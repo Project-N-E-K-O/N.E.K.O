@@ -4838,5 +4838,592 @@
             "label": "Guardar este partido en la memoria (desactivado por defecto)",
             "hint": "Cuando está desactivado, las entradas del jugador, las respuestas directas de NEKO, las reacciones a eventos, el resumen del partido y las conversaciones posteriores no se guardan ni se consultan en la memoria."
         }
+    },
+    "basketball": {
+        "title": "Desafío de baloncesto",
+        "modeSwitcher": "Modo de baloncesto",
+        "mode": {
+            "spectator": "Práctica libre",
+            "shooter": "Desafío de tiro",
+            "duel": "Duelo con Yui",
+            "timed": "Contrarreloj",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Puntos {{score}}",
+            "streak": "Racha {{streak}}",
+            "record": "Máximo {{distance}}",
+            "duelScore": "Tú {{player}} - {{neko}} Neko",
+            "duelMisses": "Fallos Tú {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Ronda {{round}}/{{max}}",
+            "timer": "{{seconds}} s",
+            "practice": "Práctica libre",
+            "yourTurn": "Tu turno",
+            "nekoTurn": "Tira Neko",
+            "horseLetters": "Tú {{player}} / Neko {{neko}}",
+            "horseChallenge": "Replica {{distance}} {{angle}}°",
+            "horseSet": "Propón un tiro",
+            "unlimitedAttempts": "Ilimitado",
+            "chances": "Oportunidades {{count}}",
+            "practiceTitle": "Práctica libre: tiros ilimitados y sin puntuación en clasificación",
+            "attemptsTitle": "Restan {{remaining}}/{{total}}, fallos {{missed}}",
+            "duelTitle": "Duelo Neko: tú y Neko tiran por turnos",
+            "timedTitle": "Contrarreloj: tiros ilimitados en 60 segundos",
+            "horseTitle": "HORSE: replica distancia, ángulo y zona dulce del tiro anotado",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "act.",
+            "off": "desact."
+        },
+        "result": {
+            "title": "Fin de partida",
+            "leaderboard": "Clasificación",
+            "stats": "Estadísticas",
+            "retry": "Jugar de nuevo",
+            "rating": "Valoración de control: {{rating}}",
+            "duel": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "duelElimination": "Resultado del duelo: {{outcome}} | Tú {{player}} - {{neko}} Neko | Fallos: tú {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rondas: {{rounds}} | Última distancia: {{distance}}",
+            "horse": "Resultado HORSE: {{outcome}} | Tú {{player}} / Neko {{neko}} | Anotadas: {{made}} | Mejor racha: {{best}}",
+            "timed": "Contrarreloj: {{made}} anotadas, mejor racha {{best}}, puntos {{score}}",
+            "practice": "Práctica libre: no se registra puntuación | Anotadas: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Distancia: {{distance}}",
+            "summary": "Puntos: {{score}} | Anotadas: {{made}} | Racha actual: {{streak}} | Mejor racha: {{best}} | Máximo: {{record}} | Distancia: {{distance}}",
+            "attemptsSummary": "Resumen de tiros: {{summary}}",
+            "personalBest": "Mejor personal: {{score}} pts",
+            "globalRank": "Puesto global: #{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "Ganaste",
+                "nekoWin": "Gana Neko",
+                "tie": "Empate",
+                "undecided": "Sin decidir"
+            }
+        },
+        "leaderboard": {
+            "title": "Clasificación",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Tiro",
+            "duel": "Duelo",
+            "empty": "Aún no hay registros",
+            "totalPlayers": "Jugadores {{count}}",
+            "yourBest": "Tu mejor #{{rank}} / {{score}} pts",
+            "recent": "Últimas {{count}} partidas",
+            "loading": "Cargando...",
+            "mode": {
+                "timed": "Tiempo",
+                "horse": "HORSE",
+                "spectator": "Espectador",
+                "shooter": "Tiro",
+                "duel": "Duelo"
+            }
+        },
+        "debug": {
+            "title": "Panel de depuración",
+            "collapse": "Contraer",
+            "hide": "Ocultar",
+            "distance": "Distancia:",
+            "power": "Potencia:",
+            "event": "Evento:",
+            "streak": "Racha:",
+            "reset": "Restablecer",
+            "guide": "Línea guía",
+            "sweet": "Zona dulce",
+            "markers": "Marcas de distancia",
+            "readout": {
+                "modeState": "Modo={{mode}}  Estado={{state}}",
+                "distance": "Distancia={{px}}px ({{meters}})",
+                "streaks": "Racha={{streak}}  Mejor={{best}}  Anotadas={{made}}",
+                "score": "Puntos={{score}}  Restan={{remaining}}/{{total}}",
+                "difficulty": "Dificultad={{difficulty}}  Ánimo={{mood}}  Tema={{theme}}",
+                "duel": "Duelo: Tú {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: Tú {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Estadísticas personales",
+            "close": "Cerrar",
+            "totalShots": "Tiros={{total}}  Anotadas={{made}}",
+            "farRate": "Acierto 300px+={{rate}}",
+            "trend": "Tendencia reciente={{trend}}",
+            "none": "Ninguno"
+        },
+        "theme": {
+            "next": "Cambiar tema",
+            "current": "Tema: {{theme}}",
+            "changed": "Tema {{theme}}",
+            "labels": {
+                "default": "Gimnasio",
+                "sunset": "Cancha al atardecer",
+                "night": "Luces nocturnas"
+            }
+        },
+        "court": {
+            "restrictedArc": "Zona restringida",
+            "freeThrowLine": "Tiro libre",
+            "threePointLine": "Triple",
+            "midCourtLine": "Media cancha"
+        },
+        "close": "Cerrar",
+        "audio": {
+            "controls": "Audio del juego"
+        },
+        "memoryOption": {
+            "label": "Guardar la conversación de esta partida en memoria (desactivado por defecto)",
+            "hint": "Si está desactivado, las entradas del jugador, respuestas de NEKO, eventos, resúmenes posteriores y contexto de seguimiento no se guardarán ni se leerán de la memoria."
+        },
+        "table": {
+            "score": "Puntos",
+            "bestStreak": "Mejor racha",
+            "farthest": "Máximo",
+            "mode": "Modo",
+            "date": "Fecha"
+        },
+        "state": {
+            "ready": "Listo",
+            "in_flight": "En vuelo",
+            "game_over": "Fin",
+            "neko_thinking": "Neko piensa"
+        },
+        "toast": {
+            "difficulty": "Dificultad {{difficulty}}",
+            "nekoShoot": "Tira Neko",
+            "nekoThinking": "Neko está pensando",
+            "nekoTurn": "Turno de Neko",
+            "copyNeko": "Replica a Neko",
+            "nekoFailed": "Neko falló el tiro inicial",
+            "yourSet": "Propón tu tiro",
+            "yourTurn": "Tu turno",
+            "reset": "Restablecido",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Línea guía",
+                "sweet": "Zona dulce de potencia",
+                "bgm": "BGM",
+                "markers": "Marcas de distancia"
+            },
+            "state": {
+                "on": "activado",
+                "off": "desactivado"
+            }
+        },
+        "tutorial": {
+            "aim": "Mueve el ratón arriba o abajo para ajustar el ángulo",
+            "charge": "Mantén clic izquierdo para cargar",
+            "release": "¡Suelta para tirar!"
+        },
+        "shot": {
+            "swish": "Limpia",
+            "bank": "Tablero",
+            "rim_in": "Entró en aro",
+            "rim_out": "Salió del aro",
+            "air_ball": "Air ball",
+            "unknown": "Desconocido",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "¡Limpia!",
+                    "¡Limpia!"
+                ],
+                "bank": [
+                    "También cuenta con tablero.",
+                    "También cuenta con tablero."
+                ],
+                "rim_in": [
+                    "Entró rebotando.",
+                    "Entró rebotando."
+                ],
+                "rim_out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "air_ball": [
+                    "El aro está al otro lado.",
+                    "El aro está al otro lado."
+                ],
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Tira ya.",
+                    "Tira ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "¡Limpia!",
+                    "¡Limpia!"
+                ],
+                "bank": [
+                    "También cuenta con tablero.",
+                    "También cuenta con tablero."
+                ],
+                "rim_in": [
+                    "Entró rebotando.",
+                    "Entró rebotando."
+                ],
+                "rim_out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "air_ball": [
+                    "El aro está al otro lado.",
+                    "El aro está al otro lado."
+                ],
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Tira ya.",
+                    "Tira ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "¡Limpia!",
+                    "¡Limpia!"
+                ],
+                "bank": [
+                    "También cuenta con tablero.",
+                    "También cuenta con tablero."
+                ],
+                "rim_in": [
+                    "Entró rebotando.",
+                    "Entró rebotando."
+                ],
+                "rim_out": [
+                    "Por poco.",
+                    "Por poco."
+                ],
+                "air_ball": [
+                    "El aro está al otro lado.",
+                    "El aro está al otro lado."
+                ],
+                "shot_missed": [
+                    "Todavía hay oportunidad.",
+                    "Todavía hay oportunidad."
+                ],
+                "game_over": [
+                    "¿Otra partida?",
+                    "¿Otra partida?"
+                ],
+                "long_aim": [
+                    "Tira ya.",
+                    "Tira ya."
+                ],
+                "close_to_record": [
+                    "Casi récord.",
+                    "Casi récord."
+                ],
+                "new_record": [
+                    "¡Nuevo récord!",
+                    "¡Nuevo récord!"
+                ],
+                "streak_5": [
+                    "¡Cinco seguidas!",
+                    "¡Cinco seguidas!"
+                ],
+                "streak_10": [
+                    "¿Diez seguidas?",
+                    "¿Diez seguidas?"
+                ],
+                "streak_15": [
+                    "Quince seguidas es demasiado.",
+                    "Quince seguidas es demasiado."
+                ],
+                "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
+                    "¿Veinte seguidas? Increíble."
+                ],
+                "clutch": "...Este tiene que entrar.",
+                "excuse": [
+                    "Ay, el brazo está algo cansado."
+                ]
+            },
+            "fallback": [
+                "Otra vez."
+            ],
+            "pressure": {
+                "lastTied": "Tiro decisivo. No parpadees.",
+                "lastAhead": "Bah, esto no terminó.",
+                "lastBehind": "Anota este y ganas.",
+                "playerAhead": "No lo haces mal...",
+                "playerBehind": "Aprieta un poco más."
+            },
+            "horse": {
+                "nekoMiss": "No lo replicó. Suma {{letters}}.",
+                "playerMiss": "Tú también sumas {{letters}}."
+            },
+            "mindGame": [
+                "Te tiembla la mano.",
+                "Piénsalo, sin prisa.",
+                "Esta distancia no es corta."
+            ],
+            "easterEgg": {
+                "lateNight": "¿Sigues tirando tan tarde?",
+                "xmas": "Ya están las campanas, ¿y aún quieres tirar?",
+                "newYear": "¡Feliz Año Nuevo!",
+                "swish3": "¿Estás usando trucos?",
+                "swish5": "...Tengo que revisar el aro.",
+                "airball3": "...Quizá toma un descanso."
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "¿Eh?! "
+        }
+    },
+    "drawingGuess": {
+        "title": "Dibuja y adivina",
+        "eyebrow": "Actividad de compañía",
+        "subtitle": "Dibuja, adivina y conversa con el personaje.",
+        "status": {
+            "loadingCharacter": "Cargando personaje actual",
+            "missingCharacter": "Esperando información del personaje",
+            "ready": "Listo",
+            "starting": "Iniciando ruta del juego",
+            "active": "Ruta activa",
+            "ending": "Terminando",
+            "ended": "Terminado",
+            "failed": "Falló la ruta",
+            "heartbeatLost": "Ruta inactiva"
+        },
+        "layout": {
+            "character": "Personaje",
+            "session": "Sesión",
+            "canvasTitle": "Lienzo",
+            "tools": "Herramientas de dibujo",
+            "canvasWaitingTitle": "El lienzo se está preparando",
+            "canvasWaiting": "Al empezar, ella dibuja primero y tú adivinas. Luego tienes 5 minutos para dibujar algo para ella.",
+            "actions": "Acciones del juego",
+            "sideResize": "Ajustar proporción entre modelo y chat",
+            "modelTitle": "Neko está presente",
+            "modelFallbackTitle": "Espacio de modelo reservado",
+            "modelFallback": "Más adelante se cargará aquí el Live2D o VRM del personaje actual. Si falla, este mismo espacio mantendrá un fallback.",
+            "chatTitle": "Chat del juego"
+        },
+        "tools": {
+            "brush": "Pincel",
+            "eraser": "Borrador",
+            "bucket": "Bote",
+            "undo": "Deshacer",
+            "redo": "Rehacer",
+            "color": "Color",
+            "size": "Grosor",
+            "eyedropper": "Cuentagotas",
+            "basicColors": "Colores básicos",
+            "historyColors": "Colores recientes"
+        },
+        "tutorial": {
+            "title": "Antes de empezar",
+            "intro": "En esta ronda cada persona dibuja una vez y adivina una vez. Puedes chatear mientras dibujas; tras 5 minutos, el lienzo actual se le entrega automáticamente.",
+            "memoryTitle": "Opciones de memoria",
+            "memoryNone": "No registrar; solo jugar esta vez.",
+            "memorySummary": "Registrar un breve resumen del juego.",
+            "quickTitle": "Guía rápida",
+            "quickDraw": "Cuando te toque dibujar, elige una carta, dibuja en el lienzo y pulsa Listo.",
+            "quickGuess": "Cuando te toque adivinar, escribe tu respuesta en el chat; también puedes conversar y pedir pistas.",
+            "quickSummary": "Cada ronda conserva miniaturas, y en el resumen final puedes guardar los dibujos.",
+            "voiceHint": "Si quieres usar voz, actívala primero en la página principal; este minijuego la tomará al comenzar."
+        },
+        "actions": {
+            "start": "Empezar",
+            "end": "Terminar",
+            "retryCharacter": "Recargar personaje",
+            "send": "Enviar",
+            "done": "Listo",
+            "nextRound": "Siguiente ronda",
+            "clearCanvas": "Limpiar lienzo",
+            "saveNekoSvg": "Guardar como SVG",
+            "saveNekoPng": "Guardar como PNG",
+            "saveUserPng": "Guardar mi dibujo"
+        },
+        "debug": {
+            "title": "Panel de depuración",
+            "currentCharacter": "Personaje de esta página",
+            "loadingCharacters": "Cargando lista de personajes",
+            "roundControls": "Controles de ronda",
+            "aiRound": "Ronda de Neko",
+            "userRound": "Ronda del jugador",
+            "rotateRounds": "Alternar rondas",
+            "randomGuessPoint": "Punto de conjetura aleatorio",
+            "triggerAiGuess": "Activar conjetura de Neko ahora",
+            "locked": "Bloqueado",
+            "available": "Disponible",
+            "requestLocked": "Solicitud bloqueada",
+            "requestUnlocked": "Sin bloqueo",
+            "waitingForChat": "Esperando el chat",
+            "guessing": "Adivinando",
+            "attemptsExhausted": "Sin intentos restantes",
+            "notScheduled": "No programado",
+            "switchedCharacter": "Depuración: se cambió a {{name}}.",
+            "switchedCharacterContinue": "Depuración: se cambió a {{name}} y continúa la ronda de prueba actual.",
+            "holdAiRound": "Depuración: se mantiene la ronda de Neko y se prepara la siguiente palabra.",
+            "wordPoolsStatus": "Estado del banco de palabras",
+            "wordPool1": "Banco 1",
+            "wordPool2": "Banco 2",
+            "requestLock": "Bloqueo de solicitud"
+        },
+        "voice": {
+            "connected": "La voz está conectada a esta ronda.",
+            "connectHint": "Activa primero la voz en la página principal para que esta ronda la tome.",
+            "connectedNotice": "La voz de la página principal está conectada a esta ronda.",
+            "connectHintNotice": "Activa primero la voz en la página principal; esta ronda la tomará cuando esté activa.",
+            "routeNotReady": "Espera a que la ruta del juego esté lista antes de usar voz.",
+            "buttonLabel": "Chat de voz"
+        },
+        "exitConfirm": {
+            "title": "¿Salir de esta página?",
+            "message": "El resumen final está listo. ¿Quieres salir de la página del minijuego?",
+            "stay": "Luego",
+            "leave": "Salir",
+            "reopen": "¿Salir?"
+        },
+        "memory": {
+            "noneShort": "Sin memoria",
+            "summaryShort": "Resumen"
+        },
+        "phases": {
+            "tutorial": "Tutorial",
+            "loading_round": "Cargando",
+            "ended": "Terminado",
+            "ai_drawing": "Neko dibujando",
+            "user_guessing": "Tu adivinanza",
+            "drawing_pick": "Sorteando palabra",
+            "user_drawing": "Tú dibujas",
+            "ai_guessing": "Neko adivinando",
+            "ai_guess_feedback": "Dale una pista",
+            "summary": "Resumen",
+            "final_summary": "Resumen final"
+        },
+        "modelStates": {
+            "loading": "Cargando modelo",
+            "idle": "En espera",
+            "drawing": "Dibujando",
+            "thinking": "Pensando",
+            "guessing": "Adivinando",
+            "talking": "Hablando",
+            "happy": "Contenta"
+        },
+        "modelControls": {
+            "group": "Controles de vista del modelo",
+            "scale": "Tamaño del modelo",
+            "x": "Posición horizontal",
+            "y": "Posición vertical",
+            "reset": "Restablecer vista del modelo"
+        },
+        "messages": {
+            "welcome": "Cuando esté listo, confirmaremos el personaje actual y tomaremos la ruta del minijuego.",
+            "missingCharacter": "Abre esta página con un personaje o carga primero el personaje actual.",
+            "startFailed": "No se pudo iniciar la ruta: {{reason}}",
+            "routeActive": "La ruta del juego está activa para {{name}}.",
+            "roundStart": "Empieza una nueva ronda.",
+            "aiDrawingReady": "Ella terminó de dibujar. Intenta adivinar.",
+            "roundFailed": "No se pudo iniciar la ronda: {{reason}}",
+            "requestTimeout": "La solicitud agotó el tiempo. Inténtalo de nuevo.",
+            "guessTimeout": "Se acabó el tiempo. La respuesta era {{answer}}.",
+            "inputFailed": "Eso no se envió. Inténtalo otra vez.",
+            "answerReveal": "Respuesta: {{answer}}",
+            "drawingPickTitle": "Sorteando una palabra",
+            "drawingPickSubtitle": "Espera un momento. Ella está sacando algunas cartas del mazo.",
+            "drawingPickReady": "Elige una carta para dibujar.",
+            "drawingPickReveal": "Elegida: {{answer}}",
+            "userDrawPrompt": "Tu palabra es: {{answer}}. Dibújala para que ella adivine.",
+            "blankCanvas": "Dibuja unas líneas primero.",
+            "aiDrawingWaiting": "La Neko está dibujando",
+            "aiGuessing": "Ella está mirando tu dibujo...",
+            "aiGuessLine": "Ella adivinó: {{guess}}",
+            "aiGuessCorrect": "Acertó.",
+            "aiGuessWrong": "Todavía no acertó.",
+            "aiGuessMissAnswer": "No acertó. Respuesta: {{answer}}",
+            "aiNeedsHint": "Puedes seguir conversando. Dale una pista cuando quieras que intente adivinar otra vez.",
+            "summaryReady": "El resumen de la ronda está listo.",
+            "canvasCleared": "Lienzo limpio.",
+            "userSupplemented": "Retocaste el dibujo. Ella volverá a adivinar ahora."
+        },
+        "input": {
+            "placeholder": "Espera a que la ruta esté lista",
+            "guessPlaceholder": "Escribe tu respuesta o pide una pista",
+            "drawingPlaceholder": "Puedes charlar mientras dibujas",
+            "hintPlaceholder": "Sigue conversando; dale una pista cuando quieras otro intento",
+            "summaryPlaceholder": "Habla sobre esta ronda o empieza otra",
+            "ariaLabel": "Entrada de chat"
+        },
+        "timer": {
+            "seconds": "{{seconds}}s"
+        },
+        "summary": {
+            "title": "Resumen de ronda",
+            "outcome": {
+                "userWin": "Ganaste esta ronda, suave y con estilo.",
+                "nekoWin": "Ella ganó esta ronda, con un poquito de orgullo.",
+                "tie": "Un empate cerrado. Perfecto para otra ronda."
+            },
+            "score": "Tú {{user}} - {{neko}} Neko",
+            "userDrawAnswer": "Respuesta de tu dibujo: {{answer}}",
+            "nekoArt": "Dibujo de Neko",
+            "userArt": "Tu dibujo",
+            "finalTitle": "Resumen final",
+            "roundLabel": "Ronda {{round}}",
+            "noRounds": "Aún no hay rondas completadas."
+        }
     }
 }

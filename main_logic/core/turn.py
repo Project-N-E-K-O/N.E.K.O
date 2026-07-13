@@ -1470,6 +1470,7 @@ class TurnMixin:
         mirror_text: bool = True,
         emit_turn_end_after: bool = True,
         interrupt_audio: bool = False,
+        suppress_primary_audio: bool = False,
     ) -> dict:
         """Mirror an assistant line + play it through the project TTS pipeline.
 
@@ -1513,6 +1514,9 @@ class TurnMixin:
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
             turn_id = self.current_speech_id
+            if suppress_primary_audio:
+                self._speech_primary_suppressed_ids.add(turn_id)
+
             self.state.mark_user_input_preempt()
         await self.state.fire(SessionEvent.USER_INPUT, sid=turn_id)
 
@@ -1552,6 +1556,7 @@ class TurnMixin:
             "audio_queued": audio_queued,
             "turn_end_emitted": bool(emit_turn_end_after),
             "interrupt_audio": bool(interrupt_audio),
+            "suppress_primary_audio": bool(suppress_primary_audio),
             "voice_source": {
                 "provider": "project_tts",
                 "method": "project_tts",

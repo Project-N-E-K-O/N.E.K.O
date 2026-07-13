@@ -255,9 +255,13 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         if len(message) < 2:
                             continue
                         audio_array = np.frombuffer(message, dtype=np.int16)
-                        response_queue.put(
-                            _resample_audio(audio_array, 24000, 48000, resampler)
-                        )
+                        source_speech_id = session_state.get("speech_id")
+                        if source_speech_id is not None:
+                            response_queue.put((
+                                "__audio__",
+                                source_speech_id,
+                                _resample_audio(audio_array, 24000, 48000, resampler),
+                            ))
                     else:
                         try:
                             event = json.loads(message)

@@ -22,7 +22,6 @@ minigame.
 
 from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
 
-
 SOCCER_SYSTEM_PROMPT = """\
 你是{name}，{personality}
 

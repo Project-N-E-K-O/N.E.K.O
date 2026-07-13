@@ -171,7 +171,7 @@ import re
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
 from config.prompts.prompts_soccer import (
     get_soccer_passive_guard_system_prompt,
     get_soccer_passive_guard_user_prompt,
@@ -226,6 +226,113 @@ _SSML_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
+_GAME_SPEECH_TAP_KEY = "game_route_speech"
+_game_speech_subscribers: Dict[tuple[str, str, str], set[WebSocket]] = {}
+_game_speech_subscribers_lock = asyncio.Lock()
+_game_speech_subscriber_send_locks: Dict[WebSocket, asyncio.Lock] = {}
+_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS = 20.0
+_GAME_SPEECH_RECONNECT_GRACE_SECONDS = 0.8
+_GAME_SPEECH_RECONNECT_POLL_SECONDS = 0.05
+
+
+def _game_speech_subscriber_key(lanlan_name: str, game_type: str, session_id: str) -> tuple[str, str, str]:
+    return (str(lanlan_name or ""), str(game_type or ""), str(session_id or ""))
+
+
+def _active_game_speech_subscriber_key(lanlan_name: str) -> tuple[str, str, str] | None:
+    state = _get_active_game_route_state(lanlan_name)
+    if not state:
+        return None
+    return _game_speech_subscriber_key(
+        str(state.get("lanlan_name") or lanlan_name or ""),
+        str(state.get("game_type") or ""),
+        str(state.get("session_id") or ""),
+    )
+
+
+async def _drop_game_speech_subscriber(key: tuple[str, str, str], websocket: WebSocket) -> None:
+    async with _game_speech_subscribers_lock:
+        subscribers = _game_speech_subscribers.get(key)
+        if subscribers is not None:
+            subscribers.discard(websocket)
+            if not subscribers:
+                _game_speech_subscribers.pop(key, None)
+        _game_speech_subscriber_send_locks.pop(websocket, None)
+        target_lanlan = key[0]
+        has_same_lanlan_subscribers = any(
+            sub_key[0] == target_lanlan and bool(subscribers_for_key)
+            for sub_key, subscribers_for_key in _game_speech_subscribers.items()
+        )
+        if not has_same_lanlan_subscribers:
+            mgr = get_session_manager().get(target_lanlan)
+            remove_tap = getattr(mgr, "remove_speech_tap", None) if mgr else None
+            if callable(remove_tap):
+                remove_tap(_GAME_SPEECH_TAP_KEY)
+
+
+async def _broadcast_game_speech(lanlan_name: str, audio: bytes, speech_id: str | None) -> bool:
+    if not audio:
+        return False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _GAME_SPEECH_RECONNECT_GRACE_SECONDS
+    while True:
+        active_key = _active_game_speech_subscriber_key(lanlan_name)
+        if not active_key:
+            return False
+        async with _game_speech_subscribers_lock:
+            subscribers = [
+                (
+                    websocket,
+                    _game_speech_subscriber_send_locks.setdefault(websocket, asyncio.Lock()),
+                )
+                for websocket in (_game_speech_subscribers.get(active_key) or [])
+            ]
+        delivered = False
+        stale: list[WebSocket] = []
+        header = {"type": "audio_chunk", "speech_id": speech_id}
+        for websocket, send_lock in subscribers:
+            try:
+                async with send_lock:
+                    await websocket.send_json(header)
+                    await websocket.send_bytes(audio)
+                delivered = True
+            except Exception:
+                stale.append(websocket)
+        for websocket in stale:
+            await _drop_game_speech_subscriber(active_key, websocket)
+        if delivered:
+            return True
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(_GAME_SPEECH_RECONNECT_POLL_SECONDS, remaining))
+
+
+def _ensure_game_speech_tap(lanlan_name: str) -> bool:
+    mgr = get_session_manager().get(lanlan_name)
+    add_tap = getattr(mgr, "add_speech_tap", None) if mgr else None
+    if not callable(add_tap):
+        return False
+
+    async def _tap(audio: bytes, speech_id: str | None, *, _lanlan_name: str = lanlan_name) -> bool:
+        return await _broadcast_game_speech(_lanlan_name, audio, speech_id)
+
+    add_tap(_GAME_SPEECH_TAP_KEY, _tap)
+    return True
+
+
+def _resolve_window_lanlan_name(data: dict, default_lanlan_name: str) -> str:
+    for key in (
+        "window_lanlan_name",
+        "windowLanlanName",
+        "route_owner_lanlan_name",
+        "routeOwnerLanlanName",
+    ):
+        raw = data.get(key)
+        if str(raw or "").strip():
+            return _resolve_lanlan_name(raw) or default_lanlan_name
+    return default_lanlan_name
 
 _SOCCER_QUICK_LINE_KEYS = {
     "goal-scored", "goal-conceded", "own-goal-by-ai", "own-goal-by-player",
@@ -1160,6 +1267,7 @@ async def game_route_start(game_type: str, request: Request):
     _absorb_request_language(data, lanlan_name)
 
     session_id = str(data.get("session_id") or "default")
+    window_lanlan_name = _resolve_window_lanlan_name(data, lanlan_name)
     # 同一角色同一时刻只允许一个 active 游戏路由：启动新路由前先结束所有其它仍活跃的
     # 路由（同 game_type 旧 session、不同 game_type、未来跨游戏并存均覆盖）。否则
     # is_game_route_active(lanlan_name) / _get_active_game_route_state(lanlan_name)
@@ -1239,6 +1347,7 @@ async def game_route_start(game_type: str, request: Request):
                 lanlan_name,
                 data.get("game_last_full_dialogue_count"),
             )
+            state["window_lanlan_name"] = window_lanlan_name
             # Take over the SessionManager: ordinary chat LLM output handlers must
             # stay silent during the game, and any voice transcript that reaches
             # the SessionManager must be redirected into route_external_voice_transcript.
@@ -1276,7 +1385,7 @@ async def game_route_start(game_type: str, request: Request):
     # 让前端 UI 卡死收缩态再无 closed 抵消。recheck state 自身的 active 标志 +
     # session_id 双重匹配（防 state 字典里同 (lanlan,game_type) key 已被新一轮
     # supersede 替换为新 state）。
-    mgr_for_ws = get_session_manager().get(lanlan_name)
+    mgr_for_ws = get_session_manager().get(window_lanlan_name)
     if (
         state.get("game_route_active")
         and str(state.get("session_id") or "") == session_id
@@ -1284,7 +1393,7 @@ async def game_route_start(game_type: str, request: Request):
         await _push_game_window_state_change(
             mgr_for_ws,
             action="opened",
-            lanlan_name=lanlan_name,
+            lanlan_name=window_lanlan_name,
             game_type=game_type,
             session_id=session_id,
         )
@@ -1372,6 +1481,54 @@ async def game_route_start(game_type: str, request: Request):
     return {"ok": True, "state": _public_route_state(state)}
 
 
+@router.websocket("/{game_type}/speech/ws")
+async def game_route_speech_ws(game_type: str, websocket: WebSocket):
+    """Mirror synthesized assistant audio to the game window."""
+    lanlan_name = _resolve_lanlan_name(websocket.query_params.get("lanlan_name"))
+    session_id = str(websocket.query_params.get("session_id") or "")
+    if not lanlan_name or not session_id:
+        await websocket.close(code=1008)
+        return
+    state = _get_active_game_route_state(lanlan_name, game_type)
+    if not state or str(state.get("session_id") or "") != session_id:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    key = _game_speech_subscriber_key(lanlan_name, game_type, session_id)
+    async with _game_speech_subscribers_lock:
+        _game_speech_subscribers.setdefault(key, set()).add(websocket)
+        _game_speech_subscriber_send_locks.setdefault(websocket, asyncio.Lock())
+    tap_ready = _ensure_game_speech_tap(lanlan_name)
+    try:
+        await websocket.send_json({
+            "type": "speech_tap_ready",
+            "ok": bool(tap_ready),
+            "game_type": game_type,
+            "session_id": session_id,
+        })
+        while True:
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=_GAME_SPEECH_WS_ROUTE_CHECK_SECONDS)
+            except asyncio.TimeoutError:
+                pass
+            active_state = _get_active_game_route_state(lanlan_name, game_type)
+            if not active_state or str(active_state.get("session_id") or "") != session_id:
+                await websocket.close(code=1000)
+                break
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug(
+            "game speech websocket closed: lanlan=%s game=%s session=%s err=%s",
+            lanlan_name,
+            game_type,
+            session_id,
+            exc,
+        )
+    finally:
+        await _drop_game_speech_subscriber(key, websocket)
+
 @router.get("/{game_type}/route/state")
 async def game_route_state(game_type: str, lanlan_name: str = ""):
     resolved = _resolve_lanlan_name(lanlan_name)
@@ -1401,6 +1558,16 @@ async def game_route_any_active(lanlan_name: str = ""):
     }
 
 
+def _store_route_canvas_context(state: dict, data: dict, game_type: str) -> None:
+    if game_type != "drawing_guess":
+        return
+    if data.get("canvas_context_clear"):
+        state.pop("_last_canvas_image_data_url", None)
+        return
+    image_data_url = str(data.get("data") or data.get("canvas_image_data_url") or "")
+    if image_data_url.startswith("data:image/") and len(image_data_url) <= 1_800_000:
+        state["_last_canvas_image_data_url"] = image_data_url
+
 @router.post("/{game_type}/route/drain")
 async def game_route_drain(game_type: str, request: Request):
     """Drain backend outputs caused by hijacked main-window input for the game page."""
@@ -1418,7 +1585,12 @@ async def game_route_drain(game_type: str, request: Request):
     if session_id and session_id != str(state.get("session_id") or ""):
         return {"ok": True, "outputs": [], "state": _public_route_state(state)}
 
+    _update_route_start_state_from_payload(state, data)
+    current_state = data.get("currentState")
+    if isinstance(current_state, dict):
+        state["last_state"] = current_state
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
+    _store_route_canvas_context(state, data, game_type)
     outputs = list(state.get("pending_outputs") or [])
     state["pending_outputs"] = []
     return {"ok": True, "outputs": outputs, "state": _public_route_state(state)}
@@ -1453,6 +1625,8 @@ async def game_route_voice_transcript(game_type: str, request: Request):
         state["last_state"] = current_state
     _update_route_start_state_from_payload(state, data)
     _update_game_memory_enabled_from_payload(state, data, game_type=game_type)
+
+    _store_route_canvas_context(state, data, game_type)
 
     handled = await route_external_voice_transcript(
         lanlan_name,
@@ -1493,6 +1667,8 @@ async def game_route_heartbeat(game_type: str, request: Request):
     if isinstance(current_state, dict):
         state["last_state"] = current_state
 
+    _store_route_canvas_context(state, data, game_type)
+
     heartbeat_timeout = _route_heartbeat_timeout_seconds(state)
     return {
         "ok": True,
@@ -1525,6 +1701,7 @@ async def _speak_game_line_via_project_tts(
     mirror_text: bool = True,
     emit_turn_end: bool = True,
     interrupt_audio: bool = False,
+    suppress_primary_audio: bool = False,
     event: dict | None = None,
 ) -> Dict[str, Any]:
     speak = getattr(mgr, "mirror_assistant_speech", None)
@@ -1545,6 +1722,7 @@ async def _speak_game_line_via_project_tts(
             mirror_text=mirror_text,
             emit_turn_end_after=emit_turn_end,
             interrupt_audio=interrupt_audio,
+            suppress_primary_audio=suppress_primary_audio,
         )
     except Exception as exc:
         return {
@@ -1731,6 +1909,7 @@ async def game_project_speak(game_type: str, request: Request):
         return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
 
     interrupt_audio = _coerce_payload_bool(data.get("interrupt_audio")) is True
+    suppress_primary_audio = _coerce_payload_bool(data.get("suppress_primary_audio")) is True
     session_id = str(data.get("session_id") or "")
     state = _get_active_game_route_state(lanlan_name, game_type)
     if not state:
@@ -1771,6 +1950,7 @@ async def game_project_speak(game_type: str, request: Request):
             "request_id": str(data.get("request_id") or ""),
             "line_length": len(line),
             "interrupt_audio": interrupt_audio,
+            "suppress_primary_audio": suppress_primary_audio,
             "mirror_text": data.get("mirror_text", True) is not False,
             "emit_turn_end": data.get("emit_turn_end", True) is not False,
             "event_kind": data.get("event", {}).get("kind") if isinstance(data.get("event"), dict) else "",
@@ -1786,6 +1966,7 @@ async def game_project_speak(game_type: str, request: Request):
         mirror_text=data.get("mirror_text", True) is not False,
         emit_turn_end=data.get("emit_turn_end", True) is not False,
         interrupt_audio=interrupt_audio,
+        suppress_primary_audio=suppress_primary_audio,
         event=_attach_game_memory_flag_to_event(
             data.get("event") if isinstance(data.get("event"), dict) else {},
             state,
@@ -1811,6 +1992,7 @@ async def game_project_speak(game_type: str, request: Request):
             "speech_id": result.get("speech_id"),
             "turn_end_emitted": result.get("turn_end_emitted"),
             "interrupt_audio": result.get("interrupt_audio"),
+            "suppress_primary_audio": result.get("suppress_primary_audio"),
             "error_type": result.get("error_type"),
             "error": result.get("error"),
             "tts_pipeline": result.get("tts_pipeline"),
@@ -2000,6 +2182,7 @@ async def _route_external_transcript_to_game(
         mode,
         {"request_id": request_id or ""},
     )
+    mirror_user_to_frontend = kind == "user-voice" and game_type != "drawing_guess"
     if mgr and hasattr(mgr, "mirror_user_input"):
         await mgr.mirror_user_input(
             text,
@@ -2015,7 +2198,7 @@ async def _route_external_transcript_to_game(
                 if kind == "user-voice"
                 else MIRROR_USER_TEXT_INPUT_TYPE
             ),
-            send_to_frontend=kind == "user-voice",
+            send_to_frontend=mirror_user_to_frontend,
         )
     if mgr and hasattr(mgr, "send_user_activity"):
         try:
@@ -2058,12 +2241,30 @@ async def _route_external_transcript_to_game(
         },
     })
     llm_started_at = time.time()
-    result = await _run_game_chat(game_type, session_id, event)
+    if game_type == "drawing_guess":
+        try:
+            from .drawing_guess import handle_external_drawing_guess_transcript
+
+            result = await handle_external_drawing_guess_transcript(
+                lanlan_name,
+                session_id,
+                text,
+                route_state=state,
+                request_id=request_id,
+                source=source,
+                kind=kind,
+            )
+        except Exception as exc:
+            logger.warning("drawing_guess external transcript handling failed: %s", exc)
+            result = {"ok": False, "error": "drawing_guess_external_transcript_failed"}
+    else:
+        result = await _run_game_chat(game_type, session_id, event)
     result_ts = time.time()
+    assistant_line = str(result.get("line") or result.get("message") or "").strip()
     _append_game_dialog(state, {
         "type": "assistant",
         "source": "game_llm",
-        "line": result.get("line", ""),
+        "line": assistant_line,
         "control": result.get("control", {}),
         "request_id": request_id or "",
     })
@@ -2097,8 +2298,7 @@ async def _route_external_transcript_to_game(
     }
     _append_game_output(state, output)
 
-    line = str(result.get("line") or "").strip()
-    if not line and mgr and hasattr(mgr, "send_status"):
+    if not assistant_line and mgr and hasattr(mgr, "send_status"):
         await mgr.send_status(json.dumps({
             "code": "GAME_ROUTE_LLM_FAILED",
             "details": {"source": source, "error": result.get("error", "empty_line")},
@@ -2277,6 +2477,23 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
         return True
 
     if input_type in {"screen", "camera"}:
+        if game_type == "drawing_guess":
+            _store_route_canvas_context(state, message, game_type)
+            now = time.time()
+            last_request_at = float(state.get("_last_canvas_context_request_at") or 0)
+            if now - last_request_at >= 0.75:
+                state["_last_canvas_context_request_at"] = now
+                _append_game_output(state, {
+                    "type": "game_canvas_context_request",
+                    "source": "external_media_hijacked_by_game",
+                    "request_id": request_id or "",
+                    "ts": now,
+                    "meta": {
+                        "input_type": input_type,
+                        "game_type": game_type,
+                    },
+                })
+            return True
         if mgr and hasattr(mgr, "send_status"):
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_MEDIA_SKIPPED",
@@ -2519,6 +2736,12 @@ async def _complete_game_end_from_payload(
     _absorb_request_language(data, lanlan_name)
     exit_reason = str(data.get("reason") or default_reason)
     postgame_options = _normalize_postgame_options(data.get("postgameProactive"), reason=exit_reason)
+    suppress_window_state_change = _coerce_payload_bool(
+        data.get("suppressWindowStateChange", data.get("suppress_window_state_change"))
+    ) is True
+    suppress_route_end_status = _coerce_payload_bool(
+        data.get("suppressRouteEndStatus", data.get("suppress_route_end_status"))
+    ) is True
     state = _get_active_game_route_state(lanlan_name, game_type) if lanlan_name else None
     _append_game_session_debug_log(
         game_type,
@@ -2537,6 +2760,10 @@ async def _complete_game_end_from_payload(
     archive_memory = None
     postgame_result = None
     if state and str(state.get("session_id") or "") == session_id:
+        state["window_lanlan_name"] = _resolve_window_lanlan_name(
+            data,
+            str(state.get("window_lanlan_name") or lanlan_name),
+        )
         score_session_mode = _normalize_badminton_mode(state.get("mode")) if _is_badminton_game_type(game_type) else ""
         _update_route_start_state_from_payload(state, data, exiting=True)
         current_state = data.get("currentState")
@@ -2569,6 +2796,8 @@ async def _complete_game_end_from_payload(
                         reason=exit_reason,
                         close_game_session=True,
                         close_debug_log=False,
+                        notify_window=not suppress_window_state_change,
+                        notify_status=not suppress_route_end_status,
                     )
             archive = finalized["archive"]
             archive_memory = finalized["archive_memory"]

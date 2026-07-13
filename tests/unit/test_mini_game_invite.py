@@ -682,11 +682,10 @@ async def test_maybe_deliver_uses_localized_template(monkeypatch):
     history = sr_history._proactive_chat_history[LANLAN]
     _, message, _ = history[0]
     assert 'Alice' in message
-    assert (
-        'soccer' in message.lower()
-        or 'badminton' in message.lower()
-        or 'rally challenge' in message.lower()
-    )
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
+
+    expected = MINI_GAME_INVITE_LINES_BY_GAME[out["game_type"]]["en"].format(master_name="Alice")
+    assert message == expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1478,7 +1477,7 @@ async def test_push_resolved_includes_game_url_for_open_game(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['action'] == 'open_game'
     assert payload['game_url'].startswith('/soccer_demo?')
-    assert payload['game_type'] in ('soccer', 'badminton')
+    assert payload['game_type'] == 'soccer'
 
 
 @pytest.mark.asyncio
@@ -1514,6 +1513,7 @@ def test_advance_response_returns_outcome_for_caller_ws_push():
 async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     """Successful invite delivery pushes mini_game_invite_options to the client."""
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
+    monkeypatch.setattr(sr, 'MINI_GAME_INVITE_AVAILABLE_GAMES', ('drawing_guess',))
     mgr = _make_mgr()
     mgr.websocket = MagicMock()
     mgr.websocket.send_json = AsyncMock()
@@ -1532,7 +1532,7 @@ async def test_invite_delivery_pushes_options_via_websocket(monkeypatch):
     payload = mgr.websocket.send_json.await_args.args[0]
     assert payload['type'] == 'mini_game_invite_options'
     assert payload['session_id'] == out['invite_session_id']
-    assert payload['game_type'] in ('soccer', 'badminton')
+    assert payload['game_type'] == 'drawing_guess'
     assert isinstance(payload['options'], list) and len(payload['options']) == 3
     choices = [opt['choice'] for opt in payload['options']]
     assert choices == ['accept', 'decline', 'later']
@@ -1569,20 +1569,27 @@ def test_keywords_cover_all_native_locales():
             )
 
 
-def test_badminton_invite_config_and_i18n_complete():
+def test_invite_game_configs_and_i18n_complete():
     from config import MINI_GAME_INVITE_AVAILABLE_GAMES, MINI_GAME_LAUNCH_URL_BY_GAME
     from config.prompts.prompts_activity import WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME
     from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME
 
-    assert 'badminton' in MINI_GAME_INVITE_AVAILABLE_GAMES
-    assert MINI_GAME_LAUNCH_URL_BY_GAME['badminton'] == '/badminton_demo'
-    for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
-        assert MINI_GAME_INVITE_LINES_BY_GAME['badminton'][lang].strip()
-        work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME['badminton'][lang]
-        assert work_break_prompt.strip()
-        assert '{master}' in work_break_prompt
-        assert '{app}' in work_break_prompt
-        assert '{minutes}' in work_break_prompt
+    expected_urls = {
+        'soccer': '/soccer_demo',
+        'badminton': '/badminton_demo',
+        'drawing_guess': '/drawing_guess_demo',
+    }
+    assert set(MINI_GAME_INVITE_AVAILABLE_GAMES) == set(expected_urls)
+    for game in MINI_GAME_INVITE_AVAILABLE_GAMES:
+        url = expected_urls[game]
+        assert MINI_GAME_LAUNCH_URL_BY_GAME[game] == url
+        for lang in ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'):
+            assert MINI_GAME_INVITE_LINES_BY_GAME[game][lang].strip()
+            work_break_prompt = WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME[game][lang]
+            assert work_break_prompt.strip()
+            assert '{master}' in work_break_prompt
+            assert '{app}' in work_break_prompt
+            assert '{minutes}' in work_break_prompt
 
 
 def test_accept_badminton_invite_returns_badminton_url():
@@ -1599,3 +1606,18 @@ def test_accept_badminton_invite_returns_badminton_url():
     assert result['game_url'].startswith('/badminton_demo?')
     assert 'mode=duel' not in result['game_url']
     assert 'session_id=bd-sess' in result['game_url']
+
+
+def test_accept_drawing_guess_invite_returns_drawing_guess_url():
+    state = sr._mini_game_invite_get_state(LANLAN)
+    state['delivered_at'] = time.time() - 3
+    state['responded_at'] = None
+    state['pending_session_id'] = 'dg-sess'
+    state['last_game_type'] = 'drawing_guess'
+
+    result = sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='unit')
+
+    assert result['action'] == 'open_game'
+    assert result['game_type'] == 'drawing_guess'
+    assert result['game_url'].startswith('/drawing_guess_demo?')
+    assert 'session_id=dg-sess' in result['game_url']

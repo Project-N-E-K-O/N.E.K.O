@@ -4838,5 +4838,592 @@
             "label": "今回の試合内容を記憶に保存（デフォルトはオフ）",
             "hint": "オフの場合、プレイヤー入力・NEKOの直接応答・イベント反応・試合後の要約・続きの会話はいずれも記憶に入らず、参照もされません。"
         }
+    },
+    "basketball": {
+        "title": "シュートチャレンジ - Basketball",
+        "modeSwitcher": "バスケットボールモード",
+        "mode": {
+            "spectator": "フリー練習",
+            "shooter": "シュートチャレンジ",
+            "duel": "Yui と対戦",
+            "timed": "タイムアタック",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "スコア {{score}}",
+            "streak": "連続成功 {{streak}}",
+            "record": "最長 {{distance}}",
+            "duelScore": "あなた {{player}} - {{neko}} Neko",
+            "duelMisses": "ミス あなた {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "ラウンド {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "フリー練習",
+            "yourTurn": "あなたの番",
+            "nekoTurn": "Neko のシュート",
+            "horseLetters": "あなた {{player}} / Neko {{neko}}",
+            "horseChallenge": "再現 {{distance}} {{angle}}°",
+            "horseSet": "お題ターン",
+            "unlimitedAttempts": "無制限",
+            "chances": "残り {{count}}",
+            "practiceTitle": "フリー練習：投球回数は無制限、ランキングには記録されません",
+            "attemptsTitle": "残り {{remaining}}/{{total}}、ミス {{missed}}",
+            "duelTitle": "Neko 対戦：あなたと Neko が交互にシュートします",
+            "timedTitle": "タイムアタック：60 秒間は何度でも投げられます",
+            "horseTitle": "HORSE：相手の成功した距離、角度、スイートスポットを再現します",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "オン",
+            "off": "オフ"
+        },
+        "result": {
+            "title": "ゲーム終了",
+            "leaderboard": "ランキングを見る",
+            "stats": "統計を見る",
+            "retry": "もう一度",
+            "rating": "操作評価：{{rating}}",
+            "duel": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+            "duelElimination": "対戦結果：{{outcome}} | あなた {{player}} - {{neko}} Neko | ミス：あなた {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | ラウンド：{{rounds}} | 最後の距離：{{distance}}",
+            "horse": "HORSE結果：{{outcome}} | あなた {{player}} / Neko {{neko}} | 成功：{{made}} | 最高連続：{{best}}",
+            "timed": "タイムアタック：成功 {{made}} 本、最長連続 {{best}}、スコア {{score}}",
+            "practice": "フリー練習：ランキングスコアは記録されません | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 距離：{{distance}}",
+            "summary": "スコア：{{score}} | 成功：{{made}} | 現在の連続：{{streak}} | 最高連続：{{best}} | 最長：{{record}} | 距離：{{distance}}",
+            "attemptsSummary": "シュート概要：{{summary}}",
+            "personalBest": "自己ベスト：{{score}}点",
+            "globalRank": "世界順位：#{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "あなたの勝ち",
+                "nekoWin": "Neko の勝ち",
+                "tie": "引き分け",
+                "undecided": "未決着"
+            }
+        },
+        "leaderboard": {
+            "title": "ランキング",
+            "global": "グローバル",
+            "local": "ローカル",
+            "shooter": "シュート",
+            "duel": "対戦",
+            "empty": "記録はまだありません",
+            "totalPlayers": "プレイヤー {{count}}",
+            "yourBest": "自己ベスト #{{rank}} / {{score}}点",
+            "recent": "最近 {{count}} 試合",
+            "loading": "読み込み中...",
+            "mode": {
+                "shooter": "シュート",
+                "duel": "対戦",
+                "timed": "タイム",
+                "horse": "HORSE",
+                "spectator": "観戦"
+            }
+        },
+        "debug": {
+            "title": "デバッグパネル",
+            "collapse": "折りたたむ",
+            "hide": "隠す",
+            "distance": "距離:",
+            "power": "パワー:",
+            "event": "イベント:",
+            "streak": "連続:",
+            "reset": "リセット",
+            "guide": "ガイド線",
+            "sweet": "スイートスポット",
+            "markers": "距離目盛り",
+            "readout": {
+                "modeState": "モード={{mode}}  状態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連続={{streak}}  最高={{best}}  成功={{made}}",
+                "score": "スコア={{score}}  残り={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  気分={{mood}}  テーマ={{theme}}",
+                "duel": "対戦: あなた{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: あなた {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "閉じる",
+            "totalShots": "シュート={{total}}  成功={{made}}",
+            "farRate": "300px+ 成功率={{rate}}",
+            "trend": "最近の傾向={{trend}}",
+            "none": "なし"
+        },
+        "theme": {
+            "next": "テーマ切替",
+            "current": "テーマ：{{theme}}",
+            "changed": "テーマ {{theme}}",
+            "labels": {
+                "default": "体育館",
+                "sunset": "夕暮れコート",
+                "night": "夜の照明"
+            }
+        },
+        "court": {
+            "restrictedArc": "制限区域",
+            "freeThrowLine": "フリースロー",
+            "threePointLine": "3Pライン",
+            "midCourtLine": "センターライン"
+        },
+        "close": "閉じる",
+        "audio": {
+            "controls": "ゲーム音声"
+        },
+        "memoryOption": {
+            "label": "この試合の会話を記憶に入れる（デフォルトはオフ）",
+            "hint": "オフの場合、プレイヤー入力、NEKOの返信、イベント返信、試合後の要約、続きの文脈は記憶に保存・参照されません。"
+        },
+        "table": {
+            "score": "スコア",
+            "bestStreak": "最高連続",
+            "farthest": "最長",
+            "mode": "モード",
+            "date": "日付"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "終了",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko のシュート",
+            "nekoThinking": "Neko が考え中",
+            "nekoTurn": "Neko の番",
+            "copyNeko": "Neko を再現",
+            "nekoFailed": "Neko のお題失敗",
+            "yourSet": "お題を出す番",
+            "yourTurn": "あなたの番",
+            "reset": "リセットしました",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "ガイド線",
+                "sweet": "パワースイートスポット",
+                "bgm": "BGM",
+                "markers": "距離目盛り"
+            },
+            "state": {
+                "on": "オン",
+                "off": "オフ"
+            }
+        },
+        "tutorial": {
+            "aim": "マウスを上下に動かして角度を調整",
+            "charge": "左クリック長押しでチャージ",
+            "release": "離してシュート！"
+        },
+        "shot": {
+            "swish": "スウィッシュ",
+            "bank": "バンク",
+            "rim_in": "リングイン",
+            "rim_out": "リングアウト",
+            "air_ball": "エアボール",
+            "unknown": "不明",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "きれいに決まった！",
+                    "きれいに決まった！"
+                ],
+                "bank": [
+                    "バンクショットも成功。",
+                    "バンクショットも成功。"
+                ],
+                "rim_in": [
+                    "跳ねて入った！",
+                    "跳ねて入った！"
+                ],
+                "rim_out": [
+                    "惜しい。",
+                    "惜しい。"
+                ],
+                "air_ball": [
+                    "リングはそっちじゃないよ。",
+                    "リングはそっちじゃないよ。"
+                ],
+                "shot_missed": [
+                    "まだチャンスはある。",
+                    "まだチャンスはある。"
+                ],
+                "game_over": [
+                    "もう一回やる？",
+                    "もう一回やる？"
+                ],
+                "long_aim": [
+                    "そろそろ投げよう。",
+                    "そろそろ投げよう。"
+                ],
+                "close_to_record": [
+                    "記録まであと少し。",
+                    "記録まであと少し。"
+                ],
+                "new_record": [
+                    "新記録！",
+                    "新記録！"
+                ],
+                "streak_5": [
+                    "5連続成功！",
+                    "5連続成功！"
+                ],
+                "streak_10": [
+                    "10連続？すごい。",
+                    "10連続？すごい。"
+                ],
+                "streak_15": [
+                    "15連続はすごすぎる。",
+                    "15連続はすごすぎる。"
+                ],
+                "streak_20": [
+                    "20連続？信じられない。",
+                    "20連続？信じられない。"
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "きれいに決まった！",
+                    "きれいに決まった！"
+                ],
+                "bank": [
+                    "バンクショットも成功。",
+                    "バンクショットも成功。"
+                ],
+                "rim_in": [
+                    "跳ねて入った！",
+                    "跳ねて入った！"
+                ],
+                "rim_out": [
+                    "惜しい。",
+                    "惜しい。"
+                ],
+                "air_ball": [
+                    "リングはそっちじゃないよ。",
+                    "リングはそっちじゃないよ。"
+                ],
+                "shot_missed": [
+                    "まだチャンスはある。",
+                    "まだチャンスはある。"
+                ],
+                "game_over": [
+                    "もう一回やる？",
+                    "もう一回やる？"
+                ],
+                "long_aim": [
+                    "そろそろ投げよう。",
+                    "そろそろ投げよう。"
+                ],
+                "close_to_record": [
+                    "記録まであと少し。",
+                    "記録まであと少し。"
+                ],
+                "new_record": [
+                    "新記録！",
+                    "新記録！"
+                ],
+                "streak_5": [
+                    "5連続成功！",
+                    "5連続成功！"
+                ],
+                "streak_10": [
+                    "10連続？すごい。",
+                    "10連続？すごい。"
+                ],
+                "streak_15": [
+                    "15連続はすごすぎる。",
+                    "15連続はすごすぎる。"
+                ],
+                "streak_20": [
+                    "20連続？信じられない。",
+                    "20連続？信じられない。"
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "きれいに決まった！",
+                    "きれいに決まった！"
+                ],
+                "bank": [
+                    "バンクショットも成功。",
+                    "バンクショットも成功。"
+                ],
+                "rim_in": [
+                    "跳ねて入った！",
+                    "跳ねて入った！"
+                ],
+                "rim_out": [
+                    "惜しい。",
+                    "惜しい。"
+                ],
+                "air_ball": [
+                    "リングはそっちじゃないよ。",
+                    "リングはそっちじゃないよ。"
+                ],
+                "shot_missed": [
+                    "まだチャンスはある。",
+                    "まだチャンスはある。"
+                ],
+                "game_over": [
+                    "もう一回やる？",
+                    "もう一回やる？"
+                ],
+                "long_aim": [
+                    "そろそろ投げよう。",
+                    "そろそろ投げよう。"
+                ],
+                "close_to_record": [
+                    "記録まであと少し。",
+                    "記録まであと少し。"
+                ],
+                "new_record": [
+                    "新記録！",
+                    "新記録！"
+                ],
+                "streak_5": [
+                    "5連続成功！",
+                    "5連続成功！"
+                ],
+                "streak_10": [
+                    "10連続？すごい。",
+                    "10連続？すごい。"
+                ],
+                "streak_15": [
+                    "15連続はすごすぎる。",
+                    "15連続はすごすぎる。"
+                ],
+                "streak_20": [
+                    "20連続？信じられない。",
+                    "20連続？信じられない。"
+                ],
+                "clutch": "……これは決めなきゃ。",
+                "excuse": [
+                    "ああ、少し腕が疲れた。"
+                ]
+            },
+            "fallback": [
+                "もう一回やろう。"
+            ],
+            "pressure": {
+                "lastTied": "決勝の一投。まばたき禁止。",
+                "lastAhead": "ふん、まだ終わってない。",
+                "lastBehind": "これを決めれば勝ち。",
+                "playerAhead": "なかなかやるね...",
+                "playerBehind": "もっと押して。"
+            },
+            "horse": {
+                "nekoMiss": "再現できなかったね。{{letters}} を追加。",
+                "playerMiss": "あなたにも {{letters}} を追加。"
+            },
+            "mindGame": [
+                "手が震えてるよ。",
+                "落ち着いて狙って。",
+                "この距離は近くないよ。"
+            ],
+            "easterEgg": {
+                "lateNight": "こんな時間までシュート？",
+                "xmas": "ベルも飾ったのに、まだ投げる？",
+                "newYear": "あけましておめでとう！",
+                "swish3": "チートしてない？",
+                "swish5": "……リングを確認しないと。",
+                "airball3": "……少し休んだら？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "えっ？！"
+        }
+    },
+    "drawingGuess": {
+        "title": "お絵かき当てっこ",
+        "eyebrow": "一緒に遊ぶ時間",
+        "subtitle": "猫娘と一緒に描いて、当てて、話します。",
+        "status": {
+            "loadingCharacter": "現在のキャラクターを読み込み中",
+            "missingCharacter": "キャラクター情報待ち",
+            "ready": "準備完了",
+            "starting": "ゲームルートを開始中",
+            "active": "ルート接続中",
+            "ending": "終了中",
+            "ended": "終了しました",
+            "failed": "ルート開始失敗",
+            "heartbeatLost": "ルートが無効です"
+        },
+        "layout": {
+            "character": "キャラクター",
+            "session": "セッション",
+            "canvasTitle": "キャンバス",
+            "tools": "お絵かきツール",
+            "canvasWaitingTitle": "キャンバス準備中",
+            "canvasWaiting": "開始すると先に猫娘が描きます。あなたが当てたら、次は 5 分で彼女に見せる絵を描きます。",
+            "actions": "ゲーム操作",
+            "sideResize": "モデルとチャットの比率を調整",
+            "modelTitle": "猫娘がそばにいる",
+            "modelFallbackTitle": "モデル枠を確保済み",
+            "modelFallback": "あとで現在のキャラクターの Live2D または VRM をここに読み込みます。失敗しても同じ場所に fallback を表示します。",
+            "chatTitle": "ゲームチャット"
+        },
+        "tools": {
+            "brush": "ブラシ",
+            "eraser": "消しゴム",
+            "bucket": "塗りつぶし",
+            "undo": "元に戻す",
+            "redo": "やり直す",
+            "color": "色",
+            "size": "太さ",
+            "eyedropper": "スポイト",
+            "basicColors": "基本色",
+            "historyColors": "履歴の色"
+        },
+        "tutorial": {
+            "title": "始める前に",
+            "intro": "この一局ではお互いに一回ずつ描いて、一回ずつ当てます。描きながら話せます。5 分たつと今のキャンバスを自動で彼女に渡します。",
+            "memoryTitle": "記憶オプション",
+            "memoryNone": "記録せず、今回だけ遊ぶ。",
+            "memorySummary": "短いゲーム概要を一つ記録する。",
+            "quickTitle": "かんたんガイド",
+            "quickDraw": "あなたが描く番では、カードを1枚選んでキャンバスに描き、終わったら「できた」を押します。",
+            "quickGuess": "あなたが当てる番では、チャットに答えを書きます。会話しながらヒントを頼むこともできます。",
+            "quickSummary": "各ラウンドのサムネイルが残り、最終まとめで絵を保存できます。",
+            "voiceHint": "音声を使いたい場合は、先にメインページで音声をオンにしてください。開始後、このミニゲームが自動で引き継ぎます。"
+        },
+        "actions": {
+            "start": "開始",
+            "end": "終了",
+            "retryCharacter": "キャラクター再読み込み",
+            "send": "送信",
+            "done": "描けた",
+            "nextRound": "次のラウンド",
+            "clearCanvas": "キャンバスを消す",
+            "saveNekoSvg": "SVGで保存",
+            "saveNekoPng": "PNGで保存",
+            "saveUserPng": "自分の絵を保存"
+        },
+        "debug": {
+            "title": "デバッグパネル",
+            "currentCharacter": "現在のページのキャラクター",
+            "loadingCharacters": "キャラクター一覧を読み込み中",
+            "roundControls": "ラウンド操作",
+            "aiRound": "猫娘のラウンド",
+            "userRound": "プレイヤーのラウンド",
+            "rotateRounds": "ラウンドを交代",
+            "randomGuessPoint": "ランダム推測タイミング",
+            "triggerAiGuess": "今すぐ猫娘に推測させる",
+            "locked": "ロック中",
+            "available": "利用可能",
+            "requestLocked": "リクエストロック中",
+            "requestUnlocked": "未ロック",
+            "waitingForChat": "チャット終了待ち",
+            "guessing": "推測中",
+            "attemptsExhausted": "試行回数なし",
+            "notScheduled": "未設定",
+            "switchedCharacter": "デバッグ: {{name}} に切り替えました。",
+            "switchedCharacterContinue": "デバッグ: {{name}} に切り替え、現在のテストラウンドを続行します。",
+            "holdAiRound": "デバッグ: 猫娘のラウンドを維持し、次のお題を準備します。",
+            "wordPoolsStatus": "単語プールの状態",
+            "wordPool1": "単語プール 1",
+            "wordPool2": "単語プール 2",
+            "requestLock": "リクエストロック"
+        },
+        "voice": {
+            "connected": "このラウンドに音声が接続されています。",
+            "connectHint": "メイン画面で音声を先にオンにすると、このラウンドが引き継ぎます。",
+            "connectedNotice": "メイン画面の音声がこのラウンドに接続されました。",
+            "connectHintNotice": "先にメイン画面で音声をオンにしてください。有効になるとこのラウンドが自動で引き継ぎます。",
+            "routeNotReady": "音声を使う前にゲームルートの準備を待ってください。",
+            "buttonLabel": "音声チャット"
+        },
+        "exitConfirm": {
+            "title": "このページを離れる？",
+            "message": "最終結果をまとめたよ。このミニゲームページを離れる？",
+            "stay": "あとで",
+            "leave": "ページを離れる",
+            "reopen": "離れる？"
+        },
+        "memory": {
+            "noneShort": "記録なし",
+            "summaryShort": "概要"
+        },
+        "phases": {
+            "tutorial": "チュートリアル",
+            "loading_round": "読み込み中",
+            "ended": "終了",
+            "ai_drawing": "猫娘がお絵かき中",
+            "user_guessing": "あなたが当てる番",
+            "drawing_pick": "お題を抽選中",
+            "user_drawing": "あなたが描く番",
+            "ai_guessing": "猫娘が当てる番",
+            "ai_guess_feedback": "ヒントを渡す",
+            "summary": "結果",
+            "final_summary": "最終結果"
+        },
+        "modelStates": {
+            "loading": "モデル読み込み中",
+            "idle": "待機中",
+            "drawing": "描画中",
+            "thinking": "考え中",
+            "guessing": "推理中",
+            "talking": "おしゃべり中",
+            "happy": "ごきげん"
+        },
+        "modelControls": {
+            "group": "モデル表示コントロール",
+            "scale": "モデルの大きさ",
+            "x": "左右位置",
+            "y": "上下位置",
+            "reset": "モデル表示をリセット"
+        },
+        "messages": {
+            "welcome": "準備できたら、現在のキャラクターを確認してミニゲームルートを接続します。",
+            "missingCharacter": "キャラクター付きでこのページを開くか、先に現在のキャラクターを読み込んでください。",
+            "startFailed": "ルート開始に失敗しました: {{reason}}",
+            "routeActive": "{{name}} のゲームルートが有効です。",
+            "roundStart": "新しいラウンドを始めます。",
+            "aiDrawingReady": "彼女が描き終わりました。当ててみてください。",
+            "roundFailed": "ラウンド開始に失敗しました: {{reason}}",
+            "requestTimeout": "リクエストがタイムアウトしました。もう一度試してください。",
+            "guessTimeout": "時間です。答えは {{answer}} でした。",
+            "inputFailed": "送れませんでした。もう一度試してください。",
+            "answerReveal": "答え: {{answer}}",
+            "drawingPickTitle": "お題を選んでいます",
+            "drawingPickSubtitle": "少し待って。彼女が山札からお題カードを何枚か引いています。",
+            "drawingPickReady": "描くカードを1枚選んでください。",
+            "drawingPickReveal": "選択: {{answer}}",
+            "userDrawPrompt": "あなたのお題は {{answer}} です。彼女に見せる絵を描きましょう。",
+            "blankCanvas": "まず少し描いてあげましょう。",
+            "aiDrawingWaiting": "猫娘が描いています",
+            "aiGuessing": "彼女があなたの絵を見ています...",
+            "aiGuessLine": "彼女の答え: {{guess}}",
+            "aiGuessCorrect": "彼女の答えは正解でした。",
+            "aiGuessWrong": "まだ当たっていません。",
+            "aiGuessMissAnswer": "彼女は外しました。答え: {{answer}}",
+            "aiNeedsHint": "そのまま話していて大丈夫です。もう一度当ててほしい時だけヒントを渡してください。",
+            "summaryReady": "結果ページを表示しました。",
+            "canvasCleared": "キャンバスを消しました。",
+            "userSupplemented": "描き足しました。彼女がすぐにもう一度当てます。"
+        },
+        "input": {
+            "placeholder": "ルートの準備を待っています",
+            "guessPlaceholder": "答えを書くか、ヒントを頼む",
+            "drawingPlaceholder": "描きながら話せます",
+            "hintPlaceholder": "まずは会話を続けて、もう一度当ててほしい時にヒントを渡す",
+            "summaryPlaceholder": "このラウンドのことを話すか、次のラウンドへ",
+            "ariaLabel": "チャット入力"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "ラウンド結果",
+            "outcome": {
+                "userWin": "あなたの勝ちです。でも一緒に遊ぶのが本番です。",
+                "nekoWin": "彼女の勝ちです。少しだけ得意げでも許してあげましょう。",
+                "tie": "引き分けです。もう一回にちょうどいいですね。"
+            },
+            "score": "あなた {{user}} - {{neko}} 猫娘",
+            "userDrawAnswer": "あなたのお題: {{answer}}",
+            "nekoArt": "猫娘の絵",
+            "userArt": "あなたの絵",
+            "finalTitle": "最終結果",
+            "roundLabel": "第 {{round}} ラウンド",
+            "noRounds": "完了したラウンドはまだありません。"
+        }
     }
 }

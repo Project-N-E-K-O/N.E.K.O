@@ -86,6 +86,9 @@ class _FakeConnectedWebSocket:
     async def send_json(self, payload):
         self.sent.append(payload)
 
+    async def send_bytes(self, payload):
+        self.sent.append(payload)
+
 
 class _FakeActivityTracker:
     def __init__(self):
@@ -156,6 +159,11 @@ def _make_manager():
     mgr._pending_ai_voice_echo_text = ""
     mgr._pending_ai_voice_echo_chunks = deque()
     mgr._confirmed_ai_voice_echo_audio_speech_ids = set()
+    mgr._speech_taps = {}
+    mgr._speech_primary_suppressed_ids = set()
+    mgr._speech_output_total = 0
+    mgr._last_speech_output_time = 0.0
+    mgr._last_speech_output_bytes = 0
     mgr.tts_ready = False
     mgr.tts_thread = None
     mgr.tts_request_queue = _FakeQueue()
@@ -304,6 +312,111 @@ async def test_mirror_assistant_speech_interrupt_audio_triggers_existing_interru
     assert result["interrupt_audio"] is True
     assert mgr.user_activity == ["old-speech"]
     assert mgr.audio_resampler.cleared is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_mirror_assistant_speech_can_suppress_primary_audio_for_game_tap():
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+
+    result = await core_module.LLMSessionManager.mirror_assistant_speech(
+        mgr,
+        "game-only voice",
+        metadata=_soccer_mirror_meta({"kind": "drawing_guess"}),
+        request_id="req-game-only",
+        mirror_text=False,
+        emit_turn_end_after=False,
+        suppress_primary_audio=True,
+    )
+
+    assert result["ok"] is True
+    assert result["suppress_primary_audio"] is True
+    speech_id = result["speech_id"]
+    assert speech_id in mgr._speech_primary_suppressed_ids
+    assert mgr.tts_request_queue.messages[0] == (speech_id, "game-only voice")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_speech_suppressed_primary_audio_still_delivers_taps():
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("game-turn")
+    tapped = []
+
+    async def tap(audio, speech_id):
+        tapped.append((audio, speech_id))
+        return True
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", tap)
+
+    delivered = await core_module.LLMSessionManager.send_speech(
+        mgr,
+        b"audio-bytes",
+        speech_id="game-turn",
+    )
+
+    assert delivered is True
+    assert mgr.websocket.sent == []
+    assert tapped == [(b"audio-bytes", "game-turn")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_speech_suppressed_primary_audio_stays_isolated_when_tap_disconnects():
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("game-turn")
+
+    async def disconnected_tap(_audio, _speech_id):
+        return False
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", disconnected_tap)
+
+    delivered = await core_module.LLMSessionManager.send_speech(
+        mgr,
+        b"audio-bytes",
+        speech_id="game-turn",
+    )
+
+    assert delivered is False
+    assert mgr.websocket.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_suppressed_speech_ids_are_not_discarded_at_legacy_size_limit():
+    mgr = _make_manager()
+    mgr.tts_thread = _FakeAliveThread()
+    mgr.tts_ready = True
+    speech_ids = []
+
+    for index in range(65):
+        result = await core_module.LLMSessionManager.mirror_assistant_speech(
+            mgr,
+            f"game-only voice {index}",
+            metadata=_soccer_mirror_meta({"kind": "drawing_guess"}),
+            request_id=f"req-game-only-{index}",
+            mirror_text=False,
+            emit_turn_end_after=False,
+            suppress_primary_audio=True,
+        )
+        speech_ids.append(result["speech_id"])
+
+    assert set(speech_ids).issubset(mgr._speech_primary_suppressed_ids)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_clear_tts_pipeline_keeps_suppressed_ids_for_late_worker_audio():
+    mgr = _make_manager()
+    mgr._speech_primary_suppressed_ids.update({"game-turn-1", "game-turn-2"})
+
+    await core_module.LLMSessionManager._clear_tts_pipeline(mgr)
+
+    assert mgr._speech_primary_suppressed_ids == {"game-turn-1", "game-turn-2"}
 
 
 @pytest.mark.unit
@@ -1608,26 +1721,59 @@ async def test_text_first_chunk_drops_stale_pending_echo_before_new_tts(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_late_structured_audio_keeps_old_speech_id_after_turn_rotation():
+    mgr = _make_manager()
+    mgr.tts_response_queue = queue.Queue()
+    mgr.tts_response_queue.put(("__audio__", "old-game-turn", b"late-audio"))
+    mgr.current_speech_id = "new-chat-turn"
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._speech_primary_suppressed_ids.add("old-game-turn")
+    tapped = []
+    delivered = asyncio.Event()
+
+    async def tap(audio, speech_id):
+        tapped.append((audio, speech_id))
+        delivered.set()
+        return True
+
+    core_module.LLMSessionManager.add_speech_tap(mgr, "game", tap)
+
+    task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(delivered.wait(), timeout=1)
+    task.cancel()
+    cancelled_result = await asyncio.gather(task, return_exceptions=True)
+
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
+    assert tapped == [(b"late-audio", "old-game-turn")]
+    assert mgr.websocket.sent == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sidless_tts_audio_discards_pending_echo(monkeypatch):
     mgr = _make_manager()
     monkeypatch.setattr(core_module.time, "time", lambda: FIXED_TS)
     mgr.tts_response_queue = queue.Queue()
     mgr.tts_response_queue.put(b"sidless-audio")
     mgr.current_speech_id = "new-turn"
-    send_called = asyncio.Event()
+    dropped = asyncio.Event()
 
     core_module.LLMSessionManager._remember_pending_ai_voice_echo(mgr, "new-turn", "new turn pending text")
 
     async def send_speech(audio, speech_id=None):
-        assert audio == b"sidless-audio"
-        assert speech_id is None
-        send_called.set()
-        return True
+        raise AssertionError("sidless legacy audio must never be attributed to the current turn")
 
     monkeypatch.setattr(mgr, "send_speech", send_speech)
+    original_discard = mgr._discard_pending_ai_voice_echo
+
+    def discard_pending_echo():
+        original_discard()
+        dropped.set()
+
+    monkeypatch.setattr(mgr, "_discard_pending_ai_voice_echo", discard_pending_echo)
 
     task = asyncio.create_task(core_module.LLMSessionManager.tts_response_handler(mgr))
-    await asyncio.wait_for(send_called.wait(), timeout=1)
+    await asyncio.wait_for(dropped.wait(), timeout=1)
     task.cancel()
     cancelled_result = await asyncio.gather(task, return_exceptions=True)
     assert isinstance(cancelled_result[0], asyncio.CancelledError)

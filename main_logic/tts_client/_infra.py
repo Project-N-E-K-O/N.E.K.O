@@ -101,10 +101,12 @@ class AudioJitterBuffer:
         self._steady_buffer_bytes = steady_buffer_bytes
         self.buffer = bytearray()
         self.started = False
+        self.speech_id: str | None = None
 
-    def reset(self):
+    def reset(self, speech_id: str | None = None):
         self.buffer.clear()
         self.started = False
+        self.speech_id = speech_id
 
     def append(self, audio_bytes):
         if not audio_bytes:
@@ -124,7 +126,8 @@ class AudioJitterBuffer:
     def _flush(self):
         if not self.buffer:
             return
-        self._response_queue.put(bytes(self.buffer))
+        if self.speech_id is not None:
+            self._response_queue.put(("__audio__", self.speech_id, bytes(self.buffer)))
         self.buffer.clear()
         # 放行即视为本轮已开播：短句不足 initial 阈值靠终结 flush 首次放行时，
         # 后续若有上游晚到的 stray delta 走 steady 而非重新 head-start 再被 reset 丢弃。
@@ -323,6 +326,7 @@ async def _non_bistream_tts_main_loop(
 
     _next_seq: int = 0                                  # 下一个分配的序号
     _slot_buffers: dict[int, list] = {}                 # seq_id → [chunk, ...]
+    _slot_speech_ids: dict[int, str] = {}               # seq_id → source speech_id
     _slot_done: dict[int, asyncio.Event] = {}           # seq_id → 合成完成事件
     _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
@@ -353,6 +357,7 @@ async def _non_bistream_tts_main_loop(
         _slot_buffers.pop(seq, None)
         _slot_done.pop(seq, None)
         _slot_new_data.pop(seq, None)
+        _slot_speech_ids.pop(seq, None)
         _tasks.pop(seq, None)
         _sentence_enqueued_at.pop(seq, None)
 
@@ -427,7 +432,11 @@ async def _non_bistream_tts_main_loop(
                             and item[0] == "__synth_error__"):
                         _enqueue_error(real_queue, item[1])
                     else:
-                        real_queue.put(item)
+                        sid = _slot_speech_ids.get(seq)
+                        if isinstance(item, (bytes, bytearray)) and sid is not None:
+                            real_queue.put(("__audio__", sid, bytes(item)))
+                        else:
+                            real_queue.put(item)
 
                 if done_evt.is_set():
                     # 该句子合成完毕，转发剩余 chunk 后推进到下一句
@@ -438,7 +447,11 @@ async def _non_bistream_tts_main_loop(
                                 and item[0] == "__synth_error__"):
                             _enqueue_error(real_queue, item[1])
                         else:
-                            real_queue.put(item)
+                            sid = _slot_speech_ids.get(seq)
+                            if isinstance(item, (bytes, bytearray)) and sid is not None:
+                                real_queue.put(("__audio__", sid, bytes(item)))
+                            else:
+                                real_queue.put(item)
                     _free_slot(seq)
                     _drain_seq = seq + 1
                     break
@@ -459,6 +472,7 @@ async def _non_bistream_tts_main_loop(
 
     def _enqueue_sentence(text: str, sid: str) -> None:
         seq = _alloc_slot()
+        _slot_speech_ids[seq] = sid
         _sentence_enqueued_at[seq] = time.perf_counter()
         _trace_sentence("enqueue", seq, sid, text)
         task = asyncio.create_task(_synth_one(seq, text, sid, _generation_id))
@@ -500,6 +514,7 @@ async def _non_bistream_tts_main_loop(
         _slot_buffers.clear()
         _slot_done.clear()
         _slot_new_data.clear()
+        _slot_speech_ids.clear()
         _tasks.clear()
         _sentence_enqueued_at.clear()
         _next_seq = 0

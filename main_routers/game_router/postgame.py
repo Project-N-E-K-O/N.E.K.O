@@ -845,6 +845,8 @@ async def _finalize_game_route_state(
     reason: str,
     close_game_session: bool = False,
     close_debug_log: bool = True,
+    notify_window: bool = True,
+    notify_status: bool = True,
 ) -> dict:
     """Run the game route exit flow once, including archive submission.
 
@@ -880,6 +882,14 @@ async def _finalize_game_route_state(
         state["_exit_defer_debug_log_close"] = True
         if "_exit_close_debug_log_request" not in state:
             state["_exit_close_debug_log_request"] = False
+    if notify_window:
+        state.setdefault("_exit_suppress_window_state_change", False)
+    else:
+        state["_exit_suppress_window_state_change"] = True
+    if notify_status:
+        state.setdefault("_exit_suppress_status", False)
+    else:
+        state["_exit_suppress_status"] = True
 
     existing_task = state.get("_exit_task")
     if existing_task:
@@ -952,16 +962,19 @@ async def _finalize_game_route_state_inner(
     state["heartbeat_enabled"] = False
     lanlan_name = str(state.get("lanlan_name") or "")
     mgr = get_session_manager().get(lanlan_name) if lanlan_name else None
+    window_lanlan_name = str(state.get("window_lanlan_name") or lanlan_name or "")
+    window_mgr = get_session_manager().get(window_lanlan_name) if window_lanlan_name else mgr
     # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
     # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
     # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
-    await _push_game_window_state_change(
-        mgr,
-        action="closed",
-        lanlan_name=lanlan_name,
-        game_type=str(state.get("game_type") or ""),
-        session_id=str(state.get("session_id") or ""),
-    )
+    if not state.get("_exit_suppress_window_state_change"):
+        await _push_game_window_state_change(
+            window_mgr,
+            action="closed",
+            lanlan_name=window_lanlan_name or lanlan_name,
+            game_type=str(state.get("game_type") or ""),
+            session_id=str(state.get("session_id") or ""),
+        )
     # Release the SessionManager-level takeover so ordinary chat handlers come
     # back online; chat LLM may produce auto-replies again, but the player has
     # exited the game so that's the desired behavior.
@@ -970,7 +983,7 @@ async def _finalize_game_route_state_inner(
         mgr._takeover_input_dispatcher = None
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
-    if mgr and hasattr(mgr, "send_status"):
+    if mgr and hasattr(mgr, "send_status") and not state.get("_exit_suppress_status"):
         try:
             await mgr.send_status(json.dumps({
                 "code": "GAME_ROUTE_ENDED",

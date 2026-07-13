@@ -208,7 +208,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         current_speech_id = None
         resampler = None
 
-        async def receive_loop(ws_conn):
+        async def receive_loop(ws_conn, source_speech_id):
             """Independent receive coroutine: handles audio chunks and JSON messages returned by the WS"""
             nonlocal resampler
             try:
@@ -224,7 +224,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                                 resampled_bytes = _resample_audio(audio_array, src_rate, 48000, resampler)
                             else:
                                 resampled_bytes = audio_array.tobytes()
-                            response_queue.put(resampled_bytes)
+                            if source_speech_id is not None:
+                                response_queue.put(("__audio__", source_speech_id, resampled_bytes))
                     else:
                         # JSON 消息（日志用）
                         try:
@@ -276,7 +277,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     pass
             resampler = None
 
-        async def create_connection():
+        async def create_connection(source_speech_id=None):
             """Create a new WS connection and send init"""
             nonlocal ws, receive_task, resampler
             resampler = None
@@ -298,7 +299,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             logger.debug(f"[GPT-SoVITS v3] 会话就绪 (voice={v3_voice_id})")
 
             # 启动接收协程
-            receive_task = asyncio.create_task(receive_loop(ws))
+            receive_task = asyncio.create_task(receive_loop(ws, source_speech_id))
             return ws
 
         # ─── 初始连接验证 ───
@@ -345,7 +346,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     current_speech_id = sid
                     for _retry in range(3):
                         try:
-                            await create_connection()
+                            await create_connection(sid)
                             break
                         except Exception as e:
                             logger.warning(f"[GPT-SoVITS v3] 连接失败 (retry {_retry+1}/3): {e}")

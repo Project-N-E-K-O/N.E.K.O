@@ -119,7 +119,10 @@ def test_mimo_worker_clone_uses_voiceclone_model_and_inlines_sample(monkeypatch)
     _wait_for_queue_item(response_queue, lambda item: item == ("__ready__", True))
     request_queue.put(("speech-1", "你好"))
     request_queue.put((None, None))
-    _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
+    _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and item[:2] == ("__audio__", "speech-1"),
+    )
 
     assert len(transport.requests) == 1
     body = transport.requests[0]["body"]

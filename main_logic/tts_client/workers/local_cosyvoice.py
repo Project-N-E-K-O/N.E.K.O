@@ -92,7 +92,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
-        async def receive_loop(ws_conn):
+        async def receive_loop(ws_conn, source_speech_id):
             """Independent receive task, handles the audio stream"""
             try:
                 async for message in ws_conn:
@@ -100,7 +100,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                         # 服务器返回 16-bit PCM @ 22050Hz
                         audio_array = np.frombuffer(message, dtype=np.int16)
                         resampled_bytes = _resample_audio(audio_array, SRC_RATE, 48000, resampler)
-                        response_queue.put(resampled_bytes)
+                        if source_speech_id is not None:
+                            response_queue.put(("__audio__", source_speech_id, resampled_bytes))
             except websockets.exceptions.ConnectionClosed:
                 logger.debug("本地 WebSocket 连接已关闭")
             except asyncio.CancelledError:
@@ -116,7 +117,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             except Exception as e:
                 _enqueue_error(response_queue, f"发送结束信号失败: {e}")
 
-        async def create_connection():
+        async def create_connection(source_speech_id=None):
             """Create a new connection and send the config"""
             nonlocal ws, receive_task, resampler
             
@@ -149,7 +150,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             logger.debug(f"发送配置: {config}")
             
             # 启动接收任务
-            receive_task = asyncio.create_task(receive_loop(ws))
+            receive_task = asyncio.create_task(receive_loop(ws, source_speech_id))
             return ws
 
         # 初始连接
@@ -199,7 +200,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 
                 current_speech_id = sid
                 try:
-                    await create_connection()
+                    await create_connection(sid)
                 except Exception as e:
                     logger.error(f"重连失败: {e}")
                     ws = None

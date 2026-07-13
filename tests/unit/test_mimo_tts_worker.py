@@ -143,8 +143,12 @@ def test_mimo_worker_sends_chat_completions_tts_request(monkeypatch):
     request_queue.put(("speech-1", "世界"))
     request_queue.put((None, None))
 
-    audio_item, _ = _wait_for_queue_item(response_queue, lambda item: isinstance(item, bytes))
-    assert len(audio_item) > 0
+    audio_item, _ = _wait_for_queue_item(
+        response_queue,
+        lambda item: isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__",
+    )
+    assert audio_item[1] == "speech-1"
+    assert len(audio_item[2]) > 0
 
     assert len(transport.requests) == 1
     sent = transport.requests[0]

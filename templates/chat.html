@@ -1224,14 +1224,84 @@
             }, 100);
         }
 
+        var _drawingGuessChatHiddenSnap = null;
+        var _drawingGuessChatHideActive = false;
+
+        function _isDrawingGuessGame(detail) {
+            var gameType = String((detail && detail.gameType) || '').toLowerCase().replace(/-/g, '_');
+            return gameType === 'drawing_guess';
+        }
+
+        function _hideChatForDrawingGuess() {
+            if (!_gameWindowActive) return;
+            if (typeof W.hide !== 'function' || typeof W.show !== 'function') {
+                _gameMinimizeForGame();
+                return;
+            }
+            _drawingGuessChatHideActive = true;
+            if (typeof W.setCompactChatBallTemporarilyHidden === 'function') {
+                W.setCompactChatBallTemporarilyHidden(true);
+            }
+            if (_drawingGuessChatHiddenSnap) {
+                W.hide();
+                return;
+            }
+            if (animating) {
+                requestAnimationFrame(_hideChatForDrawingGuess);
+                return;
+            }
+            function hideWithSnap(b0) {
+                if (!_drawingGuessChatHideActive || !_gameWindowActive || _drawingGuessChatHiddenSnap) return;
+                _drawingGuessChatHiddenSnap = {
+                    bounds: b0 ? { x: b0.x, y: b0.y, width: b0.width, height: b0.height } : null,
+                    savedWHBefore: savedWH ? { w: savedWH.w, h: savedWH.h } : null
+                };
+                W.hide();
+            }
+            if (typeof W.getBounds !== 'function') {
+                hideWithSnap(null);
+                return;
+            }
+            W.getBounds().then(hideWithSnap).catch(function() {
+                hideWithSnap(null);
+            });
+        }
+
+        function _restoreChatAfterDrawingGuess() {
+            _drawingGuessChatHideActive = false;
+            var snap = _drawingGuessChatHiddenSnap;
+            _drawingGuessChatHiddenSnap = null;
+            if (typeof W.show !== 'function') {
+                _gameRestoreAfterGame();
+                return;
+            }
+            if (typeof W.setCompactChatBallTemporarilyHidden === 'function') {
+                W.setCompactChatBallTemporarilyHidden(false);
+            }
+            W.show();
+            if (!snap) return;
+            if (snap.bounds && typeof W.setBounds === 'function') {
+                W.setBounds(snap.bounds.x, snap.bounds.y, snap.bounds.width, snap.bounds.height);
+            }
+            if (snap.savedWHBefore) savedWH = { w: snap.savedWHBefore.w, h: snap.savedWHBefore.h };
+        }
+
         window.addEventListener('neko-game-window-state-change', function(ev) {
             var detail = ev && ev.detail ? ev.detail : {};
             if (detail.action === 'opened') {
                 _gameWindowActive = true;
-                _gameMinimizeForGame();
+                if (_isDrawingGuessGame(detail)) {
+                    _hideChatForDrawingGuess();
+                } else {
+                    _gameMinimizeForGame();
+                }
             } else if (detail.action === 'closed') {
                 _gameWindowActive = false;
-                _gameRestoreAfterGame();
+                if (_drawingGuessChatHideActive || _drawingGuessChatHiddenSnap) {
+                    _restoreChatAfterDrawingGuess();
+                } else {
+                    _gameRestoreAfterGame();
+                }
             }
         });
 

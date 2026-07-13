@@ -388,7 +388,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
                     # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
-                    audio_jitter.reset()  # 新轮次重置 jitter buffer 领先量
+                    audio_jitter.reset(sid)  # 新轮次重置 jitter buffer 领先量并绑定来源
 
                     # 建立新连接
                     try:

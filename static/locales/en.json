@@ -4838,5 +4838,592 @@
             "label": "Save this match to memory (off by default)",
             "hint": "When off, your inputs, NEKO's direct replies, event reactions, post-match summary, and follow-ups will not enter or reference memory."
         }
+    },
+    "basketball": {
+        "title": "Basketball Challenge",
+        "modeSwitcher": "Basketball mode",
+        "mode": {
+            "spectator": "Free Practice",
+            "shooter": "Shot Challenge",
+            "duel": "Duel Yui",
+            "timed": "Time Attack",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "Score {{score}}",
+            "streak": "Streak {{streak}}",
+            "record": "Best {{distance}}",
+            "duelScore": "You {{player}} - {{neko}} Neko",
+            "duelMisses": "Misses: You {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "Round {{round}}/{{max}}",
+            "timer": "{{seconds}}s",
+            "practice": "Free Practice",
+            "yourTurn": "Your turn",
+            "nekoTurn": "Neko shoots",
+            "horseLetters": "You {{player}} / Neko {{neko}}",
+            "horseChallenge": "Copy {{distance}} {{angle}}°",
+            "horseSet": "Set a shot",
+            "unlimitedAttempts": "Unlimited",
+            "chances": "Chances {{count}}",
+            "practiceTitle": "Free Practice: unlimited shots and no leaderboard score",
+            "attemptsTitle": "Remaining {{remaining}}/{{total}}, misses {{missed}}",
+            "duelTitle": "Neko Duel: you and Neko take turns shooting",
+            "timedTitle": "Time Attack: unlimited shots in 60 seconds",
+            "horseTitle": "HORSE: copy the made shot distance, angle, and sweet spot",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "on",
+            "off": "off"
+        },
+        "result": {
+            "title": "Game Over",
+            "leaderboard": "Leaderboard",
+            "stats": "Stats",
+            "retry": "Play Again",
+            "rating": "Control rating: {{rating}}",
+            "duel": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Rounds: {{rounds}} | Last distance: {{distance}}",
+            "duelElimination": "Duel result: {{outcome}} | You {{player}} - {{neko}} Neko | Misses: You {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | Rounds: {{rounds}} | Last distance: {{distance}}",
+            "horse": "HORSE result: {{outcome}} | You {{player}} / Neko {{neko}} | Made: {{made}} | Best streak: {{best}}",
+            "timed": "Time Attack: {{made}} made, best streak {{best}}, score {{score}}",
+            "practice": "Free Practice: leaderboard score is not recorded | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Shot distance: {{distance}}",
+            "summary": "Score: {{score}} | Made: {{made}} | Current streak: {{streak}} | Best streak: {{best}} | Farthest: {{record}} | Shot distance: {{distance}}",
+            "attemptsSummary": "Shot summary: {{summary}}",
+            "personalBest": "Personal best: {{score}} pts",
+            "globalRank": "Global rank: #{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "You win",
+                "nekoWin": "Neko wins",
+                "tie": "Tie",
+                "undecided": "Undecided"
+            }
+        },
+        "leaderboard": {
+            "title": "Leaderboard",
+            "global": "Global",
+            "local": "Local",
+            "shooter": "Shooter",
+            "duel": "Duel",
+            "empty": "No records yet",
+            "totalPlayers": "Players {{count}}",
+            "yourBest": "Your best #{{rank}} / {{score}} pts",
+            "recent": "Recent {{count}} games",
+            "loading": "Loading...",
+            "mode": {
+                "shooter": "Shooter",
+                "duel": "Duel",
+                "timed": "Timed",
+                "horse": "HORSE",
+                "spectator": "Spectator"
+            }
+        },
+        "debug": {
+            "title": "Debug Panel",
+            "collapse": "Collapse",
+            "hide": "Hide",
+            "distance": "Distance:",
+            "power": "Power:",
+            "event": "Event:",
+            "streak": "Streak:",
+            "reset": "Reset",
+            "guide": "Guide line",
+            "sweet": "Sweet spot",
+            "markers": "Distance markers",
+            "readout": {
+                "modeState": "Mode={{mode}}  State={{state}}",
+                "distance": "Distance={{px}}px ({{meters}})",
+                "streaks": "Streak={{streak}}  Best={{best}}  Made={{made}}",
+                "score": "Score={{score}}  Left={{remaining}}/{{total}}",
+                "difficulty": "Difficulty={{difficulty}}  Mood={{mood}}  Theme={{theme}}",
+                "duel": "Duel: You {{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: You {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "Personal Stats",
+            "close": "Close",
+            "totalShots": "Shots={{total}}  Made={{made}}",
+            "farRate": "300px+ rate={{rate}}",
+            "trend": "Recent trend={{trend}}",
+            "none": "None"
+        },
+        "theme": {
+            "next": "Switch Theme",
+            "current": "Theme: {{theme}}",
+            "changed": "Theme {{theme}}",
+            "labels": {
+                "default": "Gym",
+                "sunset": "Sunset Court",
+                "night": "Night Lights"
+            }
+        },
+        "court": {
+            "restrictedArc": "Restricted",
+            "freeThrowLine": "Free throw",
+            "threePointLine": "3-point",
+            "midCourtLine": "Midcourt"
+        },
+        "close": "Close",
+        "audio": {
+            "controls": "Game audio"
+        },
+        "memoryOption": {
+            "label": "Remember this game's conversation (off by default)",
+            "hint": "When off, player input, NEKO replies, event replies, postgame summaries, and follow-up context will not be stored in or read from memory."
+        },
+        "table": {
+            "score": "Score",
+            "bestStreak": "Best Streak",
+            "farthest": "Farthest",
+            "mode": "Mode",
+            "date": "Date"
+        },
+        "state": {
+            "ready": "Ready",
+            "in_flight": "In flight",
+            "game_over": "Game over",
+            "neko_thinking": "Neko thinking"
+        },
+        "toast": {
+            "difficulty": "Difficulty {{difficulty}}",
+            "nekoShoot": "Neko shoots",
+            "nekoThinking": "Neko is thinking",
+            "nekoTurn": "Neko's turn",
+            "copyNeko": "Copy Neko",
+            "nekoFailed": "Neko missed the set shot",
+            "yourSet": "Set your shot",
+            "yourTurn": "Your turn",
+            "reset": "Reset",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "Guide line",
+                "sweet": "Power sweet spot",
+                "bgm": "BGM",
+                "markers": "Distance markers"
+            },
+            "state": {
+                "on": "on",
+                "off": "off"
+            }
+        },
+        "tutorial": {
+            "aim": "Move the mouse up or down to adjust your shot angle",
+            "charge": "Hold left click to charge",
+            "release": "Release to shoot!"
+        },
+        "shot": {
+            "swish": "Swish",
+            "bank": "Bank",
+            "rim_in": "Rim in",
+            "rim_out": "Rim out",
+            "air_ball": "Air ball",
+            "unknown": "Unknown",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "Nothing but net!",
+                    "Clean shot."
+                ],
+                "bank": [
+                    "Bank shot counts.",
+                    "Nice angle."
+                ],
+                "rim_in": [
+                    "It bounced in!",
+                    "That was close."
+                ],
+                "rim_out": [
+                    "So close.",
+                    "That one rolled out."
+                ],
+                "air_ball": [
+                    "The rim is over there.",
+                    "Way off line."
+                ],
+                "shot_missed": [
+                    "Still a chance.",
+                    "Steady up."
+                ],
+                "game_over": [
+                    "Run it back?",
+                    "I will remember that one."
+                ],
+                "long_aim": [
+                    "Take the shot.",
+                    "Still aiming?"
+                ],
+                "close_to_record": [
+                    "Almost a record.",
+                    "Just a little more."
+                ],
+                "new_record": [
+                    "New record!",
+                    "That was far."
+                ],
+                "streak_5": [
+                    "Five in a row!",
+                    "You are heating up."
+                ],
+                "streak_10": [
+                    "Ten straight?",
+                    "That is wild."
+                ],
+                "streak_15": [
+                    "Fifteen is absurd.",
+                    "You are locked in."
+                ],
+                "streak_20": [
+                    "Twenty straight?",
+                    "This round is unreal."
+                ],
+                "clutch": "...This has to go in.",
+                "excuse": [
+                    "Ow, my arm is a little tired."
+                ]
+            },
+            "fallback": [
+                "Run it back."
+            ],
+            "pressure": {
+                "lastTied": "Deciding shot. Do not blink.",
+                "lastAhead": "Hmph, this is not over.",
+                "lastBehind": "Make this and you win.",
+                "playerAhead": "You are pretty good...",
+                "playerBehind": "Push harder."
+            },
+            "horse": {
+                "nekoMiss": "Did not copy it. Add {{letters}}.",
+                "playerMiss": "You add {{letters}} too."
+            },
+            "mindGame": [
+                "Your hand is shaking.",
+                "Think first, no rush.",
+                "This is not a short shot."
+            ],
+            "easterEgg": {
+                "lateNight": "Still shooting this late?",
+                "xmas": "The bells are up and you still want to shoot?",
+                "newYear": "Happy New Year!",
+                "swish3": "Are you cheating?",
+                "swish5": "...I need to inspect the rim.",
+                "airball3": "...Maybe take a short break?"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "...",
+            "surprisedPrefix": "Huh?! "
+        }
+    },
+    "drawingGuess": {
+        "title": "Drawing Guess",
+        "eyebrow": "Companion activity",
+        "subtitle": "Draw, guess, and chat together with the character.",
+        "status": {
+            "loadingCharacter": "Loading current character",
+            "missingCharacter": "Waiting for character info",
+            "ready": "Ready",
+            "starting": "Starting game route",
+            "active": "Route active",
+            "ending": "Ending",
+            "ended": "Ended",
+            "failed": "Route failed",
+            "heartbeatLost": "Route inactive"
+        },
+        "layout": {
+            "character": "Character",
+            "session": "Session",
+            "canvasTitle": "Canvas",
+            "tools": "Drawing tools",
+            "canvasWaitingTitle": "Canvas is preparing",
+            "canvasWaiting": "After starting, she draws first and you guess. Then you get 5 minutes to draw something for her.",
+            "actions": "Game actions",
+            "sideResize": "Resize model and chat panes",
+            "modelTitle": "Neko is here",
+            "modelFallbackTitle": "Model slot reserved",
+            "modelFallback": "The current character's Live2D or VRM model will load here later. If it fails, the same slot keeps a fallback.",
+            "chatTitle": "Game chat"
+        },
+        "tools": {
+            "brush": "Brush",
+            "eraser": "Eraser",
+            "bucket": "Bucket",
+            "undo": "Undo",
+            "redo": "Redo",
+            "color": "Color",
+            "size": "Size",
+            "eyedropper": "Eyedropper",
+            "basicColors": "Basic colors",
+            "historyColors": "History colors"
+        },
+        "tutorial": {
+            "title": "Before we start",
+            "intro": "This round has one drawing and one guess for each of us. You can chat while drawing; after 5 minutes, the current canvas is handed to her automatically.",
+            "memoryTitle": "Memory options",
+            "memoryNone": "Do not record this; only play this time.",
+            "memorySummary": "Record one short game summary.",
+            "quickTitle": "Quick guide",
+            "quickDraw": "When it is your turn to draw, pick one card, draw it on the canvas, then press Done.",
+            "quickGuess": "When it is your turn to guess, type your guess in chat; you can also chat and ask for hints.",
+            "quickSummary": "Each round keeps thumbnails, and the final summary lets you save the drawings.",
+            "voiceHint": "If you want to use voice, turn it on from the main page first; this mini-game will take it over after it starts."
+        },
+        "actions": {
+            "start": "Start",
+            "end": "End",
+            "retryCharacter": "Reload character",
+            "send": "Send",
+            "done": "Done",
+            "nextRound": "Next round",
+            "clearCanvas": "Clear canvas",
+            "saveNekoSvg": "Save as SVG",
+            "saveNekoPng": "Save as PNG",
+            "saveUserPng": "Save my drawing"
+        },
+        "debug": {
+            "title": "Debug panel",
+            "currentCharacter": "Current page character",
+            "loadingCharacters": "Loading character list",
+            "roundControls": "Round controls",
+            "aiRound": "Neko round",
+            "userRound": "Player round",
+            "rotateRounds": "Rotate rounds",
+            "randomGuessPoint": "Random guess point",
+            "triggerAiGuess": "Trigger Neko guess now",
+            "locked": "Locked",
+            "available": "Available",
+            "requestLocked": "Request locked",
+            "requestUnlocked": "Unlocked",
+            "waitingForChat": "Waiting for chat",
+            "guessing": "Guessing",
+            "attemptsExhausted": "No attempts left",
+            "notScheduled": "Not scheduled",
+            "switchedCharacter": "Debug: switched to {{name}}.",
+            "switchedCharacterContinue": "Debug: switched to {{name}}, continuing the current test round.",
+            "holdAiRound": "Debug: keeping Neko round, preparing the next word.",
+            "wordPoolsStatus": "Word pool status",
+            "wordPool1": "Word pool 1",
+            "wordPool2": "Word pool 2",
+            "requestLock": "Request lock"
+        },
+        "voice": {
+            "connected": "Voice is connected to this round.",
+            "connectHint": "Open voice on the main page to let this round take it over.",
+            "connectedNotice": "Main-page voice is connected to this round.",
+            "connectHintNotice": "Open voice on the main page first; this round will take it over when it becomes active.",
+            "routeNotReady": "Wait until the game route is ready before using voice.",
+            "buttonLabel": "Voice chat"
+        },
+        "exitConfirm": {
+            "title": "Leave this page?",
+            "message": "The final summary is ready. Do you want to leave this mini-game page?",
+            "stay": "Later",
+            "leave": "Leave page",
+            "reopen": "Leave?"
+        },
+        "memory": {
+            "noneShort": "No memory",
+            "summaryShort": "Summary"
+        },
+        "phases": {
+            "tutorial": "Tutorial",
+            "loading_round": "Loading",
+            "ended": "Ended",
+            "ai_drawing": "Neko drawing",
+            "user_guessing": "Your guess",
+            "drawing_pick": "Drawing word",
+            "user_drawing": "Your drawing",
+            "ai_guessing": "Neko guessing",
+            "ai_guess_feedback": "Give a hint",
+            "summary": "Summary",
+            "final_summary": "Final summary"
+        },
+        "modelStates": {
+            "loading": "Loading model",
+            "idle": "Idle",
+            "drawing": "Drawing",
+            "thinking": "Thinking",
+            "guessing": "Guessing",
+            "talking": "Talking",
+            "happy": "Happy"
+        },
+        "modelControls": {
+            "group": "Model view controls",
+            "scale": "Model size",
+            "x": "Horizontal position",
+            "y": "Vertical position",
+            "reset": "Reset model view"
+        },
+        "messages": {
+            "welcome": "When ready, we will confirm the current character and take over the mini-game route.",
+            "missingCharacter": "Open this page with a character or load the current one first.",
+            "startFailed": "Route start failed: {{reason}}",
+            "routeActive": "Game route is active for {{name}}.",
+            "roundStart": "A new round is starting.",
+            "aiDrawingReady": "She finished drawing. Try to guess it.",
+            "roundFailed": "Round failed: {{reason}}",
+            "requestTimeout": "Request timed out. Please try again.",
+            "guessTimeout": "Time is up. The answer was {{answer}}.",
+            "inputFailed": "That did not go through. Try again.",
+            "answerReveal": "Answer: {{answer}}",
+            "drawingPickTitle": "Drawing a word",
+            "drawingPickSubtitle": "Hold on. She is drawing a few cards from the deck.",
+            "drawingPickReady": "Pick one card to draw.",
+            "drawingPickReveal": "Chosen: {{answer}}",
+            "userDrawPrompt": "Your word is: {{answer}}. Draw it for her.",
+            "blankCanvas": "Give her a few lines first.",
+            "aiDrawingWaiting": "She is drawing",
+            "aiGuessing": "She is looking at your drawing...",
+            "aiGuessLine": "She guessed: {{guess}}",
+            "aiGuessCorrect": "She guessed it right.",
+            "aiGuessWrong": "Not quite.",
+            "aiGuessMissAnswer": "She missed it. Answer: {{answer}}",
+            "aiNeedsHint": "You can just keep chatting. Give her a hint when you want another guess.",
+            "summaryReady": "Round summary is ready.",
+            "canvasCleared": "Canvas cleared.",
+            "userSupplemented": "You touched up the drawing. She will guess again now."
+        },
+        "input": {
+            "placeholder": "Wait until the route is ready",
+            "guessPlaceholder": "Type your guess or ask for a hint",
+            "drawingPlaceholder": "You can chat while drawing",
+            "hintPlaceholder": "Keep chatting; give a hint when you want her to guess again",
+            "summaryPlaceholder": "Chat about this round, or start another one",
+            "ariaLabel": "Chat input"
+        },
+        "timer": {
+            "seconds": "{{seconds}}s"
+        },
+        "summary": {
+            "title": "Round summary",
+            "outcome": {
+                "userWin": "You win this round, gently and with style.",
+                "nekoWin": "She wins this round, with just a little smugness.",
+                "tie": "A close little draw."
+            },
+            "score": "You {{user}} - {{neko}} Neko",
+            "userDrawAnswer": "Your drawing answer: {{answer}}",
+            "nekoArt": "Neko drawing",
+            "userArt": "Your drawing",
+            "finalTitle": "Final summary",
+            "roundLabel": "Round {{round}}",
+            "noRounds": "No completed rounds yet."
+        }
     }
 }

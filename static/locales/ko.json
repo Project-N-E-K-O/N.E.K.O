@@ -4838,5 +4838,592 @@
             "label": "이번 경기를 기억에 저장 (기본 꺼짐)",
             "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 응답, 이벤트 반응, 경기 후 요약, 이어지는 대화 모두 기억에 저장되거나 참조되지 않습니다."
         }
+    },
+    "basketball": {
+        "title": "슛 챌린지 - Basketball",
+        "modeSwitcher": "농구 모드",
+        "mode": {
+            "spectator": "자유 연습",
+            "shooter": "슛 챌린지",
+            "duel": "Yui와 대결",
+            "timed": "타임 어택",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "점수 {{score}}",
+            "streak": "연속 성공 {{streak}}",
+            "record": "최장 {{distance}}",
+            "duelScore": "나 {{player}} - {{neko}} Neko",
+            "duelMisses": "실패 나 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "라운드 {{round}}/{{max}}",
+            "timer": "{{seconds}}초",
+            "practice": "자유 연습",
+            "yourTurn": "내 차례",
+            "nekoTurn": "Neko 슛",
+            "horseLetters": "나 {{player}} / Neko {{neko}}",
+            "horseChallenge": "재현 {{distance}} {{angle}}°",
+            "horseSet": "문제 내기",
+            "unlimitedAttempts": "무제한",
+            "chances": "기회 {{count}}",
+            "practiceTitle": "자유 연습: 슛은 무제한이며 순위표에 기록되지 않습니다",
+            "attemptsTitle": "남은 기회 {{remaining}}/{{total}}, 실수 {{missed}}",
+            "duelTitle": "Neko 대결: 나와 Neko가 번갈아 슛합니다",
+            "timedTitle": "타임 어택: 60초 동안 무제한 슛",
+            "horseTitle": "HORSE: 성공한 거리, 각도, 스위트 스팟을 따라 합니다",
+            "assist": "G {{guide}} / S {{sweet}} / M {{music}}",
+            "on": "켜짐",
+            "off": "꺼짐"
+        },
+        "result": {
+            "title": "게임 종료",
+            "leaderboard": "순위표 보기",
+            "stats": "통계 보기",
+            "retry": "다시 하기",
+            "rating": "조작 평가: {{rating}}",
+            "duel": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+            "duelElimination": "대결 결과: {{outcome}} | 나 {{player}} - {{neko}} Neko | 실패: 나 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 라운드: {{rounds}} | 마지막 거리: {{distance}}",
+            "horse": "HORSE 결과: {{outcome}} | 나 {{player}} / Neko {{neko}} | 성공: {{made}} | 최고 연속: {{best}}",
+            "timed": "타임 어택: 성공 {{made}}개, 최고 연속 {{best}}, 점수 {{score}}",
+            "practice": "자유 연습: 순위표 점수는 기록되지 않습니다 | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 거리: {{distance}}",
+            "summary": "점수: {{score}} | 성공: {{made}} | 현재 연속: {{streak}} | 최고 연속: {{best}} | 최장: {{record}} | 거리: {{distance}}",
+            "attemptsSummary": "슛 요약: {{summary}}",
+            "personalBest": "개인 최고: {{score}}점",
+            "globalRank": "글로벌 순위: #{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "내 승리",
+                "nekoWin": "Neko 승리",
+                "tie": "무승부",
+                "undecided": "미정"
+            }
+        },
+        "leaderboard": {
+            "title": "순위표",
+            "global": "글로벌",
+            "local": "로컬",
+            "shooter": "슛",
+            "duel": "대결",
+            "empty": "아직 기록이 없습니다",
+            "totalPlayers": "플레이어 {{count}}",
+            "yourBest": "내 최고 #{{rank}} / {{score}}점",
+            "recent": "최근 {{count}}경기",
+            "loading": "로딩 중...",
+            "mode": {
+                "shooter": "슛",
+                "duel": "대결",
+                "timed": "시간 제한",
+                "horse": "HORSE",
+                "spectator": "관전"
+            }
+        },
+        "debug": {
+            "title": "디버그 패널",
+            "collapse": "접기",
+            "hide": "숨기기",
+            "distance": "거리:",
+            "power": "힘:",
+            "event": "이벤트:",
+            "streak": "연속:",
+            "reset": "초기화",
+            "guide": "가이드 라인",
+            "sweet": "스위트 스팟",
+            "markers": "거리 눈금",
+            "readout": {
+                "modeState": "모드={{mode}}  상태={{state}}",
+                "distance": "거리={{px}}px ({{meters}})",
+                "streaks": "연속={{streak}}  최고={{best}}  성공={{made}}",
+                "score": "점수={{score}}  남음={{remaining}}/{{total}}",
+                "difficulty": "난이도={{difficulty}}  기분={{mood}}  테마={{theme}}",
+                "duel": "대결: 나{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: 나 {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "개인 통계",
+            "close": "닫기",
+            "totalShots": "슛={{total}}  성공={{made}}",
+            "farRate": "300px+ 성공률={{rate}}",
+            "trend": "최근 추세={{trend}}",
+            "none": "없음"
+        },
+        "theme": {
+            "next": "테마 변경",
+            "current": "테마: {{theme}}",
+            "changed": "테마 {{theme}}",
+            "labels": {
+                "default": "체육관",
+                "sunset": "노을 코트",
+                "night": "야간 조명"
+            }
+        },
+        "court": {
+            "restrictedArc": "제한 구역",
+            "freeThrowLine": "자유투",
+            "threePointLine": "3점선",
+            "midCourtLine": "하프라인"
+        },
+        "close": "닫기",
+        "audio": {
+            "controls": "게임 오디오"
+        },
+        "memoryOption": {
+            "label": "이번 게임 대화를 기억에 저장(기본 꺼짐)",
+            "hint": "꺼져 있으면 플레이어 입력, NEKO의 직접 답변, 이벤트 답변, 게임 후 요약, 후속 컨텍스트가 기억에 저장되거나 참조되지 않습니다."
+        },
+        "table": {
+            "score": "점수",
+            "bestStreak": "최고 연속",
+            "farthest": "최장",
+            "mode": "모드",
+            "date": "날짜"
+        },
+        "state": {
+            "ready": "준비",
+            "in_flight": "비행 중",
+            "game_over": "종료",
+            "neko_thinking": "Neko 생각 중"
+        },
+        "toast": {
+            "difficulty": "난이도 {{difficulty}}",
+            "nekoShoot": "Neko 슛",
+            "nekoThinking": "Neko 생각 중",
+            "nekoTurn": "Neko 차례",
+            "copyNeko": "Neko 따라 하기",
+            "nekoFailed": "Neko 출제 실패",
+            "yourSet": "내가 출제할 차례",
+            "yourTurn": "내 차례",
+            "reset": "초기화됨",
+            "featureToggled": "{{feature}} {{state}}",
+            "feature": {
+                "guide": "가이드 라인",
+                "sweet": "파워 스위트 스팟",
+                "bgm": "BGM",
+                "markers": "거리 눈금"
+            },
+            "state": {
+                "on": "켜짐",
+                "off": "꺼짐"
+            }
+        },
+        "tutorial": {
+            "aim": "마우스를 위아래로 움직여 각도를 조정하세요",
+            "charge": "왼쪽 버튼을 길게 눌러 충전",
+            "release": "놓아서 슛!"
+        },
+        "shot": {
+            "swish": "스위시",
+            "bank": "뱅크",
+            "rim_in": "림 인",
+            "rim_out": "림 아웃",
+            "air_ball": "에어볼",
+            "unknown": "알 수 없음",
+            "attempt": "#{{index}} {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "깔끔하게 들어갔어!",
+                    "깔끔하게 들어갔어!"
+                ],
+                "bank": [
+                    "백보드 맞고 성공.",
+                    "백보드 맞고 성공."
+                ],
+                "rim_in": [
+                    "튕겨서 들어갔어!",
+                    "튕겨서 들어갔어!"
+                ],
+                "rim_out": [
+                    "아깝다.",
+                    "아깝다."
+                ],
+                "air_ball": [
+                    "림은 저쪽이야.",
+                    "림은 저쪽이야."
+                ],
+                "shot_missed": [
+                    "아직 기회가 있어.",
+                    "아직 기회가 있어."
+                ],
+                "game_over": [
+                    "한 판 더 할래?",
+                    "한 판 더 할래?"
+                ],
+                "long_aim": [
+                    "이제 던져 보자.",
+                    "이제 던져 보자."
+                ],
+                "close_to_record": [
+                    "기록까지 거의 다 왔어.",
+                    "기록까지 거의 다 왔어."
+                ],
+                "new_record": [
+                    "신기록!",
+                    "신기록!"
+                ],
+                "streak_5": [
+                    "5연속 성공!",
+                    "5연속 성공!"
+                ],
+                "streak_10": [
+                    "10연속? 대단해.",
+                    "10연속? 대단해."
+                ],
+                "streak_15": [
+                    "15연속은 너무 대단해.",
+                    "15연속은 너무 대단해."
+                ],
+                "streak_20": [
+                    "20연속? 믿기 힘들어.",
+                    "20연속? 믿기 힘들어."
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "깔끔하게 들어갔어!",
+                    "깔끔하게 들어갔어!"
+                ],
+                "bank": [
+                    "백보드 맞고 성공.",
+                    "백보드 맞고 성공."
+                ],
+                "rim_in": [
+                    "튕겨서 들어갔어!",
+                    "튕겨서 들어갔어!"
+                ],
+                "rim_out": [
+                    "아깝다.",
+                    "아깝다."
+                ],
+                "air_ball": [
+                    "림은 저쪽이야.",
+                    "림은 저쪽이야."
+                ],
+                "shot_missed": [
+                    "아직 기회가 있어.",
+                    "아직 기회가 있어."
+                ],
+                "game_over": [
+                    "한 판 더 할래?",
+                    "한 판 더 할래?"
+                ],
+                "long_aim": [
+                    "이제 던져 보자.",
+                    "이제 던져 보자."
+                ],
+                "close_to_record": [
+                    "기록까지 거의 다 왔어.",
+                    "기록까지 거의 다 왔어."
+                ],
+                "new_record": [
+                    "신기록!",
+                    "신기록!"
+                ],
+                "streak_5": [
+                    "5연속 성공!",
+                    "5연속 성공!"
+                ],
+                "streak_10": [
+                    "10연속? 대단해.",
+                    "10연속? 대단해."
+                ],
+                "streak_15": [
+                    "15연속은 너무 대단해.",
+                    "15연속은 너무 대단해."
+                ],
+                "streak_20": [
+                    "20연속? 믿기 힘들어.",
+                    "20연속? 믿기 힘들어."
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "깔끔하게 들어갔어!",
+                    "깔끔하게 들어갔어!"
+                ],
+                "bank": [
+                    "백보드 맞고 성공.",
+                    "백보드 맞고 성공."
+                ],
+                "rim_in": [
+                    "튕겨서 들어갔어!",
+                    "튕겨서 들어갔어!"
+                ],
+                "rim_out": [
+                    "아깝다.",
+                    "아깝다."
+                ],
+                "air_ball": [
+                    "림은 저쪽이야.",
+                    "림은 저쪽이야."
+                ],
+                "shot_missed": [
+                    "아직 기회가 있어.",
+                    "아직 기회가 있어."
+                ],
+                "game_over": [
+                    "한 판 더 할래?",
+                    "한 판 더 할래?"
+                ],
+                "long_aim": [
+                    "이제 던져 보자.",
+                    "이제 던져 보자."
+                ],
+                "close_to_record": [
+                    "기록까지 거의 다 왔어.",
+                    "기록까지 거의 다 왔어."
+                ],
+                "new_record": [
+                    "신기록!",
+                    "신기록!"
+                ],
+                "streak_5": [
+                    "5연속 성공!",
+                    "5연속 성공!"
+                ],
+                "streak_10": [
+                    "10연속? 대단해.",
+                    "10연속? 대단해."
+                ],
+                "streak_15": [
+                    "15연속은 너무 대단해.",
+                    "15연속은 너무 대단해."
+                ],
+                "streak_20": [
+                    "20연속? 믿기 힘들어.",
+                    "20연속? 믿기 힘들어."
+                ],
+                "clutch": "……이건 꼭 넣어야 해.",
+                "excuse": [
+                    "아, 팔이 조금 피곤해."
+                ]
+            },
+            "fallback": [
+                "한 판 더 하자."
+            ],
+            "pressure": {
+                "lastTied": "결정구야. 눈 깜빡이지 마.",
+                "lastAhead": "흥, 아직 안 끝났어.",
+                "lastBehind": "이걸 넣으면 이겨.",
+                "playerAhead": "제법인데...",
+                "playerBehind": "더 밀어붙여."
+            },
+            "horse": {
+                "nekoMiss": "못 따라 했네. {{letters}} 추가.",
+                "playerMiss": "너도 {{letters}} 추가."
+            },
+            "mindGame": [
+                "손 떨리는 거 봤어.",
+                "천천히 생각하고 던져.",
+                "이 거리는 가깝지 않아."
+            ],
+            "easterEgg": {
+                "lateNight": "이 시간에도 슛해?",
+                "xmas": "종도 달았는데 아직도 던질 거야?",
+                "newYear": "새해 복 많이 받아!",
+                "swish3": "혹시 치트 쓰는 거야?",
+                "swish5": "……림을 확인해 봐야겠어.",
+                "airball3": "……잠깐 쉬는 게 어때?"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "어?! "
+        }
+    },
+    "drawingGuess": {
+        "title": "그림 맞히기",
+        "eyebrow": "함께하는 놀이",
+        "subtitle": "고양이 소녀와 함께 그리고, 맞히고, 이야기하세요.",
+        "status": {
+            "loadingCharacter": "현재 캐릭터를 읽는 중",
+            "missingCharacter": "캐릭터 정보 대기 중",
+            "ready": "준비됨",
+            "starting": "게임 라우트 시작 중",
+            "active": "라우트 활성화됨",
+            "ending": "종료 중",
+            "ended": "종료됨",
+            "failed": "라우트 시작 실패",
+            "heartbeatLost": "라우트 비활성"
+        },
+        "layout": {
+            "character": "캐릭터",
+            "session": "세션",
+            "canvasTitle": "캔버스",
+            "tools": "그리기 도구",
+            "canvasWaitingTitle": "캔버스 준비 중",
+            "canvasWaiting": "시작하면 먼저 고양이 소녀가 그리고 당신이 맞힙니다. 그다음 5분 동안 그녀가 맞힐 그림을 그립니다.",
+            "actions": "게임 동작",
+            "sideResize": "모델과 채팅 영역 비율 조절",
+            "modelTitle": "네코가 함께 있음",
+            "modelFallbackTitle": "모델 영역 예약됨",
+            "modelFallback": "나중에 현재 캐릭터의 Live2D 또는 VRM 모델을 여기에 불러옵니다. 실패해도 같은 자리에 fallback을 유지합니다.",
+            "chatTitle": "게임 채팅"
+        },
+        "tools": {
+            "brush": "브러시",
+            "eraser": "지우개",
+            "bucket": "페인트통",
+            "undo": "실행 취소",
+            "redo": "다시 실행",
+            "color": "색상",
+            "size": "굵기",
+            "eyedropper": "스포이트",
+            "basicColors": "기본 색상",
+            "historyColors": "최근 색상"
+        },
+        "tutorial": {
+            "title": "시작하기 전에",
+            "intro": "이번 판은 서로 한 번씩 그리고 한 번씩 맞힙니다. 그리면서 대화할 수 있고, 5분이 지나면 현재 캔버스가 자동으로 그녀에게 넘어갑니다.",
+            "memoryTitle": "기억 옵션",
+            "memoryNone": "기록하지 않고 이번에만 플레이합니다.",
+            "memorySummary": "짧은 게임 요약 한 줄을 기록합니다.",
+            "quickTitle": "간단 안내",
+            "quickDraw": "내가 그릴 차례에는 카드 한 장을 고르고 캔버스에 그린 뒤, 다 그렸어요를 누르세요.",
+            "quickGuess": "내가 맞힐 차례에는 채팅창에 답을 입력하세요. 대화하면서 힌트를 물어봐도 됩니다.",
+            "quickSummary": "각 라운드는 썸네일로 남고, 최종 정산에서 그림을 저장할 수 있습니다.",
+            "voiceHint": "음성을 쓰고 싶다면 먼저 메인 페이지에서 음성을 켜 주세요. 미니게임이 시작되면 자동으로 이어받습니다."
+        },
+        "actions": {
+            "start": "시작",
+            "end": "종료",
+            "retryCharacter": "캐릭터 다시 읽기",
+            "send": "보내기",
+            "done": "다 그렸어",
+            "nextRound": "다음 라운드",
+            "clearCanvas": "캔버스 비우기",
+            "saveNekoSvg": "SVG로 저장",
+            "saveNekoPng": "PNG로 저장",
+            "saveUserPng": "내 그림 저장"
+        },
+        "debug": {
+            "title": "디버그 패널",
+            "currentCharacter": "현재 페이지 캐릭터",
+            "loadingCharacters": "캐릭터 목록 불러오는 중",
+            "roundControls": "라운드 제어",
+            "aiRound": "고양이 소녀 라운드",
+            "userRound": "플레이어 라운드",
+            "rotateRounds": "라운드 교대",
+            "randomGuessPoint": "무작위 추측 지점",
+            "triggerAiGuess": "지금 고양이 소녀 추측 실행",
+            "locked": "잠김",
+            "available": "사용 가능",
+            "requestLocked": "요청 잠김",
+            "requestUnlocked": "잠금 없음",
+            "waitingForChat": "채팅 종료 대기",
+            "guessing": "추측 중",
+            "attemptsExhausted": "남은 시도 없음",
+            "notScheduled": "예약 없음",
+            "switchedCharacter": "디버그: {{name}}(으)로 전환했습니다.",
+            "switchedCharacterContinue": "디버그: {{name}}(으)로 전환하고 현재 테스트 라운드를 계속합니다.",
+            "holdAiRound": "디버그: 고양이 소녀 라운드를 유지하고 다음 단어를 준비합니다.",
+            "wordPoolsStatus": "단어 풀 상태",
+            "wordPool1": "단어 풀 1",
+            "wordPool2": "단어 풀 2",
+            "requestLock": "요청 잠금"
+        },
+        "voice": {
+            "connected": "이 라운드에 음성이 연결되어 있어요.",
+            "connectHint": "메인 화면에서 먼저 음성을 켜면 이 라운드가 이어받아요.",
+            "connectedNotice": "메인 화면 음성이 이 라운드에 연결되었어요.",
+            "connectHintNotice": "메인 화면에서 먼저 음성을 켜 주세요. 켜지면 이 라운드가 자동으로 이어받아요.",
+            "routeNotReady": "음성을 사용하기 전에 게임 라우트가 준비될 때까지 기다려 주세요.",
+            "buttonLabel": "음성 채팅"
+        },
+        "exitConfirm": {
+            "title": "페이지를 나갈까요?",
+            "message": "최종 정산이 준비됐어요. 이 미니게임 페이지를 나갈까요?",
+            "stay": "나중에",
+            "leave": "페이지 나가기",
+            "reopen": "나갈까요?"
+        },
+        "memory": {
+            "noneShort": "기록 안 함",
+            "summaryShort": "요약"
+        },
+        "phases": {
+            "tutorial": "튜토리얼",
+            "loading_round": "불러오는 중",
+            "ended": "종료됨",
+            "ai_drawing": "고양이 소녀가 그리는 중",
+            "user_guessing": "당신이 맞힐 차례",
+            "drawing_pick": "제시어 뽑는 중",
+            "user_drawing": "당신이 그릴 차례",
+            "ai_guessing": "고양이 소녀가 맞히는 중",
+            "ai_guess_feedback": "힌트 주기",
+            "summary": "결산",
+            "final_summary": "최종 정산"
+        },
+        "modelStates": {
+            "loading": "모델 불러오는 중",
+            "idle": "대기 중",
+            "drawing": "그리는 중",
+            "thinking": "생각 중",
+            "guessing": "맞히는 중",
+            "talking": "말하는 중",
+            "happy": "기쁜 상태"
+        },
+        "modelControls": {
+            "group": "모델 보기 조절",
+            "scale": "모델 크기",
+            "x": "가로 위치",
+            "y": "세로 위치",
+            "reset": "모델 보기 초기화"
+        },
+        "messages": {
+            "welcome": "준비되면 현재 캐릭터를 확인하고 미니게임 라우트를 연결합니다.",
+            "missingCharacter": "캐릭터와 함께 이 페이지를 열거나 먼저 현재 캐릭터를 불러오세요.",
+            "startFailed": "라우트 시작 실패: {{reason}}",
+            "routeActive": "{{name}}의 게임 라우트가 활성화되었습니다.",
+            "roundStart": "새 라운드를 시작합니다.",
+            "aiDrawingReady": "그녀가 다 그렸어요. 맞혀 보세요.",
+            "roundFailed": "라운드 시작 실패: {{reason}}",
+            "requestTimeout": "요청 시간이 초과됐어요. 다시 시도해 주세요.",
+            "guessTimeout": "시간이 끝났어요. 정답은 {{answer}}입니다.",
+            "inputFailed": "전송되지 않았어요. 다시 시도해 주세요.",
+            "answerReveal": "정답: {{answer}}",
+            "drawingPickTitle": "제시어를 뽑는 중",
+            "drawingPickSubtitle": "잠깐만요. 그녀가 카드 더미에서 제시어 카드를 몇 장 뽑고 있어요.",
+            "drawingPickReady": "그릴 카드 한 장을 골라 주세요.",
+            "drawingPickReveal": "선택: {{answer}}",
+            "userDrawPrompt": "당신의 제시어는 {{answer}}입니다. 그녀가 맞힐 수 있게 그려 주세요.",
+            "blankCanvas": "먼저 몇 줄이라도 그려 주세요.",
+            "aiDrawingWaiting": "고양이 소녀가 그림을 그리는 중",
+            "aiGuessing": "그녀가 당신의 그림을 보고 있어요...",
+            "aiGuessLine": "그녀의 추측: {{guess}}",
+            "aiGuessCorrect": "그녀가 맞혔어요.",
+            "aiGuessWrong": "아직 아니에요.",
+            "aiGuessMissAnswer": "그녀가 맞히지 못했어요. 정답: {{answer}}",
+            "aiNeedsHint": "그냥 계속 이야기해도 돼요. 다시 맞히게 하고 싶을 때 힌트를 주세요.",
+            "summaryReady": "결산 페이지가 준비됐어요.",
+            "canvasCleared": "캔버스를 비웠어요.",
+            "userSupplemented": "그림을 보완했어요. 그녀가 바로 다시 맞혀 볼 거예요."
+        },
+        "input": {
+            "placeholder": "라우트가 준비될 때까지 기다려 주세요",
+            "guessPlaceholder": "추측을 입력하거나 힌트를 요청하세요",
+            "drawingPlaceholder": "그리면서 채팅할 수 있어요",
+            "hintPlaceholder": "먼저 계속 대화하고, 다시 맞히게 하고 싶을 때 힌트 주기",
+            "summaryPlaceholder": "이번 라운드 이야기를 하거나 다음 라운드를 시작하세요",
+            "ariaLabel": "채팅 입력"
+        },
+        "timer": {
+            "seconds": "{{seconds}}초"
+        },
+        "summary": {
+            "title": "라운드 결산",
+            "outcome": {
+                "userWin": "이번 라운드는 당신의 승리예요. 그래도 핵심은 함께 노는 거죠.",
+                "nekoWin": "그녀의 승리예요. 살짝 뿌듯해해도 괜찮겠죠.",
+                "tie": "무승부예요. 한 판 더 하기 딱 좋아요."
+            },
+            "score": "당신 {{user}} - {{neko}} 고양이 소녀",
+            "userDrawAnswer": "당신의 제시어: {{answer}}",
+            "nekoArt": "고양이 소녀 그림",
+            "userArt": "당신의 그림",
+            "finalTitle": "최종 정산",
+            "roundLabel": "{{round}} 라운드",
+            "noRounds": "아직 완료된 라운드가 없습니다."
+        }
     }
 }

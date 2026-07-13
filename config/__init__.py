@@ -2220,12 +2220,15 @@ MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
   从未玩过的人有一次确定的「被邀请」机会，不靠 10% 骰子赌。
 - 上游：_maybe_deliver_mini_game_invite force-first 分支。"""
 
-MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer", "badminton")
+MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = (
+    "soccer",
+    "badminton",
+    "drawing_guess",
+)
 """mini-game 邀请可选的 game_type 列表。
 - 命中后从该列表 random.choice 选一个，文案从
   config.prompts.prompts_proactive.MINI_GAME_INVITE_LINES_BY_GAME[game_type] 取。
-- 当前只有 soccer；badminton 后端与文案在本 PR 预埋，但实际邀请入口需要等
-  页面路由和 Electron 窗口注册在后续 PR 落地后再启用。
+- 每个 game_type 必须同时配置邀请文案和启动 URL。
 - 顺序无意义（用 random.choice）；用 tuple 防止运行期被改写。"""
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
@@ -2245,6 +2248,7 @@ MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
 MINI_GAME_LAUNCH_URL_BY_GAME: dict[str, str] = {
     'soccer': '/soccer_demo',
     'badminton': '/badminton_demo',
+    'drawing_guess': '/drawing_guess_demo',
 }
 """game_type → 实际打开的页面 URL。前端 `window.open(url)` 让 Electron 主进程
 ``setWindowOpenHandler`` 拦截开独立 BrowserWindow（普通浏览器是新 tab）；URL

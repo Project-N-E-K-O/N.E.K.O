@@ -320,7 +320,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     # 旧接收任务已完全停止后再重置流式状态：await ws.close() 会让出，
                     # 期间旧 receive_task 可能写入晚到的 audio.delta，若提前重置会被残留污染下一轮
                     resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
-                    qwen_audio_jitter.reset()
+                    qwen_audio_jitter.reset(sid)
 
                     # 建立新连接（延迟 session.update 至首批文本到达后发送，携带语言提示）
                     try:

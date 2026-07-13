@@ -104,6 +104,8 @@ class LLMSessionManager(
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
+        self._speech_taps: dict[str, Callable[[bytes, Optional[str]], Awaitable[bool] | bool]] = {}
+        self._speech_primary_suppressed_ids: set[str] = set()
         self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0

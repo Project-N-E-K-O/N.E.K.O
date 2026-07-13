@@ -772,33 +772,79 @@ class TtsRuntimeMixin:
             return ""
         return text
 
+    def add_speech_tap(self, key: str, callback) -> None:
+        """Register an optional synthesized-audio side channel."""
+        if key and callable(callback):
+            self._speech_taps[str(key)] = callback
+
+    def remove_speech_tap(self, key: str) -> None:
+        if key:
+            self._speech_taps.pop(str(key), None)
+
+    async def _publish_speech_taps(self, tts_audio: bytes, speech_id: Optional[str]) -> bool:
+        delivered = False
+        for key, callback in list(self._speech_taps.items()):
+            try:
+                result = callback(tts_audio, speech_id)
+                if hasattr(result, "__await__"):
+                    result = await asyncio.wait_for(result, timeout=1.0)
+                delivered = bool(result) or delivered
+            except asyncio.TimeoutError:
+                logger.warning("[%s] speech tap timed out: key=%s", self.lanlan_name, key)
+            except Exception as exc:
+                logger.warning("[%s] speech tap failed: key=%s err=%s", self.lanlan_name, key, exc)
+        return delivered
+
     async def send_speech(self, tts_audio, speech_id: Optional[str] = None):
-        """Send speech data to the frontend, sending the speech_id header first for precise interruption control"""
+        """Send speech to the primary frontend and registered side channels."""
         try:
-            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
-                await self.websocket.send_json({
-                    "type": "audio_chunk",
-                    "speech_id": effective_speech_id
-                })
-                await self.websocket.send_bytes(tts_audio)
+            effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
+            suppress_primary = (
+                effective_speech_id is not None
+                and str(effective_speech_id) in self._speech_primary_suppressed_ids
+            )
+            delivered = False
+            if suppress_primary:
+                delivered = await self._publish_speech_taps(tts_audio, effective_speech_id)
+            if (
+                not suppress_primary
+                and self.websocket
+                and hasattr(self.websocket, 'client_state')
+                and self.websocket.client_state == self.websocket.client_state.CONNECTED
+            ):
+                try:
+                    async def _send_primary_audio() -> None:
+                        await self.websocket.send_json({
+                            "type": "audio_chunk",
+                            "speech_id": effective_speech_id,
+                        })
+                        await self.websocket.send_bytes(tts_audio)
+
+                    if self.websocket_lock:
+                        async with self.websocket_lock:
+                            await _send_primary_audio()
+                    else:
+                        await _send_primary_audio()
+                    delivered = True
+                    self.sync_message_queue.put({"type": "binary", "data": tts_audio})
+                except WebSocketDisconnect:
+                    logger.warning("⚠️ send_speech: WebSocket disconnected")
+                except Exception as exc:
+                    logger.warning("⚠️ send_speech primary WS failed; continuing speech taps: %s", exc)
+            if not suppress_primary and await self._publish_speech_taps(tts_audio, effective_speech_id):
+                delivered = True
+            if delivered:
                 logger.debug(f"🔊 send_speech OK: {len(tts_audio)} bytes, speech_id={effective_speech_id}")
                 self._speech_output_total += 1
                 self._last_speech_output_time = time.time()
                 self._last_speech_output_bytes = len(tts_audio)
-                self.sync_message_queue.put({"type": "binary", "data": tts_audio})
                 return True
-            else:
-                ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
-                logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
-                return False
-        except WebSocketDisconnect:
-            logger.warning("⚠️ send_speech: WebSocket disconnected")
+            ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+            logger.warning(f"⚠️ send_speech skipped: ws={self.websocket is not None}, state={ws_state}")
             return False
-        except Exception as e:
-            logger.error(f"💥 WS Send Response Error: {e}")
+        except Exception as exc:
+            logger.error(f"💥 WS Send Response Error: {exc}")
             return False
-
     async def tts_response_handler(self):
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
@@ -982,8 +1028,11 @@ class TtsRuntimeMixin:
                     continue
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
-                logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                await self.send_speech(data)
+                logger.warning(
+                    "🎧 dropping legacy TTS audio without source speech_id: %s, qsize≈%s",
+                    size,
+                    q.qsize(),
+                )
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")

@@ -137,6 +137,28 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
+    _PROJECT_ROOT / "static/libs/live2dcubismcore.min.js",
+    _PROJECT_ROOT / "static/libs/live2d.min.js",
+    _PROJECT_ROOT / "static/libs/pixi.min.js",
+    _PROJECT_ROOT / "static/libs/index.min.js",
+    _PROJECT_ROOT / "static/libs/ogg-opus-decoder.min.js",
+    _PROJECT_ROOT / "static/ogg-opus-decoder-wrapper.js",
+    _PROJECT_ROOT / "static/app/app-state.js",
+    _PROJECT_ROOT / "static/app/app-audio-playback.js",
+    _PROJECT_ROOT / "static/live2d/live2d-core.js",
+    _PROJECT_ROOT / "static/live2d/live2d-emotion.js",
+    _PROJECT_ROOT / "static/live2d/live2d-interaction.js",
+    _PROJECT_ROOT / "static/live2d/live2d-model.js",
+    _PROJECT_ROOT / "static/pngtuber-core.js",
+    _PROJECT_ROOT / "static/vrm/vrm-init.js",
+    _PROJECT_ROOT / "static/mmd/mmd-init.js",
+    _PROJECT_ROOT / "static/libs/three.module.js",
+    _PROJECT_ROOT / "static/libs/three-vrm.module.min.js",
+    _PROJECT_ROOT / "static/libs/three-vrm-animation.module.js",
+    _PROJECT_ROOT / "static/libs/three-mmd.module.js",
+    _PROJECT_ROOT / "static/libs/three-mmd-physics-ammo.module.js",
+    _PROJECT_ROOT / "static/libs/ammojs-typed.module.js",
+    _PROJECT_ROOT / "static/game/games/drawing_guess/drawing-guess.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
@@ -275,6 +297,20 @@ async def badminton_demo(request: Request):
         "request": request,
         **_static_assets_ctx(),
     })
+
+
+def _render_drawing_guess(request: Request):
+    templates = get_templates()
+    return templates.TemplateResponse("templates/drawing_guess.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+@router.get("/drawing_guess_demo", response_class=HTMLResponse)
+async def drawing_guess_demo(request: Request):
+    """Drawing Guess companion mini-game."""
+    return _render_drawing_guess(request)
 
 
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)

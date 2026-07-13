@@ -1920,4 +1920,33 @@ WORK_BREAK_GAME_INVITE_PROMPTS_BY_GAME: dict[str, dict[str, str]] = {
         "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de bádminton contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
         "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de badminton com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
     },
+    "drawing_guess": {
+        "zh": "========以下是环境提示========\n"
+        "{master}已经在{app}专注工作{minutes}分钟了。\n"
+        "你想让{master}停下来歇一会儿，顺便邀请{master}陪你玩一局你画我猜小游戏放松一下。\n"
+        '用符合你性格的方式自然搭话吧——既要让{master}感觉到关心，也要把"一起玩一局你画我猜"的邀请说出来。直接说出你想说的话，简短自然即可，不要生成思考过程。\n'
+        "========以上是环境提示========",
+        "en": "========Below is Environment Notice========\n"
+        "{master} has been focused on {app} for {minutes} minutes.\n"
+        "You want {master} to take a break — and you want to invite {master} to play a quick round of the drawing guess mini-game with you to unwind.\n"
+        "Talk to {master} in your own way, naturally — show that you care AND make the invite to play together clear. Just say what you want to say, keep it short and natural. Do not generate thinking process.\n"
+        "========Above is Environment Notice========",
+        "ja": "========以下は環境通知========\n"
+        "{master}は{app}に{minutes}分間ずっと集中している。\n"
+        "少し休ませてあげたくて、ついでにお絵描き当てゲームを一緒にやろうって誘いたい気持ち。\n"
+        "自分らしいやり方で自然に話しかけて——気にかけている雰囲気を出しつつ、「一緒にお絵描き当てゲームをやろう」と誘う言葉を入れてね。言いたいことをそのまま短く自然に。思考プロセスは生成しないで。\n"
+        "========以上は環境通知========",
+        "ko": "========아래는 환경 알림========\n"
+        "{master}가 {app}에 {minutes}분 동안 계속 집중하고 있다.\n"
+        "잠깐 쉬게 하고 싶고, 겸사겸사 같이 그림 맞히기 미니게임 한 판 하자고 권하고 싶다.\n"
+        '너다운 방식으로 자연스럽게 말을 걸어 — 걱정하는 마음을 보이면서 "같이 그림 맞히기 한 판 하자"는 초대도 분명히 담아. 하고 싶은 말을 짧고 자연스럽게. 사고 과정은 생성하지 마.\n'
+        "========위는 환경 알림========",
+        "ru": "========Ниже Уведомление========\n"
+        "{master} уже {minutes} минут сосредоточенно работает в {app}.\n"
+        "Хочется дать {master} отдохнуть — и заодно позвать его сыграть один быстрый раунд в мини-игру угадай рисунок, чтобы развеяться.\n"
+        "Заговори с {master} так, как тебе свойственно — пусть {master} почувствует заботу, и обязательно прозвучит приглашение сыграть разок. Просто скажи что хочешь — коротко и естественно. Не генерируй процесс размышлений.\n"
+        "========Выше Уведомление========",
+        "es": "========Aviso de entorno abajo========\n{master} lleva {minutes} minutos concentrado en {app}.\nQuieres que {master} descanse un poco y, de paso, invitarlo a jugar una ronda rápida del minijuego de dibujo y adivinanzas contigo para relajarse.\nHabla con {master} naturalmente a tu manera: muestra cuidado y deja clara la invitación a jugar juntos. Di solo lo que quieras decir, breve y natural. No generes proceso de pensamiento.\n========Aviso de entorno arriba========",
+        "pt": "========Abaixo está o aviso de ambiente========\n{master} está focado em {app} há {minutes} minutos.\nVocê quer que {master} faça uma pausa e também quer convidá-lo para jogar uma rodada rápida do minijogo de desenho e adivinhação com você para relaxar.\nFale com {master} naturalmente do seu jeito: mostre cuidado e deixe claro o convite para jogar junto. Diga apenas o que quer dizer, breve e natural. Não gere processo de pensamento.\n========Acima está o aviso de ambiente========",
+    },
 }

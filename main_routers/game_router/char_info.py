@@ -20,7 +20,9 @@ Split out of the former monolithic ``main_routers/game_router.py``.
 
 from ._shared import logger
 
+import re
 from typing import Any, Dict
+from config import CHARACTER_RESERVED_FIELDS
 from ..shared_state import get_config_manager, get_session_manager
 from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
 
@@ -127,6 +129,94 @@ def _resolve_game_prompt_language(
         return "en"
 
 
+_GAME_CHARACTER_PROFILE_MAX_CHARS = 3600
+_GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS = 900
+
+
+def _normalize_game_character_profile_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple, set)):
+                continue
+            text = str(item).strip()
+            if text:
+                parts.append(text)
+        return "、".join(parts)
+    if isinstance(value, (dict, tuple, set)):
+        return ""
+    return str(value).strip()
+
+
+def _replace_game_character_profile_placeholders(
+    text: str,
+    *,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    return (
+        text.replace("{LANLAN_NAME}", lanlan_name)
+        .replace("{MASTER_NAME}", master_name)
+        .replace("{{char}}", lanlan_name)
+        .replace("{{user}}", master_name)
+    )
+
+
+def _ordered_game_character_profile_keys(character_payload: dict[str, Any]) -> list[str]:
+    ordered: list[str] = []
+    reserved = character_payload.get("_reserved")
+    field_order = character_payload.get("_field_order")
+    if not isinstance(field_order, list):
+        field_order = reserved.get("field_order") if isinstance(reserved, dict) else None
+    if isinstance(field_order, list):
+        for raw_key in field_order:
+            key = str(raw_key or "").strip()
+            if key and key in character_payload and key not in ordered:
+                ordered.append(key)
+    for key in character_payload:
+        if key not in ordered:
+            ordered.append(key)
+    return ordered
+
+
+def _format_game_character_profile_prompt(
+    character_payload: Any,
+    *,
+    lanlan_name: str,
+    master_name: str,
+) -> str:
+    if not isinstance(character_payload, dict):
+        return ""
+
+    reserved_fields = set(CHARACTER_RESERVED_FIELDS) | {"档案名", "_reserved"}
+    lines: list[str] = []
+    total_chars = 0
+    for key in _ordered_game_character_profile_keys(character_payload):
+        if key in reserved_fields:
+            continue
+        value = _normalize_game_character_profile_value(character_payload.get(key))
+        if not value:
+            continue
+        value = _replace_game_character_profile_placeholders(
+            value,
+            lanlan_name=lanlan_name,
+            master_name=master_name,
+        )
+        value = re.sub(r"\s+", " ", value).strip()
+        if len(value) > _GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS:
+            value = value[:_GAME_CHARACTER_PROFILE_FIELD_MAX_CHARS].rstrip() + "..."
+        line = f"- {key}: {value}"
+        if total_chars + len(line) > _GAME_CHARACTER_PROFILE_MAX_CHARS:
+            break
+        lines.append(line)
+        total_chars += len(line) + 1
+    return "\n".join(lines)
+
+
 def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     """Get the specified character's info from shared_state; uses the current character when unspecified."""
     try:
@@ -141,16 +231,38 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
             info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
+            info.setdefault("character_profile_prompt", "")
             return info
         raise
     characters = config_manager.load_characters()
-    current_name = str(lanlan_name or characters.get('当前猫娘', '') or '').strip()
+    (
+        resolved_master_name,
+        resolved_current_name,
+        _master_basic_config,
+        lanlan_basic_config,
+        _name_mapping,
+        lanlan_prompt_map,
+        _time_store,
+        _setting_store,
+        _recent_log,
+    ) = config_manager.get_character_data()
+    requested_name = str(lanlan_name or "").strip()
+    configured_name = str(characters.get('当前猫娘') or resolved_current_name or '').strip()
+    known_names = set(lanlan_prompt_map.keys()) if isinstance(lanlan_prompt_map, dict) else set()
+    if requested_name and (not known_names or requested_name in known_names):
+        current_name = requested_name
+    elif configured_name and (not known_names or configured_name in known_names):
+        current_name = configured_name
+    elif requested_name:
+        current_name = requested_name
+    else:
+        current_name = configured_name
 
     master_data = characters.get('主人', {})
     # 显式 str 归一化：'档案名' 来自用户编辑的角色配置 JSON，可能是 None / 数字
     # / 其他非字符串。下面 .replace 的第二个参数必须是 str，且 master_name 还会
     # 直接进入返回 dict 给下游消费，统一在源头收口。
-    master_name = str(master_data.get('档案名', '玩家') or '玩家')
+    master_name = str(resolved_master_name or master_data.get('档案名', '玩家') or '玩家')
 
     # 获取角色人格 prompt
     # Why: lanlan_prompt_map 存的是带 {LANLAN_NAME} / {MASTER_NAME} 占位符的原始
@@ -159,10 +271,19 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     # / quick_lines / pregame context AI 拼出来的 prompt 会含字面占位符，触发
     # llm_prompt_leak_check 警告并污染人设。
     # 模板本身也用 str() 兜底：极端情况下 lanlan_prompt_map 里的值可能是 None。
-    _, _, _, _, _, lanlan_prompt_map, _, _, _ = config_manager.get_character_data()
     lanlan_prompt = str(lanlan_prompt_map.get(current_name, '') or '') \
         .replace('{LANLAN_NAME}', current_name) \
         .replace('{MASTER_NAME}', master_name)
+    character_payload = (
+        lanlan_basic_config.get(current_name, {})
+        if isinstance(lanlan_basic_config, dict)
+        else {}
+    )
+    character_profile_prompt = _format_game_character_profile_prompt(
+        character_payload,
+        lanlan_name=current_name,
+        master_name=master_name,
+    )
 
     # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
     conversation_config = config_manager.get_model_api_config('game_main')
@@ -171,6 +292,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'lanlan_name': current_name,
         'master_name': master_name,
         'lanlan_prompt': lanlan_prompt,
+        'character_profile_prompt': character_profile_prompt,
         'model': conversation_config.get('model', ''),
         'base_url': conversation_config.get('base_url', ''),
         'api_type': conversation_config.get('api_type', ''),

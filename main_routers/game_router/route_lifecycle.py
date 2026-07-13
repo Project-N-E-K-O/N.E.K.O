@@ -183,6 +183,7 @@ def _build_route_state(
         "game_type": game_type,
         "session_id": session_id,
         "lanlan_name": lanlan_name,
+        "window_lanlan_name": lanlan_name,
         "before_game_external_mode": before_mode,
         "before_game_external_active": before_active,
         "game_route_active": True,

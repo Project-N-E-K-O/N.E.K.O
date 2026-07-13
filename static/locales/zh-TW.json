@@ -4838,5 +4838,592 @@
             "label": "本局對話進入記憶（預設不啟用）",
             "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
         }
+    },
+    "basketball": {
+        "title": "投籃挑戰 - Basketball",
+        "modeSwitcher": "籃球模式",
+        "mode": {
+            "spectator": "自由練習",
+            "shooter": "投籃挑戰",
+            "duel": "跟 Yui 對戰",
+            "timed": "限時挑戰",
+            "horse": "HORSE"
+        },
+        "hud": {
+            "score": "得分 {{score}}",
+            "streak": "連中 {{streak}}",
+            "record": "最遠 {{distance}}",
+            "duelScore": "你 {{player}} - {{neko}} Neko",
+            "duelMisses": "投丟 你 {{player}}/{{max}} - Neko {{neko}}/{{max}}",
+            "round": "回合 {{round}}/{{max}}",
+            "timer": "{{seconds}} 秒",
+            "practice": "自由練習",
+            "yourTurn": "輪到你",
+            "nekoTurn": "Neko 出手",
+            "horseLetters": "你 {{player}} / Neko {{neko}}",
+            "horseChallenge": "復刻 {{distance}} {{angle}}°",
+            "horseSet": "出題回合",
+            "unlimitedAttempts": "不限次數",
+            "chances": "機會 {{count}}",
+            "practiceTitle": "自由練習：不限投籃次數，不記錄排行榜分數",
+            "attemptsTitle": "剩餘機會 {{remaining}}/{{total}}，已失誤 {{missed}}",
+            "duelTitle": "Neko 對戰模式：玩家和 Neko 輪流投籃",
+            "timedTitle": "限時挑戰：60 秒內不限出手次數",
+            "horseTitle": "HORSE：復刻對手命中的距離、角度和甜區",
+            "assist": "G{{guide}} / S{{sweet}} / M{{music}}",
+            "on": "開",
+            "off": "關"
+        },
+        "result": {
+            "title": "遊戲結束",
+            "leaderboard": "查看排行榜",
+            "stats": "查看統計",
+            "retry": "再來一局",
+            "rating": "操控評級：{{rating}}",
+            "duel": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "duelElimination": "對戰結果：{{outcome}} | 你 {{player}} - {{neko}} Neko | 投丟：你 {{playerMisses}}/{{max}} - Neko {{nekoMisses}}/{{max}} | 回合：{{rounds}} | 最後距離：{{distance}}",
+            "horse": "HORSE結果：{{outcome}} | 你 {{player}} / Neko {{neko}} | 命中：{{made}} | 最佳連中：{{best}}",
+            "timed": "限時挑戰：命中 {{made}} 球，最長連中 {{best}}，總分 {{score}}",
+            "practice": "自由練習：不記錄排行榜分數 | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 本球距離：{{distance}}",
+            "summary": "總分：{{score}} | 命中：{{made}} | 目前連中：{{streak}} | 最佳連中：{{best}} | 最遠：{{record}} | 本球距離：{{distance}}",
+            "attemptsSummary": "投籃摘要：{{summary}}",
+            "personalBest": "個人最佳：{{score}}分",
+            "globalRank": "全球排名：#{{rank}} / {{total}}",
+            "outcome": {
+                "youWin": "你贏了",
+                "nekoWin": "Neko贏了",
+                "tie": "平手",
+                "undecided": "未分勝負"
+            }
+        },
+        "leaderboard": {
+            "title": "排行榜",
+            "global": "全球",
+            "local": "本地",
+            "shooter": "操控",
+            "duel": "對戰",
+            "empty": "暫無記錄",
+            "totalPlayers": "總玩家 {{count}}",
+            "yourBest": "你的最佳 #{{rank}} / {{score}}分",
+            "recent": "最近 {{count}} 局",
+            "loading": "載入中...",
+            "mode": {
+                "shooter": "操控",
+                "duel": "對戰",
+                "timed": "限時",
+                "horse": "HORSE",
+                "spectator": "觀戰"
+            }
+        },
+        "debug": {
+            "title": "除錯面板",
+            "collapse": "收起",
+            "hide": "隱藏",
+            "distance": "距離:",
+            "power": "力度:",
+            "event": "事件:",
+            "streak": "連中:",
+            "reset": "重置",
+            "guide": "引導線",
+            "sweet": "甜區",
+            "markers": "距離刻度",
+            "readout": {
+                "modeState": "模式={{mode}}  狀態={{state}}",
+                "distance": "距離={{px}}px ({{meters}})",
+                "streaks": "連中={{streak}}  最佳={{best}}  命中={{made}}",
+                "score": "分數={{score}}  剩餘={{remaining}}/{{total}}",
+                "difficulty": "難度={{difficulty}}  心情={{mood}}  主題={{theme}}",
+                "duel": "決鬥: 你{{player}}-{{neko}} NEKO R{{round}}",
+                "horse": "HORSE: 你 {{player}} / Neko {{neko}} phase={{phase}}"
+            }
+        },
+        "stats": {
+            "title": "個人統計",
+            "close": "關閉",
+            "totalShots": "總投籃={{total}}  命中={{made}}",
+            "farRate": "300px+ 命中率={{rate}}",
+            "trend": "最近趨勢={{trend}}",
+            "none": "暫無"
+        },
+        "theme": {
+            "next": "切換主題",
+            "current": "主題：{{theme}}",
+            "changed": "主題 {{theme}}",
+            "labels": {
+                "default": "體育館",
+                "sunset": "黃昏球場",
+                "night": "夜晚燈光"
+            }
+        },
+        "court": {
+            "restrictedArc": "衝撞區",
+            "freeThrowLine": "罰球線",
+            "threePointLine": "三分線",
+            "midCourtLine": "中場線"
+        },
+        "close": "關閉",
+        "audio": {
+            "controls": "遊戲音訊"
+        },
+        "memoryOption": {
+            "label": "本局對話進入記憶（預設不開啟）",
+            "hint": "關閉後，玩家輸入、NEKO直接回應、事件回應、賽後摘要和後續銜接都不會進入或引用記憶。"
+        },
+        "table": {
+            "score": "分數",
+            "bestStreak": "最佳連中",
+            "farthest": "最遠",
+            "mode": "模式",
+            "date": "日期"
+        },
+        "state": {
+            "ready": "準備",
+            "in_flight": "飛行中",
+            "game_over": "結束",
+            "neko_thinking": "Neko思考中"
+        },
+        "toast": {
+            "difficulty": "難度 {{difficulty}}",
+            "nekoShoot": "Neko出手",
+            "nekoThinking": "Neko思考中",
+            "nekoTurn": "Neko回合",
+            "copyNeko": "復刻Neko",
+            "nekoFailed": "Neko出題失敗",
+            "yourSet": "你來出題",
+            "yourTurn": "輪到你",
+            "reset": "已重置",
+            "featureToggled": "{{feature}}已{{state}}",
+            "feature": {
+                "guide": "引導線",
+                "sweet": "力度甜區",
+                "bgm": "BGM",
+                "markers": "距離刻度"
+            },
+            "state": {
+                "on": "開啟",
+                "off": "關閉"
+            }
+        },
+        "tutorial": {
+            "aim": "上下移動滑鼠調整投籃角度",
+            "charge": "按住左鍵蓄力",
+            "release": "放開投籃！"
+        },
+        "shot": {
+            "swish": "空心",
+            "bank": "擦板",
+            "rim_in": "彈進",
+            "rim_out": "彈出",
+            "air_ball": "三不沾",
+            "unknown": "未知",
+            "attempt": "第{{index}}次 {{distance}} {{type}}"
+        },
+        "lines": {
+            "default": {
+                "swish": [
+                    "空心喵！",
+                    "這球漂亮"
+                ],
+                "bank": [
+                    "擦板也算喵",
+                    "角度不錯"
+                ],
+                "rim_in": [
+                    "彈進去了喵",
+                    "心臟停一下"
+                ],
+                "rim_out": [
+                    "差一點喵",
+                    "這都彈出來？"
+                ],
+                "air_ball": [
+                    "籃框在右邊喵",
+                    "偏太多啦"
+                ],
+                "shot_missed": [
+                    "還有機會喵",
+                    "穩一點再來"
+                ],
+                "game_over": [
+                    "再來一局？",
+                    "這次先記著"
+                ],
+                "long_aim": [
+                    "快投呀喵",
+                    "還在瞄準？"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "差一點點喵"
+                ],
+                "new_record": [
+                    "破紀錄了喵！",
+                    "這也太遠了"
+                ],
+                "streak_5": [
+                    "五連中喵！",
+                    "手感來了"
+                ],
+                "streak_10": [
+                    "十連中？！",
+                    "你是怪物喵"
+                ],
+                "streak_15": [
+                    "十五連也太誇張",
+                    "這次真穩"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合離譜喵"
+                ]
+            },
+            "shooter": {
+                "swish": [
+                    "哼，控制得還行",
+                    "這次算你準"
+                ],
+                "bank": [
+                    "擦板也算你會控",
+                    "角度還湊合"
+                ],
+                "rim_in": [
+                    "別得意，有點運氣",
+                    "差點被你控壞了"
+                ],
+                "rim_out": [
+                    "力度差一點啦",
+                    "你剛剛手抖了吧"
+                ],
+                "air_ball": [
+                    "你往哪兒瞄呢",
+                    "籃框在右邊啦"
+                ],
+                "shot_missed": [
+                    "還有機會，別亂控",
+                    "穩一點啦"
+                ],
+                "game_over": [
+                    "這操控我記下了",
+                    "下次別亂帶我投"
+                ],
+                "long_aim": [
+                    "快點啦，手痠了",
+                    "還沒瞄好嗎"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "別在這兒失手"
+                ],
+                "new_record": [
+                    "勉強算新紀錄",
+                    "你這次還挺穩"
+                ],
+                "streak_5": [
+                    "五連中，別飄",
+                    "五連中，別飄"
+                ],
+                "streak_10": [
+                    "十連中？還行吧",
+                    "十連中？還行吧"
+                ],
+                "streak_15": [
+                    "十五連？別太驕傲",
+                    "這次確實穩"
+                ],
+                "streak_20": [
+                    "二十連？你認真的？",
+                    "這局有點誇張"
+                ]
+            },
+            "duel": {
+                "swish": [
+                    "這回合我拿下了",
+                    "輪到我發力"
+                ],
+                "bank": [
+                    "擦板也算有數",
+                    "角度我記著"
+                ],
+                "rim_in": [
+                    "有點運氣吧",
+                    "差點就攔住了"
+                ],
+                "rim_out": [
+                    "差一點點而已",
+                    "這球還能再來"
+                ],
+                "air_ball": [
+                    "你這是飄哪兒去",
+                    "回合太急了吧"
+                ],
+                "shot_missed": [
+                    "下一回合補回來",
+                    "別急，繼續對戰"
+                ],
+                "game_over": [
+                    "這局我記下了",
+                    "下回再分高下"
+                ],
+                "long_aim": [
+                    "該出手了吧",
+                    "別讓回合拖太久"
+                ],
+                "close_to_record": [
+                    "快摸到紀錄了",
+                    "對戰也能衝紀錄"
+                ],
+                "new_record": [
+                    "這局破紀錄了",
+                    "節奏被你帶起來了"
+                ],
+                "streak_5": [
+                    "五連回合了",
+                    "手感開始熱了"
+                ],
+                "streak_10": [
+                    "十連？對戰認真了",
+                    "你這節奏真怪"
+                ],
+                "streak_15": [
+                    "十五連也太離譜",
+                    "這局有點壓不住"
+                ],
+                "streak_20": [
+                    "二十連？！",
+                    "這回合徹底瘋了"
+                ],
+                "clutch": "……這球必須進",
+                "excuse": [
+                    "哎，手有點痠了"
+                ]
+            },
+            "fallback": [
+                "再來一次喵"
+            ],
+            "pressure": {
+                "lastTied": "決勝球了，別眨眼",
+                "lastAhead": "哼，還沒結束呢",
+                "lastBehind": "這球拿下就贏了",
+                "playerAhead": "你還挺厲害嘛...",
+                "playerBehind": "再加把勁喵"
+            },
+            "horse": {
+                "nekoMiss": "沒復刻上？記一個 {{letters}}",
+                "playerMiss": "你也記一個 {{letters}}"
+            },
+            "mindGame": [
+                "你手在抖哦",
+                "想好再投，不急~",
+                "這個距離可不近喵"
+            ],
+            "easterEgg": {
+                "lateNight": "這麼晚了還在投籃？",
+                "xmas": "鈴鐺都掛上了，還要投喵？",
+                "newYear": "新年快樂喵",
+                "swish3": "你是不是開掛了",
+                "swish5": "……我要檢查一下籃框",
+                "airball3": "……要不你去旁邊休息一下？"
+            }
+        },
+        "mood": {
+            "happySuffix": " ♪",
+            "sadPrefix": "……",
+            "surprisedPrefix": "欸？！"
+        }
+    },
+    "drawingGuess": {
+        "title": "你畫我猜",
+        "eyebrow": "陪伴活動",
+        "subtitle": "和貓娘一起畫畫、猜圖和聊天。",
+        "status": {
+            "loadingCharacter": "正在讀取目前角色",
+            "missingCharacter": "等待角色資訊",
+            "ready": "準備好了",
+            "starting": "正在啟動遊戲路由",
+            "active": "路由已接管",
+            "ending": "正在結束",
+            "ended": "已結束",
+            "failed": "路由啟動失敗",
+            "heartbeatLost": "路由已失效"
+        },
+        "layout": {
+            "character": "角色",
+            "session": "會話",
+            "canvasTitle": "畫布",
+            "tools": "繪畫工具",
+            "canvasWaitingTitle": "畫布準備中",
+            "canvasWaiting": "開始後會先由貓娘畫，你來猜；接著你有 5 分鐘畫圖給她猜。",
+            "actions": "遊戲操作",
+            "sideResize": "調整模型和聊天區域比例",
+            "modelTitle": "貓娘在場",
+            "modelFallbackTitle": "模型槽位已預留",
+            "modelFallback": "後續會在這裡載入目前角色 Live2D 或 VRM；載入失敗時也會保留同位置 fallback。",
+            "chatTitle": "遊戲聊天"
+        },
+        "tools": {
+            "brush": "畫筆",
+            "eraser": "橡皮擦",
+            "bucket": "油漆桶",
+            "undo": "復原",
+            "redo": "重做",
+            "color": "顏色",
+            "size": "粗細",
+            "eyedropper": "取色器",
+            "basicColors": "基礎顏色",
+            "historyColors": "歷史顏色"
+        },
+        "tutorial": {
+            "title": "開始前",
+            "intro": "這一局會各畫一次、各猜一次。你可以邊畫邊聊天，畫滿 5 分鐘會自動交給她猜。",
+            "memoryTitle": "記憶選項",
+            "memoryNone": "不記錄，僅本次玩。",
+            "memorySummary": "可以記錄一句遊戲概要。",
+            "quickTitle": "簡易玩法",
+            "quickDraw": "輪到你畫時，抽一張題目牌，在畫布上畫完後點「畫好了」。",
+            "quickGuess": "輪到你猜時，在聊天框裡輸入猜測，也可以一邊聊天一邊要提示。",
+            "quickSummary": "每輪結算會保留縮圖，最終結算裡可以儲存畫作。",
+            "voiceHint": "想用語音的話，請先在主頁面開啟語音；小遊戲開始後會自動接管。"
+        },
+        "actions": {
+            "start": "開始",
+            "end": "結束",
+            "retryCharacter": "重新讀取角色",
+            "send": "送出",
+            "done": "畫好了",
+            "nextRound": "下一輪",
+            "clearCanvas": "清空畫布",
+            "saveNekoSvg": "儲存為 SVG",
+            "saveNekoPng": "儲存為 PNG",
+            "saveUserPng": "儲存我的畫"
+        },
+        "debug": {
+            "title": "除錯面板",
+            "currentCharacter": "目前頁面角色",
+            "loadingCharacters": "正在讀取角色列表",
+            "roundControls": "回合除錯",
+            "aiRound": "貓娘回合",
+            "userRound": "玩家回合",
+            "rotateRounds": "輪換回合",
+            "randomGuessPoint": "隨機猜測點",
+            "triggerAiGuess": "立即觸發貓娘猜測",
+            "locked": "鎖定",
+            "available": "可用",
+            "requestLocked": "請求鎖定中",
+            "requestUnlocked": "未鎖定",
+            "waitingForChat": "等待聊天結束",
+            "guessing": "猜測中",
+            "attemptsExhausted": "次數已用完",
+            "notScheduled": "未安排",
+            "switchedCharacter": "除錯：已切換為 {{name}}。",
+            "switchedCharacterContinue": "除錯：已切換為 {{name}}，繼續目前測試回合。",
+            "holdAiRound": "除錯：保持貓娘回合，準備下一題。",
+            "wordPoolsStatus": "詞庫狀態",
+            "wordPool1": "詞庫 1",
+            "wordPool2": "詞庫 2",
+            "requestLock": "請求鎖"
+        },
+        "voice": {
+            "connected": "語音已接入這一局。",
+            "connectHint": "先在主頁面開啟語音，這一局會自動接管。",
+            "connectedNotice": "主頁面語音已接入這一局。",
+            "connectHintNotice": "請先在主頁面開啟語音；開啟後這一局會自動接管。",
+            "routeNotReady": "先等遊戲路由準備好，再使用語音。",
+            "buttonLabel": "語音聊天"
+        },
+        "exitConfirm": {
+            "title": "要離開嗎？",
+            "message": "最終結算已經整理好了。要離開這個小遊戲頁面嗎？",
+            "stay": "待會",
+            "leave": "離開頁面",
+            "reopen": "離開？"
+        },
+        "memory": {
+            "noneShort": "不記錄",
+            "summaryShort": "概要"
+        },
+        "phases": {
+            "tutorial": "教學",
+            "loading_round": "載入中",
+            "ended": "已結束",
+            "ai_drawing": "貓娘作畫中",
+            "user_guessing": "你來猜",
+            "drawing_pick": "抽題中",
+            "user_drawing": "你來畫",
+            "ai_guessing": "貓娘猜圖中",
+            "ai_guess_feedback": "給她提示",
+            "summary": "結算",
+            "final_summary": "最終結算"
+        },
+        "modelStates": {
+            "loading": "模型載入中",
+            "idle": "待機中",
+            "drawing": "畫畫中",
+            "thinking": "思考中",
+            "guessing": "猜圖中",
+            "talking": "聊天中",
+            "happy": "開心中"
+        },
+        "modelControls": {
+            "group": "模型視圖調整",
+            "scale": "模型大小",
+            "x": "水平位置",
+            "y": "垂直位置",
+            "reset": "重置模型視圖"
+        },
+        "messages": {
+            "welcome": "準備好後，我們會先確認目前角色並接管小遊戲路由。",
+            "missingCharacter": "請帶角色開啟這個頁面，或先讀取目前角色。",
+            "startFailed": "路由啟動失敗：{{reason}}",
+            "routeActive": "{{name}} 的遊戲路由已接管。",
+            "roundStart": "新一輪開始。",
+            "aiDrawingReady": "她畫好了，輪到你猜。",
+            "roundFailed": "這一輪啟動失敗：{{reason}}",
+            "requestTimeout": "請求逾時了，再試一次吧。",
+            "guessTimeout": "時間到，答案是 {{answer}}。",
+            "inputFailed": "這句話沒送到，再試一次。",
+            "answerReveal": "答案：{{answer}}",
+            "drawingPickTitle": "抽取題目中",
+            "drawingPickSubtitle": "先別動筆，她正在從牌庫裡抽幾張題目牌。",
+            "drawingPickReady": "選一張題目牌來畫。",
+            "drawingPickReveal": "已選：{{answer}}",
+            "userDrawPrompt": "你的題目是：{{answer}}。畫給她猜吧。",
+            "blankCanvas": "先給她畫幾筆吧。",
+            "aiDrawingWaiting": "貓娘正在繪畫中",
+            "aiGuessing": "她正在看你的畫...",
+            "aiGuessLine": "她猜：{{guess}}",
+            "aiGuessCorrect": "她猜對了。",
+            "aiGuessWrong": "沒猜中。",
+            "aiGuessMissAnswer": "她沒猜中。答案：{{answer}}",
+            "aiNeedsHint": "可以先繼續聊天；想讓她再猜時再給提示。",
+            "summaryReady": "結算頁準備好了。",
+            "canvasCleared": "畫布已清空。",
+            "userSupplemented": "你補畫好了，她會立刻再猜一次。"
+        },
+        "input": {
+            "placeholder": "先等路由準備好",
+            "guessPlaceholder": "輸入你的猜測，或者要一個提示",
+            "drawingPlaceholder": "畫畫時也可以聊天",
+            "hintPlaceholder": "先繼續聊天；想讓她再猜時再給提示",
+            "summaryPlaceholder": "可以聊聊這一局，或者開始下一輪",
+            "ariaLabel": "聊天輸入框"
+        },
+        "timer": {
+            "seconds": "{{seconds}} 秒"
+        },
+        "summary": {
+            "title": "本輪結算",
+            "outcome": {
+                "userWin": "你贏啦，但這局重點是一起玩。",
+                "nekoWin": "她贏啦，可以允許她小小得意一下。",
+                "tie": "平手，剛好很適合再來一輪。"
+            },
+            "score": "你 {{user}} - {{neko}} 貓娘",
+            "userDrawAnswer": "你的畫題：{{answer}}",
+            "nekoArt": "貓娘畫作",
+            "userArt": "你的畫作",
+            "finalTitle": "最終結算",
+            "roundLabel": "第 {{round}} 輪",
+            "noRounds": "還沒有完成的輪次。"
+        }
     }
 }

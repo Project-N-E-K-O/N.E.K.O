@@ -2202,6 +2202,7 @@ class LifecycleMixin:
         )
         if not tts_replaced_by_new_session:
             self._reset_tts_retry_state()
+            self._speech_primary_suppressed_ids.clear()
         
         # 重置输入缓存状态
         async with self.input_cache_lock:
