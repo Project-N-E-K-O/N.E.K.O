@@ -322,7 +322,9 @@ def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
+    paths = set()
+    for module_path, _ in _agent_server_package_sources():
+        paths.update(_route_paths_from_decorators(str(module_path), "app"))
     for expected in {
         "/health",
         "/agent/flags",
