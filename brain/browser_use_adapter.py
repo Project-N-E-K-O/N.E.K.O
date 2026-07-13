@@ -512,7 +512,8 @@ class BrowserUseAdapter:
         api_cfg = self._config_manager.get_model_api_config("agent")
         model = api_cfg.get("model", "") or ""
         base_url = api_cfg.get("base_url", "") or ""
-        return f"{base_url}|{model}"
+        provider_type = str(api_cfg.get("provider_type") or "openai_compatible").strip().lower()
+        return f"{provider_type}|{base_url}|{model}"
 
     def _get_mode_order(self, api_sig: str) -> List[str]:
         with _API_MODE_CACHE_LOCK:
@@ -595,17 +596,40 @@ class BrowserUseAdapter:
         ))
 
     def _build_llm(self, mode: str = "schema") -> Any:
-        """Build a browser-use compatible ChatOpenAI instance.
+        """Build a browser-use client matching the configured wire protocol.
 
         For Gemini-compatible endpoints, strips parameters that the API
         rejects (``frequency_penalty``, ``seed``, ``service_tier``).
         A thin wrapper class is used so the constraint survives any
         internal copy / re-init performed by browser-use.
         """
-        from browser_use.llm import ChatOpenAI as BUChatOpenAI
+        from utils.llm_client import (
+            _is_anthropic_endpoint,
+            _is_kimi_code_anthropic_base_url,
+            _normalize_anthropic_sdk_base_url,
+        )
+
         api_cfg = self._config_manager.get_model_api_config("agent")
         base_url = api_cfg.get("base_url", "") or ""
         model = api_cfg.get("model", "") or ""
+        provider_type = str(api_cfg.get("provider_type") or "openai_compatible").strip().lower()
+
+        if _is_anthropic_endpoint(base_url, provider_type):
+            from browser_use.llm import ChatAnthropic as BUChatAnthropic
+
+            default_headers: Dict[str, str] = {}
+            if _is_kimi_code_anthropic_base_url(base_url):
+                default_headers["User-Agent"] = "claude-code/0.1.0"
+            return BUChatAnthropic(
+                model=model,
+                api_key=api_cfg.get("api_key"),
+                base_url=_normalize_anthropic_sdk_base_url(base_url),
+                temperature=0.0,
+                default_headers=default_headers or None,
+            )
+
+        from browser_use.llm import ChatOpenAI as BUChatOpenAI
+
         is_gemini = self._is_gemini_compatible_endpoint(base_url)
         kwargs: Dict[str, Any] = dict(
             model=model,

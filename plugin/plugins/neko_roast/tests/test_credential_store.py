@@ -110,3 +110,38 @@ async def test_credential_save_marks_missing_audit_identity_as_unidentified(tmp_
 def test_invalid_credential_namespace_is_rejected(tmp_path):
     with pytest.raises(ValueError):
         CredentialStore(_FakePlugin(tmp_path), namespace="bili!!")
+
+
+@pytest.mark.asyncio
+async def test_credential_store_namespace_keeps_douyin_cookie_separate(tmp_path):
+    pytest.importorskip("cryptography")
+    store = CredentialStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        namespace="douyin",
+        fields=("cookie", "uid", "nickname", "saved_at"),
+    )
+
+    ok = await store.save(
+        {
+            "cookie": "ttwid=secret-cookie; odin_tt=hidden",
+            "uid": "42",
+            "nickname": "dy-user",
+            "saved_at": "now",
+            "SESSDATA": "drop-me",
+        }
+    )
+
+    assert ok is True
+    assert store.has_credential() is True
+    assert (tmp_path / "douyin_credential.enc").exists()
+    assert (tmp_path / "douyin_credential.key").exists()
+    assert not (tmp_path / "bili_credential.enc").exists()
+    data = await store.load()
+    assert data == {
+        "cookie": "ttwid=secret-cookie; odin_tt=hidden",
+        "uid": "42",
+        "nickname": "dy-user",
+        "saved_at": "now",
+    }
+    assert b"secret-cookie" not in (tmp_path / "douyin_credential.enc").read_bytes()

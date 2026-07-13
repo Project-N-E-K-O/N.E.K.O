@@ -168,21 +168,18 @@ Live2DManager.prototype.recordInitialParameters = function() {
 
 // 清除expression到默认状态（使用保存的初始参数）
 Live2DManager.prototype.clearExpression = function() {
-    // 取消正在进行的平滑过渡和手动表情覆盖
+    const activeExpressionParamIds = this._activeExpressionParamIds
+        && typeof this._activeExpressionParamIds.forEach === 'function'
+        ? new Set(Array.from(this._activeExpressionParamIds))
+        : null;
+    // 必须先保存受影响参数，再取消正在进行的平滑过渡和手动表情覆盖。
     this._cancelSmoothReset();
     this._removeManualExpressionOverride();
-    this._activeExpressionParamIds = null;
 
     try {
         if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            this._activeExpressionParamIds = null;
             console.warn('无法清除expression：模型未加载');
-            return;
-        }
-
-        // 检查初始参数是否存在，如果不存在则视为硬错误
-        if (!this.initialParameters || Object.keys(this.initialParameters).length === 0) {
-            console.error('严重错误：未找到初始参数记录！expression清除失败。');
-            console.error('请确保在模型加载完成后立即调用recordInitialParameters()初始化参数基准');
             return;
         }
 
@@ -195,41 +192,20 @@ Live2DManager.prototype.clearExpression = function() {
             }
         }
 
-        const coreModel = this.currentModel.internalModel.coreModel;
-        console.log(`开始重置expression到初始状态，共${Object.keys(this.initialParameters).length}个参数`);
-        
-        // 创建可折叠的参数重置详情日志（默认折叠状态）
-        console.groupCollapsed(`参数重置详情 (${Object.keys(this.initialParameters).length}个参数)`);
-        
-        // 重置所有记录的初始参数
-        for (const [paramId, initialValue] of Object.entries(this.initialParameters)) {
-            try {
-                if (paramId.startsWith('param_')) {
-                    // 如果是使用索引作为参数名的情况，提取索引
-                    const paramIndex = parseInt(paramId.substring(6));
-                    if (!isNaN(paramIndex)) {
-                        coreModel.setParameterValueByIndex(paramIndex, initialValue);
-                        console.log(`使用索引重置参数 ${paramId} (索引${paramIndex}) = ${initialValue}`);
-                    } else {
-                        console.warn(`无效的参数索引: ${paramId}`);
-                    }
-                } else {
-                    // 正常使用参数ID重置
-                    coreModel.setParameterValueById(paramId, initialValue);
-                    console.log(`重置参数 ${paramId} = ${initialValue}`);
-                }
-            } catch (e) {
-                console.warn(`重置参数 ${paramId} 失败:`, e);
-            }
+        this._activeExpressionParamIds = null;
+        if (activeExpressionParamIds && activeExpressionParamIds.size > 0) {
+            const resetCount = this._resetRecordedParameterIds(activeExpressionParamIds, {
+                preserveExpression: false
+            });
+            console.log(`expression已恢复${resetCount}个受影响参数到用户外观基准`);
+        } else {
+            const resetCount = this._resetParametersToInitialState({ preserveExpression: false });
+            console.log(`expression参数列表不可用，已降级恢复${resetCount}个参数到外观基准`);
         }
-        
-        // 结束可折叠日志组
-        console.groupEnd();
-        
-        console.log('expression已使用初始参数重置');
 
     } catch (error) {
         console.warn('expression重置失败:', error);
+        this._activeExpressionParamIds = null;
     }
 
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉

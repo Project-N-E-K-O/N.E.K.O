@@ -8854,12 +8854,14 @@ const AvatarButtonMixin = {
 
             this._returnButtonDragHandlers = {
                 mouseMove: (e) => {
-                    const point = getDragPoint(e, e.clientX, e.clientY);
-                    if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {
+                    // document 级 handler：非拖拽期直接返回，避免全页面鼠标移动白算坐标
+                    if (!isDragging) return;
+                    if (dragPointerType === 'mouse' && e.buttons === 0) {
                         handleEnd();
                         return;
                     }
-                    handleMove(point.x, point.y, e);
+                    const point = getDragPoint(e, e.clientX, e.clientY);
+                    handleMove(point.x, point.y, e, point);
                 },
                 mouseUp: handleEnd,
                 touchMove: (e) => {

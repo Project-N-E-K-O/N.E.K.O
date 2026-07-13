@@ -1,9 +1,9 @@
 from pathlib import Path
 
 
-APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app-character.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
-APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app-ui.js"
+APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-character.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js"
+APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-ui.js"
 INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 
 

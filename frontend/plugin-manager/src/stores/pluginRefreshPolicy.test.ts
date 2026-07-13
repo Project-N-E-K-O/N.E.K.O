@@ -14,8 +14,6 @@ vi.mock('@/api/plugins', () => ({
   startPlugin: vi.fn(),
   stopPlugin: vi.fn(),
   reloadPlugin: vi.fn(),
-  disableExtension: vi.fn(),
-  enableExtension: vi.fn(),
   refreshPluginsRegistry: vi.fn(),
 }))
 

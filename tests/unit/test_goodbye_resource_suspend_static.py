@@ -6,16 +6,16 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APP_AGENT_PATH = REPO_ROOT / "static" / "app-agent.js"
-APP_UI_PATH = REPO_ROOT / "static" / "app-ui.js"
-APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
+APP_AGENT_PATH = REPO_ROOT / "static" / "app" / "app-agent.js"
+APP_UI_PATH = REPO_ROOT / "static" / "app" / "app-ui.js"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
 AGENTHUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
 PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
 PLUGIN_METRICS_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "stores" / "metrics.ts"
-SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def _read(path: Path) -> str:

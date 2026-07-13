@@ -1186,7 +1186,7 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/libs/driver.min.js" in tracked_paths
     assert "static/libs/driver.min.css" in tracked_paths
     assert "static/live2d/live2d-init.js" in tracked_paths
-    assert "static/app-interpage.js" in tracked_paths
+    assert "static/app/app-interpage.js" in tracked_paths
     assert "static/live2d/live2d-interaction.js" in tracked_paths
 
 
@@ -1236,16 +1236,16 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     react_assets = (
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
-        "/static/app-buttons.js",
+        "/static/app/app-react-chat-window.js",
+        "/static/app/app-chat-adapter.js",
+        "/static/app/app-buttons.js",
     )
 
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
-        assert "/static/app-interpage.js?v={{ static_asset_version }}" in source
-        assert "/static/app-interpage.js?v={{ react_chat_asset_version }}" not in source
+        assert "/static/app/app-interpage.js?v={{ static_asset_version }}" in source
+        assert "/static/app/app-interpage.js?v={{ react_chat_asset_version }}" not in source
         for asset_path in react_assets:
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source
@@ -1259,9 +1259,9 @@ def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
         "static/icons/chat_sugar1.png",
         "static/icons/cat_claw1.png",
         "static/icons/chat_hammer1.png",
-        "static/app-react-chat-window.js",
-        "static/app-chat-adapter.js",
-        "static/app-buttons.js",
+        "static/app/app-react-chat-window.js",
+        "static/app/app-chat-adapter.js",
+        "static/app/app-buttons.js",
     ):
         assert f'_PROJECT_ROOT / "{asset_path}"' in source
 
@@ -1428,8 +1428,8 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
-    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
-    app_ui_source = Path("static/app-ui.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
+    app_ui_source = Path("static/app/app-ui.js").read_text(encoding="utf-8")
     live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
     live2d_model_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
@@ -1778,7 +1778,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
 
 
 def test_tutorial_temporary_model_reload_bootstraps_live2d_manager_without_user_model_init():
-    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
     live2d_branch = interpage_source.split("if (newModelPath) {", 1)[1].split(
         "// Load the new model",
         1,
@@ -3555,7 +3555,7 @@ def test_agent_ui_v2_keeps_agent_status_short_during_tutorial():
 def test_agent_popup_state_sync_includes_pngtuber_prefix():
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     ui_v2_source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
-    legacy_source = Path("static/app-agent.js").read_text(encoding="utf-8")
+    legacy_source = Path("static/app/app-agent.js").read_text(encoding="utf-8")
 
     assert "const avatarPrefix = this && typeof this._avatarPrefix === 'string'" in hud_source
     assert "statusDiv.id = `${avatarPrefix}-agent-status`;" in hud_source

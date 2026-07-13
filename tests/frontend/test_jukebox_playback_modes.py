@@ -6,8 +6,8 @@ from playwright.sync_api import Page
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "Jukebox.js").read_text(encoding="utf-8")
-JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox-loader.js").read_text(encoding="utf-8")
+JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-loader.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 
 HARNESS_HTML = """

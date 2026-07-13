@@ -16,6 +16,8 @@ on:
       - 'main_logic/card_forge_facts.py'
       - 'tests/unit/test_card_drop_session_facts.py'
       - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       # Dependency changes alter the plugin test/runtime environment (e.g.
       # removing a dev dep plugin/tests needs) — without these a deps-only
@@ -32,6 +34,8 @@ on:
       - 'main_logic/card_forge_facts.py'
       - 'tests/unit/test_card_drop_session_facts.py'
       - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_plugin_sdk_packaging.py'
+      - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -71,7 +75,7 @@ jobs:
 
       - name: Install dependencies
         # Plain `uv sync` = main deps + dev group (pytest, pytest-asyncio,
-        # hypothesis). The galgame group (rapidocr + cv2, ~130 MB) is NOT
+        # hypothesis, PyInstaller). The galgame group (rapidocr + cv2, ~130 MB) is NOT
         # installed — the plugin degrades its OCR backend gracefully and the
         # affected tests mock or skip that cohort.
         run: uv sync
@@ -83,15 +87,13 @@ jobs:
         # collected too.
         run: uv run pytest plugin/tests -q
 
-      - name: Run avatar static contract tests
+      - name: Run repository contract tests
         # Keep this in a separate pytest process so plugin/tests continues to
-        # use its own pytest.ini while repo-root static contracts are still
-        # covered by CI.
-        run: uv run pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q
-
-      - name: Run card-drop desktop contracts
-        run: >-
+        # use its own pytest.ini while repo-root contracts are still covered.
+        run: >
           uv run pytest
+          tests/unit/test_avatar_return_button_idle_tiers_static.py
+          tests/unit/test_plugin_sdk_packaging.py
           tests/unit/test_card_drop_session_facts.py
           tests/unit/test_card_drop_steam_pkce.py
           -q

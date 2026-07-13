@@ -30,8 +30,8 @@ def test_bundled_legacy_seed_validates_with_quality_gaps() -> None:
     result = validate_knowledge_seed_manifest(seed)
 
     assert result.is_valid
-    assert len(result.topics) == 127
-    assert result.report["schema_ready_topics"] == 0
+    assert len(result.topics) == 457
+    assert result.report["schema_ready_topics"] == len(result.topics)
 
 
 def test_compact_confusion_labels_use_related_topic_label() -> None:

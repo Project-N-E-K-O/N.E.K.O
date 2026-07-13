@@ -16,7 +16,7 @@ ROUND_PRELUDE_CONTROLLER_PATH = (
 )
 YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/common.js"
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
-APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-audio-capture.js"
+APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 APP_PROMPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/app-prompt.js"
 AVATAR_FLOATING_BOOT_PREDICTOR_PATH = (
@@ -696,7 +696,7 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
 def test_tutorial_live2d_preparing_hides_model_side_controls():
     repo_root = Path(__file__).resolve().parents[2]
     css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
-    app_ui_source = (repo_root / "static/app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = (repo_root / "static/app/app-ui.js").read_text(encoding="utf-8")
     live2d_buttons_source = (repo_root / "static/live2d/live2d-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = _read_manager()
     reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")

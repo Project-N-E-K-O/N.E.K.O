@@ -4,7 +4,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
 
 

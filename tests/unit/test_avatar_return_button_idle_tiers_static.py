@@ -7,9 +7,9 @@ from main_routers import pages_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
 COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm" / "vrm-ui-buttons.js"
@@ -2125,10 +2125,19 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
     _assert_source_order(
         mouse_move_block,
         "local return-ball lost mouseup recovery",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
-        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (!isDragging) return;",
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
-        "handleMove(point.x, point.y, e);",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "handleMove(point.x, point.y, e, point);",
+    )
+    _assert_source_contains(
+        mouse_move_block,
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "                        handleEnd();\n"
+        "                        return;\n"
+        "                    }",
+        "local return-ball lost mouseup recovery ends drag without moving",
     )
     _assert_source_order(
         drag_setup,
@@ -2452,7 +2461,7 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
     )
     _assert_source_contains(
         local_drag_setup,
-        "handleMove(point.x, point.y, e);",
+        "handleMove(point.x, point.y, e, point);",
         "return button drag setup",
     )
     _assert_source_contains(
@@ -3044,7 +3053,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
 def test_cat1_walk_to_minimized_chat_contract_is_present():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app" / "app-ui.js").read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
@@ -3168,7 +3177,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "_isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in minimized_state_block
     assert "_isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in minimized_state_block
     assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
-    react_chat_source = (PROJECT_ROOT / "static" / "app-react-chat-window.js").read_text(encoding="utf-8")
+    react_chat_source = (PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js").read_text(encoding="utf-8")
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source
@@ -3412,10 +3421,19 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_order(
         mouse_move_block,
         "local return-ball mousemove recovers released mouse before moving",
-        "const point = getDragPoint(e, e.clientX, e.clientY);",
-        "if (isDragging && dragPointerType === 'mouse' && e.buttons === 0) {",
+        "if (!isDragging) return;",
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {",
         "handleEnd();",
-        "handleMove(point.x, point.y, e);",
+        "const point = getDragPoint(e, e.clientX, e.clientY);",
+        "handleMove(point.x, point.y, e, point);",
+    )
+    _assert_source_contains(
+        mouse_move_block,
+        "if (dragPointerType === 'mouse' && e.buttons === 0) {\n"
+        "                        handleEnd();\n"
+        "                        return;\n"
+        "                    }",
+        "local return-ball mousemove ends released drag without moving",
     )
     finish_drag_state_block = _source_slice_between(
         drag_setup,

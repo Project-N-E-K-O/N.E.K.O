@@ -286,17 +286,13 @@ export default {
     autoStart: 'Início automático',
     manualStart: 'Início manual',
     fetchFailed: 'Falha ao obter os plugins',
-    extension: 'Extensão',
     pluginType: 'Tipo',
     pluginTypeNormal: 'Plugin',
     hostPlugin: 'Plugin hospedeiro',
-    boundExtensions: 'Extensões vinculadas',
     pluginsSection: 'Plugins',
     adaptersSection: 'Adaptadores',
-    extensionsSection: 'Extensões',
     typePlugin: 'Plugin',
     typeAdapter: 'Adaptador',
-    typeExtension: 'Extensão',
     layoutList: 'Lista',
     layoutSingle: 'Coluna única',
     layoutDouble: 'Duas colunas',
@@ -345,13 +341,10 @@ export default {
       auto: 'Início automático',
       plugin: 'Plugin',
       adapter: 'Adaptador',
-      extension: 'Extensão',
       ui: 'Com UI',
       entries: 'Com pontos de entrada',
-      host: 'Com hospedeiro',
       name: 'Por nome',
       id: 'Por ID',
-      hostTarget: 'Por hospedeiro',
       version: 'Por versão',
       entry: 'Por ponto de entrada',
       author: 'Por autor'
@@ -363,8 +356,6 @@ export default {
     },
     build: 'Empacotar plugin',
     delete: 'Excluir plugin',
-    disableExtension: 'Desabilitar extensão',
-    enableExtension: 'Habilitar extensão',
     dangerDialog: {
       title: 'Confirmar ação destrutiva',
       warningTitle: 'Esta ação não pode ser desfeita',
@@ -553,7 +544,6 @@ export default {
     loadFailed: 'Falha no carregamento',
     loading: 'Carregando',
     disabled: 'Desabilitado',
-    injected: 'Injetado',
     pending: 'Hospedeiro pendente'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: 'Falha ao empacotar plugin',
     deleteFailed: 'Falha ao excluir plugin',
     pluginLoadFailed: 'O plugin falhou ao carregar e não pode ser iniciado.',
-    confirmDisableExt: 'Desabilitar esta extensão? Sua funcionalidade será descarregada do plugin hospedeiro.',
-    extensionDisabled: 'Extensão desabilitada',
-    extensionEnabled: 'Extensão habilitada',
-    disableExtFailed: 'Falha ao desabilitar a extensão',
-    enableExtFailed: 'Falha ao habilitar a extensão',
     requestFailed: 'Falha na solicitação',
     requestFailedWithStatus: 'Falha na solicitação ({status})',
     badRequest: 'Parâmetros de solicitação inválidos',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: 'Área de plugins',
-        body: 'Aqui ficam plugins, adaptadores e extensões para a gestão do dia a dia.'
+        body: 'Aqui ficam plugins e adaptadores para a gestão do dia a dia.'
       },
       pluginFilters: {
         title: 'Busca e filtros',

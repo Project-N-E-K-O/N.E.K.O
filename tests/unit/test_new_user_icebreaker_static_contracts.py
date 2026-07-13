@@ -12,12 +12,12 @@ ICEBREAKER_FREE_TEXT_RUNTIME_PATH = ROOT / "static" / "tutorial" / "icebreaker" 
 SCRIPTS_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "icebreaker_scripts.json"
 LOCALE_PATH = ROOT / "static" / "tutorial" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "tutorial" / "icebreaker" / "locales"
-CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
-APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
-APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
+CHAT_HOST_PATH = ROOT / "static" / "app" / "app-react-chat-window.js"
+APP_WEBSOCKET_PATH = ROOT / "static" / "app" / "app-websocket.js"
+APP_PROACTIVE_PATH = ROOT / "static" / "app" / "app-proactive.js"
 APP_PROMPT_PATH = ROOT / "static" / "tutorial" / "core" / "app-prompt.js"
 UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "tutorial" / "core" / "universal-manager.js"
-APP_INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
+APP_INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage.js"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_DIR = ROOT / "main_routers" / "game_router"
@@ -25,7 +25,7 @@ ICEBREAKER_ROUTER_PATH = ROOT / "main_routers" / "icebreaker_router.py"
 ICEBREAKER_PROMPTS_PATH = ROOT / "config" / "prompts" / "prompts_icebreaker.py"
 ICEBREAKER_FREE_TEXT_UTILS_PATH = ROOT / "utils" / "icebreaker_free_text.py"
 LIVE2D_CORE_PATH = ROOT / "static" / "live2d" / "live2d-core.js"
-SUBTITLE_PATH = ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def assert_icebreaker_script_has_voice_keys_for_every_spoken_line(day_key: str):
@@ -1082,7 +1082,7 @@ def test_avatar_floating_angry_exit_skip_event_preserves_raw_end_state():
 
 def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (ROOT / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "broadcastIcebreakerAppendMessage" in runtime
     assert "broadcastIcebreakerChoicePrompt" in runtime
@@ -1127,7 +1127,7 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
 
 def test_icebreaker_desktop_bridge_has_storage_fallback():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (ROOT / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
     assert "localStorage.setItem(ICEBREAKER_BRIDGE_STORAGE_KEY" in runtime
@@ -1165,7 +1165,7 @@ def test_icebreaker_page_exit_clears_choice_prompt_before_route_end():
 
 def test_yui_guide_chat_bridge_has_storage_queue_fallback():
     director = (ROOT / "static" / "tutorial" / "yui-guide" / "director.js").read_text(encoding="utf-8")
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (ROOT / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in director
     assert "enqueueYuiGuideChatBridgeMessage" in director
@@ -1185,7 +1185,7 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
 
 
 def test_yui_guide_native_relay_uses_defined_chat_helpers():
-    interpage = (ROOT / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (ROOT / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
     relay_block = interpage.split("function handleYuiGuideRelayedMessage(message)", 1)[1].split(
         "yuiGuideInterpageResources.addEventListener(window, 'neko:tutorial-overlay-relay'",
         1,
@@ -1497,13 +1497,13 @@ def test_react_chat_assets_use_react_chat_cache_version():
     react_chat_assets = [
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app-react-chat-window.js",
-        "/static/app-chat-adapter.js",
-        "/static/app-buttons.js",
+        "/static/app/app-react-chat-window.js",
+        "/static/app/app-chat-adapter.js",
+        "/static/app/app-buttons.js",
     ]
 
     for asset in react_chat_assets:
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in index_html
         assert f'{asset}?v={{{{ react_chat_asset_version }}}}' in chat_html
 
-    assert pages_router.count('_PROJECT_ROOT / "static/app-interpage.js"') == 1
+    assert pages_router.count('_PROJECT_ROOT / "static/app/app-interpage.js"') == 1

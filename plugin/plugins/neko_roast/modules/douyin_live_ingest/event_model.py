@@ -32,6 +32,21 @@ _EVENT_TYPE_ALIASES = {
 _TEXT_FIELD_LIMIT = 2048
 _INT_FIELDS = {"gift_count", "gift_value"}
 _UID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_SENSITIVE_UID_MARKERS = {
+    "authorization",
+    "cookie",
+    "odin_tt",
+    "sessionid",
+    "sessionid_ss",
+    "sid_tt",
+    "sign",
+    "signature",
+    "token",
+    "ttwid",
+    "uid_tt",
+    "webcast_sign",
+    "x-tt-token",
+}
 
 
 @dataclass(slots=True)
@@ -149,7 +164,7 @@ def platform_uid(value: Any) -> str:
     if not raw:
         return ""
     stable_id = raw.removeprefix("douyin:")
-    if not _UID_RE.match(stable_id):
+    if stable_id.lower() in _SENSITIVE_UID_MARKERS or not _UID_RE.match(stable_id):
         return ""
     return f"douyin:{stable_id}"
 

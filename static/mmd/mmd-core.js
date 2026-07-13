@@ -427,7 +427,7 @@ class MMDCore {
 
     // ═══════════════════ 模型加载 ═══════════════════
 
-    async loadModel(modelUrl, options = {}) {
+    async loadModel(modelUrl, options = {}, managerLoadToken = null) {
         const THREE = window.THREE;
         if (!THREE) {
             throw new Error('Three.js 库未加载，无法加载 MMD 模型');
@@ -437,9 +437,27 @@ class MMDCore {
             throw new Error(`MMD 模型路径无效: ${modelUrl}`);
         }
 
+        // 加载令牌由 mmd-manager.js 分配并传入；未传时回退读当前值（等价旧行为）。
+        // 必须在首个 await 之前确定：旧实现在模块导入 await 之后才读当前值，悬挂期间
+        // 若有新调用进入会误拿新调用的 token，使下方的取代检查失效（幽灵模型叠加）。
+        const loadToken = managerLoadToken !== null ? managerLoadToken : this.manager._activeLoadToken;
+
+        // 已被更新的加载取代（如失败回退路径迟到）：在触碰 currentModel 之前退出，
+        // 避免把新调用刚装好的模型 _clearModel 掉
+        if (this.manager._activeLoadToken !== loadToken) {
+            console.log('[MMD Core] 模型加载已被取代（进入时），跳过');
+            return null;
+        }
+
         const mmdModule = await this._getMMDModule();
         if (!mmdModule) {
             throw new Error('three-mmd 模块加载失败');
+        }
+
+        // 模块导入悬挂期间同样可能被取代：同上，先于 _clearModel 检查
+        if (this.manager._activeLoadToken !== loadToken) {
+            console.log('[MMD Core] 模型加载已被取代（模块导入后），跳过');
+            return null;
         }
 
         const { MMDLoader } = mmdModule;
@@ -476,9 +494,6 @@ class MMDCore {
         if (this.manager.currentModel) {
             this._clearModel();
         }
-
-        // 加载令牌由 mmd-manager.js 管理，此处仅读取当前值用于竞态检查
-        const loadToken = this.manager._activeLoadToken;
 
         try {
             // MMDLoader.load 返回 MMD 对象

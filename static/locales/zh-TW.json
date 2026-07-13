@@ -4761,6 +4761,19 @@
             "send": "送出",
             "voiceStatusHidden": "除錯 STT：隱藏"
         },
+        "surrenderReminder": {
+            "label": "認輸提醒"
+        },
+        "exitPrompt": {
+            "continuePlay": "繼續玩",
+            "endGame": "結束遊戲",
+            "stayLonger": "再陪一會",
+            "rest": "休息",
+            "neverAgain": "不再提示",
+            "neverAgainNote": "以後不再自動彈出貓娘認輸或休息提示。可在右上角重新開啟「認輸提醒」。如果貓娘情緒低落，可以用語音或文字哄哄她。",
+            "surrenderFallback": "喵..認輸喵...",
+            "restFallback": "喵...有點累了，想先安靜一會。"
+        },
         "debug": {
             "mouse": "滑鼠：{{x}}, {{y}}",
             "playerCenter": "玩家中心：{{x}}, {{y}}",

@@ -37,10 +37,8 @@
         :layout-mode="layoutMode"
         :plugin-count="pluginCount"
         :adapter-count="adapterCount"
-        :extension-count="extensionCount"
         :filtered-pure-plugins="filteredPurePlugins"
         :filtered-adapters="filteredAdapters"
-        :filtered-extensions="filteredExtensions"
         :selected-plugin-ids="selectedPluginIds"
         @refresh="refreshPluginSources"
         @select-all-visible="selectAllVisible"
@@ -298,10 +296,8 @@ const {
   selectablePlugins,
   pluginCount,
   adapterCount,
-  extensionCount,
   filteredPurePlugins,
   filteredAdapters,
-  filteredExtensions,
   selectedPluginIds,
   resolvedBuildTargets,
   filteredLocalPackages,

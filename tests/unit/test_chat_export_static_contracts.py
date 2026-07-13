@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CHAT_EXPORT_JS = PROJECT_ROOT / "static" / "app-chat-export.js"
+CHAT_EXPORT_JS = PROJECT_ROOT / "static" / "app" / "app-chat-export.js"
 
 
 def test_export_preview_waits_for_shell_before_rewriting_document():

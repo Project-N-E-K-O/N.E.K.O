@@ -511,6 +511,7 @@ async def publish_analyze_request_reliably(
     retries: int = 1,
     conversation_id: Optional[str] = None,
     external_intent: Optional[float] = None,
+    proactive: bool = False,
 ) -> bool:
     """Reliably publish analyze_request: carries event_id + ack, with short retries.
 
@@ -519,6 +520,10 @@ async def publish_analyze_request_reliably(
     payload so the agent can cheaply decide whether to skip its expensive
     assessment. ``None`` (reading unavailable / no usable signal) is omitted from
     the event → the agent gate fails open (runs the assessment).
+
+    ``proactive`` marks a self-initiated (no fresh user input) turn. The agent
+    routes these through a separate throttled path instead of the user-turn
+    dedupe; omitted (not set) for ordinary user turns.
     """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
@@ -536,6 +541,10 @@ async def publish_analyze_request_reliably(
         # Only an optimization hint; omitted when None so the agent fails open.
         if external_intent is not None:
             event["external_intent"] = external_intent
+        # Self-initiated turn marker; omitted for ordinary user turns so the
+        # agent's user-turn path is byte-for-byte unchanged when disabled.
+        if proactive:
+            event["proactive"] = True
 
         loop = asyncio.get_running_loop()
         waiter: asyncio.Future = loop.create_future()

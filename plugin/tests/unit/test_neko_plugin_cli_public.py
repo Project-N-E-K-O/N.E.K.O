@@ -6,7 +6,13 @@ import zipfile
 
 import pytest
 
-from plugin.neko_plugin_cli.public import inspect_package, build_bundle, build_plugin, install_package
+from plugin.neko_plugin_cli.public import (
+    build_bundle,
+    build_plugin,
+    inspect_package,
+    install_package,
+    unpack_package,
+)
 from plugin.neko_plugin_cli.public.build_rules import BuildRuleSet, should_skip_path
 
 pytestmark = pytest.mark.plugin_unit
@@ -414,6 +420,74 @@ def test_inspect_package_fails_when_plugin_toml_is_missing(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="plugin.toml"):
         inspect_package(package_path)
+
+
+def test_inspect_package_rejects_removed_script_plugin_type(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        inspect_package(package_path)
+
+
+def test_install_package_rejects_removed_script_type_before_extraction(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+    plugins_root = tmp_path / "installed-plugins"
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        install_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "installed-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
+
+
+def test_unpack_package_rejects_removed_script_type_before_extraction(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    build_plugin(plugin_dir, package_path)
+    plugin_toml = (plugin_dir / "plugin.toml").read_text(encoding="utf-8").replace(
+        'type = "plugin"',
+        'type = "script"',
+    )
+    _rewrite_package_member(
+        package_path,
+        "payload/plugins/demo_plugin/plugin.toml",
+        plugin_toml,
+    )
+    plugins_root = tmp_path / "unpacked-plugins"
+
+    with pytest.raises(ValueError, match="plugin.type"):
+        unpack_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=tmp_path / "unpacked-profiles",
+        )
+
+    assert not plugins_root.exists() or not any(plugins_root.iterdir())
 
 
 def test_inspect_package_without_metadata_reports_unverified_hash(tmp_path: Path) -> None:

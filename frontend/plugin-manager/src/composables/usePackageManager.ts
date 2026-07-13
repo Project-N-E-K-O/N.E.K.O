@@ -131,7 +131,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
           version: plugin.version || '0.0.0',
           type: normalizePluginType(plugin.type),
           status: plugin.status,
-          host_plugin_id: plugin.host_plugin_id,
           entries: plugin.entries || [],
           i18n: plugin.i18n,
           runtime_enabled: plugin.runtime_enabled,
@@ -176,10 +175,8 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     regexError,
     pluginCount,
     adapterCount,
-    extensionCount,
     filteredPurePlugins,
     filteredAdapters,
-    filteredExtensions,
     setSelectedPluginIds,
     togglePlugin: toggleWorkbenchPlugin,
     selectAllVisible,
@@ -215,7 +212,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
   function normalizePluginType(type?: string): PluginGroupType {
     if (type === 'adapter') return 'adapter'
-    if (type === 'extension') return 'extension'
     return 'plugin'
   }
 
@@ -850,10 +846,8 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     selectablePlugins,
     pluginCount,
     adapterCount,
-    extensionCount,
     filteredPurePlugins,
     filteredAdapters,
-    filteredExtensions,
     selectedPluginIds,
     resolvedBuildTargets,
     filteredLocalPackages,
