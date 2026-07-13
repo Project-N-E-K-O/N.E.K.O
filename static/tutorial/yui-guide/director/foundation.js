@@ -315,30 +315,6 @@
         });
     }
 
-    async function syncGuideI18nLanguage(timeoutMs) {
-        await waitForGuideI18nReady(timeoutMs);
-
-        const targetLanguage = resolveGuidePreferredLanguage();
-        const currentLanguage = window.i18n && typeof window.i18n.language === 'string'
-            ? window.i18n.language
-            : '';
-
-        if (!targetLanguage || !currentLanguage || typeof window.changeLanguage !== 'function') {
-            return;
-        }
-
-        if (targetLanguage === currentLanguage) {
-            return;
-        }
-
-        try {
-            await window.changeLanguage(targetLanguage);
-            await waitForGuideI18nReady(timeoutMs);
-        } catch (error) {
-            console.warn('[YuiGuide] 同步引导语言失败:', targetLanguage, error);
-        }
-    }
-
     function resolveGuideLocale() {
         const candidates = [
             window.i18n && window.i18n.language,
