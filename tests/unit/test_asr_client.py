@@ -634,3 +634,223 @@ async def test_dummy_does_not_retain_pcm_requests(monkeypatch):
             _AsrWorkerRequest(kind="shutdown", generation=1)
         )
         await asyncio.wait_for(worker_task, 1)
+
+
+async def test_dummy_close_cancels_long_delayed_final(monkeypatch):
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setenv("ASR_DUMMY_MODE", "delayed")
+    monkeypatch.setenv("ASR_DUMMY_DELAY_MS", "10000")
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    errors = AsyncMock()
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=transcripts.put,
+        on_connection_error=errors,
+    )
+
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+    await asyncio.wait_for(session.close(), 1)
+
+    assert transcripts.empty()
+    errors.assert_not_awaited()
+
+
+async def test_transcript_callback_can_close_session(monkeypatch):
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setenv("ASR_DUMMY_MODE", "normal")
+    callback_returned = asyncio.Event()
+    errors = AsyncMock()
+    session = None
+
+    async def close_from_callback(text):
+        assert text
+        assert session is not None
+        await session.close()
+        callback_returned.set()
+
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=close_from_callback,
+        on_connection_error=errors,
+    )
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+
+    await asyncio.wait_for(callback_returned.wait(), 1)
+    assert session.is_ready is False
+    assert session._callback_task is not None
+    await asyncio.wait_for(asyncio.shield(session._callback_task), 1)
+    await session.close()
+    errors.assert_not_awaited()
+
+
+async def test_manual_mode_accepts_only_committed_utterance_finals():
+    async def eager_final_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            common = {
+                "generation": request.generation,
+                "buffer_epoch": request.buffer_epoch,
+                "utterance_id": request.utterance_id,
+            }
+            if request.kind == "audio":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text="uncommitted", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="final",
+                        text="arbitrary",
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=(request.utterance_id or 0) + 100,
+                    )
+                )
+            elif request.kind == "commit":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text="committed", **common)
+                )
+            elif request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
+
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=eager_final_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await asyncio.sleep(0.05)
+    assert transcripts.empty()
+
+    await session.signal_user_activity_end()
+    assert await asyncio.wait_for(transcripts.get(), 1) == "committed"
+    await session.close()
+
+
+async def test_provider_final_waits_for_in_flight_audio_enqueue():
+    first_audio_received = asyncio.Event()
+    release_final = asyncio.Event()
+
+    async def racing_provider_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        first_request = None
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            if request.kind == "audio" and first_request is None:
+                first_request = request
+                first_audio_received.set()
+                await release_final.wait()
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="final",
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=request.utterance_id,
+                        text="provider final",
+                    )
+                )
+                await asyncio.sleep(0)
+            elif request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
+
+    callback_states: asyncio.Queue[bool] = asyncio.Queue()
+    blocked_producer: asyncio.Task[None] | None = None
+
+    async def capture_enqueue_state(text):
+        assert text == "provider final"
+        assert blocked_producer is not None
+        await callback_states.put(blocked_producer.done())
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=racing_provider_worker,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="provider"),
+        on_input_transcript=capture_enqueue_state,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x00\x00")
+    await asyncio.wait_for(first_audio_received.wait(), 1)
+    for _ in range(asr_infra._REQUEST_QUEUE_SIZE):
+        await session.stream_audio(b"\x00\x00")
+
+    blocked_producer = asyncio.create_task(session.stream_audio(b"\x00\x00"))
+    await asyncio.sleep(0)
+    assert blocked_producer.done() is False
+    release_final.set()
+
+    assert await asyncio.wait_for(callback_states.get(), 1) is True
+    await asyncio.wait_for(blocked_producer, 1)
+    await session.close()
+
+
+async def test_delivered_request_wins_over_simultaneous_worker_exit():
+    release_worker = asyncio.Event()
+
+    async def exiting_worker(request_queue, response_queue, api_key, config):
+        del request_queue, api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        await release_worker.wait()
+
+    errors: asyncio.Queue[str] = asyncio.Queue()
+    delivered: list[_AsrWorkerRequest] = []
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=exiting_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=errors.put,
+    )
+    await session.connect()
+
+    class DeliveringQueue:
+        async def put(self, request):
+            delivered.append(request)
+            release_worker.set()
+
+    session._request_queue = DeliveringQueue()  # type: ignore[assignment]
+    await session.stream_audio(b"\x00\x00")
+
+    assert [request.kind for request in delivered] == ["audio"]
+    assert (await asyncio.wait_for(errors.get(), 1)).startswith("ASR_WORKER_FAILED:")
+    await session.close()
+
+
+async def test_worker_exception_during_close_is_not_reported():
+    async def shutdown_error_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            if request.kind == "shutdown":
+                raise RuntimeError("shutdown failed")
+
+    errors = AsyncMock()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=shutdown_error_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=errors,
+    )
+    await session.connect()
+    await asyncio.wait_for(session.close(), 1)
+
+    assert session.is_ready is False
+    errors.assert_not_awaited()
