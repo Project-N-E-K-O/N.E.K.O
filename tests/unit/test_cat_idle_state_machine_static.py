@@ -643,6 +643,13 @@ def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
 
 def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     source = _read(AVATAR_UI_BUTTONS_PATH)
+    debug_source = _read(CAT_MIND_DEBUG_PATH)
+
+    runtime_gate_block = source.split("function _getNekoCatMindRuntimeGateSnapshot", 1)[1].split(
+        "function _sanitizeNekoCatIdleObservationDetail",
+        1,
+    )[0]
+    assert "edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button)" in runtime_gate_block
 
     generic_provider_block = source.split("function _dryRunNekoCatMindCat1ButtonProvider", 1)[1].split(
         "function _dryRunNekoCatMindSocialPingProvider",
@@ -653,6 +660,15 @@ def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     assert "active_independent_action" in generic_provider_block
     assert "compact_surface_dragging" in generic_provider_block
     assert "_isNekoCatMindAudioActionActive()" in generic_provider_block
+
+    provider_evaluator_block = source.split("function _evaluateNekoCatMindActionProvider", 1)[1].split(
+        "function _dryRunNekoCatMindCat1ButtonProvider",
+        1,
+    )[0]
+    assert "edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button)" in provider_evaluator_block
+    assert "else if (facts.edgePeekActive) reason = 'edge_peek_active';" in provider_evaluator_block
+    assert "edge_peek_active: '猫咪正在屏幕边缘探头'" in debug_source
+    assert "edge_peek_inactive: '猫咪未在屏幕边缘探头'" in debug_source
 
     social_provider_block = source.split("function _dryRunNekoCatMindSocialPingProvider", 1)[1].split(
         "function _dryRunNekoCatMindPlayYarnProvider",
@@ -1003,6 +1019,19 @@ def test_cat_mind_phase2_social_ping_runner_ignores_stale_audio_callbacks():
             assert.equal(pendingDecision.reason, 'return_ball_drag_active');
             container.setAttribute('data-dragging', 'false');
             vm.runInContext(`_nekoIdleCat1AmbientSoundState.active = true;`, context);
+            button.classList.add('is-cat1-edge-peek-left');
+            assert.equal(win.NekoCatMindActionProviders.getRuntimeGateSnapshot().edgePeekActive, true);
+            for (const actionId of ['cat1_social_ping', 'cat1_eat_snack', 'cat1_small_move', 'cat1_play_yarn']) {
+              const edgeDecision = win.NekoCatMindActionProviders.dryRun(actionId, { button });
+              assert.equal(edgeDecision.allowed, false);
+              assert.equal(edgeDecision.reason, 'edge_peek_active');
+            }
+            button.setAttribute('data-neko-idle-tier', 'cat2');
+            assert.equal(win.NekoCatMindActionProviders.getRuntimeGateSnapshot().edgePeekActive, false);
+            assert.notEqual(win.NekoCatMindActionProviders.dryRun('cat2_nap_feedback', { button }).reason, 'edge_peek_active');
+            button.setAttribute('data-neko-idle-tier', 'cat1');
+            button.classList.remove('is-cat1-edge-peek-left');
+            assert.equal(win.NekoCatMindActionProviders.getRuntimeGateSnapshot().edgePeekActive, false);
             assert.equal(win.NekoCatMindActionProviders.dryRun('cat1_social_ping', { button }).allowed, true);
         vm.runInContext(`_nekoIdleCompactSurfaceDragging = true;`, context);
         const compactEatDecision = win.NekoCatMindActionProviders.dryRun('cat1_eat_snack', { button });
@@ -1395,7 +1424,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           getRuntimeGateSnapshot() {{
             const gates = {{ returnPending: false, dragPending: false, dragging: false, transitionActive: false,
               activeIndependentAction: false, returnBallVisible: true, validCatRuntime: true,
-              chatSurfaceDragging: false }};
+              chatSurfaceDragging: false, edgePeekActive: false }};
             if (activeHardGate === 'returnBallInvisible') gates.returnBallVisible = false;
             else if (activeHardGate === 'invalidCatRuntime') gates.validCatRuntime = false;
             else if (activeHardGate) gates[activeHardGate] = true;
@@ -1439,6 +1468,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           ['returnPending', 'return_pending'],
           ['dragPending', 'drag_pending'],
           ['dragging', 'dragging'],
+          ['edgePeekActive', 'edge_peek_active'],
           ['transitionActive', 'transition_active'],
           ['activeIndependentAction', 'active_independent_action'],
           ['returnBallInvisible', 'return_ball_not_visible'],
@@ -1447,11 +1477,13 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         ]) {{
           activeHardGate = gate;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-            detail: {{ type: 'cat_hover_reaction', source: 'unit-test', tier: 'cat1', timestamp: Date.now() + providerCalls, detail: {{ reason: gate }} }}
+            detail: {{ type: gate === 'edgePeekActive' ? 'edge_peek_after_drag' : 'cat_hover_reaction',
+              source: 'unit-test', tier: 'cat1', timestamp: Date.now() + providerCalls, detail: {{ reason: gate }} }}
           }}));
           assert.equal(timers.length, 1);
           timers.shift()();
           assert.equal(providerCalls, 4);
+          assert.equal(actionRequests, 1);
           const gated = win.nekoCatMind.getDebugSnapshot().lastDecision;
           assert.equal(gated.outcome, 'quiet');
           assert.equal(gated.reason, reason);

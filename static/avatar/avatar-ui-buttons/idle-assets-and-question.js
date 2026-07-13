@@ -451,6 +451,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button, returnBallVisible: _isNekoCatMindButtonContainerVisible(button),
         hasArt: !!art,
         returnBallDragBlocking: _isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         returnPending: _isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
@@ -473,6 +474,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
     const checks = [
         { id: 'known_action', passed: Object.values(_NEKO_CAT_MIND_ACTION_IDS).includes(actionId) },
         { id: 'return_ball_drag_free', passed: !facts.returnBallDragBlocking }, { id: 'return_not_pending', passed: !facts.returnPending },
+        { id: 'edge_peek_inactive', passed: !facts.edgePeekActive },
         { id: 'transition_idle', passed: !facts.transitionActive }, { id: 'no_independent_action', passed: !facts.independentActionActive },
         { id: 'compact_surface_idle', passed: !facts.compactSurfaceDragging }, { id: 'return_ball_visible', passed: facts.returnBallVisible }
     ];
@@ -561,6 +563,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
         returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
         transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
         independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         audioEnabled: isNekoIdleCatAudioEnabled(),
         nearChat: _isNekoCatMindCat1NearChat(button) };
     let reason = '';
@@ -572,6 +575,7 @@ function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
     else if (facts.transitionActive) reason = 'transition_active';
     else if (facts.independentActionActive) reason = 'active_independent_action';
     else if (!facts.returnBallVisible) reason = 'return_ball_not_visible';
+    else if (facts.edgePeekActive) reason = 'edge_peek_active';
     else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) && !button.querySelector('.neko-idle-return-art')) reason = 'missing_art';
     else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) && !facts.nearChat) reason = 'near_chat_unavailable';
     else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !_canNekoCatMindControlPlayYarn()) reason = 'play_yarn_unavailable';
@@ -664,6 +668,7 @@ function _isNekoCatMindAudioActionActive() {
 function _getNekoCatMindRuntimeGateSnapshot() {
     const tier = _getActiveNekoIdleReturnTier(); const button = _findNekoCatMindVisibleButtonForTier(tier);
     return Object.freeze({ returnPending: _isAnyNekoCatMindReturnPending(), dragPending: _isAnyNekoIdleReturnDragActionBlocking(), dragging: _isAnyNekoIdleReturnDragActionActive(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
         transitionActive: _isNekoCatMindTransitionActive(button), activeIndependentAction: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
         returnBallVisible: !!button, validCatRuntime: tier !== _NEKO_IDLE_TIER_NONE, chatSurfaceDragging: _isNekoIdleCompactSurfaceDragging(), tier });
 }

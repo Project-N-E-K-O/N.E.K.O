@@ -703,6 +703,7 @@ Hard gate 本身也有生命周期。实现时不能只在 selector 一瞬间读
 | `returnPending` | return click、cat-to-model transition、return cleanup 开始 | return 链恢复完成或 Cat Mind reset | 不补播被跳过动作，只生成/提交 summary |
 | `dragPending` | return ball pointer down / drag pending | drag active、drag cancel、drag end | 若取消，记录轻交互；若 active，转入 dragging |
 | `dragging` | return ball drag active / motion | drag end / drag cancel | 记录 drag observation，允许之后重新调度 |
+| `edgePeekActive` | CAT1 拖拽结束后贴边半隐藏 class 生效 | 下一次拖拽开始、tier 退出或 return cleanup 清除 class | 不补播动作；后续非贴边 drag end 可重新判断 |
 | `transitionActive` | model-to-cat 或 cat-to-model 转场开始 | 转场 promise 完成、overlay cleanup 完成 | 只同步状态，不立即抢播动作 |
 | `activeIndependentAction` | provider runner `started` | runner done / failed / cancelled / interrupted 且 restore 完成 | 写 action result，再由 scheduler 决定是否重新判断 |
 | `returnBallInvisible` | return ball hidden、container 不可见、页面不在猫形态 | return ball visible 且 tier 有效 | 只恢复 observation，不主动补播 |

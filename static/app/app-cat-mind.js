@@ -774,6 +774,7 @@
         if (!gates.returnBallVisible) return 'return_ball_not_visible';
         if (!gates.validCatRuntime) return 'invalid_cat_runtime';
         if (gates.chatSurfaceDragging) return 'chat_surface_dragging';
+        if (gates.edgePeekActive) return 'edge_peek_active';
         return '';
     }
 
