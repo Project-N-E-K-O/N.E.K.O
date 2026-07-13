@@ -335,7 +335,7 @@ async def unsubscribe_workshop_item(request: Request):
         # 也根本不存在文件锁 —— 硬拒绝会导致用户永远无法取消订阅。
         # 真正的安全网是同步清理里的 PermissionError retry；这里只记录 warning。
         #
-        # 并行预算：per-call 2.5s，整体 3s（参考 main_server.py 关机阶段做法）。
+        # 并行预算：per-call 2.5s，整体 3s（参考 main_server 关机阶段做法）。
         # 多候选时耗时从 O(N * RT) 降到 O(max(RT))；单候选表现不变。
         release_warnings: list[str] = []
         if candidate_names:

@@ -60,7 +60,7 @@ uv run python launcher.py
 uv run python app/memory_server.py
 
 # 终端 2 — 主服务器（必需）
-uv run python app/main_server.py
+uv run python -m app.main_server
 
 # 终端 3 — 智能体服务器（可选）
 uv run python -m app.agent_server
@@ -79,7 +79,7 @@ codesign --force --sign - steamworks/libsteam_api.dylib
 codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
-- 重新签名后再执行 `uv run python launcher.py` 或 `uv run python app/main_server.py`。
+- 重新签名后再执行 `uv run python launcher.py` 或 `uv run python -m app.main_server`。
 
 ## 配置
 
@@ -93,7 +93,7 @@ codesign --force --sign - steamworks/SteamworksPy.dylib
 ```bash
 export NEKO_CORE_API_KEY="sk-your-key"
 export NEKO_CORE_API="qwen"
-uv run python app/main_server.py
+uv run python -m app.main_server
 ```
 
 ## 替代方案：pip 安装
@@ -105,7 +105,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python app/memory_server.py
-python app/main_server.py
+python -m app.main_server
 ```
 
 ## 验证

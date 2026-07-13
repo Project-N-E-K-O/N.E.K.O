@@ -30,7 +30,7 @@ CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.h
 INDEX_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "index.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
-MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server.py"
+MAIN_SERVER_PATH = Path(__file__).resolve().parents[2] / "app" / "main_server" / "__init__.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )

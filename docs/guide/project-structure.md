@@ -5,7 +5,7 @@ N.E.K.O/
 ├── launcher.py                 # Desktop launcher (Steam/exe)
 │
 ├── app/                        # Server entry points
-│   ├── main_server.py          # Main server entry point (port 48911)
+│   ├── main_server/           # Main server entry point (port 48911)
 │   ├── memory_server.py        # Memory server entry point (port 48912)
 │   ├── agent_server/           # Agent server package (port 48915)
 │   └── monitor.py              # Monitor service

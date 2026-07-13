@@ -408,7 +408,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
@@ -745,7 +745,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
         )
     }
 
-    with patch.object(main_server, "role_state", role_state):
+    with patch.object(main_server.character_runtime, "role_state", role_state):
         # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
         # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
         assert main_server._reset_sync_connector_shutdown_events() is None
@@ -765,7 +765,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", existing_steamworks), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
          patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -796,7 +796,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -862,7 +862,7 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
          patch.object(main_server, "_request_memory_server_shutdown", AsyncMock(side_effect=_fake_request_shutdown)) as mock_request_shutdown, \

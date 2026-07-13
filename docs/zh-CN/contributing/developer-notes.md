@@ -14,11 +14,11 @@
 
 ```bash
 # ✅ Correct
-uv run python app/main_server.py
+uv run python -m app.main_server
 uv run pytest tests/
 
 # ❌ Wrong
-python app/main_server.py
+python -m app.main_server
 pytest tests/
 ```
 

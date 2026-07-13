@@ -1,6 +1,6 @@
 # Three-Server Design
 
-## Main Server (`app/main_server.py`, port 48911)
+## Main Server (`app/main_server/__init__.py`, port 48911)
 
 The main server is a FastAPI application that serves as the user-facing entry point for all interactions.
 
