@@ -384,8 +384,6 @@ class _RealtimeAsrSessionImpl:
         async with self._operation_lock:
             if self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
-            if self._config.endpointing_mode == "provider":
-                return
             if not self._utterance_has_audio:
                 return
 
@@ -400,6 +398,12 @@ class _RealtimeAsrSessionImpl:
                         audio=tail,
                     )
                 )
+            if self._config.endpointing_mode == "provider":
+                # Provider endpointing still needs a local activity boundary
+                # to drain soxr's buffered 48 kHz tail. It deliberately does
+                # not send a commit or advance the provider utterance key.
+                self._reset_resampler()
+                return
             await self._enqueue_request(
                 _AsrWorkerRequest(
                     kind="commit",
