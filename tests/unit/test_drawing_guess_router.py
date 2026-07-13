@@ -571,6 +571,8 @@ def test_user_guess_extraction_uses_alias_boundaries():
     "I didn't feel that is a cat?",
     "He did not believe it is a cat?",
     "\u6211\u4e0d\u89c9\u5f97\u662f\u4e00\u53ea\u732b\u5427\uff1f",
+    "我不觉得那是猫吧？",
+    "我不覺得那個是貓吧？",
     "\u044d\u0442\u043e \u043d\u0435 \u043a\u043e\u0442?",
     "n\u00e3o \u00e9 um gato?",
     "Será que não é um gato?",
