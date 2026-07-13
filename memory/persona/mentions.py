@@ -117,7 +117,8 @@ class MentionsMixin:
                             entry['recent_mentions'] = []
                             changed = True
                     except (ValueError, TypeError):
-                        pass
+                        # Malformed legacy timestamps keep their suppression state.
+                        continue
         return changed
 
     def update_suppressions(self, name: str) -> None:
