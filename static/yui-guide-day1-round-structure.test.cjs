@@ -1,11 +1,12 @@
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const { readJsParts } = require('./app-part-test-utils.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
-const directorSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(path.join(repoRoot, 'static'));
 const day1Source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/yui-guide/days/day1-home-guide.js'), 'utf8');
 const resetSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/avatar/floating-guide-reset.js'), 'utf8');
 const appInterpageSource = readJsParts(path.join(repoRoot, 'static', 'app/app-interpage'));

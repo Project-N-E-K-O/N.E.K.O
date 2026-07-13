@@ -11,6 +11,8 @@ from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
 
+from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
+
 
 @pytest.fixture
 def reset_tracker_records():
@@ -261,7 +263,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     handoff_source = Path("static/tutorial/yui-guide/page-handoff.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "def _user_plugin_ctx()" not in pages_router_source
@@ -427,7 +429,7 @@ def test_yui_guide_steps_registry_uses_day1_round_without_legacy_handoff_scenes(
 
 def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -463,7 +465,7 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
 
 def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanup():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -518,7 +520,7 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
 
 def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
@@ -537,7 +539,7 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
 
 
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     doc_source = Path("docs/design/home-yui-guide-text-highlight-cursor-flow.md").read_text(encoding="utf-8")
     petal_animation = Path("static/assets/tutorial/petals/yui-guide-petal-transition.webp")
@@ -609,7 +611,7 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
 
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
@@ -672,7 +674,7 @@ _YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "tutorial/core/interaction-takeover.js",
-    "tutorial/yui-guide/director.js",
+    *DIRECTOR_SCRIPT_NAMES,
 )
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
@@ -683,7 +685,7 @@ _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/avatar/yui-stage.js",
     "tutorial/yui-guide/wakeup.js",
     "tutorial/core/interaction-takeover.js",
-    "tutorial/yui-guide/director.js",
+    *DIRECTOR_SCRIPT_NAMES,
 )
 
 
@@ -731,7 +733,7 @@ def test_home_template_loads_yui_wakeup_before_director():
             "tutorial/avatar/yui-stage.js",
             "tutorial/yui-guide/wakeup.js",
             "tutorial/core/interaction-takeover.js",
-            "tutorial/yui-guide/director.js",
+            *DIRECTOR_SCRIPT_NAMES,
             "tutorial/core/skip-controller.js",
             "tutorial/avatar/reload-controller.js",
             "tutorial/core/universal-manager.js",
@@ -918,7 +920,7 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
 
 
 def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "runIntroGreetingHugPerformance" in director_source
@@ -944,7 +946,7 @@ def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
 
 
 def test_yui_intro_avatar_actions_respect_reduced_motion():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "shouldReduceTutorialMotion()" in director_source
@@ -955,7 +957,7 @@ def test_yui_intro_avatar_actions_respect_reduced_motion():
 
 
 def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1029,7 +1031,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
 
 
 def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1072,7 +1074,7 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
 
 
 def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1452,7 +1454,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     begin_start = avatar_reload_source.index("beginOverride(")
     restore_start = avatar_reload_source.index("restoreOverride()")
@@ -1810,7 +1812,7 @@ def test_tutorial_temporary_model_reload_bootstraps_live2d_manager_without_user_
 
 
 def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     activation_block = director_source.split("async playDay1IntroActivationRoundScene(sceneRunId)", 1)[1].split(
         "async playDay1IntroGreetingRoundScene(sceneRunId)",
         1,
@@ -2124,7 +2126,7 @@ def test_theme_system_preference_does_not_become_saved_user_choice():
 
 
 def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "window.homeTutorialPlatformCapabilities" in director_source
@@ -2142,7 +2144,7 @@ def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
 
 def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
     steps_source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     assert "timeline: []" in steps_source
     assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
@@ -2156,7 +2158,7 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
 
 
 def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     assert "neko_home_tutorial_experience_metrics_v1" in director_source
     assert "window.homeTutorialExperienceMetrics" in director_source

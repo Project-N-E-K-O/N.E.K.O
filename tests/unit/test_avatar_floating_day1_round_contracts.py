@@ -3,6 +3,8 @@ from tests.static_app_parts import read_js_parts
 
 import pytest
 
+from tests.yui_guide_director_parts import read_director_source
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DAY1_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
@@ -13,7 +15,6 @@ DAY5_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day5-personalizatio
 DAY6_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day6-agent-guide.js"
 DAY7_GUIDE_PATH = ROOT / "static" / "tutorial/yui-guide/days/day7-graduation-guide.js"
 STEPS_PATH = ROOT / "static" / "tutorial/yui-guide/steps.js"
-DIRECTOR_PATH = ROOT / "static" / "tutorial/yui-guide/director.js"
 SCENE_ORCHESTRATOR_PATH = ROOT / "static" / "tutorial/core/scene-orchestrator.js"
 INTERPAGE_PATH = ROOT / "static" / "app" / "app-interpage"
 REACT_APP_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx"
@@ -307,7 +308,7 @@ def test_day6_round_wrap_returns_to_capsule_input_like_day2_wrap():
     if not DAY6_GUIDE_PATH.exists():
         pytest.skip("Day 6 guide is not shipped in this PR")
     source = DAY6_GUIDE_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     round_block = source.split("round: {", 1)[1]
     plugin_side_panel_block = round_block.split("id: 'day6_plugin_side_panel'", 1)[1].split(
         "id: 'day6_plugin_dashboard'",
@@ -367,7 +368,7 @@ def test_day7_round_wrap_returns_to_capsule_input_like_day2_wrap():
 
 
 def test_compact_chat_tutorial_bridge_exposes_new_targets_and_requests():
-    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     interpage = read_js_parts(INTERPAGE_PATH)
     react_app = REACT_APP_PATH.read_text(encoding="utf-8")
     react_schema = REACT_SCHEMA_PATH.read_text(encoding="utf-8")
@@ -401,7 +402,7 @@ def test_external_chat_cursor_retry_cannot_replay_stale_wobble_after_clear():
 
 
 def test_tutorial_exit_clears_externalized_guide_chat_messages():
-    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     takeover = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
 
     termination_block = director.split("beginTerminationVisualCleanup()", 1)[1].split(
@@ -497,7 +498,7 @@ def test_pc_external_chat_spotlight_reuses_last_rect_during_transient_layout_gap
 def test_pc_external_chat_spotlight_preserves_highlight_during_resistance_pause():
     interpage_source = read_js_parts(INTERPAGE_PATH)
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     apply_block = interpage_source.split("function applyYuiGuideChatSpotlight(kind, options)", 1)[1].split(
         "function applyYuiGuideChatCursorRelay",
         1,
@@ -527,7 +528,7 @@ def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsul
     interpage_source = read_js_parts(INTERPAGE_PATH)
     takeover_source = (ROOT / "static" / "tutorial/core/interaction-takeover.js").read_text(encoding="utf-8")
     scene_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     visual_runtime_source = (ROOT / "static" / "tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     day1_source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
 
@@ -593,7 +594,7 @@ def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
 def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():
     interpage_source = read_js_parts(INTERPAGE_PATH)
     overlay_source = OVERLAY_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     skip_controller_source = SKIP_CONTROLLER_PATH.read_text(encoding="utf-8")
     page_tutorial_source = PAGE_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
     yui_guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
@@ -763,7 +764,7 @@ def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_home_bridge():
 def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_spotlight():
     overlay_source = OVERLAY_PATH.read_text(encoding="utf-8")
     ghost_source = GHOST_CURSOR_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     resistance_source = RESISTANCE_CONTROLLER_PATH.read_text(encoding="utf-8")
 
     cursor_only_block = overlay_source.split("const sendCursorOnly = (cursor, retried) => {", 1)[1].split(
@@ -797,7 +798,7 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
 
 
 def test_externalized_resistance_restores_home_cursor_visibility_before_animating():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    source = read_director_source(ROOT)
     resistance_block = source.split("playCursorResistanceToUserMotion(x, y, distance, motionDx, motionDy)", 1)[1].split(
         "isCursorTransientMotionActive()",
         1,
@@ -970,11 +971,11 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "cursorAction: 'move'" in return_control_scene
     assert "cursorAction: 'wobble'" not in return_control_scene
 
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     assert "scene.cursorTarget || scene.target || ''" in director_source
     assert "scene.cursorTarget || scene.target" in director_source
 
-    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     activation_block = director.split("async playDay1IntroActivationRoundScene", 1)[1].split(
         "async playDay1IntroGreetingRoundScene",
         1,
@@ -1010,7 +1011,7 @@ def test_day1_capsule_drag_hint_copy_uses_single_click_language():
 
 
 def test_day1_intro_basic_voice_moves_from_history_handle_anchor():
-    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     showcase_block = director.split("async runIntroVoiceControlButtonShowcase", 1)[1].split(
         "async runTakeoverKeyboardControlSequence",
         1,
@@ -1022,7 +1023,7 @@ def test_day1_intro_basic_voice_moves_from_history_handle_anchor():
 
 
 def test_day1_takeover_restores_original_agent_switches():
-    director = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director = read_director_source(ROOT)
     operations = (ROOT / "static" / "tutorial/core/operation-registry.js").read_text(encoding="utf-8")
     restore_block = director.split("async restoreDay1TakeoverAgentSwitches(reason)", 1)[1].split(
         "async clickAgentSidePanelAction",
@@ -1166,7 +1167,7 @@ def test_peek_intro_avatar_motions_keep_floating_buttons_attached_only_for_intro
         (DAY5_GUIDE_PATH, "day5_character_settings", "day5_character_panic"),
         (DAY6_GUIDE_PATH, "day6_intro_agent", "day6_agent_status_master"),
     ]
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
 
     for guide_path, first_scene_id, next_scene_id in guide_specs:
         source = guide_path.read_text(encoding="utf-8")
@@ -1183,7 +1184,7 @@ def test_corner_intro_avatar_motions_rotate_floating_buttons_with_model_when_mod
     day2_source = DAY2_GUIDE_PATH.read_text(encoding="utf-8")
     day5_source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
     day6_source = DAY6_GUIDE_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
 
     day2_block = day2_source.split("id: 'day2_tool_toggle_intro'", 1)[1].split(
         "id: 'day2_avatar_tools'",
@@ -1222,7 +1223,7 @@ def test_peek_intro_half_body_fade_in_restores_full_opacity_after_fadeout():
 def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     manager_source = MANAGER_PATH.read_text(encoding="utf-8")
     orchestrator_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
 
     prelude_block = manager_source.split("async playAvatarFloatingRoundPrelude(round, source, director, options = {})", 1)[1].split(
         "async checkAndStartTutorial()",
@@ -1246,7 +1247,7 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
 
 
 def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    source = read_director_source(ROOT)
     externalized_block = source.split("async playDay1IntroGreetingRoundScene(sceneRunId)", 1)[1].split(
         "await this.playIntroGreetingReply()",
         1,
@@ -1261,7 +1262,7 @@ def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
 
 def test_day2_intro_externalized_cursor_uses_scene_action_not_wobble():
     orchestrator_source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     first_daily_externalized_block = orchestrator_source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
         "} else if (introChatSpotlightTarget)",
         1,
@@ -1296,7 +1297,7 @@ def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it
 
 
 def test_day1_return_control_preserves_externalized_cursor_from_capture_scene():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    source = read_director_source(ROOT)
     preserve_block = source.split("shouldPreserveExternalizedChatCursor(previousSceneId, scene)", 1)[1].split(
         "shouldPreserveIntroExternalizedChatCursor(scene)",
         1,

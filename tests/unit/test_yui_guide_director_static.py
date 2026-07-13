@@ -3,8 +3,9 @@ from tests.static_app_parts import read_js_parts
 import json
 import re
 
+from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
 
-YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
+
 YUI_GUIDE_OVERLAY_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/overlay.js"
 YUI_GUIDE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css/yui-guide.css"
 YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
@@ -18,7 +19,7 @@ STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
 
 def _read_director() -> str:
-    return YUI_GUIDE_DIRECTOR_PATH.read_text(encoding="utf-8")
+    return read_director_source(Path(__file__).resolve().parents[2])
 
 
 def _read_steps() -> str:
@@ -35,6 +36,37 @@ def _read_interpage() -> str:
 
 def _read_static_locale(locale_name: str) -> dict:
     return json.loads((STATIC_LOCALES_DIR / f"{locale_name}.json").read_text(encoding="utf-8"))
+
+
+def test_director_parts_use_domain_names_and_explicit_template_order():
+    root = Path(__file__).resolve().parents[2]
+    expected_parts = (
+        "tutorial/yui-guide/director/foundation.js",
+        "tutorial/yui-guide/director/voice-queue.js",
+        "tutorial/yui-guide/director/emotion-bridge.js",
+        "tutorial/yui-guide/director/cursor-anchor-store.js",
+        "tutorial/yui-guide/director/director-core.js",
+        "tutorial/yui-guide/director/avatar-rounds.js",
+        "tutorial/yui-guide/director/page-flows.js",
+        "tutorial/yui-guide/director/chat-performance.js",
+        "tutorial/yui-guide/director/lifecycle.js",
+        "tutorial/yui-guide/director/bootstrap.js",
+    )
+
+    assert DIRECTOR_SCRIPT_NAMES == expected_parts
+    for relative_path in expected_parts:
+        source = (root / "static" / relative_path).read_text(encoding="utf-8")
+        assert source.startswith("(function (") or source.startswith("(function ()")
+        assert "'use strict';" in {line.strip() for line in source.splitlines()[:3]}
+        assert not re.search(r"director/\d", relative_path)
+
+    for template_name in ("index.html", "api_key_settings.html", "memory_browser.html"):
+        template_source = (root / "templates" / template_name).read_text(encoding="utf-8")
+        indexes = [template_source.index(f"/static/{relative_path}") for relative_path in expected_parts]
+        assert indexes == sorted(indexes)
+
+    pages_router_source = (root / "main_routers/pages_router.py").read_text(encoding="utf-8")
+    assert '"static/tutorial/yui-guide/director").glob("*.js")' in pages_router_source
 
 
 def _extract_deep_freeze_registration_block(source: str) -> str:
