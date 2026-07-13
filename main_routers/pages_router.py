@@ -46,6 +46,9 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
 _AVATAR_UI_BUTTON_ASSET_PATHS = tuple(sorted(
     (_PROJECT_ROOT / "static/avatar/avatar-ui-buttons").glob("*.js")
 ))
+_MODEL_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
+))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -130,7 +133,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
-    _PROJECT_ROOT / "static/js/model_manager.js",
+    *_MODEL_MANAGER_JS_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0

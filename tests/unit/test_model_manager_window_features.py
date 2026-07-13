@@ -1,6 +1,13 @@
 from pathlib import Path
 
 
+def read_model_manager_source() -> str:
+    return "".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path("static/js/model_manager").glob("*.js"))
+    )
+
+
 def test_avatar_model_manager_popup_opens_fullscreen():
     source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 
@@ -27,7 +34,7 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
-    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+    model_manager_source = read_model_manager_source()
     interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
 
     assert "hide_main_ui" not in model_manager_source
