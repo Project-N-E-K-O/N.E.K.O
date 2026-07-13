@@ -97,5 +97,21 @@ def test_parse_baidu_scans_past_rejected_containers():
 
 
 @pytest.mark.unit
+def test_parse_baidu_h3_fallback_scans_past_rejected_links():
+    # 兜底 h3 路径（无 c-container）同样不能因预截断漏掉排在后面的有效链接
+    junk = ''.join(
+        f'<h3><a href="/s?wd=related{i}">相关搜索推荐词条目{i}</a></h3>'
+        for i in range(10)
+    )
+    html = (
+        f'<html><body>{junk}'
+        '<h3><a href="http://www.baidu.com/link?url=REAL">兜底路径真实结果标题</a></h3>'
+        '</body></html>'
+    )
+    results = parse_baidu_results(html, limit=3)
+    assert [r['title'] for r in results] == ['兜底路径真实结果标题']
+
+
+@pytest.mark.unit
 def test_parse_baidu_empty_html_returns_empty_list():
     assert parse_baidu_results('<html><body>no results</body></html>', limit=5) == []

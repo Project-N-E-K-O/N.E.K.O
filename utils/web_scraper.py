@@ -1696,10 +1696,11 @@ def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html_content, 'lxml')
 
-        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）
+        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）。
+        # 不预截断：广告/无效 URL 的条目可能排在前面，靠下方攒够 limit 提前退出
         result_divs = soup.find_all('div', class_='result')
 
-        for div in result_divs[:limit * 2]:
+        for div in result_divs:
             # 跳过广告（class 含 result--ad / results_links_deep 之外的 ad 变体）
             cls = div.get('class') or []
             if any('ad' in c for c in cls):
@@ -1876,10 +1877,10 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                         if len(results) >= limit:
                             break
         
-        # 如果没找到结果，尝试提取 h3 标题
+        # 如果没找到结果，尝试提取 h3 标题。同样不预截断：被拒绝的
+        # 相关搜索类 h3 可能排在前面，攒够 limit 条再退出
         if not results:
-            h3_links = soup.find_all('h3')
-            for h3 in h3_links[:limit]:
+            for h3 in soup.find_all('h3'):
                 link = h3.find('a')
                 if link:
                     title = _sanitize_search_text(link.get_text(strip=True))
@@ -1895,6 +1896,8 @@ def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str
                             'abstract': '',
                             'url': url
                         })
+                        if len(results) >= limit:
+                            break
         
         logger.info(f"解析到 {len(results)} 条百度搜索结果")
         return results[:limit]

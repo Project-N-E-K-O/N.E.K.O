@@ -87,6 +87,34 @@ def test_parse_empty_html_returns_empty_list():
 
 
 @pytest.mark.unit
+def test_parse_scans_past_rejected_results():
+    # 被拒绝的条目（无效 uddg 目标）排在前面时，不能因预截断漏掉后面的有效结果
+    junk = ''.join(
+        f'''
+        <div class="result results_links web-result">
+          <div class="links_main result__body">
+            <h2 class="result__title">
+              <a class="result__a" href="//duckduckgo.com/l/?uddg=javascript%3Avoid({i})">Broken Entry {i}</a>
+            </h2>
+          </div>
+        </div>
+        '''
+        for i in range(10)
+    )
+    html = junk + '''
+    <div class="result results_links web-result">
+      <div class="links_main result__body">
+        <h2 class="result__title">
+          <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fvalid">Valid Trailing Result</a>
+        </h2>
+      </div>
+    </div>
+    '''
+    results = parse_duckduckgo_results(html, limit=3)
+    assert [r['title'] for r in results] == ['Valid Trailing Result']
+
+
+@pytest.mark.unit
 def test_parse_skips_results_without_usable_url():
     # uddg 包着非 http 目标（javascript:）→ 整条丢弃，不以空 URL 占用结果位
     html = '''
