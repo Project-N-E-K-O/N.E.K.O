@@ -8,7 +8,13 @@ const projectRoot = path.resolve(__dirname, '..', '..');
 const interactionPath = path.join(projectRoot, 'static', 'live2d', 'live2d-interaction.js');
 const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
 
-function createHarness({ gameModeEnabled = true, innerWidth = 1000, innerHeight = 800 } = {}) {
+function createHarness({
+    gameModeEnabled = true,
+    innerWidth = 1000,
+    innerHeight = 800,
+    platform = '',
+    currentDisplay = null
+} = {}) {
     const rafQueue = [];
     const bodyClasses = new Set();
     const listeners = new Map();
@@ -36,6 +42,12 @@ function createHarness({ gameModeEnabled = true, innerWidth = 1000, innerHeight 
             innerHeight,
             screen: { id: 'display-test', width: innerWidth, height: innerHeight },
             devicePixelRatio: 1.25,
+            __NEKO_DESKTOP_RUNTIME__: platform ? { platform } : {},
+            electronScreen: currentDisplay ? {
+                async getCurrentDisplay() {
+                    return currentDisplay;
+                }
+            } : null,
             nekoGameModeBeta: {
                 isEnabled: () => gameModeEnabled
             },
@@ -104,6 +116,19 @@ function createRotatingModel({ x, y, scaleX = 1, width = 300, height = 600 }) {
             return {
                 x: this.x + scaledX * Math.cos(this.rotation) - localY * Math.sin(this.rotation),
                 y: this.y + scaledX * Math.sin(this.rotation) + localY * Math.cos(this.rotation)
+            };
+        },
+        toGlobal(point) {
+            return this.transformPoint(Number(point.x), Number(point.y));
+        },
+        toLocal(point) {
+            const dx = Number(point.x) - this.x;
+            const dy = Number(point.y) - this.y;
+            const cos = Math.cos(this.rotation);
+            const sin = Math.sin(this.rotation);
+            return {
+                x: (dx * cos + dy * sin) / this.scale.x,
+                y: -dx * sin + dy * cos
             };
         },
         getBounds() {
@@ -241,10 +266,10 @@ test('head anchor keeps the face visible when a tail widens the model bounds', a
     assert.ok(model.x > -500, 'placement must not expose only the tail-side edge of the bounds');
 });
 
-test('four corners use 45 degree poses and top corners peek downward', async () => {
+test('top corners use 135 degree poses with the body outside above the viewport', async () => {
     const cases = [
-        { edge: 'top-left', x: 0, y: 0, scaleX: 1, rotation: 45 },
-        { edge: 'top-right', x: 1000, y: 0, scaleX: -1, rotation: -45 },
+        { edge: 'top-left', x: 0, y: 0, scaleX: 1, rotation: 135 },
+        { edge: 'top-right', x: 1000, y: 0, scaleX: -1, rotation: -135 },
         { edge: 'bottom-left', x: 0, y: 200, scaleX: 1, rotation: 45, inwardX: -1 },
         { edge: 'bottom-right', x: 1000, y: 200, scaleX: -1, rotation: -45, inwardX: 1 }
     ];
@@ -269,7 +294,8 @@ test('four corners use 45 degree poses and top corners peek downward', async () 
             const head = manager.getHeadScreenAnchor();
             const lowerBody = model.transformPoint(150, 560);
             assert.ok(head.y >= 36 && head.y <= 64, `${item.edge} head should sit just below the top edge`);
-            assert.ok(lowerBody.y > head.y, `${item.edge} body should extend downward`);
+            assert.ok(lowerBody.y < head.y, `${item.edge} body should stay above the head`);
+            assert.ok(lowerBody.y < 0, `${item.edge} body should stay outside above the viewport`);
         } else {
             assert.ok(manager.getBodyScreenRectInfo().rect.bottom > 800, `${item.edge} waist should sit outside the bottom edge`);
         }
@@ -301,7 +327,61 @@ test('semantic corner anchor restores the model to the same corner', async () =>
     flushNextFrame(harness);
     assert.equal(await restorePromise, true);
     assert.equal(manager._live2DGameModeEdgePeekState.edge, 'top-left');
-    assert.equal(model.rotation, 45 * Math.PI / 180);
+    assert.equal(model.rotation, 135 * Math.PI / 180);
+});
+
+test('top corner falls back to model transforms when no head anchor is available', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+
+    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    const estimatedHead = model.transformPoint(150, 600 * 0.24);
+    const lowerBody = model.transformPoint(150, 560);
+    assert.equal(manager._live2DGameModeEdgePeekState.edge, 'top-left');
+    assert.equal(manager._live2DGameModeEdgePeekState.headAnchorSource, 'bounds-fallback');
+    assert.ok(estimatedHead.x >= 48 && estimatedHead.x <= 84, `fallback head x should remain visible, got ${estimatedHead.x}`);
+    assert.ok(estimatedHead.y >= 36 && estimatedHead.y <= 64, `fallback head y should remain visible, got ${estimatedHead.y}`);
+    assert.ok(lowerBody.y < 0, 'fallback should keep the lower body outside above the viewport');
+});
+
+test('macOS top corners trigger at the current display work-area top', async () => {
+    const cases = [
+        { edge: 'top-left', x: 0, scaleX: 1, rotation: 135 },
+        { edge: 'top-right', x: 1000, scaleX: -1, rotation: -135 }
+    ];
+
+    for (const item of cases) {
+        const harness = createHarness({
+            platform: 'darwin',
+            currentDisplay: {
+                screenX: 0,
+                screenY: 0,
+                width: 1000,
+                height: 800,
+                workArea: { x: 0, y: 28, width: 1000, height: 744 }
+            }
+        });
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: item.x, y: 28, scaleX: item.scaleX });
+        manager.getHeadScreenAnchor = () => model.transformPoint(150, 110);
+        manager.getBodyScreenRectInfo = () => {
+            const waist = model.transformPoint(150, 330);
+            return { rect: { centerX: waist.x, bottom: waist.y } };
+        };
+
+        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
+            await Promise.resolve();
+        }
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(model.rotation, item.rotation * Math.PI / 180);
+    }
 });
 
 test('clearing during enter animation prevents stale peek writeback', async () => {
