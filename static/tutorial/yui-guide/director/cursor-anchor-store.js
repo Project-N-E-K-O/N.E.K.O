@@ -2,14 +2,6 @@
     'use strict';
 
     const {
-        YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY,
-        YUI_GUIDE_CHAT_BRIDGE_QUEUE_LIMIT,
-        TutorialVisualControllers,
-        TutorialResistanceControllers,
-        ResistanceController,
-        SidebarPauseController,
-        PauseCoordinator,
-        TutorialTerminationRouter,
         TutorialOperationRegistry,
         OperationRegistry,
         TutorialSceneOrchestrator,
