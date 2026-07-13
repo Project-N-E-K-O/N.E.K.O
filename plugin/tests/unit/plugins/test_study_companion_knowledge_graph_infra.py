@@ -44,6 +44,47 @@ def test_bundled_seed_manifest_validates_all_topics() -> None:
     assert result.report["schema_ready_topics"] == len(result.topics)
 
 
+def test_chinese_main_idea_bridge_extends_into_junior_narrative_reading() -> None:
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_seeds"
+        / "chinese.json"
+    )
+    payload = json.loads(seed.read_text(encoding="utf-8"))
+    topics = payload["topics"]
+    main_idea = next(
+        topic
+        for topic in topics
+        if topic.get("id") == "chinese_primary_paragraph_main_idea"
+    )
+    narrative = next(
+        topic
+        for topic in topics
+        if topic.get("id") == "chinese_junior_narrative_reading"
+    )
+
+    edges = build_topic_edges([main_idea, narrative])
+    bridge = next(
+        edge
+        for edge in edges
+        if {
+            edge.get("from"),
+            edge.get("to"),
+        }
+        == {
+            "chinese_primary_paragraph_main_idea",
+            "chinese_junior_narrative_reading",
+        }
+    )
+
+    assert bridge["relation"] == "extends"
+    assert bridge["from"] == "chinese_primary_paragraph_main_idea"
+    assert bridge["to"] == "chinese_junior_narrative_reading"
+
+
 def test_compact_confusion_labels_use_related_topic_label() -> None:
     payload = build_knowledge_guidance_payload(
         topics=[

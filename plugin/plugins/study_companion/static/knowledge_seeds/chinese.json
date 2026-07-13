@@ -362,7 +362,7 @@
         },
         {
           "id": "chinese_junior_narrative_reading",
-          "relation": "prerequisite",
+          "relation": "extends",
           "reason": "Finding a paragraph main idea prepares students to track events, character changes, and emotion in junior narrative reading.",
           "priority": "core",
           "context": "explanation",
