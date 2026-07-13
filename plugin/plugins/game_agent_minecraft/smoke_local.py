@@ -235,7 +235,10 @@ async def run(
         print(f"[smoke] ← result after {elapsed:.1f}s: {result}")
 
         status = result.get("status") if isinstance(result, dict) else None
-        rc = 0 if status in ("ok", "timeout", "interrupted") else 1
+        # ``superseded`` is mc-agent's "a newer task replaced this one" —
+        # a neutral non-completion, same class as ``interrupted``, not a
+        # failure. ``failed`` (genuine failure) still maps to rc=1.
+        rc = 0 if status in ("ok", "timeout", "interrupted", "superseded") else 1
         # ``timeout`` is a clean structured outcome (LLM-visible) — keep
         # exit 0 so CI doesn't read it as a hard failure; the elapsed
         # time + the printed result are enough for a human reader.
