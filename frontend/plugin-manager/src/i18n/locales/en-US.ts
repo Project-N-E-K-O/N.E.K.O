@@ -286,17 +286,13 @@ export default {
     autoStart: 'Auto Start',
     manualStart: 'Manual Start',
     fetchFailed: 'Failed to fetch plugins',
-    extension: 'Extension',
     pluginType: 'Type',
     pluginTypeNormal: 'Plugin',
     hostPlugin: 'Host Plugin',
-    boundExtensions: 'Bound Extensions',
     pluginsSection: 'Plugins',
     adaptersSection: 'Adapters',
-    extensionsSection: 'Extensions',
     typePlugin: 'Plugin',
     typeAdapter: 'Adapter',
-    typeExtension: 'Extension',
     layoutList: 'List',
     layoutSingle: 'Single',
     layoutDouble: 'Double',
@@ -345,13 +341,10 @@ export default {
       auto: 'Auto Start',
       plugin: 'Plugin',
       adapter: 'Adapter',
-      extension: 'Extension',
       ui: 'Has UI',
       entries: 'Has Entries',
-      host: 'Has Host',
       name: 'By Name',
       id: 'By ID',
-      hostTarget: 'By Host',
       version: 'By Version',
       entry: 'By Entry',
       author: 'By Author'
@@ -363,8 +356,6 @@ export default {
     },
     build: 'Build Plugin',
     delete: 'Delete Plugin',
-    disableExtension: 'Disable Extension',
-    enableExtension: 'Enable Extension',
     dangerDialog: {
       title: 'Confirm Destructive Action',
       warningTitle: 'This action cannot be undone',
@@ -553,7 +544,6 @@ export default {
     loadFailed: 'Load Failed',
     loading: 'Loading',
     disabled: 'Disabled',
-    injected: 'Injected',
     pending: 'Pending Host'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: 'Failed to build plugin',
     deleteFailed: 'Failed to delete plugin',
     pluginLoadFailed: 'Plugin load failed and cannot be started.',
-    confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
-    extensionDisabled: 'Extension disabled',
-    extensionEnabled: 'Extension enabled',
-    disableExtFailed: 'Failed to disable extension',
-    enableExtFailed: 'Failed to enable extension',
     requestFailed: 'Request failed',
     requestFailedWithStatus: 'Request failed ({status})',
     badRequest: 'Invalid request parameters',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: 'Plugin Workbench',
-        body: 'This is the main workspace for plugins, adapters, and extensions.'
+        body: 'This is the main workspace for plugins and adapters.'
       },
       pluginFilters: {
         title: 'Search and Filters',

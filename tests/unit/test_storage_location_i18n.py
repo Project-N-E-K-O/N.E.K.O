@@ -7,7 +7,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCALES_DIR = REPO_ROOT / "static" / "locales"
-STORAGE_LOCATION_JS = REPO_ROOT / "static" / "app-storage-location.js"
+STORAGE_LOCATION_JS = REPO_ROOT / "static" / "app" / "app-storage-location.js"
 STORAGE_KEY_RE = re.compile(r"""['"]storage\.([A-Za-z0-9_.-]+)['"]""")
 
 

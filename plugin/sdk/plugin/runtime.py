@@ -15,7 +15,6 @@ import plugin.sdk.shared.core.types as _types
 import plugin.sdk.shared.logging as _shared_logging
 import plugin.sdk.shared.models as _models
 import plugin.sdk.shared.models.exceptions as _exceptions
-import plugin.sdk.shared.runtime.memory as _memory
 import plugin.sdk.shared.runtime.system_info as _system_info
 import plugin.sdk.shared.storage.database as _database
 import plugin.sdk.shared.storage.state as _state
@@ -87,7 +86,6 @@ HookTiming = _hooks.HookTiming
 HOOK_META_ATTR = _shared_constants.HOOK_META_ATTR
 HookExecutorMixin = _hook_executor.HookExecutorMixin
 SystemInfo = _system_info.SystemInfo
-MemoryClient = _memory.MemoryClient
 PluginStore = _store.PluginStore
 PluginDatabase = _database.PluginDatabase
 PluginKVStore = _database.PluginKVStore
@@ -127,7 +125,6 @@ PLUGIN_RUNTIME_EXPORTS = [
     "HOOK_META_ATTR",
     "HookExecutorMixin",
     "SystemInfo",
-    "MemoryClient",
     "PluginStore",
     "PluginDatabase",
     "PluginKVStore",

@@ -318,7 +318,7 @@
     </div>
 
     <!-- 存储位置首屏哨兵需要尽早建立启动屏障，避免模型与主业务先行初始化 -->
-    <script src="/static/app-storage-location.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-storage-location.js?v={{ static_asset_version }}"></script>
 
     <!-- Live2D SDK 核心库 -->
     <script src="/static/libs/live2dcubismcore.min.js?v={{ static_asset_version }}"></script>
@@ -368,8 +368,8 @@
     </script>
 
     <script type="module" src="/static/js/APlayer/main.js?v={{ static_asset_version }}"></script>
-    <script src="/static/music_ui.js?v={{ static_asset_version }}"></script>
-    <script src="/static/jukebox-loader.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/music_ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/jukebox/jukebox-loader.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/index.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_ui.js?v={{ static_asset_version }}"></script>
     <script src="/static/vrm/vrm-init.js?v={{ static_asset_version }}"></script>
@@ -380,19 +380,19 @@
     <script src="/static/ogg-opus-decoder-wrapper.js?v={{ static_asset_version }}"></script>
 
     <!-- app 解构模块 -->
-    <script src="/static/subtitle-shared.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-state.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-ui.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-screen.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-activity-signal.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-crop.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle/subtitle-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-ui.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-avatar.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-audio-playback.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-spatial-audio.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-audio-capture.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-screen.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-activity-signal.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-crop.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/guide-helpers.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/scoped-resources.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/bridge-command-bus.js?v={{ static_asset_version }}"></script>
@@ -403,31 +403,31 @@
     <script src="/static/tutorial/core/timeline-engine.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/visual-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/yui-guide/common.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-interpage.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-proactive.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-settings.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-interpage.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-proactive.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-settings.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-reaction-bubble.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-agent.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-character.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-telemetry.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/avatar/avatar-drop-parser.js?v={{ static_asset_version }}"></script>
     <script src="/static/avatar/avatar-drop-intake.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-autostart-provider.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/lifecycle-state-store.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/core/app-prompt.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-context-prompt.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-context-prompt.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/game/system/game-audio-system.js?v={{ static_asset_version }}"></script>
     <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
-    <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app/app-chat-export.js?v={{ static_asset_version }}"></script>
 
-    <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>
+    <script src="/static/subtitle/subtitle.js?v={{ static_asset_version }}"></script>
 
     <link rel="stylesheet" href="/static/css/touch-config.css?v={{ static_asset_version }}">
     <script src="/static/touch-config.js?v={{ static_asset_version }}"></script>
@@ -467,7 +467,7 @@
     <script src="/static/tutorial/icebreaker/assistant-loading.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/icebreaker/free-text-runtime.js?v={{ static_asset_version }}"></script>
     <script src="/static/tutorial/icebreaker/new-user-icebreaker.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-auto-goodbye.js?v={{ static_asset_version }}"></script>
     <script>
         document.addEventListener('DOMContentLoaded', function () {
             if (window.CharacterPersonalityOnboarding &&

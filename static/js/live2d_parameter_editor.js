@@ -178,7 +178,9 @@ let currentModelInfo = null;
 let parameterInfo = null;
 let parameterGroups = {};
 let initialParameters = {};
-let currentParameters = {};
+// 独立编辑草稿：只由用户操作更新，避免 motion/物理/呼吸的瞬时值混入保存结果。
+let draftParameters = {};
+let draftParameterIndexes = {};
 
 // 加载序列号，用于防止异步加载乱序
 let loadSeq = 0;
@@ -512,9 +514,10 @@ try {
 }
 
 // 保留原有的简单发送函数（用于不需要确认的场景）
-function sendMessageToMainPage(action) {
+function sendMessageToMainPage(action, payload = {}) {
     try {
         const message = {
+            ...payload,
             action: action,
             timestamp: Date.now()
         };
@@ -638,18 +641,13 @@ function showStatus(message, duration = 0) {
 
 // 返回L2D设置界面
 backToMainBtn.addEventListener('click', () => {
-    // 在跳转前发送消息通知主页
-    sendMessageToMainPage('reload_model_parameters');
-    // 延迟一点确保消息发送
-    setTimeout(() => {
-        // 获取当前URL参数，保留lanlan_name等参数
-        const lanlanName = getParameterEditorLanlanName();
-        let targetUrl = '/model_manager';
-        if (lanlanName) {
-            targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
-        }
-        window.location.href = targetUrl;
-    }, 100);
+    // 获取当前URL参数，保留lanlan_name等参数
+    const lanlanName = getParameterEditorLanlanName();
+    let targetUrl = '/model_manager';
+    if (lanlanName) {
+        targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
+    }
+    window.location.href = targetUrl;
 });
 
 // 加载模型列表
@@ -896,6 +894,7 @@ async function loadModel(modelName) {
             dragEnabled: true,
             wheelEnabled: true,
             preferences: modelPreferences,
+            parameterEditingMode: true,
             skipCloseWindows: true  // 参数编辑器页面不需要关闭其他窗口
         });
         
@@ -929,6 +928,9 @@ function recordInitialParameters() {
 
     const coreModel = live2dModel.internalModel.coreModel;
     initialParameters = {};
+    draftParameters = {};
+    draftParameterIndexes = {};
+    const effectiveParameters = window.live2dManager?.effectiveModelParameters || {};
     const paramCount = coreModel.getParameterCount();
 
     for (let i = 0; i < paramCount; i++) {
@@ -941,6 +943,10 @@ function recordInitialParameters() {
             }
             const value = coreModel.getParameterValueByIndex(i);
             initialParameters[paramId] = value;
+            draftParameterIndexes[paramId] = i;
+            draftParameters[paramId] = Object.prototype.hasOwnProperty.call(effectiveParameters, paramId)
+                ? effectiveParameters[paramId]
+                : value;
         } catch (e) {
             console.warn(`记录参数 ${i} 失败:`, e);
         }
@@ -1275,7 +1281,7 @@ function displayParameters() {
                             slider.value = clampedValue;
                         }
                         input.value = clampedValue;
-                        currentParameters[paramId] = clampedValue;
+                        draftParameters[paramId] = clampedValue;
                     } catch (e) {
                         console.warn(`更新参数 ${paramId} 失败:`, e);
                     }
@@ -1385,6 +1391,7 @@ if (resetAllBtn) {
                 }
 
                 coreModel.setParameterValueByIndex(i, resetValue);
+                draftParameters[paramId] = resetValue;
             } catch (e) {
                 console.warn(`重置参数索引 ${i} 失败:`, e);
             }
@@ -1396,91 +1403,99 @@ if (resetAllBtn) {
     });
 }
 
+function buildParametersFromDraft(parameters, parameterIndexes, manager) {
+    const paramsToSave = {};
+    for (const [paramId, value] of Object.entries(parameters || {})) {
+        const index = parameterIndexes && parameterIndexes[paramId];
+        let isEyeBlinkParam = false;
+        try {
+            isEyeBlinkParam = manager && typeof manager._isEyeBlinkParamId === 'function'
+                && (manager._isEyeBlinkParamId(paramId) || manager._isEyeBlinkParamId(`param_${index}`));
+        } catch (_) {}
+        if (!isEyeBlinkParam && typeof value === 'number' && Number.isFinite(value)) {
+            paramsToSave[paramId] = value;
+        }
+    }
+    return paramsToSave;
+}
+
+async function persistParameterDraft(modelInfo, model, parameters, dependencies = {}) {
+    const fetchImpl = dependencies.fetchImpl || fetch;
+    const manager = dependencies.manager || window.live2dManager;
+    const position = { x: model.x, y: model.y };
+    const scale = { x: model.scale.x, y: model.scale.y };
+
+    let fileSuccess = false;
+    let fileError = null;
+    try {
+        const fileResponse = await fetchImpl(`/api/live2d/save_model_parameters/${encodeURIComponent(modelInfo.name)}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ parameters })
+        });
+        const fileResult = await fileResponse.json();
+        fileSuccess = fileResponse.ok !== false && fileResult.success === true;
+        if (!fileSuccess) fileError = fileResult.error || `HTTP ${fileResponse.status}`;
+    } catch (error) {
+        fileError = error.message;
+    }
+
+    let prefSuccess = false;
+    let prefError = null;
+    try {
+        prefSuccess = await manager.saveUserPreferences(
+            modelInfo.path,
+            position,
+            scale,
+            parameters
+        );
+    } catch (error) {
+        prefError = error.message;
+    }
+
+    return { fileSuccess, fileError, prefSuccess, prefError };
+}
+
 if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
         if (!currentModelInfo || !live2dModel) return;
 
         showStatus(t('live2d.parameterEditor.savingParameters', '正在保存参数...'));
 
-        const paramsToSave = {};
-        if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
-            const coreModel = live2dModel.internalModel.coreModel;
-            const paramCount = coreModel.getParameterCount();
-            const manager = window.live2dManager;
-            const isEyeBlinkParam = (paramId, index) => {
-                if (!manager || typeof manager._isEyeBlinkParamId !== 'function') return false;
-                try {
-                    return manager._isEyeBlinkParamId(paramId)
-                        || manager._isEyeBlinkParamId(`param_${index}`);
-                } catch (_) {
-                    return false;
-                }
-            };
-
-            for (let i = 0; i < paramCount; i++) {
-                try {
-                    let paramId = null;
-                    try {
-                        paramId = coreModel._parameterIds?.[i]
-                            ?? coreModel._model?.parameters?.ids?.[i]
-                            ?? (typeof coreModel.getParameterId === 'function' ? coreModel.getParameterId(i) : null);
-                    } catch (e) {
-                        paramId = `param_${i}`;
-                    }
-                    if (!paramId) {
-                        paramId = `param_${i}`;
-                    }
-                    if (isEyeBlinkParam(paramId, i)) {
-                        continue;
-                    }
-                    const value = coreModel.getParameterValueByIndex(i);
-                    paramsToSave[paramId] = value;
-                } catch (e) {
-                    console.warn(`收集参数 ${i} 失败:`, e);
-                }
-            }
-        }
+        const manager = window.live2dManager;
+        const paramsToSave = buildParametersFromDraft(draftParameters, draftParameterIndexes, manager);
 
         try {
-            // 同时保存到模型目录的parameters.json文件和用户偏好设置
-            const position = { x: live2dModel.x, y: live2dModel.y };
-            const scale = { x: live2dModel.scale.x, y: live2dModel.scale.y };
-
-            // 1. 保存到模型目录的parameters.json文件
-            const fileResponse = await fetch(`/api/live2d/save_model_parameters/${encodeURIComponent(currentModelInfo.name)}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    parameters: paramsToSave
-                })
-            });
-
-            const fileResult = await fileResponse.json();
-
-            // 2. 同时保存到用户偏好设置（这样主页加载时也能读取到）
-            const prefSuccess = await window.live2dManager.saveUserPreferences(
-                currentModelInfo.path,
-                position,
-                scale,
-                paramsToSave
+            const { fileSuccess, fileError, prefSuccess, prefError } = await persistParameterDraft(
+                currentModelInfo,
+                live2dModel,
+                paramsToSave,
+                { manager }
             );
 
-            if (fileResult.success || prefSuccess) {
+            if (prefSuccess) {
                 markModelManagerNeedsSaveAfterParameterEdit(currentModelInfo);
-            }
+                sendMessageToMainPage('reload_model_parameters', {
+                    lanlan_name: getParameterEditorLanlanName(),
+                    model_name: currentModelInfo.name,
+                    model_path: currentModelInfo.path
+                });
 
-            if (fileResult.success && prefSuccess) {
-                showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);
-                // 通知主页重新应用参数
-                sendMessageToMainPage('reload_model_parameters');
+                if (fileSuccess) {
+                    showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);
+                } else {
+                    showStatus(t(
+                        'live2d.parameterEditor.modelDirectoryMirrorSaveWarning',
+                        '参数已保存；模型目录兼容镜像写入失败'
+                    ), 3500);
+                    console.warn('模型目录 parameters.json 兼容镜像保存失败:', fileError);
+                }
             } else {
-                const errors = [];
-                if (!fileResult.success) errors.push(t('live2d.parameterEditor.modelDirectorySaveFailed', '模型目录文件保存失败'));
-                if (!prefSuccess) errors.push(t('live2d.parameterEditor.userPreferencesSaveFailed', '用户偏好设置保存失败'));
-                showStatus(t('live2d.parameterEditor.parametersSavePartialFailed', '参数保存部分失败: {{errors}}', { errors: errors.join(', ') }), 3000);
-                console.error('参数保存失败:', errors);
+                const message = t('live2d.parameterEditor.userPreferencesSaveFailed', '用户偏好设置保存失败');
+                showStatus(t('live2d.parameterEditor.parametersSaveFailed', '参数保存失败: {{error}}', { error: message }), 3000);
+                console.error('权威用户偏好保存失败:', { fileSuccess, fileError, prefError });
             }
         } catch (error) {
             showStatus(t('live2d.parameterEditor.parametersSaveFailed', '参数保存失败: {{error}}', { error: error.message }), 3000);

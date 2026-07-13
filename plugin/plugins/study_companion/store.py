@@ -430,6 +430,11 @@ class StudyStore:
             "question_types": StudyStore._json_loads(row["question_types"], []),
             "examples": StudyStore._json_loads(row["examples"], []),
             "course_family": str(row["course_family"] or ""),
+            "curriculum_version": StudyStore._json_loads(
+                row["curriculum_version"], []
+            ),
+            "exam_region": StudyStore._json_loads(row["exam_region"], []),
+            "exam_type": StudyStore._json_loads(row["exam_type"], []),
             "aliases": StudyStore._json_loads(row["aliases"], []),
             "source": str(row["source"] or ""),
             "created_at": str(row["created_at"] or ""),
@@ -1003,9 +1008,10 @@ class StudyStore:
             INSERT INTO topics (
                 id, name, subject, chapter, stage, unit, depth, difficulty,
                 prerequisites, related, typical_misconceptions, skills,
-                question_types, examples, course_family, aliases, source, updated_at
+                question_types, examples, course_family, curriculum_version,
+                exam_region, exam_type, aliases, source, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
                 name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
                 subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
@@ -1044,6 +1050,21 @@ class StudyStore:
                     WHEN topics.source = 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
                     WHEN topics.source = 'seed' THEN topics.course_family
                     ELSE excluded.course_family
+                END,
+                curriculum_version = CASE
+                    WHEN topics.source = 'seed' AND topics.curriculum_version = '[]' AND excluded.curriculum_version != '[]' THEN excluded.curriculum_version
+                    WHEN topics.source = 'seed' THEN topics.curriculum_version
+                    ELSE excluded.curriculum_version
+                END,
+                exam_region = CASE
+                    WHEN topics.source = 'seed' AND topics.exam_region = '[]' AND excluded.exam_region != '[]' THEN excluded.exam_region
+                    WHEN topics.source = 'seed' THEN topics.exam_region
+                    ELSE excluded.exam_region
+                END,
+                exam_type = CASE
+                    WHEN topics.source = 'seed' AND topics.exam_type = '[]' AND excluded.exam_type != '[]' THEN excluded.exam_type
+                    WHEN topics.source = 'seed' THEN topics.exam_type
+                    ELSE excluded.exam_type
                 END,
                 aliases = CASE
                     WHEN topics.source = 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
@@ -1093,6 +1114,21 @@ class StudyStore:
                     topic.get("examples") if isinstance(topic.get("examples"), list) else []
                 ),
                 str(topic.get("course_family") or "").strip(),
+                self._json_dumps(
+                    topic.get("curriculum_version")
+                    if isinstance(topic.get("curriculum_version"), (str, list))
+                    else []
+                ),
+                self._json_dumps(
+                    topic.get("exam_region")
+                    if isinstance(topic.get("exam_region"), (str, list))
+                    else []
+                ),
+                self._json_dumps(
+                    topic.get("exam_type")
+                    if isinstance(topic.get("exam_type"), (str, list))
+                    else []
+                ),
                 self._json_dumps(
                     topic.get("aliases") if isinstance(topic.get("aliases"), list) else []
                 ),

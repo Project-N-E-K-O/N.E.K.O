@@ -36,8 +36,6 @@ _ALLOWED_PLUGIN_LIST_ACTION_BUILTINS = {
     "reload",
     "pack",
     "delete",
-    "enable_extension",
-    "disable_extension",
 }
 _HOSTED_TRANSLATIONS_MAX_BYTES = 128 * 1024
 _HOSTED_TRANSLATIONS_DEFAULT_SOURCE_LOCALE = "en-US"

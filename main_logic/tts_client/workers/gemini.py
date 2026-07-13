@@ -18,8 +18,8 @@ import numpy as np
 import time
 import base64
 
-from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
-from utils.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
+from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
+from utils.tts.providers.gemini import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
 
 from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry

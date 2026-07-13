@@ -286,17 +286,13 @@ export default {
     autoStart: 'Inicio automático',
     manualStart: 'Inicio manual',
     fetchFailed: 'Error al obtener los plugins',
-    extension: 'Extensión',
     pluginType: 'Tipo',
     pluginTypeNormal: 'Plugin',
     hostPlugin: 'Plugin anfitrión',
-    boundExtensions: 'Extensiones vinculadas',
     pluginsSection: 'Plugins',
     adaptersSection: 'Adaptadores',
-    extensionsSection: 'Extensiones',
     typePlugin: 'Plugin',
     typeAdapter: 'Adaptador',
-    typeExtension: 'Extensión',
     layoutList: 'Lista',
     layoutSingle: 'Una columna',
     layoutDouble: 'Dos columnas',
@@ -345,13 +341,10 @@ export default {
       auto: 'Inicio automático',
       plugin: 'Plugin',
       adapter: 'Adaptador',
-      extension: 'Extensión',
       ui: 'Con UI',
       entries: 'Con puntos de entrada',
-      host: 'Con anfitrión',
       name: 'Por nombre',
       id: 'Por ID',
-      hostTarget: 'Por anfitrión',
       version: 'Por versión',
       entry: 'Por punto de entrada',
       author: 'Por autor'
@@ -363,8 +356,6 @@ export default {
     },
     build: 'Empaquetar plugin',
     delete: 'Eliminar plugin',
-    disableExtension: 'Deshabilitar extensión',
-    enableExtension: 'Habilitar extensión',
     dangerDialog: {
       title: 'Confirmar acción destructiva',
       warningTitle: 'Esta acción no se puede deshacer',
@@ -553,7 +544,6 @@ export default {
     loadFailed: 'Error de carga',
     loading: 'Cargando',
     disabled: 'Deshabilitado',
-    injected: 'Inyectado',
     pending: 'Anfitrión pendiente'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: 'Error al empaquetar el plugin',
     deleteFailed: 'Error al eliminar el plugin',
     pluginLoadFailed: 'El plugin no se cargó y no puede iniciarse.',
-    confirmDisableExt: '¿Deshabilitar esta extensión? Su funcionalidad se descargará del plugin anfitrión.',
-    extensionDisabled: 'Extensión deshabilitada',
-    extensionEnabled: 'Extensión habilitada',
-    disableExtFailed: 'Error al deshabilitar la extensión',
-    enableExtFailed: 'Error al habilitar la extensión',
     requestFailed: 'Solicitud fallida',
     requestFailedWithStatus: 'Solicitud fallida ({status})',
     badRequest: 'Parámetros de solicitud no válidos',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: 'Área de plugins',
-        body: 'Aquí se reúnen plugins, adaptadores y extensiones para la gestión diaria.'
+        body: 'Aquí se reúnen plugins y adaptadores para la gestión diaria.'
       },
       pluginFilters: {
         title: 'Búsqueda y filtros',

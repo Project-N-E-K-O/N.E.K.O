@@ -74,7 +74,6 @@ class BusSubscriptionService:
         bus: object,
         deliver: object,
         rules: object,
-        plan: object,
         debounce_ms: object,
         timeout: object,
     ) -> dict[str, object]:
@@ -97,7 +96,6 @@ class BusSubscriptionService:
             "bus": normalized_bus,
             "rules": normalized_rules,
             "deliver": normalized_deliver,
-            "plan": plan,
             "debounce_ms": debounce_ms,
             "timeout": normalized_timeout,
         }

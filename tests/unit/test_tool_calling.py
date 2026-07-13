@@ -29,6 +29,29 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
+def _init_bare(client):
+    """Populate the ``__init__``-guaranteed baseline attributes that
+    ``stream_text`` / ``switch_model`` read but that these ``__new__``-bypassing
+    harnesses don't otherwise establish (proactive-vision staging slot + vision
+    provider type). Real clients always have these set in ``__init__``; the tests
+    build a minimal object, so mirror that minimal state here."""
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    if not hasattr(client, "vision_provider_type"):
+        client.vision_provider_type = None
+    # stream_text 在到达 astream 前读 self.llm.max_completion_tokens（focus overrides /
+    # summary budget）。真实 client 恒有 self.llm；harness 里若测试自己设了 fake llm
+    # 就用它的，否则给个 max_completion_tokens=None 的占位（= 不限 budget，与加
+    # summary/focus 之前的老行为一致）。注意不能设成 None —— stream_text 会把
+    # ``self.llm is None`` 当成「client 已 close」提前 break。
+    if not hasattr(client, "llm"):
+        from types import SimpleNamespace
+        client.llm = SimpleNamespace(max_completion_tokens=None)
+    return client
+
+
+
 # ---------------------------------------------------------------------------
 # 1. ToolRegistry
 # ---------------------------------------------------------------------------
@@ -256,6 +279,7 @@ async def test_offline_openai_path_runs_tool_then_text():
     # construction. We bypass __init__ entirely and patch the minimum
     # state needed by _astream_openai_with_tools.
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -331,6 +355,7 @@ async def test_offline_openai_path_filters_pretool_leak_before_history():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
@@ -400,6 +425,7 @@ async def test_offline_openai_path_emits_finalized_pretool_tail():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
@@ -443,6 +469,7 @@ async def test_visible_tool_leak_filter_flushes_pending_text_before_stream_error
     monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_with_tools_then_raise)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.model = "fake"
     client._tool_definitions = []
@@ -499,6 +526,7 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -560,6 +588,7 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
         LLMStreamChunk(content="答案是 42。", finish_reason="stop"),
     ]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -600,6 +629,7 @@ async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
 
     chunks = [LLMStreamChunk(content="直接答。", finish_reason="stop")]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -630,6 +660,7 @@ async def test_notify_reasoning_done_clears_only_after_a_pulse():
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_active_pulse_seq = None
     pulses = []
 
@@ -658,6 +689,7 @@ async def test_notify_reasoning_done_owner_seq_guards_cross_stream_clear():
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_stream_seq = 0
     client._reasoning_active_pulse_seq = None
     pulses = []
@@ -692,6 +724,7 @@ async def test_notify_reasoning_done_clears_own_pulse_after_preemption_without_n
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_stream_seq = 0
     client._reasoning_active_pulse_seq = None
     pulses = []
@@ -724,6 +757,7 @@ async def test_offline_openai_path_pulses_when_reasoning_bundled_with_other_sign
     # pure-reasoning skip (has content/finish) yet must still pulse.
     chunks = [LLMStreamChunk(content="答案", reasoning_content="先想想", finish_reason="stop")]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -780,6 +814,7 @@ async def test_offline_openai_path_omits_reasoning_when_absent():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -819,6 +854,7 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
 
     # 建 client：conversation 走 OpenAI，vision_base_url 指向 Gemini native endpoint。
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gpt-4o-mini"
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "sk-fake"
@@ -861,6 +897,7 @@ async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gpt-4o-mini"
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "sk-fake"
@@ -932,6 +969,7 @@ async def test_offline_genai_transient_error_does_not_disable_tools(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -1024,6 +1062,7 @@ async def test_offline_genai_streamed_text_persisted_with_tool_call(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -1711,6 +1750,7 @@ async def test_genai_unsupported_keyword_matches_underscore_variant(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-old"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -1754,6 +1794,7 @@ async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_should_not_run)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -1808,6 +1849,7 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1865,6 +1907,7 @@ async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(m
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1939,6 +1982,7 @@ async def test_stream_text_empty_safety_completion_reports_policy_violation(monk
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1994,6 +2038,7 @@ async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2060,6 +2105,7 @@ async def test_stream_text_length_guard_finishes_visible_long_reply_without_disc
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2114,6 +2160,7 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -2153,6 +2200,7 @@ async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monke
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -2194,6 +2242,7 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-old"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -2251,6 +2300,7 @@ async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -2350,6 +2400,7 @@ async def test_offline_genai_path_drops_empty_name_function_calls(monkeypatch):
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -2392,6 +2443,7 @@ async def test_set_tools_resets_genai_unsupported_flag():
     from main_logic.tool_calling import ToolDefinition
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._tool_definitions = [
         ToolDefinition(name="bad", description="", handler=lambda _: 0),
     ]
@@ -2446,6 +2498,7 @@ async def test_stream_text_does_not_double_write_pretool_text(monkeypatch):
     async def noop(*_a, **_kw): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2542,6 +2595,7 @@ async def test_stream_text_length_guard_after_tool_call_does_not_double_write_pr
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2628,6 +2682,7 @@ async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_rec
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2694,6 +2749,7 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     fake_llm = _FakeLLM([loop_chunks(), loop_chunks(), loop_chunks(), final_text_chunks])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool]
     client.max_tool_iterations = 3
@@ -2909,6 +2965,7 @@ def _build_summary_client(monkeypatch, *, max_response_length: int = 4):
     )
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -3276,6 +3333,7 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -3314,6 +3372,7 @@ def _minimal_offline_client_for_leak_tests():
     from utils.llm_client import SystemMessage
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.lanlan_name = "T"
     client.master_name = "M"

@@ -3,15 +3,15 @@ import re
 from pathlib import Path
 
 
-APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
-APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app.js"
-APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
-APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-react-chat-window.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app.js"
+APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-buttons.js"
+APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-chat-export.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js"
 AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-ui-popup.js"
 AVATAR_POPUP_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar" / "avatar-popup-common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
-MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "jukebox" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
@@ -203,7 +203,7 @@ def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
     source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert '<script src="/static/theme-manager.js"></script>' in source
-    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
@@ -965,7 +965,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert "--compact-chat-minimize-ball-size: 41px;" in styles
+    assert "--compact-chat-minimize-ball-size: 46px;" in styles
     assert "--compact-chat-minimize-ball-inset: 2px;" in styles
     assert "--compact-chat-minimize-ball-gap: 8px;" in styles
     assert "--compact-chat-minimize-ball-slot: calc(" in styles
@@ -1041,12 +1041,14 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     tooltip_block = css_block(
         styles,
         ".compact-input-tool-fan .compact-input-tool-tooltip {",
-        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+        ".compact-input-tool-fan button.compact-input-tool-item:not(:disabled):focus-within,",
     )
     visible_block = css_block(
         styles,
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
-        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled)[data-compact-tool-pointer-hovered="true"] > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] button.compact-input-tool-item:not(:disabled):focus-visible > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar[data-compact-tool-pointer-hovered="true"]:has(> .composer-emoji-btn:not(:disabled)) > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item-avatar:has(> .composer-emoji-btn:not(:disabled):focus-visible) > .compact-input-tool-tooltip {',
         ".compact-input-tool-fan .compact-input-tool-item > img,",
     )
     dark_tooltip_block = css_block(
@@ -1241,21 +1243,21 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
 
 
 def test_externalized_chat_input_spotlight_uses_pc_overlay_rounded_rect_radius():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
-    rect_block = script.split("function buildYuiGuidePcOverlayRect(kind, rect, index)", 1)[1].split(
-        "function dispatchCrossWindowIdleActivity",
+    rect_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight",
         1,
     )[0]
 
     assert (
         "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
-        "Math.round((rect.height + padding * 2) / 2)));"
+        "Math.round((sourceRect.height + padding * 2) / 2)));"
     ) in rect_block
 
 
 def test_externalized_chat_input_spotlight_uses_global_overlay_only():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     update_block = script.split("function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)", 1)[1].split(
         "function applyYuiGuideChatSpotlight(kind, options)",
@@ -1278,7 +1280,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
 
 def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_do_not():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action, message)", 1)[1].split(
         "function isMainUIHiddenByModelManager()",
@@ -1307,7 +1309,7 @@ def test_yui_guide_state_messages_bypass_cross_channel_dedup_but_cursor_deltas_d
 
 def test_yui_guide_external_compact_history_open_is_bridged_to_react_host():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "function setCompactHistoryOpen(open, reason)" in react_host
     assert "compactHistoryOpenRequest" in react_host
@@ -1464,7 +1466,7 @@ def test_externalized_tutorial_chat_ready_replays_input_lock():
     bridge_bus = (Path(__file__).resolve().parents[2] / "static" / "tutorial" / "core" / "bridge-command-bus.js").read_text(
         encoding="utf-8"
     )
-    interpage = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    interpage = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     assert "yui_guide_set_chat_input_locked: true" in bridge_bus
     bridge_replay_block = interpage.split("function handleYuiGuideChatBridgeData(data)", 1)[1].split(
@@ -1502,14 +1504,14 @@ def test_interpage_bundle_uses_static_asset_version_on_home_and_chat():
     index_template = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in index_template
-    assert '/static/app-interpage.js?v={{ static_asset_version }}' in chat_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in index_template
-    assert '/static/app-interpage.js?v={{ react_chat_asset_version }}' not in chat_template
+    assert '/static/app/app-interpage.js?v={{ static_asset_version }}' in index_template
+    assert '/static/app/app-interpage.js?v={{ static_asset_version }}' in chat_template
+    assert '/static/app/app-interpage.js?v={{ react_chat_asset_version }}' not in index_template
+    assert '/static/app/app-interpage.js?v={{ react_chat_asset_version }}' not in chat_template
 
 
 def test_externalized_chat_input_spotlight_retries_after_message_layout():
-    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js").read_text(encoding="utf-8")
 
     retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry(kind, pcOverlayRunId)", 1)[1].split(
         "function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)",
@@ -2289,10 +2291,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
-    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function getPreferredMusicMountTarget(" in music_ui_source
     assert "function getCompactMusicMountTarget()" in music_ui_source
     assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
-    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.querySelectorAll('#music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source

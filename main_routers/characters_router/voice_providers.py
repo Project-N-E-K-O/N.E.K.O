@@ -24,7 +24,7 @@ from ._shared import logger
 import json
 import io
 import httpx
-from utils.elevenlabs_tts_voices import (
+from utils.tts.providers.elevenlabs import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_VOICE_PREFIX,
 )

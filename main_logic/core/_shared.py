@@ -124,7 +124,7 @@ logger = get_module_logger("main_logic.core", "Main")
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
-# 前端文本会话 start_session 等 session_started 的硬超时（static/app-buttons.js
+# 前端文本会话 start_session 等 session_started 的硬超时（static/app/app-buttons.js
 # 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
 # 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
 # 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
@@ -203,6 +203,11 @@ def _get_chat_locale_text(language: str | None, key: str, fallback: str) -> str:
 # without an expected_session guard and would otherwise tear down the winner's
 # session/websocket while also inflating session_start_failure_count.
 _START_LLM_CONCURRENT_ABORTED = object()
+
+# 强引用兜底：事件循环只弱引用 task，分离的收尸 task（lifecycle 的 listener
+# 取消超时 fail-close 后等旧 listener 退出再关旧 session）若无人持有可能被
+# GC 掐死在半路。add + done_callback(discard) 模式。
+_ORPHAN_SESSION_REAPER_TASKS: set = set()
 
 
 @dataclass(frozen=True)

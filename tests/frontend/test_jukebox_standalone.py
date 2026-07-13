@@ -6,7 +6,7 @@ from playwright.sync_api import Page, expect
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox-standalone.js").read_text(encoding="utf-8")
+STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-standalone.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
 PRELOAD_JUKEBOX_PATH = REPO_ROOT / "N.E.K.O.-PC" / "src" / "preload-jukebox.js"
 if not PRELOAD_JUKEBOX_PATH.exists():

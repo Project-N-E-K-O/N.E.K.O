@@ -5,7 +5,7 @@
 // opens an embedded Chromium webview that has no close affordance —
 // users get trapped. The host preload script exposes window.electronShell
 // as the bridge to shell.openExternal in the main process; the same
-// convention is used by static/app-proactive.js for url-card / meme
+// convention is used by static/app/app-proactive.js for url-card / meme
 // links, and by plugin surfaces (e.g. game_agent_minecraft quickstart).
 //
 // The chat surface renders in three contexts (index.html wide / narrow
