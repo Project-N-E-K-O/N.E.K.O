@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import weakref
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,6 +15,10 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _AsrWorkerRequest,
     _RealtimeAsrSessionImpl,
+)
+from main_logic.asr_client._registry_meta import (
+    ASR_PROVIDER_REGISTRY,
+    CORE_ASR_ROUTES,
 )
 from main_logic.asr_client.workers.dummy import dummy_asr_worker
 
@@ -78,6 +83,7 @@ async def _delayed_error_worker(request_queue, response_queue, api_key, config):
         while True:
             request = await request_queue.get()
             if request.kind == "commit":
+
                 async def emit_error(committed_request=request):
                     await asyncio.sleep(0.02)
                     await response_queue.put(
@@ -141,7 +147,7 @@ def test_routes_fail_synchronously_without_dummy(monkeypatch):
             on_input_transcript=callback,
             on_connection_error=callback,
         )
-    with pytest.raises(RuntimeError, match="ASR_BACKEND_NOT_IMPLEMENTED"):
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING"):
         create_asr_session(
             "qwen",
             on_input_transcript=callback,
@@ -179,13 +185,97 @@ def test_dummy_requires_explicit_override_and_manual_mode(monkeypatch):
         on_connection_error=callback,
     )
     assert session is not None
-    with pytest.raises(RuntimeError, match="ASR_INVALID_CONFIG"):
+    with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         create_asr_session(
             "qwen",
-            config=AsrSessionConfig(endpointing_mode="provider"),
+            config=AsrSessionConfig(endpointing_mode="server_vad"),
             on_input_transcript=callback,
             on_connection_error=callback,
         )
+
+
+def test_phase2_registry_routes_and_capabilities():
+    assert set(asr_client._IMPLEMENTED_WORKERS) == {
+        "dummy",
+        "qwen",
+        "openai",
+        "step",
+        "grok",
+    }
+    assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
+    assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
+    assert CORE_ASR_ROUTES["qwen"].region == "cn"
+    assert CORE_ASR_ROUTES["qwen_intl"].credential_field == ("ASSIST_API_KEY_QWEN_INTL")
+    assert CORE_ASR_ROUTES["qwen_intl"].region == "intl"
+    assert CORE_ASR_ROUTES["openai"].credential_field == "ASSIST_API_KEY_OPENAI"
+    assert CORE_ASR_ROUTES["step"].credential_field == "ASSIST_API_KEY_STEP"
+    assert CORE_ASR_ROUTES["grok"].credential_field == "ASSIST_API_KEY_GROK"
+
+    assert ASR_PROVIDER_REGISTRY["qwen"].supported_endpointing_modes == {
+        "manual",
+        "server_vad",
+    }
+    assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
+    assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
+    assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"server_vad"}
+    for provider_key in ("qwen", "openai", "step", "grok"):
+        assert (
+            ASR_PROVIDER_REGISTRY[provider_key].implementation_status
+            == "blocked_credentials"
+        )
+
+
+def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
+    import utils.config_manager as config_manager
+
+    class FakeConfigManager:
+        def get_core_config(self):
+            return {
+                "ASSIST_API_KEY_QWEN": "qwen-cn-key",
+                "ASSIST_API_KEY_QWEN_INTL": "qwen-intl-key",
+                "AUDIO_API_KEY": "must-not-be-used",
+            }
+
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        config_manager,
+        "get_config_manager",
+        lambda: FakeConfigManager(),
+    )
+    monkeypatch.setitem(
+        ASR_PROVIDER_REGISTRY,
+        "qwen",
+        replace(
+            ASR_PROVIDER_REGISTRY["qwen"],
+            implementation_status="implemented",
+        ),
+    )
+
+    cn_worker, cn_key, cn_provider = asr_client._get_asr_worker("qwen")
+    intl_worker, intl_key, intl_provider = asr_client._get_asr_worker("qwen_intl")
+    assert (cn_key, cn_provider) == ("qwen-cn-key", "qwen")
+    assert (intl_key, intl_provider) == ("qwen-intl-key", "qwen")
+    assert cn_worker.keywords == {"region": "cn"}
+    assert intl_worker.keywords == {"region": "intl"}
+
+    with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
+        asr_client._get_asr_worker("openai", "server_vad")
+
+    class AudioOnlyConfigManager:
+        def get_core_config(self):
+            return {
+                "AUDIO_API_KEY": "audio-key",
+                "TTS_API_KEY": "tts-key",
+                "ASSIST_API_KEY_OPENAI": "another-provider-key",
+            }
+
+    monkeypatch.setattr(
+        config_manager,
+        "get_config_manager",
+        lambda: AudioOnlyConfigManager(),
+    )
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING"):
+        asr_client._get_asr_worker("qwen")
 
 
 async def test_connect_ready_status_and_idempotent_close(monkeypatch):
@@ -438,7 +528,7 @@ async def test_provider_mode_does_not_commit():
         api_key="",
         config=AsrSessionConfig(
             input_sample_rate_hz=48_000,
-            endpointing_mode="provider",
+            endpointing_mode="server_vad",
         ),
         on_input_transcript=transcripts.put,
         on_connection_error=errors,
@@ -454,6 +544,105 @@ async def test_provider_mode_does_not_commit():
     assert all(kind != "commit" for kind, _ in observed_requests)
     assert transcripts.empty()
     errors.assert_not_awaited()
+    await session.close()
+
+
+async def test_server_vad_started_is_idempotent_and_finals_can_arrive_out_of_order():
+    observed_kinds: list[str] = []
+
+    async def server_vad_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        audio_requests = []
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                observed_kinds.append(request.kind)
+                if request.kind == "audio":
+                    audio_requests.append(request)
+                    if len(audio_requests) == 2:
+                        common = {
+                            "generation": request.generation,
+                            "buffer_epoch": request.buffer_epoch,
+                        }
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="utterance_started",
+                                utterance_id=10,
+                                **common,
+                            )
+                        )
+                        # A repeated provider speech-start notification is
+                        # idempotent and must not create another turn.
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="utterance_started",
+                                utterance_id=10,
+                                **common,
+                            )
+                        )
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="utterance_started",
+                                utterance_id=11,
+                                **common,
+                            )
+                        )
+                        # Turn 2 may complete before turn 1.
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="final",
+                                utterance_id=11,
+                                text="second",
+                                **common,
+                            )
+                        )
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="final",
+                                utterance_id=10,
+                                text="first",
+                                **common,
+                            )
+                        )
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="final",
+                                utterance_id=10,
+                                text="duplicate",
+                                **common,
+                            )
+                        )
+                elif request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="closed",
+                            generation=request.generation,
+                        )
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=server_vad_worker,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="server_vad"),
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+
+    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
+    await asyncio.sleep(0.05)
+    assert transcripts.empty()
+    assert "commit" not in observed_kinds
+    assert session._utterance_id == 1
     await session.close()
 
 
@@ -657,9 +846,7 @@ async def test_dummy_does_not_retain_pcm_requests(monkeypatch):
         gc.collect()
         assert first_payload_ref() is None
     finally:
-        await request_queue.put(
-            _AsrWorkerRequest(kind="shutdown", generation=1)
-        )
+        await request_queue.put(_AsrWorkerRequest(kind="shutdown", generation=1))
         await asyncio.wait_for(worker_task, 1)
 
 
@@ -789,6 +976,14 @@ async def test_provider_final_waits_for_in_flight_audio_enqueue():
                 await release_final.wait()
                 await response_queue.put(
                     _AsrWorkerEvent(
+                        kind="utterance_started",
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=request.utterance_id,
+                    )
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(
                         kind="final",
                         generation=request.generation,
                         buffer_epoch=request.buffer_epoch,
@@ -814,7 +1009,7 @@ async def test_provider_final_waits_for_in_flight_audio_enqueue():
     session = _RealtimeAsrSessionImpl(
         worker_fn=racing_provider_worker,
         api_key="",
-        config=AsrSessionConfig(endpointing_mode="provider"),
+        config=AsrSessionConfig(endpointing_mode="server_vad"),
         on_input_transcript=capture_enqueue_state,
         on_connection_error=AsyncMock(),
     )
