@@ -266,7 +266,7 @@ test('head anchor keeps the face visible when a tail widens the model bounds', a
     assert.ok(model.x > -500, 'placement must not expose only the tail-side edge of the bounds');
 });
 
-test('top corners use 135 degree poses with the body outside above the viewport', async () => {
+test('corner peeks keep the head at the corner and the body outside the matching vertical edge', async () => {
     const cases = [
         { edge: 'top-left', x: 0, y: 0, scaleX: 1, rotation: 135 },
         { edge: 'top-right', x: 1000, y: 0, scaleX: -1, rotation: -135 },
@@ -290,14 +290,25 @@ test('top corners use 135 degree poses with the body outside above the viewport'
         assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
         assert.equal(model.rotation, item.rotation * Math.PI / 180);
 
+        const head = manager.getHeadScreenAnchor();
+        const expectedHeadXRange = item.edge.endsWith('-left')
+            ? [48, 84]
+            : [916, 952];
+        assert.ok(
+            head.x >= expectedHeadXRange[0] && head.x <= expectedHeadXRange[1],
+            `${item.edge} head should sit just inside the side edge, got ${head.x}`
+        );
+
         if (item.edge.startsWith('top-')) {
-            const head = manager.getHeadScreenAnchor();
             const lowerBody = model.transformPoint(150, 560);
             assert.ok(head.y >= 36 && head.y <= 64, `${item.edge} head should sit just below the top edge`);
             assert.ok(lowerBody.y < head.y, `${item.edge} body should stay above the head`);
             assert.ok(lowerBody.y < 0, `${item.edge} body should stay outside above the viewport`);
         } else {
-            assert.ok(manager.getBodyScreenRectInfo().rect.bottom > 800, `${item.edge} waist should sit outside the bottom edge`);
+            const lowerBody = model.transformPoint(150, 560);
+            assert.ok(head.y >= 736 && head.y <= 764, `${item.edge} head should sit just above the bottom edge`);
+            assert.ok(lowerBody.y > head.y, `${item.edge} body should stay below the head`);
+            assert.ok(lowerBody.y > 800, `${item.edge} body should stay outside below the viewport`);
         }
     }
 });
@@ -330,22 +341,32 @@ test('semantic corner anchor restores the model to the same corner', async () =>
     assert.equal(model.rotation, 135 * Math.PI / 180);
 });
 
-test('top corner falls back to model transforms when no head anchor is available', async () => {
-    const harness = createHarness();
-    const manager = new harness.Live2DManager();
-    const model = createRotatingModel({ x: 0, y: 0, scaleX: 1 });
+test('corner peeks fall back to model transforms when no head anchor is available', async () => {
+    const cases = [
+        { edge: 'top-left', y: 0, headYRange: [36, 64], bodyOutside: (bodyY) => bodyY < 0 },
+        { edge: 'bottom-left', y: 200, headYRange: [736, 764], bodyOutside: (bodyY) => bodyY > 800 }
+    ];
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
-    flushNextFrame(harness);
-    assert.equal(await enterPromise, true);
+    for (const item of cases) {
+        const harness = createHarness();
+        const manager = new harness.Live2DManager();
+        const model = createRotatingModel({ x: 0, y: item.y, scaleX: 1 });
 
-    const estimatedHead = model.transformPoint(150, 600 * 0.24);
-    const lowerBody = model.transformPoint(150, 560);
-    assert.equal(manager._live2DGameModeEdgePeekState.edge, 'top-left');
-    assert.equal(manager._live2DGameModeEdgePeekState.headAnchorSource, 'bounds-fallback');
-    assert.ok(estimatedHead.x >= 48 && estimatedHead.x <= 84, `fallback head x should remain visible, got ${estimatedHead.x}`);
-    assert.ok(estimatedHead.y >= 36 && estimatedHead.y <= 64, `fallback head y should remain visible, got ${estimatedHead.y}`);
-    assert.ok(lowerBody.y < 0, 'fallback should keep the lower body outside above the viewport');
+        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        flushNextFrame(harness);
+        assert.equal(await enterPromise, true);
+
+        const estimatedHead = model.transformPoint(150, 600 * 0.24);
+        const lowerBody = model.transformPoint(150, 560);
+        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(manager._live2DGameModeEdgePeekState.headAnchorSource, 'bounds-fallback');
+        assert.ok(estimatedHead.x >= 48 && estimatedHead.x <= 84, `fallback head x should remain visible, got ${estimatedHead.x}`);
+        assert.ok(
+            estimatedHead.y >= item.headYRange[0] && estimatedHead.y <= item.headYRange[1],
+            `${item.edge} fallback head y should remain visible, got ${estimatedHead.y}`
+        );
+        assert.ok(item.bodyOutside(lowerBody.y), `${item.edge} fallback should keep the lower body outside the viewport`);
+    }
 });
 
 test('macOS top corners trigger at the current display work-area top', async () => {
