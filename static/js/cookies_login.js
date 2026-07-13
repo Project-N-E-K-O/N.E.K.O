@@ -36,7 +36,7 @@ const PLATFORM_CONFIG_DATA = {
         instructionKey: 'cookiesLogin.instructions.xhh',
         fields: [
             { key: 'user_heybox_id', labelKey: 'cookiesLogin.fields.user_heybox_id.label', descKey: 'cookiesLogin.fields.user_heybox_id.desc', required: true },
-            { key: 'heybox_token', labelKey: 'cookiesLogin.fields.heybox_token.label', descKey: 'cookiesLogin.fields.heybox_token.desc', required: true },
+            { key: 'user_pkey', labelKey: 'cookiesLogin.fields.user_pkey.label', descKey: 'cookiesLogin.fields.user_pkey.desc', required: true },
             { key: 'x_xhh_tokenid', labelKey: 'cookiesLogin.fields.x_xhh_tokenid.label', descKey: 'cookiesLogin.fields.x_xhh_tokenid.desc', required: false }
         ]
     },

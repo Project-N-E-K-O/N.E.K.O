@@ -12,6 +12,9 @@ from main_routers.cookies_login_router import (
     _poll_xhh_qr_login,
     validate_platform_fields,
 )
+from utils import cookies_login
+from utils.cookies_login import _read_encryption_key, _write_encryption_key
+from utils.cookies_login import validate_cookies
 
 
 def test_xhh_credential_tab_is_present():
@@ -30,11 +33,53 @@ def _response_with_cookies(cookies: dict[str, str]) -> httpx.Response:
 
 def test_xhh_manual_credentials_require_core_fields():
     validate_platform_fields(
-        "xhh", {"user_heybox_id": "123", "heybox_token": "secret"}
+        "xhh", {"user_heybox_id": "123", "user_pkey": "secret"}
+    )
+    assert validate_cookies(
+        "xhh", {"user_heybox_id": "123", "user_pkey": "secret"}
     )
 
-    with pytest.raises(HTTPException, match="heybox_token"):
+    with pytest.raises(HTTPException, match="user_pkey"):
         validate_platform_fields("xhh", {"user_heybox_id": "123"})
+    assert not validate_cookies("xhh", {"user_heybox_id": "123"})
+
+
+def test_xhh_encryption_key_uses_json(tmp_path: Path):
+    key_file = tmp_path / "xhh_key.json"
+    key = b"test-fernet-key"
+
+    _write_encryption_key("xhh", key_file, key)
+
+    assert _read_encryption_key("xhh", key_file) == key
+    assert '"key": "test-fernet-key"' in key_file.read_text(encoding="utf-8")
+
+
+def test_xhh_encryption_key_rejects_invalid_json_payload(tmp_path: Path):
+    key_file = tmp_path / "xhh_key.json"
+    key_file.write_text('{"unexpected": "value"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="key 字段"):
+        _read_encryption_key("xhh", key_file)
+
+
+def test_xhh_encrypted_credentials_round_trip_with_json_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cookie_file = tmp_path / "xhh_cookies.json"
+    key_file = tmp_path / "xhh_key.json"
+    monkeypatch.setattr(cookies_login, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(
+        cookies_login,
+        "COOKIE_FILES",
+        {"xhh": cookie_file, "xhh_key": key_file},
+    )
+    credentials = {"user_heybox_id": "123", "user_pkey": "secret"}
+
+    assert cookies_login.save_cookies_to_file("xhh", credentials)
+    assert key_file.exists()
+    assert not (tmp_path / "xhh_key.key").exists()
+    assert cookies_login.load_cookies_from_file("xhh") == credentials
 
 
 @pytest.mark.asyncio
@@ -76,7 +121,7 @@ async def test_poll_xhh_qr_reports_waiting_state():
 @pytest.mark.asyncio
 async def test_poll_xhh_qr_saves_and_returns_credentials():
     response = _response_with_cookies(
-        {"user_heybox_id": "123", "heybox_token": "secret"}
+        {"user_heybox_id": "123", "user_pkey": "secret"}
     )
     payload = {"status": "ok", "result": {"error": "ok", "nickname": "盒友"}}
     with patch(
@@ -98,7 +143,7 @@ async def test_poll_xhh_qr_saves_and_returns_credentials():
         "xhh",
         {
             "user_heybox_id": "123",
-            "heybox_token": "secret",
+            "user_pkey": "secret",
             "x_xhh_tokenid": "token-id",
         },
     )

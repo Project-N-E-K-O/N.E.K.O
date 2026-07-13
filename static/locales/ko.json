@@ -3758,9 +3758,9 @@
                 "label": "user_heybox_id",
                 "desc": "Xiaoheihe 계정 ID (필수)"
             },
-            "heybox_token": {
-                "label": "heybox_token",
-                "desc": "Xiaoheihe 로그인 토큰 (필수)"
+            "user_pkey": {
+                "label": "user_pkey",
+                "desc": "Xiaoheihe 로그인 자격 증명 (필수)"
             },
             "x_xhh_tokenid": {
                 "label": "x_xhh_tokenid",

@@ -3758,9 +3758,9 @@
                 "label": "user_heybox_id",
                 "desc": "ID учетной записи Xiaoheihe (обязательно)"
             },
-            "heybox_token": {
-                "label": "heybox_token",
-                "desc": "Токен входа Xiaoheihe (обязательно)"
+            "user_pkey": {
+                "label": "user_pkey",
+                "desc": "Учетные данные для входа в Xiaoheihe (обязательно)"
             },
             "x_xhh_tokenid": {
                 "label": "x_xhh_tokenid",

@@ -51,10 +51,10 @@ def test_build_xhh_token_and_cookie_header():
 
     assert len(base64.b64decode(token)) == 65
     header = build_xhh_cookie_header(
-        {"user_heybox_id": "123", "heybox_token": "secret"}
+        {"user_heybox_id": "123", "user_pkey": "secret"}
     )
     assert "user_heybox_id=123" in header
-    assert "heybox_token=secret" in header
+    assert "user_pkey=secret" in header
     assert "x_xhh_tokenid=" in header
 
 
@@ -126,7 +126,7 @@ async def test_fetch_xhh_feed_injects_saved_credentials():
         return_value=client,
     ), patch(
         "main_routers.system_router.proactive_xhh.load_cookies_from_file",
-        return_value={"user_heybox_id": "123", "heybox_token": "secret"},
+        return_value={"user_heybox_id": "123", "user_pkey": "secret"},
     ):
         result = await fetch_xhh_feed_content(limit=1)
 
@@ -134,7 +134,7 @@ async def test_fetch_xhh_feed_injects_saved_credentials():
     _, kwargs = client.call
     cookie_header = kwargs["headers"]["Cookie"]
     assert "user_heybox_id=123" in cookie_header
-    assert "heybox_token=secret" in cookie_header
+    assert "user_pkey=secret" in cookie_header
     assert "x_xhh_tokenid=" in cookie_header
 
 

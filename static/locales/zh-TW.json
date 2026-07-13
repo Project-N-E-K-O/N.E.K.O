@@ -3758,9 +3758,9 @@
                 "label": "user_heybox_id",
                 "desc": "小黑盒帳號 ID（必填）"
             },
-            "heybox_token": {
-                "label": "heybox_token",
-                "desc": "小黑盒登入權杖（必填）"
+            "user_pkey": {
+                "label": "user_pkey",
+                "desc": "小黑盒登入憑證（必填）"
             },
             "x_xhh_tokenid": {
                 "label": "x_xhh_tokenid",

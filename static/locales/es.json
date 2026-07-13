@@ -3758,9 +3758,9 @@
                 "label": "user_heybox_id",
                 "desc": "ID de cuenta de Xiaoheihe (obligatorio)"
             },
-            "heybox_token": {
-                "label": "heybox_token",
-                "desc": "Token de inicio de sesión de Xiaoheihe (obligatorio)"
+            "user_pkey": {
+                "label": "user_pkey",
+                "desc": "Credencial de inicio de sesión de Xiaoheihe (obligatoria)"
             },
             "x_xhh_tokenid": {
                 "label": "x_xhh_tokenid",

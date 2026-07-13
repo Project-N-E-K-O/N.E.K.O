@@ -46,7 +46,7 @@ from utils.cookies_login import (
     load_cookies_from_file,
     parse_cookie_string,
     COOKIE_FILES,
-    CONFIG_DIR
+    get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
 from main_routers.system_router.proactive_xhh import (
@@ -104,7 +104,7 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     platform_validations = {
         "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
-        "xhh": ["user_heybox_id", "heybox_token"],
+        "xhh": ["user_heybox_id", "user_pkey"],
         "douyin": ["sessionid", "ttwid"],
         "kuaishou": ["kuaishou.server.web_st", "userId"], 
         "weibo": ["SUB"],
@@ -243,7 +243,7 @@ async def delete_platform_cookies(platform: str):
         raise HTTPException(status_code=500, detail="删除 cookie 文件失败，请检查系统权限")
 
     # Step 2: 删除关联密钥文件（独立 try/except，失败不影响 cookie 已删除的结果）
-    key_file = CONFIG_DIR / f"{platform}_key.key"
+    key_file = get_cookie_key_file(platform)
     if key_file.exists():
         try:
             key_file.unlink()
@@ -615,7 +615,7 @@ NetworkQRLoginInfo = {
         "get": f"{_XHH_API_BASE}{_XHH_QR_CREATE_PATH}",
         "login": f"{_XHH_API_BASE}{_XHH_QR_POLL_PATH}",
         "timeout": 180,
-        "cookie_fields": ["user_heybox_id", "heybox_token", "x_xhh_tokenid"],
+        "cookie_fields": ["user_heybox_id", "user_pkey", "x_xhh_tokenid"],
         "headers": _XHH_HEADERS,
         "response": {},
         "status_codes": {},

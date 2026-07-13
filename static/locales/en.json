@@ -3758,9 +3758,9 @@
                 "label": "user_heybox_id",
                 "desc": "Xiaoheihe account ID (required)"
             },
-            "heybox_token": {
-                "label": "heybox_token",
-                "desc": "Xiaoheihe login token (required)"
+            "user_pkey": {
+                "label": "user_pkey",
+                "desc": "Xiaoheihe login credential (required)"
             },
             "x_xhh_tokenid": {
                 "label": "x_xhh_tokenid",

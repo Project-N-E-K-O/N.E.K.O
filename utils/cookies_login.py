@@ -46,6 +46,7 @@ COOKIE_FILES = {
     'netease': CONFIG_DIR / 'netease_cookies.json',
     'bilibili': CONFIG_DIR / 'bilibili_cookies.json',
     'xhh': CONFIG_DIR / 'xhh_cookies.json',
+    'xhh_key': CONFIG_DIR / 'xhh_key.json',
     "douyin": CONFIG_DIR / 'douyin_cookies.json',
     "kuaishou": CONFIG_DIR / 'kuaishou_cookies.json', 
     'weibo': CONFIG_DIR / 'weibo_cookies.json',
@@ -74,7 +75,7 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     required_keys = {
         'netease': ['MUSIC_U'],
         'bilibili': ['SESSDATA'],
-        'xhh': ['user_heybox_id', 'heybox_token'],
+        'xhh': ['user_heybox_id', 'user_pkey'],
         "douyin": ['sessionid', 'ttwid'],
         "kuaishou": ['kuaishou.server.web_st', 'userId'], 
         'weibo': ['SUB'],
@@ -88,6 +89,38 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
                 logger.warning(f"⚠️ 安全拦截：提取的 Cookie 中缺失核心字段 '{key}'！")
                 return False
     return True
+
+
+def get_cookie_key_file(platform: str) -> Path:
+    if platform == 'xhh':
+        return COOKIE_FILES['xhh_key']
+    return CONFIG_DIR / f"{platform}_key.key"
+
+
+def _read_encryption_key(platform: str, key_file: Path) -> bytes:
+    if platform != 'xhh':
+        return key_file.read_bytes()
+
+    payload = json.loads(key_file.read_text(encoding='utf-8'))
+    key = payload.get('key') if isinstance(payload, dict) else None
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("xhh_key.json 缺少有效的 key 字段")
+    return key.strip().encode('ascii')
+
+
+def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
+    if platform == 'xhh':
+        atomic_write_json(
+            key_file,
+            {'key': key.decode('ascii')},
+            ensure_ascii=True,
+            indent=2,
+        )
+    else:
+        key_file.write_bytes(key)
+
+    if sys.platform != 'win32':
+        os.chmod(key_file, 0o600)
 
 def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool = True) -> bool:
     """Save cookies, with normalization checks and encryption logic"""
@@ -115,17 +148,12 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             from cryptography.fernet import Fernet
             
             # 生成或加载加密密钥
-            key_file = CONFIG_DIR / f"{platform}_key.key"
+            key_file = get_cookie_key_file(platform)
             if key_file.exists():
-                with open(key_file, 'rb') as f:
-                    key = f.read()
+                key = _read_encryption_key(platform, key_file)
             else:
                 key = Fernet.generate_key()
-                with open(key_file, 'wb') as f:
-                    f.write(key)
-                # 设置密钥文件权限
-                if sys.platform != 'win32':
-                    os.chmod(key_file, 0o600)
+                _write_encryption_key(platform, key_file, key)
             
             # 加密Cookie数据
             fernet = Fernet(key)
@@ -200,10 +228,9 @@ def load_cookies_from_file(platform: str) -> Dict[str, str]:
             from cryptography.fernet import Fernet
             
             # 加载加密密钥
-            key_file = CONFIG_DIR / f"{platform}_key.key"
+            key_file = get_cookie_key_file(platform)
             if key_file.exists():
-                with open(key_file, 'rb') as f:
-                    key = f.read()
+                key = _read_encryption_key(platform, key_file)
                 
                 # 解密Cookie数据
                 with open(cookie_file, 'rb') as f:
@@ -296,7 +323,7 @@ def get_bilibili_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
 
 def get_xhh_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
-    print("【小黑盒手动导入】(需包含 user_heybox_id 和 heybox_token 字段)")
+    print("【小黑盒手动导入】(需包含 user_heybox_id 和 user_pkey 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)
