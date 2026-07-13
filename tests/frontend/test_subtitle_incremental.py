@@ -5464,10 +5464,10 @@ def test_subtitle_panel_bounds_enforce_usable_minimum_without_legacy_scale_contr
 
 
 @pytest.mark.frontend
-def test_web_subtitle_panel_minimum_does_not_overflow_a_narrow_viewport(
+def test_web_subtitle_panel_minimum_does_not_overflow_a_small_viewport(
     mock_page: Page,
 ):
-    mock_page.set_viewport_size({"width": 180, "height": 240})
+    mock_page.set_viewport_size({"width": 180, "height": 32})
     _open_subtitle_harness(
         mock_page,
         "subtitle-web-host",
@@ -5490,8 +5490,11 @@ def test_web_subtitle_panel_minimum_does_not_overflow_a_narrow_viewport(
             return {
                 logical,
                 datasetWidth: display.dataset.subtitlePanelWidth,
+                datasetHeight: display.dataset.subtitlePanelHeight,
                 rectWidth: Math.round(rect.width),
+                rectHeight: Math.round(rect.height),
                 cssMinWidth: getComputedStyle(display).minWidth,
+                cssMinHeight: getComputedStyle(display).minHeight,
             };
         }
         """
@@ -5500,8 +5503,11 @@ def test_web_subtitle_panel_minimum_does_not_overflow_a_narrow_viewport(
     assert result == {
         "logical": {"width": 228, "height": 40},
         "datasetWidth": "180",
+        "datasetHeight": "32",
         "rectWidth": 180,
+        "rectHeight": 32,
         "cssMinWidth": "180px",
+        "cssMinHeight": "32px",
     }
 
 

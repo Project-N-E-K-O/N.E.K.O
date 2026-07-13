@@ -978,9 +978,10 @@
         var rendered = resolved;
         if (options && options.host === 'web') {
             var viewportWidth = Math.max(1, Math.floor(Number(window.innerWidth) || resolved.width));
+            var viewportHeight = Math.max(1, Math.floor(Number(window.innerHeight) || resolved.height));
             rendered = {
                 width: Math.min(resolved.width, viewportWidth),
-                height: resolved.height
+                height: Math.min(resolved.height, viewportHeight)
             };
         }
         var fontSize = normalizeSubtitleFontSize(options && hasOwn(options, 'fontSize')
