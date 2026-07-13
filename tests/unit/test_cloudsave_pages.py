@@ -7,6 +7,20 @@ from main_routers.pages_router import cloudsave_manager_page
 from main_routers.shared_state import init_shared_state
 
 
+CHARACTER_CARD_MANAGER_PART_NAMES = (
+    "core-and-upload.js",
+    "subscriptions-and-scan.js",
+    "character-data-and-transfer.js",
+    "card-list-and-panel.js",
+    "card-form-and-actions.js",
+    "workshop-card-and-upload.js",
+    "model-previews.js",
+    "master-profile.js",
+    "card-companion.js",
+    "sync-and-legacy-memory.js",
+)
+
+
 class _DummyTemplates:
     def TemplateResponse(self, template_name, context):
         return {
@@ -42,9 +56,10 @@ async def test_cloudsave_manager_page_renders_with_or_without_character_query():
 
 @pytest.mark.unit
 def test_character_card_manager_disables_cloudsave_entry_when_provider_is_unavailable():
+    parts_dir = Path("static/js/character_card_manager")
     source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(Path("static/js/character_card_manager").glob("*.js"))
+        (parts_dir / part_name).read_text(encoding="utf-8")
+        for part_name in CHARACTER_CARD_MANAGER_PART_NAMES
     )
     css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
 

@@ -32,7 +32,7 @@
 |------|----------|
 | `utils/config_manager.py` | 添加 `live2d.idle_animation` 字段迁移逻辑、legacy_keys 读取兼容 |
 | `main_routers/characters_router.py` | 添加 `live2d_idle_animation` 保存处理和路径校验 |
-| `static/js/model_manager/06-page-controller.js` | 添加动作保存逻辑、循环播放、恢复函数；动作选择器状态管理；异步令牌竞态防护；保存快照纳入 Live2D 待机动作 |
+| `static/js/model_manager/page-controller.js` | 添加动作保存逻辑、循环播放、恢复函数；动作选择器状态管理；异步令牌竞态防护；保存快照纳入 Live2D 待机动作 |
 | `static/app/app-interpage.js` | 添加 `restoreLive2DIdleAnimationOnMainPage()` 函数和 `_injectMotionGroupSafely()` 隔离 Helper |
 | `static/live2d-init.js` | 添加 `onModelReady` 回调触发恢复函数、模型实例对比守卫 |
 | `static/live2d-model.js` | 添加 `onModelReady` 回调选项支持、setMouth Index 缓存、loadToken 穿透保护、coreModel 快照校验、Idle 判定去 PreviewAll、视线跟踪状态冗余消除 |
@@ -160,9 +160,9 @@ onModelReady: (model) => {
 
 | 功能 | 文件 | 函数/行号 |
 |------|------|-----------|
-| 动作保存 | `model_manager/06-page-controller.js` | `saveModelToCharacter()` |
-| 动作选择播放 | `model_manager/06-page-controller.js` | `motionSelect.change` 事件 |
-| 循环播放设置 | `model_manager/06-page-controller.js` | `motionSelect.change` 事件 |
+| 动作保存 | `model_manager/page-controller.js` | `saveModelToCharacter()` |
+| 动作选择播放 | `model_manager/page-controller.js` | `motionSelect.change` 事件 |
+| 循环播放设置 | `model_manager/page-controller.js` | `motionSelect.change` 事件 |
 | 主页恢复函数 | `app-interpage.js` | `restoreLive2DIdleAnimationOnMainPage()` |
 | 恢复触发 | `live2d-init.js` | `initLive2DModel()` |
 | 模型就绪回调 | `live2d-model.js` | `loadModel()` 完成处 |
