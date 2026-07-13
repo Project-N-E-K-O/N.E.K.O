@@ -348,6 +348,7 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
                 cfg["model"],
                 cfg["base_url"],
                 cfg.get("api_key") or "",
+                provider_type=cfg.get("provider_type"),
                 max_completion_tokens=FORGE_STORY_MAX_TOKENS,
                 timeout=FORGE_STORY_TIMEOUT_SECONDS,
             )
