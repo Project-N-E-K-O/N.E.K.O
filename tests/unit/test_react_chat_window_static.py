@@ -1392,6 +1392,19 @@ def test_interpage_defers_broadcast_binding_until_all_parts_are_loaded():
     assert "I.nekoBroadcastChannel.onmessage = I.handleNekoBroadcastMessage;" in final_part
 
 
+def test_interpage_defers_tutorial_relay_listeners_until_all_parts_are_loaded():
+    root = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+    bridge_part = (root / "cross-window-broadcast-and-bridge.js").read_text(encoding="utf-8")
+    final_part = (root / "listeners-and-api.js").read_text(encoding="utf-8")
+
+    assert "I.handleYuiGuideRelayedCustomEvent = function" in bridge_part
+    assert "I.handleYuiGuideRelayedWindowMessage = function" in bridge_part
+    assert bridge_part.count("I.handleYuiGuideRelayedCustomEvent") == 1
+    assert bridge_part.count("I.handleYuiGuideRelayedWindowMessage") == 1
+    assert "I.handleYuiGuideRelayedCustomEvent" in final_part
+    assert "I.handleYuiGuideRelayedWindowMessage" in final_part
+
+
 def test_new_user_icebreaker_choice_prompt_dispatches_host_event():
     react_host = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     choice_block = react_host.split("function handleChoiceSelect(option, source)", 1)[1].split(

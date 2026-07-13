@@ -893,7 +893,7 @@
         }
     }
 
-    I.yuiGuideInterpageResources.addEventListener(window, 'neko:tutorial-overlay-relay', function (event) {
+    I.handleYuiGuideRelayedCustomEvent = function handleYuiGuideRelayedCustomEvent(event) {
         var message = event && event.detail;
         if (
             message
@@ -903,9 +903,9 @@
             return;
         }
         handleYuiGuideRelayedMessage(message);
-    });
+    };
 
-    I.yuiGuideInterpageResources.addEventListener(window, 'message', function (event) {
+    I.handleYuiGuideRelayedWindowMessage = function handleYuiGuideRelayedWindowMessage(event) {
         var data = event && event.data;
         if (!data || data.__nekoTutorialOverlayRelay !== true) {
             return;
@@ -922,7 +922,7 @@
             return;
         }
         handleYuiGuideRelayedMessage(message);
-    });
+    };
 
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleIcebreakerStorageBridgeEvent);
     I.yuiGuideInterpageResources.addEventListener(window, 'storage', handleYuiGuideChatBridgeStorageEvent);

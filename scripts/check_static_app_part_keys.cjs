@@ -1,13 +1,57 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const childProcess = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
 
 const repoRoot = path.resolve(__dirname, '..');
+
+// Snapshot of the public keys published by the three monoliths immediately
+// before they were split. Keep this contract independent of git history so the
+// check remains runnable after the deleted source files reach main.
+const expectedPublicKeys = {
+    reactChatWindowHost: [
+        'appendMessage', 'clearChoicePromptBySource', 'clearGuideMessages',
+        'clearIcebreakerChoicePrompt', 'clearMessages', 'clearPendingRollbackDraft',
+        'closeWindow', 'cycleChatSurfaceMode', 'deactivateToolCursor', 'ensureBundleLoaded',
+        'getChatSurfaceMode', 'getState', 'handleMiniGameInviteResolved',
+        'isGalgameModeEnabled', 'isMounted', 'openWindow', 'prepareCompactHistoryDropSubmit',
+        'refreshGalgameOptions', 'removeMessage', 'rollbackLastDraft', 'rotateCompactToolWheel',
+        'setAvatarToolMenuOpen', 'setChatSurfaceMode', 'setChoicePrompt',
+        'setCompactChatState', 'setCompactHistoryOpen', 'setCompactToolFanOpen',
+        'setCompactToolWheelIndex', 'setComposerAttachments', 'setComposerHidden',
+        'setGalgameModeEnabled', 'setGoodbyeComposerHidden', 'setHomeTutorialInputLocked',
+        'setHomeTutorialInteractionLocked', 'setIcebreakerChoicePrompt', 'setMessages',
+        'setMiniGameInvitePrompt', 'setNewUserIcebreakerPrompt', 'setOnAvatarInteraction',
+        'setOnAvatarToolStateChange', 'setOnComposerImportImage', 'setOnComposerRemoveAttachment',
+        'setOnComposerScreenshot', 'setOnComposerSubmit', 'setOnMessageAction',
+        'setTranslateEnabled', 'setViewProps', 'syncGoodbyeComposerHidden',
+        'triggerComposerScreenshot', 'updateMessage',
+    ],
+    appUi: [
+        'completeGoodbyeResourceSuspend', 'ensureHiddenElements', 'hideLive2d',
+        'hideVoicePreparingToast', 'initFinalUiGuards', 'initFloatingButtonListeners',
+        'restoreGoodbyeResourceSuspend', 'showCurrentModel', 'showLive2d',
+        'showProminentNotice', 'showReadyToSpeakToast', 'showStatusToast', 'showSurveyModal',
+        'showVoicePreparingToast', 'syncFloatingMicButtonState', 'syncFloatingScreenButtonState',
+    ],
+    appInterpage: [
+        'applyGoodbyeChatComposerHidden', 'applyTutorialChatIdentityOverride',
+        'applyVoiceComposerHiddenFromActive', 'cleanupLive2DOverlayUI', 'cleanupMMDOverlayUI',
+        'cleanupPNGTuberOverlayUI', 'cleanupVRMOverlayUI',
+        'consumePendingVoiceChatComposerHiddenMessage', 'handleGoodbyeChatComposerHiddenMessage',
+        'handleHideMainUI', 'handleMemoryEdited', 'handleModelReload', 'handleShowMainUI',
+        'handleVoiceChatComposerHiddenMessage', 'isMainUIHiddenByModelManager',
+        'isVoiceConfigSwitching', 'nekoBroadcastChannel', 'postGoodbyeChatComposerHiddenElectron',
+        'postGoodbyeChatComposerHiddenState', 'postIcebreakerBridgeEvent',
+        'postIcebreakerChoiceSelected', 'postIcebreakerFreeTextSubmitted',
+        'postVoiceChatComposerHiddenElectron', 'requestGoodbyeChatComposerHiddenState',
+        'resetToDefaultModel', 'shouldKeepVoiceComposerHidden', 'syncVoiceChatComposerHidden',
+        'waitForVoiceConfigSwitchReady',
+    ],
+};
 
 
 function createElement() {
@@ -46,7 +90,10 @@ function createContext(options = {}) {
         getElementById() { return null; },
         querySelector() { return null; },
         querySelectorAll() { return []; },
-        addEventListener(type, handler) { listeners.set(`document:${type}`, handler); },
+        addEventListener(type, handler) {
+            const key = `document:${type}`;
+            listeners.set(key, [...(listeners.get(key) || []), handler]);
+        },
         removeEventListener() {},
     };
     const localStorage = {
@@ -72,7 +119,9 @@ function createContext(options = {}) {
         screenX: 0,
         screenY: 0,
         console: quietConsole,
-        addEventListener(type, handler) { listeners.set(type, handler); },
+        addEventListener(type, handler) {
+            listeners.set(type, [...(listeners.get(type) || []), handler]);
+        },
         removeEventListener() {},
         dispatchEvent() { return true; },
         setTimeout() { return 1; },
@@ -118,16 +167,7 @@ function createContext(options = {}) {
         requestAnimationFrame: window.requestAnimationFrame,
         cancelAnimationFrame: window.cancelAnimationFrame,
     };
-    return { context, window };
-}
-
-
-function baselineSource(relativePath) {
-    return childProcess.execFileSync(
-        'git',
-        ['show', `origin/main:${relativePath.replaceAll('\\', '/')}`],
-        { cwd: repoRoot, encoding: 'utf8' },
-    );
+    return { context, window, listeners };
 }
 
 
@@ -156,9 +196,11 @@ function runParts(relativeDir, options) {
 }
 
 
-function checkInterpageBroadcastBindingOrder() {
-    const { context, window } = createContext();
+function checkInterpageEventBindingOrder() {
+    const { context, window, listeners } = createContext();
     const channels = [];
+    let relayedCustomEventHandler;
+    let relayedWindowMessageHandler;
     class BroadcastChannel {
         constructor(name) {
             this.name = name;
@@ -174,35 +216,51 @@ function checkInterpageBroadcastBindingOrder() {
     const paths = partPaths('static/app/app-interpage');
     for (const partPath of paths) {
         vm.runInNewContext(fs.readFileSync(partPath, 'utf8'), context, { filename: partPath });
+        if (path.basename(partPath) === 'cross-window-broadcast-and-bridge.js') {
+            relayedCustomEventHandler = window.__appInterpageParts.handleYuiGuideRelayedCustomEvent;
+            relayedWindowMessageHandler = window.__appInterpageParts.handleYuiGuideRelayedWindowMessage;
+            assert.ok(
+                !(listeners.get('neko:tutorial-overlay-relay') || []).includes(relayedCustomEventHandler),
+                'tutorial overlay relay bound before later helpers loaded',
+            );
+            assert.ok(
+                !(listeners.get('message') || []).includes(relayedWindowMessageHandler),
+                'tutorial window message relay bound before later helpers loaded',
+            );
+        }
         if (path.basename(partPath) === 'guide-message-relay.js') {
             assert.equal(channels.length, 1);
             assert.equal(channels[0].onmessage, null, 'BroadcastChannel bound before later helpers loaded');
         }
     }
     assert.equal(typeof channels[0].onmessage, 'function', 'final part did not bind BroadcastChannel');
+    assert.ok(
+        (listeners.get('neko:tutorial-overlay-relay') || []).includes(relayedCustomEventHandler),
+        'final part did not bind tutorial overlay relay',
+    );
+    assert.ok(
+        (listeners.get('message') || []).includes(relayedWindowMessageHandler),
+        'final part did not bind tutorial window message relay',
+    );
     assert.equal(window.__appInterpageParts, undefined, 'internal namespace leaked after final assembly');
-    process.stdout.write('appInterpage: BroadcastChannel binding deferred until final part\n');
+    process.stdout.write('appInterpage: cross-window event bindings deferred until final part\n');
 }
 
 
 for (const contract of [
     {
-        oldPath: 'static/app/app-' + 'react-chat-window' + '.js',
         partDir: 'static/app/app-react-chat-window',
         publicName: 'reactChatWindowHost',
     },
-    { oldPath: 'static/app/app-' + 'ui' + '.js', partDir: 'static/app/app-ui', publicName: 'appUi' },
+    { partDir: 'static/app/app-ui', publicName: 'appUi' },
     {
-        oldPath: 'static/app/app-' + 'interpage' + '.js',
         partDir: 'static/app/app-interpage',
         publicName: 'appInterpage',
     },
 ]) {
-    const baselineWindow = runSource(baselineSource(contract.oldPath), contract.oldPath);
     const partWindow = runParts(contract.partDir);
-    const baselineKeys = Object.keys(baselineWindow[contract.publicName] || {}).sort();
     const partKeys = Object.keys(partWindow[contract.publicName] || {}).sort();
-    assert.deepEqual(partKeys, baselineKeys, `${contract.publicName} key set changed`);
+    assert.deepEqual(partKeys, expectedPublicKeys[contract.publicName], `${contract.publicName} key set changed`);
     process.stdout.write(`${contract.publicName}: ${partKeys.length} keys match\n`);
 }
 
@@ -220,4 +278,4 @@ for (const scenario of [
     process.stdout.write(`${scenario.label}: React host state/render scheduling smoke passed\n`);
 }
 
-checkInterpageBroadcastBindingOrder();
+checkInterpageEventBindingOrder();
