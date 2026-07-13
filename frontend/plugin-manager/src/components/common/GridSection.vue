@@ -141,13 +141,11 @@ const gridLayoutClass = computed(() => `grid-section__grid--${props.layoutMode}`
 
 const headerClass = computed(() => {
   if (props.variant === 'adapter') return 'grid-section__header--adapter'
-  if (props.variant === 'extension') return 'grid-section__header--ext'
   return ''
 })
 
 const sectionClass = computed(() => {
   if (props.variant === 'adapter') return 'grid-section--adapter'
-  if (props.variant === 'extension') return 'grid-section--ext'
   return ''
 })
 
@@ -184,8 +182,7 @@ function itemClass(item: T) {
   position: relative;
 }
 
-.grid-section--adapter,
-.grid-section--ext {
+.grid-section--adapter {
   margin-top: 24px;
 }
 

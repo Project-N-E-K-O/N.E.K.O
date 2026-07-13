@@ -981,6 +981,21 @@ VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
 };
 
 /**
+ * 清理 VRM UI 资源（浮动按钮、锁图标、"请她回来"按钮及其 document 级拖拽监听）。
+ *
+ * 历史：旧版 cleanupUI 在 #510 合并 common-ui 时被整体移除，但 vrm-manager.dispose()、
+ * app-character.js、app-interpage.js 仍按约定调用它（typeof 守卫下静默跳过），导致
+ * _returnButtonDragHandlers 等 document 级监听在销毁路径上无人清理。这里恢复为委托
+ * mixin 的 cleanupFloatingButtons（覆盖 RAF 循环、按钮/锁图标/返回按钮 DOM、侧边面板、
+ * _uiWindowHandlers、_returnButtonDragHandlers），与 mmd-manager.cleanupUI 对偶。
+ */
+VRMManager.prototype.cleanupUI = function () {
+    if (typeof this.cleanupFloatingButtons === 'function') {
+        this.cleanupFloatingButtons();
+    }
+};
+
+/**
  * 将屏幕像素偏移量应用到 VRM 模型的世界坐标
  * 用于"请她回来"按钮被拖拽后，模型跟随出现在新位置
  */

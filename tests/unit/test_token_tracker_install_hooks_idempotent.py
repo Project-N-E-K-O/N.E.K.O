@@ -137,15 +137,16 @@ def test_record_anthropic_usage_maps_messages_usage_fields():
             {
                 "input_tokens": 100,
                 "output_tokens": 25,
+                "cache_creation_input_tokens": 20,
                 "cache_read_input_tokens": 80,
             },
         )
 
     rec.assert_called_once_with(
         model="claude-test",
-        prompt_tokens=100,
+        prompt_tokens=200,
         completion_tokens=25,
-        total_tokens=125,
+        total_tokens=225,
         cached_tokens=80,
         call_type="conversation",
     )

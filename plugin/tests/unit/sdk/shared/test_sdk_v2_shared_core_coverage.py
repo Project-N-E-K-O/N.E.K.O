@@ -938,19 +938,8 @@ def test_sdk_bus_list_helper_paths_and_fallbacks(monkeypatch: pytest.MonkeyPatch
         def filter(self, *, strict: bool = True, source: str | None = None):
             return _RawList([item for item in self if source is None or item.get("source") == source])
 
-        def where_in(self, field: str, values: object):
-            accepted = set(values)
-            return _RawList([item for item in self if item.get(field) in accepted])
-
         def limit(self, size: int):
             return _RawList(list(self[:size]))
-
-        def __add__(self, other: object):
-            return _RawList([*self, *list(other)])
-
-        def __and__(self, other: object):
-            other_ids = {item.get("id") for item in list(other)}
-            return _RawList([item for item in self if item.get("id") in other_ids])
 
         def watch(self, host_ctx: object, *, bus: str | None = None, debounce_ms: float = 0.0):
             self.watch_calls.append((host_ctx, bus, debounce_ms))
@@ -982,7 +971,6 @@ def test_sdk_bus_list_helper_paths_and_fallbacks(monkeypatch: pytest.MonkeyPatch
     assert items._local_filter({"priority_max": 0}).count() == 0
     assert items._local_filter({"priority_max": 3, "source": "demo"}).count() == 1
     assert items._local_filter({"source": "missing"}).count() == 0
-    assert items.where_in("source", ["demo"]).count() == 1
     assert items.limit(1).count() == 1
 
     ctx_wrapper = types.SimpleNamespace(_host_ctx="wrapped-host")
@@ -999,7 +987,6 @@ def test_sdk_bus_list_helper_paths_and_fallbacks(monkeypatch: pytest.MonkeyPatch
     assert plain_items.dump() == [{"value": "plain-value"}]
     assert plain_items.explain() == "SdkBusList(namespace='messages', count=1)"
     assert plain_items.trace_tree_dump() == {"namespace": "messages", "count": 1}
-    assert plain_items.where_in("source", ["demo"]).count() == 0
     assert plain_items.limit(5).count() == 1
 
     with pytest.raises(TypeError, match="watch\\(\\) is not available"):
@@ -1024,86 +1011,6 @@ def test_sdk_bus_list_helper_paths_and_fallbacks(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(core_bus_context.inspect, "signature", _raise_value_error)
     assert core_bus_context.SdkBusList._raw_filter_accepts_kwargs(lambda: None, {"source": "demo"}) is True
-
-
-def test_sdk_bus_list_operator_paths_and_logging() -> None:
-    messages: list[str] = []
-
-    class _Logger:
-        def debug(self, message: str) -> None:
-            messages.append(message)
-
-    class _BrokenLogger:
-        def debug(self, message: str) -> None:
-            raise RuntimeError(message)
-
-    class _FailingRaw(list):
-        def __add__(self, other: object):
-            raise RuntimeError("add boom")
-
-        def __and__(self, other: object):
-            raise RuntimeError("and boom")
-
-    good_left = core_bus_context.SdkBusList.from_raw(
-        [
-            {"type": "MESSAGE", "id": "m1", "source": "demo", "priority": 1},
-            {"type": "MESSAGE", "id": "m2", "source": "demo", "priority": 2},
-        ],
-        namespace="messages",
-        record_factory=core_bus_context.SdkBusMessageRecord,
-        host_ctx=object(),
-    )
-    good_right = core_bus_context.SdkBusList.from_raw(
-        [
-            {"type": "MESSAGE", "id": "m2", "source": "demo", "priority": 2},
-            {"type": "MESSAGE", "id": "m3", "source": "demo", "priority": 3},
-        ],
-        namespace="messages",
-        record_factory=core_bus_context.SdkBusMessageRecord,
-        host_ctx=object(),
-    )
-    assert [item.message_id for item in (good_left + good_right)] == ["m1", "m2", "m2", "m3"]
-    assert [item.message_id for item in (good_left & good_right)] == ["m2"]
-
-    left = core_bus_context.SdkBusList.from_raw(
-        _FailingRaw(
-            [
-                {"type": "MESSAGE", "id": "m1", "source": "demo", "priority": 1},
-                {"type": "MESSAGE", "id": "m2", "source": "demo", "priority": 2},
-            ]
-        ),
-        namespace="messages",
-        record_factory=core_bus_context.SdkBusMessageRecord,
-        host_ctx=types.SimpleNamespace(logger=_Logger()),
-    )
-    right = core_bus_context.SdkBusList.from_raw(
-        _FailingRaw(
-            [
-                {"type": "MESSAGE", "id": "m2", "source": "demo", "priority": 2},
-                {"type": "MESSAGE", "id": "m3", "source": "demo", "priority": 3},
-            ]
-        ),
-        namespace="messages",
-        record_factory=core_bus_context.SdkBusMessageRecord,
-        host_ctx=types.SimpleNamespace(logger=_Logger()),
-    )
-    assert [item.message_id for item in (left + right)] == ["m1", "m2", "m3"]
-    assert [item.message_id for item in (left & right)] == ["m2"]
-    assert any("__add__" in message for message in messages)
-    assert any("__and__" in message for message in messages)
-
-    obj = object()
-    assert core_bus_context.SdkBusList._dedupe_key(obj) == str(obj)
-    core_bus_context.SdkBusList([], namespace="messages", record_factory=core_bus_context.SdkBusMessageRecord, host_ctx=object())._log_fallback_error(
-        "noop",
-        RuntimeError("x"),
-    )
-    core_bus_context.SdkBusList(
-        [],
-        namespace="messages",
-        record_factory=core_bus_context.SdkBusMessageRecord,
-        host_ctx=types.SimpleNamespace(logger=_BrokenLogger()),
-    )._log_fallback_error("noop", RuntimeError("x"))
 
 
 def test_sdk_bus_watcher_sync_paths() -> None:

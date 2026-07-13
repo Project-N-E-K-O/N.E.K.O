@@ -286,17 +286,13 @@ export default {
     autoStart: '自动启动',
     manualStart: '手动启动',
     fetchFailed: '获取插件列表失败',
-    extension: '扩展',
     pluginType: '类型',
     pluginTypeNormal: '插件',
     hostPlugin: '宿主插件',
-    boundExtensions: '绑定扩展',
     pluginsSection: '插件',
     adaptersSection: '适配器',
-    extensionsSection: '扩展',
     typePlugin: '插件',
     typeAdapter: '适配器',
-    typeExtension: '扩展',
     layoutList: '列表',
     layoutSingle: '单排',
     layoutDouble: '双排',
@@ -345,13 +341,10 @@ export default {
       auto: '自动启动',
       plugin: '插件',
       adapter: '适配器',
-      extension: '扩展',
       ui: '带界面',
       entries: '有入口点',
-      host: '有宿主',
       name: '按名称',
       id: '按 ID',
-      hostTarget: '按宿主',
       version: '按版本',
       entry: '按入口点',
       author: '按作者'
@@ -363,8 +356,6 @@ export default {
     },
     build: '构建插件',
     delete: '删除插件',
-    disableExtension: '禁用扩展',
-    enableExtension: '启用扩展',
     dangerDialog: {
       title: '危险操作确认',
       warningTitle: '不可逆操作',
@@ -553,7 +544,6 @@ export default {
     loadFailed: '加载失败',
     loading: '加载中',
     disabled: '已禁用',
-    injected: '已注入',
     pending: '等待宿主'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: '构建插件失败',
     deleteFailed: '删除插件失败',
     pluginLoadFailed: '插件加载失败，当前不可启动',
-    confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',
-    extensionDisabled: '扩展已禁用',
-    extensionEnabled: '扩展已启用',
-    disableExtFailed: '禁用扩展失败',
-    enableExtFailed: '启用扩展失败',
     requestFailed: '请求失败',
     requestFailedWithStatus: '请求失败 ({status})',
     badRequest: '请求参数错误',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: '插件管理工作台',
-        body: '这里集中展示插件、适配器和扩展，是日常管理插件的主要页面。'
+        body: '这里集中展示插件和适配器，是日常管理插件的主要页面。'
       },
       pluginFilters: {
         title: '筛选和搜索',

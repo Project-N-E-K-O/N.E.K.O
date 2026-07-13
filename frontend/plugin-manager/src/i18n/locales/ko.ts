@@ -286,17 +286,13 @@ export default {
     autoStart: '자동 시작',
     manualStart: '수동 시작',
     fetchFailed: '플러그인 목록을 불러오지 못했습니다',
-    extension: '확장 기능',
     pluginType: '유형',
     pluginTypeNormal: '플러그인',
     hostPlugin: '호스트 플러그인',
-    boundExtensions: '바인딩된 확장 기능',
     pluginsSection: '플러그인',
     adaptersSection: '어댑터',
-    extensionsSection: '확장 기능',
     typePlugin: '플러그인',
     typeAdapter: '어댑터',
-    typeExtension: '확장 기능',
     layoutList: '목록',
     layoutSingle: '1열',
     layoutDouble: '2열',
@@ -345,13 +341,10 @@ export default {
       auto: '자동 시작',
       plugin: '플러그인',
       adapter: '어댑터',
-      extension: '확장 기능',
       ui: 'UI 있음',
       entries: '엔트리 있음',
-      host: '호스트 있음',
       name: '이름 기준',
       id: 'ID 기준',
-      hostTarget: '호스트 기준',
       version: '버전 기준',
       entry: '엔트리 기준',
       author: '작성자 기준'
@@ -363,8 +356,6 @@ export default {
     },
     build: '플러그인 패키징',
     delete: '플러그인 삭제',
-    disableExtension: '확장 기능 비활성화',
-    enableExtension: '확장 기능 활성화',
     dangerDialog: {
       title: '위험 작업 확인',
       warningTitle: '되돌릴 수 없는 작업',
@@ -553,7 +544,6 @@ export default {
     loadFailed: '로드 실패',
     loading: '로딩 중',
     disabled: '비활성화됨',
-    injected: '주입됨',
     pending: '호스트 대기 중'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: '플러그인 패키징에 실패했습니다',
     deleteFailed: '플러그인 삭제에 실패했습니다',
     pluginLoadFailed: '플러그인 로드에 실패하여 시작할 수 없습니다.',
-    confirmDisableExt: '이 확장 기능을 비활성화하시겠습니까? 호스트 플러그인의 확장 기능이 언로드됩니다.',
-    extensionDisabled: '확장 기능이 비활성화되었습니다',
-    extensionEnabled: '확장 기능이 활성화되었습니다',
-    disableExtFailed: '확장 기능 비활성화에 실패했습니다',
-    enableExtFailed: '확장 기능 활성화에 실패했습니다',
     requestFailed: '요청에 실패했습니다',
     requestFailedWithStatus: '요청에 실패했습니다 ({status})',
     badRequest: '잘못된 요청 매개변수입니다',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: '플러그인 관리 작업대',
-        body: '여기에서 플러그인, 어댑터, 확장을 한곳에서 관리할 수 있어.'
+        body: '여기에서 플러그인과 어댑터를 한곳에서 관리할 수 있어.'
       },
       pluginFilters: {
         title: '검색과 필터',

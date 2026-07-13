@@ -90,7 +90,7 @@ def _prepare_chat_page(page: Any) -> None:
         #react-chat-window-root { min-height: 1040px !important; overflow: visible !important; }
     """)
     page.add_script_tag(path=str(STATIC_DIR / "react" / "neko-chat" / "neko-chat-window.iife.js"))
-    _load_scripts(page, ["app-react-chat-window.js", "app-interpage.js"])
+    _load_scripts(page, ["app/app-react-chat-window.js", "app/app-interpage.js"])
     page.evaluate(
         """
         async () => {

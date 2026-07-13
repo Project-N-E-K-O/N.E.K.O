@@ -39,11 +39,11 @@
 
 | 能力 | 文件 |
 |------|------|
-| 自动 idle 计时、tier 推进、变回问候事件 | `static/app-auto-goodbye.js` |
+| 自动 idle 计时、tier 推进、变回问候事件 | `static/app/app-auto-goodbye.js` |
 | return-ball 变猫、GIF、hover、拖拽、CAT1 子动作 | `static/avatar/avatar-ui-buttons.js` |
-| goodbye/return 主 UI 恢复链路 | `static/app-ui.js` |
-| 首页和桌面聊天窗联动 | `static/app-react-chat-window.js`、`static/app-interpage.js` |
-| 变回问候 WebSocket 与后端投递 | `static/app-websocket.js`、`main_routers/websocket_router.py`、`main_logic/core.py`、`config/prompts/prompts_proactive.py` |
+| goodbye/return 主 UI 恢复链路 | `static/app/app-ui.js` |
+| 首页和桌面聊天窗联动 | `static/app/app-react-chat-window.js`、`static/app/app-interpage.js` |
+| 变回问候 WebSocket 与后端投递 | `static/app/app-websocket.js`、`main_routers/websocket_router.py`、`main_logic/core.py`、`config/prompts/prompts_proactive.py` |
 | 静态资源版本指纹 | `main_routers/pages_router.py` |
 
 ## 三、主流程

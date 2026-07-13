@@ -749,7 +749,8 @@ async def test_inline_gate_user_setting_off_blocks_and_clears(monkeypatch):
 
 async def test_inline_gate_user_setting_default_on_allows(monkeypatch):
     # Setting absent ⇒ defaults to on, so the global flag alone governs entry.
-    _patch_charge(monkeypatch, enter=1.0)
+    keyword_full = config.FOCUS_SIGNAL_WEIGHTS["keyword"]
+    _patch_charge(monkeypatch, enter=max(0.0, keyword_full - 0.1))
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     _stub_user_focus_setting(monkeypatch, enabled=None)  # key absent
     mgr = _bare_mgr()

@@ -6,9 +6,9 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
-APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app-audio-capture.js"
-APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
+APP_BUTTONS_PATH = REPO_ROOT / "static" / "app" / "app-buttons.js"
+APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app" / "app-audio-capture.js"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 CORE_PACKAGE_PATH = REPO_ROOT / "main_logic" / "core"
 CROSS_SERVER_PATH = REPO_ROOT / "main_logic" / "cross_server.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
@@ -214,7 +214,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
     index_source = _read(INDEX_TEMPLATE_PATH)
     main_server_source = _read(MAIN_SERVER_PATH)
 
-    assert index_source.index("/static/app-buttons.js") < index_source.index("/static/avatar/avatar-drop-parser.js")
+    assert index_source.index("/static/app/app-buttons.js") < index_source.index("/static/avatar/avatar-drop-parser.js")
     assert index_source.index("/static/avatar/avatar-drop-parser.js") < index_source.index("/static/avatar/avatar-drop-intake.js")
     assert "from main_routers.avatar_drop_router import router as avatar_drop_router" in main_server_source
     assert "app.include_router(avatar_drop_router)" in main_server_source

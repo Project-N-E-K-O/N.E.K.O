@@ -153,6 +153,7 @@ override-dependencies = [
 dev = [
     "hypothesis>=6.100",
     "nest-asyncio>=1.6.0",
+    "pyinstaller==6.12.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",

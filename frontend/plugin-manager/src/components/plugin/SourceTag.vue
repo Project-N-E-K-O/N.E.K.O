@@ -4,7 +4,7 @@
     class="source-tag-group"
     :class="{ 'source-tag-group--compact': compact }"
   >
-    <!-- Match the cadence of the surrounding tags (extension / disabled
+    <!-- Match the cadence of the surrounding tags (disabled
          / manual-start): ``size="small"`` + ``effect="plain"``, icon
          inline, single Chinese/English word. Intentionally no custom
          font-size or padding overrides. -->

@@ -286,17 +286,13 @@ export default {
     autoStart: 'Автозапуск',
     manualStart: 'Ручной запуск',
     fetchFailed: 'Не удалось получить список плагинов',
-    extension: 'Расширение',
     pluginType: 'Тип',
     pluginTypeNormal: 'Плагин',
     hostPlugin: 'Хост-плагин',
-    boundExtensions: 'Привязанные расширения',
     pluginsSection: 'Плагины',
     adaptersSection: 'Адаптеры',
-    extensionsSection: 'Расширения',
     typePlugin: 'Плагин',
     typeAdapter: 'Адаптер',
-    typeExtension: 'Расширение',
     layoutList: 'Список',
     layoutSingle: 'Один столбец',
     layoutDouble: 'Два столбца',
@@ -345,13 +341,10 @@ export default {
       auto: 'Автозапуск',
       plugin: 'Плагин',
       adapter: 'Адаптер',
-      extension: 'Расширение',
       ui: 'Есть UI',
       entries: 'Есть точки входа',
-      host: 'Есть хост',
       name: 'По имени',
       id: 'По ID',
-      hostTarget: 'По хосту',
       version: 'По версии',
       entry: 'По точке входа',
       author: 'По автору'
@@ -363,8 +356,6 @@ export default {
     },
     build: 'Упаковать плагин',
     delete: 'Удалить плагин',
-    disableExtension: 'Отключить расширение',
-    enableExtension: 'Включить расширение',
     dangerDialog: {
       title: 'Подтверждение опасного действия',
       warningTitle: 'Это действие необратимо',
@@ -553,7 +544,6 @@ export default {
     loadFailed: 'Ошибка загрузки',
     loading: 'Загрузка',
     disabled: 'Отключён',
-    injected: 'Внедрён',
     pending: 'Ожидание хоста'
   },
   logLevel: {
@@ -583,11 +573,6 @@ export default {
     buildFailed: 'Не удалось упаковать плагин',
     deleteFailed: 'Не удалось удалить плагин',
     pluginLoadFailed: 'Ошибка загрузки плагина. Запуск невозможен.',
-    confirmDisableExt: 'Отключить это расширение? Функционал расширения будет выгружен из хост-плагина.',
-    extensionDisabled: 'Расширение отключено',
-    extensionEnabled: 'Расширение включено',
-    disableExtFailed: 'Не удалось отключить расширение',
-    enableExtFailed: 'Не удалось включить расширение',
     requestFailed: 'Ошибка запроса',
     requestFailedWithStatus: 'Ошибка запроса ({status})',
     badRequest: 'Неверные параметры запроса',
@@ -696,7 +681,7 @@ export default {
       },
       pluginWorkbench: {
         title: 'Рабочая область плагинов',
-        body: 'Здесь собраны плагины, адаптеры и расширения для повседневного управления.'
+        body: 'Здесь собраны плагины и адаптеры для повседневного управления.'
       },
       pluginFilters: {
         title: 'Поиск и фильтры',

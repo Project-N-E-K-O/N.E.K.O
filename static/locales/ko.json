@@ -4789,6 +4789,19 @@
             "send": "전송",
             "voiceStatusHidden": "디버그 STT: 숨김"
         },
+        "surrenderReminder": {
+            "label": "항복 알림"
+        },
+        "exitPrompt": {
+            "continuePlay": "계속 놀기",
+            "endGame": "게임 종료",
+            "stayLonger": "조금 더 함께 있기",
+            "rest": "쉬기",
+            "neverAgain": "다시 알리지 않기",
+            "neverAgainNote": "앞으로 NEKO의 항복 또는 휴식 안내를 자동으로 띄우지 않습니다. 오른쪽 위의 '항복 알림'에서 다시 켤 수 있습니다. NEKO가 우울해 보이면 음성이나 글로 달래 줄 수 있습니다.",
+            "surrenderFallback": "냐..항복할게...",
+            "restFallback": "냐...조금 피곤해서 잠깐 조용히 있고 싶어."
+        },
         "debug": {
             "mouse": "마우스: {{x}}, {{y}}",
             "playerCenter": "플레이어 중심: {{x}}, {{y}}",

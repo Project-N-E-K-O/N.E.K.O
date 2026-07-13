@@ -2,7 +2,6 @@
 
 Status by module:
 - `call_chain`: implemented
-- `memory`: facade
 - `system_info`: facade
 """
 
@@ -16,7 +15,6 @@ from .call_chain import (
     get_call_depth,
     is_in_call_chain,
 )
-from .memory import MemoryClient
 from .system_info import SystemInfo
 
 __all__ = [
@@ -28,6 +26,5 @@ __all__ = [
     "get_call_chain",
     "get_call_depth",
     "is_in_call_chain",
-    "MemoryClient",
     "SystemInfo",
 ]
