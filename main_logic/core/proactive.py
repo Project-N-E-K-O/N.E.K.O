@@ -21,7 +21,7 @@ Method-only mixin: every instance attribute is assigned in
 
 import asyncio
 import time
-from typing import Optional
+from typing import Any, Optional
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
@@ -674,6 +674,12 @@ class ProactiveMixin:
                     )
                     self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return False
+                # Pull-model staleness: a newer same-coalesce_key cue may have
+                # been submitted during the media await above (possibly still
+                # held by the manager, so the enqueue-time push scan never saw
+                # this snapshot). Retract the superseded cues so the re-filter
+                # below drops them and the purge sweeps both queues.
+                self._retract_stale_coalesced(voice_snapshot)
                 voice_snapshot[:] = [
                     cb for cb in voice_snapshot
                     if not cb.get(DELIVERY_RETRACTED_KEY)
@@ -896,6 +902,11 @@ class ProactiveMixin:
                 # gate closure that lands during the CLAIM/PHASE2 awaits in between.
                 if self._retract_unavailable_topic_hook_snapshots(callbacks_snapshot):
                     logger.info("[%s] trigger_agent_callbacks: topic hook dropped before claim — delivery gate closed mid-delivery", self.lanlan_name)
+                # Pull-model staleness (1/2, cheap early-out): the snapshot was
+                # checked OUT of pending_agent_callbacks before the claim awaits,
+                # so a newer same-coalesce_key cue enqueued meanwhile could not
+                # retract it via the push-side queue scan.
+                self._retract_stale_coalesced(callbacks_snapshot)
                 self._purge_retracted_agent_callback_extras(callbacks_snapshot)
                 active_callbacks = [
                     cb for cb in callbacks_snapshot
@@ -953,6 +964,10 @@ class ProactiveMixin:
             # still prompt the old text session.
             if self._retract_unavailable_topic_hook_snapshots(active_callbacks):
                 logger.info("[%s] trigger_agent_callbacks: topic hook dropped at prompt — delivery gate closed mid-delivery", self.lanlan_name)
+            # Pull-model staleness (2/2, authoritative — immediately before
+            # prompt_ephemeral): catches a newer same-coalesce_key cue that
+            # landed during the CLAIM/PHASE2 awaits above.
+            self._retract_stale_coalesced(active_callbacks)
             self._purge_retracted_agent_callback_extras(active_callbacks)
             active_callbacks = [
                 cb for cb in active_callbacks
@@ -1209,6 +1224,63 @@ class ProactiveMixin:
         self._coalesce_seq_counter = seq
         return seq
 
+    def _note_coalesce_submission(self, key: str, seq: int) -> None:
+        """Record the latest submission seq seen for a coalesce_key.
+
+        This map is the pull-model source of truth for staleness: enqueue-time
+        (push) retraction can only reach cues sitting in the LIVE queues, while
+        a cue checked out into a local delivery snapshot (voice_snapshot, the
+        text callbacks_snapshot, a hot-swap prime selection) is invisible to
+        that scan across its await boundaries. Delivery points therefore ask
+        ``_coalesce_entry_is_stale`` / ``_retract_stale_coalesced`` right
+        before actually sending, which needs the freshest seq per key recorded
+        HERE at both submission sites — including manager submit time, so a
+        newer cue still held by ProactiveDeliveryManager already marks older
+        same-key cues stale. Lazily initialised like ``_coalesce_seq_counter``."""
+        latest = getattr(self, "_coalesce_latest", None)
+        if latest is None:
+            latest = self._coalesce_latest = {}
+        if seq > latest.get(key, -1):
+            latest[key] = seq
+
+    def _coalesce_entry_is_stale(self, entry: Any) -> bool:
+        """True when ``entry``'s coalesce_key has a NEWER recorded submission.
+
+        Works for both callback dicts and their pending_extra_replies mirrors
+        (both carry ``coalesce_key`` + ``_coalesce_submit_seq``). Non-dict
+        (legacy plain-string extras), unkeyed, or unstamped entries are never
+        stale — coalescing stays strictly opt-in."""
+        if not isinstance(entry, dict):
+            return False
+        key = str(entry.get("coalesce_key") or "").strip()
+        seq = entry.get("_coalesce_submit_seq")
+        if not key or not isinstance(seq, int):
+            return False
+        latest = getattr(self, "_coalesce_latest", {}).get(key)
+        return isinstance(latest, int) and latest > seq
+
+    def _retract_stale_coalesced(self, callbacks: list) -> bool:
+        """Pull-model staleness sweep for a delivery-point snapshot.
+
+        Marks every same-key-superseded callback retracted (ack False), so the
+        existing ``DELIVERY_RETRACTED_KEY`` re-filters at each delivery point
+        drop it — exactly like the other mid-delivery removal paths. Returns
+        True when anything was retracted."""
+        retracted = False
+        for cb in callbacks:
+            if not isinstance(cb, dict) or cb.get(DELIVERY_RETRACTED_KEY):
+                continue
+            if self._coalesce_entry_is_stale(cb):
+                resolve_callback_delivery_ack(cb, False)
+                cb[DELIVERY_RETRACTED_KEY] = True
+                retracted = True
+        if retracted:
+            logger.info(
+                "[%s] retracted stale coalesced callback(s) at delivery point",
+                self.lanlan_name,
+            )
+        return retracted
+
     def submit_proactive_callback(
         self,
         callback: dict,
@@ -1233,8 +1305,15 @@ class ProactiveMixin:
         # release of an older respond cue from a newer direct-queued read cue.
         if coalesce_key:
             callback["coalesce_key"] = coalesce_key
-        if str(callback.get("coalesce_key") or "").strip():
+        _key = str(callback.get("coalesce_key") or "").strip()
+        if _key:
             callback.setdefault("_coalesce_submit_seq", self._next_coalesce_seq())
+            # Bump the latest-seq map AT SUBMIT TIME (not only at enqueue): a
+            # newer cue may sit in ProactiveDeliveryManager through a whole
+            # playback window before reaching enqueue, and the pull-model
+            # delivery guards must already see older same-key cues as stale
+            # during exactly that window.
+            self._note_coalesce_submission(_key, callback["_coalesce_submit_seq"])
         if self.is_goodbye_silent():
             self.enqueue_agent_callback(callback)
             logger.debug(
@@ -1281,6 +1360,15 @@ class ProactiveMixin:
             return
         for callback in callbacks:
             self.enqueue_agent_callback(callback)
+        # enqueue-time coalescing may retract a released cue on the spot (an
+        # older manager-held respond cue losing to a newer same-key cue that was
+        # direct-queued while it waited out playback). If the WHOLE batch died
+        # that way, nothing below will emit a playback/text signal — free the
+        # manager's inflight slot now (mirrors the pre-enqueue empty check
+        # above) instead of stalling the next cue until the inflight timeout.
+        if all(cb.get(DELIVERY_RETRACTED_KEY) for cb in callbacks):
+            self.proactive_manager.release_inflight_noop()
+            return
         # NOTE: images carried by these cues (push_message media_parts for
         # ai_behavior="respond") are streamed at the ACTUAL delivery point
         # inside trigger_agent_callbacks via _stream_cb_media — NOT here. That
@@ -1716,8 +1804,13 @@ class ProactiveMixin:
                 if not isinstance(new_seq, int):
                     new_seq = self._next_coalesce_seq()
                     callback["_coalesce_submit_seq"] = new_seq
+                # Feed the pull-model staleness map: delivery-point guards
+                # (_retract_stale_coalesced / _coalesce_entry_is_stale) compare
+                # in-flight snapshot entries against this latest seq.
+                self._note_coalesce_submission(new_key, new_seq)
                 incoming_superseded = False
                 dropped = 0
+                superseded_ids: set = set()
                 surviving: list[dict] = []
                 for _cb in self.pending_agent_callbacks:
                     # isinstance guard: the queue should hold dicts, but never let
@@ -1745,6 +1838,9 @@ class ProactiveMixin:
                         resolve_callback_delivery_ack(_cb, False)
                         _cb[DELIVERY_RETRACTED_KEY] = True
                         dropped += 1
+                        _did = _cb.get("_callback_delivery_id")
+                        if _did:
+                            superseded_ids.add(_did)
                 if dropped:
                     logger.debug(
                         "[%s] coalesced %d queued callback(s) on key=%r seq=%d (enqueue path)",
@@ -1762,8 +1858,16 @@ class ProactiveMixin:
                 if self.pending_extra_replies:
                     kept_extras: list = []
                     for _extra in self.pending_extra_replies:
-                        if not (isinstance(_extra, dict)
-                                and str(_extra.get("coalesce_key") or "").strip() == new_key):
+                        if not isinstance(_extra, dict):
+                            kept_extras.append(_extra)
+                            continue
+                        # A mirror paired with a just-retracted callback is
+                        # evicted by delivery_id even when it predates the
+                        # coalesce_key stamp (legacy mirror shape) — key-only
+                        # matching would orphan it for the hot-swap path.
+                        if _extra.get("_callback_delivery_id") in superseded_ids:
+                            continue
+                        if str(_extra.get("coalesce_key") or "").strip() != new_key:
                             kept_extras.append(_extra)
                             continue
                         _ex_seq = _extra.get("_coalesce_submit_seq")
@@ -1852,6 +1956,11 @@ class ProactiveMixin:
                 "[%s] drain_agent_callbacks_for_llm: topic hook dropped before passive drain — delivery gate closed",
                 self.lanlan_name,
             )
+        # Pull-model staleness: uniform with the voice/text/hot-swap delivery
+        # points — a cue restored from a failed proactive attempt (or any path
+        # that re-appends without the push-side scan) must not deliver once a
+        # newer same-coalesce_key cue exists.
+        self._retract_stale_coalesced(candidate_callbacks)
         self._purge_retracted_agent_callback_extras(candidate_callbacks)
         self._purge_retracted_agent_callbacks()
         active_callbacks = [

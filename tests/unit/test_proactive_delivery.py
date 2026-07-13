@@ -369,6 +369,108 @@ def test_enqueue_coalesce_older_manager_release_loses_to_newer_read():
     assert respond.get(DELIVERY_RETRACTED_KEY) is True
 
 
+def test_pull_model_retracts_checked_out_snapshot():
+    # PULL model: a cue checked OUT of pending_agent_callbacks into a local
+    # delivery snapshot is invisible to the enqueue-time push scan. When a
+    # newer same-key cue arrives (bumping _coalesce_latest), the delivery point
+    # calls _retract_stale_coalesced on its snapshot and the stale cue must be
+    # retracted there — acked False and flagged — instead of being delivered.
+    mgr = _make_session_mgr()
+    old = _passive_cb("checked out", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    snapshot = list(mgr.pending_agent_callbacks)
+    mgr.pending_agent_callbacks.clear()  # simulate checkout (text delivery path)
+    # Newer same-key cue arrives while the old one is in-flight.
+    mgr.enqueue_agent_callback(_passive_cb("newer", coalesce_key="k"))
+    fut = _FakeAckFuture()
+    snapshot[0][DELIVERY_ACK_FUTURE_KEY] = fut
+    assert mgr._retract_stale_coalesced(snapshot) is True
+    assert snapshot[0].get(DELIVERY_RETRACTED_KEY) is True
+    assert fut.done() and fut.result is False
+    # The newer cue is NOT stale (it holds the latest seq itself).
+    assert mgr._retract_stale_coalesced(list(mgr.pending_agent_callbacks)) is False
+
+
+def test_pull_model_manager_held_window():
+    # The staleness map is bumped at SUBMIT time (submit_proactive_callback),
+    # not only at enqueue — so an older direct-queued cue is already stale
+    # while the newer respond cue is still held by the delivery manager.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old read", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    # Newer respond cue submitted; manager holds it (we stub the manager).
+    class _MgrStub:
+        def submit(self, cb, **kw):
+            pass
+    mgr.proactive_manager = _MgrStub()
+    mgr.is_goodbye_silent = lambda: False
+    newer = {"status": "completed", "summary": "respond held"}
+    core_module.LLMSessionManager.submit_proactive_callback(
+        mgr, newer, priority=1, coalesce_key="k",
+    )
+    # The old cue must now test stale even though the newer one never enqueued.
+    assert mgr._coalesce_entry_is_stale(old) is True
+    assert mgr._coalesce_entry_is_stale(newer) is False
+
+
+def test_pull_model_stale_extra_is_detected():
+    # _coalesce_entry_is_stale works on pending_extra_replies mirrors too (the
+    # hot-swap prime guard filters its selection with it). Legacy plain-string
+    # extras are never stale.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old", coalesce_key="k"))
+    old_extra = mgr.pending_extra_replies[0]
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert mgr._coalesce_entry_is_stale(old_extra) is True
+    assert mgr._coalesce_entry_is_stale(mgr.pending_extra_replies[-1]) is False
+    assert mgr._coalesce_entry_is_stale("legacy plain string") is False
+
+
+async def test_deliver_batch_releases_inflight_when_all_superseded():
+    # An older manager-released respond cue that loses to a newer same-key
+    # direct cue during enqueue produces an all-retracted batch; the release
+    # hook must free the manager's inflight slot instead of stalling until the
+    # inflight timeout (and must not fire a trigger for nothing).
+    mgr = _make_session_mgr()
+    released = []
+    class _MgrStub:
+        def release_inflight_noop(self):
+            released.append(True)
+    mgr.proactive_manager = _MgrStub()
+    triggered = []
+    async def _fake_trigger():
+        triggered.append(True)
+        return True
+    mgr.trigger_agent_callbacks = _fake_trigger
+    mgr._topic_hook_release_allowed = lambda cb: True
+    # Newer same-key cue already direct-queued with a higher seq.
+    mgr._coalesce_seq_counter = 5
+    mgr.enqueue_agent_callback(_passive_cb("newer read", coalesce_key="k"))
+    # Manager releases the OLDER respond cue (stamped seq=1 at submit time).
+    stale = _passive_cb("older respond", coalesce_key="k")
+    stale["_coalesce_submit_seq"] = 1
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [stale])
+    assert released == [True]   # inflight slot freed immediately
+    assert triggered == []      # no pointless trigger for an empty batch
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
+
+
+def test_enqueue_coalesce_evicts_legacy_mirror_by_delivery_id():
+    # A mirror created before the coalesce_key stamp existed (legacy shape,
+    # paired by _callback_delivery_id only) must still be evicted when its
+    # callback half is retracted by a same-key enqueue — key-only matching
+    # would orphan it for the hot-swap path.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    # Strip the key/seq stamps from the mirror to simulate the legacy shape.
+    legacy_mirror = mgr.pending_extra_replies[0]
+    legacy_mirror.pop("coalesce_key", None)
+    legacy_mirror.pop("_coalesce_submit_seq", None)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new"]
+
+
 def test_enqueue_coalesce_guards_legacy_string_extra():
     # pending_extra_replies may hold a legacy plain-string entry that the render
     # path tolerates. A keyed enqueue must not raise on it (the broad except in
