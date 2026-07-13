@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
+from config.prompts import prompts_drawing_guess as drawing_guess_prompts
 from main_routers.game_router import drawing_guess as dgr
 from main_routers import game_router
 from utils.game_route_state import _game_route_states, _route_state_key
@@ -25,9 +27,11 @@ def _clear_sessions():
 
 
 def _load_drawing_guess_context_payload(raw: str) -> dict:
-    assert raw.startswith(dgr._DRAWING_GUESS_CONTEXT_BEGIN)
-    assert raw.endswith(dgr._DRAWING_GUESS_CONTEXT_END)
-    body = raw.removeprefix(dgr._DRAWING_GUESS_CONTEXT_BEGIN).removesuffix(dgr._DRAWING_GUESS_CONTEXT_END)
+    begin = drawing_guess_prompts.DRAWING_GUESS_CONTEXT_BEGIN
+    end = drawing_guess_prompts.DRAWING_GUESS_CONTEXT_END
+    assert raw.startswith(begin)
+    assert raw.endswith(end)
+    body = raw.removeprefix(begin).removesuffix(end)
     return json.loads(body.strip())
 
 
@@ -40,6 +44,22 @@ def test_drawing_guess_word_bank_has_60_easy_words_with_all_locales():
         for locale in dgr.SUPPORTED_LOCALES:
             assert word.labels[locale].strip()
             assert dgr._word_hint(word, locale).strip()
+
+
+@pytest.mark.unit
+def test_drawing_guess_system_prompts_are_owned_by_prompt_module():
+    router_source = Path(dgr.__file__).read_text(encoding="utf-8")
+    prompt_source = Path(drawing_guess_prompts.__file__).read_text(encoding="utf-8")
+    markers = (
+        "You are drawing as the current character for a companion mini-game.",
+        "Temporary mini-game premise:",
+        "You classify one user message inside a companion drawing-guess game.",
+        "Temporary mini-game task:",
+        "======以上为开启上下文输入======",
+    )
+    for marker in markers:
+        assert marker not in router_source
+        assert marker in prompt_source
 
 
 @pytest.mark.unit

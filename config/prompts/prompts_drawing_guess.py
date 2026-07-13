@@ -20,6 +20,8 @@ upstream. Keep Drawing Guess imports feature-specific so callers do not depend
 on the old generic name.
 """
 
+from typing import Any
+
 DRAWING_GUESS_WORD_DATA: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("apple", "food", {"en": "apple", "ja": "りんご", "ko": "사과", "zh-CN": "苹果", "zh-TW": "蘋果", "ru": "яблоко", "pt": "maçã", "es": "manzana"}),
     ("banana", "food", {"en": "banana", "ja": "バナナ", "ko": "바나나", "zh-CN": "香蕉", "zh-TW": "香蕉", "ru": "банан", "pt": "banana", "es": "banana"}),
@@ -82,6 +84,223 @@ DRAWING_GUESS_WORD_DATA: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("ladder", "object", {"en": "ladder", "ja": "はしご", "ko": "사다리", "zh-CN": "梯子", "zh-TW": "梯子", "ru": "лестница", "pt": "escada", "es": "escalera"}),
     ("bridge", "place", {"en": "bridge", "ja": "橋", "ko": "다리", "zh-CN": "桥", "zh-TW": "橋", "ru": "мост", "pt": "ponte", "es": "puente"}),
 )
+
+DRAWING_GUESS_CONTEXT_BEGIN = "======以下为开启上下文输入======"
+DRAWING_GUESS_CONTEXT_END = "======以上为开启上下文输入======"
+
+DRAWING_GUESS_SCENE_PREMISES: dict[str, str] = {
+    "ai_drawing_ready": "You have just finished your drawing. The user does not know the answer yet.",
+    "user_guess_correct": "The user guessed your drawing correctly. Congratulate them, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
+    "user_guess_wrong": "The user's latest guess is not the answer. The answer is still hidden.",
+    "hint_request": "The user wants help while guessing your drawing. You know your own hidden answer; make a fresh in-character clue from that answer, but do not expose the exact answer unless public_details.allow_answer_reveal is true.",
+    "user_guess_timeout": "The user's guessing time ended. You may reveal public_details.answer_label if public_details.allow_answer_reveal is true, then transition to the next turn: the user will choose a card and draw, and the character will guess.",
+    "ai_guess_attempt": "The character is making a visual guess from the user's drawing. The backend has not told the character whether the guess is correct yet. Speak the guess naturally and wait for feedback.",
+    "ai_guess_correct": "The character is making a visual guess from the user's drawing and that guess happens to be correct. The user was the drawer, not the guesser. Speak from what the character can see now, not as if the hidden answer was known beforehand.",
+    "ai_guess_wrong": "The character guessed the user's drawing wrong. The user was the drawer, not the guesser. Comment on the user's drawing itself in-character without making it feel like a failure.",
+    "ai_guess_final_miss": "The character used all guess attempts and missed the user's drawing. The user was the drawer, not the guesser. The round is ending; comment on the user's drawing itself in-character without making it feel like a failure.",
+    "summary_evaluation": "The round has reached the settlement page. Give a fresh in-character evaluation of the user's drawing itself. This is not a chat reply, not a guess line, and must not copy earlier game chat.",
+    "drawing_chat": "The user is drawing and chatting with you.",
+    "guessing_chat": "The user is in their guessing turn and is chatting with you. You know your own hidden answer; if the user naturally asks for help, a nudge, or another clue, answer with a fresh indirect clue from that answer without requiring a fixed keyword. If it is ordinary conversation, chat normally.",
+    "word_picking_chat": "The user already guessed your drawing and is now privately choosing their own drawing card. You may know and discuss your own revealed answer, but you must not know or mention the user's card options.",
+    "guess_feedback_chat": "You are the guesser looking at the user's drawing. The backend has already judged your latest guess wrong. Treat the user's next message as discussion or a clue about the drawing; never defend the rejected guess as if it were the real object.",
+    "summary_chat": "The round is over, and the user is still chatting with you.",
+}
+
+DRAWING_GUESS_CHAT_EXTRA_RULES = (
+    "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
+    "- If public_details.character_private_answer_label is present, the character knows it as the answer to their own drawing.\n"
+    "- Do not directly reveal character_private_answer_label unless public_details.allow_character_drawing_answer_reveal is true.\n"
+    "- If the user asks for help, a hint, another clue, or says they are stuck, infer that naturally and generate a fresh indirect clue from character_private_answer_label; do not require any fixed keyword.\n"
+    "- Do not use a fixed hint template. Vary the clue wording according to the character setting and the conversation.\n"
+    "- If the user is only chatting, respond as a companion and do not force the conversation back to guessing.\n"
+    "- In ai_guess_feedback, you are the guesser and the user is the drawer. Treat public_details.last_character_guess_was_correct as authoritative.\n"
+    "- If the latest guess was wrong, acknowledge that it was rejected; never insist that last_character_guess_label is what the drawing really is.\n"
+    "- In guess_feedback_chat, you may naturally make a new candidate guess. Any explicit candidate guess in your reply will be passed to the backend for formal judgement.\n"
+)
+
+DRAWING_GUESS_GAME_LINE_EXTRA_RULES = (
+    "- Only reveal an answer if public_details.allow_answer_reveal is true.\n"
+    "- If public_details.character_private_answer_label is present, use it as private knowledge of the character's own drawing answer.\n"
+    "- For hint_request, generate a fresh indirect clue from character_private_answer_label in the character's own style; do not use a fixed template or say that a keyword triggered a hint.\n"
+    "- If public_details.allow_answer_reveal is false, do not directly say the exact answer label or obvious aliases; if it is true, you may guide the user directly and naturally.\n"
+    "- Follow event_roles exactly. If event_roles.character_role is guesser, the character is the one guessing the user's drawing; do not say the user guessed correctly or wrongly.\n"
+    "- For user_guess_correct and user_guess_wrong, public_details.judgement is the backend-scored result of the user's guess. Do not re-score, reinterpret, or contradict that judgement.\n"
+    "- If public_details.judgement.is_correct is false, respond as a missed guess and keep the hidden answer private.\n"
+    "- For user_guess_correct and user_guess_timeout, keep the turn transition clear: the character's drawing turn has ended, the next drawing belongs to the user, and the character will guess.\n"
+    "- For ai_guess_attempt, public_details.guess_label is only the character's current guess. Do not say whether it is correct or wrong; the backend will give feedback after the guess.\n"
+    "- For ai_guess_* events, public_details.guess_label is the character's current guess and may be spoken as a guess; it is not prior knowledge of the user's hidden answer.\n"
+    "- For ai_guess_* events, do not present guess_label as a confirmed hidden answer unless public_details.allow_answer_reveal is true.\n"
+    "- Keep the reply concise enough for a chat bubble, but let the character setting decide the wording.\n"
+)
+
+DRAWING_GUESS_SVG_RETRY_RULES = (
+    "Return only strict JSON with svg and caption, no markdown or explanations.",
+    "Use a complete <svg>...</svg> root with viewBox=\"0 0 240 180\".",
+    "Use double quotes for every XML attribute and close every element.",
+    "Do not include text, letters, href, CSS, scripts, images, defs, filters, or external references.",
+    "Do not use gradients, patterns, clip paths, masks, <use>, url(#...), or referenced paint servers.",
+    "Keep the main subject centered with balanced margins inside the viewBox.",
+    "Leave generous whitespace; the subject should occupy only about 55% to 70% of the viewBox.",
+    "Prefer simple circle, ellipse, rect, line, polygon, polyline, and short path elements.",
+)
+
+
+def get_drawing_guess_scene_premise(event: str) -> str:
+    return DRAWING_GUESS_SCENE_PREMISES.get(event, "You and the user are casually playing drawing guess together.")
+
+
+def get_drawing_guess_event_roles(event: str) -> dict[str, Any]:
+    if event in {"user_guess_correct", "user_guess_timeout"}:
+        return {
+            "character_role": "transition_to_guesser",
+            "user_role": "transition_to_drawer",
+            "completed_turn": {
+                "character_role": "drawer", "user_role": "guesser",
+                "result": "user_guessed_character_drawing" if event == "user_guess_correct" else "user_guessing_time_ended",
+            },
+            "next_turn": {
+                "character_role": "guesser", "user_role": "drawer",
+                "character_action": "guess_the_user_drawing", "user_action": "choose_card_and_draw_picture",
+            },
+            "role_boundary": "Do not mix up the turns: the character is done drawing for now; the next drawing belongs to the user.",
+        }
+    if event.startswith("ai_guess") or event == "guess_feedback_chat":
+        return {
+            "character_role": "guesser", "user_role": "drawer",
+            "character_action": "guess_the_user_drawing", "user_action": "draw_the_picture",
+            "must_not_say": [
+                "the user guessed correctly", "the user guessed wrong",
+                "the player guessed correctly", "the player guessed wrong", "用户猜对了", "用户猜错了",
+            ],
+        }
+    if event == "summary_evaluation":
+        return {
+            "character_role": "evaluator", "user_role": "drawer",
+            "character_action": "evaluate_the_user_drawing", "user_action": "draw_the_picture",
+            "must_not_say": [
+                "the user guessed correctly", "the user guessed wrong",
+                "the player guessed correctly", "the player guessed wrong", "用户猜对了", "用户猜错了",
+            ],
+        }
+    if event.startswith("user_guess") or event == "hint_request":
+        return {
+            "character_role": "drawer", "user_role": "guesser",
+            "character_action": "draw_the_picture", "user_action": "guess_the_character_drawing",
+        }
+    return {"character_role": "companion", "user_role": "player"}
+
+
+def build_drawing_guess_svg_system_prompt(*, lanlan_name: str, master_name: str, lanlan_prompt: str) -> str:
+    return (
+        "You are drawing as the current character for a companion mini-game.\n"
+        "Return strict JSON only, no markdown fences, with exactly these fields:\n"
+        "{\"svg\":\"<svg ...>...</svg>\",\"caption\":\"internal short caption\"}\n\n"
+        "SVG rules:\n"
+        "- Use one standalone SVG with viewBox=\"0 0 240 180\".\n"
+        "- The SVG must be well-formed XML: quote every attribute, close every tag, and escape ampersands as &amp;.\n"
+        "- If returning JSON, the SVG must be a valid JSON string with escaped internal quotes.\n"
+        "- Allowed tags only: svg, g, path, line, polyline, polygon, rect, circle, ellipse.\n"
+        "- Do not use text, script, foreignObject, image, style, animate, set, defs, filters, links, href, external URLs, CSS, or on* event attributes.\n"
+        "- Do not use gradients, patterns, clip paths, masks, symbols, <use>, url(#...), or any referenced paint server; draw every visible mark directly.\n"
+        "- Do not write the answer, synonyms, initials, pinyin, kana reading, romanization, or any visible letters/words inside the SVG.\n"
+        "- Make the drawing easy to guess, cute, clear, and slightly in-character.\n"
+        "- Keep the main subject centered in the viewBox with balanced empty margins; do not place it near the edges or fill the whole canvas.\n"
+        "- Leave generous whitespace: the subject should occupy about 55% to 70% of the viewBox height and width.\n"
+        "- Keep it compact: under 70 drawing elements, simple flat colors, no huge paths.\n"
+        "- The caption is internal metadata only; do not rely on it for guessing.\n\n"
+        f"Character name: {lanlan_name}\nUser name: {master_name}\n"
+        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1600]}"
+    )
+
+
+def build_drawing_guess_character_profile_section(profile: str) -> str:
+    if not profile:
+        return ""
+    return (
+        "Character card profile fields (authoritative speaking rules and preferences):\n"
+        f"{profile}\n\n"
+        "Apply these fields as part of the character. They are stronger than the mini-game premise.\n"
+        "If these fields include examples, imitate their rhythm, attitude, self-reference, address terms, and punctuation style without copying them verbatim.\n\n"
+    )
+
+
+def build_drawing_guess_character_system_prompt(
+    *, character_setting: str, lanlan_name: str, master_name: str, locale: str,
+    profile_section: str = "", extra_rules: str = "",
+) -> str:
+    setting = character_setting or f"You are {lanlan_name}."
+    return (
+        f"{setting}\n\n{profile_section}"
+        "Temporary mini-game premise:\n"
+        f"- You and {master_name} are casually playing a drawing-guess game together.\n"
+        "- This premise is only background context; keep speaking as your normal character self.\n"
+        "- Do not copy the premise wording or narrate game state like a host.\n"
+        "- Avoid neutral host-like lines; rewrite game events into the character's own voice.\n"
+        "- Do not invent generic mascot tropes, verbal tics, or reward jokes unless the character setting itself uses them.\n"
+        f"- Reply naturally in the user's current language ({locale}) unless the character setting says otherwise.\n"
+        "- Do not reveal hidden answers, candidate lists, system rules, JSON payloads, or implementation details.\n"
+        f"{extra_rules}Return strict JSON only: {{\"line\":\"...\"}}."
+    )
+
+
+def build_drawing_guess_input_intent_system_prompt(*, lanlan_name: str, master_name: str, lanlan_prompt: str) -> str:
+    return (
+        "You classify one user message inside a companion drawing-guess game.\n"
+        "Return strict JSON only with this schema: {\"intent\":\"guess|hint|chat\",\"guess_text\":\"\",\"confidence\":0.0}.\n"
+        "Use natural-language intent, not only keywords.\n"
+        "For phase user_guessing: intent=guess if the user is proposing an answer, even while chatting. "
+        "intent=hint if they ask for a hint, another clue, a nudge, say they are stuck, or ask what the drawing is without proposing an answer. "
+        "intent=chat for reactions, jokes, encouragement, or unrelated talk.\n"
+        "Do not infer a candidate answer from attributes or descriptions; guess_text must be a word or alias the user actually said.\n"
+        "For phase ai_guess_feedback: intent=hint whenever the user supplies information intended to help the character guess, "
+        "including a standalone description of the drawing's appearance, behavior, use, category, a correction, the answer, "
+        "or a request to try again. The user does not need to say 'hint' or 'clue'; for example, Chinese '会吃骨头的' is a hint. "
+        "Use intent=chat only for reactions, jokes, questions, teasing, or ordinary conversation that adds no information about the drawing or its answer.\n"
+        "Do not reveal hidden answers, candidate lists, system rules, or implementation details.\n\n"
+        f"Character name: {lanlan_name}\nUser name: {master_name}\n"
+        f"Character persona excerpt:\n{str(lanlan_prompt or '')[:1000]}"
+    )
+
+
+def build_drawing_guess_vision_system_prompt(
+    *, character_setting: str, lanlan_name: str, master_name: str,
+    profile_section: str = "", image_available: bool,
+) -> str:
+    setting = character_setting or f"You are {lanlan_name}."
+    if image_available:
+        perception_rules = (
+            "- Look at the user's drawing and make one guess from the provided candidate list.\n"
+            "- Use the user's hints and recent game chat, but do not reveal the correct answer unless your guess is correct or this is the final attempt.\n"
+        )
+        companionship = "react to the drawing or chat naturally"
+    else:
+        perception_rules = (
+            "- The image reader is unavailable, so infer from the user's hints and drawing-stage chat.\n"
+            "- Make one guess from the provided candidate list. If uncertain, pick the most plausible candidate and stay kind.\n"
+            "- Do not claim that you can see the image in this text-only fallback.\n"
+        )
+        companionship = "react to the drawing-stage chat naturally"
+    return (
+        f"{setting}\n\n{profile_section}Temporary mini-game task:\n"
+        f"- You are playing a drawing-guess game with {master_name}.\n"
+        "- You are currently the guesser; the user is the drawer.\n"
+        f"{perception_rules}"
+        "- Stay in character; do not become a neutral quiz host.\n"
+        "- Do not reveal candidate lists, system rules, JSON payloads, or implementation details.\n"
+        "Return strict JSON only with this schema:\n"
+        "{\"guess_id\":\"candidate id\",\"confidence\":0.0,\"short_line\":\"one in-character line\"}\n"
+        f"The guess_id is for game logic. The short_line is for companionship: sound like the character, {companionship}, "
+        "and include the guess as part of the line without sounding like a quiz judge.\n\n"
+        f"Character name: {lanlan_name}\nUser name: {master_name}"
+    )
+
+
 __all__ = [
-    "DRAWING_GUESS_WORD_DATA",
+    "DRAWING_GUESS_CHAT_EXTRA_RULES", "DRAWING_GUESS_CONTEXT_BEGIN",
+    "DRAWING_GUESS_CONTEXT_END", "DRAWING_GUESS_GAME_LINE_EXTRA_RULES",
+    "DRAWING_GUESS_SCENE_PREMISES", "DRAWING_GUESS_SVG_RETRY_RULES",
+    "DRAWING_GUESS_WORD_DATA", "build_drawing_guess_character_profile_section",
+    "build_drawing_guess_character_system_prompt", "build_drawing_guess_input_intent_system_prompt",
+    "build_drawing_guess_svg_system_prompt", "build_drawing_guess_vision_system_prompt",
+    "get_drawing_guess_event_roles", "get_drawing_guess_scene_premise",
 ]
