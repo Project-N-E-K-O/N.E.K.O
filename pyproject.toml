@@ -87,7 +87,7 @@ dependencies = [
 ]
 
 [tool.hatch.version]
-path = "config/__init__.py"
+path = "config/application.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
 
 [project.scripts]
