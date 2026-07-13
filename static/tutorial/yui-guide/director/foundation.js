@@ -1279,6 +1279,7 @@
         TAKEOVER_CAPTURE_SELECTORS,
         AVATAR_FLOATING_GUIDE_INTERRUPT_STEP,
         wait,
+        resumeKnownAudioContexts,
         fetchWithTimeout,
         resolveWithTimeout,
         clamp,
