@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
@@ -696,7 +697,7 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
 def test_tutorial_live2d_preparing_hides_model_side_controls():
     repo_root = Path(__file__).resolve().parents[2]
     css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
-    app_ui_source = (repo_root / "static/app/app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(repo_root / "static/app/app-ui")
     live2d_buttons_source = (repo_root / "static/live2d/live2d-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = _read_manager()
     reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")

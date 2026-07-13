@@ -40,7 +40,7 @@ def test_app_buttons_preserve_goodbye_backend_silence_contract():
 
 
 def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
-    """app-ui.js 允许承载 return-ball 桌面桥接，但不能改写 return 主语义。"""
+    """Keep the return-ball desktop bridge without changing return semantics."""
     source = _read(APP_UI_PATH)
 
     assert "action: 'idle_return_ball_state'" in source
