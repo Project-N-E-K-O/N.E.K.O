@@ -148,7 +148,7 @@
             cursor: grab !important;
         }
 
-        /* Keep this standalone override palette in sync with static/Jukebox.js. */
+        /* Keep this standalone override palette in sync with static/jukebox/jukebox/*.js. */
         html[data-theme="dark"] body .jukebox-sam-panel {
             color: #e6edf3 !important;
             background: linear-gradient(160deg, rgba(18, 25, 36, 0.98), rgba(26, 38, 52, 0.96)) !important;
@@ -372,8 +372,13 @@
         // 标记为管理器独立窗口模式
         window.__NEKO_JUKEBOX_MANAGER_STANDALONE__ = true;
     </script>
-    <!-- Jukebox.js 包含 SongActionManager 定义 -->
-    <script src="/static/Jukebox.js"></script>
+    <!-- jukebox/*.js 包含 SongActionManager 定义 -->
+    <script src="/static/jukebox/jukebox/bootstrap.js"></script>
+    <script src="/static/jukebox/jukebox/core.js"></script>
+    <script src="/static/jukebox/jukebox/manager.js"></script>
+    <script src="/static/jukebox/jukebox/shell.js"></script>
+    <script src="/static/jukebox/jukebox/transport.js"></script>
+    <script src="/static/jukebox/jukebox/wiring.js"></script>
     <script>
         // 管理器独立窗口初始化
         // 拖动走 CSS `-webkit-app-region: drag`（OS 原生），不再用 JS mousedown 模拟。

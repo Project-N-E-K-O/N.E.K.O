@@ -4,7 +4,7 @@
 
 // --- VRM 模块加载逻辑 ---
 (async function initVRMModules() {
-    // 如果已经加载过模块，或者正由 model_manager.js 加载中，则不再重复加载
+    // 如果已经加载过模块，或者正由 model_manager/runtime-loaders.js 加载中，则不再重复加载
     if (window.vrmModuleLoaded || window._vrmModulesLoading) return;
 
     const VRM_VERSION = '1.0.0';
@@ -728,7 +728,7 @@ function _stopVrmIdleRotation() {
     _vrmIdleLastUrl = null;
 }
 
-// 暴露给外部（如 app-interpage.js 切模型时停止旧轮换��
+// 暴露给外部（如 app-interpage 切模型时停止旧轮换��
 window._stopVrmIdleRotation = _stopVrmIdleRotation;
 window._startVrmIdleRotation = _startVrmIdleRotation;
 

@@ -10,6 +10,41 @@
 // 动画时长常量（由 avatar-ui-popup.js 中定义，此处仅引用）
 // AVATAR_POPUP_ANIMATION_DURATION_MS 已在 avatar-ui-popup.js 中声明
 
+// 设置弹窗打开时把各 checkbox 与全局状态对齐（防止 app.js 侧改动后弹窗显示过期状态）
+// Live2D / VRM 共用同一实现，仅 prefix 不同
+function createSettingsPopupShowSync(prefix) {
+    return function(popup, buttonId) {
+        if (buttonId !== 'settings') return;
+        // 守卫打在原始全局值上（反转在守卫之后做）：全局尚未初始化时保持
+        // checkbox 创建期的默认态，避免 undefined 被反转成 true 强写
+        const syncCheckbox = (cb, rawValue, inverted) => {
+            if (!cb || typeof rawValue === 'undefined') return;
+            cb.checked = inverted ? !rawValue : !!rawValue;
+            if (typeof cb.updateStyle === 'function') cb.updateStyle();
+        };
+        syncCheckbox(document.querySelector(`#${prefix}-merge-messages`), window.mergeMessagesEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), window.focusModeEnabled, true);
+        syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-slop-filter`), window.slopFilterEnabled);
+        syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
+        // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
+        syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
+        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        if (window.CHAT_MODE_CONFIG) {
+            window.CHAT_MODE_CONFIG.forEach(config => {
+                const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
+                if (cb && typeof window[config.globalVarName] !== 'undefined') {
+                    cb.checked = window[config.globalVarName];
+                    if (typeof window.updateChatModeStyle === 'function') {
+                        requestAnimationFrame(() => window.updateChatModeStyle(cb));
+                    }
+                }
+            });
+        }
+    };
+}
+
 // ═══════════════════════════════════════════════════════
 // Live2D（HTML 静态加载时已可用）
 // ═══════════════════════════════════════════════════════
@@ -31,6 +66,9 @@ if (typeof Live2DManager !== 'undefined') {
         },
         getMouseTrackingState: function() {
             return window.mouseTrackingEnabled !== false;
+        },
+        overrides: {
+            _onPopupShow: createSettingsPopupShowSync('live2d')
         }
     });
 }
@@ -65,35 +103,7 @@ const _vrmPopupConfig = {
         return window.mouseTrackingEnabled !== false;
     },
     overrides: {
-        _onPopupShow: function(popup, buttonId) {
-            if (buttonId !== 'settings') return;
-            const syncCheckbox = (cb, checked) => {
-                if (!cb) return;
-                cb.checked = checked;
-                if (typeof cb.updateStyle === 'function') cb.updateStyle();
-            };
-            const prefix = 'vrm';
-            syncCheckbox(document.querySelector(`#${prefix}-merge-messages`), window.mergeMessagesEnabled);
-            syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), !window.focusModeEnabled);
-            syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
-            syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
-            syncCheckbox(document.querySelector(`#${prefix}-slop-filter`), window.slopFilterEnabled);
-            syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
-            // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
-            syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), !window.proactiveVisionEnabled);
-            syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
-            if (window.CHAT_MODE_CONFIG) {
-                window.CHAT_MODE_CONFIG.forEach(config => {
-                    const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
-                    if (cb && typeof window[config.globalVarName] !== 'undefined') {
-                        cb.checked = window[config.globalVarName];
-                        if (typeof window.updateChatModeStyle === 'function') {
-                            requestAnimationFrame(() => window.updateChatModeStyle(cb));
-                        }
-                    }
-                });
-            }
-        }
+        _onPopupShow: createSettingsPopupShowSync('vrm')
     }
 };
 

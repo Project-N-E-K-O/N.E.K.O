@@ -9,7 +9,6 @@ from config.prompts.prompts_soccer import (
     get_soccer_quick_lines_user_prompt,
     get_soccer_system_prompt,
 )
-from main_routers import game_router
 from main_routers.game_router import runtime as gr_runtime
 from scripts import check_no_temperature
 
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_game_llm_paths_do_not_send_temperature_kwarg():
     assert check_no_temperature.main([
         "main_routers/game_router",
-        "main_logic/omni_offline_client.py",
+        "main_logic/omni_offline_client",
     ]) == 0
 
 
@@ -137,6 +136,148 @@ def test_soccer_template_posts_session_debug_errors():
 
 
 @pytest.mark.unit
+def test_soccer_mood_rotation_only_runs_for_pure_game_fallback():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+
+    assert "function _shouldUsePureGameMoodRotationFallback()" in html
+    assert "source === 'fallback' || !!error" in html
+    assert "moodRotationFallbackEnabled" in html
+    assert "'mood_rotation_policy'" in html
+    assert "默认开启 20s 心情轮换" not in html
+    assert "if (!moodDebugMode) enableMoodRotation(20);" not in html
+    assert "setTimeout(() => SoccerDemo.enableMoodRotation(20), 15000)" in html
+
+    llm_control_block = html.split("if (result.control.mood && SoccerDemo.MOODS.includes(result.control.mood))", 1)[1].split(
+        "} else if (result.control.mood)",
+        1,
+    )[0]
+    assert "_llm.moodRotationFallbackEnabled" in llm_control_block
+
+
+@pytest.mark.unit
+def test_soccer_passive_guard_writes_structured_debug_events():
+    html = ROOT.joinpath("templates/soccer_demo.html").read_text(encoding="utf-8")
+    router_source = ROOT.joinpath("main_routers/game_router/runtime.py").read_text(encoding="utf-8")
+
+    assert "function _passiveGuardDebugLog(" in html
+    assert "'passive_guard'" in html
+    assert "'passive_guard_counter'" in html
+    assert "'passive_guard_hint'" in html
+    assert "'passive_guard_sidecar'" in html
+    assert "'passive_guard_modal'" in html
+    assert "'passive_guard_teaching'" in html
+    assert "'passive_guard_state_change'" in html
+    assert "PASSIVE_GUARD_DEBUG_LOG_LIMIT_PER_WINDOW = 80" in html
+    assert "passiveGuardSentInWindow" in html
+    assert "FALLBACK_DIAGNOSTIC_REPEAT_EVERY = 20" in html
+    assert "fallbackStatusState.hitCounts.set(key, hits)" in html
+    assert "const isPassiveGuardLog = payload?.category === 'passive_guard'" in html
+    assert "startsWith('passive_guard_')" in html
+    assert "PASSIVE_GUARD_SIDE_CAR_TIMEOUT_MS = 7000" in html
+
+    set_difficulty_block = html.split("function setDifficultyInternal(name, opts = {})", 1)[1].split(
+        "function targetDifficultyForScoreDiff",
+        1,
+    )[0]
+    set_mood_block = html.split("setMood = function(name, opts = {})", 1)[1].split(
+        "const __cycleDiffBase",
+        1,
+    )[0]
+    sidecar_block = html.split("async function _requestPassiveGuardSidecar", 1)[1].split(
+        "function _handleSidecarAction",
+        1,
+    )[0]
+    exit_prompt_line_block = html.split("async function _requestExitPromptLine", 1)[1].split(
+        "async function _prepareExitPrompt",
+        1,
+    )[0]
+    prepare_exit_prompt_block = html.split("async function _prepareExitPrompt", 1)[1].split(
+        "async function _requestPassiveGuardSidecar",
+        1,
+    )[0]
+    external_route_input_block = html.split("if (output && output.type === 'game_external_input')", 1)[1].split(
+        "if (!output || output.type !== 'game_llm_result')",
+        1,
+    )[0]
+    rest_candidate_block = html.split("if (promptType === 'rest') {", 1)[1].split(
+        "const streak = Number(passiveGuard.lv4PlayerGoalStreak",
+        1,
+    )[0]
+    withdrawn_goal_block = html.split("function _handleWithdrawnGoal", 1)[1].split(
+        "function _handleOrdinaryGoal",
+        1,
+    )[0]
+    passive_guard_ai_block = router_source.split("async def _run_soccer_passive_guard_ai", 1)[1].split(
+        "# ── 路由端点",
+        1,
+    )[0]
+    passive_guard_backend_block = router_source.split('set_call_type("game_passive_guard")', 1)[1].split(
+        "async with llm:",
+        1,
+    )[0]
+
+    assert "'passive_guard_state_change'" in set_difficulty_block
+    assert "_clearOrdinaryCandidate('difficulty_left_lv4')" in html
+    assert "_clearRestCandidate('difficulty_left_lv4')" in html
+    assert "'passive_guard_state_change'" in set_mood_block
+    assert "'passive_guard_sidecar'" in sidecar_block
+    assert "requestSessionId = _llm.sessionId" in sidecar_block
+    assert "requestGeneration = passiveGuard.sidecarGeneration" in sidecar_block
+    assert "discard_stale_result" in sidecar_block
+    assert "stale_sidecar_error" in sidecar_block
+    assert "function _passiveGuardExitPromptCandidateState(promptType, stage, options = {})" in html
+    assert "skip_inactive_candidate" in html
+    assert "_passiveGuardExitPromptCandidateState(promptType, stage)" in html
+    assert "allowPreparedModal = options.allowPreparedModal === true" in html
+    assert "_passiveGuardExitPromptCandidateState(promptType, stage, { allowPreparedModal: true })" in (
+        prepare_exit_prompt_block
+    )
+    assert "function _releasePreparedExitPrompt(type)" in html
+    assert prepare_exit_prompt_block.index("_llm.cleanedUp || !isGameRuntimeReady()") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
+    assert prepare_exit_prompt_block.index("skip_cleaned_up_before_show") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
+    assert prepare_exit_prompt_block.index("skip_inactive_candidate_before_show") < prepare_exit_prompt_block.index(
+        "_showExitPrompt(type, firstLine"
+    )
+    assert "_llm.cleanedUp ||" in prepare_exit_prompt_block
+    assert "!isGameRuntimeReady() ||" in prepare_exit_prompt_block
+    assert "_prepareExitPrompt('rest', 'sidecar_prepare_exit_prompt', { stage })" in html
+    assert "_prepareExitPrompt('surrender', 'sidecar_prepare_exit_prompt', { stage })" in html
+    assert "function _externalGameRouteInputText(output)" in html
+    assert "_handlePassiveGuardUserSpeech(" in external_route_input_block
+    assert "_externalGameRouteInputText(output)" in external_route_input_block
+    assert "_get_game_route_summary_llm_info(lanlan_name)" in passive_guard_ai_block
+    assert "_get_game_route_summary_llm_info," in router_source
+    assert "rest_streak_below_stage" in html
+    assert "ordinary_candidate_below_stage" in html
+    assert "passiveGuard.sidecarGeneration = Number(passiveGuard.sidecarGeneration || 0) + 1" in html
+    assert "reason: 'surrender_reminder_disabled'" in html
+    assert "reason: 'surrender_reminder_disabled'" in rest_candidate_block
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.withdrawnRestGoalStreak++"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restLightHintSent = true"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restSidecar7Called = true"
+    )
+    assert withdrawn_goal_block.index("if (!passiveGuard.surrenderReminderEnabled)") < withdrawn_goal_block.index(
+        "passiveGuard.restSidecar8Called = true"
+    )
+    assert "new AbortController()" in exit_prompt_line_block
+    assert "signal: controller.signal" in exit_prompt_line_block
+    assert "clearTimeout(timeoutId)" in exit_prompt_line_block
+    assert 'provider_type=char_info.get("provider_type")' in passive_guard_backend_block
+    assert 'elif action != "prepare_exit_prompt"' not in router_source
+    assert 'f"暂不支持 {game_type} 的 PassiveGuard"' in router_source
+    assert '"recommendedAction": "observe_more"' in router_source
+
+
+@pytest.mark.unit
 def test_pregame_prompt_must_not_be_format_called():
     """Pregame schema uses literal {} for JSON output; callers must not .format() it.
     If a future change needs a {placeholder}, every JSON literal must be doubled first."""
@@ -181,11 +322,15 @@ def test_game_voice_route_end_avoids_double_mic_restore():
 
 @pytest.mark.unit
 def test_realtime_client_has_no_game_route_surface():
-    """omni_realtime_client.py must not carry any game-route-specific
+    """The omni_realtime_client package must not carry game-route-specific
     APIs after Phase 1 of the dialog-passthrough refactor — that logic
     belongs in main_routers/game_router.py + main_logic/core.py
     (mirror_*) + main_logic/cross_server.py (mirror_meta detection)."""
-    realtime_py = (ROOT / "main_logic" / "omni_realtime_client.py").read_text(encoding="utf-8")
+    realtime_package = ROOT / "main_logic" / "omni_realtime_client"
+    realtime_py = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(realtime_package.glob("*.py"))
+    )
 
     assert "set_game_route_stt_only" not in realtime_py
     assert "_game_route_stt_only" not in realtime_py

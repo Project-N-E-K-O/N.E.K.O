@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from plugin.server.application.bus import subscription_service as bus_subscription_service_module
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.messaging.handlers import bus_delete as bus_delete_module
 from plugin.server.messaging.handlers import bus_subscribe as bus_subscribe_module
@@ -29,17 +30,28 @@ class _Recorder:
 @pytest.mark.asyncio
 async def test_bus_subscribe_and_unsubscribe_error_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     send = _Recorder()
+    subscribe_calls: list[dict[str, object]] = []
+
+    def _subscribe(**kwargs: object) -> dict[str, object]:
+        subscribe_calls.append(dict(kwargs))
+        return {"ok": True, "sub_id": "s1"}
 
     monkeypatch.setattr(
         bus_subscribe_module.bus_subscription_service,
         "subscribe",
-        lambda **_: {"ok": True, "sub_id": "s1"},
+        _subscribe,
     )
     await bus_subscribe_module.handle_bus_subscribe(
-        {"from_plugin": "p1", "request_id": "r1", "bus": "events"},
+        {
+            "from_plugin": "p1",
+            "request_id": "r1",
+            "bus": "events",
+            "plan": {"kind": "get"},
+        },
         send,
     )
     assert send.calls[-1][2] == {"ok": True, "sub_id": "s1"}
+    assert "plan" not in subscribe_calls[-1]
 
     def _raise_subscribe(**_: object) -> object:
         raise ServerDomainError(code="E", message="subscribe failed", status_code=400, details={})
@@ -65,6 +77,37 @@ async def test_bus_subscribe_and_unsubscribe_error_paths(monkeypatch: pytest.Mon
         send,
     )
     assert send.calls[-1][2] == {"ok": True}
+
+
+@pytest.mark.plugin_unit
+def test_bus_subscription_service_does_not_store_replay_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture(bus: str, sub_id: str, info: dict[str, object]) -> None:
+        captured.update(bus=bus, sub_id=sub_id, info=info)
+
+    monkeypatch.setattr(bus_subscription_service_module, "new_sub_id", lambda: "s1")
+    monkeypatch.setattr(bus_subscription_service_module.state, "add_bus_subscription", _capture)
+    monkeypatch.setattr(bus_subscription_service_module.state, "get_bus_rev", lambda _bus: 7)
+
+    result = bus_subscription_service_module.BusSubscriptionService().subscribe(
+        from_plugin="p1",
+        bus="events",
+        deliver="delta",
+        rules=["add", "change"],
+        debounce_ms=25,
+        timeout=2.0,
+    )
+
+    assert result == {"ok": True, "sub_id": "s1", "bus": "events", "rev": 7}
+    assert captured["info"] == {
+        "from_plugin": "p1",
+        "bus": "events",
+        "rules": ["add", "change"],
+        "deliver": "delta",
+        "debounce_ms": 25,
+        "timeout": 2.0,
+    }
 
 
 @pytest.mark.plugin_unit

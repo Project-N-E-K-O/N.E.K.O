@@ -121,6 +121,11 @@ class _KnowledgeEntriesMixin:
                 name = str(payload.get("name") or payload.get("topic") or topic_id).strip()
                 if not topic_id or not name:
                     raise ValueError("topic candidate requires id/topic_id and name/topic")
+                existing_topic = self._store.get_topic(topic_id)
+                if existing_topic and existing_topic.get("source") == "seed":
+                    raise ValueError(
+                        "candidate topic_id conflicts with canonical seed topic"
+                    )
                 self._store.upsert_topic(
                     {
                         "id": topic_id,
@@ -157,7 +162,7 @@ class _KnowledgeEntriesMixin:
                         "aliases": payload.get("aliases")
                         if isinstance(payload.get("aliases"), list)
                         else [],
-                        "source": "seed",
+                        "source": "runtime",
                     }
                 )
                 invalidate_guidance_cache = getattr(
@@ -286,7 +291,7 @@ class _KnowledgeEntriesMixin:
             "properties": {
                 "topic_id": {"type": "string", "default": ""},
                 "query": {"type": "string", "default": ""},
-                "limit": {"type": "integer", "default": 500},
+                "limit": {"type": "integer", "default": 1000},
                 "stage": {"type": "string", "default": ""},
                 "course_family": {"type": "string", "default": ""},
                 "max_depth": {"type": "integer", "default": 3},
@@ -307,14 +312,14 @@ class _KnowledgeEntriesMixin:
         self,
         topic_id: str = "",
         query: str = "",
-        limit: int = 500,
+        limit: int = 1000,
         stage: str = "",
         course_family: str = "",
         max_depth: int = 3,
         **_,
     ):
         try:
-            safe_limit = max(1, min(5000, int(limit or 500)))
+            safe_limit = max(1, min(5000, int(limit or 1000)))
             stage_key = str(stage or "").strip()
             course_family_key = str(course_family or "").strip()
             topics = await asyncio.to_thread(

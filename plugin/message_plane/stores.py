@@ -155,43 +155,6 @@ class TopicStore:
             start_idx = dq_len - limit_i
             return [dq[i] for i in range(start_idx, dq_len)]
 
-    def get_since(self, *, topic: Optional[str], after_seq: int, limit: int) -> list[Dict[str, Any]]:
-        nn = int(limit)
-        if nn <= 0:
-            return []
-        try:
-            after = int(after_seq)
-        except Exception:
-            after = 0
-
-        topic_q = None if topic is None else str(topic)
-        out: list[Dict[str, Any]] = []
-        
-        with self._lock:
-            if topic_q is None or topic_q.strip() in ("", "*"):
-                topics = list(self.items.keys())
-            else:
-                topics = [topic_q]
-            
-            # Filter while iterating, avoid copying entire deque
-            for t in topics:
-                dq = self.items.get(t)
-                if not dq:
-                    continue
-                
-                for ev in dq:
-                    try:
-                        if int(ev.get("seq", 0)) > after:
-                            out.append(ev)
-                    except Exception:
-                        logger.debug("skip event due to invalid seq: {}", ev)
-                        continue
-
-        out.sort(key=lambda e: int(e.get("seq") or 0))
-        if nn >= len(out):
-            return out
-        return out[:nn]
-
     def query(
         self,
         *,

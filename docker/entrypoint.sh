@@ -916,13 +916,13 @@ start_services() {
     # 根的 sys.path，config 等顶层包会 import 不到）。
     # PR #2264: memory_server 同样包化（app/memory_server/），走同一机制；
     # 其 __main__.py 顶部另带 sys.path bootstrap，文件直跑亦等价，但统一用 -m。
-    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server/__main__.py")
+    local services=("app/memory_server/__main__.py" "app/main_server/__main__.py" "app/agent_server/__main__.py")
 
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
+            if [[ "$service" == "app/main_server/__main__.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
                 return 1
             fi
             continue
@@ -934,6 +934,8 @@ start_services() {
             runuser -u neko -- "$VENV_PYTHON" -m app.agent_server &
         elif [[ "$service" == "app/memory_server/__main__.py" ]]; then
             runuser -u neko -- "$VENV_PYTHON" -m app.memory_server &
+        elif [[ "$service" == "app/main_server/__main__.py" ]]; then
+            runuser -u neko -- "$VENV_PYTHON" -m app.main_server &
         else
             runuser -u neko -- "$VENV_PYTHON" "$service" &
         fi

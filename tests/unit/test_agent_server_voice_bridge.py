@@ -8,7 +8,7 @@ pytestmark = pytest.mark.unit
 
 
 def test_agent_api_gate_reports_agent_free_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
 
     class _Config:
         def is_agent_api_ready(self) -> tuple[bool, list[str]]:
@@ -33,7 +33,7 @@ def test_agent_api_gate_reports_agent_free_flag(monkeypatch: pytest.MonkeyPatch)
 async def test_voice_transcript_request_reports_lifecycle_start_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
     emitted: list[tuple[str, str | None, dict[str, Any]]] = []
@@ -77,7 +77,7 @@ async def test_voice_transcript_request_reports_lifecycle_start_failure(
 async def test_voice_transcript_request_skips_plugins_when_agent_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
     emitted: list[tuple[str, str | None, dict[str, Any]]] = []
@@ -125,7 +125,7 @@ async def test_voice_transcript_request_skips_plugins_when_agent_disabled(
 async def test_voice_transcript_request_skips_plugins_for_empty_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
     emitted: list[tuple[str, str | None, dict[str, Any]]] = []
@@ -165,7 +165,7 @@ async def test_voice_transcript_request_skips_plugins_for_empty_transcript(
 async def test_voice_transcript_request_skips_plugins_when_user_plugin_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
     emitted: list[tuple[str, str | None, dict[str, Any]]] = []
@@ -213,7 +213,7 @@ async def test_voice_transcript_request_skips_plugins_when_user_plugin_disabled(
 async def test_voice_transcript_request_uses_arbitrated_custom_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
     from plugin.server.application.plugins import voice_transcript_bridge
 
     emitted: list[tuple[str, str | None, dict[str, Any]]] = []

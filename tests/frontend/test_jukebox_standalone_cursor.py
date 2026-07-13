@@ -5,7 +5,7 @@ from playwright.sync_api import Page
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox-standalone.js").read_text(encoding="utf-8")
+STANDALONE_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-standalone.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
 <!DOCTYPE html>

@@ -150,7 +150,7 @@ def _persona_manager():
     cm.get_character_data = MagicMock(return_value=(
         "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
     ))
-    with patch("memory.persona.get_config_manager", return_value=cm):
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
     pm._config_manager = cm
     return pm
@@ -283,7 +283,7 @@ async def test_render_persona_independent_from_reflection_budget(tmp_path):
         "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
     ))
     cm.get_config_value.return_value = False
-    with patch("memory.persona.get_config_manager", return_value=cm):
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
     pm._config_manager = cm
 
@@ -344,7 +344,7 @@ async def test_render_protected_always_emitted_under_tight_budget(tmp_path):
     cm.get_character_data = MagicMock(return_value=(
         "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
     ))
-    with patch("memory.persona.get_config_manager", return_value=cm):
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
     pm._config_manager = cm
 
@@ -362,7 +362,7 @@ async def test_render_protected_always_emitted_under_tight_budget(tmp_path):
     pm.aupdate_suppressions = AsyncMock()
 
     # Force the persona budget to 1 so non-protected entries cannot fit.
-    with patch('memory.persona.PERSONA_RENDER_MAX_TOKENS', 1):
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', 1):
         md = await pm.arender_persona_markdown('小天')
 
     assert '主人是一只猫娘的主人' in md, (
@@ -411,7 +411,7 @@ async def test_arender_preserves_reflection_score_order(tmp_path):
     cm.get_character_data = MagicMock(return_value=(
         "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
     ))
-    with patch("memory.persona.get_config_manager", return_value=cm):
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
     pm._config_manager = cm
 

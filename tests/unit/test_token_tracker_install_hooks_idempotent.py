@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import utils.token_tracker as tt
+import utils.token_tracker._shared as tracker_shared
 
 
 @pytest.fixture
@@ -137,15 +138,44 @@ def test_record_anthropic_usage_maps_messages_usage_fields():
             {
                 "input_tokens": 100,
                 "output_tokens": 25,
+                "cache_creation_input_tokens": 20,
                 "cache_read_input_tokens": 80,
             },
         )
 
     rec.assert_called_once_with(
         model="claude-test",
-        prompt_tokens=100,
+        prompt_tokens=200,
         completion_tokens=25,
-        total_tokens=125,
+        total_tokens=225,
         cached_tokens=80,
         call_type="conversation",
     )
+
+
+def test_file_lock_closes_descriptor_after_initial_write_failure(monkeypatch, tmp_path):
+    """A failed lock metadata write must not leak its opened descriptor."""
+    real_write = tracker_shared.os.write
+    real_close = tracker_shared.os.close
+    write_attempts = 0
+    closed_descriptors = []
+
+    def flaky_write(fd, data):
+        nonlocal write_attempts
+        write_attempts += 1
+        if write_attempts == 1:
+            raise OSError("simulated lock metadata write failure")
+        return real_write(fd, data)
+
+    def tracked_close(fd):
+        closed_descriptors.append(fd)
+        return real_close(fd)
+
+    monkeypatch.setattr(tracker_shared.os, "write", flaky_write)
+    monkeypatch.setattr(tracker_shared.os, "close", tracked_close)
+
+    with tracker_shared._file_lock(tmp_path / "token-tracker.lock"):
+        pass
+
+    assert write_attempts == 2
+    assert len(closed_descriptors) == 2

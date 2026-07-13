@@ -4,6 +4,7 @@ import hashlib
 from pathlib import PurePosixPath
 import zipfile
 
+from plugin._types.plugin_types import require_supported_plugin_type
 from plugin.core.python_dependencies import (
     collect_project_python_requirements,
     find_missing_python_requirements_from_versions,
@@ -143,6 +144,31 @@ def validate_plugin_layout(archive: zipfile.ZipFile, plugin_folders: list[str]) 
             f"the following plugin folder(s) are missing the required 'plugin.toml': "
             f"{', '.join(missing)}. "
             f"Every plugin directory under payload/plugins/ must contain a plugin.toml file."
+        )
+
+
+def validate_plugin_manifest_types(
+    archive: zipfile.ZipFile,
+    plugin_folders: list[str],
+) -> None:
+    """Reject removed plugin types before an archive is inspected or extracted."""
+
+    for folder in plugin_folders:
+        member_name = f"payload/plugins/{folder}/plugin.toml"
+        manifest = read_archive_toml(archive, member_name, required=True)
+        assert manifest is not None
+        plugin_table = manifest.get("plugin")
+        if not isinstance(plugin_table, dict):
+            raise ValueError(
+                f"'{member_name}' 必须包含 [plugin] 表，才能检查或安装该包。 / "
+                f"'{member_name}' must contain a [plugin] table before the package "
+                "can be inspected or installed. / "
+                f"'{member_name}' を検査またはインストールするには "
+                "[plugin] テーブルが必要です。"
+            )
+        require_supported_plugin_type(
+            plugin_table.get("type", "plugin"),
+            label=f"{member_name} plugin.type",
         )
 
 

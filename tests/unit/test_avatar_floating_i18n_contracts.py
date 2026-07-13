@@ -2,10 +2,11 @@ import json
 import re
 from pathlib import Path
 
+from tests.yui_guide_director_parts import read_director_source
+
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCALES = ROOT / "static" / "locales"
-DIRECTOR_PATH = ROOT / "static" / "tutorial/yui-guide/director.js"
 GUIDE_PATHS = [
     ROOT / "static" / "tutorial/yui-guide/days/day1-home-guide.js",
     ROOT / "static" / "tutorial/yui-guide/days/day2-screen-voice-guide.js",
@@ -53,7 +54,7 @@ def test_avatar_floating_tutorial_copy_uses_csv_i18n_columns():
 
 
 def test_avatar_floating_zh_tw_uses_zh_guide_audio_locale():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    source = read_director_source(ROOT)
     assert "candidate.indexOf('zh') === 0) return 'zh';" in source
     assert "return 'en';" in source
 
@@ -93,7 +94,7 @@ def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
 
 def test_day3_voice_used_intro_uses_matching_audio_key_after_day_swap():
     day3_source = (ROOT / "static" / "tutorial/yui-guide/days/day3-interaction-guide.js").read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     default_key = "tutorial.avatarFloating.day3.intro"
     voice_used_key = "tutorial.avatarFloating.day3.introVoiceUsed"
     default_zh_cn = (
@@ -159,7 +160,7 @@ def test_day3_voice_used_intro_uses_matching_audio_key_after_day_swap():
 
 
 def test_day3_voice_used_intro_requires_voice_usage_after_day1_end_before_day3_start():
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
     usage_block = director_source.split("function hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart", 1)[1].split(
         "if (!window.__avatarFloatingGuideUsageListenersInstalled)",
         1,

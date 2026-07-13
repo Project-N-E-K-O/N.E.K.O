@@ -351,39 +351,6 @@ async def test_system_info_runtime_behaviors() -> None:
     assert (await no_system.get_server_settings()).is_err()
 
 
-@pytest.mark.asyncio
-async def test_memory_client_runtime_behaviors() -> None:
-    class _CtxMem(_Ctx):
-        async def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> dict[str, object]:
-            return {"bucket": lanlan_name, "query": query}
-
-        @property
-        def bus(self):
-            class _Bus:
-                class memory:
-                    @staticmethod
-                    async def get(bucket_id: str, limit: int = 20, timeout: float = 5.0):
-                        class _List:
-                            @staticmethod
-                            def dump_records():
-                                return [{"bucket": bucket_id, "limit": limit}]
-                        return rt.Ok(_List())
-            return _Bus()
-
-    mem = rt.MemoryClient(_CtxMem())
-    queried = await mem.query("b", "q")
-    assert queried.is_ok()
-    got = await mem.get("b")
-    assert got.is_ok()
-    assert got.unwrap()[0]["bucket"] == "b"
-
-    class _CtxNoMem:
-        plugin_id = "demo"
-
-    no_mem = rt.MemoryClient(_CtxNoMem())
-    assert (await no_mem.query("b", "q")).is_err()
-    assert (await no_mem.get("b")).is_err()
-
 
 @pytest.mark.asyncio
 async def test_store_database_and_state_runtime_exports_work(tmp_path) -> None:

@@ -35,11 +35,6 @@ def validate_source_dependency_layout(source: PluginSource) -> None:
     if not external_requirements:
         return
 
-    if source.package_type == "extension":
-        raise ValueError(
-            f"{source.plugin_id}: extension plugins cannot declare Python runtime dependencies "
-            "because they run inside their host plugin process."
-        )
 
     vendor_dir = source.plugin_dir / "vendor"
     if not vendor_dir.is_dir():

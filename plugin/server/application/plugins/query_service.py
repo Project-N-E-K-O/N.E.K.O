@@ -162,17 +162,6 @@ def _resolve_plugin_status(
     if isinstance(runtime_load_state_obj, str) and runtime_load_state_obj == "failed":
         return "load_failed"
 
-    plugin_type = plugin_meta.get("type")
-    if plugin_type == "extension":
-        runtime_enabled = _to_bool(plugin_meta.get("runtime_enabled"), default=True)
-        if not runtime_enabled:
-            return "disabled"
-
-        host_plugin_id = plugin_meta.get("host_plugin_id")
-        if isinstance(host_plugin_id, str) and host_plugin_id in running_plugin_ids:
-            return "injected"
-        return "pending"
-
     return "running" if plugin_id in running_plugin_ids else "stopped"
 
 

@@ -141,7 +141,7 @@ from config.prompts.prompts_avatar_interaction import (
 # )
 from utils.config_manager import _as_bool, get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
-from utils.native_voice_registry import (
+from utils.tts.native_voice_registry import (
     is_free_preset_voice_id,
     resolve_native_voice_for_routing,
 )

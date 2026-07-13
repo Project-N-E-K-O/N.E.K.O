@@ -35,7 +35,7 @@ def _mock_cm(tmpdir: str):
 def _install_persona(tmpdir: str):
     from memory.persona import PersonaManager
     cm = _mock_cm(tmpdir)
-    with patch("memory.persona.get_config_manager", return_value=cm):
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
         pm = PersonaManager()
     pm._config_manager = cm
     return pm, cm
@@ -48,8 +48,8 @@ def _install_reflection(tmpdir: str):
 
     cm = _mock_cm(tmpdir)
     with patch("memory.facts.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.persona.manager.get_config_manager", return_value=cm), \
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         fs = FactStore()
         fs._config_manager = cm
         pm = PersonaManager()

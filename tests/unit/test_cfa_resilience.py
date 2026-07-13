@@ -611,7 +611,7 @@ class TestBackwardCompatibility:
         cm = _make_config_manager_normal(normal_env)
 
         assert cm.readable_live2d_dir is None
-        # This means main_server.py won't create the /user_live2d_local mount
+        # This means the main_server package won't create the /user_live2d_local mount
         readable = cm.readable_live2d_dir
         should_create_local_mount = (
             readable is not None

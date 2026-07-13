@@ -112,6 +112,11 @@ class Modules:
     analyze_lock: Optional[asyncio.Lock] = None
     # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
     last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
+    # Proactive-analyze throttle state (opt-in feature, see AGENT_PROACTIVE_ANALYZE_*).
+    # Per-lanlan count of proactive analyses run this session (reset on greeting_check)
+    # and the last proactive assistant-turn fingerprint already consumed (dedupe).
+    proactive_analyze_count: ClassVar[Dict[str, int]] = {}
+    last_proactive_assistant_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},

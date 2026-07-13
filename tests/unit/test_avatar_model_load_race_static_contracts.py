@@ -10,7 +10,7 @@ Covers:
 2. vrm-core.loadModel token guards: managerLoadToken passed in + guarded before
    old-model removal and before scene.add, with _disposeAbandonedVRM on bail.
 3. VRMManager.cleanupUI restored: dropped in #510 while dispose() /
-   app-character.js / app-interpage.js kept calling it behind typeof guards,
+   app-character.js / app-interpage kept calling it behind typeof guards,
    leaving _returnButtonDragHandlers document listeners uncleaned on teardown.
 4. MMD load token provenance: token captured before the first await in
    mmd-core.loadModel and passed from the manager, otherwise a superseded call
@@ -18,6 +18,8 @@ Covers:
    mesh, or _clearModel a newer call's freshly loaded model.
 """
 from pathlib import Path
+
+from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -136,7 +138,7 @@ def test_vrm_cleanup_ui_is_restored_and_delegates_to_mixin():
     assert "this.cleanupUI();" in manager_source
 
     # mixin 的 cleanupFloatingButtons 必须清理 return 按钮的 document 级拖拽监听
-    mixin_source = (PROJECT_ROOT / "static/avatar-ui-buttons.js").read_text(encoding="utf-8")
+    mixin_source = read_avatar_ui_buttons_source()
     cleanup_section = mixin_source.split("ManagerPrototype.cleanupFloatingButtons = function() {", 1)[1]
     assert "this._returnButtonDragHandlers = null;" in cleanup_section
 

@@ -12,7 +12,7 @@
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
             <h3 class="plugin-list-row-card__name">{{ displayText.name }}</h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
-            <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
+            <el-tag v-if="plugin.autoStart === false" size="small" type="warning">
               {{ t('plugins.manualStart') }}
             </el-tag>
             <SourceTag
@@ -52,12 +52,6 @@
           <span class="plugin-list-row-card__meta-label">{{ t('plugins.entryPoint') }}</span>
           <span class="plugin-list-row-card__meta-value">{{ entryCount }}</span>
         </div>
-        <div v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-list-row-card__meta-item">
-          <span class="plugin-list-row-card__meta-label">Host</span>
-          <span class="plugin-list-row-card__meta-value plugin-list-row-card__meta-value--code">
-            {{ plugin.host_plugin_id }}
-          </span>
-        </div>
       </div>
     </div>
   </el-card>
@@ -76,7 +70,7 @@ import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
-  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string }
   isSelected?: boolean
   showMetrics?: boolean
   showSourceDetail?: boolean
@@ -116,13 +110,11 @@ const hasUpdate = computed<boolean>(() => {
 
 const typeLabel = computed(() => {
   if (props.plugin.type === 'adapter') return t('plugins.typeAdapter')
-  if (props.plugin.type === 'extension') return t('plugins.typeExtension')
   return t('plugins.typePlugin')
 })
 
 const typeTagType = computed<'primary' | 'success' | 'warning'>(() => {
   if (props.plugin.type === 'adapter') return 'success'
-  if (props.plugin.type === 'extension') return 'warning'
   return 'primary'
 })
 </script>

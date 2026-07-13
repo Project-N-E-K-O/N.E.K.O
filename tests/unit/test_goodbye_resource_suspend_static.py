@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tests.static_app_parts import read_path_or_parts
 
 import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_AGENT_PATH = REPO_ROOT / "static" / "app" / "app-agent.js"
-APP_UI_PATH = REPO_ROOT / "static" / "app" / "app-ui.js"
+APP_UI_PATH = REPO_ROOT / "static" / "app" / "app-ui"
 APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 COMMON_UI_HUD_PATH = REPO_ROOT / "static" / "common-ui-hud.js"
 AGENTHUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
@@ -15,11 +16,11 @@ PNGTUBER_PATH = REPO_ROOT / "static" / "pngtuber-core.js"
 PLUGIN_DASHBOARD_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Dashboard.vue"
 PLUGIN_METRICS_VIEW_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "views" / "Metrics.vue"
 PLUGIN_METRICS_PATH = REPO_ROOT / "frontend" / "plugin-manager" / "src" / "stores" / "metrics.ts"
-SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle.js"
+SUBTITLE_PATH = REPO_ROOT / "static" / "subtitle" / "subtitle.js"
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_path_or_parts(path)
 
 
 def _js_function_block(source: str, function_name: str) -> str:
@@ -100,7 +101,7 @@ def test_goodbye_resource_suspend_waits_for_cat_transition_and_uses_token_snapsh
     complete_suspend = _js_function_block(source, "completeGoodbyeResourceSuspend")
     restore_suspend = _js_function_block(source, "restoreGoodbyeResourceSuspend")
 
-    assert "const NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850;" in source
     assert "const GOODBYE_RESOURCE_SUSPEND_STORAGE_KEY = 'neko-goodbye-resource-suspended';" in source
     assert "window.goodbyeResourceSuspended = suspended;" in source
     assert "window.__nekoGoodbyeResourceSuspendPending = pending;" in source
