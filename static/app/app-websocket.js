@@ -21,9 +21,9 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
     const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
-    // Cat-form returns shorter than three minutes stay silent. This matches
-    // the backend prompt gate so a short return never sends a request that the
-    // backend would reject anyway.
+    // Cat-form returns shorter than three minutes stay silent by default. A
+    // summary carrying a strictly verified runner start is the one short-return
+    // exception, mirrored by the backend prompt gate below.
     const CAT_GREETING_SILENT_BELOW_SECONDS = 180;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -3654,7 +3654,16 @@
             return;
         }
         var durationSeconds = Number(detail.durationSeconds) || 0;
-        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS) {
+        var catMemorySummary = detail.catMemorySummary && typeof detail.catMemorySummary === 'object' &&
+            !Array.isArray(detail.catMemorySummary)
+            ? detail.catMemorySummary
+            : null;
+        // A real runner start may return before the old silence threshold.
+        // This flag is delivery-only: completed experience narration still
+        // comes solely from the strict done-only episode summary.
+        var hasStartedAutonomousAction = !!(catMemorySummary &&
+            catMemorySummary.has_started_autonomous_action === true);
+        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS && !hasStartedAutonomousAction) {
             return;
         }
         var catLang = '';
@@ -3671,12 +3680,12 @@
                 was_auto: !!detail.wasAuto,
                 language: catLang
             };
-            if (detail.catMemorySummary && typeof detail.catMemorySummary === 'object' &&
-                !Array.isArray(detail.catMemorySummary)) {
-                catGreetingMessage.cat_memory_summary = detail.catMemorySummary;
+            if (catMemorySummary) {
+                catGreetingMessage.cat_memory_summary = catMemorySummary;
             }
             S.socket.send(JSON.stringify(catGreetingMessage));
-            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
+            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') +
+                ' was_auto=' + (!!detail.wasAuto) + ' started_action=' + hasStartedAutonomousAction);
         } catch (e) {
             console.warn('[cat_greeting_check] send failed:', e);
         }

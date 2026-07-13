@@ -5350,6 +5350,10 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         walkSpeedRate: 1,
         walkPreviousDistance: 0,
         walkDistanceGrowthPx: 0,
+        // One minimized-side approach has one local tail only: play or stretch.
+        // Keep the resolution until a later, genuinely new walk starts so a
+        // duplicated finish callback cannot re-roll or append the other tail.
+        walkFinishResolution: '',
         actionSettled: false,
         pairMoveTimer: 0,
         pairMoveToken: 0,
@@ -5793,6 +5797,11 @@ function _resetNekoIdleCat1WalkSpeed(state) {
     state.walkDistanceGrowthPx = 0;
 }
 
+function _resetNekoIdleCat1WalkFinishResolution(state) {
+    if (!state) return;
+    state.walkFinishResolution = '';
+}
+
 function _getNekoIdleNowMs() {
     return (typeof performance !== 'undefined' && typeof performance.now === 'function')
         ? performance.now()
@@ -5908,6 +5917,7 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     state.targetKind = '';
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
+    _resetNekoIdleCat1WalkFinishResolution(state);
     _resetNekoIdleCat1CompactFollowState(state);
     _setNekoIdleCat1Classes(button, state);
     if (options.resetArt) {
@@ -7084,6 +7094,12 @@ function _finishNekoIdleCat1Walk(button) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
     const targetKind = state.targetKind || (state.target && state.target.kind) || '';
+    // A delayed frame / observer sync can arrive after this approach has
+    // already resolved. Do not re-roll the local probability or run the
+    // opposite tail; a later walk start is the only reset point.
+    if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && state.walkFinishResolution) {
+        return;
+    }
     _cancelNekoIdleCat1Frame(state);
     _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     _dispatchNekoIdleCat1MotionInputRegionState(state, false, 'cat1-walk-finish');
@@ -7092,17 +7108,24 @@ function _finishNekoIdleCat1Walk(button) {
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
     if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE) {
+        const walkFinishResolution = Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY
+            ? 'play'
+            : 'stretch';
+        state.walkFinishResolution = walkFinishResolution;
         _dispatchNekoCatIdleObservationSource(_NEKO_CAT_IDLE_OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT, {
             tier: _NEKO_IDLE_TIER_CAT1, source: 'cat1-walk-finish', timestamp: Date.now()
         });
-        if (Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY &&
-            _playNekoIdleCat1PlayAction(button)) {
+        if (walkFinishResolution === 'play' && _playNekoIdleCat1PlayAction(button)) {
             state.substate = state.profile.idleSubstate;
             state.targetKind = targetKind;
             state.actionSettled = true;
             _setNekoIdleCat1Classes(button, state);
             return;
         }
+        // The visual runner can still reject because the local presentation
+        // changed meanwhile. Resolve that same approach deterministically to
+        // stretch instead of retrying the random branch on a later callback.
+        state.walkFinishResolution = 'stretch';
     }
     _setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });
 }
@@ -7392,6 +7415,7 @@ function _startNekoIdleCat1Walk(button, target) {
     if (state.substate !== profile.walkingSubstate) {
         state.lastStepAt = 0;
         _resetNekoIdleCat1WalkSpeed(state);
+        _resetNekoIdleCat1WalkFinishResolution(state);
         state.walkPreviousDistance = Math.max(0, Number(target && target.distance) || 0);
         _setNekoIdleCat1Substate(button, profile.walkingSubstate, { animate: false, facingRight: state.facingRight });
     } else {

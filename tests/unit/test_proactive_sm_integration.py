@@ -1721,13 +1721,60 @@ async def test_cat_greeting_episode_scene_is_request_local_and_keeps_existing_gu
         assert raw_value not in instruction
     assert mgr.state.phase is ProactivePhase.IDLE
 
-    # A short return remains silent even when it carries a valid episode.
-    short_session = _FakeOmniOffline(delivered=True)
-    short_mgr = _make_mgr(session=short_session)
+    # The established silence remains unless the adapter verified a runner
+    # really entered started. A valid done episode alone cannot bypass it.
+    short_without_start_session = _FakeOmniOffline(delivered=True)
+    short_without_start_mgr = _make_mgr(session=short_without_start_session)
     await core_module.LLMSessionManager.trigger_cat_greeting(
-        short_mgr, 179, "cat1", False, episode=episode,
+        short_without_start_mgr, 179, "cat1", False, episode=episode,
     )
-    assert short_session.called_with == []
+    assert short_without_start_session.called_with == []
+
+    short_scene_session = _FakeOmniOffline(delivered=True)
+    short_scene_mgr = _make_mgr(session=short_scene_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        short_scene_mgr,
+        10,
+        "cat2",
+        False,
+        episode=episode,
+        has_started_autonomous_action=True,
+    )
+    assert len(short_scene_session.called_with) == 1
+    short_scene_instruction = short_scene_session.called_with[0]
+    assert get_cat_greeting_episode_scene(episode, "en") in short_scene_instruction
+    assert "The true cat-form episode was:" in short_scene_instruction
+    assert "for 1 minute" not in short_scene_instruction
+    assert "dozed for" not in short_scene_instruction
+
+    # started without strict done permits a neutral return only: it cannot use
+    # the old waiting/sleep template or invent a completed action.
+    short_neutral_session = _FakeOmniOffline(delivered=True)
+    short_neutral_mgr = _make_mgr(session=short_neutral_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        short_neutral_mgr,
+        10,
+        "cat3",
+        False,
+        has_started_autonomous_action=True,
+    )
+    assert len(short_neutral_session.called_with) == 1
+    short_neutral_instruction = short_neutral_session.called_with[0]
+    assert "There is no completed cat-form episode to narrate." in short_neutral_instruction
+    assert "for 1 minute" not in short_neutral_instruction
+    assert "had a short sleep of" not in short_neutral_instruction
+    assert get_cat_greeting_episode_scene(episode, "en") not in short_neutral_instruction
+
+    truthy_not_started_session = _FakeOmniOffline(delivered=True)
+    truthy_not_started_mgr = _make_mgr(session=truthy_not_started_session)
+    await core_module.LLMSessionManager.trigger_cat_greeting(
+        truthy_not_started_mgr,
+        10,
+        "cat1",
+        False,
+        has_started_autonomous_action="true",
+    )
+    assert truthy_not_started_session.called_with == []
 
     # No trustworthy chapter means the exact existing greeting path remains.
     no_episode_session = _FakeOmniOffline(delivered=True)

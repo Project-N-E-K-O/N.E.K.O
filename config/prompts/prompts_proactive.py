@@ -4588,8 +4588,9 @@ _CAT_GREETING_TABLES = {
     ("sleep", "long"): CAT_GREETING_SLEEP_LONG,
 }
 
-# 时长分档门槛（秒）：猫形态少于 3 分钟时静默；清醒"憋坏"门槛 15min，
-# 打盹/熟睡"久"门槛 30min。
+# 时长分档门槛（秒）：猫形态少于 3 分钟默认静默；仅调用方已严格确认
+# runner ``started`` 时可走无时长的短 return wrapper。清醒"憋坏"门槛
+# 15min，打盹/熟睡"久"门槛 30min。
 CAT_GREETING_SILENT_BELOW_SECONDS = 180
 _CAT_GREETING_LONG_THRESHOLDS = {
     "awake": 900,
@@ -4768,6 +4769,96 @@ _CAT_GREETING_EPISODE_PROMPTS = {
     "======Acima está o aviso de ambiente======",
 }
 
+# A runner may have really entered ``started`` and return before the ordinary
+# 180-second greeting threshold.  These wrappers deliberately omit elapsed
+# time: only an already-completed episode can be narrated, and a sub-minute
+# return must not be rewritten as "one minute" by the shared formatter.
+_CAT_GREETING_SHORT_EPISODE_PROMPTS = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你刚才变成了猫咪。刚才作为猫真实经历的是：{cat_form_scene}现在{master}把你叫回来了。\n"
+    "{episode_return_tone}\n"
+    "这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you were just in cat form. The true cat-form episode was: {cat_form_scene} Now {master} has called you back.\n"
+    "{episode_return_tone}\n"
+    "This episode is the only factual account of the time in cat form and must be naturally reflected in the return. You may naturally mention being back, but do not portray that time as nothing but waiting, doing nothing, dozing, deep sleep, or just waking without evidence. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}さっき猫の姿になっていた。さっき猫として実際にあったことはこう：{cat_form_scene}今、{master}が呼び戻してくれた。\n"
+    "{episode_return_tone}\n"
+    "この経緯が今回の猫の姿で過ごした時間の唯一の事実で、戻るときは自然に必ず反映する。戻ったことは自然に触れてよいが、根拠なく「ずっと待っていただけ」「何もしていなかった」「うたた寝・熟睡・起きたばかり」とは言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}방금 고양이 모습이었다. 방금 고양이로서 실제로 있었던 일은 다음과 같다: {cat_form_scene} 이제 {master}가 너를 불러 돌아왔다.\n"
+    "{episode_return_tone}\n"
+    "이 경험은 이번 고양이 모습의 유일한 사실이며, 돌아올 때 반드시 자연스럽게 반영해야 한다. 돌아온 일은 자연스럽게 언급해도 되지만, 근거 없이 계속 기다리기만 했거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깬 것처럼 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты только что была в кошачьем облике. Вот что действительно произошло в это время: {cat_form_scene} Теперь {master} позвал тебя обратно.\n"
+    "{episode_return_tone}\n"
+    "Этот эпизод — единственное фактическое описание времени в кошачьем облике, и его нужно естественно отразить при возвращении. Можно естественно упомянуть возвращение, но без оснований не изображай это время как одно лишь ожидание, бездействие, дремоту, глубокий сон или только что пробуждение. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}acababas de estar en forma de gata. Lo que realmente ocurrió en ese momento fue: {cat_form_scene} Ahora {master} te ha llamado de vuelta.\n"
+    "{episode_return_tone}\n"
+    "Este episodio es el único relato factual del tiempo en forma de gata y debe reflejarse de forma natural al volver. Puedes mencionar con naturalidad el regreso, pero no presentes ese tiempo sin pruebas como solo esperar, no hacer nada, dormitar, dormir profundamente o acabar de despertar. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você acabou de estar em forma de gata. O que realmente aconteceu nesse momento foi: {cat_form_scene} Agora {master} te chamou de volta.\n"
+    "{episode_return_tone}\n"
+    "Este episódio é o único relato factual do tempo em forma de gata e deve aparecer naturalmente no retorno. Você pode mencionar naturalmente a volta, mas não apresente esse tempo sem evidência como apenas esperar, não fazer nada, cochilar, dormir profundamente ou ter acabado de acordar. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# This path has a verified runner start but no strict done-only episode.  It
+# must permit a short return greeting without inventing the runner's outcome,
+# a duration, waiting, or sleep facts.
+_CAT_GREETING_SHORT_STARTED_PROMPTS = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你刚才变成了猫咪，现在{master}把你叫回来了。\n"
+    "这次没有可叙述的已完成猫形态经历。只自然回应已经回来；不要猜测或声称刚才全程在等待、什么也没做、打盹、熟睡、刚醒，或任何动作已经完成。不要列举动作、次数或过程，也不要把它归因于对方。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you were just in cat form, and now {master} has called you back.\n"
+    "There is no completed cat-form episode to narrate. Simply greet naturally on being back; do not guess or claim that you only waited, did nothing, dozed, slept deeply, just woke up, or completed any action. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}さっき猫の姿になっていて、今{master}が呼び戻してくれた。\n"
+    "今回、語れる完了済みの猫としての出来事はない。戻ったことに自然に応じるだけにして、ずっと待っていた、何もしていない、うたた寝・熟睡・起きたばかり、何かを終えた、と推測して言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}방금 고양이 모습이었다가, 이제 {master}가 너를 불러 돌아왔다.\n"
+    "이번에는 말할 수 있는 완료된 고양이 모습의 경험이 없다. 돌아온 일에만 자연스럽게 답하고, 계속 기다렸거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깼거나, 어떤 행동을 끝냈다고 추측해 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты только что была в кошачьем облике, и теперь {master} позвал тебя обратно.\n"
+    "В этот раз нет завершённого кошачьего эпизода, о котором можно рассказывать. Естественно отреагируй только на возвращение; не гадай и не утверждай, что ты лишь ждала, ничего не делала, дремала, крепко спала, только проснулась или завершила какое-либо действие. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}acababas de estar en forma de gata y ahora {master} te ha llamado de vuelta.\n"
+    "Esta vez no hay un episodio felino completado que se pueda narrar. Responde con naturalidad solo al hecho de haber vuelto; no adivines ni afirmes que solo esperaste, no hiciste nada, dormitaste, dormiste profundamente, acabas de despertar o terminaste alguna acción. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você acabou de estar em forma de gata e agora {master} te chamou de volta.\n"
+    "Desta vez não há um episódio felino concluído que possa ser narrado. Responda naturalmente apenas ao fato de ter voltado; não adivinhe nem afirme que só esperou, não fez nada, cochilou, dormiu profundamente, acabou de acordar ou terminou alguma ação. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
 _CAT_GREETING_EPISODE_RETURN_TONES = {
     "zh": {
         ("awake", "short"): "心情可以轻松些，顺着这段经历自然地打个招呼。",
@@ -4829,9 +4920,9 @@ _CAT_GREETING_EPISODE_RETURN_TONES = {
 
 
 def _get_cat_greeting_behavior_band(
-    behavior: str, duration_seconds: float,
+    behavior: str, duration_seconds: float, *, allow_short_started: bool = False,
 ) -> tuple[str, str] | None:
-    if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:
+    if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS and not allow_short_started:
         return None
     behavior_key = behavior if behavior in ("awake", "nap", "sleep") else "awake"
     long_threshold = _CAT_GREETING_LONG_THRESHOLDS[behavior_key]
@@ -4862,7 +4953,8 @@ def get_cat_greeting_episode_scene(episode: dict | None, lang: str = "zh") -> st
 
     The helper validates again even though the websocket router already
     sanitizes the payload: raw browser text is never interpolated, and an
-    invalid optional episode falls back to the unchanged legacy greeting.
+    invalid optional episode produces no factual scene. The caller then applies
+    the normal duration / strict-start delivery-gate rules.
     """
     normalized = _normalize_cat_greeting_episode(episode)
     if not normalized:
@@ -4877,16 +4969,36 @@ def get_cat_greeting_episode_scene(episode: dict | None, lang: str = "zh") -> st
 
 
 def get_cat_greeting_episode_prompt(
-    behavior: str, duration_seconds: float, lang: str = "zh",
+    behavior: str,
+    duration_seconds: float,
+    lang: str = "zh",
+    *,
+    allow_short_started: bool = False,
 ) -> str | None:
-    """Return the factual-scene return prompt for a validated episode."""
-    behavior_band = _get_cat_greeting_behavior_band(behavior, duration_seconds)
+    """Return the factual-scene return prompt for a validated episode.
+
+    ``allow_short_started`` is deliberately opt-in and only for a caller that
+    has already verified a Cat Mind runner entered ``started``. It changes the
+    delivery gate, not the done-only scene evidence.
+    """
+    behavior_band = _get_cat_greeting_behavior_band(
+        behavior,
+        duration_seconds,
+        allow_short_started=allow_short_started,
+    )
     if not behavior_band:
         return None
     lang_key = _normalize_prompt_language(lang)
-    template = _CAT_GREETING_EPISODE_PROMPTS.get(
-        lang_key, _CAT_GREETING_EPISODE_PROMPTS["en"]
+    short_started_return = (
+        allow_short_started
+        and duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS
     )
+    prompt_table = (
+        _CAT_GREETING_SHORT_EPISODE_PROMPTS
+        if short_started_return
+        else _CAT_GREETING_EPISODE_PROMPTS
+    )
+    template = prompt_table.get(lang_key, prompt_table["en"])
     tones = _CAT_GREETING_EPISODE_RETURN_TONES.get(
         lang_key, _CAT_GREETING_EPISODE_RETURN_TONES["en"]
     )
@@ -4895,6 +5007,20 @@ def get_cat_greeting_episode_prompt(
         _CAT_GREETING_EPISODE_RETURN_TONES["en"][behavior_band],
     )
     return template.replace("{episode_return_tone}", tone)
+
+
+def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
+    """Return the neutral short-return wrapper after a verified runner start.
+
+    It intentionally has no episode scene or elapsed-duration placeholder:
+    a started runner is sufficient to permit delivery, not to narrate an
+    action as completed.
+    """
+    lang_key = _normalize_prompt_language(lang)
+    return _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
+        lang_key,
+        _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
+    )
 
 
 def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = "zh") -> str | None:

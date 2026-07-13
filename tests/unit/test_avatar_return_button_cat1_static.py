@@ -134,8 +134,17 @@ def test_cat1_walk_finish_keeps_legacy_probability_branch_outside_cat_mind():
     assert "CAT1_WALK_DONE_NEAR_CHAT" in finish_block
     assert "CAT1_PLAY_YARN_WAKEUP" not in finish_block
     assert "Math.random() < _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY" in finish_block
+    assert "state.walkFinishResolution = walkFinishResolution" in finish_block
+    assert "state.walkFinishResolution = 'stretch';" in finish_block
+    assert "if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && state.walkFinishResolution)" in finish_block
     assert "_playNekoIdleCat1PlayAction(button)" in finish_block
     assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
+
+    walk_start_block = source.split("function _startNekoIdleCat1Walk", 1)[1].split(
+        "function _scheduleNekoIdleCat1WalkStart",
+        1,
+    )[0]
+    assert "_resetNekoIdleCat1WalkFinishResolution(state);" in walk_start_block
 
 
 def test_cat1_pair_move_is_adapter_only_small_move_runner():

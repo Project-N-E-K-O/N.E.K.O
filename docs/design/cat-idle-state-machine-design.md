@@ -324,7 +324,7 @@ state machine requests cat1_play_yarn
 1. 状态机不能为了玩毛线主动启动 walk-to-chat。
 2. near-chat 是 provider 硬条件。
 3. 玩毛线不能破坏 chat 主链路恢复。
-4. 例外：猫走到毛线球边后的既有 journey 表现，仍按固定 25% 播放玩球、否则伸展；它只是该表现链内部的二选一，不是 `cat1_play_yarn` 自主候选，不发 action request/result，也不写 cooldown 或五维。walk finish 只额外上报到球边这一 observation。
+4. 例外：猫走到毛线球边后的既有 journey 表现，仍按固定 25% 播放玩球、否则伸展；它只是该表现链内部的二选一，不是 `cat1_play_yarn` 自主候选。本地 runner 不发 action request/result，也不直接写 cooldown 或五维。一次 approach 必须锁定一个尾声，重复 finish callback 不得重掷概率或追加另一尾声。`walk finish` 与 stretch settle 仍额外上报 presentation observation，按既有 reducer 更新状态/debug；但它们不作为 selector wakeup，不能借此把本地二选一绕回正式动作请求。
 
 ### 8.4 `cat2_nap_feedback` / `cat3_sleep_feedback`
 
@@ -390,19 +390,19 @@ return 前生成的是一条**最后、可信、可自然表达的会话经历**
 
 摘要原则：
 
-1. 少于现有静默阈值时仍可不触发问候。
+1. 少于现有静默阈值且没有严格 started 的 Cat Mind runner 时仍不触发问候；strict-start 只解除该次短 return 的投递 gate，不使未完成动作变成经历事实。
 2. 不传次数、分数、坐标、窗口状态、原始事件、开放文本或完整时间线。
 3. 不责备用户，不根据互动或五维推断用户意图、缺席原因或关系结论。
 4. 问候失败不能影响模型恢复；摘要不进入长期记忆或下一轮猫形态。
-5. 有可信 `episode` 时，它决定问候中“刚才作为猫经历了什么”的实际经过；既有 tier × 时长 × entry 只提供等待、被叫回来和回归的语气/措辞。可以自然同时提到等待，但不得遗漏、弱化或用“全程只有等待 / 什么也没做”替代 `episode`。无 `episode` 时，完全沿用既有 tier × 时长 × entry 的等待问候。
-6. 猫形态 return 是封闭问候链：不得注入普通主动问候的时段、餐食、节日、话题或其它跨功能提示；它只消费本次 return 的入口、时长、tier 和可选 episode。
+5. 有可信 `episode` 时，它决定问候中“刚才作为猫经历了什么”的实际经过；既有 tier × 时长 × entry 只提供等待、被叫回来和回归的语气/措辞。可以自然同时提到等待，但不得遗漏、弱化或用“全程只有等待 / 什么也没做”替代 `episode`。无 `episode` 在 `>=180s` 时沿用既有等待问候；`<180s` 的 strict-start 但无 `done` episode 只能用中性“已经回来”问候，不得说动作完成、全程等待或睡醒。
+6. 猫形态 return 是封闭问候链：不得注入普通主动问候的时段、餐食、节日、话题或其它跨功能提示；它只消费本次 return 的入口、时长、tier、可选 episode 与 gate-only strict-start bit。
 
 当前实施范围：
 
-1. Live2D / VRM / MMD return 已把这条 episode 单次附着到既有网页 `cat_greeting_check`；时长、tier 和入口仍以本次 return 的 canonical 顶层值为准，后端只消费 allowlist enum。
+1. Live2D / VRM / MMD return 已把这条 episode 单次附着到既有网页 `cat_greeting_check`；时长、tier 和入口仍以本次 return 的 canonical 顶层值为准，后端只消费 allowlist enum 与 literal-true strict-start gate。
 2. 短时静默、无 socket 或发送失败时，draft 仍属于本次 return，不会缓存给下一次；Cat Mind 缺失或读取异常时保留原问候 payload。临时 episode 场景只进入本次 `prompt_ephemeral` instruction，不进入长期 memory。
 3. PNGTuber 仍不接入经历问候：保留原 return observation / `return-summary` 事件，但不保存 draft，避免无人消费的内容跨 return 残留。
-4. NEKO-PC 不保存、选择、解释或发送 episode；桌面端只继续提供既有 observation 与窗口安全能力。
+4. NEKO-PC 不保存、选择、解释或发送 episode / strict-start gate；桌面端只继续提供既有 observation 与窗口安全能力。
 
 ## 10. 实施顺序
 
@@ -432,8 +432,8 @@ return 前生成的是一条**最后、可信、可自然表达的会话经历**
 第四阶段：接入 return 记忆问候。
 
 1. 已将本地 raw summary draft 替换为有界的会话经历归并；严格动作完成和既有用户 interaction observation 是唯一落账入口。
-2. 已将一次性 `episode` 投影传入既有 cat greeting 逻辑，并原子消费。
-3. 后端只消费白名单 enum；有 episode 时 prompt 以这一个自然段作为猫形态经过的事实场景，tier × 时长 × entry 只调回归语气；无 episode 时保留原等待问候。
+2. 已将一次性 `episode` 投影与 gate-only strict-start bit 传入既有 cat greeting 逻辑，并原子消费。
+3. 后端只消费白名单 enum 与 literal-true strict-start gate；有 episode 时 prompt 以这一个自然段作为猫形态经过的事实场景，tier × 时长 × entry 只调回归语气；无 episode 在 `>=180s` 保留原等待问候，`<180s` 只有 strict-start 才走中性 return。
 4. 已保留失败静默，不影响 return；PNGTuber 仍明确不接入经历问候。
 
 `cat1_small_move` 已在完成 provider、生命周期和几何边界验证后作为 CAT1 扩展动作接入；后续只基于真实调试日志调整节奏，不恢复旧随机直跑。
@@ -450,4 +450,4 @@ return 前生成的是一条**最后、可信、可自然表达的会话经历**
 6. 自主 `cat1_play_yarn` 由 `stimulation_need`、`energy` 和 provider 决定；走到球边后的既有 25% 玩球 / 否则伸展仅是 journey 内部表现，不参与 selector。
 7. CAT2/CAT3 睡眠反馈由 `sleepiness`、用户互动上下文和 cooldown 决定。
 8. goodbye / return、窗口拖拽、chat idle-dock、NEKO-PC 原生窗口链路不被状态机接管。
-9. return 后，支持的网页 avatar 只单次消费一条有界、可信的 episode；后端不会持久化它。有 episode 时猫娘必须自然表达这段经历（可同时带等待语境），无 episode 时才走原等待问候。PNGTuber 仍不发送或保留经历 draft。
+9. return 后，支持的网页 avatar 只单次消费一条有界、可信的 episode；后端不会持久化它。有 episode 时猫娘必须自然表达这段经历（可同时带等待语境）。无 episode 在 `>=180s` 时走原等待问候；`<180s` 只有严格 started 才走中性 return。PNGTuber 仍不发送或保留经历 draft。

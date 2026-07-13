@@ -563,7 +563,7 @@ CAT2/CAT3 sleep sound timer
 |---|---|---|
 | `cat1_social_ping` | `_scheduleNekoIdleCat1AmbientSoundInterval()` timer 直接调用 `_playNekoIdleCat1AmbientSound()` | timer 已删除；Cat Mind clock 与真实 observation 提供判断机会 |
 | `cat1_eat_snack` | thought bubble click 后 `_playNekoIdleCat1EatAction(button)` | 只保留 pop 反馈和 `thought_bubble_pop` observation |
-| `cat1_play_yarn` | pair move 完成后的概率 `_playNekoIdleCat1PlayAction(button)`；walk finish 的既有表现二选一 | pair move 概率派生已删除；walk finish 保留 25% 玩球 / 否则伸展，并仅上报 walk observation |
+| `cat1_play_yarn` | pair move 完成后的概率 `_playNekoIdleCat1PlayAction(button)`；walk finish 的既有表现二选一 | pair move 概率派生已删除；walk finish 保留 25% 玩球 / 否则伸展，并上报 walk / stretch presentation observation（不唤醒 selector） |
 | `cat2_nap_feedback` | sleep timer 直接 `_playNekoIdleSleepSound(tier, token)` | timer 已删除；tier / clock observation 提供判断机会 |
 | `cat3_sleep_feedback` | sleep timer 直接 `_playNekoIdleSleepSound(tier, token)` | timer 已删除；tier / clock observation 提供判断机会 |
 
@@ -589,7 +589,7 @@ CAT2/CAT3 sleep sound timer
 已完成：
 
 1. 历史上曾用临时接管开关验证统一封口；最终版本已移除该开关及其回退语义。
-2. 该历史切片当时曾将旧入口降级为 wakeup；最终版本进一步删除了 ambient / sleep / pair-move timer 及 walk finish 的动作派生 wakeup。walk finish 仍保留既有 25% 玩球 / 否则伸展的 journey 内部表现二选一：它不进入 selector，也不写 Cat Mind result、cooldown 或五维。现在只保留：
+2. 该历史切片当时曾将旧入口降级为 wakeup；最终版本进一步删除了 ambient / sleep / pair-move timer 及 walk finish 的动作派生 wakeup。walk finish 仍保留既有 25% 玩球 / 否则伸展的 journey 内部表现二选一：本地 runner 不进入 selector，也不写 Cat Mind result 或 cooldown；同一 approach 锁定一个尾声。walk / stretch presentation observation 仍可按既有 reducer 更新状态，但不排 selector。现在只保留：
    - thought bubble click 的 pop 与 `thought_bubble_pop` observation；不再直接吃东西。
    - walk、drag、compact、idle-dock 等现有表现的事实 observation；它们不携带任何动作派生调度权。
 3. 最终版本不保留单动作灰度；所有已接入动作只由 selector 候选池决定，旧入口不会恢复直跑。
@@ -729,7 +729,7 @@ Hard gate 约束：
 
 3. `cat1_play_yarn`
    - pair move 的概率触发不再直接调用 play，完成只发送 observation。
-   - walk finish 的既有 25% 玩球 / 否则伸展只属于 journey 内部表现；它不发 action request/result，walk 本身只发送 observation。
+   - walk finish 的既有 25% 玩球 / 否则伸展只属于 journey 内部表现；它不发 action request/result，同一 approach 不得重复结算，walk / stretch observation 只归约、不唤醒 selector。
 
 4. `cat2_nap_feedback` / `cat3_sleep_feedback`
    - sleep timer 不再直接决定播放；如仍保留时间信号，只能异步唤醒 scheduler。
@@ -823,9 +823,9 @@ NEKO-PC：
 当前实施结果：
 
 1. `returnEpisodeAccumulator` 已替换 raw `recentEvents` / `dominant_state` 投影；它只在严格完成动作和既有六类明确互动 observation 处更新，debug 仅只读展示 accumulator 与 preview。
-2. 支持的网页 return（Live2D / VRM / MMD）通过 `consumeReturnSummaryDraft()` 原子附着到既有 `cat_greeting_check`；短时静默、无 socket 和发送失败均不建立跨 return 缓存。Cat Mind 缺失或读取异常时保留原问候 payload / 恢复链。
-3. router 已把顶层 duration / tier / was_auto 规范为 canonical 值，只将安全的 `episode` enum 作为一次性参数传进 `trigger_cat_greeting(...)`；不写数据库、memory 或 Cat Mind 以外的状态。
-4. `get_cat_greeting_episode_scene()` 已用服务端 locale 表把 enum 映为事实场景；有效 scene 走通用的 episode return prompt，tier × 时长 × entry 只提供回归语气。缺失或非法 episode 时，既有等待问候模板保持原样，仍通过现有 `prompt_ephemeral` 投递。
+2. 支持的网页 return（Live2D / VRM / MMD）通过 `consumeReturnSummaryDraft()` 原子附着到既有 `cat_greeting_check`；无严格 started 的短时静默、无 socket 和发送失败均不建立跨 return 缓存。Cat Mind 缺失或读取异常时保留原问候 payload / 恢复链。
+3. router 已把顶层 duration / tier / was_auto 规范为 canonical 值，只将安全的 `episode` enum 和 literal-true 的短时投递 gate `has_started_autonomous_action` 作为一次性参数传进 `trigger_cat_greeting(...)`；不写数据库、memory 或 Cat Mind 以外的状态。
+4. `get_cat_greeting_episode_scene()` 已用服务端 locale 表把 enum 映为事实场景；有效 scene 走通用的 episode return prompt，tier × 时长 × entry 只提供回归语气。缺失或非法 episode 在 `>=180s` 时仍走既有等待问候，严格 started 的 `<180s` 则走不叙述动作的中性 wrapper，仍通过现有 `prompt_ephemeral` 投递。
 5. PNGTuber 仍明确排除在经历问候之外：它保留既有 return observation / `return-summary` 事件，但不保存 `returnSummaryDraft`，因此不会把无人消费的经历遗留到下一次网页 return。
 
 ### 7.1 范围与非目标
@@ -833,17 +833,17 @@ NEKO-PC：
 阶段 4 做：
 
 1. 在猫形态内把长会话归并为一条有界、可审计的 `episode`。
-2. 只把这一次 return 的 `episode` 附着到现有 `cat_greeting_check`。
-3. 有可信 episode 时，让它成为猫娘问候中“刚才作为猫经历了什么”的事实场景；tier × 时长 × entry 只调等待、被叫回来和回归的语气。无 episode 时完全保留原等待问候。
+2. 只把这一次 return 的 `episode` 和无叙事的 strict-start delivery gate 附着到现有 `cat_greeting_check`。
+3. 有可信 episode 时，让它成为猫娘问候中“刚才作为猫经历了什么”的事实场景；tier × 时长 × entry 只调等待、被叫回来和回归的语气。无 episode 在 `>=180s` 时保留原等待问候；`<180s` 无严格 started 时静默，有严格 started 时只走中性 return。
 
 阶段 4 不做：
 
 1. 不让猫娘形态继续持有五维、recent events、cooldown、selector、episode accumulator 或 Cat Mind。
 2. 不把五维、动作分数、recent events、原始时间线、动作次数、坐标、DOM、窗口状态、动作 ID、开放文本或模型生成摘要跨边界传递。
 3. 不新增 LLM “总结调用”、重试队列、独立问候通道或长期记忆。
-4. 不让 NEKO-PC 保存、选择、解释或发送会话摘要。
-5. 不因摘要绕过 `< 180s` 静默、goodbye silent、语音/takeover、会话忙或用户抢占等现有 guard。
-6. 不向猫形态 return 注入普通主动问候的 `get_time_of_day_hint()`、餐食/节日/话题提示或其它跨功能上下文；本链只消费本次 return 的入口、时长、tier 和可选 episode。
+4. 不让 NEKO-PC 保存、选择、解释或发送会话摘要 / strict-start delivery gate。
+5. 不因 `episode` 绕过 `<180s` 静默；唯一例外是 Cat Mind adapter 已严格确认 runner `started` 后的 gate-only bit。goodbye silent、语音/takeover、会话忙或用户抢占等现有 guard 不得绕过。
+6. 不向猫形态 return 注入普通主动问候的 `get_time_of_day_hint()`、餐食/节日/话题提示或其它跨功能上下文；本链只消费本次 return 的入口、时长、tier、可选 episode 与 gate-only strict-start bit。
 
 结构化摘要及临时 prompt instruction 不进入 conversation history；猫娘最终可见的问候仍按现有 `prompt_ephemeral` 默认语义持久化。
 
@@ -856,7 +856,7 @@ NEKO-PC：
 | 证据层 | 严格完成动作、明确用户互动、tier 变化 | 只记录来源事实；不写语言、不推断用户意图。 |
 | 归并层 | 当前活动段 `activeChapter` 与最近休息段 `lastRest` | 仅在 Cat Mind active 时存在；不参与五维、selector、cooldown。 |
 | return 投影 | 一条可选 `episode` | 固定 enum；不含次数、分数、时间线或原始事件。 |
-| 表达层 | 现有猫问候 prompt | 有效 `episode` 渲染为唯一的猫形态事实场景；无 episode 才走旧等待问候。 |
+| 表达层 | 现有猫问候 prompt | 有效 `episode` 渲染为唯一的猫形态事实场景；无 episode 时按时长与 strict-start gate 走旧等待问候、静默或中性 return。 |
 
 归并层是一个固定大小的 `returnEpisodeAccumulator`，进入猫形态时初始化，return/reset 时与运行态一起清掉：
 
@@ -877,7 +877,7 @@ lastRest:
 3. `lastRest` 的证据只是严格完成的 `cat2_nap_feedback` / `cat3_sleep_feedback` 表现，不是对真实休息时长的断言。tier × 时长只调回归语气，不能覆盖 episode 的实际经过；`tier_changed`、最终 tier、drag demotion、窗口变化、走向聊天球、compact/mirror、idle-dock 都不能单独形成“睡过”或“被弄醒”的叙述。
 4. sleep feedback 到来时：当前活动段有成功 CAT1 动作，则用它封成新的“活动后休息”、覆盖旧 `lastRest` 并清空 `activeChapter`；当前活动段只有 interaction，则建立/覆盖一个没有活动前置关系的 `rested` 并清空 `activeChapter`；只有当前活动段完全为空时，后续 CAT2/CAT3 feedback 才延续已有 rest。这样不会复用旧章节的 highlight，也不会把 interaction 后的新休息误说成旧的“活动后休息”。
 5. `tier_changed`、drag demotion 和最终 tier 继续保留为既有 observation/debug 事实，但不单独生成 `episode`，也不被解释成苏醒或用户行为的因果。
-6. 旧 journey walk finish 内部的 25% 本地玩球不经过严格 Cat Mind lifecycle；它、桌面 poll、near-chat、坐标、窗口层级与调试事件都不得写入 accumulator。
+6. 旧 journey walk finish 内部的 25% 本地玩球不经过严格 Cat Mind lifecycle；它、桌面 poll、near-chat、坐标、窗口层级与调试事件都不得写入 accumulator。一次走近只锁定本地玩球或伸展之一；`cat1_walk_done_near_chat` / `cat1_stretch_done_near_chat` 继续归约为 presentation observation，但不得排入 selector，避免本地伸展后又被正式 `cat1_play_yarn` 或其他动作插播。
 7. 互动发生在 `lastRest` 之后但没有新的成功动作时，会开启一个更新的非叙述活动段；return 不得再把旧 `lastRest` 当作最新经历。只有没有任何后续活动证据时，旧 rest 才可被投影。
 8. 现有 `neko.catMind.debug` 可展示本地 accumulator 和当前 episode preview，供验证归并；关闭调试仍不得改变归并、selector 或 return 行为。
 
@@ -912,7 +912,7 @@ lastRest:
 1. 当前 `activeChapter` 有成功 CAT1 动作时，优先输出 `activity`，旧 `lastRest` 不再抢占；互动只作为章节边界，不产生额外可说类型。
 2. 当前活动段只有后续互动而没有成功动作时，不输出 `episode`；这段更新证据会阻止旧 `lastRest` 被误当作最新经历。
 3. 否则有 `lastRest` 时，输出 `rest_after_activity` 或 `rested`。
-4. 只有窗口、tier 变化或噪声时不输出 `episode`，继续原问候。
+4. 只有窗口、tier 变化或噪声时不输出 `episode`；最终走旧等待问候、静默还是中性 return，仍由时长与 strict-start gate 决定。
 5. 内部 action ID 必须经唯一映射才可形成 transport enum：`cat1_play_yarn → played_yarn`、`cat1_eat_snack → ate_snack`、`cat1_small_move → small_move`、`cat1_social_ping → social_ping`。同一活动段只有一种动作 kind 时才保留 `highlight`；混合动作一律省略它，由 prompt 使用泛化的“活动了一会”而非挑一个冒充主线。
 
 因此：
@@ -936,7 +936,7 @@ lastRest:
 3. 新增 `window.nekoCatMind.consumeReturnSummaryDraft()`：原子 clone 后清除 draft。保留只读 getter 仅供调试，不能承担附件职责。
 4. `app-auto-goodbye.js` 的既有 `handleReturn` 是唯一 consumer：构造 `neko:cat-greeting-check` detail 时 best-effort 调用 consume 并附为 `catMemorySummary`。即使短时静默、无 socket 或发送失败，草稿也已属于这一次 return，不能滞留给下一次。
 5. 当前脚本顺序下 Cat Mind 的 return listener 先于 `handleReturn` 建 draft；必须用回归测试锁住。读取失败、Cat Mind 未激活或 draft 缺失时，原 return payload 与恢复链不变。
-6. `app-websocket.js` 只在原本会发送 `cat_greeting_check` 的条件下透传 `cat_memory_summary`；不建立跨 return 缓存。前端可做 shape 缩减，但后端才是安全边界。
+6. `app-websocket.js` 不建立跨 return 缓存。默认仍只在原本会发送 `cat_greeting_check` 的条件下透传 `cat_memory_summary`；唯一短时例外是 summary 内严格 `has_started_autonomous_action === true`，它只解除本次 `<180s` 的投递静默。该 bit 不含动作名、结果或 scene，后端仍是安全边界。
 
 ### 7.5 后端：enum allowlist、canonical 值与一次性使用
 
@@ -947,20 +947,21 @@ lastRest:
    - `final_tier`：`cat1 / cat2 / cat3`；
    - 可选 `episode.kind`：`rest_after_activity / rested / activity`；
    - 可选 `episode.highlight`：`played_yarn / ate_snack / small_move / social_ping`。
+   - 可选 `has_started_autonomous_action`：只接受字面量布尔 `true`；它只是短时 return 的投递 gate，不是动作完成、episode 或可叙述事实。
 3. `episode` 必须做组合校验：`rested` 禁止 `highlight`；其余 kind 只可使用上述可选 highlight。未知 kind、错误组合或非对象 episode 一律整体丢弃，不允许部分猜测修复。
 4. 现有顶层 `cat_duration_seconds / tier / was_auto` 是本次 return 的 canonical 输入，必须先严格规范化：duration 仅接受有限数并继续限制在 `0–7 天`；tier 只接受 `cat1 / cat2 / cat3`，否则回退为空 tier；`was_auto` 只有布尔 `true` 才代表 auto，字符串如 `"false"` 不能被 Python truthiness 误判。随后覆盖 `cat_duration_seconds → duration_seconds`、`tier → final_tier`、`was_auto: true → entry: auto`、其他值 → `entry: manual`。
-5. `episode` 缺失或非法时只丢掉 `episode`，仍按原 cat greeting 继续；它不能成为拒绝 return 或问候的理由。
-6. sanitize 后将可选 episode 传给 `main_logic/core/greeting.py:trigger_cat_greeting(...)`。它只活到本次调用结束，不写数据库、长期 memory、角色设定或后续 proactive state。
+5. `episode` 缺失或非法时只丢掉 `episode`，不拒绝 return；最终走原 cat greeting、短时静默或中性 return，仍由时长与 strict-start gate 决定。
+6. sanitize 后将可选 episode 与 gate-only 的 literal-true `has_started_autonomous_action` 传给 `main_logic/core/greeting.py:trigger_cat_greeting(...)`。二者只活到本次调用结束，不写数据库、长期 memory、角色设定或后续 proactive state。
 
 ### 7.6 Prompt：一段经历的回归表达
 
 1. 保持现有 `prompt_ephemeral(instruction)`、completion mode、可见回复持久化和完成生命周期；不要改成 `create_response`、`prime_context`、独立 LLM 调用或 `persist_response=False`。`trigger_cat_greeting()` 不得调用普通问候的 `get_time_of_day_hint()`，避免午饭/深夜等跨功能话题污染 return。
 2. 在 `config/prompts/prompts_proactive.py` 保留服务端拥有的 enum → `get_cat_greeting_episode_scene()` 映射；它只接收 sanitizer 后的 enum，绝不 stringify JSON。
-3. 有可信 episode 时，最终 instruction 必须把 scene 作为本次“刚才作为猫经历了什么”的唯一事实，而不是可忽略背景。通用 scene wrapper 不按动作另起问候通道：它只插入 `{cat_form_scene}`，tier × 时长 × entry 继续只决定等待、被叫回来和回归的语气/措辞。旧模板中会断言“全程等待 / 打盹 / 熟睡”的猫形态事实不得与有效 scene 同时出现。
+3. 有可信 episode 时，最终 instruction 必须把 scene 作为本次“刚才作为猫经历了什么”的唯一事实，而不是可忽略背景。通用 scene wrapper 不按动作另起问候通道：它只插入 `{cat_form_scene}`，tier × 时长 × entry 继续只决定等待、被叫回来和回归的语气/措辞。旧模板中会断言“全程等待 / 打盹 / 熟睡”的猫形态事实不得与有效 scene 同时出现。`<180s` 且有严格 started 时，scene 使用无 elapsed 的短 wrapper，不能把几秒伪造成一分钟；`<180s` 且严格 started 但没有 `done` scene 时，只用中性“已经回来” wrapper，不得把开始过的动作说成完成。
    - `rest_after_activity` 必须保持“先活动、后来休息”的真实顺序；
    - `rested` 只能表达已严格完成的休息；
    - `activity` 只能表达当前活动段；
-   - 无 episode 或非法 episode 时，必须完整保留既有 tier × 时长 × entry 的等待问候。
+   - 无 episode 或非法 episode 在 `>=180s` 时保留既有 tier × 时长 × entry 的等待问候；`<180s` 无严格 started 时静默，有严格 started 时只走中性 return。
 4. 等待和被叫回来仍可自然提到，但不能遗漏、弱化或用“全程只有等待 / 什么也没做”替代 scene。一个 scene 只表达这一个自然段；`highlight` 缺失时用泛化表述，不逐项报动作，不报次数、概率、坐标、分数、窗口状态或五维。
 5. 提示词目标是 1–2 句、短、口语、符合人设、无思考过程。第一版不新增输出裁剪器，测试验证 instruction 约束而非断言模型永远不会超过两句。
 6. scene、scene wrapper 和按 tier × 时长取值的回归语气都必须覆盖当前 prompt locale 归一后的语言键并保留英文 fallback；沿用 `{master}` 模板与反物化护栏，并为空名与花括号格式化补回归。
@@ -969,7 +970,7 @@ lastRest:
 
 ### 7.7 模型与桌面边界
 
-1. return 继续由既有网页 renderer 主链处理。NEKO-PC 只维持窗口/跨窗桥接、桌面 observation 与窗口安全；它不保存、发送、解释 `episode`，也不拥有 return summary、selector 或后端调用。
+1. return 继续由既有网页 renderer 主链处理。NEKO-PC 只维持窗口/跨窗桥接、桌面 observation 与窗口安全；它不保存、发送、解释 `episode` 或 strict-start gate，也不拥有 return summary、selector 或后端调用。
 2. Electron / Web 的同一 return 都复用网页前端附件链，桌面端不新增 ACK 或状态。
 3. PNGTuber 当前明确排除：它不监听既有 `handleReturn`，因此不发送经历问候，也不保存可被下一次 return 消费的 draft。若产品要求四种 avatar 都有经历问候，必须先以同一既有 `handleReturn` 接入 PNGTuber 并补回归；在此之前不能声称所有 return 已覆盖。
 
@@ -978,8 +979,8 @@ lastRest:
 1. 已完成：`returnEpisodeAccumulator` 替换 `getSummaryEventTags()` 的 raw events / `dominant_state` 投影；只在严格 action `done` 和既有用户 interaction observation 处更新它。
 2. 已完成：活动段、CAT2 后 CAT3 feedback 延续同一休息段、动作后新活动覆盖旧休息，以及 window/presentation/legacy play 不入账的行为测试。
 3. 已完成：`consumeReturnSummaryDraft()`、Cat Mind → `handleReturn` 脚本/事件顺序、单次消费与缺失/失败 fallback 回归。
-4. 已完成：websocket router sanitizer、`kind × highlight` 组合校验与顶层 canonical 规范化；只向 `trigger_cat_greeting` 传 request-local episode。
-5. 已完成：本地化 episode scene 与通用 scene wrapper；有效 episode 以 `cat_form_scene` 成为猫形态事实，tier × 时长 × entry 仅取回归语气；无/非法 episode 保留旧等待问候。
+4. 已完成：websocket router sanitizer、`kind × highlight` 组合校验与顶层 canonical 规范化；只向 `trigger_cat_greeting` 传 request-local episode 和 literal-true strict-start delivery gate。
+5. 已完成：本地化 episode scene 与通用 scene wrapper；有效 episode 以 `cat_form_scene` 成为猫形态事实，tier × 时长 × entry 仅取回归语气。无/非法 episode 在 `>=180s` 保留旧等待问候；`<180s` 无严格 started 保持静默，而严格 started 但无 `done` scene 只走中性短 return wrapper。
 6. 已验证：silent / socket failure / send failure / voice-takeover / SM guard 仍按原语义生效；不为了让猫娘说经历而强行发问候。
 
 ### 7.9 阶段 4 验证
@@ -1000,15 +1001,15 @@ lastRest:
 
 后端与 prompt：
 
-1. 非对象、开放文本、未知 `kind/highlight`、数组、错误类型和额外字段被 sanitizer 丢弃；非法 episode 不妨碍原问候。
+1. 非对象、开放文本、未知 `kind/highlight`、数组、错误类型和额外字段被 sanitizer 丢弃；非法 episode 不妨碍本次 return 按既有时长与 strict-start gate 继续决策。
 2. 顶层 canonical 值覆盖 summary：`cat_duration_seconds → duration_seconds`、`tier → final_tier`、`was_auto → entry`。
 3. 最终 instruction 不含原始 JSON、DOM/坐标、动作 ID、次数、五维、未知文本或未展开占位符。
-4. 每个 locale 的 episode scene 与 scene wrapper 都可格式化；`rest_after_activity` 保持真实前后顺序，混合动作不假装某一项是主线。有效 scene 的 instruction 必须自然包含该经历，且不得残留与它冲突的旧“全程等待 / 打盹 / 熟睡”猫形态事实；无/非法 episode 的 instruction 与旧问候精确一致。
+4. 每个 locale 的 episode scene 与 scene wrapper 都可格式化；`rest_after_activity` 保持真实前后顺序，混合动作不假装某一项是主线。有效 scene 的 instruction 必须自然包含该经历，且不得残留与它冲突的旧“全程等待 / 打盹 / 熟睡”猫形态事实；无/非法 episode 在 `>=180s` 与旧问候精确一致，`<180s` 只有严格 started 才允许中性短 wrapper。
 5. 继续通过反物化、短时静默、现有 cat greeting 与可见问候持久化回归；为 router sanitizer 和 `GreetingMixin.trigger_cat_greeting` 参数传递补行为单测，而非只做静态字符串断言。
 
 运行时：
 
-1. 当前生产阈值为 180 秒：猫形态 < 180 秒 return 仍静默；>= 180 秒时有 episode 必须自然表达经历（可同时带等待语境），无 episode 保持原问候。
+1. 当前生产阈值为 180 秒：猫形态 `<180s` 且没有严格 started runner 时仍静默；严格 started runner 可解除这一次短 return 的投递 gate，但只有严格 `done` episode 才能表达动作经历。`>=180s` 时有 episode 必须自然表达经历（可同时带等待语境），无 episode 保持原问候。
 2. voice / takeover / busy / user preempt / session 启动失败时继续静默，模型恢复和猫娘 return 都不被 episode 阻塞。
 3. Web 与 Electron 已支持的 return 不回归；PNGTuber 按 7.7 的明确产品决策验收。
 
@@ -1022,9 +1023,9 @@ lastRest:
 
 ### 7.11 v0.1 收口状态
 
-1. 阶段 4 的代码边界与自动回归已收口：严格 `done` 归并、一次性 draft 附件、失败不遗留、router allowlist、request-local prompt、普通时段/餐食提示隔离，以及前后端一致的 180 秒静默门槛均有回归覆盖。
-2. `test_cat_idle_state_machine_static.py` 的 Node harness 覆盖归并、listener 顺序、单次消费、短时静默、无 socket、发送失败、Cat Mind 缺失与 PNGTuber 不存 draft；router、prompt 与主动问候 guard 另有 Python 单测覆盖。
-3. 这不等同于已完成实机文案验收：发布前仍需重启实际后端，在 Web / Electron 各观察一次“有 episode 的 >= 180 秒 return”与一次“< 180 秒静默 return”，并从日志确认 `summary_object → episode → trigger_cat_greeting` 闭环。
+1. 阶段 4 的代码边界与自动回归已收口：严格 `done` 归并、一次性 draft 附件、失败不遗留、router allowlist、request-local prompt、普通时段/餐食提示隔离，以及前后端一致的 180 秒默认静默门槛（严格 started runner 的 gate-only 短时例外）均有回归覆盖。
+2. `test_cat_idle_state_machine_static.py` 的 Node harness 覆盖归并、listener 顺序、单次消费、无 started 的短时静默、strict started 的短时附件、无 socket、发送失败、Cat Mind 缺失与 PNGTuber 不存 draft；router、prompt 与主动问候 guard 另有 Python 单测覆盖。
+3. 这不等同于已完成实机文案验收：发布前仍需重启实际后端，在 Web / Electron 各观察一次“有 episode 的 >= 180 秒 return”、一次“无 started 的 <180 秒静默 return”与一次“started 的 <180 秒 return”，并从日志确认 `summary_object → episode / started_action → trigger_cat_greeting` 闭环。
 4. 下列事项明确不属于阶段 4 v0.1：PNGTuber 经历问候、NEKO-PC 保存或发送 episode、为 WebSocket 重连产生的独立普通问候做优先级重排、LLM 输出裁剪器，以及任何长期记忆。
 
 ## 8. 调试策略
@@ -1100,5 +1101,5 @@ lastRest:
 4. 第一批 provider 都可 dry-run、可执行、可回报。
 5. selector 可在统一封口后从完整动作池中产生候选。
 6. 每个动作只有一个最终调度入口；实施期旧入口不作为长期双轨保留。
-7. 阶段 4 已把一条有界 episode 单次接入既有问候链；后端只消费 enum，有 episode 时以它作为猫形态事实场景、无 episode 时保留旧问候，临时 scene 不进入长期 memory，PNGTuber 仍明确排除。
+7. 阶段 4 已把一条有界 episode 与 gate-only strict-start bit 单次接入既有问候链；后端只消费 enum / literal-true gate，有 episode 时以它作为猫形态事实场景，未完成动作不形成 scene，临时 scene 不进入长期 memory，PNGTuber 仍明确排除。
 8. NEKO 和 NEKO-PC 现有拖拽、idle-dock、return、goodbye 关键链路不回归。

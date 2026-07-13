@@ -242,6 +242,10 @@
             lastChatMinimizedRect: null,
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
+            // Delivery eligibility only. It is set after the adapter proves a
+            // Cat Mind runner actually entered started; it is not an episode
+            // fact and never replaces the strict done-only accumulator.
+            hasStartedAutonomousAction: false,
             returnSummaryDraft: null,
             returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
@@ -592,6 +596,7 @@
             if (!runId || pending.runId !== runId) return false;
             var scoreConfig = getActionScoreConfig(pending.actionId);
             runtimeState.scheduler.pendingActionRequest = null;
+            runtimeState.hasStartedAutonomousAction = true;
             runtimeState.scheduler.activeAction = {
                 requestId: pending.requestId,
                 actionId: pending.actionId,
@@ -986,6 +991,16 @@
         if (scheduler.queued || typeof window.setTimeout !== 'function') return;
         scheduler.queued = true;
         window.setTimeout(evaluateQueuedDecision, 0);
+    }
+
+    function shouldScheduleDecisionForObservation(observation) {
+        var type = observation && typeof observation.type === 'string' ? observation.type : '';
+        // These two events close the existing walk-to-yarn local presentation
+        // tail (one 25% play / otherwise stretch). They remain full Cat Mind
+        // observations for fields, recent events, and debug, but must not
+        // turn that local tail into a separate autonomous action opportunity.
+        return type !== OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT &&
+            type !== OBSERVATION_TYPES.CAT1_STRETCH_DONE_NEAR_CHAT;
     }
 
     function shouldSkipDetailValue(value) {
@@ -1400,7 +1415,9 @@
             recordReturnEpisodeInteraction();
         }
         addRecentEvent(observation);
-        scheduleDecision(observation);
+        if (shouldScheduleDecisionForObservation(observation)) {
+            scheduleDecision(observation);
+        }
         emitStateChange('observation', { observation: observation });
         return clonePlain(observation);
     }
@@ -1411,6 +1428,11 @@
             entry: runtimeState.entry || 'manual',
             final_tier: runtimeState.tier,
         };
+        if (runtimeState.hasStartedAutonomousAction) {
+            // This is only a short-return delivery gate. The optional episode
+            // below remains strictly completed-action evidence.
+            summary.has_started_autonomous_action = true;
+        }
         var episode = buildReturnEpisode();
         if (episode) summary.episode = episode;
         return summary;

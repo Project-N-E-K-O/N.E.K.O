@@ -450,6 +450,185 @@ def test_cat_mind_phase3_removes_legacy_action_dispatchers():
     assert "_playNekoIdleCat1PlayAction(button)" not in pair_move_block
 
 
+def test_cat_mind_walk_journey_tail_observations_reduce_without_waking_selector():
+    """The old walk tail is visible state, not a second autonomous action source."""
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const source = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        const timers = [];
+        const requests = [];
+        const win = new EventTargetLike();
+        win.setTimeout = (callback) => {{ timers.push(callback); return timers.length; }};
+        win.setInterval = () => 1;
+        win.clearInterval = () => {{}};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date, console }};
+        vm.createContext(context);
+        vm.runInContext(source, context);
+        win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
+        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+          detail: {{ source: 'manual-goodbye', timestamp: 1000 }}
+        }}));
+        assert.equal(timers.length, 1);
+        timers.shift()();
+        win.NekoCatMindActionProviders = {{
+          getRuntimeGateSnapshot() {{
+            return {{ returnPending: false, dragPending: false, dragging: false, transitionActive: false,
+              activeIndependentAction: false, returnBallVisible: true, validCatRuntime: true,
+              chatSurfaceDragging: false }};
+          }},
+          dryRun(actionId) {{
+            return actionId === 'cat1_social_ping'
+              ? {{ allowed: true, reason: 'allowed' }}
+              : {{ allowed: false, reason: 'not_for_this_test' }};
+          }}
+        }};
+
+        const beforeWalk = win.nekoCatMind.getState().fields;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'cat1_walk_done_near_chat', source: 'journey-test', tier: 'cat1', timestamp: 1010, detail: {{}} }}
+        }}));
+        const afterWalk = win.nekoCatMind.getState().fields;
+        assert.ok(afterWalk.social_need > beforeWalk.social_need);
+        assert.equal(win.nekoCatMind.getRecentEvents().at(-1).type, 'cat1_walk_done_near_chat');
+        assert.equal(timers.length, 0);
+        assert.equal(requests.length, 0);
+
+        const beforeStretch = win.nekoCatMind.getState().fields;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'cat1_stretch_done_near_chat', source: 'journey-test', tier: 'cat1', timestamp: 1020, detail: {{}} }}
+        }}));
+        const afterStretch = win.nekoCatMind.getState().fields;
+        assert.ok(afterStretch.energy < beforeStretch.energy);
+        assert.equal(win.nekoCatMind.getRecentEvents().at(-1).type, 'cat1_stretch_done_near_chat');
+        assert.equal(timers.length, 0);
+        assert.equal(requests.length, 0);
+
+        // Ordinary interaction remains a later asynchronous decision source.
+        for (let index = 0; index < 16; index += 1) {{
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+            detail: {{ type: 'thought_bubble_pop', source: 'journey-test', tier: 'cat1', timestamp: 1100 + index, detail: {{}} }}
+          }}));
+        }}
+        assert.equal(timers.length, 1);
+        timers.shift()();
+        assert.equal(requests.length, 1);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
+    """A duplicated finish callback may neither re-roll nor append the other tail."""
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const avatarSource = fs.readFileSync({json.dumps(str(AVATAR_UI_BUTTONS_PATH))}, 'utf8');
+        const start = avatarSource.indexOf('function _finishNekoIdleCat1Walk');
+        const end = avatarSource.indexOf('function _finishNekoIdleCat1CompactTopEdgeWalk', start);
+        assert.ok(start >= 0 && end > start);
+        const finishSource = avatarSource.slice(start, end);
+        let state = null;
+        let playSucceeds = false;
+        let randomCalls = 0;
+        let playCalls = 0;
+        let stretchCalls = 0;
+        let observationCalls = 0;
+        let randomValue = 0;
+        const math = Object.create(Math);
+        math.random = () => {{ randomCalls += 1; return randomValue; }};
+        const context = {{
+          Math: math,
+          Date: {{ now: () => 1234 }},
+          _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE: 'minimized-side',
+          _NEKO_IDLE_TIER_CAT1: 'cat1',
+          _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY: 0.25,
+          _NEKO_CAT_IDLE_OBSERVATION_TYPES: {{ CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat' }},
+          _getNekoIdleCat1Journey: () => state,
+          _cancelNekoIdleCat1Frame: () => {{}},
+          _clearNekoIdleCat1WalkApproachSide: () => {{}},
+          _getNekoIdleReturnContainerFromButton: () => null,
+          _dispatchNekoIdleCat1MotionInputRegionState: () => {{}},
+          _resetNekoIdleCat1WalkSpeed: () => {{}},
+          _dispatchNekoCatIdleObservationSource: () => {{ observationCalls += 1; }},
+          _playNekoIdleCat1PlayAction: () => {{ playCalls += 1; return playSucceeds; }},
+          _setNekoIdleCat1Classes: () => {{}},
+          _setNekoIdleCat1Substate: (_button, substate) => {{ stretchCalls += 1; state.substate = substate; }},
+        }};
+        vm.createContext(context);
+        vm.runInContext(finishSource, context);
+        const button = {{}};
+        function reset(value, canPlay) {{
+          state = {{
+            targetKind: 'minimized-side',
+            target: null,
+            lastStepAt: 0,
+            actionSettled: false,
+            walkFinishResolution: '',
+            substate: 'walking',
+            profile: {{ idleSubstate: 'idle', finishingSubstate: 'stretch' }},
+          }};
+          randomValue = value;
+          playSucceeds = canPlay;
+          randomCalls = 0;
+          playCalls = 0;
+          stretchCalls = 0;
+          observationCalls = 0;
+        }}
+
+        reset(0.1, true);
+        context._finishNekoIdleCat1Walk(button);
+        context._finishNekoIdleCat1Walk(button);
+        assert.equal(state.walkFinishResolution, 'play');
+        assert.equal(randomCalls, 1);
+        assert.equal(observationCalls, 1);
+        assert.equal(playCalls, 1);
+        assert.equal(stretchCalls, 0);
+
+        reset(0.9, true);
+        context._finishNekoIdleCat1Walk(button);
+        context._finishNekoIdleCat1Walk(button);
+        assert.equal(state.walkFinishResolution, 'stretch');
+        assert.equal(randomCalls, 1);
+        assert.equal(observationCalls, 1);
+        assert.equal(playCalls, 0);
+        assert.equal(stretchCalls, 1);
+
+        // A runner rejection remains the same arrival's deterministic stretch
+        // fallback; it cannot cause a later callback to roll play again.
+        reset(0.1, false);
+        context._finishNekoIdleCat1Walk(button);
+        context._finishNekoIdleCat1Walk(button);
+        assert.equal(state.walkFinishResolution, 'stretch');
+        assert.equal(randomCalls, 1);
+        assert.equal(observationCalls, 1);
+        assert.equal(playCalls, 1);
+        assert.equal(stretchCalls, 1);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
 def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     source = _read(AVATAR_UI_BUTTONS_PATH)
 
@@ -2304,6 +2483,18 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
           }}), true);
           return {{ request, runId }};
         }}
+        function acceptOnly(actionId) {{
+          allowedAction = actionId;
+          observe('cat_elapsed');
+          const request = requests[requests.length - 1];
+          assert.ok(request, 'expected action request');
+          assert.equal(request.actionId, actionId);
+          const runId = 'phase4-accepted-' + (++runNumber);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId, status: 'accepted', runId, timestamp: now
+          }}), true);
+          return {{ request, runId }};
+        }}
         function finishAction(actionId, lifecycle, result, reason) {{
           now += 10;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
@@ -2355,9 +2546,22 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         let episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), []);
         assert.equal(episodeDebug.preview, null);
+        const legacySummary = returnSummary();
+        assert.equal(Object.prototype.hasOwnProperty.call(legacySummary, 'episode'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(legacySummary, 'has_started_autonomous_action'), false);
+
+        // Adapter acceptance alone is not a real action entry and cannot
+        // open the short-return delivery gate.
+        start();
+        primeInteraction(10);
+        acceptOnly('cat1_small_move');
+        const acceptedOnlySummary = returnSummary();
+        assert.equal(Object.prototype.hasOwnProperty.call(acceptedOnlySummary, 'episode'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(acceptedOnlySummary, 'has_started_autonomous_action'), false);
 
         // Matching terminal failures do settle their runner but never count as
-        // a completed activity. This covers all non-done terminal outcomes.
+        // a completed activity. They do preserve the separate verified-start
+        // delivery gate. This covers all non-done terminal outcomes.
         for (const result of ['failed', 'cancelled', 'interrupted']) {{
           restart();
           primeInteraction(10);
@@ -2366,6 +2570,9 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
           episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
           assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), []);
           assert.equal(episodeDebug.preview, null);
+          const interruptedSummary = returnSummary();
+          assert.equal(Object.prototype.hasOwnProperty.call(interruptedSummary, 'episode'), false);
+          assert.equal(interruptedSummary.has_started_autonomous_action, true);
         }}
 
         // Repeated successful kinds stay bounded; mixed kinds deliberately
@@ -2387,6 +2594,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.preview)), {{ kind: 'activity' }});
         const mixedSummary = returnSummary();
         assert.deepEqual(JSON.parse(JSON.stringify(mixedSummary.episode)), {{ kind: 'activity' }});
+        assert.equal(mixedSummary.has_started_autonomous_action, true);
         assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'dominant_state'), false);
         assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'events'), false);
 
@@ -2495,6 +2703,8 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter)), {{ interactionSeen: false, activityKinds: [] }});
         assert.equal(episodeDebug.lastRest, null);
         assert.equal(episodeDebug.preview, null);
+        const cleanSummary = returnSummary();
+        assert.equal(Object.prototype.hasOwnProperty.call(cleanSummary, 'has_started_autonomous_action'), false);
         """
     )
 
@@ -2535,6 +2745,7 @@ def test_cat_mind_phase4_return_summary_draft_is_consumed_once():
         win.dispatchEvent(new CustomEventLike('live2d-return-click'));
         const beforeConsume = win.nekoCatMind.getReturnSummaryDraft();
         assert.ok(beforeConsume);
+        assert.equal(Object.prototype.hasOwnProperty.call(beforeConsume, 'has_started_autonomous_action'), false);
         const consumed = win.nekoCatMind.consumeReturnSummaryDraft();
         assert.deepEqual(JSON.parse(JSON.stringify(consumed)), JSON.parse(JSON.stringify(beforeConsume)));
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
@@ -2578,7 +2789,10 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
         let now = 1000;
         let sendThrows = false;
+        let allowStartedAction = false;
+        let actionRunNumber = 0;
         const sentMessages = [];
+        const selectorTimers = [];
         const win = new EventTargetLike();
         const doc = new EventTargetLike();
         const classList = {{ contains() {{ return false; }}, add() {{}}, remove() {{}} }};
@@ -2634,6 +2848,28 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         vm.runInContext(autoGoodbyeSource, context);
         const greetingEvents = [];
         win.addEventListener('neko:cat-greeting-check', (event) => greetingEvents.push(event.detail));
+        win.NekoCatMindActionProviders = {{
+          getRuntimeGateSnapshot() {{
+            return {{ returnPending: false, dragPending: false, dragging: false, transitionActive: false,
+              activeIndependentAction: false, returnBallVisible: true, validCatRuntime: true,
+              chatSurfaceDragging: false }};
+          }},
+          dryRun(actionId) {{
+            return actionId === 'cat1_social_ping' && allowStartedAction
+              ? {{ allowed: true, reason: 'allowed' }}
+              : {{ allowed: false, reason: 'not_for_return_listener_test' }};
+          }}
+        }};
+        win.addEventListener('neko:cat-mind:action-request', (event) => {{
+          const request = event.detail;
+          const runId = 'return-listener-run-' + (++actionRunNumber);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId: request.actionId, status: 'accepted', runId, timestamp: now
+          }}), true);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId: request.actionId, status: 'started', runId, timestamp: now
+          }}), true);
+        }});
 
         function enterAndReturn(durationMs) {{
           win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
@@ -2645,12 +2881,30 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         function catGreetingMessages() {{
           return sentMessages.filter((message) => message && message.action === 'cat_greeting_check');
         }}
+        function startStrictCatMindAction() {{
+          // Normal return tests deliberately have no selector timer. Enable a
+          // controlled one only here, then obtain the real accepted→started
+          // lifecycle before returning without a terminal result.
+          win.setTimeout = (callback) => {{ selectorTimers.push(callback); return selectorTimers.length; }};
+          allowStartedAction = true;
+          for (let index = 0; index < 10; index += 1) {{
+            now += 1;
+            win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+              detail: {{ type: 'thought_bubble_pop', source: 'return-listener-test', tier: 'cat1', timestamp: now, detail: {{}} }}
+            }}));
+          }}
+          assert.equal(selectorTimers.length, 1);
+          selectorTimers.shift()();
+          assert.ok(win.nekoCatMind.getState().activeAction);
+          allowStartedAction = false;
+        }}
 
         enterAndReturn(190 * 1000);
         let greetings = catGreetingMessages();
         assert.equal(greetings.length, 1);
         assert.ok(greetings[0].cat_memory_summary);
         assert.equal(greetings[0].cat_memory_summary.entry, 'manual');
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[0].cat_memory_summary, 'has_started_autonomous_action'), false);
         assert.equal(greetingEvents.length, 1);
         assert.deepEqual(
           JSON.parse(JSON.stringify(greetingEvents[0].catMemorySummary)),
@@ -2666,19 +2920,34 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         assert.equal(catGreetingMessages().length, 1);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
 
+        // A strictly started action opens the short-return delivery gate, but
+        // without a terminal done result it contributes no narrative episode.
+        now += 10;
+        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        }}));
+        startStrictCatMindAction();
+        now += 1000;
+        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        greetings = catGreetingMessages();
+        assert.equal(greetings.length, 2);
+        assert.equal(greetings[1].cat_memory_summary.has_started_autonomous_action, true);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[1].cat_memory_summary, 'episode'), false);
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+
         // A closed socket and a send failure keep the old silent/failure path;
         // neither is allowed to retain a summary for the next return.
         now += 10;
         win.appState.socket.readyState = 0;
         enterAndReturn(190 * 1000);
-        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(catGreetingMessages().length, 2);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
 
         now += 10;
         win.appState.socket.readyState = 1;
         sendThrows = true;
         enterAndReturn(190 * 1000);
-        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(catGreetingMessages().length, 2);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
         sendThrows = false;
 
@@ -2688,8 +2957,8 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         win.nekoCatMind = null;
         enterAndReturn(190 * 1000);
         greetings = catGreetingMessages();
-        assert.equal(greetings.length, 2);
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[1], 'cat_memory_summary'), false);
+        assert.equal(greetings.length, 3);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[2], 'cat_memory_summary'), false);
 
         now += 10;
         win.nekoCatMind = {{
@@ -2697,8 +2966,8 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         }};
         enterAndReturn(190 * 1000);
         greetings = catGreetingMessages();
-        assert.equal(greetings.length, 3);
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[2], 'cat_memory_summary'), false);
+        assert.equal(greetings.length, 4);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[3], 'cat_memory_summary'), false);
         """
     )
 
