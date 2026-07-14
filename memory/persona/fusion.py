@@ -16,31 +16,38 @@
 
 WHY THIS EXISTS
 ---------------
-persona 渲染进 system prompt 时有一个**严格的 token 上限**
-(``PERSONA_RENDER_MAX_TOKENS``，所有 non-protected 条目共抢同一个池)。而
-OpenClaw / Hermes 的 ``USER.md`` / ``SOUL.md`` 是几十行自由 Markdown——若像旧
-的 ``aimport_external_facts`` 那样精确去重后逐条追加，很快就会把 persona 池撑
-爆，把角色在对话里自然积累的印象挤掉。所以 ``USER.md`` / ``SOUL.md`` 必须先经
-一次 LLM 融合（归纳 / 合并 / 去重 / 消歧 / 按重要度排序），把内容压进 per-entity
-预算 (``EXTERNAL_IMPORT_PERSONA_{NEKO,MASTER}_MAX_TOKENS``)，再落盘为
-non-protected persona 条目。
+When persona is rendered into the system prompt there is a **strict token
+ceiling** (``PERSONA_RENDER_MAX_TOKENS``, shared by all non-protected entries in
+one pool). But OpenClaw / Hermes ``USER.md`` / ``SOUL.md`` are dozens of lines of
+free-form Markdown -- appending them entry-by-entry after exact dedup (as the old
+``aimport_external_facts`` did) would quickly overflow the persona pool and crowd
+out the impressions the character has naturally accumulated in conversation. So
+``USER.md`` / ``SOUL.md`` must first go through one LLM fusion (summarise / merge /
+dedupe / disambiguate / rank by importance) that compresses the content into the
+per-entity budget (``EXTERNAL_IMPORT_PERSONA_{NEKO,MASTER}_MAX_TOKENS``) before it
+is persisted as non-protected persona entries.
 
 LOCK DISCIPLINE
 ---------------
-融合要调 LLM（几十秒）。persona 的 per-character 锁**也**被 ``/new_dialog`` 组
-实时 prompt 时持有，所以 LLM 绝不能在锁内跑，否则该角色在融合期间无法回话。
-沿用 ``promotion_merge`` 的三段式：
-  Phase 1 (locked)  : 快照同源条目 + 算指纹，命中即幂等 skip
-  Phase 2 (unlocked): 跑融合 LLM（几十秒）
-  Phase 3 (locked)  : CAS 剔旧同源条目 + 写融合结果，原子 save
+Fusion calls an LLM (tens of seconds). The persona per-character lock is **also**
+held while ``/new_dialog`` assembles a live prompt, so the LLM must never run
+inside the lock -- otherwise the character cannot reply during fusion. This
+follows the three-phase shape of ``promotion_merge``:
+  Phase 1 (locked)  : snapshot same-source entries + compute fingerprint; on a hit, idempotent skip
+  Phase 2 (unlocked): run the fusion LLM (tens of seconds)
+  Phase 3 (locked)  : CAS-evict old same-source entries + write the fused result, atomic save
 
 IDEMPOTENCY
 -----------
-LLM 融合非确定，重导同一份 workspace 不能越导越膨胀。按 entity 的候选集算稳定
-指纹存进产出条目；重导时同指纹→整批 skip 不进 LLM（严格幂等 no-op），指纹变
-了→剔掉同源旧条目、从原始候选重新融合（条目数被源上界钉死，只改文面不累积）。
-剔旧只碰 ``source == 'external_import'`` 的条目——protected（角色卡）/ 对话积累 /
-reflection 一律不动。
+LLM fusion is non-deterministic; re-importing the same workspace must not grow the
+pool with every import. A stable fingerprint over the entity's candidate set is
+stored on the produced entries; on re-import, same fingerprint -> skip the whole
+batch without calling the LLM (strict idempotent no-op), changed fingerprint ->
+evict the old same-source entries and re-fuse from the original candidates (the
+entry count is pinned by the source's upper bound, so only the wording changes, it
+does not accumulate). Eviction only touches ``source == 'external_import'``
+entries -- protected (character card) / conversational accumulation / reflection
+are all left untouched.
 """
 from __future__ import annotations
 
@@ -79,19 +86,21 @@ _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 class ExternalMemoryFusionError(RuntimeError):
-    """融合 LLM 终态失败（调用失败 / 解析失败 / 产出 0 条）。
+    """Terminal failure of the fusion LLM (call failed / parse failed / produced 0 entries).
 
-    调用方**不得**降级成逐条追加（那会绕过 token 预算把池撑爆）——原始导入素材
-    保留，让用户重试；重试是幂等的（同指纹 skip / 变更 replace-then-fuse）。与
-    ``FactExtractionFailed`` 对偶：区分「终态失败可重试」与「成功但空」。
+    The caller **must not** fall back to per-entry appends (that would bypass the
+    token budget and overflow the pool) -- the original import material is kept so
+    the user can retry; retries are idempotent (same fingerprint -> skip / changed
+    -> replace-then-fuse). Dual to ``FactExtractionFailed``: it distinguishes a
+    "retriable terminal failure" from "succeeded but empty".
     """
 
 
 class ExternalFusionMixin:
-    """PersonaManager mixin：把外部导入素材经 LLM 融合后落进 persona。
+    """PersonaManager mixin: fuse external-import material via an LLM, then persist into persona.
 
-    与 ``RefinementMixin`` / ``CorrectionsMixin`` 对偶——都是 persona 的 LLM 写入
-    路径，各自成一个 mixin 文件。
+    Dual to ``RefinementMixin`` / ``CorrectionsMixin`` -- all three are persona LLM
+    write paths, each living in its own mixin file.
     """
 
     async def afuse_external_facts(
@@ -272,8 +281,9 @@ class ExternalFusionMixin:
     def _trim_fused_to_budget(fused: list[dict], budget: int) -> list[dict]:
         """Sort by importance desc, per-entry soft-cap, greedily accumulate to budget.
 
-        whole-entry 贪心（total+t>budget 即停），与渲染层 _ascore_trim_entries 一致。
-        至少保留 1 条，避免边界情形整批被丢。
+        Whole-entry greedy (stop as soon as total+t>budget), matching the rendering
+        layer's _ascore_trim_entries. Keeps at least 1 entry so boundary cases don't
+        drop the whole batch.
         """
         ordered = sorted(fused, key=lambda x: x.get("importance", 5), reverse=True)
         kept: list[dict] = []

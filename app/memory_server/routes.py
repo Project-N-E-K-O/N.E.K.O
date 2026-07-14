@@ -68,19 +68,26 @@ class ExternalMemoryImportRequest(BaseModel):
 async def import_external_markdown(request: ExternalMemoryImportRequest):
     """Persist already-previewed OpenClaw/Hermes entries via live managers.
 
-    persona 与 facts 两条落盘路径**不对称**，因为它们的下游预算不同：
+    The persona and facts persistence paths are **asymmetric**, because their
+    downstream budgets differ:
 
-    - **facts** 走 ``_apersist_new_facts(semantic_dedup=False)`` 纯追加——facts
-      池没有渲染进 system prompt 的硬 token 上限，检索时才按需召回，逐条保留即可。
-    - **persona** 必须先经 ``afuse_external_facts`` 做一次 LLM 融合。persona 渲染
-      进 system prompt 时所有 non-protected 条目共抢一个**严格的 token 上限**；
-      ``USER.md`` / ``SOUL.md`` 是几十行自由 Markdown，若原样逐条追加会迅速撑爆
-      这个池，把角色在对话里自然积累的印象挤掉。融合把素材归纳/合并/去重/按
-      per-entity 预算截断后再落盘。候选按 entity（master / neko）分组分别融合。
+    - **facts** take the ``_apersist_new_facts(semantic_dedup=False)`` pure-append
+      path -- the facts pool has no hard token ceiling for system-prompt rendering;
+      entries are recalled on demand at retrieval time, so keeping each one is fine.
+    - **persona** must first go through one LLM fusion via ``afuse_external_facts``.
+      When persona is rendered into the system prompt, all non-protected entries
+      compete for a single **strict token ceiling**; ``USER.md`` / ``SOUL.md`` are
+      dozens of lines of free-form Markdown, and appending them verbatim would
+      quickly overflow that pool and crowd out the impressions the character has
+      naturally accumulated in conversation. Fusion summarises / merges / dedupes
+      the material and truncates it to the per-entity budget before persisting.
+      Candidates are grouped by entity (master / neko) and fused separately.
 
-    融合失败 (``ExternalMemoryFusionError``) 时**不降级**成逐条追加（那会绕过预算
-    把池撑爆）——保留用户素材、返回 ``external_import_partial`` 让前端重试，重试
-    是幂等的（同指纹整批 skip / 变更 replace-then-fuse）。
+    On fusion failure (``ExternalMemoryFusionError``) there is **no fallback** to
+    per-entry appends (that would bypass the budget and overflow the pool) -- the
+    user's material is kept and ``external_import_partial`` is returned so the
+    frontend can retry; retries are idempotent (same fingerprint -> skip the whole
+    batch / changed -> replace-then-fuse).
     """
     name = validate_lanlan_name(request.character_name)
     if request.source_format not in {"openclaw", "hermes"}:
