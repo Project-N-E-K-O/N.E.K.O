@@ -529,7 +529,7 @@ async def test_openai_transcription_resampling_and_out_of_order_finals(
     assert (first.utterance_id, first.text) == (1, "first")
 
     url, kwargs = connector.calls[0]
-    assert "model=gpt-realtime-whisper" in url
+    assert url == "wss://api.openai.com/v1/realtime?intent=transcription"
     assert kwargs["additional_headers"] == {"Authorization": "Bearer openai-key"}
     messages = [json.loads(payload) for payload in websocket.sent]
     session = messages[0]["session"]
