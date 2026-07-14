@@ -839,6 +839,13 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
     assert "action: 'yui_guide_prepare_compact_chat'" in source
     assert "neko:yui-guide:compact-chat-ready" in source
     assert "wasCollapsed: response.wasCollapsed === true" in source
+    prepare_block = source.split("    prepareYuiGuideCompactChatForTutorial() {", 1)[1].split(
+        "    restoreYuiGuideCompactChatSurface(reason = 'tutorial-ended') {",
+        1,
+    )[0]
+    # 单窗口浏览器虽然有 BroadcastChannel，却没有独立聊天页回执；必须先走本地 host。
+    assert "const hasNativeChatRelay" in prepare_block
+    assert prepare_block.index("if (!hasNativeChatRelay") < prepare_block.index("channel.postMessage(message)")
     # 所有结束方式都经过 clearAllTutorialLifecycles，因此形态恢复不能只挂在 skip 或 complete 分支。
     assert lifecycle_block.index("this.clearYuiGuideCompactChatFixedLayout(rawReason)") < lifecycle_block.index(
         "this.restoreYuiGuideCompactChatSurface(rawReason)"
@@ -885,6 +892,8 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
     assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
     assert "nativeBridge.prepareExpandedForTutorial()" in source
     assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
+    # 新旧原生桥同步抛错时都必须回执失败，不能让 null 被当成准备成功。
+    assert source.count("nativePreparation = { ready: false };") == 2
     # 只有教程前确实是毛球时才折叠，普通胶囊用户结束教程后保持胶囊。
     assert "if (!message || message.wasCollapsed !== true) return false" in source
     assert "nativeBridge.restoreCollapsedAfterTutorial()" in source

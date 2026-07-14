@@ -625,12 +625,18 @@
             try {
                 nativePreparation = nativeBridge.prepareExpandedForTutorial();
             } catch (error) {
+                // 同步调用失败与 Promise reject 语义一致，必须显式回执失败，
+                // 否则 null 会被后续 Promise.resolve 当成成功准备完成。
+                nativePreparation = { ready: false };
                 console.warn('[YuiGuide] Failed to prepare native compact chat surface:', error);
             }
         } else if (nativeBridge && typeof nativeBridge.ensureExpandedForTutorial === 'function') {
             try {
                 nativeBridge.ensureExpandedForTutorial();
-            } catch (_) {}
+            } catch (_) {
+                // 旧桥接同步失败时同样不能向教程误报胶囊已经准备完成。
+                nativePreparation = { ready: false };
+            }
         }
 
         // 浏览器和旧版桌面桥仍需同步 React 自己的 minimized 状态；新版桌面桥会在

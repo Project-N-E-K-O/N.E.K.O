@@ -1461,6 +1461,23 @@ class UniversalTutorialManager {
             }, YUI_GUIDE_COMPACT_CHAT_PREPARE_TIMEOUT_MS);
             window.addEventListener('neko:yui-guide:compact-chat-ready', handleReady);
 
+            const localHost = window.reactChatWindowHost || null;
+            const hasNativeChatRelay = !!(
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+            );
+            if (!hasNativeChatRelay && localHost && typeof localHost.openWindow === 'function') {
+                // 单窗口浏览器也可能创建 BroadcastChannel，但没有独立 /chat 页面负责回执；
+                // 此时直接准备当前页的 React chat host，避免等待一个永远不会出现的回执。
+                const wasCollapsed = !!(
+                    typeof localHost.getChatSurfaceMode === 'function'
+                    && localHost.getChatSurfaceMode() === 'minimized'
+                );
+                localHost.openWindow();
+                finish(true, { wasCollapsed: wasCollapsed });
+                return;
+            }
+
             let posted = false;
             const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
             if (channel && typeof channel.postMessage === 'function') {
@@ -1484,14 +1501,13 @@ class UniversalTutorialManager {
             }
             if (!posted) {
                 // 没有独立聊天窗的浏览器环境无需等待原生 carrier；本地 React 窗口沿用原行为。
-                const host = window.reactChatWindowHost || null;
                 const wasCollapsed = !!(
-                    host
-                    && typeof host.getChatSurfaceMode === 'function'
-                    && host.getChatSurfaceMode() === 'minimized'
+                    localHost
+                    && typeof localHost.getChatSurfaceMode === 'function'
+                    && localHost.getChatSurfaceMode() === 'minimized'
                 );
-                if (host && typeof host.openWindow === 'function') {
-                    host.openWindow();
+                if (localHost && typeof localHost.openWindow === 'function') {
+                    localHost.openWindow();
                 }
                 finish(true, { wasCollapsed: wasCollapsed });
             }
