@@ -92,10 +92,11 @@ def test_cat1_play_action_module_is_independent_from_eat_action():
         "function _postNekoIdleCat1PlayYarnVisibilityState",
         1,
     )[0]
-    assert "if (_isNekoIdleCat1NativeWaylandSelfBallRuntime()) return payload;" in release_block
-    assert release_block.index("_isNekoIdleCat1NativeWaylandSelfBallRuntime()") < release_block.index(
-        "_getNekoIdleReturnContainerFromButton(button)"
-    )
+    assert "_NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX = 58" in source
+    assert "if (_isNekoIdleCat1NativeWaylandSelfBallRuntime()) return payload;" not in release_block
+    assert "const ballSize = _isNekoIdleCat1NativeWaylandSelfBallRuntime()" in release_block
+    assert "? _NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX" in release_block
+    assert "payload.targetScreenRect" in release_block
     assert "idle_cat1_play_yarn_visibility" in interpage_source
     assert "dispatchIdleCat1PlayYarnVisibility(event.data)" in interpage_source
     assert "neko:idle-cat1-play-yarn-visibility" in chat_source
