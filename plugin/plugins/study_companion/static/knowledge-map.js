@@ -116,8 +116,8 @@ function renderKnowledgeStageSelector(nodes = []) {
     button.addEventListener('click', () => {
       knowledgeMapStage = stage === normalizeLearningStage(learningProfile.stage) ? '' : stage;
       knowledgeMapSubject = '';
-      if (surfaceDrawerBody && lastKnowledgeMapPayload) {
-        surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload));
+      if (surfaceDrawerBody) {
+        surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
       }
     });
     actions.appendChild(button);
@@ -521,7 +521,7 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
     cardList.appendChild(card);
   });
   const displayedEdgeCount = visibleGroups.reduce(
-    (count, group) => count + Math.min(group.items.length, 6),
+    (count, group) => count + group.items.length,
     0,
   );
   const hidden = Math.max(0, edgeCount - displayedEdgeCount);

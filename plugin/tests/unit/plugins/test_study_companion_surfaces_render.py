@@ -161,7 +161,9 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "subject === UNCATEGORIZED_SUBJECT ? '' : subject" in fallback
     assert "let knowledgeMapSubject = '';" in fallback
     assert "let knowledgeMapSubject = '';" not in main
-    assert "renderKnowledgePanel(lastKnowledgeMapPayload)" in fallback
+    assert fallback.count("renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload)") >= 2
     assert "loadKnowledgeMapIntoDrawer('knowledge-map', requestId)" not in fallback
     assert "const displayedEdgeCount = visibleGroups.reduce" in fallback
+    assert "(count, group) => count + group.items.length" in fallback
+    assert "count + Math.min(group.items.length, 6)" not in fallback
     assert "edgeCount - displayedEdgeCount" in fallback
