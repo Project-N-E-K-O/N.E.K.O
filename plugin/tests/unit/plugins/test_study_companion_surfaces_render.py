@@ -139,6 +139,7 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "from: String(group.fromId || '').trim()" in hosted
     assert "to: String(item.toId || '').trim()" in hosted
     assert "event.key === 'Escape'" in hosted
+    assert "event.stopPropagation()" in hosted
     assert "document.addEventListener('keydown', closeNodeDialog)" in hosted
     assert "document.removeEventListener('keydown', closeNodeDialog)" in hosted
     assert "visibleNodes.length - 60" in hosted

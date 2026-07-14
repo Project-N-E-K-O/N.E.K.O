@@ -245,6 +245,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
     const closeNodeDialog = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
+        event.stopPropagation();
         setSelectedNode(null);
         return;
       }
