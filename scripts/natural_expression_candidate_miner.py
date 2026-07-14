@@ -438,7 +438,7 @@ def _message_candidates(
 
 
 def _coverage_language(language: str) -> str:
-    return "zh" if language.startswith("zh") else language
+    return "zh" if language in {"zh", "zh-CN"} else language
 
 
 def _covered_rule_ids(

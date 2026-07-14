@@ -257,6 +257,25 @@ def test_coverage_reads_the_real_curated_rule_table():
     assert _candidate(report, "she smiled warmly")["covered_by_rule_ids"] == ["EN_004"]
 
 
+def test_traditional_chinese_is_not_covered_by_simplified_runtime_rules():
+    phrase = "嘴角微微上揚"
+    messages = [miner.SourceMessage("zh-TW", phrase, index) for index in range(1, 4)]
+    rules = {"zh": [{"id": "ZH_TEST", "find": phrase}]}
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(
+            cjk_ngram_min=len(phrase),
+            cjk_ngram_max=len(phrase),
+            exclude_covered=True,
+        ),
+        rules_by_language=rules,
+    )
+
+    assert _candidate(report, phrase)["covered_by_rule_ids"] == []
+
+
 def test_output_schema_is_pending_and_not_a_runtime_rule_schema():
     messages = [
         miner.SourceMessage("en", "quiet lantern", index) for index in range(1, 4)
