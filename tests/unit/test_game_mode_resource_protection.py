@@ -120,13 +120,11 @@ async def test_game_mode_triggers_after_sustained_pressure():
 
         state = await protector.tick_once()
 
-        assert len(events) == 1
-        assert events[0]["type"] == "game_mode_auto_switch"
-        assert events[0]["source"] == "game_mode_auto"
-        assert events[0]["reason"] == "cpu"
-        assert events[0]["duration_seconds"] == 30.0
-        assert state["auto_switch_active"] is True
-        assert state["pressure_state"] == "protected"
+        assert events == []
+        assert state["auto_switch_active"] is False
+        assert state["pressure_state"] == "high"
+        assert state["high_sample_count"] == 6
+        assert state["trigger_reason"] is None
     finally:
         await protector.set_enabled(False)
 
@@ -159,9 +157,9 @@ async def test_game_mode_long_high_pressure_keeps_protected_state_without_retrig
         for _ in range(18):
             state = await protector.tick_once()
 
-        assert len(events) == 1
-        assert state["pressure_state"] == "protected"
-        assert state["auto_switch_active"] is True
+        assert events == []
+        assert state["pressure_state"] == "high"
+        assert state["auto_switch_active"] is False
         assert state["high_sample_count"] == 18
         assert len(state["last_samples"]) == 6
         assert [sample["ts"] for sample in state["last_samples"]] == [1013.0, 1014.0, 1015.0, 1016.0, 1017.0, 1018.0]
@@ -169,7 +167,7 @@ async def test_game_mode_long_high_pressure_keeps_protected_state_without_retrig
         await protector.set_enabled(False)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert messages.count("[GameModeBeta] auto switch requested: reason=cpu percent=91.0 duration=30.0s delivered=1") == 1
+    assert not any("auto switch requested" in message for message in messages)
     assert not any("sample" in message.lower() and "unavailable" not in message.lower() for message in messages)
 
 
@@ -232,15 +230,11 @@ async def test_game_mode_cpu_memory_still_trigger_when_gpu_metric_is_unavailable
         for _ in range(6):
             state = await protector.tick_once()
 
-        assert len(events) == 1
-        assert events[0]["reason"] == "memory"
-        assert events[0]["percent"] == 89.0
-        assert events[0]["sample"]["errors"] == {"gpu": "nvidia-smi failed"}
-        assert state["trigger_reason"] == {
-            "metric": "memory",
-            "percent": 89.0,
-            "duration_seconds": 30.0,
-        }
+        assert events == []
+        assert state["pressure_state"] == "high"
+        assert state["auto_switch_active"] is False
+        assert state["trigger_reason"] is None
+        assert state["last_samples"][-1]["errors"] == {"gpu": "nvidia-smi failed"}
     finally:
         await protector.set_enabled(False)
 
@@ -324,19 +318,15 @@ async def test_game_mode_pressure_clear_does_not_restore_shape_state():
         for _ in range(6):
             state = await protector.tick_once()
 
-        assert len(events) == 1
-        assert state["auto_switch_active"] is True
-        assert state["pressure_state"] == "protected"
+        assert events == []
+        assert state["auto_switch_active"] is False
+        assert state["pressure_state"] == "high"
 
         state = await protector.tick_once()
 
         assert state["pressure_state"] == "normal"
-        assert state["auto_switch_active"] is True
-        assert state["trigger_reason"] == {
-            "metric": "cpu",
-            "percent": 91.0,
-            "duration_seconds": 30.0,
-        }
+        assert state["auto_switch_active"] is False
+        assert state["trigger_reason"] is None
     finally:
         await protector.set_enabled(False)
 
@@ -360,20 +350,20 @@ async def test_game_mode_manual_restore_starts_cooldown():
     try:
         for _ in range(6):
             await protector.tick_once()
-        assert len(events) == 1
+        assert events == []
 
         await protector.mark_manual_restore()
         for _ in range(6):
             await protector.tick_once()
 
-        assert len(events) == 1
-        assert protector.snapshot()["suppressed_until"] == 1600.0
+        assert events == []
+        assert protector.snapshot()["suppressed_until"] is None
 
         now["value"] = 1601.0
         for _ in range(6):
             await protector.tick_once()
 
-        assert len(events) == 2
+        assert events == []
     finally:
         await protector.set_enabled(False)
 
@@ -416,8 +406,9 @@ async def test_game_mode_disable_clears_runtime_state():
     for _ in range(6):
         await protector.tick_once()
 
-    assert events
-    assert protector.snapshot()["auto_switch_active"] is True
+    assert events == []
+    assert protector.snapshot()["auto_switch_active"] is False
+    assert protector.snapshot()["pressure_state"] == "high"
 
     state = await protector.set_enabled(False)
 
@@ -462,10 +453,10 @@ async def test_game_mode_key_state_transitions_are_logged(caplog):
 
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "[GameModeBeta] enabled" in messages
-    assert "[GameModeBeta] auto switch requested: reason=cpu percent=91.0 duration=30.0s delivered=1" in messages
+    assert "auto switch requested" not in messages
     assert "[GameModeBeta] pressure cleared" in messages
-    assert "[GameModeBeta] manual restore cooldown started" in messages
-    assert "[GameModeBeta] manual restore cooldown ended" in messages
+    assert "[GameModeBeta] manual restore cooldown started" not in messages
+    assert "[GameModeBeta] manual restore cooldown ended" not in messages
     assert "[GameModeBeta] disabled and runtime state cleared" in messages
 
 
@@ -704,10 +695,10 @@ async def test_smart_game_mode_uses_70_80_90_thresholds_for_two_consecutive_samp
         assert events == []
         state = await protector.tick_once()
 
-        assert len(events) == 1
-        assert events[0]["trigger_source"] == "game_semantic_smart"
-        assert events[0]["reason"] == "cpu"
-        assert state["cycle_phase"] == "protected"
+        assert events == []
+        assert state["game_smart_high_count"] == 2
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
     finally:
         await protector.set_enabled(False)
 
@@ -1157,10 +1148,11 @@ async def test_semantic_fuse_does_not_disable_legacy_pressure_protection():
 
         for _ in range(6):
             state = await protector.tick_once()
-        assert state["cycle_phase"] == "protected"
+        assert state["cycle_phase"] == "idle"
+        assert state["pressure_state"] == "high"
+        assert state["auto_switch_active"] is False
         auto_switches = [event for event in events if event["type"] == "game_mode_auto_switch"]
-        assert auto_switches[-1]["trigger_source"] == "resource_pressure"
-        assert auto_switches[-1]["reason"] == "cpu"
+        assert auto_switches == []
     finally:
         await protector.set_enabled(False)
 

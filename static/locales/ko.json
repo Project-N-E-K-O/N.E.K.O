@@ -2648,9 +2648,9 @@
             "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
         "gameModeBeta": {
-            "enabledNotice": "게임 모드 Beta가 켜졌습니다. 리소스 사용량이 계속 높으면 NEKO가 사용량을 줄이기 위해 고양이 형태로 전환합니다. 일부 플러그인과 비전/OCR 기능은 처음 사용할 때 더 오래 걸릴 수 있습니다.",
+            "enabledNotice": "사이드 모드가 켜졌습니다. Live2D를 화면 가장자리로 끌면 옆에서 내다보는 상태가 됩니다. 리소스 부하는 기록만 하며 모델을 자동으로 바꾸지 않습니다.",
             "autoSwitchNotice": "{metric} 사용량이 계속 높아 리소스를 줄이는 고양이 형태로 전환했습니다.",
-            "disabledNotice": "게임 모드 Beta가 꺼졌습니다. NEKO가 일반 리소스 정책으로 돌아왔습니다.",
+            "disabledNotice": "사이드 모드가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
             "toggleFailed": "게임 모드를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
             "memoryMetric": "메모리",
             "resourceMetric": "리소스",
@@ -2658,7 +2658,7 @@
             "statusOff": "꺼짐",
             "statusOnly": "{status}",
             "statusWithReason": "{status} · 최근: {metric} {percent} / {duration}",
-            "autoCatOnGame": "게임 감지 시 자동으로 고양이 형태로 전환",
+            "autoCatOnGame": "게임 감지 시 Live2D 이외의 모델을 자동으로 고양이 형태로 전환",
             "triggerMode": "트리거 모드",
             "smartMode": "스마트",
             "instantMode": "감지 즉시 트리거",
@@ -2666,7 +2666,7 @@
             "details": "세부 정보",
             "switchFailed": "고양이 형태로 전환하지 못했습니다. 잠시 후 게임 감지를 다시 확인합니다.",
             "restoreFailed": "모델을 복원하지 못해 고양이 형태를 유지합니다. 고양이를 다시 클릭해 재시도하세요.",
-            "signalUnavailable": "신뢰할 수 있는 게임 감지를 일시적으로 사용할 수 없습니다. 리소스 부하 보호는 계속 작동합니다."
+            "signalUnavailable": "신뢰할 수 있는 게임 감지를 일시적으로 사용할 수 없습니다. 리소스 샘플링은 계속 사용할 수 있습니다."
         },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
@@ -2678,8 +2678,8 @@
             "widgetModeTooltip": "가장자리 도킹 모드를 수동으로 켜면 Live2D가 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",
-            "gameModeBeta": "게임 모드 Beta",
-            "gameModeBetaTooltip": "시스템 CPU, 메모리, GPU 부하를 감시하고 높은 사용량이 지속되면 리소스를 줄이기 위해 고양이 형태로 전환합니다.",
+            "gameModeBeta": "사이드 모드",
+            "gameModeBetaTooltip": "Live2D를 화면 왼쪽이나 오른쪽 가장자리로 끌면 옆에서 내다봅니다. CPU, 메모리, GPU 부하는 진단 전용이며 모델을 자동으로 바꾸지 않습니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "catAudio": "고양이 효과음",

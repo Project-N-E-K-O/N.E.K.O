@@ -2648,9 +2648,9 @@
             "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
         },
         "gameModeBeta": {
-            "enabledNotice": "遊戲模式 Beta（測試版）已開啟。資源占用持續較高時，NEKO 會自動切換到貓貓形態以降低占用；部分外掛、視覺/OCR 功能首次使用可能載入較慢。",
+            "enabledNotice": "側邊模式已開啟。拖動 Live2D 到螢幕邊緣即可進入探身狀態；資源壓力只記錄狀態，不會自動變貓。",
             "autoSwitchNotice": "偵測到 {metric} 占用持續較高，已切換到貓貓形態以降低資源占用。",
-            "disabledNotice": "遊戲模式 Beta（測試版）已關閉。NEKO 已恢復一般資源策略。",
+            "disabledNotice": "側邊模式已關閉。Live2D 將恢復一般邊緣吸附行為。",
             "toggleFailed": "遊戲模式切換失敗，請稍後重試。",
             "memoryMetric": "記憶體",
             "resourceMetric": "資源",
@@ -2658,7 +2658,7 @@
             "statusOff": "關閉",
             "statusOnly": "{status}",
             "statusWithReason": "{status} · 最近：{metric} {percent} / {duration}",
-            "autoCatOnGame": "偵測到遊戲時自動變貓",
+            "autoCatOnGame": "偵測到遊戲時讓非 Live2D 模型自動變貓",
             "triggerMode": "觸發模式",
             "smartMode": "智慧判斷",
             "instantMode": "偵測到即觸發",
@@ -2666,7 +2666,7 @@
             "details": "詳情",
             "switchFailed": "切換到貓貓形態失敗，稍後會重新完整確認遊戲偵測。",
             "restoreFailed": "模型恢復失敗，仍保持貓貓形態。請再次點擊貓貓重試。",
-            "signalUnavailable": "暫時無法取得可靠的遊戲識別訊號；資源壓力保護仍然有效。"
+            "signalUnavailable": "暫時無法取得可靠的遊戲識別訊號；資源採樣仍然可用。"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",
@@ -2678,8 +2678,8 @@
             "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
-            "gameModeBeta": "遊戲模式 Beta（測試版）",
-            "gameModeBetaTooltip": "開啟後持續監測整機 CPU、記憶體和 GPU 壓力；資源占用持續較高時自動切換到貓貓形態。",
+            "gameModeBeta": "側邊模式",
+            "gameModeBetaTooltip": "拖動 Live2D 到螢幕左右邊緣即可探身。CPU、記憶體和 GPU 壓力僅用於診斷，不會自動改變模型。",
             "autoCat": "自動變貓",
             "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "catAudio": "貓貓音效",

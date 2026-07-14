@@ -436,7 +436,7 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
     const autoLabel = document.createElement('span');
     autoLabel.textContent = window.t
         ? window.t('settings.gameModeBeta.autoCatOnGame')
-        : '检测到游戏时自动变猫';
+        : '检测到游戏时让非 Live2D 模型自动变猫';
     autoLabel.setAttribute('data-i18n', 'settings.gameModeBeta.autoCatOnGame');
     autoRow.appendChild(autoCheckbox);
     autoRow.appendChild(autoLabel);
@@ -584,7 +584,7 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
 
     const gameModeItem = manager._createSettingsToggleItem({
         id: 'game-mode-beta',
-        label: window.t ? window.t('settings.toggles.gameModeBeta') : 'Game Mode Beta',
+        label: window.t ? window.t('settings.toggles.gameModeBeta') : '侧边模式',
         labelKey: 'settings.toggles.gameModeBeta',
         tooltipKey: 'settings.toggles.gameModeBetaTooltip',
         alwaysTinted: true
