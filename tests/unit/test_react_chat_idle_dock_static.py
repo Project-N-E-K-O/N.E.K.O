@@ -151,6 +151,7 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
 
     assert "function dispatchElectronChatMinimizedState(reason)" in source
     assert "function getElectronChatMinimizedScreenRect(windowRect)" in source
+    assert "window.__nekoMinimizedChatBallScreenRect" in source
     assert "width: MINIMIZED_SIZE" in source
     assert "height: MINIMIZED_SIZE" in source
     assert "Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2))" in source
@@ -173,6 +174,22 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "getElectronChatMinimizedScreenRect(windowRect)" in dispatch_block
     assert "classList.contains('is-minimized')" not in dispatch_block
     assert "querySelector('.react-chat-minimized-icon')" not in dispatch_block
+
+
+def test_electron_chat_minimized_heartbeat_prefers_rendered_ball_over_carrier_bounds():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    rect_block = _between(
+        source,
+        "function getElectronChatMinimizedScreenRect(windowRect) {",
+        "function dispatchElectronChatMinimizedState(reason)",
+    )
+
+    rendered_rect = "normalizeElectronWindowBoundsRect(\n            window.__nekoMinimizedChatBallScreenRect"
+    fallback_left = "Math.round(windowRect.left + Math.max(0, (windowRect.width - MINIMIZED_SIZE) / 2))"
+    assert rendered_rect in rect_block
+    assert "if (renderedBallRect) return renderedBallRect;" in rect_block
+    assert fallback_left in rect_block
+    assert rect_block.index("if (renderedBallRect) return renderedBallRect;") < rect_block.index(fallback_left)
 
 
 def test_cat1_minimized_ball_target_wins_over_stale_compact_surface():

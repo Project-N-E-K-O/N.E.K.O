@@ -258,6 +258,21 @@ const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -5;
 const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
 const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
+// GNOME Wayland 的自带毛球发布真实的 58px 可见区域。CAT1 与毛球素材仍使用
+// 各自的透明画布，因此这一条路径按素材坐标计算接触点，再应用实机截图校准。
+const _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX = 116;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_LEFT_PX = 5;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_RIGHT_PX = 90;
+const _NEKO_IDLE_CAT1_ASSET_SIZE_PX = 512;
+const _NEKO_IDLE_CAT1_IDLE_VISIBLE_LEFT_PX = 89;
+const _NEKO_IDLE_CAT1_IDLE_VISIBLE_RIGHT_PX = 394;
+// 猫位于毛球左侧（朝右）时，截图与同时间 trace 显示待机和侧身素材均少走约 34px。
+// 猫位于毛球右侧时容器终点保持不动，待机与侧身素材的 33px 校准由 CSS 按状态隔离。
+const _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX = 34;
+const _NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR = 'data-neko-cat1-native-yarn-visual-anchor';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR = 'data-neko-cat1-native-yarn-side';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_LEFT = 'left';
+const _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_RIGHT = 'right';
 const _NEKO_IDLE_CAT1_MINIMIZED_BACKWARD_RETREAT_TOLERANCE_PX = 2;
 // 容器属性名：本次走路提交的接近侧（true=站毛球左侧/朝右，false=站毛球右侧/朝左）。
 const _NEKO_IDLE_CAT1_WALK_SIDE_COMMIT_PROP = '__nekoIdleCat1WalkApproachLookRight';

@@ -299,6 +299,9 @@ function _getNekoIdleCat1PlayYarnReleasePayload(button, state, reason) {
         releaseDrag: true,
         releaseReason: reason || 'cat1-play-action-finished'
     };
+    // 原生 Wayland 的 58px 毛球只是隐藏，没有移动。结束时若把可见区域再次当成
+    // 88px 输入锚点发送，Chat 会重复加 15px 内边距并让毛球发生二次偏移。
+    if (_isNekoIdleCat1NativeWaylandSelfBallRuntime()) return payload;
     const container = _getNekoIdleReturnContainerFromButton(button);
     const rect = container && typeof container.getBoundingClientRect === 'function'
         ? container.getBoundingClientRect()

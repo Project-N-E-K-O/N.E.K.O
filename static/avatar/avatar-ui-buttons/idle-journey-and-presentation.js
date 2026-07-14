@@ -27,6 +27,8 @@ function _dispatchNekoIdleReturnBallManualMove(container, reason, extraDetail = 
 }
 
 function _getNekoIdleReactChatMinimizedRect() {
+    // Electron 多窗口中 Pet 页里的 React Chat 只是隐藏兼容 DOM；真实毛球位于 Chat 窗口。
+    if (window.__NEKO_MULTI_WINDOW__ === true) return null;
     const overlay = document.getElementById('react-chat-window-overlay');
     if (overlay && overlay.hidden) return null;
     const shell = document.getElementById('react-chat-window-shell');
@@ -52,6 +54,7 @@ function _getNekoIdleReactChatMinimizedRect() {
 }
 
 function _getNekoIdleReactChatMinimizedShell() {
+    if (window.__NEKO_MULTI_WINDOW__ === true) return null;
     const overlay = document.getElementById('react-chat-window-overlay');
     if (overlay && overlay.hidden) return null;
     const shell = document.getElementById('react-chat-window-shell');
@@ -67,6 +70,7 @@ function _getNekoIdleReactChatMinimizedShell() {
 }
 
 function _getNekoIdleReactChatExpandedShell() {
+    if (window.__NEKO_MULTI_WINDOW__ === true) return null;
     const overlay = document.getElementById('react-chat-window-overlay');
     if (overlay && overlay.hidden) return null;
     const shell = document.getElementById('react-chat-window-shell');
@@ -236,7 +240,54 @@ function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect) {
     if (facingRight) return 0;
     const width = Number(chatRect && chatRect.width);
     if (!Number.isFinite(width) || width <= 0) return 0;
-    return Math.max(0, Math.min(width, _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX));
+    const configuredOffset = _usesNekoIdleCat1NativeYarnVisualAnchor(chatRect)
+        ? width * (_NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX -
+            _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_RIGHT_PX) /
+            _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX
+        : _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX;
+    return Math.max(0, Math.min(width, configuredOffset));
+}
+
+function _usesNekoIdleCat1NativeYarnVisualAnchor(chatRect) {
+    const width = Number(chatRect && chatRect.width);
+    return _isNekoIdleCat1NativeWaylandSelfBallRuntime() &&
+        Number.isFinite(width) && width > 0 && width <= 60;
+}
+
+function _getNekoIdleCat1NativeYarnSide(container, chatRect) {
+    if (!_usesNekoIdleCat1NativeYarnVisualAnchor(chatRect) ||
+        !container || typeof container.getBoundingClientRect !== 'function') {
+        return '';
+    }
+    const catRect = container.getBoundingClientRect();
+    const catLeft = Number(catRect && catRect.left);
+    const catWidth = Number(catRect && catRect.width);
+    const yarnLeft = Number(chatRect.left);
+    const yarnWidth = Number(chatRect.width);
+    if (!Number.isFinite(catLeft) || !Number.isFinite(catWidth) || catWidth <= 0 ||
+        !Number.isFinite(yarnLeft) || !Number.isFinite(yarnWidth) || yarnWidth <= 0) {
+        return '';
+    }
+    const catCenterX = catLeft + catWidth / 2;
+    const yarnCenterX = yarnLeft + yarnWidth / 2;
+    return catCenterX <= yarnCenterX
+        ? _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_LEFT
+        : _NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_RIGHT;
+}
+
+function _getNekoIdleCat1NativeYarnVisualTargetLeft(rect, chatRect, facingRight) {
+    if (!_usesNekoIdleCat1NativeYarnVisualAnchor(chatRect)) return NaN;
+    const yarnContactRatio = facingRight
+        ? _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_LEFT_PX / _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX
+        : _NEKO_IDLE_CAT1_NATIVE_YARN_BODY_RIGHT_PX / _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX;
+    const catContactRatio = facingRight
+        ? _NEKO_IDLE_CAT1_IDLE_VISIBLE_RIGHT_PX / _NEKO_IDLE_CAT1_ASSET_SIZE_PX
+        : _NEKO_IDLE_CAT1_IDLE_VISIBLE_LEFT_PX / _NEKO_IDLE_CAT1_ASSET_SIZE_PX;
+    const leftSideCorrection = facingRight
+        ? _NEKO_IDLE_CAT1_NATIVE_YARN_LEFT_SIDE_CONTACT_CORRECTION_PX
+        : 0;
+    return chatRect.left + chatRect.width * yarnContactRatio -
+        rect.width * catContactRatio + leftSideCorrection;
 }
 
 function _getNekoIdleCat1TargetMoveDirection(rect, targetLeft) {
@@ -324,9 +375,16 @@ function _makeNekoIdleCat1SideTarget(rect, chatRect, options) {
 function _computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight) {
     const profile = _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const approachOffsetPx = _getNekoIdleCat1MinimizedSideApproachOffsetPx(lookFacingRight, chatRect);
-    const rawLeft = lookFacingRight
-        ? chatRect.left - rect.width - profile.target.gapPx
-        : chatRect.right + profile.target.gapPx - approachOffsetPx;
+    const nativeVisualTargetLeft = _getNekoIdleCat1NativeYarnVisualTargetLeft(
+        rect,
+        chatRect,
+        lookFacingRight
+    );
+    const rawLeft = Number.isFinite(nativeVisualTargetLeft)
+        ? nativeVisualTargetLeft
+        : lookFacingRight
+            ? chatRect.left - rect.width - profile.target.gapPx
+            : chatRect.right + profile.target.gapPx - approachOffsetPx;
     return _makeNekoIdleCat1SideTarget(rect, chatRect, {
         facingRight: lookFacingRight,
         rawLeft: rawLeft,
@@ -432,6 +490,7 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     // #1754：毛球中心已落进猫体 rect（猫已贴上球），且到该侧位点仍需倒退（moveFacingRight 与朝向
     // 相反）时就别再走过去——原地以当前朝向站住，避免贴球时反复前后蹭动抽搐。提交侧随之钉在当前朝向。
     if (target &&
+        !_usesNekoIdleCat1NativeYarnVisualAnchor(chatRect) &&
         _isNekoIdleRectCenterInsideRect(chatRect, rect) &&
         target.moveFacingRight !== null &&
         target.moveFacingRight !== target.lookFacingRight) {
