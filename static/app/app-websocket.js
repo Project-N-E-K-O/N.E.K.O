@@ -3400,7 +3400,6 @@
             '#prominent-notice-overlay',
             '.modal-overlay',
             '.modal-dialog',
-            '.storage-location-completion-card',
             '#storage-location-overlay',
             '.storage-location-modal'
         ]);

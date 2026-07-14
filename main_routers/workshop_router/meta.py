@@ -77,8 +77,13 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
     if not target_names:
         return []
 
-    session_removed_names = sorted(name for name in target_names if name in _session_deleted_names)
-    _session_deleted_names.difference_update(target_names)
+    target_casefolds = {name.casefold() for name in target_names}
+    session_removed_names = sorted(
+        name
+        for name in _session_deleted_names
+        if name.casefold() in target_casefolds
+    )
+    _session_deleted_names.difference_update(session_removed_names)
 
     if is_cloudsave_disabled():
         return session_removed_names
@@ -93,7 +98,7 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
             remaining_entries.append(entry)
             continue
         character_name = str(entry.get("character_name") or "").strip()
-        if character_name in target_names:
+        if character_name.casefold() in target_casefolds:
             removed_names.append(character_name)
             continue
         remaining_entries.append(entry)

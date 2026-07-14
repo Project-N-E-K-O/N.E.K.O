@@ -92,6 +92,21 @@ def test_pipeline_routing_falls_back_to_avatar_roast_for_first_live_danmaku():
     assert route.should_mark_roasted
 
 
+def test_pipeline_routing_uses_text_reply_when_first_roast_is_disabled():
+    route = route_for_event(
+        _event("live_danmaku"),
+        is_transient_event_result=False,
+        has_uid_lock=True,
+        already_roasted=False,
+        entrance_pacing_active=False,
+        avatar_roast_enabled=False,
+    )
+
+    assert route.response_module_id == "danmaku_response"
+    assert route.viewer_gate_reason == "avatar_roast_disabled"
+    assert route.should_mark_roasted is False
+
+
 def test_pipeline_routing_live_danmaku_and_activity_pacing_helpers():
     assert is_live_danmaku_with_text(_event("live_danmaku", "hi"))
     assert is_live_danmaku_with_text(_event("manual_live_simulation", "hi"))

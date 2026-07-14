@@ -315,6 +315,16 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
                 },
             });
             await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: {
+                    opacity: 72,
+                    bounds: { width: 655, height: 109 },
+                    locked: false,
+                    interactionPassthrough: false,
+                    danmakuMode: true,
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
             const afterOn = {
                 subscriptions: window.__avatarBoundsSubscriptions.slice(),
                 settings: shared.getSettings(),
@@ -322,6 +332,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
                 calls: window.__subtitleSetBoundsCalls.slice(),
                 changes: window.__subtitleSettingsChanges.slice(),
                 panelState: display.dataset.subtitlePanelState || '',
+                backgroundOpacity: display.dataset.subtitleBackgroundOpacity || '',
                 panelHidden: panel.classList.contains('hidden'),
                 closeCount: window.__subtitleSettingsCloseCount,
             };
@@ -352,6 +363,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
     assert result["afterOn"]["nativeBounds"] == {"x": 780, "y": 244, "width": 240, "height": 88}
     assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["backgroundOpacity"] == "0"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["closeCount"] == 1
     assert {"type": "lock", "value": True, "transient": True} in result["afterOn"]["changes"]
@@ -728,6 +740,22 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
             const panel = document.getElementById('subtitle-settings-panel');
             shared.updateSettings({ subtitleDanmakuMode: true }, { source: 'test-enable-web-danmaku' });
             await new Promise((resolve) => setTimeout(resolve, 150));
+            shared.updateSettings({
+                subtitlePanelBounds: { width: 655, height: 109 },
+                subtitlePanelPosition: {
+                    left: 300,
+                    top: 500,
+                    coordinateSpace: 'viewport',
+                },
+                subtitlePanelLocked: false,
+                subtitleInteractionPassthrough: false,
+                subtitleOpacity: 72,
+                subtitleDanmakuMode: true,
+            }, {
+                persist: false,
+                source: 'test-settings-refresh',
+            });
+            await new Promise((resolve) => setTimeout(resolve, 50));
             const afterOn = {
                 settings: shared.getSettings(),
                 style: {
@@ -737,6 +765,7 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
                     height: display.style.height,
                 },
                 panelState: display.dataset.subtitlePanelState || '',
+                backgroundOpacity: display.dataset.subtitleBackgroundOpacity || '',
                 panelHidden: panel.classList.contains('hidden'),
                 storage: {
                     bounds: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
@@ -791,6 +820,7 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
         "height": "76px",
     }
     assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["backgroundOpacity"] == "0"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["storage"] == {
         "bounds": {"width": 655, "height": 109},
@@ -2873,6 +2903,70 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
         "renderVisible": False,
         "renderEnabled": False,
         "propagated": [{"type": "toggle", "value": False, "enabled": False}],
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_panel_close_persists_app_settings(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'en');
+            window.appState = { subtitleEnabled: true };
+            window.__subtitleSaveSettingsCalls = 0;
+            window.__savedSubtitleEnabled = null;
+            window.appSettings = {
+                saveSettings: () => {
+                    window.__subtitleSaveSettingsCalls += 1;
+                    window.__savedSubtitleEnabled = window.appState.subtitleEnabled;
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            initSubtitleHostUi();
+            document.getElementById('subtitle-close-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            return {
+                saveSettingsCalls: window.__subtitleSaveSettingsCalls,
+                savedEnabled: window.__savedSubtitleEnabled,
+                enabled: window.nekoSubtitleShared.getSettings().subtitleEnabled,
+                storedEnabled: window.localStorage.getItem('subtitleEnabled'),
+                appStateEnabled: window.appState.subtitleEnabled,
+                isHidden: display.classList.contains('hidden'),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "saveSettingsCalls": 1,
+        "savedEnabled": False,
+        "enabled": False,
+        "storedEnabled": "false",
+        "appStateEnabled": False,
+        "isHidden": True,
     }
 
 

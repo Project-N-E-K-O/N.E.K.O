@@ -111,6 +111,7 @@ def test_recent_danmaku_topic_material_gets_replyable_shape_profile(runtime: Roa
     topics = runtime._recent_danmaku_topic_candidates()
 
     assert topics[0]["source"] == "recent_danmaku"
+    assert topics[0]["privacy_classification"] == "viewer_derived"
     assert topics[0]["preferred_shape"] == "tiny_tease"
     assert topics[0]["fun_axis"] == "tease"
     assert topics[0]["live_column"] == "NEKO tiny verdict"
@@ -145,6 +146,7 @@ async def test_active_engagement_prefers_recent_live_thread_over_single_topic(
     topic = await runtime._select_active_engagement_topic()
 
     assert topic["source"] == "live_thread"
+    assert topic["privacy_classification"] == "viewer_derived"
     assert topic["shape"] == "light_stance"
     assert topic["fun_axis"] == "viewer_callback"
     assert topic["live_column"] == "NEKO thread pickup"
@@ -173,6 +175,23 @@ def test_active_engagement_prompt_includes_recent_thread_evidence() -> None:
     assert "- risk: 20" in prompt
     assert "- recent thread evidence:" in prompt
     assert "这个奶茶真的不好喝" in prompt
+
+
+def test_active_engagement_prompt_keeps_viewer_derived_topic_material_internal() -> None:
+    prompt = ActiveEngagementModule._build_prompt(
+        "normal",
+        topic_material={
+            "source": "live_thread",
+            "privacy_classification": "viewer_derived",
+            "title": "private viewer words",
+            "hook": "continue private viewer words",
+            "evidence": ["private viewer evidence"],
+        },
+    )
+
+    assert "- title: private viewer words" in prompt
+    assert "- hook: continue private viewer words" in prompt
+    assert "private viewer evidence" in prompt
 
 
 @pytest.mark.asyncio

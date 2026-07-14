@@ -630,17 +630,48 @@
 
     function applyDanmakuModeTemporaryState(session) {
         if (!session || !session.active) return;
-        var nextState = SubtitleShared.updateSettings({
-            subtitlePanelLocked: true,
-            subtitleInteractionPassthrough: true,
-            subtitleOpacity: 0
-        }, {
+        var currentState = SubtitleShared.getSettings();
+        var restoreBounds = !!session.lastPanelBounds &&
+            !samePanelBounds(currentState.subtitlePanelBounds, session.lastPanelBounds);
+        var restoreLock = currentState.subtitlePanelLocked !== true ||
+            currentState.subtitleInteractionPassthrough !== true;
+        var restoreOpacity = currentState.subtitleOpacity !== 0;
+        if (!restoreBounds && !restoreLock && !restoreOpacity) {
+            return currentState;
+        }
+
+        var patch = {};
+        if (restoreBounds) {
+            patch.subtitlePanelBounds = session.lastPanelBounds;
+        }
+        if (restoreLock) {
+            patch.subtitlePanelLocked = true;
+            patch.subtitleInteractionPassthrough = true;
+        }
+        if (restoreOpacity) {
+            patch.subtitleOpacity = 0;
+        }
+        var nextState = SubtitleShared.updateSettings(patch, {
             persist: false,
-            source: 'subtitle-danmaku-enter'
+            source: 'subtitle-danmaku-maintain'
         });
-        propagateDanmakuModeLock(true, nextState);
-        propagateDanmakuModeOpacity(0, nextState);
+        if (restoreBounds) {
+            propagateSubtitleSetting({
+                type: 'bounds',
+                value: session.lastPanelBounds,
+                patch: { subtitlePanelBounds: session.lastPanelBounds },
+                transient: true,
+                state: nextState
+            });
+        }
+        if (restoreLock) {
+            propagateDanmakuModeLock(true, nextState);
+        }
+        if (restoreOpacity) {
+            propagateDanmakuModeOpacity(0, nextState);
+        }
         updateNativeInteractionPassthrough();
+        return nextState;
     }
 
     function applyDanmakuModeAvatarBounds(session, payload) {
@@ -669,6 +700,8 @@
             layout.panelBounds,
             { host: 'window' }
         );
+        var panelBoundsChanged = !samePanelBounds(session.lastPanelBounds, layout.panelBounds);
+        session.lastPanelBounds = layout.panelBounds;
         var nextState = SubtitleShared.updateSettings({
             subtitlePanelBounds: layout.panelBounds,
             subtitlePanelLocked: true,
@@ -677,8 +710,7 @@
             persist: false,
             source: 'subtitle-danmaku-avatar-layout'
         });
-        if (!samePanelBounds(session.lastPanelBounds, layout.panelBounds)) {
-            session.lastPanelBounds = layout.panelBounds;
+        if (panelBoundsChanged) {
             propagateSubtitleSetting({
                 type: 'bounds',
                 value: layout.panelBounds,
@@ -775,7 +807,12 @@
         function setActive(nextActive) {
             nextActive = !!nextActive;
             var active = !!(danmakuModeSession && danmakuModeSession.active);
-            if (active === nextActive) return;
+            if (active === nextActive) {
+                if (active) {
+                    applyDanmakuModeTemporaryState(danmakuModeSession);
+                }
+                return;
+            }
             if (nextActive) {
                 startDanmakuModeSession();
             } else {

@@ -64,9 +64,20 @@ class LiveProviderRouter:
         return normalize_room_ref_for_platform(self.platform, value)
 
     def _ingest(self) -> Any | None:
-        if self.platform == "bilibili":
+        return self.provider_for(self.platform)
+
+    def provider_for(self, platform: Any) -> Any | None:
+        """Return the concrete provider for a captured platform.
+
+        Callers that are changing config must capture ownership before activating
+        the new config; resolving through ``self.platform`` afterwards can stop
+        the new provider while leaving the old one alive.
+        """
+
+        normalized = normalize_live_platform(platform)
+        if normalized == "bilibili":
             return getattr(self.runtime, "bili_live_ingest", None)
-        if self.platform == "douyin":
+        if normalized == "douyin":
             return getattr(self.runtime, "douyin_live_ingest", None)
         return None
 

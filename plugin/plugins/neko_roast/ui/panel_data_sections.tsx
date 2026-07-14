@@ -1,11 +1,18 @@
 import {
+  Alert,
+  Button,
   Card,
   DataTable,
+  Field,
   Grid,
+  Input,
+  KeyValue,
+  Modal,
   Stack,
   StatCard,
   StatusBadge,
   Text,
+  useState,
 } from "@neko/plugin-ui"
 import {
   eventSignalLabel,
@@ -20,6 +27,104 @@ import {
 
 type PanelTranslator = (key: string) => string
 type DynamicLabel = (group: string, keyPrefix: string, value: string) => string
+
+export function LiveSessionSection({
+  t,
+  session,
+}: {
+  t: PanelTranslator
+  session: any
+}) {
+  const [query, setQuery] = useState("")
+  const [selectedViewer, setSelectedViewer] = useState<any>(null)
+  const viewers = Array.isArray(session?.viewers) ? session.viewers : []
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredViewers = viewers.filter((viewer: any) => {
+    if (!normalizedQuery) return true
+    return String(viewer?.nickname || "").toLowerCase().includes(normalizedQuery)
+  })
+  const viewerCount = Number(session?.interaction_viewer_count || 0)
+  const viewerCountLabel = session?.interaction_viewer_count_capped ? `${viewerCount}+` : viewerCount
+
+  return (
+    <Stack>
+      {!session?.has_session ? <Alert tone="info">{t("panel.audience.noSession")}</Alert> : null}
+      <Grid cols={2}>
+        <StatCard label={t("panel.audience.interactionViewers")} value={viewerCountLabel} />
+        <StatCard label={t("panel.columns.danmakuCount")} value={Number(session?.danmaku_count || 0)} />
+        <StatCard label={t("panel.audience.supportEvents")} value={Number(session?.support_event_count || 0)} />
+        <StatCard label={t("panel.audience.nekoOutputs")} value={Number(session?.neko_output_count || 0)} />
+      </Grid>
+      {session?.interaction_viewer_count_capped ? <Text>{t("panel.audience.viewerCountCapped")}</Text> : null}
+      <Card title={t("panel.audience.recentViewers")}>
+        <Stack>
+          <Field label={t("panel.audience.searchLabel")}>
+            <Input value={query} placeholder={t("panel.audience.sessionSearchPlaceholder")} onChange={setQuery} />
+          </Field>
+          {filteredViewers.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <DataTable
+                data={filteredViewers}
+                rowKey="viewer_key"
+                maxRows={30}
+                columns={[
+                  {
+                    key: "nickname",
+                    label: t("panel.columns.nickname"),
+                    render: (row: any) => (
+                      <Button tone="default" onClick={() => setSelectedViewer(row)}>
+                        {row.nickname || t("panel.audience.anonymousViewer")}
+                      </Button>
+                    ),
+                  },
+                  {
+                    key: "interactions",
+                    label: t("panel.audience.interactions"),
+                    render: (row: any) => `${Number(row.danmaku_count || 0)} / ${Number(row.support_event_count || 0)}`,
+                  },
+                  {
+                    key: "last_event_type",
+                    label: t("panel.audience.latestEvent"),
+                    render: (row: any) => <StatusBadge tone={sessionEventTone(row.last_event_type)} label={sessionEventLabel(t, row.last_event_type)} />,
+                  },
+                  {
+                    key: "last_interaction_at",
+                    label: t("panel.columns.lastSeen"),
+                    render: (row: any) => formatDateTime(row.last_interaction_at),
+                  },
+                ]}
+              />
+            </div>
+          ) : (
+            <Text>{session?.has_session ? t("panel.audience.noSessionViewers") : t("panel.audience.noSession")}</Text>
+          )}
+        </Stack>
+      </Card>
+      <Modal
+        open={!!selectedViewer}
+        title={t("panel.audience.sessionDetailTitle")}
+        size="lg"
+        onClose={() => setSelectedViewer(null)}
+        footer={<Button tone="default" onClick={() => setSelectedViewer(null)}>{t("panel.actions.cancel")}</Button>}
+      >
+        {selectedViewer ? (
+          <Stack>
+            <Text>{selectedViewer.nickname || t("panel.audience.anonymousViewer")}</Text>
+            <KeyValue
+              items={[
+                { key: "danmaku", label: t("panel.columns.danmakuCount"), value: Number(selectedViewer.danmaku_count || 0) },
+                { key: "support", label: t("panel.audience.supportEvents"), value: Number(selectedViewer.support_event_count || 0) },
+                { key: "replies", label: t("panel.audience.nekoReplyCount"), value: Number(selectedViewer.neko_reply_count || 0) },
+                { key: "lastEvent", label: t("panel.audience.latestEvent"), value: sessionEventLabel(t, selectedViewer.last_event_type) },
+                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedViewer.last_interaction_at) },
+              ]}
+            />
+          </Stack>
+        ) : null}
+      </Modal>
+    </Stack>
+  )
+}
 
 export function LiveExplainSection({
   t,
@@ -140,34 +245,106 @@ export function ViewerProfilesTable({
   t: PanelTranslator
   profiles: any[]
 }) {
+  const [query, setQuery] = useState("")
+  const [selectedProfile, setSelectedProfile] = useState<any>(null)
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredProfiles = profiles.filter((profile: any) => {
+    if (!normalizedQuery) return true
+    return String(profile?.nickname || "").toLowerCase().includes(normalizedQuery)
+  })
+
   return (
-    <Card title={t("panel.profiles.title")}>
-      {profiles.length ? (
-        <DataTable
-          data={profiles.map((item, index) => ({ ...item, id: item.uid || String(index) }))}
-          rowKey="id"
-          columns={[
-            { key: "uid", label: "UID" },
-            { key: "nickname", label: t("panel.columns.nickname") },
-            { key: "roast_count", label: t("panel.columns.roastCount") },
-            { key: "danmaku_count", label: t("panel.columns.danmakuCount"), render: (row: any) => row.danmaku_count || 0 },
-            { key: "viewer_stage", label: t("panel.columns.viewerStage"), render: (row: any) => profileBadge("viewerStage", row.viewer_stage, t) },
-            { key: "profile_confidence", label: t("panel.columns.profileConfidence"), render: (row: any) => profileBadge("profileConfidence", row.profile_confidence, t) },
-            { key: "profile_freshness", label: t("panel.columns.profileFreshness"), render: (row: any) => profileBadge("profileFreshness", row.profile_freshness, t) },
-            { key: "top_preference_tags", label: t("panel.columns.preferenceTags"), render: (row: any) => Array.isArray(row.top_preference_tags) ? row.top_preference_tags.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
-            { key: "top_favorite_topics", label: t("panel.columns.favoriteTopics"), render: (row: any) => Array.isArray(row.top_favorite_topics) ? row.top_favorite_topics.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
-            { key: "top_running_jokes", label: t("panel.columns.runningJokes"), render: (row: any) => Array.isArray(row.top_running_jokes) ? row.top_running_jokes.map((item: any) => `${item.tag}:${item.count}`).join(", ") : "-" },
-            { key: "profile_summary", label: t("panel.columns.latestSummary"), render: (row: any) => row.impression_summary || row.profile_summary || row.last_interaction_summary || "-" },
-            { key: "avoid_guidance", label: t("panel.columns.avoidGuidance"), render: (row: any) => row.avoid_guidance || "-" },
-            { key: "reply_guidance", label: t("panel.columns.replyGuidance"), render: (row: any) => row.reply_guidance || "-" },
-            { key: "last_seen_at", label: t("panel.columns.lastSeen") },
-          ]}
-        />
-      ) : (
-        <Text>{t("panel.empty.profiles")}</Text>
-      )}
-    </Card>
+    <Stack>
+      <Card title={t("panel.profiles.title")}>
+        <Stack>
+          <Field label={t("panel.audience.searchLabel")}>
+            <Input value={query} placeholder={t("panel.audience.profileSearchPlaceholder")} onChange={setQuery} />
+          </Field>
+          {filteredProfiles.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <DataTable
+                data={filteredProfiles.map((item, index) => ({ ...item, id: item.uid || String(index) }))}
+                rowKey="id"
+                columns={[
+                  {
+                    key: "nickname",
+                    label: t("panel.columns.nickname"),
+                    render: (row: any) => (
+                      <Button tone="default" onClick={() => setSelectedProfile(row)}>
+                        {row.nickname || t("panel.audience.anonymousViewer")}
+                      </Button>
+                    ),
+                  },
+                  { key: "viewer_stage", label: t("panel.columns.viewerStage"), render: (row: any) => profileBadge("viewerStage", row.viewer_stage, t) },
+                  { key: "profile_confidence", label: t("panel.columns.profileConfidence"), render: (row: any) => profileBadge("profileConfidence", row.profile_confidence, t) },
+                  { key: "profile_freshness", label: t("panel.columns.profileFreshness"), render: (row: any) => profileBadge("profileFreshness", row.profile_freshness, t) },
+                  { key: "last_seen_at", label: t("panel.columns.lastSeen"), render: (row: any) => formatDateTime(row.last_seen_at) },
+                ]}
+              />
+            </div>
+          ) : (
+            <Text>{t("panel.empty.profiles")}</Text>
+          )}
+        </Stack>
+      </Card>
+      <Modal
+        open={!!selectedProfile}
+        title={t("panel.audience.profileDetailTitle")}
+        size="lg"
+        onClose={() => setSelectedProfile(null)}
+        footer={<Button tone="default" onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>}
+      >
+        {selectedProfile ? (
+          <Stack>
+            <Text>{selectedProfile.nickname || t("panel.audience.anonymousViewer")}</Text>
+            <KeyValue
+              items={[
+                { key: "stage", label: t("panel.columns.viewerStage"), value: profileLabel("viewerStage", selectedProfile.viewer_stage, t) },
+                { key: "confidence", label: t("panel.columns.profileConfidence"), value: profileLabel("profileConfidence", selectedProfile.profile_confidence, t) },
+                { key: "freshness", label: t("panel.columns.profileFreshness"), value: profileLabel("profileFreshness", selectedProfile.profile_freshness, t) },
+                { key: "danmaku", label: t("panel.columns.danmakuCount"), value: Number(selectedProfile.danmaku_count || 0) },
+                { key: "roast", label: t("panel.columns.roastCount"), value: Number(selectedProfile.roast_count || 0) },
+                { key: "preferences", label: t("panel.columns.preferenceTags"), value: formatCountedTags(selectedProfile.top_preference_tags) },
+                { key: "topics", label: t("panel.columns.favoriteTopics"), value: formatCountedTags(selectedProfile.top_favorite_topics) },
+                { key: "jokes", label: t("panel.columns.runningJokes"), value: formatCountedTags(selectedProfile.top_running_jokes) },
+                { key: "summary", label: t("panel.columns.latestSummary"), value: selectedProfile.impression_summary || selectedProfile.profile_summary || selectedProfile.last_interaction_summary || "-" },
+                { key: "avoid", label: t("panel.columns.avoidGuidance"), value: selectedProfile.avoid_guidance || "-" },
+                { key: "reply", label: t("panel.columns.replyGuidance"), value: selectedProfile.reply_guidance || "-" },
+                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedProfile.last_seen_at) },
+              ]}
+            />
+          </Stack>
+        ) : null}
+      </Modal>
+    </Stack>
   )
+}
+
+function formatCountedTags(value: any): string {
+  return Array.isArray(value) && value.length
+    ? value.map((item: any) => `${item.tag}:${item.count}`).join(", ")
+    : "-"
+}
+
+function formatDateTime(value: any): string {
+  const raw = String(value || "").trim()
+  if (!raw) return "-"
+  const parsed = new Date(raw)
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString()
+}
+
+function sessionEventLabel(t: PanelTranslator, value: any): string {
+  const key = String(value || "unknown")
+  const labelKey = `panel.audience.event.${key === "super_chat" ? "superChat" : key}`
+  const label = t(labelKey)
+  return label && label !== labelKey ? label : t("panel.audience.event.unknown")
+}
+
+function sessionEventTone(value: any): "success" | "warning" | "info" | "default" {
+  const key = String(value || "")
+  if (key === "gift" || key === "super_chat" || key === "guard") return "success"
+  if (key === "danmaku") return "info"
+  return "default"
 }
 
 function profileBadge(group: "viewerStage" | "profileConfidence" | "profileFreshness", value: any, t: PanelTranslator) {

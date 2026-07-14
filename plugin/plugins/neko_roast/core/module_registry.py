@@ -51,8 +51,8 @@ class ModuleRegistry:
     async def setup_all(self, ctx: Any) -> None:
         await setup_all_modules(self._modules, self._degraded, ctx)
 
-    async def teardown_all(self) -> None:
-        await teardown_all_modules(self._modules)
+    async def teardown_all(self, ctx: Any = None) -> None:
+        await teardown_all_modules(self._modules, ctx)
 
     async def enable(self, module_id: str, ctx: Any) -> bool:
         return await toggle_module(self._modules, self._degraded, module_id, True, ctx)

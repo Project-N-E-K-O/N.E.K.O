@@ -9,7 +9,7 @@ The live hosting flow selects and builds short solo-stream warmup, idle-hosting,
 - `core/live_hosting_director.py` is the runtime-facing facade.
 - `core/live_hosting_gates.py` decides whether automatic hosting is eligible.
 - `core/live_hosting_beat_picker.py`, `core/live_hosting_beat_state.py`, and `core/live_hosting_beat_rules.py` select non-repeating safe material.
-- `core/live_material_rules.py` owns the small safety and title-similarity rules required by this slice, so hosting does not depend on the later active-topic slice.
+- `core/live_material_rules.py` owns the shared safety and title-similarity rules used by hosting. Active-topic and live-content catalogs integrate through the current plugin-owned content interfaces rather than becoming hard dependencies of the hosting director.
 - `modules/warmup_hosting/module.py` and `modules/active_engagement/module.py` build `InteractionRequest` objects. Idle hosting continues through the avatar-roast host path.
 
 ## Data Flow And Safety
@@ -33,8 +33,8 @@ The focused tests cover standalone module imports, material safety filtering, an
 ## Limitations And Rollback
 
 - Hosting is intentionally low-frequency and may skip a beat when safety or queue pressure is uncertain.
-- Topic discovery and broader active-topic catalogs belong to later stacked slices.
-- Before the later `live_content` catalog slice lands, idle-hosting material discovery safely degrades to an empty candidate list.
+- Topic discovery and broader active-topic catalogs are available through the current content interfaces, but hosting must still tolerate an unavailable, empty, or filtered source.
+- If `live_content` cannot provide safe material, idle-hosting discovery degrades to an empty candidate list instead of blocking the live runtime.
 - Output length remains governed by the prompt/metadata contract described in `output_contract.md`.
 
 To roll back, remove the hosting director delegates and module registrations. The EventBus, pipeline, safety guard, and viewer stores remain unchanged.

@@ -71,6 +71,16 @@ function _isNekoDesktopLinuxRuntime() {
     );
 }
 
+function _isNekoIdleCat1NativeWaylandRuntime() {
+    const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+    return window.__NEKO_MULTI_WINDOW__ === true && runtime.isWayland === true;
+}
+
+function _isNekoIdleCat1NativeWaylandSelfBallRuntime() {
+    const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+    return _isNekoIdleCat1NativeWaylandRuntime() && runtime.isNiriWayland !== true;
+}
+
 function _getNekoIdleReturnAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();

@@ -715,6 +715,14 @@
         if (markApplied === true) state.startupDefaultCatApplied = true;
     }
 
+    function consumeStartupDefaultCatRequest() {
+        if (!state.startupDefaultCatRequested) return false;
+        // 教程恢复会自行重放同一个猫咪业务入口；先消费启动请求并清掉重试定时器，
+        // 避免教程锁释放后旧重试与恢复链各派发一次猫咪切换。
+        cancelStartupDefaultCatRequest(true);
+        return true;
+    }
+
     function scheduleStartupDefaultCatRetry() {
         state.startupDefaultCatTimerId = window.setTimeout(
             applyStartupDefaultCat,
@@ -728,6 +736,15 @@
         // The startup event can arrive before the storage-location barrier is released.
         // Do not spend the avatar-readiness retry budget while app startup is still blocked.
         if (!state.started) {
+            scheduleStartupDefaultCatRetry();
+            return;
+        }
+        if (
+            isTutorialGuardActive()
+            || window.isNekoHomeTutorialPending === true
+            || window.isInTutorial === true
+        ) {
+            // 教程直启时页面上出现的是临时 YUI 模型按钮；继续等待，不能把启动默认猫咪请求消费在教程模型上。
             scheduleStartupDefaultCatRetry();
             return;
         }
@@ -793,6 +810,8 @@
             lastSuppressionChangedAt: state.lastSuppressionChangedAt,
             conversationGraceUntil: state.conversationGraceUntil,
             lastConversationSource: state.lastConversationSource,
+            // 教程管理器需要区分“用户选择普通模型”和“PC 默认猫咪请求尚未执行”的冷启动状态。
+            startupDefaultCatRequested: state.startupDefaultCatRequested,
             thresholdsMs: {
                 cat1: AUTO_GOODBYE_MS,
                 cat2: CAT2_MS,
@@ -977,6 +996,7 @@
         setAutoCatEnabled: setAutoCatEnabled,
         isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,
+        consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest,
         getState: getState,
     };
 

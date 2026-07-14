@@ -28,6 +28,31 @@ class PNGTuberImportResult:
     message: str = ""
 
 
+def _select_pngtuber_plus_save(package_dir: Path, save_files: list[Path], fallback_model_name: str) -> Path:
+    if len(save_files) == 1:
+        return save_files[0]
+
+    expected_name = f"{fallback_model_name}.save".lower()
+    root_matches = [
+        path for path in save_files
+        if path.parent.resolve() == package_dir.resolve() and path.name.lower() == expected_name
+    ]
+    if len(root_matches) == 1:
+        return root_matches[0]
+
+    candidates = [str(path.relative_to(package_dir)).replace("\\", "/") for path in save_files]
+    preview = ", ".join(candidates[:8])
+    if len(candidates) > 8:
+        preview += f", ... (+{len(candidates) - 8})"
+    raise PNGTuberImportError(
+        "检测到多个 PNGTuber Plus .save 文件，无法确定要导入哪一个。"
+        f"请只保留一个 .save，或把目标文件放在根目录并命名为 {fallback_model_name}.save。"
+        f"候选文件: {preview}",
+        source_format="pngtuber_plus_save",
+        warnings=candidates,
+    )
+
+
 def import_pngtuber_package(package_dir: Path, fallback_model_name: str) -> PNGTuberImportResult:
     """Detect and normalize an uploaded PNGTuber package in-place."""
     simple_result = import_simple_package(package_dir)
@@ -41,7 +66,8 @@ def import_pngtuber_package(package_dir: Path, fallback_model_name: str) -> PNGT
 
     save_files = sorted(package_dir.rglob("*.save"))
     if save_files:
-        imported = import_pngtuber_plus_save(package_dir, save_files[0], fallback_model_name)
+        save_file = _select_pngtuber_plus_save(package_dir, save_files, fallback_model_name)
+        imported = import_pngtuber_plus_save(package_dir, save_file, fallback_model_name)
         return PNGTuberImportResult(**imported)
 
     remix_files = sorted([p for p in package_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".pngremix"])
