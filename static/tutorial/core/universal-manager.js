@@ -1432,8 +1432,8 @@ class UniversalTutorialManager {
                 ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
                 : '';
             if (!tutorialRunId) {
-                // prepare 早于 lifecycle-start relay，必须在排队前给本轮生成稳定 runId；
-                // PC 才能让迟到的旧 lifecycle-ended 只清理旧教程请求。
+                // 正常入口会复用 lifecycle-start 创建的 runId；独立调用或旧入口缺失时仍需
+                // 在排队前补一个稳定 id，让迟到的旧 lifecycle-ended 只清理旧教程请求。
                 tutorialRunId = 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
                 if (window.localStorage) {
                     window.localStorage.setItem('yuiGuidePcOverlayRunId', tutorialRunId);
@@ -1450,6 +1450,7 @@ class UniversalTutorialManager {
 
         return new Promise((resolve) => {
             let settled = false;
+            let posted = false;
             const finish = (ready, detail) => {
                 if (settled) return;
                 settled = true;
@@ -1459,7 +1460,10 @@ class UniversalTutorialManager {
                 // 只在握手完成后保存启动前形态；上一轮迟到回执不能覆盖本轮恢复目标。
                 this._avatarFloatingChatSurfaceSnapshot = {
                     requestId: requestId,
-                    wasCollapsed: response.wasCollapsed === true
+                    wasCollapsed: response.wasCollapsed === true,
+                    // 超时只说明主页没收到回执；聊天窗可能已保存真实形态并仍在异步展开。
+                    // teardown 通过同一 requestId 请求它按自己的 prepare 快照恢复，避免主页猜测。
+                    restoreFromPrepareSnapshot: response.restoreFromPrepareSnapshot === true
                 };
                 resolve(ready === true);
             };
@@ -1472,7 +1476,7 @@ class UniversalTutorialManager {
             };
             const timeoutId = window.setTimeout(() => {
                 console.warn('[Tutorial] 等待胶囊聊天框原生展开超时，取消本轮教程启动');
-                finish(false, {});
+                finish(false, { restoreFromPrepareSnapshot: posted });
             }, YUI_GUIDE_COMPACT_CHAT_PREPARE_TIMEOUT_MS);
             window.addEventListener('neko:yui-guide:compact-chat-ready', handleReady);
 
@@ -1493,7 +1497,6 @@ class UniversalTutorialManager {
                 return;
             }
 
-            let posted = false;
             const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
             if (channel && typeof channel.postMessage === 'function') {
                 try {
@@ -1532,12 +1535,17 @@ class UniversalTutorialManager {
     restoreYuiGuideCompactChatSurface(reason = 'tutorial-ended') {
         const snapshot = this._avatarFloatingChatSurfaceSnapshot;
         this._avatarFloatingChatSurfaceSnapshot = null;
-        if (!snapshot || snapshot.wasCollapsed !== true) return false;
+        if (!snapshot || (
+            snapshot.wasCollapsed !== true
+            && snapshot.restoreFromPrepareSnapshot !== true
+        )) return false;
 
         const message = {
             action: 'yui_guide_restore_compact_chat',
             requestId: snapshot.requestId,
-            wasCollapsed: true,
+            wasCollapsed: snapshot.wasCollapsed === true,
+            // prepare 超时后由聊天窗使用同 request 的本地快照决定是否需要折叠。
+            restoreFromPrepareSnapshot: snapshot.restoreFromPrepareSnapshot === true,
             reason: reason,
             timestamp: Date.now()
         };
@@ -1562,10 +1570,11 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 原生转发胶囊聊天框形态恢复失败:', error);
             }
         }
-        if (!posted) {
+        if (!posted && snapshot.wasCollapsed === true) {
             const host = window.reactChatWindowHost || null;
             if (host && typeof host.setChatSurfaceMode === 'function') {
-                // 浏览器内嵌聊天窗没有跨窗口接收端，直接通过同一 surface 状态机恢复毛球。
+                // 只有明确回执过毛球状态才能走本地 fallback；超时未知状态必须由
+                // 保存过 prepare 快照的独立聊天窗判断，主页不能猜测并强制折叠。
                 host.setChatSurfaceMode('minimized');
                 return true;
             }

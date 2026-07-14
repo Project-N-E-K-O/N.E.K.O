@@ -619,6 +619,9 @@
             return true;
         }
         I.yuiGuideCompactChatPrepareRequestId = requestId;
+        // 主页超时后已无法收到 ready 回执；按 request 保存真实初始形态，后续取消请求
+        // 才能只恢复原本的毛球，而不把原本展开的胶囊错误折叠。
+        I.yuiGuideCompactChatPrepareWasCollapsed = wasCollapsed;
 
         var nativePreparation = null;
         if (nativeBridge && typeof nativeBridge.prepareExpandedForTutorial === 'function') {
@@ -664,13 +667,20 @@
     };
 
     I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface(message) {
-        if (!message || message.wasCollapsed !== true) return false;
+        if (!message) return false;
         var requestId = message.requestId ? String(message.requestId) : '';
         // restore 必须属于当前最近一次 prepare；快速重启教程时，旧 run 的迟到恢复
         // 不能把新教程刚展开的胶囊重新折叠。新版恢复消息始终携带 requestId。
         if (!requestId || I.yuiGuideCompactChatPrepareRequestId !== requestId) {
             return false;
         }
+        var shouldRestoreCollapsed = message.wasCollapsed === true;
+        if (message.restoreFromPrepareSnapshot === true) {
+            // 超时恢复只信任当前 prepare 在聊天窗捕获的真实状态；主页的未知状态不能
+            // 保守地当成毛球，否则原本展开的胶囊也会被错误折叠。
+            shouldRestoreCollapsed = I.yuiGuideCompactChatPrepareWasCollapsed === true;
+        }
+        if (!shouldRestoreCollapsed) return false;
         if (requestId && I.yuiGuideCompactChatRestoreRequestId === requestId) {
             return true;
         }
