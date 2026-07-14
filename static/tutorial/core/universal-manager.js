@@ -3692,6 +3692,17 @@ class UniversalTutorialManager {
             // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
             // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
             const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
+            if (
+                this._tutorialEndHandled
+                || this._isDestroyed
+                || !this.isTutorialRunning
+                || window.isInTutorial !== true
+            ) {
+                // skip/远程结束可能发生在 prepare 等待期间；迟到回执刚写入的形态快照
+                // 仍需补恢复，但不能再走 catch 重复 teardown，更不能继续固定布局并启动 director。
+                this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare');
+                return false;
+            }
             if (!compactChatReady) {
                 throw new Error('tutorial_compact_chat_not_ready');
             }

@@ -837,6 +837,18 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
     assert start_round_block.index("this.relayYuiGuideTutorialLifecycleStarted('home', source)") < start_round_block.index(
         "await this.prepareYuiGuideCompactChatForTutorial()"
     )
+    # prepare 等待期间允许 skip/远程结束；回执回来后只能恢复形态，不能复活已拆除的教程。
+    prepare_ready_index = start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()")
+    cancellation_index = start_round_block.index("this._tutorialEndHandled", prepare_ready_index)
+    fixed_layout_index = start_round_block.index(
+        "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
+    )
+    assert prepare_ready_index < cancellation_index < fixed_layout_index
+    assert "this._isDestroyed" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "!this.isTutorialRunning" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "window.isInTutorial !== true" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare')" in start_round_block
+    assert "return false;" in start_round_block[cancellation_index:fixed_layout_index]
     assert start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()") < start_round_block.index(
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )
