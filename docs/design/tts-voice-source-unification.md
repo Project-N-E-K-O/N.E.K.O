@@ -18,7 +18,7 @@ main_logic/voice_registration/providers/
 └── mimo.py          # MiMo Clone + Design
 ```
 
-- `main_routers/characters_router/voice_registration.py` 只承载 HTTP 请求编排；
+- `main_routers/characters_router/voice_cloning.py` 只承载 HTTP 请求编排；
   provider 的 endpoint、payload、响应解析和上游异常不得放进 Router。
 - `main_logic/tts_client/workers/` 只负责注册完成后的运行时语音合成。
 - 历史 `utils/voice_clone.py` 已移除；新代码直接 import 对应 provider adapter，

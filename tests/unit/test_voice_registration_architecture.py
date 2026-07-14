@@ -34,8 +34,8 @@ def test_legacy_voice_clone_util_is_removed():
 
 
 @pytest.mark.unit
-def test_legacy_voice_cloning_router_module_aliases_registration_module():
-    import main_routers.characters_router.voice_cloning as legacy
-    import main_routers.characters_router.voice_registration as registration
+def test_voice_cloning_router_remains_the_registration_route_module():
+    import main_routers.characters_router.voice_cloning as voice_cloning
 
-    assert legacy is registration
+    assert callable(voice_cloning.voice_clone)
+    assert callable(voice_cloning.voice_design)

@@ -208,7 +208,7 @@ from .voice_preview import (  # noqa: F401
     get_voices,
     get_voice_preview,
 )
-from .voice_registration import (  # noqa: F401
+from .voice_cloning import (  # noqa: F401
     _cosyvoice_design_default_preview_text,
     _voice_design_preview_language,
     _voice_design_preview_text,
