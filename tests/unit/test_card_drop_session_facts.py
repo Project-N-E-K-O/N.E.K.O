@@ -1066,13 +1066,58 @@ def test_local_login_bind_ownership_conflict_returns_409_and_preserves_session(
 
     response = client.post(
         "/api/card-drop/login",
-        json={"email": "new@example.com", "password": "password123"},
+        json={
+            "email": "new@example.com",
+            "password": "password123",
+            "sync_ticket": _issue_sync_ticket(client),
+        },
     )
 
     assert response.status_code == 409
     assert response.json() == {"detail": "client_already_bound_to_other_user"}
     assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
     assert json.loads(session.read_text(encoding="utf-8")) == old_session
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/api/card-drop/login",
+            {"email": "user@example.com", "password": "password123"},
+        ),
+        (
+            "/api/card-drop/register",
+            {"email": "user@example.com", "password": "password123"},
+        ),
+    ],
+)
+def test_local_password_auth_requires_local_origin_and_sync_ticket(
+    client, monkeypatch, path, payload,
+):
+    class _UnexpectedCloudClient:
+        async def __aenter__(self):
+            raise AssertionError("cloud auth must not run before local authorization")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(C.httpx, "AsyncClient", lambda *args, **kwargs: _UnexpectedCloudClient())
+    ticket = _issue_sync_ticket(client)
+
+    cross_site = client.post(
+        path,
+        headers={"Origin": "https://attacker.example"},
+        json={**payload, "sync_ticket": ticket},
+    )
+    assert cross_site.status_code == 403
+    assert cross_site.json() == {"detail": "origin_not_allowed"}
+    assert C._sync_ticket_is_valid(ticket)
+
+    missing_ticket = client.post(path, json=payload)
+    assert missing_ticket.status_code == 403
+    assert missing_ticket.json() == {"detail": "invalid_sync_ticket"}
+    assert C._sync_ticket_is_valid(ticket)
 
 
 @pytest.mark.asyncio

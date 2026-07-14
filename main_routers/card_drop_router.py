@@ -237,6 +237,17 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
     )
 
 
+def _require_local_mutation_ticket(request: Request, payload: dict | None) -> None:
+    """Authorize a local state mutation and atomically consume its ticket."""
+    if not _local_mutation_origin_allowed(request):
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
+    sync_ticket = (payload or {}).get("sync_ticket") or (payload or {}).get(
+        "syncTicket"
+    )
+    if not _consume_sync_ticket(sync_ticket):
+        raise HTTPException(status_code=403, detail="invalid_sync_ticket")
+
+
 def _local_request_source_allowed(request: Request) -> bool:
     """Allow same-origin local browser calls and non-browser native clients only."""
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
@@ -1120,7 +1131,8 @@ async def forge_facts_endpoint(
 
 
 @router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")
-async def login_endpoint(payload: dict = Body(...)):
+async def login_endpoint(request: Request, payload: dict = Body(...)):
+    _require_local_mutation_ticket(request, payload)
     email = (payload.get("email") or "").strip()
     password = payload.get("password") or ""
     if not email or not password:
@@ -1136,7 +1148,8 @@ async def login_endpoint(payload: dict = Body(...)):
 
 
 @router.post("/register", summary="邮箱密码注册社区账号（存 JWT + 迁移游客卡）")
-async def register_endpoint(payload: dict = Body(...)):
+async def register_endpoint(request: Request, payload: dict = Body(...)):
+    _require_local_mutation_ticket(request, payload)
     email = (payload.get("email") or "").strip()
     password = payload.get("password") or ""
     display_name = (payload.get("display_name") or "").strip() or None
@@ -1157,11 +1170,7 @@ async def register_endpoint(payload: dict = Body(...)):
 
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
-    if not _local_mutation_origin_allowed(request):
-        raise HTTPException(status_code=403, detail="origin_not_allowed")
-    sync_ticket = (payload or {}).get("sync_ticket") or (payload or {}).get("syncTicket")
-    if not _consume_sync_ticket(sync_ticket):
-        raise HTTPException(status_code=403, detail="invalid_sync_ticket")
+    _require_local_mutation_ticket(request, payload)
     if not _clear_auth():
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
