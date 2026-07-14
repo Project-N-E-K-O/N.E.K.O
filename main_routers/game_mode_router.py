@@ -55,6 +55,8 @@ async def broadcast_game_mode_event(payload: dict[str, Any]) -> int:
     for name in list(session_manager.keys()):
         try:
             core = session_manager.get(name)
+            if getattr(core, "game_mode_capable", True) is not True:
+                continue
             ws = getattr(core, "websocket", None)
             if ws is None or not hasattr(ws, "send_json"):
                 continue

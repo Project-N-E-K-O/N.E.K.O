@@ -31,6 +31,7 @@
         currentCycleId: null,
         cycleTriggerSource: null,
         deepSleeping: false,
+        deepSleepPausedManagers: [],
         returnBallMoved: false,
         restoreAnchor: null,
         modelLoadInvalidated: false,
@@ -493,6 +494,15 @@
         if (!clientState.deepSleeping) return;
         clientState.deepSleeping = false;
         try { document.body && document.body.classList.remove('neko-game-mode-deep-sleep'); } catch (_) {}
+        const pausedManagers = clientState.deepSleepPausedManagers.splice(0);
+        pausedManagers.forEach(function (manager) {
+            if (!manager || typeof manager.resumeRendering !== 'function') return;
+            try {
+                manager.resumeRendering();
+            } catch (error) {
+                console.warn('[GameModeBeta] resume rendering failed:', error);
+            }
+        });
         try {
             if (window.nekoActivitySignalClient && typeof window.nekoActivitySignalClient.start === 'function') {
                 window.nekoActivitySignalClient.start();
@@ -616,6 +626,7 @@
             return false;
         };
         clientState.deepSleeping = true;
+        clientState.deepSleepPausedManagers = [];
         success = runIdempotentStep('window-throttle-class', function () {
             document.body && document.body.classList.add('neko-game-mode-deep-sleep');
         }) && success;
@@ -629,9 +640,11 @@
         }
         [window.live2dManager, window.vrmManager, window.mmdManager].forEach(function (manager, index) {
             if (!manager || typeof manager.pauseRendering !== 'function') return;
-            success = runIdempotentStep('pause-rendering-' + index, function () {
+            const paused = runIdempotentStep('pause-rendering-' + index, function () {
                 manager.pauseRendering();
-            }) && success;
+            });
+            if (paused) clientState.deepSleepPausedManagers.push(manager);
+            success = paused && success;
         });
         if (window.nekoActivitySignalClient && typeof window.nekoActivitySignalClient.stop === 'function') {
             success = runIdempotentStep('activity-signal-stop', function () {
@@ -702,6 +715,7 @@
         } else if (payload.type === 'game_mode_deep_sleep') {
             void enterDeepSleep(payload);
         } else if (payload.type === 'game_mode_restore') {
+            if (payload.cycle_id !== clientState.currentCycleId) return;
             const targetIds = Array.isArray(payload.pet_instance_ids) ? payload.pet_instance_ids : [];
             const host = clientState.hostContract;
             if (targetIds.length && host && !targetIds.includes(host.petInstanceId)) return;

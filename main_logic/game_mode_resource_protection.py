@@ -410,6 +410,20 @@ class GameModeResourceProtector:
             self._windows.pop(window_id, None)
             removed_ack = self._window_acks.pop(window_id, None)
             self._deep_sleep_acks.pop(window_id, None)
+            if self._state.get("cycle_phase") == "switching":
+                expected = set(self._state.get("expected_window_ids") or [])
+                if window_id in expected:
+                    expected.discard(window_id)
+                    self._state["expected_window_ids"] = sorted(expected)
+                    self._state["expected_window_count"] = len(expected)
+                    self._refresh_ack_counts_locked()
+                    if not expected:
+                        await self._fail_switch_locked("targets-disconnected")
+                    elif expected.issubset(self._window_acks):
+                        if any(self._window_acks[item]["status"] == "failed" for item in expected):
+                            await self._fail_switch_locked("ack-failed")
+                        else:
+                            await self._finalize_switch_locked()
             if removed_ack and removed_ack.get("status") == "protected":
                 owned_count = sum(
                     1 for ack in self._window_acks.values() if ack.get("status") == "protected"
@@ -448,7 +462,9 @@ class GameModeResourceProtector:
                 owned = sum(1 for ack in self._window_acks.values() if ack.get("status") == "protected")
                 self._state["owned_window_count"] = owned
                 self._state["auto_switch_active"] = owned > 0
-                if normalized_status == "already_protected" and owned == 0:
+                if normalized_status == "failed" and owned == 0:
+                    await self._fail_switch_locked("late-join-failed")
+                elif normalized_status == "already_protected" and owned == 0:
                     self._state["pressure_state"] = "normal"
                     self._state["trigger_reason"] = None
                     self._state["last_event"] = {"type": "already_protected", "ts": self._time()}

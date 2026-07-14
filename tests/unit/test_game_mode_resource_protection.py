@@ -816,6 +816,38 @@ async def test_late_pet_does_not_extend_in_flight_switch_ack_set():
 
 
 @pytest.mark.asyncio
+async def test_unregistering_pending_pet_finalizes_remaining_successful_targets():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-ready")
+        await protector.register_window(pet_instance_id="pet-closing")
+        state = await protector.debug_trigger()
+        cycle_id = state["cycle_id"]
+        state = await protector.acknowledge_switch(
+            cycle_id=cycle_id,
+            pet_instance_id="pet-ready",
+            status="protected",
+        )
+        assert state["cycle_phase"] == "switching"
+
+        state = await protector.unregister_window("pet-closing")
+
+        assert state["cycle_phase"] == "protected"
+        assert state["owned_window_count"] == 1
+        assert state["auto_switch_active"] is True
+        assert any(event["type"] == "game_mode_switch_confirmed" for event in events)
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
 async def test_unregistering_protected_pet_releases_ack_ownership():
     async def broadcaster(_payload):
         return 1
@@ -1053,6 +1085,35 @@ async def test_late_already_protected_join_ends_hostless_protected_cycle():
         assert state["cycle_phase"] == "idle"
         assert state["auto_switch_active"] is False
         assert state["last_event"]["type"] == "already_protected"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_late_failed_join_ends_hostless_protected_cycle():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(broadcaster=broadcaster, time_fn=lambda: 1000.0)
+    await protector.set_enabled(True)
+    try:
+        state = await protector.debug_trigger()
+        registration = await protector.register_window(pet_instance_id="late-failed")
+        assert registration["cycle_phase"] == "protected"
+
+        state = await protector.acknowledge_switch(
+            cycle_id=state["cycle_id"],
+            pet_instance_id="late-failed",
+            status="failed",
+        )
+
+        assert state["cycle_phase"] == "idle"
+        assert state["auto_switch_active"] is False
+        assert state["last_event"]["type"] == "switch_failed"
+        assert state["last_event"]["reason"] == "late-join-failed"
     finally:
         await protector.set_enabled(False)
 
