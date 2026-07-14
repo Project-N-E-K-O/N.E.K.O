@@ -31,6 +31,8 @@ def test_list_persona_presets_returns_three_fixed_presets():
     assert presets[2]["profile"]["性格原型"] == "优雅全能管家"
     assert all(preset["profile"]["口癖"].startswith("不用固定") for preset in presets)
     assert "下不为例喵" not in repr(presets)
+    assert "普通请求不预设过错" in presets[1]["profile"]["隐藏设定"]
+    assert "先吐槽" not in presets[1]["profile"]["隐藏设定"]
 
 
 @pytest.mark.unit
