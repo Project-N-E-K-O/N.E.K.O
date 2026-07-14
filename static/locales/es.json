@@ -2582,6 +2582,8 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
+            "slopFilter": "Reducir clichés de IA",
+            "slopFilterTooltip": "Reescribe las frases repetitivas y tópicas del propio historial del modelo antes de devolvérselo, para que las respuestas no se vuelvan monótonas. Solo afecta a lo que ve el modelo; tu chat se muestra sin cambios.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",

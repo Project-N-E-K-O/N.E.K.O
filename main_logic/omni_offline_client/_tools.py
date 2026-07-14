@@ -31,6 +31,7 @@ from ._shared import (
 from ._genai_support import (
     _GenaiToolsUnsupported,
 )
+from ._lifecycle import _suspend_dialog_slop
 
 class _ToolingMixin:
     def set_tools(self, tool_definitions: Optional[List[ToolDefinition]]) -> None:
@@ -139,7 +140,8 @@ class _ToolingMixin:
                 )
             else:
                 try:
-                    result = await handler(tool_call)
+                    with _suspend_dialog_slop():
+                        result = await handler(tool_call)
                 except Exception as e:
                     logger.exception("OmniOfflineClient: on_tool_call '%s' raised", c.name)
                     result = ToolResult(

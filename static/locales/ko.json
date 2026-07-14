@@ -2582,6 +2582,8 @@
             "avatarReactionBubble": "표정 말풍선",
             "focusCognition": "집중 모드",
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
+            "slopFilter": "AI 상투어 줄이기",
+            "slopFilterTooltip": "모델의 이전 답변에 반복되는 상투적 표현을 맥락에 다시 넣기 전에 다양한 표현으로 바꿔 답변이 천편일률적이지 않게 합니다. 모델이 보는 내용에만 영향을 주며 표시되는 대화는 그대로입니다.",
             "autoCat": "자동 고양이 전환",
             "autoCatTooltip": "일정 시간 활동이 없으면 자동으로 새끼 고양이가 됩니다",
             "catAudio": "고양이 효과음",
