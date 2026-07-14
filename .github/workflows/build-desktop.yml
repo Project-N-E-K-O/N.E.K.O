@@ -1,6 +1,9 @@
 name: Build Desktop App (Cross-Platform)
 
 on:
+  push:
+    tags:
+      - 'v*'
   schedule:
     - cron: '0 0 * * *'   # Daily at 8 AM Beijing time (00:00 UTC)
   workflow_dispatch:
@@ -762,8 +765,18 @@ jobs:
             console.log('Set Linux deb maintainer');
           "
 
-      # --- Build Electron app ---
-      - name: Build Electron app
+      # Windows Portable is a ZIP containing the complete unpacked Electron
+      # directory. Building --dir gives the updater stable file boundaries.
+      - name: Build Electron app (Windows ZIP Portable directory)
+        if: runner.os == 'Windows'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js windows --dir --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Build Electron app (macOS/Linux)
+        if: runner.os != 'Windows'
         working-directory: electron-app
         run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
@@ -776,6 +789,43 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Download previous stable Portable manifest
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        working-directory: electron-app
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous-portable
+          PREVIOUS_URL="$(gh api repos/Project-N-E-K-O/N.E.K.O/releases/latest \
+            --jq '[.assets[] | select(.name | endswith("_win_manifest.json"))][0].browser_download_url // empty' \
+            2>/dev/null || true)"
+          if [[ -n "$PREVIOUS_URL" ]]; then
+            curl --fail --location --retry 3 "$PREVIOUS_URL" \
+              --output previous-portable/previous-win-manifest.json
+            echo "Downloaded previous stable Portable manifest"
+          else
+            echo "No previous Portable manifest found; this release will contain a full ZIP only"
+          fi
+
+      - name: Create Windows Portable full and differential update assets
+        if: runner.os == 'Windows'
+        working-directory: electron-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS_ARGS=()
+          if [[ -f previous-portable/previous-win-manifest.json ]]; then
+            PREVIOUS_ARGS=(--previous previous-portable/previous-win-manifest.json)
+          fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          node scripts/create-portable-update.js \
+            --dir dist/win-unpacked \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
 
       - name: List build output
         working-directory: electron-app/dist
@@ -797,6 +847,7 @@ jobs:
             electron-app/dist/*.tar.gz
             electron-app/dist/*.blockmap
             electron-app/dist/latest*.yml
+            electron-app/dist/portable-update/*
           if-no-files-found: warn
           retention-days: 14
 
@@ -804,7 +855,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
@@ -834,7 +885,7 @@ jobs:
           find artifacts/desktop-* -type f \( \
             -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
-            -o -name "latest*.yml" \
+            -o -name "latest*.yml" -o -name "*_win_manifest.json" \
           \) -exec cp {} release/ \; 2>/dev/null || true
 
           echo "=== Nightly release files ==="
@@ -887,3 +938,46 @@ jobs:
           Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           NOTES
           )"
+
+  # Stable tags publish the ZIP Portable update channel. If a release was
+  # created manually first, upload --clobber updates its assets in place.
+  publish-stable-portable:
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
+    needs: [version, build-electron]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows desktop artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-win-x64
+          path: artifacts/desktop-win-x64
+
+      - name: Collect Portable update assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts/desktop-win-x64 -type f \( \
+            -name "N.E.K.O_*_win.zip" -o \
+            -name "N.E.K.O_*_win_manifest.json" -o \
+            -name "N.E.K.O_*_win_delta.zip" \
+          \) -exec cp {} release/ \;
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_win.zip"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_win_manifest.json"
+          ls -lah release/
+
+      - name: Create or update stable GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* \
+              --title "N.E.K.O ${{ needs.version.outputs.version }}" \
+              --target "${GITHUB_SHA}" \
+              --generate-notes
+          fi
