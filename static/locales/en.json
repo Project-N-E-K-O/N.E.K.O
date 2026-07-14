@@ -3876,6 +3876,7 @@
                 "waiting": "Waiting for scan"
             },
             "successAlert": "QR login successful! Cookies have been filled in automatically, please click Save Configuration",
+            "localSaveFailed": "QR login succeeded, but automatic local saving failed. Credentials have been filled in; please click Save Configuration to save them manually.",
             "extractFailed": "QR login succeeded but failed to extract fields automatically. Please check manually."
         }
     },

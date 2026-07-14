@@ -3876,6 +3876,7 @@
                 "waiting": "Esperando escaneo"
             },
             "successAlert": "¡Inicio de sesión QR exitoso! Las cookies se han completado automáticamente, haga clic en Guardar configuración",
+            "localSaveFailed": "El inicio de sesión QR se realizó correctamente, pero falló el guardado local automático. Las credenciales se han completado; haga clic en Guardar configuración para guardarlas manualmente.",
             "extractFailed": "El inicio de sesión QR se realizó correctamente pero no se pudieron extraer los campos automáticamente. Por favor verifíquelo manualmente."
         }
     },

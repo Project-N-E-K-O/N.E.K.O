@@ -3876,6 +3876,7 @@
                 "waiting": "等待掃碼"
             },
             "successAlert": "掃碼登入成功！Cookie 已自動填入，請點擊儲存設定",
+            "localSaveFailed": "掃碼登入成功，但自動儲存失敗。憑證已填入，請手動點擊儲存設定。",
             "extractFailed": "掃碼成功但未能自動擷取到欄位，請手動檢查。"
         }
     },

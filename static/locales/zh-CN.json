@@ -3876,6 +3876,7 @@
                 "waiting": "等待扫码"
             },
             "successAlert": "扫码登录成功！Cookie 已自动填入，请点击保存配置",
+            "localSaveFailed": "扫码登录成功，但自动保存失败。凭证已填入，请手动点击保存配置。",
             "extractFailed": "扫码成功但未能自动提取到字段，请手动检查。"
         }
     },

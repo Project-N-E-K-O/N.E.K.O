@@ -3876,6 +3876,7 @@
                 "waiting": "Aguardando digitalização"
             },
             "successAlert": "Login QR bem-sucedido! Os cookies foram preenchidos automaticamente, clique em Salvar configuração",
+            "localSaveFailed": "O login por QR foi bem-sucedido, mas o salvamento local automático falhou. As credenciais foram preenchidas; clique em Salvar configuração para salvá-las manualmente.",
             "extractFailed": "O login do QR foi bem-sucedido, mas não conseguiu extrair os campos automaticamente. Verifique manualmente."
         }
     },

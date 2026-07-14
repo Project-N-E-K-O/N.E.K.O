@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -22,6 +23,14 @@ def test_xhh_credential_tab_is_present():
 
     assert "switchTab('xhh', this)" in template
     assert 'data-i18n="cookiesLogin.xhh"' in template
+    assert '/static/js/cookies_login.js?v=2.3' in template
+
+
+def test_xhh_local_save_failure_message_is_localized():
+    for locale_path in Path("static/locales").glob("*.json"):
+        locale = json.loads(locale_path.read_text(encoding="utf-8"))
+        message = locale["cookiesLogin"]["qrLogin"]["localSaveFailed"]
+        assert isinstance(message, str) and message.strip(), locale_path
 
 
 def _response_with_cookies(cookies: dict[str, str]) -> httpx.Response:
