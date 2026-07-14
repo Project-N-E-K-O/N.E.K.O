@@ -657,6 +657,8 @@ from .web_app import (  # noqa: F401
 
 _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
+_facts_sync_worker_task: asyncio.Task = None
+_card_cache_worker_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
@@ -683,6 +685,27 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(
             f"Steam Auto-Cloud startup import could not sync memory_server: {e}"
         )
+
+
+def _start_neko_servers_integration_workers() -> None:
+    """Start storage-backed integration workers after the startup barrier clears."""
+    global _facts_sync_worker_task, _card_cache_worker_task
+
+    if _facts_sync_worker_task is None or _facts_sync_worker_task.done():
+        try:
+            from main_logic.facts_sync import start_facts_sync_worker
+
+            _facts_sync_worker_task = asyncio.create_task(start_facts_sync_worker())
+        except Exception as exc:
+            logger.debug("[facts_sync] start worker failed: %s", exc)
+
+    if _card_cache_worker_task is None or _card_cache_worker_task.done():
+        try:
+            from main_logic.card_cache import start_card_cache_puller
+
+            _card_cache_worker_task = asyncio.create_task(start_card_cache_puller())
+        except Exception as exc:
+            logger.debug("[card_cache] start puller failed: %s", exc)
 
 
 async def _cancel_task_if_running(
@@ -966,6 +989,7 @@ async def release_storage_startup_barrier(
             )
         raise
     _disable_main_storage_limited_mode()
+    _start_neko_servers_integration_workers()
     return {
         "ok": True,
         "initialized": bool(initialized),
@@ -1040,22 +1064,6 @@ async def on_startup():
         except Exception as _e:
             logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
-        # Optional N.E.K.O.Servers integration workers. Each worker has its own
-        # environment gate and exits immediately when the feature is disabled.
-        try:
-            from main_logic.facts_sync import start_facts_sync_worker
-
-            asyncio.create_task(start_facts_sync_worker())
-        except Exception as _e:
-            logger.debug(f"[facts_sync] start worker failed: {_e}")
-
-        try:
-            from main_logic.card_cache import start_card_cache_puller
-
-            asyncio.create_task(start_card_cache_puller())
-        except Exception as _e:
-            logger.debug(f"[card_cache] start puller failed: {_e}")
-
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
             _enable_main_storage_limited_mode(blocking_reason)
@@ -1066,6 +1074,7 @@ async def on_startup():
             return
 
         await _ensure_main_server_runtime_initialized(reason="startup")
+        _start_neko_servers_integration_workers()
 
 
 @app.on_event("shutdown")
