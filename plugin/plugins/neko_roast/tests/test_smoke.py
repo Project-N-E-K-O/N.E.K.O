@@ -93,7 +93,7 @@ def test_hosted_ui_compat_entry_keeps_full_live_controls():
         assert marker in source
 
 
-def test_dry_run_control_is_settings_only_and_defaults_off():
+def test_dry_run_defaults_off_and_is_hidden_from_normal_panel():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
@@ -103,9 +103,35 @@ def test_dry_run_control_is_settings_only_and_defaults_off():
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
-        assert source.count('label={t("panel.fields.dryRun")}') == 1
+        assert 'label={t("panel.fields.dryRun")}' not in source
         assert "config.dry_run === true" in source
         assert "config.dry_run !== false" not in source
+
+
+def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert '!/^\\d+$/.test(roomRef)' not in source
+        assert 't("panel.console.roomNumeric")' in source
+        assert 'const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)' in source
+        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection' in source
+        assert 'loginLoggedIn || allowLimitedConnection' in source
+        assert 'onClick={enableLimitedConnection}' in source
+
+
+def test_first_use_guide_is_local_resettable_and_mirrored() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert 'const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v1"' in source
+        assert "window.localStorage.getItem(ONBOARDING_STORAGE_KEY)" in source
+        assert "window.localStorage.setItem(ONBOARDING_STORAGE_KEY, \"done\")" in source
+        assert "function resetOnboarding()" in source
+        assert 'onClick={resetOnboarding}' in source
+        assert 'open={onboardingOpen}' in source
 
 
 def test_live_room_entries_are_platform_neutral():

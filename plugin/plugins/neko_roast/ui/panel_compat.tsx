@@ -929,6 +929,8 @@ function profileTone(group: string, key: string): "success" | "warning" | "dange
 }
 
 /* bundled source: ui/panel.tsx */
+const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v1"
+
 export default function NekoRoastPanel(props: CompatPluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}
@@ -955,9 +957,22 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "diagnostics" | "">("")
   const [connectPending, setConnectPending] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
+  const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
+  const [onboardingStep, setOnboardingStep] = useState(0)
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(ONBOARDING_STORAGE_KEY) !== "done") {
+        setOnboardingOpen(true)
+      }
+    } catch {
+      /* The panel remains usable when the host blocks browser storage. */
+    }
+  }, [])
 
   useEffect(() => {
     configForm.setValues({
@@ -1086,6 +1101,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
 
   function switchLivePlatform(next: string) {
     if (next === livePlatform) return
+    setAllowLimitedConnection(false)
     configForm.setField("live_platform", next)
     configForm.setField("live_room_ref", "")
     configForm.setField("live_room_id", "")
@@ -1121,10 +1137,6 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
     if (!roomRef) {
       toast.error(t("panel.messages.roomRequired"))
-      return
-    }
-    if (livePlatform === "bilibili" && !/^\d+$/.test(roomRef)) {
-      toast.error(t("panel.console.roomNumeric"))
       return
     }
     const lookup = await lookupLiveRoom()
@@ -1174,6 +1186,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       setLoginState(result)
       if (result.status === "qrcode_ready") toast.info(t("panel.auth.scanHint"))
       else if (result.logged_in || result.status === "already_logged_in" || result.status === "done") {
+        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loggedIn"))
         await props.api.refresh()
       }
@@ -1187,6 +1200,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       const result = unwrapActionResult(await props.api.call("bili_login_check"))
       setLoginState(result)
       if (result.status === "done" || result.logged_in) {
+        setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loginDone"))
         await props.api.refresh()
       } else if (result.message) {
@@ -1201,6 +1215,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     try {
       const result = unwrapActionResult(await props.api.call("bili_logout"))
       setLoginState(result)
+      setAllowLimitedConnection(false)
       toast.success(t("panel.auth.logoutDone"))
       await props.api.refresh()
     } catch (err) {
@@ -1386,6 +1401,32 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     }
   }
 
+  function enableLimitedConnection() {
+    setAllowLimitedConnection(true)
+    setConsoleDialog("")
+    toast.warning(t("panel.console.limitedEnabled"))
+  }
+
+  function completeOnboarding() {
+    try {
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "done")
+    } catch {
+      /* Completion still closes the guide when browser storage is unavailable. */
+    }
+    setOnboardingStep(0)
+    setOnboardingOpen(false)
+  }
+
+  function resetOnboarding() {
+    try {
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+    } catch {
+      /* Opening the guide does not depend on browser storage. */
+    }
+    setOnboardingStep(0)
+    setOnboardingOpen(true)
+  }
+
   const resultCounts = results.reduce(
     (acc, item) => {
       const status = String(item.status || "")
@@ -1477,8 +1518,9 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   )
   const consoleState = connectPending ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : loginLoggedIn
-  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn
-  const canStart = !!roomInputRef && (livePlatform === "bilibili" || douyinLoggedIn) && !connectPending
+  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection
+  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection
+  const canStart = !!roomInputRef && (livePlatform === "bilibili" ? (loginLoggedIn || allowLimitedConnection) : douyinLoggedIn) && !connectPending
   const accountLabel = accountReady
     ? (livePlatform === "douyin" ? (douyinNickname || douyinUid || t("panel.douyinAuth.cookieReady")) : (loginName || loginUid || t("panel.auth.loggedIn")))
     : (limitedConnection ? t("panel.console.limitedConnection") : t("panel.auth.loggedOut"))
@@ -1528,8 +1570,11 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
                     ? t("panel.messages.roomRequired")
                     : livePlatform === "douyin" && !douyinLoggedIn
                       ? t("panel.douyinAuth.cookieMissing")
+                      : loginRequired
+                        ? t("panel.console.loginRequired")
                       : t("panel.console.readyHint")}
           </Text>
+          {loginRequired && !started ? <Alert tone="info">{t("panel.console.loginRequiredHint")}</Alert> : null}
           {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
           {started ? (
             <Grid cols={2}>
@@ -1585,7 +1630,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
               <Text>{t("panel.douyinAuth.manualHint")}</Text>
             </Stack>
           ) : (
-            <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
+            <Stack>
+              <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
+              {!loginLoggedIn ? <Stack gap={8}><Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert><Button tone="warning" onClick={enableLimitedConnection}>{t("panel.console.useLimitedConnection")}</Button></Stack> : null}
+            </Stack>
           )}
         </Stack>
       </Modal>
@@ -1926,10 +1974,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       <Card title={t("panel.control.title")}>
         <Stack>
           {/* live_enabled is owned by the interaction module card; settings keep platform-level controls only. */}
-          <Grid cols={2}>
-            <ToggleSwitch checked={!!configForm.values.dry_run} label={t("panel.fields.dryRun")} onChange={(value) => configForm.setField("dry_run", value)} />
-            <ToggleSwitch checked={!!configForm.values.safety_auto_stop_enabled} label={t("panel.fields.autoStop")} onChange={(value) => configForm.setField("safety_auto_stop_enabled", value)} />
-          </Grid>
+          <ToggleSwitch checked={!!configForm.values.safety_auto_stop_enabled} label={t("panel.fields.autoStop")} onChange={(value) => configForm.setField("safety_auto_stop_enabled", value)} />
           <Grid cols={2}>
             <Field label={t("panel.fields.rateLimit")}>
               <Input value={configForm.values.rate_limit_seconds} onChange={(value) => configForm.setField("rate_limit_seconds", value)} />
@@ -1977,6 +2022,12 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         </Stack>
       </Card>
       <ModuleOverviewCard modules={modules} t={t} />
+      <Card title={t("panel.onboarding.settingsTitle")}>
+        <Stack gap={8}>
+          <Text>{t("panel.onboarding.resetHint")}</Text>
+          <Button tone="default" onClick={resetOnboarding}>{t("panel.onboarding.reset")}</Button>
+        </Stack>
+      </Card>
       <Card title={t("panel.dev.switch.title")}>
         <ToggleSwitch checked={!!configForm.values.developer_tools_enabled} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
       </Card>
@@ -2148,9 +2199,28 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     tabItems.push({ id: "dev", label: t("panel.tabs.dev"), content: developerSandbox })
   }
 
+  const onboardingSteps = [
+    { title: t("panel.onboarding.welcomeTitle"), body: t("panel.onboarding.welcomeBody") },
+    { title: t("panel.onboarding.accountTitle"), body: t("panel.onboarding.accountBody") },
+    { title: t("panel.onboarding.roomTitle"), body: t("panel.onboarding.roomBody") },
+    { title: t("panel.onboarding.liveTitle"), body: t("panel.onboarding.liveBody") },
+  ]
+  const currentOnboarding = onboardingSteps[Math.min(onboardingStep, onboardingSteps.length - 1)]
+
   return (
     <Page title={t("panel.title")} subtitle={t("panel.subtitle")}>
       {!safeState.store_enabled ? <Alert tone="warning">{t("panel.store.disabled")}</Alert> : null}
+      <Modal
+        open={onboardingOpen}
+        title={t("panel.onboarding.title")}
+        onClose={() => { setOnboardingOpen(false) }}
+        footer={<Grid cols={3}><Button tone="default" onClick={() => { setOnboardingOpen(false) }}>{t("panel.actions.cancel")}</Button><Button tone="default" disabled={onboardingStep === 0} onClick={() => { setOnboardingStep(Math.max(0, onboardingStep - 1)) }}>{t("panel.onboarding.previous")}</Button>{onboardingStep < onboardingSteps.length - 1 ? <Button tone="info" onClick={() => { setOnboardingStep(onboardingStep + 1) }}>{t("panel.onboarding.next")}</Button> : <Button tone="success" onClick={completeOnboarding}>{t("panel.onboarding.finish")}</Button>}</Grid>}
+      >
+        <Stack>
+          <StatusBadge tone="info" label={`${onboardingStep + 1}/${onboardingSteps.length}`} />
+          <Card title={currentOnboarding.title}><Text>{currentOnboarding.body}</Text></Card>
+        </Stack>
+      </Modal>
       <Toolbar>
         <ToolbarGroup>
           <StatusBadge
