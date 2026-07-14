@@ -132,7 +132,14 @@ function createHarness(options = {}) {
 
   let fakeNow = 0;
   const contextDate = options.expireReturnWaitImmediately
-    ? { now: () => { fakeNow += 5000; return fakeNow; } }
+    ? new Proxy(Date, {
+        get(target, prop) {
+          if (prop === 'now') {
+            return () => { fakeNow += 5000; return fakeNow; };
+          }
+          return Reflect.get(target, prop);
+        },
+      })
     : Date;
 
   async function fetch(url, init = {}) {
