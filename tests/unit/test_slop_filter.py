@@ -9,7 +9,7 @@ model stops imitating its own stock phrases. Two hard invariants this file pins:
 2. **assistant-only** — system instructions and the user's own words pass through
    verbatim; only the cat's past turns are rewritten.
 
-Plus: the third eligible match is the first rewrite, replacement choice is stable
+Plus: the second eligible match is the first rewrite, replacement choice is stable
 across calls and history appends, protected technical regions are skipped,
 malformed rules can never break a turn, ``dry_run`` is side-effect-free, and all
 three provider paths use the same engine.
@@ -179,31 +179,25 @@ def test_no_assistant_turn_returns_same_list():
     assert sf.apply_slop_reduction(msgs, "zz", rules=_RULES) is msgs
 
 
-def test_default_threshold_keeps_first_two_and_rewrites_third():
+def test_default_threshold_keeps_first_and_rewrites_second():
     msgs = [
         _assistant_dict("他的心脏疯狂跳动"),
         _assistant_dict("她的心脏疯狂跳动"),
-        _assistant_dict("他的心脏疯狂跳动"),
     ]
 
     out = sf.apply_slop_reduction(msgs, "zz", rules=[_HEART])
 
     assert out[0]["content"] == "他的心脏疯狂跳动"
-    assert out[1]["content"] == "她的心脏疯狂跳动"
-    assert out[2]["content"] == "他的胸口闷闷地一沉"
+    assert out[1]["content"] == "她的胸口闷闷地一沉"
 
 
 def test_below_threshold_is_a_true_noop():
-    msgs = [
-        _assistant_dict("他的心脏疯狂跳动"),
-        _assistant_dict("她的心脏疯狂跳动"),
-    ]
+    msgs = [_assistant_dict("他的心脏疯狂跳动")]
 
     out = sf.apply_slop_reduction(msgs, "zz", rules=[_HEART])
 
     assert out is msgs
     assert out[0] is msgs[0]
-    assert out[1] is msgs[1]
 
 
 def test_multiple_hits_in_one_message_count_in_text_order():
@@ -211,7 +205,7 @@ def test_multiple_hits_in_one_message_count_in_text_order():
 
     out = sf.apply_slop_reduction([_assistant_dict("X X X X")], "zz", rules=[rule])
 
-    assert out[0]["content"] == "X X R R"
+    assert out[0]["content"] == "X R R R"
 
 
 def test_replacement_pool_is_fully_deterministic_across_calls():
@@ -279,7 +273,7 @@ def test_code_inline_code_and_urls_are_not_counted_or_rewritten():
     out = sf.apply_slop_reduction([_assistant_dict(text)], "zz", rules=[rule])
 
     assert out[0]["content"] == (
-        "slop `slop` https://example.test/slop\n```text\nslop\n```\nslop fixed fixed"
+        "slop `slop` https://example.test/slop\n```text\nslop\n```\nfixed fixed fixed"
     )
 
 
@@ -387,7 +381,7 @@ def test_params_applies_slop_only_when_contextvar_armed(monkeypatch):
     assert p_on["messages"][0]["content"] == "你是只猫娘"
     assert p_on["messages"][1]["content"] == "他的心脏疯狂跳动"
     assert p_on["messages"][2]["content"] == "继续"
-    assert p_on["messages"][3]["content"] == "她的心脏疯狂跳动"
+    assert p_on["messages"][3]["content"] == "她的胸口闷闷地一沉"
     assert p_on["messages"][5]["content"] == "他的胸口闷闷地一沉"
 
 
@@ -434,7 +428,7 @@ def test_anthropic_payload_uses_same_repeat_aware_engine(monkeypatch):
     ]
     assert assistant_texts == [
         "他的心脏疯狂跳动",
-        "她的心脏疯狂跳动",
+        "她的胸口闷闷地一沉",
         "他的胸口闷闷地一沉",
     ]
 
@@ -461,7 +455,7 @@ def test_genai_path_uses_same_repeat_aware_engine(monkeypatch):
         reset_dialog_slop_lang(token)
 
     assert out[1].content == "他的心脏疯狂跳动"
-    assert out[3].content == "她的心脏疯狂跳动"
+    assert out[3].content == "她的胸口闷闷地一沉"
     assert out[5].content == "他的胸口闷闷地一沉"
 
 
@@ -478,7 +472,7 @@ def test_all_static_rules_are_valid():
     assert isinstance(rules_by_lang, dict) and rules_by_lang
     assert set(rules_by_lang) == {"zh", "en", "ja", "ko", "ru", "es", "pt"}
     assert prompts_slop.SLOP_RULESET_VERSION >= 1
-    assert prompts_slop.SLOP_REPEAT_THRESHOLD == 3
+    assert prompts_slop.SLOP_REPEAT_THRESHOLD == 2
 
     seen_ids = set()
     cjk_langs = {"zh", "ja"}

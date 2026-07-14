@@ -45,10 +45,10 @@ import re
 # should intentionally re-key deterministic prompt-side replacements.
 SLOP_RULESET_VERSION = 1
 
-# The third eligible occurrence of a rule is the first one rewritten. This is
+# The second eligible occurrence of a rule is the first one rewritten. This is
 # deliberately an engine constant, not a user setting: the existing Natural
 # Speech switch remains the only product control.
-SLOP_REPEAT_THRESHOLD = 3
+SLOP_REPEAT_THRESHOLD = 2
 
 
 SLOP_RULES: dict[str, list[dict]] = {

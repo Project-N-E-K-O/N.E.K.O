@@ -154,7 +154,7 @@ def _get_ruleset_config() -> tuple[int, int]:
     except Exception:
         # Keep prompt construction available even if a partially-upgraded rule
         # module is imported during development.
-        return 1, 3
+        return 1, 2
 
 
 # ────────────────────────────────────────────────────────────────
@@ -520,7 +520,7 @@ def apply_slop_reduction(
         rules: override rule set (defaults to ``get_rules_for_language(lang)``).
         ruleset_version: stable version mixed into replacement selection.
         repeat_threshold: first occurrence ordinal eligible for replacement;
-            defaults to the built-in value (3) and is not a user setting.
+            defaults to the built-in value (2) and is not a user setting.
         dry_run: count + log what *would* change but return ``messages`` as-is.
 
     Returns ``messages`` unchanged (same object) when there is nothing to do —
