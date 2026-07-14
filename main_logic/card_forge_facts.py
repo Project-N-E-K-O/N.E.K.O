@@ -530,9 +530,9 @@ async def build_forge_facts_payload(
         and character != resolved_character
         and not allow_override
     )
-    runtime_hint_used = bool(
-        runtime_character_hint and runtime_character_hint == resolved_character
-    )
+    if runtime_hint and runtime_hint != resolved_character:
+        return _empty_payload(character, limit)
+    runtime_hint_used = bool(runtime_hint and runtime_hint == resolved_character)
 
     url_template = os.environ.get("NEKO_FORGE_FACTS_URL", "").strip()
     if url_template:

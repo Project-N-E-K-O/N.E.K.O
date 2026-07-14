@@ -105,3 +105,38 @@ def test_steam_login_url_carries_code_challenge(pending_path):
     data = json.loads(pending_path.read_text(encoding="utf-8"))
     expected = _challenge_for(data["code_verifier"])
     assert f"code_challenge={expected}" in url
+
+
+@pytest.mark.unit
+def test_steam_login_rejects_cross_site_before_replacing_pending(pending_path):
+    original = C._mark_steam_pending()
+    assert original is not None
+    original_data = pending_path.read_text(encoding="utf-8")
+    app = FastAPI()
+    app.include_router(C.router)
+    client = TestClient(app, base_url="http://localhost:48911")
+
+    evil_origin = client.get(
+        "/api/card-drop/steam-login",
+        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+    )
+    blind_navigation = client.get(
+        "/api/card-drop/steam-login",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert evil_origin.status_code == 403
+    assert evil_origin.json() == {"detail": "origin_not_allowed"}
+    assert blind_navigation.status_code == 403
+    assert blind_navigation.json() == {"detail": "origin_not_allowed"}
+    assert pending_path.read_text(encoding="utf-8") == original_data
+
+    same_origin = client.get(
+        "/api/card-drop/steam-login",
+        headers={
+            "Origin": "http://localhost:48911",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    )
+    assert same_origin.status_code == 200
+    assert pending_path.read_text(encoding="utf-8") != original_data

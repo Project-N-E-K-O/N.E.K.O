@@ -237,7 +237,7 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
     )
 
 
-def _sync_ticket_request_allowed(request: Request) -> bool:
+def _local_request_source_allowed(request: Request) -> bool:
     """Allow same-origin local browser calls and non-browser native clients only."""
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
@@ -896,7 +896,7 @@ async def auth_status_endpoint():
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
 async def sync_ticket_endpoint(request: Request):
     """Issue a short-lived ticket readable only by the local NEKO page."""
-    if not _sync_ticket_request_allowed(request):
+    if not _local_request_source_allowed(request):
         return JSONResponse(
             {"detail": "origin_not_allowed"},
             status_code=403,
@@ -1194,6 +1194,8 @@ def _steam_callback_html(title: str, sub: str, *, status_code: int = 200) -> HTM
 
 @router.get("/steam-login", summary="返回 Steam 登录授权 URL（前端用浏览器打开）")
 async def steam_login_endpoint(request: Request):
+    if not _local_request_source_allowed(request):
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
     base = _social_base_url()
     callback = _neko_steam_callback_url(request)
     pending = _mark_steam_pending()

@@ -347,13 +347,50 @@ async def test_shared_facts_selector_filters_private_and_redacted_memory(
 
     monkeypatch.setattr("main_logic.card_forge_facts.resolve_active_neko_context", fake_context)
     payload = await build_forge_facts_payload(
-        runtime_character_hint="Lanlan",
+        runtime_character_hint=" Lanlan ",
         min_importance=0,
         limit=5,
     )
 
     assert [fact["id"] for fact in payload["facts"]] == ["public"]
     assert payload["excludedCount"] == 2
+    assert payload["runtimeCharacterHintUsed"] is True
+
+
+@pytest.mark.asyncio
+async def test_shared_facts_selector_rejects_mismatched_runtime_character(
+    tmp_path, monkeypatch
+):
+    async def fake_context(*_args, **_kwargs):
+        return ActiveNekoContext(
+            master_name="Master",
+            lanlan_name="Lanlan",
+            memory_dir=tmp_path,
+            facts_path=tmp_path / "Lanlan" / "facts.json",
+            source="test",
+        )
+
+    def unexpected_facts_read(_path):
+        raise AssertionError("mismatched runtime character must fail before reading facts")
+
+    async def unexpected_remote_fetch(_url):
+        raise AssertionError("mismatched runtime character must fail before fetching facts")
+
+    monkeypatch.setattr("main_logic.card_forge_facts.resolve_active_neko_context", fake_context)
+    monkeypatch.setattr("main_logic.card_forge_facts._load_facts_json", unexpected_facts_read)
+    monkeypatch.setattr("main_logic.card_forge_facts._fetch_facts_from_url", unexpected_remote_fetch)
+
+    payload = await build_forge_facts_payload(
+        runtime_character_hint="Other",
+        min_importance=0,
+        limit=5,
+    )
+
+    assert payload["character"] == ""
+    assert payload["facts"] == []
+    assert payload["runtimeCharacterHintUsed"] is False
+    assert payload["fallbackReason"] == "runtime_character_hint_missing"
+    assert payload["error"] == "active_neko_runtime_not_linked"
 
 
 @pytest.fixture
