@@ -1,7 +1,13 @@
 import json
 import time
 
-from main_logic.topic.signals import TopicSignalStore
+from main_logic.topic.signals import TopicSignalStore, TopicTurnSignal
+
+
+def test_topic_turn_signal_uses_slots_for_the_bounded_rolling_window():
+    signal = TopicTurnSignal(actor="user", text="hello", timestamp=1.0)
+
+    assert not hasattr(signal, "__dict__")
 
 
 def test_topic_signal_store_keeps_filler_chat_below_ready_even_after_many_turns():
