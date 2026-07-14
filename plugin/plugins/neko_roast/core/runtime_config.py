@@ -90,7 +90,16 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
             runtime._accepting_live_events = False
         activate_config(runtime, candidate)
         runtime._config_revision += 1
-        if "live_enabled" in clean:
+        if {
+            "live_enabled",
+            "avatar_roast_enabled",
+            "avatar_analysis_enabled",
+            "danmaku_response_enabled",
+            "live_support_events_enabled",
+            "warmup_hosting_enabled",
+            "idle_hosting_enabled",
+            "active_engagement_enabled",
+        } & set(clean):
             await runtime.sync_live_instructions(force=True)
         if developer_mode_changed:
             await runtime.sync_developer_mode(announce=False, force=True)

@@ -293,6 +293,25 @@ def test_roast_config_parses_activity_level_with_standard_default():
     assert RoastConfig.from_mapping({"activity_level": "noisy"}).activity_level == "standard"
 
 
+def test_roast_config_module_controls_default_on_and_parse_explicit_false():
+    defaults = RoastConfig.from_mapping({})
+    keys = (
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+    )
+
+    assert all(getattr(defaults, key) is True for key in keys)
+
+    disabled = RoastConfig.from_mapping({key: False for key in keys})
+    assert all(getattr(disabled, key) is False for key in keys)
+    assert all(disabled.to_public_dict()[key] is False for key in keys)
+
+
 def test_roast_config_keeps_bilibili_room_id_and_room_ref_compatible():
     config = RoastConfig.from_mapping(
         {"live_platform": "bili", "live_room_ref": "https://live.bilibili.com/12345"}

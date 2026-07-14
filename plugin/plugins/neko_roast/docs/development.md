@@ -1011,7 +1011,7 @@ Hosted UI manifest 入口位于 `ui/panel_compat.tsx`，这是由模块化源码
 - `⚙设置 settings`：平台参数。「节奏与安全」卡（dry_run / 自动急停 / 冷却秒数 / 队列上限 + 保存设置 / 清空队列）+ **「档案存储」卡**（当前只读展示插件默认目录；自定义入口暂时屏蔽，见「数据边界」）+ 高级状态（队列 / 安全门 / 最近 audit）+ 模块总览表 + 开发者模式开关。
 - `开发者沙盒 dev`：仅开发者模式开启时出现。UID/URL 调试、只查询资料、模拟弹幕、请求结果、独立的最近沙盒记录和清空沙盒记录。
 
-**「一张嘴」切分**：功能级参数（开关 / 强度 / 去重…）跟功能走、进「直播间互动」功能卡；平台级参数（dry_run / 节奏 / 队列 / 急停 / 模式）留「设置」。`live_enabled`（开启弹幕锐评）是功能级开关，**单一真相源 = 弹幕锐评卡的绿色卡头开关**（设置页不再重复）。
+**「一张嘴」切分**：功能级参数（开关 / 强度 / 去重…）跟功能走、进「直播间互动」功能卡；平台级参数（dry_run / 节奏 / 队列 / 急停 / 模式）留「设置」。`live_enabled` 是直播监听与输出总闸，单一真相源为控制台底部的开始/停止直播动作，不再伪装成首次锐评模块开关。互动页公开七个持久化功能开关：`avatar_roast_enabled`、`avatar_analysis_enabled`、`danmaku_response_enabled`、`live_support_events_enabled`、`warmup_hosting_enabled`、`idle_hosting_enabled`、`active_engagement_enabled`；默认均开启以保持既有行为。关闭后必须在对应 runtime / pipeline 入口 fail-closed，其中头像分析关闭时不得下载头像字节，三类自动主持关闭时手动和自动触发都不得进入 pipeline。
 
 新增 UI 文案必须同步 8 个 locale 文件。
 
@@ -1036,7 +1036,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-07-13：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1247 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-07-14：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1257 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

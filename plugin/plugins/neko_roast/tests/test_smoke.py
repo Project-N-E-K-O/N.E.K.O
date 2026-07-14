@@ -224,6 +224,46 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         assert 'configForm.values.queue_limit' in settings_source
 
 
+def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
+    root = Path(__file__).resolve().parents[1]
+    required_keys = {
+        "panel.interaction.details",
+        "panel.interaction.group.audience",
+        "panel.interaction.group.audienceHint",
+        "panel.interaction.group.hosting",
+        "panel.interaction.group.hostingHint",
+        "panel.interaction.module.avatarRoast.avatarAnalysisHint",
+        "panel.interaction.module.avatarRoast.disabledHint",
+        "panel.interaction.module.danmakuResponse.disabledHint",
+        "panel.interaction.module.liveSupportEvents.disabledHint",
+        "panel.interaction.module.warmupHosting.disabledHint",
+        "panel.interaction.module.idleHosting.disabledHint",
+        "panel.interaction.module.activeEngagement.disabledHint",
+    }
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        interaction_source = source.split("const currentDecisionCard = (", 1)[1].split(
+            "const viewerStore =", 1
+        )[0]
+
+        assert 'const [interactionDialog, setInteractionDialog]' in source
+        assert 'open={!!interactionDialog}' in interaction_source
+        assert interaction_source.count('renderInteractionDetailsButton("') == 6
+        assert 'minHeight: "230px"' in source
+        assert 'minHeight: "52px"' in source
+        assert 'visibility: enabled ? "hidden" : "visible"' in source
+        assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
+            't("panel.interaction.group.audience")'
+        )
+        assert 'disabled={!configForm.values.avatar_roast_enabled}' in interaction_source
+        assert "<details" not in interaction_source
+
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        locale = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= set(locale), locale_path.name
+
+
 def test_live_room_entries_are_platform_neutral():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
@@ -558,6 +598,21 @@ def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
         assert '{ id: "settings", label: t("panel.tabs.settings"), content: advancedSection }' in source
         assert '{ id: "dm", label: t("panel.tabs.dm")' not in source
         assert '{ id: "automation", label: t("panel.tabs.automation")' not in source
+
+        modules_section = source.split("const modulesSection = (", 1)[1].split("const viewerStore", 1)[0]
+        assert modules_section.count("<div style={interactionCardGridStyle}>") == 2
+        assert modules_section.index("{currentDecisionCard}") < modules_section.index("renderAvatarRoastCard")
+        assert modules_section.index("{currentDecisionCard}") < modules_section.index("renderActiveEngagementCard")
+        for key in (
+            "avatar_roast_enabled",
+            "avatar_analysis_enabled",
+            "danmaku_response_enabled",
+            "live_support_events_enabled",
+            "warmup_hosting_enabled",
+            "idle_hosting_enabled",
+            "active_engagement_enabled",
+        ):
+            assert key in source
 
 
 def test_panel_advanced_save_resubmits_current_room_with_patch():

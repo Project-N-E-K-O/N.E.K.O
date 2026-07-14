@@ -1825,6 +1825,24 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
 
 
 @pytest.mark.asyncio
+async def test_idle_and_warmup_hosting_controls_block_manual_and_automatic_triggers(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.idle_hosting_enabled = False
+    runtime.config.warmup_hosting_enabled = False
+
+    idle = await runtime.trigger_idle_hosting()
+    warmup = await runtime.trigger_warmup_hosting()
+
+    assert idle.status == "skipped"
+    assert idle.reason == "idle_hosting.disabled"
+    assert warmup.status == "skipped"
+    assert warmup.reason == "warmup_hosting.disabled"
+    assert await runtime.maybe_trigger_idle_hosting() is None
+    assert await runtime.maybe_trigger_warmup_hosting() is None
+
+
+@pytest.mark.asyncio
 async def test_auto_idle_hosting_skips_when_previous_idle_has_no_viewer_reply(
     runtime: RoastRuntime,
 ) -> None:

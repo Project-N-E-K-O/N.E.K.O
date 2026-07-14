@@ -91,6 +91,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [loginState, setLoginState] = useState<any>(null)
   const [douyinAuthState, setDouyinAuthState] = useState<any>(null)
   const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "theme" | "pacing" | "diagnostics" | "">("")
+  const [interactionDialog, setInteractionDialog] = useState<"avatar_roast" | "danmaku_response" | "live_support_events" | "warmup_hosting" | "idle_hosting" | "active_engagement" | "">("")
   const [connectPending, setConnectPending] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
@@ -115,6 +116,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       live_platform: String(config.live_platform || "bilibili"),
       live_room_ref: String(config.live_room_ref || config.live_room_id || ""),
       live_enabled: !!config.live_enabled,
+      avatar_roast_enabled: config.avatar_roast_enabled !== false,
+      avatar_analysis_enabled: config.avatar_analysis_enabled !== false,
+      danmaku_response_enabled: config.danmaku_response_enabled !== false,
+      live_support_events_enabled: config.live_support_events_enabled !== false,
+      warmup_hosting_enabled: config.warmup_hosting_enabled !== false,
+      idle_hosting_enabled: config.idle_hosting_enabled !== false,
+      active_engagement_enabled: config.active_engagement_enabled !== false,
       live_room_id: String(config.live_room_id || ""),
       douyin_cookie: configForm.values.douyin_cookie || "",
       douyin_uid: configForm.values.douyin_uid || "",
@@ -138,6 +146,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     config.live_platform,
     config.live_room_ref,
     config.live_enabled,
+    config.avatar_roast_enabled,
+    config.avatar_analysis_enabled,
+    config.danmaku_response_enabled,
+    config.live_support_events_enabled,
+    config.warmup_hosting_enabled,
+    config.idle_hosting_enabled,
+    config.active_engagement_enabled,
     config.live_room_id,
     config.developer_tools_enabled,
     config.live_mode,
@@ -208,6 +223,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       live_platform: livePlatform,
       live_room_ref: liveRoomRef,
       live_enabled: configForm.values.live_enabled,
+      avatar_roast_enabled: configForm.values.avatar_roast_enabled,
+      avatar_analysis_enabled: configForm.values.avatar_analysis_enabled,
+      danmaku_response_enabled: configForm.values.danmaku_response_enabled,
+      live_support_events_enabled: configForm.values.live_support_events_enabled,
+      warmup_hosting_enabled: configForm.values.warmup_hosting_enabled,
+      idle_hosting_enabled: configForm.values.idle_hosting_enabled,
+      active_engagement_enabled: configForm.values.active_engagement_enabled,
       live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
       developer_tools_enabled: configForm.values.developer_tools_enabled,
       live_mode: configForm.values.live_mode,
@@ -1123,13 +1145,55 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     : ""
 
   // Live roast card header state.
-  const roastEnabled = !!config.live_enabled
+  const roastEnabled = config.avatar_roast_enabled !== false
   const roastConnected = !!connection.connected
   const roastBadge = roastEnabled
     ? (roastConnected
         ? <StatusBadge tone="success" label={t("panel.modules.online")} />
         : <StatusBadge tone="warning" label={t("panel.modules.standby")} />)
     : <StatusBadge tone="default" label={t("panel.modules.off")} />
+
+  const interactionCardGridStyle: any = {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 440px), 1fr))",
+    gap: "12px",
+    alignItems: "stretch",
+  }
+  const interactionCardBodyStyle: any = {
+    minHeight: "230px",
+    height: "100%",
+    display: "flex",
+    flexDirection: "column" as const,
+    gap: "12px",
+  }
+  const interactionStatusRowStyle: any = {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "8px",
+    minHeight: "26px",
+  }
+  const renderInteractionToggle = (title: any, enabled: boolean, onChange: (value: boolean) => void) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}>
+      <span style={{ minWidth: 0, color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{title}</span>
+      <ToggleSwitch checked={enabled} label={title} tone="success" onChange={onChange} />
+    </div>
+  )
+  const renderInteractionDisabledHint = (enabled: boolean, key: string) => (
+    <div style={{ minHeight: "52px", visibility: enabled ? "hidden" : "visible" }} aria-hidden={enabled}>
+      <Alert tone="info">{t(key)}</Alert>
+    </div>
+  )
+  const renderInteractionDetailsButton = (dialog: "avatar_roast" | "danmaku_response" | "live_support_events" | "warmup_hosting" | "idle_hosting" | "active_engagement") => (
+    <div style={{ marginTop: "auto" }}>
+      <Button tone="default" onClick={() => { setInteractionDialog(dialog) }}>{t("panel.interaction.details")}</Button>
+    </div>
+  )
+  const renderInteractionGroupHeader = (title: string, subtitle: string) => (
+    <div style={{ display: "grid", gap: "4px", marginTop: "4px" }}>
+      <span style={{ color: "var(--text)", fontSize: "16px", fontWeight: 720 }}>{title}</span>
+      <Text>{subtitle}</Text>
+    </div>
+  )
 
   const currentDecisionCard = (
     <Card title={t("panel.interaction.currentDecision.title")}>
@@ -1171,161 +1235,224 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   // First-appearance roast card.
   const renderAvatarRoastCard = (m: any) => (
     <Card>
-      <Stack gap={12}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-            <span style={{ color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{t("panel.interaction.module.avatarRoast.title")}</span>
-            <StatusBadge tone="success" label={t("panel.interaction.module.avatarRoast.badge")} />
-            {roastBadge}
-          </div>
-          <ToggleSwitch checked={roastEnabled} tone="success" onChange={(v) => { configForm.setField("live_enabled", v); saveConfig({ live_enabled: v }) }} />
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.avatarRoast.title"), !!configForm.values.avatar_roast_enabled, (v) => { configForm.setField("avatar_roast_enabled", v); saveConfig({ avatar_roast_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          {roastBadge}
+          <StatusBadge tone="warning" label={t("panel.interaction.tags.oncePerUid")} />
         </div>
         <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
-          { key: "panel.interaction.tags.oncePerUid", tone: "warning" },
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-        {m && Array.isArray(m.config_schema) && m.config_schema.length ? (
-          <Stack gap={12}>
-            {m.config_schema.map((f: any, fi: number) => renderConfigField(f, fi))}
-          </Stack>
-        ) : null}
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.avatar_roast_enabled, "panel.interaction.module.avatarRoast.disabledHint")}
+        {renderInteractionDetailsButton("avatar_roast")}
+      </div>
     </Card>
   )
 
   const renderDanmakuResponseCard = (m: any) => (
-    <Card title={t("panel.interaction.module.danmakuResponse.title")}>
-      <Stack gap={12}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <StatusBadge tone={m ? "success" : "warning"} label={m ? t("panel.interaction.module.danmakuResponse.badge") : t("panel.modules.soon")} />
-          {m ? <ModuleHealthBadge module={m} t={t} /> : null}
+    <Card>
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.danmakuResponse.title"), !!configForm.values.danmaku_response_enabled, (v) => { configForm.setField("danmaku_response_enabled", v); saveConfig({ danmaku_response_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          <StatusBadge tone={configForm.values.danmaku_response_enabled && m ? "success" : "default"} label={!configForm.values.danmaku_response_enabled ? t("panel.modules.off") : (m ? t("panel.interaction.module.danmakuResponse.badge") : t("panel.modules.soon"))} />
+          <StatusBadge tone="info" label={t("panel.interaction.tags.currentDanmaku")} />
         </div>
         <Text>{t("panel.interaction.module.danmakuResponse.desc")}</Text>
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
-          { key: "panel.interaction.tags.noAvatarCount", tone: "warning" },
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.danmaku_response_enabled, "panel.interaction.module.danmakuResponse.disabledHint")}
+        {renderInteractionDetailsButton("danmaku_response")}
+      </div>
     </Card>
   )
 
   const renderLiveSupportEventsCard = (m: any) => (
-    <Card title={t("panel.interaction.module.liveSupportEvents.title")}>
-      <Stack gap={12}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <StatusBadge tone={m ? "success" : "warning"} label={m ? t("panel.interaction.module.liveSupportEvents.badge") : t("panel.modules.soon")} />
-          {m ? <ModuleHealthBadge module={m} t={t} /> : null}
+    <Card>
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.liveSupportEvents.title"), !!configForm.values.live_support_events_enabled, (v) => { configForm.setField("live_support_events_enabled", v); saveConfig({ live_support_events_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          <StatusBadge tone={configForm.values.live_support_events_enabled && m ? "success" : "default"} label={!configForm.values.live_support_events_enabled ? t("panel.modules.off") : (m ? t("panel.interaction.module.liveSupportEvents.badge") : t("panel.modules.soon"))} />
+          <StatusBadge tone="info" label={t("panel.interaction.tags.safetyRequired")} />
         </div>
         <Text>{t("panel.interaction.module.liveSupportEvents.desc")}</Text>
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.live_support_events_enabled, "panel.interaction.module.liveSupportEvents.disabledHint")}
+        {renderInteractionDetailsButton("live_support_events")}
+      </div>
     </Card>
   )
 
   const renderIdleHostingCard = () => (
-    <Card title={t("panel.interaction.module.idleHosting.title")}>
-      <Stack gap={12}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <StatusBadge tone={idleHostingEligible ? "success" : "warning"} label={t("panel.interaction.module.idleHosting.badge")} />
+    <Card>
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.idleHosting.title"), !!configForm.values.idle_hosting_enabled, (v) => { configForm.setField("idle_hosting_enabled", v); saveConfig({ idle_hosting_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          <StatusBadge tone={configForm.values.idle_hosting_enabled && idleHostingEligible ? "success" : "default"} label={configForm.values.idle_hosting_enabled ? t("panel.interaction.module.idleHosting.badge") : t("panel.modules.off")} />
           <StatusBadge tone={idleHostingCandidate ? "success" : "default"} label={dynamicLabel("idleHostingCandidate", "panel.idleHostingCandidate", idleHostingCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.idleHosting.desc")}</Text>
-        <Grid cols={2}>
-          <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
-          <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
-        </Grid>
-        <Grid cols={2}>
-          <StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} />
-          <StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} />
-        </Grid>
-        <Grid cols={2}>
-          <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
-          <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
-        </Grid>
-        <Text>{dynamicLabel("idleHostingReason", "panel.idleHostingStatus.reason", idleHostingReason)}</Text>
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.cooldown", tone: "warning" },
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.idle_hosting_enabled, "panel.interaction.module.idleHosting.disabledHint")}
+        {renderInteractionDetailsButton("idle_hosting")}
+      </div>
     </Card>
   )
 
   const renderWarmupHostingCard = () => (
-    <Card title={t("panel.interaction.module.warmupHosting.title")}>
-      <Stack gap={12}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={t("panel.interaction.module.warmupHosting.badge")} />
+    <Card>
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.warmupHosting.title"), !!configForm.values.warmup_hosting_enabled, (v) => { configForm.setField("warmup_hosting_enabled", v); saveConfig({ warmup_hosting_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          <StatusBadge tone={configForm.values.warmup_hosting_enabled && warmupHostingCandidate ? "success" : "default"} label={configForm.values.warmup_hosting_enabled ? t("panel.interaction.module.warmupHosting.badge") : t("panel.modules.off")} />
           <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={dynamicLabel("warmupHostingCandidate", "panel.warmupHostingCandidate", warmupHostingCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.warmupHosting.desc")}</Text>
-        <Grid cols={2}>
-          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
-          <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />} />
-        </Grid>
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.openingBeat", tone: "success" },
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-        <Button tone="info" onClick={() => callSimple("trigger_warmup_hosting")}>{t("panel.actions.triggerWarmupHosting")}</Button>
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.warmup_hosting_enabled, "panel.interaction.module.warmupHosting.disabledHint")}
+        {renderInteractionDetailsButton("warmup_hosting")}
+      </div>
     </Card>
   )
 
   const renderActiveEngagementCard = () => (
-    <Card title={t("panel.interaction.module.activeEngagement.title")}>
-      <Stack gap={12}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-          <StatusBadge tone={activeEngagementEligible ? "success" : "warning"} label={t("panel.interaction.module.activeEngagement.badge")} />
+    <Card>
+      <div style={interactionCardBodyStyle}>
+        {renderInteractionToggle(t("panel.interaction.module.activeEngagement.title"), !!configForm.values.active_engagement_enabled, (v) => { configForm.setField("active_engagement_enabled", v); saveConfig({ active_engagement_enabled: v }) })}
+        <div style={interactionStatusRowStyle}>
+          <StatusBadge tone={configForm.values.active_engagement_enabled && activeEngagementEligible ? "success" : "default"} label={configForm.values.active_engagement_enabled ? t("panel.interaction.module.activeEngagement.badge") : t("panel.modules.off")} />
           <StatusBadge tone={activeEngagementCandidate ? "success" : "default"} label={dynamicLabel("activeEngagementCandidate", "panel.activeEngagementCandidate", activeEngagementCandidate ? "true" : "false")} />
         </div>
         <Text>{t("panel.interaction.module.activeEngagement.desc")}</Text>
-        <Text>{dynamicLabel("activeEngagementReason", "panel.activeEngagementStatus.reason", activeEngagementReason)}</Text>
-        <Grid cols={2}>
-          <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
-          <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
-        </Grid>
-        <Grid cols={2}>
-          <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${activeEngagementCooldown.toFixed(1)}s`} />
-          <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${activeEngagementMinInterval.toFixed(1)}s`} />
-        </Grid>
-        <Grid cols={2}>
-          <StatCard label={t("panel.activeEngagementStatus.minimumIntervalRemaining")} value={`${activeEngagementMinimumRemaining.toFixed(1)}s`} />
-          <StatCard label={t("panel.activeEngagementStatus.recentDanmakuWait")} value={`${activeEngagementDanmakuWait.toFixed(1)}s`} />
-        </Grid>
-        {latestTopic ? (
-          <Grid cols={1}>
-            <StatCard label={t("panel.interaction.currentDecision.topic")} value={latestTopic} />
-          </Grid>
-        ) : null}
-        {latestHostBeat ? (
-          <Grid cols={1}>
-            <StatCard label={t("panel.interaction.currentDecision.hostBeat")} value={latestHostBeat} />
-          </Grid>
-        ) : null}
-        <StatusBadgeRow t={t} items={[
-          { key: "panel.interaction.tags.activeQuestion", tone: "success" },
-          { key: "panel.interaction.tags.safetyRequired" },
-        ]} />
-        <Button tone="info" onClick={() => callSimple("trigger_active_engagement")}>{t("panel.actions.triggerActiveEngagement")}</Button>
-      </Stack>
+        {renderInteractionDisabledHint(!!configForm.values.active_engagement_enabled, "panel.interaction.module.activeEngagement.disabledHint")}
+        {renderInteractionDetailsButton("active_engagement")}
+      </div>
     </Card>
   )
+
+  const interactionDialogTitle = interactionDialog === "avatar_roast"
+    ? t("panel.interaction.module.avatarRoast.title")
+    : interactionDialog === "danmaku_response"
+      ? t("panel.interaction.module.danmakuResponse.title")
+      : interactionDialog === "live_support_events"
+        ? t("panel.interaction.module.liveSupportEvents.title")
+        : interactionDialog === "warmup_hosting"
+          ? t("panel.interaction.module.warmupHosting.title")
+          : interactionDialog === "idle_hosting"
+            ? t("panel.interaction.module.idleHosting.title")
+            : interactionDialog === "active_engagement"
+              ? t("panel.interaction.module.activeEngagement.title")
+              : ""
+
+  const interactionDialogContent = interactionDialog === "avatar_roast" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
+      <ToggleSwitch checked={!!configForm.values.avatar_analysis_enabled} disabled={!configForm.values.avatar_roast_enabled} label={t("panel.interaction.module.avatarRoast.avatarAnalysis")} onChange={(v) => { configForm.setField("avatar_analysis_enabled", v); saveConfig({ avatar_analysis_enabled: v }) }} />
+      <Text>{t("panel.interaction.module.avatarRoast.avatarAnalysisHint")}</Text>
+      <StatusBadgeRow t={t} items={[
+        { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
+        { key: "panel.interaction.tags.oncePerUid", tone: "warning" },
+        { key: "panel.interaction.tags.safetyRequired" },
+      ]} />
+      {interactionModuleById.avatar_roast && Array.isArray(interactionModuleById.avatar_roast.config_schema) && interactionModuleById.avatar_roast.config_schema.length ? (
+        <Stack gap={12}>
+          {interactionModuleById.avatar_roast.config_schema.map((f: any, fi: number) => renderConfigField(f, fi))}
+        </Stack>
+      ) : null}
+    </Stack>
+  ) : interactionDialog === "danmaku_response" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.danmakuResponse.desc")}</Text>
+      {interactionModuleById.danmaku_response ? <ModuleHealthBadge module={interactionModuleById.danmaku_response} t={t} /> : null}
+      <StatusBadgeRow t={t} items={[
+        { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
+        { key: "panel.interaction.tags.noAvatarCount", tone: "warning" },
+        { key: "panel.interaction.tags.safetyRequired" },
+      ]} />
+    </Stack>
+  ) : interactionDialog === "live_support_events" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.liveSupportEvents.desc")}</Text>
+      {interactionModuleById.live_support_events ? <ModuleHealthBadge module={interactionModuleById.live_support_events} t={t} /> : null}
+      <StatusBadgeRow t={t} items={[{ key: "panel.interaction.tags.safetyRequired" }]} />
+    </Stack>
+  ) : interactionDialog === "warmup_hosting" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.warmupHosting.desc")}</Text>
+      <Grid cols={2}>
+        <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
+        <StatCard label={t("panel.liveDirector.nextAutoAction")} value={<StatusBadge tone={liveDirectorEligible ? "success" : "default"} label={dynamicLabel("liveDirectorAction", "panel.liveDirector.action", liveDirectorNextAction)} />} />
+      </Grid>
+      <StatusBadgeRow t={t} items={[
+        { key: "panel.interaction.tags.openingBeat", tone: "success" },
+        { key: "panel.interaction.tags.safetyRequired" },
+      ]} />
+      <Button tone="info" disabled={!configForm.values.warmup_hosting_enabled} onClick={() => callSimple("trigger_warmup_hosting")}>{t("panel.actions.triggerWarmupHosting")}</Button>
+    </Stack>
+  ) : interactionDialog === "idle_hosting" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.idleHosting.desc")}</Text>
+      <Grid cols={2}>
+        <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${idleHostingCooldown.toFixed(1)}s`} />
+        <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${idleHostingMinInterval.toFixed(1)}s`} />
+      </Grid>
+      <Grid cols={2}>
+        <StatCard label={t("panel.liveState.lastViewerActivityAge")} value={liveStateLastViewerActivityAge} />
+        <StatCard label={t("panel.liveState.lastOutputAge")} value={liveStateLastOutputAge} />
+      </Grid>
+      <Grid cols={2}>
+        <StatCard label={t("panel.liveState.lastActivityAge")} value={liveStateLastActivityAge} />
+        <StatCard label={t("panel.liveState.idleAfter")} value={liveStateIdleAfter} />
+      </Grid>
+      <Text>{dynamicLabel("idleHostingReason", "panel.idleHostingStatus.reason", idleHostingReason)}</Text>
+      <StatusBadgeRow t={t} items={[
+        { key: "panel.interaction.tags.cooldown", tone: "warning" },
+        { key: "panel.interaction.tags.safetyRequired" },
+      ]} />
+    </Stack>
+  ) : interactionDialog === "active_engagement" ? (
+    <Stack>
+      <Text>{t("panel.interaction.module.activeEngagement.desc")}</Text>
+      <Text>{dynamicLabel("activeEngagementReason", "panel.activeEngagementStatus.reason", activeEngagementReason)}</Text>
+      <Grid cols={2}>
+        <StatCard label={t("panel.liveState.title")} value={<StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />} />
+        <StatCard label={t("panel.liveState.quietAfter")} value={liveStateQuietAfter} />
+      </Grid>
+      <Grid cols={2}>
+        <StatCard label={t("panel.idleHostingStatus.cooldown")} value={`${activeEngagementCooldown.toFixed(1)}s`} />
+        <StatCard label={t("panel.idleHostingStatus.minInterval")} value={`${activeEngagementMinInterval.toFixed(1)}s`} />
+      </Grid>
+      <Grid cols={2}>
+        <StatCard label={t("panel.activeEngagementStatus.minimumIntervalRemaining")} value={`${activeEngagementMinimumRemaining.toFixed(1)}s`} />
+        <StatCard label={t("panel.activeEngagementStatus.recentDanmakuWait")} value={`${activeEngagementDanmakuWait.toFixed(1)}s`} />
+      </Grid>
+      {latestTopic ? <StatCard label={t("panel.interaction.currentDecision.topic")} value={latestTopic} /> : null}
+      {latestHostBeat ? <StatCard label={t("panel.interaction.currentDecision.hostBeat")} value={latestHostBeat} /> : null}
+      <StatusBadgeRow t={t} items={[
+        { key: "panel.interaction.tags.activeQuestion", tone: "success" },
+        { key: "panel.interaction.tags.safetyRequired" },
+      ]} />
+      <Button tone="info" disabled={!configForm.values.active_engagement_enabled} onClick={() => callSimple("trigger_active_engagement")}>{t("panel.actions.triggerActiveEngagement")}</Button>
+    </Stack>
+  ) : null
 
   const modulesSection = (
     <Stack>
       {currentDecisionCard}
-      <ModuleRenderBoundary title={t("panel.interaction.module.avatarRoast.title")} render={() => renderAvatarRoastCard(interactionModuleById.avatar_roast)} t={t} />
-      <ModuleRenderBoundary title={t("panel.interaction.module.danmakuResponse.title")} render={() => renderDanmakuResponseCard(interactionModuleById.danmaku_response)} t={t} />
-      <ModuleRenderBoundary title={t("panel.interaction.module.liveSupportEvents.title")} render={() => renderLiveSupportEventsCard(interactionModuleById.live_support_events)} t={t} />
-      <ModuleRenderBoundary title={t("panel.interaction.module.warmupHosting.title")} render={renderWarmupHostingCard} t={t} />
-      <ModuleRenderBoundary title={t("panel.interaction.module.idleHosting.title")} render={renderIdleHostingCard} t={t} />
-      <ModuleRenderBoundary title={t("panel.interaction.module.activeEngagement.title")} render={renderActiveEngagementCard} t={t} />
+      {renderInteractionGroupHeader(t("panel.interaction.group.audience"), t("panel.interaction.group.audienceHint"))}
+      <div style={interactionCardGridStyle}>
+        <ModuleRenderBoundary title={t("panel.interaction.module.avatarRoast.title")} render={() => renderAvatarRoastCard(interactionModuleById.avatar_roast)} t={t} />
+        <ModuleRenderBoundary title={t("panel.interaction.module.danmakuResponse.title")} render={() => renderDanmakuResponseCard(interactionModuleById.danmaku_response)} t={t} />
+        <ModuleRenderBoundary title={t("panel.interaction.module.liveSupportEvents.title")} render={() => renderLiveSupportEventsCard(interactionModuleById.live_support_events)} t={t} />
+      </div>
+      {renderInteractionGroupHeader(t("panel.interaction.group.hosting"), t("panel.interaction.group.hostingHint"))}
+      <div style={interactionCardGridStyle}>
+        <ModuleRenderBoundary title={t("panel.interaction.module.warmupHosting.title")} render={renderWarmupHostingCard} t={t} />
+        <ModuleRenderBoundary title={t("panel.interaction.module.idleHosting.title")} render={renderIdleHostingCard} t={t} />
+        <ModuleRenderBoundary title={t("panel.interaction.module.activeEngagement.title")} render={renderActiveEngagementCard} t={t} />
+      </div>
+      <Modal
+        open={!!interactionDialog}
+        title={interactionDialogTitle}
+        size="lg"
+        onClose={() => { setInteractionDialog("") }}
+        footer={<Button tone="default" onClick={() => { setInteractionDialog("") }}>{t("panel.actions.cancel")}</Button>}
+      >
+        {interactionDialogContent}
+      </Modal>
     </Stack>
   )
 
@@ -1334,7 +1461,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     <Stack>
       <Card title={t("panel.control.title")}>
         <Stack>
-          {/* live_enabled is owned by the interaction module card; settings keep platform-level controls only. */}
+          {/* live_enabled is owned by the console start/stop action; settings keep platform-level controls only. */}
           <ToggleSwitch checked={!!configForm.values.safety_auto_stop_enabled} label={t("panel.fields.autoStop")} onChange={(value) => configForm.setField("safety_auto_stop_enabled", value)} />
           <Grid cols={2}>
             <Field label={t("panel.fields.rateLimit")}>
