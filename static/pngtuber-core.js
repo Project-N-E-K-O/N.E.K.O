@@ -482,6 +482,10 @@
         handleLayeredPointerMove(event) {
             if (!this.isMouseTrackingEnabled()) return;
             if (!this.isLayeredActive() || !this.canvasElement || typeof this.canvasElement.getBoundingClientRect !== 'function') return;
+            if (this._dragState || this._touchZoomState) {
+                this.layeredPointer.active = false;
+                return;
+            }
             const rect = this.canvasElement.getBoundingClientRect();
             if (!rect.width || !rect.height) return;
             const targetX = ((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2));
@@ -1579,6 +1583,10 @@
             this.startLayeredAnimationLoop({ preserveTimeline: true });
         }
 
+        resetLayeredDragVelocity(timestamp = performance.now()) {
+            this.layeredDragVelocity = { x: 0, y: 0, at: timestamp };
+        }
+
         currentLayeredDragVelocity(timestamp = performance.now()) {
             const velocity = this.layeredDragVelocity || { x: 0, y: 0, at: 0 };
             const age = Math.max(0, (timestamp - (Number(velocity.at) || timestamp)) / 1000);
@@ -2516,6 +2524,8 @@
                 lastAt: performance.now(),
                 moved: false
             };
+            this.resetLayeredDragVelocity();
+            if (this.layeredPointer) this.layeredPointer.active = false;
             if (this.image && typeof this.image.setPointerCapture === 'function') {
                 try { this.image.setPointerCapture(event.pointerId); } catch (_) {}
             }
@@ -2530,7 +2540,6 @@
             const dx = event.clientX - state.startX;
             const dy = event.clientY - state.startY;
             const now = performance.now();
-            this.updateLayeredDragVelocity(event.clientX - state.lastX, event.clientY - state.lastY, now);
             state.lastX = event.clientX;
             state.lastY = event.clientY;
             state.lastAt = now;
@@ -2552,6 +2561,7 @@
             const state = this._dragState;
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
             this._dragState = null;
+            this.resetLayeredDragVelocity();
             if (this.image && typeof this.image.releasePointerCapture === 'function') {
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
             }
@@ -2638,6 +2648,8 @@
                 lastAt: performance.now(),
                 changed: false
             };
+            this.resetLayeredDragVelocity();
+            if (this.layeredPointer) this.layeredPointer.active = false;
             document.body.classList.add('neko-model-dragging');
             if (this.image) this.image.classList.add('is-dragging');
             this.showDragImage();
@@ -2654,7 +2666,6 @@
             const dx = center.x - state.startCenterX;
             const dy = center.y - state.startCenterY;
             const now = performance.now();
-            this.updateLayeredDragVelocity(center.x - state.lastCenterX, center.y - state.lastCenterY, now);
             state.lastCenterX = center.x;
             state.lastCenterY = center.y;
             state.lastAt = now;
@@ -2668,6 +2679,7 @@
             const state = this._touchZoomState;
             if (!state) return;
             this._touchZoomState = null;
+            this.resetLayeredDragVelocity();
             document.body.classList.remove('neko-model-dragging');
             if (this.image) this.image.classList.remove('is-dragging');
             this.restoreStateImage();
