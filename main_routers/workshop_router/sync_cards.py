@@ -184,8 +184,10 @@ async def sync_workshop_character_cards(
         async def _clear_restored_existing_tombstones():
             nonlocal error_count
             restored_existing_candidates = [
-                name for name in confirmed_recoverable_existing_names
-                if name not in restored_deleted_names
+                tombstone_name
+                for character_name, tombstone_name
+                in confirmed_recoverable_existing_names.items()
+                if character_name not in restored_deleted_names
             ]
             if not restored_existing_candidates:
                 return None
@@ -202,8 +204,12 @@ async def sync_workshop_character_cards(
                     config_mgr,
                     restored_existing_candidates,
                 )
-                for removed_name in removed_names:
-                    _append_unique(restored_deleted_names, removed_name)
+                removed_casefolds = {name.casefold() for name in removed_names}
+                for character_name, tombstone_name in (
+                    confirmed_recoverable_existing_names.items()
+                ):
+                    if tombstone_name.casefold() in removed_casefolds:
+                        _append_unique(restored_deleted_names, character_name)
                 if removed_names:
                     logger.info(
                         "sync_workshop_character_cards: 已移除已存在恢复角色的 tombstone: %s",
@@ -235,7 +241,7 @@ async def sync_workshop_character_cards(
             pending_card_face_writes = {}
             pending_item_ids = {}
             pending_restore_tombstone_names: dict[str, str] = {}
-            confirmed_recoverable_existing_names: set[str] = set()
+            confirmed_recoverable_existing_names: dict[str, str] = {}
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
@@ -339,7 +345,7 @@ async def sync_workshop_character_cards(
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
                                 if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
-                                    confirmed_recoverable_existing_names.add(
+                                    confirmed_recoverable_existing_names[chara_name] = (
                                         pending_restore_tombstone_names[chara_name]
                                     )
                                 if existing_matches_item:
@@ -546,7 +552,7 @@ async def sync_workshop_character_cards(
                                         pending_item_ids.get(pending_name, ""),
                                     )
                                 ):
-                                    confirmed_recoverable_existing_names.add(
+                                    confirmed_recoverable_existing_names[pending_name] = (
                                         pending_restore_tombstone_names[pending_name]
                                     )
                             elif conflict_name is not None:
@@ -582,20 +588,29 @@ async def sync_workshop_character_cards(
                         _append_unique(added_character_names, added_name)
 
                     if restore_deleted and actually_added_names:
-                        restored_candidates = [
-                            pending_restore_tombstone_names[name]
+                        restored_candidates = {
+                            name: pending_restore_tombstone_names[name]
                             for name in actually_added_names
                             if name in pending_restore_tombstone_names
-                        ]
+                        }
                         if restored_candidates:
                             try:
                                 removed_names = await asyncio.to_thread(
                                     _remove_deleted_character_tombstones,
                                     config_mgr,
-                                    restored_candidates,
+                                    list(restored_candidates.values()),
                                 )
-                                for removed_name in removed_names:
-                                    _append_unique(restored_deleted_names, removed_name)
+                                removed_casefolds = {
+                                    name.casefold() for name in removed_names
+                                }
+                                for character_name, tombstone_name in (
+                                    restored_candidates.items()
+                                ):
+                                    if tombstone_name.casefold() in removed_casefolds:
+                                        _append_unique(
+                                            restored_deleted_names,
+                                            character_name,
+                                        )
                                 if removed_names:
                                     logger.info(
                                         "sync_workshop_character_cards: 已移除手动恢复角色的 tombstone: %s",
