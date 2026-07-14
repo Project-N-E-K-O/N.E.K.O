@@ -243,7 +243,9 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     sent_text = fake_mgr.send_lanlan_response.await_args.args[0]
     assert "{MASTER_NAME}" not in sent_text
     assert "跟 小明 报告" in sent_text
-    assert private_reply not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert private_reply not in captured.out
+    assert private_reply not in captured.err
 
 
 @pytest.mark.unit
@@ -314,7 +316,9 @@ async def test_main_server_hud_notification_substitutes_master_name(
     notif_text = hud_calls[0].get("text", "")
     assert "{MASTER_NAME}" not in notif_text
     assert "提醒 小明：" in notif_text
-    assert private_notification not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert private_notification not in captured.out
+    assert private_notification not in captured.err
 
 
 @pytest.mark.unit
