@@ -247,6 +247,7 @@ def test_music_playing_hint_with_braced_track_name_survives_outer_format(lang: s
 # ─────────────────────────────────────────────────────────────────────────────
 
 from config.prompts.prompts_proactive import (  # noqa: E402
+    CAT_GREETING_SYSTEM_PROMPT_WATERMARK,
     _CAT_GREETING_EPISODE_PROMPTS,
     _CAT_GREETING_EPISODE_RETURN_TONES,
     _CAT_GREETING_EPISODE_SCENES,
@@ -454,6 +455,29 @@ def test_cat_greeting_episode_prompt_does_not_keep_a_conflicting_sleep_fact() ->
 
 
 _CAT_SHORT_RETURN_INPUT_LOCALES = ('zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+
+
+def test_cat_greeting_system_watermark_is_stable_chinese_contract() -> None:
+    assert CAT_GREETING_SYSTEM_PROMPT_WATERMARK == (
+        '\n======以上为猫形态返回系统提示======\n'
+    )
+
+
+@pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
+def test_cat_greeting_all_prompt_paths_share_chinese_system_watermark(lang) -> None:
+    prompts = (
+        get_cat_greeting_prompt('awake', 300, lang),
+        get_cat_greeting_episode_prompt('nap', 300, lang),
+        get_cat_greeting_episode_prompt(
+            'sleep', 10, lang, allow_short_started=True,
+        ),
+        get_cat_greeting_started_return_prompt(lang),
+    )
+    for prompt in prompts:
+        assert prompt is not None
+        assert prompt.endswith(CAT_GREETING_SYSTEM_PROMPT_WATERMARK)
+        assert prompt.count(CAT_GREETING_SYSTEM_PROMPT_WATERMARK) == 1
+        assert '======以上为' in prompt
 
 
 @pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)

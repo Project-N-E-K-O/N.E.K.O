@@ -4598,6 +4598,13 @@ _CAT_GREETING_LONG_THRESHOLDS = {
     "sleep": 1800,
 }
 
+# Keep one Chinese system-prompt watermark across every localized cat-return
+# path.  This is appended by the public getters so legacy, episode, and short
+# return prompts cannot drift or omit the project watermark contract.
+CAT_GREETING_SYSTEM_PROMPT_WATERMARK = (
+    "\n======以上为猫形态返回系统提示======\n"
+)
+
 # Cat Mind's one-shot return episode is deliberately an enum-to-text scene
 # table, not a rendering of browser input. A valid scene is the factual
 # account of this cat-form return; tier × duration only selects its return
@@ -5006,7 +5013,10 @@ def get_cat_greeting_episode_prompt(
         behavior_band,
         _CAT_GREETING_EPISODE_RETURN_TONES["en"][behavior_band],
     )
-    return template.replace("{episode_return_tone}", tone)
+    return (
+        template.replace("{episode_return_tone}", tone)
+        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
+    )
 
 
 def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
@@ -5017,9 +5027,12 @@ def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
     action as completed.
     """
     lang_key = _normalize_prompt_language(lang)
-    return _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
-        lang_key,
-        _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
+    return (
+        _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
+            lang_key,
+            _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
+        )
+        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
     )
 
 
@@ -5036,7 +5049,10 @@ def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = 
         return None
     table = _CAT_GREETING_TABLES[behavior_band]
     lang_key = _normalize_prompt_language(lang)
-    return table.get(lang_key, table.get("en", table["zh"]))
+    return (
+        table.get(lang_key, table.get("en", table["zh"]))
+        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
+    )
 
 
 def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
