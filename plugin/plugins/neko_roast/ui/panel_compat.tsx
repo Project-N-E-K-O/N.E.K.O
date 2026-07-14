@@ -1326,6 +1326,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
           normalizedRoomRef(config.live_room_id) ||
           normalizedRoomRef(configForm.values.live_room_id)
         )
+    const liveRoomId = livePlatform === "bilibili" ? Number(liveRoomRef) || 0 : 0
     const fullPayload = {
       live_platform: livePlatform,
       live_room_ref: liveRoomRef,
@@ -1337,7 +1338,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       warmup_hosting_enabled: configForm.values.warmup_hosting_enabled,
       idle_hosting_enabled: configForm.values.idle_hosting_enabled,
       active_engagement_enabled: configForm.values.active_engagement_enabled,
-      live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
+      live_room_id: liveRoomId,
       developer_tools_enabled: configForm.values.developer_tools_enabled,
       live_mode: configForm.values.live_mode,
       activity_level: configForm.values.activity_level,
@@ -1350,7 +1351,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       : {
           ...patch,
           live_room_ref: liveRoomRef,
-          live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0,
+          live_room_id: liveRoomId,
         }
     const payload = Object.keys(patch).length
       ? patchedPayload

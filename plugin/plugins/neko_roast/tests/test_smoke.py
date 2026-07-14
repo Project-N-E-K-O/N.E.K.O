@@ -603,7 +603,7 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert (
         "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
         "?patch:{...patch,live_room_ref:liveRoomRef,"
-        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+        "live_room_id:liveRoomId,}"
     ) in compact_source
     assert "panel.platform.title" in source
     assert "panel.platform.bilibili" in source
@@ -664,7 +664,7 @@ def test_panel_advanced_save_resubmits_current_room_with_patch():
     assert (
         "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
         "?patch:{...patch,live_room_ref:liveRoomRef,"
-        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+        "live_room_id:liveRoomId,}"
     ) in compact_source
     assert "constpayload=Object.keys(patch).length?patchedPayload:fullPayload" in compact_source
     assert "saveConfig(advancedConfigPatch())" in source
@@ -1064,12 +1064,15 @@ def test_patched_panel_saves_include_current_room_reference() -> None:
     expected = (
         "...patch,\n"
         "          live_room_ref: liveRoomRef,\n"
-        "          live_room_id: livePlatform === \"bilibili\" ? liveRoomRef : 0,"
+        "          live_room_id: liveRoomId,"
     )
 
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert 'const liveRoomId = livePlatform === "bilibili" ? Number(liveRoomRef) || 0 : 0' in source
         assert expected in source
+        assert source.count("live_room_id: liveRoomId,") == 2
+        assert 'live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0' not in source
 
 
 def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
