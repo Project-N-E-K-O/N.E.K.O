@@ -56,9 +56,9 @@ Useful controls:
   and Japanese, plus the character side of Korean's hybrid strategy. Defaults
   to 4–8 characters.
 - `--min-length`: minimum non-space character length.
-- `--exclude-covered`: omit candidates already matched by a current curated
-  `SLOP_RULES` pattern. Without this flag they remain visible with
-  `covered_by_rule_ids` for review.
+- `--exclude-covered`: omit a candidate only when every mined occurrence falls
+  inside a current curated `SLOP_RULES` match. Partially covered candidates stay
+  visible with `covered_by_rule_ids` for review.
 - `--debug-candidates`: explicitly print candidate phrases. This can expose
   assistant text and is off by default.
 
@@ -110,8 +110,9 @@ content, system content, or conversation identifiers.
 
 1. Review each pending phrase for false positives, genre-specific language, and
    whether repetition across messages is actually undesirable.
-2. Check `covered_by_rule_ids`; an already covered phrase normally needs no new
-   runtime rule.
+2. Check `covered_by_rule_ids`; it records rules covering at least one
+   occurrence. A partially covered phrase remains pending, while a fully covered
+   phrase normally needs no new runtime rule.
 3. Reject, merge, or refine candidates manually outside this artifact.
 4. In a separate maintainer change, manually add a curated, language-specific
    pattern and deterministic replacement pool to

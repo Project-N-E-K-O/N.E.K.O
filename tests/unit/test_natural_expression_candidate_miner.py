@@ -171,6 +171,20 @@ def test_cjk_character_ngrams_split_at_punctuation(language, phrase):
     )
 
 
+def test_japanese_iteration_marks_remain_in_script_runs():
+    phrase = "時々微笑む"
+    messages = [miner.SourceMessage("ja", phrase, index) for index in range(1, 4)]
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(cjk_ngram_min=len(phrase), cjk_ngram_max=len(phrase)),
+        rules_by_language={},
+    )
+
+    assert _candidate(report, phrase)["occurrence_count"] == 3
+
+
 def test_korean_uses_word_and_hangul_character_strategies():
     messages = [
         miner.SourceMessage("ko", "조용한 달빛. 두근두근.", index)
@@ -290,6 +304,33 @@ def test_current_rule_coverage_is_read_only_and_can_be_excluded():
         rules_by_language=rules,
     )
     assert excluded["candidates"] == []
+
+
+def test_partially_covered_candidate_is_annotated_but_not_excluded():
+    messages = [
+        miner.SourceMessage("en", "smiled warmly", index) for index in range(1, 4)
+    ]
+    messages.append(miner.SourceMessage("en", "She smiled warmly", 4))
+    rules = {
+        "en": [
+            {
+                "id": "EN_004",
+                "find": r"\b(he|she|they|I|you)\s+smiled\s+(?:warmly|softly)\b",
+                "flags": re.IGNORECASE,
+            }
+        ]
+    }
+
+    report = miner.build_report(
+        messages,
+        input_record_count=4,
+        config=_config(exclude_covered=True),
+        rules_by_language=rules,
+    )
+
+    candidate = _candidate(report, "smiled warmly")
+    assert candidate["covered_by_rule_ids"] == ["EN_004"]
+    assert candidate["occurrence_count"] == 4
 
 
 def test_coverage_reads_the_real_curated_rule_table():

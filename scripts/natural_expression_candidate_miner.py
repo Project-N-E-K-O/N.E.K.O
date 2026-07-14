@@ -33,7 +33,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Iterator, Mapping, Sequence, TypeVar
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -122,12 +122,21 @@ class SourceMessage:
     source_line: int
 
 
+@dataclass(frozen=True)
+class _CandidateOccurrence:
+    normalized: str
+    phrase: str
+    coverage_text: str
+    start: int
+    end: int
+
+
 @dataclass
 class _CandidateStats:
     occurrence_count: int
     source_lines: set[int]
     phrases: set[str]
-    coverage_texts: set[str]
+    occurrences: list[_CandidateOccurrence]
 
 
 def normalize_language(raw: str) -> str:
@@ -307,11 +316,14 @@ def _unprotected_segments(text: str) -> Iterator[str]:
         yield text[cursor:]
 
 
+_T = TypeVar("_T")
+
+
 def _bounded_ngrams(
-    values: Sequence[str],
+    values: Sequence[_T],
     minimum: int,
     maximum: int,
-) -> Iterator[tuple[str, ...]]:
+) -> Iterator[tuple[_T, ...]]:
     upper = min(maximum, len(values))
     for size in range(minimum, upper + 1):
         for start in range(0, len(values) - size + 1):
@@ -326,11 +338,11 @@ def _is_meaningful(value: str, min_length: int) -> bool:
 def _word_candidates(
     text: str,
     config: MiningConfig,
-) -> Iterator[tuple[str, str, str]]:
+) -> Iterator[_CandidateOccurrence]:
     for unprotected in _unprotected_segments(text):
         for segment in _TEXT_BOUNDARY_RE.split(unprotected):
             normalized_segment = unicodedata.normalize("NFKC", segment)
-            token_run: list[str] = []
+            token_run: list[tuple[str, int, int]] = []
             for match in _WORD_RE.finditer(normalized_segment):
                 token = match.group(0)
                 if not any(char.isalpha() for char in token):
@@ -341,24 +353,30 @@ def _word_candidates(
                     )
                     token_run = []
                     continue
-                token_run.append(token)
+                token_run.append((token, match.start(), match.end()))
             yield from _word_run_candidates(token_run, config, normalized_segment)
 
 
 def _word_run_candidates(
-    token_run: Sequence[str],
+    token_run: Sequence[tuple[str, int, int]],
     config: MiningConfig,
     coverage_text: str,
-) -> Iterator[tuple[str, str, str]]:
+) -> Iterator[_CandidateOccurrence]:
     for gram in _bounded_ngrams(
         token_run,
         config.word_ngram_min,
         config.word_ngram_max,
     ):
-        phrase = " ".join(gram)
-        normalized = " ".join(token.casefold() for token in gram)
+        phrase = " ".join(token for token, _, _ in gram)
+        normalized = " ".join(token.casefold() for token, _, _ in gram)
         if _is_meaningful(normalized, config.min_length):
-            yield normalized, phrase, coverage_text
+            yield _CandidateOccurrence(
+                normalized=normalized,
+                phrase=phrase,
+                coverage_text=coverage_text,
+                start=gram[0][1],
+                end=gram[-1][2],
+            )
 
 
 def _is_han(char: str) -> bool:
@@ -375,6 +393,9 @@ def _is_japanese(char: str) -> bool:
     codepoint = ord(char)
     return (
         _is_han(char)
+        or codepoint == 0x3005
+        or 0x3031 <= codepoint <= 0x3035
+        or codepoint == 0x303B
         or 0x3040 <= codepoint <= 0x30FF
         or 0x31F0 <= codepoint <= 0x31FF
         or 0xFF66 <= codepoint <= 0xFF9D
@@ -392,43 +413,51 @@ def _is_hangul(char: str) -> bool:
     )
 
 
-def _script_runs(text: str, predicate) -> Iterator[str]:
+def _script_runs(text: str, predicate) -> Iterator[tuple[str, int]]:
     run: list[str] = []
-    for char in unicodedata.normalize("NFKC", text):
+    run_start = 0
+    for index, char in enumerate(text):
         if predicate(char):
+            if not run:
+                run_start = index
             run.append(char)
         elif run:
-            yield "".join(run)
+            yield "".join(run), run_start
             run = []
     if run:
-        yield "".join(run)
+        yield "".join(run), run_start
 
 
 def _character_candidates(
     text: str,
     config: MiningConfig,
     predicate,
-) -> Iterator[tuple[str, str, str]]:
+) -> Iterator[_CandidateOccurrence]:
     for unprotected in _unprotected_segments(text):
         for segment in _TEXT_BOUNDARY_RE.split(unprotected):
             coverage_text = unicodedata.normalize("NFKC", segment)
-            for run in _script_runs(coverage_text, predicate):
+            for run, run_start in _script_runs(coverage_text, predicate):
                 characters = list(run)
-                for gram in _bounded_ngrams(
-                    characters,
-                    config.cjk_ngram_min,
-                    config.cjk_ngram_max,
-                ):
-                    phrase = "".join(gram)
-                    normalized = phrase.casefold()
-                    if _is_meaningful(normalized, config.min_length):
-                        yield normalized, phrase, coverage_text
+                upper = min(config.cjk_ngram_max, len(characters))
+                for size in range(config.cjk_ngram_min, upper + 1):
+                    for start in range(0, len(characters) - size + 1):
+                        gram = characters[start : start + size]
+                        phrase = "".join(gram)
+                        normalized = phrase.casefold()
+                        if _is_meaningful(normalized, config.min_length):
+                            yield _CandidateOccurrence(
+                                normalized=normalized,
+                                phrase=phrase,
+                                coverage_text=coverage_text,
+                                start=run_start + start,
+                                end=run_start + start + size,
+                            )
 
 
 def _message_candidates(
     message: SourceMessage,
     config: MiningConfig,
-) -> Iterator[tuple[str, str, str]]:
+) -> Iterator[_CandidateOccurrence]:
     language = message.language
     if language in _WHITESPACE_LANGUAGES:
         yield from _word_candidates(message.content, config)
@@ -445,12 +474,22 @@ def _message_candidates(
         # identical single-token occurrence once in each strategy.
         word_candidates = list(_word_candidates(message.content, config))
         overlapping_word_counts = Counter(
-            (normalized, coverage_text)
-            for normalized, _, coverage_text in word_candidates
+            (
+                candidate.normalized,
+                candidate.coverage_text,
+                candidate.start,
+                candidate.end,
+            )
+            for candidate in word_candidates
         )
         yield from word_candidates
         for candidate in _character_candidates(message.content, config, _is_hangul):
-            overlap_key = (candidate[0], candidate[2])
+            overlap_key = (
+                candidate.normalized,
+                candidate.coverage_text,
+                candidate.start,
+                candidate.end,
+            )
             if overlapping_word_counts[overlap_key]:
                 overlapping_word_counts[overlap_key] -= 1
                 continue
@@ -463,16 +502,13 @@ def _coverage_language(language: str) -> str:
     return "zh" if language in {"zh", "zh-CN"} else language
 
 
-def _covered_rule_ids(
+def _coverage_result(
     language: str,
-    phrases: Iterable[str],
-    coverage_texts: Iterable[str],
+    occurrences: Sequence[_CandidateOccurrence],
     rules_by_language: Mapping[str, Sequence[Mapping[str, object]]],
-) -> list[str]:
+) -> tuple[list[str], bool]:
+    compiled_rules: list[tuple[str, re.Pattern[str]]] = []
     covered: set[str] = set()
-    normalized_phrases = {
-        unicodedata.normalize("NFKC", phrase).casefold() for phrase in phrases
-    }
     for rule in rules_by_language.get(_coverage_language(language), ()):
         rule_id = rule.get("id")
         pattern = rule.get("find")
@@ -485,16 +521,21 @@ def _covered_rule_ids(
             raise CandidateMinerError(
                 f"existing rule {rule_id} has an invalid pattern"
             ) from exc
-        for coverage_text in coverage_texts:
+        compiled_rules.append((rule_id, compiled))
+
+    all_occurrences_covered = bool(occurrences)
+    for occurrence in occurrences:
+        occurrence_covered = False
+        for rule_id, compiled in compiled_rules:
             if any(
-                normalized_phrase
-                in unicodedata.normalize("NFKC", match.group(0)).casefold()
-                for match in compiled.finditer(coverage_text)
-                for normalized_phrase in normalized_phrases
+                match.start() <= occurrence.start and occurrence.end <= match.end()
+                for match in compiled.finditer(occurrence.coverage_text)
             ):
                 covered.add(rule_id)
-                break
-    return sorted(covered)
+                occurrence_covered = True
+        if not occurrence_covered:
+            all_occurrences_covered = False
+    return sorted(covered), all_occurrences_covered
 
 
 def load_current_rules() -> Mapping[str, Sequence[Mapping[str, object]]]:
@@ -521,28 +562,27 @@ def build_report(
     stats: dict[tuple[str, str], _CandidateStats] = {}
 
     for message in messages:
-        for normalized, phrase, coverage_text in _message_candidates(message, config):
-            key = (message.language, normalized)
+        for occurrence in _message_candidates(message, config):
+            key = (message.language, occurrence.normalized)
             candidate_stats = stats.get(key)
             if candidate_stats is None:
-                candidate_stats = _CandidateStats(0, set(), set(), set())
+                candidate_stats = _CandidateStats(0, set(), set(), [])
                 stats[key] = candidate_stats
             candidate_stats.occurrence_count += 1
             candidate_stats.source_lines.add(message.source_line)
-            candidate_stats.phrases.add(phrase)
-            candidate_stats.coverage_texts.add(coverage_text)
+            candidate_stats.phrases.add(occurrence.phrase)
+            candidate_stats.occurrences.append(occurrence)
 
     candidates: list[dict[str, object]] = []
     for (language, normalized), candidate_stats in stats.items():
         if candidate_stats.occurrence_count < config.threshold:
             continue
-        covered_by = _covered_rule_ids(
+        covered_by, all_occurrences_covered = _coverage_result(
             language,
-            sorted(candidate_stats.phrases),
-            sorted(candidate_stats.coverage_texts),
+            candidate_stats.occurrences,
             current_rules,
         )
-        if config.exclude_covered and covered_by:
+        if config.exclude_covered and all_occurrences_covered:
             continue
         candidates.append(
             {
