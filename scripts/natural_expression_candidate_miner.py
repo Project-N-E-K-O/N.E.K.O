@@ -441,10 +441,20 @@ def _message_candidates(
         return
     if language == "ko":
         # Korean prose is normally space-delimited, but repeated compounds and
-        # onomatopoeia often are not. Keep both families and make their output
-        # distinguishable through spaces in word candidates.
-        yield from _word_candidates(message.content, config)
-        yield from _character_candidates(message.content, config, _is_hangul)
+        # onomatopoeia often are not. Keep both families, but do not count an
+        # identical single-token occurrence once in each strategy.
+        word_candidates = list(_word_candidates(message.content, config))
+        overlapping_word_counts = Counter(
+            (normalized, coverage_text)
+            for normalized, _, coverage_text in word_candidates
+        )
+        yield from word_candidates
+        for candidate in _character_candidates(message.content, config, _is_hangul):
+            overlap_key = (candidate[0], candidate[2])
+            if overlapping_word_counts[overlap_key]:
+                overlapping_word_counts[overlap_key] -= 1
+                continue
+            yield candidate
         return
     raise CandidateMinerError(f"unsupported normalized language: {language}")
 
@@ -615,6 +625,7 @@ def write_report(output_path: Path, report: Mapping[str, object]) -> None:
             try:
                 Path(temporary_name).unlink(missing_ok=True)
             except OSError:
+                # Do not mask the primary report write failure with cleanup failure.
                 pass
         raise CandidateMinerError(
             f"unable to write output file: {output_path}"

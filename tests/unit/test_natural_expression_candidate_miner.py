@@ -188,6 +188,38 @@ def test_korean_uses_word_and_hangul_character_strategies():
     assert _candidate(report, "두근두근")["occurrence_count"] == 3
 
 
+def test_korean_single_token_is_not_double_counted_across_strategies():
+    messages = [miner.SourceMessage("ko", "두근두근", index) for index in range(1, 3)]
+    config = _config(
+        threshold=1,
+        word_ngram_min=1,
+        word_ngram_max=1,
+    )
+
+    report = miner.build_report(
+        messages,
+        input_record_count=2,
+        config=config,
+        rules_by_language={},
+    )
+
+    candidate = _candidate(report, "두근두근")
+    assert candidate["occurrence_count"] == 2
+    assert candidate["message_count"] == 2
+
+    below_threshold = miner.build_report(
+        messages,
+        input_record_count=2,
+        config=_config(
+            threshold=3,
+            word_ngram_min=1,
+            word_ngram_max=1,
+        ),
+        rules_by_language={},
+    )
+    assert below_threshold["candidates"] == []
+
+
 def test_code_urls_and_template_noise_are_protected():
     text = (
         "`hidden phrase` https://example.test/hidden-phrase\n"
