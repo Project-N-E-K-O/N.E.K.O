@@ -54,7 +54,7 @@ not include the small `uv` wrapper, which is shown as part of the total.
 | --- | ---: | ---: | ---: | ---: |
 | Development cold READY, three-server mode, median of 3 | 722.8 / 546.7 | - | - | 742.7 / 552.8 |
 | Merged-server cold READY | 402.8 / 339.6 | - | - | 422.5 / 345.7 |
-| First chat complete, three-server mode | 810.3 / 630.3 | - | - | 830.0 / 636.4 |
+| First chat after session teardown, three-server mode | 810.3 / 630.3 | - | - | 830.0 / 636.4 |
 | Embedding READY | 194.2 / 163.4 | - | - | 194.2 / 163.4 |
 | OCR constructed and first blank-image inference complete | 308.2 / 271.0 | - | - | 308.2 / 271.0 |
 | browser-use + headed Playwright started | 233.8 / 214.5 | - | 420.3 / 121.8 (7) | 654.1 / 336.3 |
@@ -93,13 +93,20 @@ or response text.
 
 | Transition | Whole tree RSS delta | Whole tree USS delta |
 | --- | ---: | ---: |
-| READY to first chat complete | +88.2 | +84.4 |
+| READY to first chat after session teardown | +88.2 | +84.4 |
 
 The memory server accounted for +78.7 / +75.9 MiB of that change, and the main
 server for +9.3 / +8.3 MiB. Agent and launcher changes were negligible. Thus
 the first-turn lazy allocation is concentrated in the memory service. Finer
 Python-versus-native attribution would require starting `tracemalloc` inside
 that child service; an external sampler cannot provide it.
+
+The original run sent `end_session` before this checkpoint, so the number is a
+conservative after-teardown baseline rather than the retained memory of a live
+text session. The probe now records `first_chat_complete_live` before sending
+`end_session`. A replacement live-session number requires a rerun with verified
+isolated storage; it was not repeated here because the launcher had already
+ignored the attempted isolated root and persisted the synthetic turn.
 
 The launcher overrode the attempted isolated storage root during this run and
 used the selected existing character store. The synthetic turn was therefore
@@ -209,7 +216,8 @@ Use these stable comparisons rather than a single absolute RSS value:
 
 - three-server READY whole-tree median: **742.7 / 552.8 MiB** RSS/USS;
 - merged READY whole tree: **422.5 / 345.7 MiB**;
-- first chat whole-tree delta: **+88.2 / +84.4 MiB**;
+- legacy first-chat after-teardown delta: **+88.2 / +84.4 MiB**; do not compare
+  this with the probe's new `first_chat_complete_live` checkpoint;
 - embedding imports to READY: **+87.7 / +72.5 MiB**, traced current **+7.8 MiB**;
 - OCR imports to enabled: **+106.2 / +87.0 MiB**, traced current **+12.4 MiB**;
 - browser-use imports to Playwright READY: **+466.5 / +165.2 MiB** total,

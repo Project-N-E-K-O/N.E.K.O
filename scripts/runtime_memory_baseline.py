@@ -24,15 +24,15 @@ import platform
 import socket
 import statistics
 import subprocess
-import sys
 import time
 import tracemalloc
 import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import psutil
 
@@ -161,7 +161,11 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         uss_values: list[float] = []
         for sample in samples:
-            uss_mib = sample["categories"].get(name, {}).get("uss_mib")
+            category = sample["categories"].get(name)
+            if category is None:
+                uss_values.append(0.0)
+                continue
+            uss_mib = category.get("uss_mib")
             if uss_mib is not None:
                 uss_values.append(float(uss_mib))
         count_values = [
@@ -486,17 +490,14 @@ def _terminate_process_trees(
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 continue
     target_list = list(targets.values())
+    # Teardown is best-effort because processes can exit between discovery and action.
     for target in reversed(target_list):
-        try:
+        with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             target.terminate()
-        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-            pass
     _, alive = psutil.wait_procs(target_list, timeout=timeout)
     for target in alive:
-        try:
+        with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             target.kill()
-        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-            pass
 
 
 async def _run_synthetic_chat(
@@ -505,6 +506,7 @@ async def _run_synthetic_chat(
     character: str,
     prompt: str,
     timeout: float,
+    after_turn: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     import websockets
 
@@ -578,14 +580,19 @@ async def _run_synthetic_chat(
             if (
                 message_type == "system"
                 and str(message.get("data") or "").startswith("turn end")
-                and message.get("request_id") in (None, request_id)
+                and message.get("request_id") == request_id
             ):
                 break
 
-        await websocket.send(json.dumps({"action": "end_session"}))
+        turn_elapsed_s = round(time.perf_counter() - started_at, 3)
+        try:
+            if after_turn is not None:
+                await asyncio.to_thread(after_turn)
+        finally:
+            await websocket.send(json.dumps({"action": "end_session"}))
 
     return {
-        "elapsed_s": round(time.perf_counter() - started_at, 3),
+        "elapsed_s": turn_elapsed_s,
         "message_type_counts": dict(sorted(counts.items())),
         "status_code_counts": dict(sorted(status_codes.items())),
         "request_id_prefix": "memory-baseline-",
@@ -728,22 +735,25 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
         chat_result = None
         if args.synthetic_chat:
+            def _record_live_first_chat() -> None:
+                time.sleep(args.settle)
+                checkpoints.append(
+                    _sample_window(
+                        "first_chat_complete_live",
+                        roots,
+                        seconds=args.window,
+                        interval=args.interval,
+                        observed_processes=observed_processes,
+                    )
+                )
+
             chat_result = asyncio.run(
                 _run_synthetic_chat(
                     port=ports[0],
                     character=args.chat_character,
                     prompt=args.chat_prompt,
                     timeout=args.chat_timeout,
-                )
-            )
-            time.sleep(args.settle)
-            checkpoints.append(
-                _sample_window(
-                    "first_chat_complete",
-                    roots,
-                    seconds=args.window,
-                    interval=args.interval,
-                    observed_processes=observed_processes,
+                    after_turn=_record_live_first_chat,
                 )
             )
 
