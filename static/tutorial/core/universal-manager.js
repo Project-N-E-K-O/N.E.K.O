@@ -32,6 +32,8 @@ const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usag
 const AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7;
 const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
+// PC 端最长可能先等折叠动画结束再展开；这里额外留出跨窗口转发余量，但不让教程无限等待。
+const YUI_GUIDE_COMPACT_CHAT_PREPARE_TIMEOUT_MS = 4500;
 
 function getTutorialStorageKeyForPage(pageKey) {
     return TUTORIAL_STORAGE_KEY_PREFIX + (pageKey === 'home' ? 'home_yui_v1' : pageKey);
@@ -491,6 +493,8 @@ class UniversalTutorialManager {
         this.currentStep = 0;
         this._tutorialLive2dRenderActivationToken = 0;
         this._avatarFloatingModelLockSnapshot = null;
+        // 记录教程强制展开前是否为毛球，所有结束路径都用它恢复原形态。
+        this._avatarFloatingChatSurfaceSnapshot = null;
         this.cachedValidSteps = null;
         this._pendingI18nStart = false;
         this.pendingTutorialStartSource = null;
@@ -1224,6 +1228,8 @@ class UniversalTutorialManager {
         const director = this.yuiGuideDirector;
         this.syncPcSystemCursorHidden(false, rawReason);
         this.clearYuiGuideCompactChatFixedLayout(rawReason);
+        // 恢复请求必须先于 lifecycle-ended 发出；聊天窗关闭本轮生命周期后会拒绝迟到的教程命令。
+        this.restoreYuiGuideCompactChatSurface(rawReason);
 
         try {
             this.notifyYuiGuideTutorialEnd(rawReason);
@@ -1416,6 +1422,124 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 原生转发胶囊聊天框固定布局失败:', error);
             }
         }
+    }
+
+    prepareYuiGuideCompactChatForTutorial() {
+        const requestId = `tutorial-compact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const message = {
+            action: 'yui_guide_prepare_compact_chat',
+            requestId: requestId,
+            reason: 'avatar-floating-guide-start',
+            timestamp: Date.now()
+        };
+
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (ready, detail) => {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('neko:yui-guide:compact-chat-ready', handleReady);
+                window.clearTimeout(timeoutId);
+                const response = detail && typeof detail === 'object' ? detail : {};
+                // 只在握手完成后保存启动前形态；上一轮迟到回执不能覆盖本轮恢复目标。
+                this._avatarFloatingChatSurfaceSnapshot = {
+                    requestId: requestId,
+                    wasCollapsed: response.wasCollapsed === true
+                };
+                resolve(ready === true);
+            };
+            const handleReady = (event) => {
+                const detail = event && event.detail && typeof event.detail === 'object'
+                    ? event.detail
+                    : {};
+                if (detail.requestId !== requestId) return;
+                finish(detail.ready !== false, detail);
+            };
+            const timeoutId = window.setTimeout(() => {
+                console.warn('[Tutorial] 等待胶囊聊天框原生展开超时，取消本轮教程启动');
+                finish(false, {});
+            }, YUI_GUIDE_COMPACT_CHAT_PREPARE_TIMEOUT_MS);
+            window.addEventListener('neko:yui-guide:compact-chat-ready', handleReady);
+
+            let posted = false;
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    channel.postMessage(message);
+                    posted = true;
+                } catch (error) {
+                    console.warn('[Tutorial] 广播胶囊聊天框准备请求失败:', error);
+                }
+            }
+            if (
+                window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+            ) {
+                try {
+                    window.nekoTutorialOverlay.relayToChat(message);
+                    posted = true;
+                } catch (error) {
+                    console.warn('[Tutorial] 原生转发胶囊聊天框准备请求失败:', error);
+                }
+            }
+            if (!posted) {
+                // 没有独立聊天窗的浏览器环境无需等待原生 carrier；本地 React 窗口沿用原行为。
+                const host = window.reactChatWindowHost || null;
+                const wasCollapsed = !!(
+                    host
+                    && typeof host.getChatSurfaceMode === 'function'
+                    && host.getChatSurfaceMode() === 'minimized'
+                );
+                if (host && typeof host.openWindow === 'function') {
+                    host.openWindow();
+                }
+                finish(true, { wasCollapsed: wasCollapsed });
+            }
+        });
+    }
+
+    restoreYuiGuideCompactChatSurface(reason = 'tutorial-ended') {
+        const snapshot = this._avatarFloatingChatSurfaceSnapshot;
+        this._avatarFloatingChatSurfaceSnapshot = null;
+        if (!snapshot || snapshot.wasCollapsed !== true) return false;
+
+        const message = {
+            action: 'yui_guide_restore_compact_chat',
+            requestId: snapshot.requestId,
+            wasCollapsed: true,
+            reason: reason,
+            timestamp: Date.now()
+        };
+        let posted = false;
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage(message);
+                posted = true;
+            } catch (error) {
+                console.warn('[Tutorial] 广播胶囊聊天框形态恢复失败:', error);
+            }
+        }
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.relayToChat === 'function'
+        ) {
+            try {
+                window.nekoTutorialOverlay.relayToChat(message);
+                posted = true;
+            } catch (error) {
+                console.warn('[Tutorial] 原生转发胶囊聊天框形态恢复失败:', error);
+            }
+        }
+        if (!posted) {
+            const host = window.reactChatWindowHost || null;
+            if (host && typeof host.setChatSurfaceMode === 'function') {
+                // 浏览器内嵌聊天窗没有跨窗口接收端，直接通过同一 surface 状态机恢复毛球。
+                host.setChatSurfaceMode('minimized');
+                return true;
+            }
+        }
+        return posted;
     }
 
     clearPcTutorialGlobalOverlay(reason = 'destroy') {
@@ -3022,6 +3146,12 @@ class UniversalTutorialManager {
         if (this._avatarFloatingModelLockSnapshot) {
             return;
         }
+        let autoGoodbyeState = null;
+        try {
+            autoGoodbyeState = window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.getState === 'function'
+                ? window.nekoAutoGoodbye.getState()
+                : null;
+        } catch (_) {}
         const readLocked = (manager, fallback) => {
             if (manager && typeof manager.isLocked !== 'undefined') {
                 return !!manager.isLocked;
@@ -3035,6 +3165,9 @@ class UniversalTutorialManager {
             const element = document.getElementById(elementId);
             return element ? element.style.pointerEvents : '';
         };
+        const startupDefaultCatPending = !!(
+            autoGoodbyeState && autoGoodbyeState.startupDefaultCatRequested === true
+        );
         this._avatarFloatingModelLockSnapshot = {
             live2d: readLocked(window.live2dManager),
             vrm: readLocked(window.vrmManager, window.vrmManager && window.vrmManager.interaction),
@@ -3050,6 +3183,32 @@ class UniversalTutorialManager {
                 pngtuberCanvas: readPointerEvents('pngtuber-canvas'),
                 pngtuberContainer: readPointerEvents('pngtuber-container')
             },
+            // 猫咪/告别态是业务形态，不能只靠 pointer-events 快照推断；模型重载会清掉 manager 标志。
+            goodbyeActive: !!(
+                (window.live2dManager && window.live2dManager._goodbyeClicked)
+                || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                || (window.mmdManager && window.mmdManager._goodbyeClicked)
+                // 冷启动直进教程时 manager 标志可能尚未建立，auto-goodbye 的视觉层级仍是可靠业务状态。
+                || (autoGoodbyeState && autoGoodbyeState.visualTier && autoGoodbyeState.visualTier !== 'none')
+                // PC 冷启动直进教程会跳过用户模型；此时“默认猫咪”只有待执行请求，还没有可见猫咪态。
+                || startupDefaultCatPending
+            ),
+            goodbyeMeta: autoGoodbyeState && typeof autoGoodbyeState === 'object'
+                ? {
+                    autoGoodbye: autoGoodbyeState.autoGoodbyeTriggered === true,
+                    // 待执行的启动默认形态是明确的产品状态，优先于尚未进入猫咪态时的 started 等临时原因。
+                    reason: startupDefaultCatPending ? 'startup-default-cat' : (autoGoodbyeState.lastReason || ''),
+                    visualTier: autoGoodbyeState.visualTier || ''
+                }
+                : null,
+            goodbyeRect: window._savedGoodbyeRect
+                ? {
+                    left: Number(window._savedGoodbyeRect.left),
+                    top: Number(window._savedGoodbyeRect.top),
+                    width: Number(window._savedGoodbyeRect.width),
+                    height: Number(window._savedGoodbyeRect.height)
+                }
+                : null,
             reason
         };
     }
@@ -3071,6 +3230,11 @@ class UniversalTutorialManager {
     restoreAvatarFloatingModelInteractionState(reason = 'tutorial-ended') {
         const snapshot = this._avatarFloatingModelLockSnapshot;
         if (!snapshot) {
+            return;
+        }
+        if (reason === 'teardown-early' && snapshot.goodbyeActive === true) {
+            // 猫咪态的锁定属性属于隐藏模型；必须等用户模型重载完成并重新进入猫咪态，
+            // 不能提前把 pointer-events:none 套到仍在退场的教程模型上。
             return;
         }
         try {
@@ -3136,6 +3300,47 @@ class UniversalTutorialManager {
             restoreAvatarPointerEvents(element, elementId, snapshotPointerEvents, hasSnapshotPointerEvents);
         });
         if (reason === 'tutorial-avatar-restored') {
+            this._avatarFloatingModelLockSnapshot = null;
+        }
+    }
+
+    restoreAvatarFloatingModelStateAfterTutorial() {
+        const snapshot = this._avatarFloatingModelLockSnapshot;
+        if (!snapshot || snapshot.goodbyeActive !== true) {
+            this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored');
+            return false;
+        }
+
+        const goodbyeMeta = snapshot.goodbyeMeta || {};
+        const restoreDetail = {
+            source: 'tutorial-state-restore',
+            reason: goodbyeMeta.reason || 'tutorial-state-restore',
+            // 重新进入猫咪态时保留教程前的返回按钮锚点，不使用教程临时模型站位。
+            restoreSavedGoodbyeRect: snapshot.goodbyeRect || null
+        };
+        if (goodbyeMeta.autoGoodbye === true) {
+            restoreDetail.autoGoodbye = true;
+        } else if (goodbyeMeta.reason === 'startup-default-cat') {
+            restoreDetail.startupDefaultForm = 'cat';
+        }
+
+        try {
+            // 模型重载只恢复角色资源，不会恢复猫咪/告别表现；重新走既有 goodbye 入口，
+            // 让可见形态、锁定状态、返回按钮和 PC 命中区由同一业务链路一致重建。
+            window.dispatchEvent(new CustomEvent('live2d-goodbye-click', { detail: restoreDetail }));
+            if (
+                goodbyeMeta.visualTier
+                && window.nekoAutoGoodbye
+                && typeof window.nekoAutoGoodbye.setVisualTier === 'function'
+            ) {
+                window.nekoAutoGoodbye.setVisualTier(goodbyeMeta.visualTier, {
+                    source: 'tutorial-state-restore',
+                    reason: restoreDetail.reason
+                });
+            }
+            return true;
+        } finally {
+            // 业务形态已接管交互恢复，不能再把旧 DOM 的 pointer-events 快照重复应用到新模型。
             this._avatarFloatingModelLockSnapshot = null;
         }
     }
@@ -3417,17 +3622,24 @@ class UniversalTutorialManager {
         this.isTutorialRunning = true;
         window.isInTutorial = true;
         this.lockBodyScroll();
-        if (document.body) {
-            document.body.classList.add('yui-guide-compact-chat-fixed');
-        }
-        this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
-        this._tutorialModelPrefix = 'live2d';
-        this.emitTutorialStarted('home', source);
-        if (directTutorialBoot) {
-            this.claimDirectAvatarFloatingTutorialBoot(round, source);
-        }
 
         try {
+            // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
+            // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
+            const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
+            if (!compactChatReady) {
+                throw new Error('tutorial_compact_chat_not_ready');
+            }
+            if (document.body) {
+                document.body.classList.add('yui-guide-compact-chat-fixed');
+            }
+            this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
+            this._tutorialModelPrefix = 'live2d';
+            this.emitTutorialStarted('home', source);
+            if (directTutorialBoot) {
+                this.claimDirectAvatarFloatingTutorialBoot(round, source);
+            }
+
             const director = this.ensureYuiGuideDirector();
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
                 throw new Error('avatar_floating_director_unavailable');
@@ -4040,7 +4252,8 @@ class UniversalTutorialManager {
         const teardownPromise = Promise.resolve()
             .then(() => this.restoreTutorialAvatarOverride())
             .then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))
-            .then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))
+            // 用户模型恢复后再按教程前的业务形态恢复；猫咪态不能只回放旧 DOM 的点击穿透属性。
+            .then(() => this.restoreAvatarFloatingModelStateAfterTutorial())
             .catch(error => {
                 console.warn('[Tutorial] 拆除引导时恢复头像失败:', error);
             })

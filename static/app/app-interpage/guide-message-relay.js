@@ -269,6 +269,18 @@
                         I.applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);
                         break;
                     }
+                    case 'yui_guide_prepare_compact_chat': {
+                        if (!I.isStandaloneChatPage()) break;
+                        // 固定教程布局前先完成原生毛球到胶囊的展开，并把启动前形态回传给主页。
+                        I.prepareYuiGuideCompactChatSurface(event.data);
+                        break;
+                    }
+                    case 'yui_guide_restore_compact_chat': {
+                        if (!I.isStandaloneChatPage()) break;
+                        // 教程结束后的形态恢复必须由胶囊窗口执行，主页没有原生窗口状态。
+                        I.restoreYuiGuideCompactChatSurface(event.data);
+                        break;
+                    }
                     case 'yui_guide_set_chat_cursor':
                     case 'yui_guide_drag_chat_cursor':
                     case 'yui_guide_arc_chat_cursor': {
@@ -322,6 +334,14 @@
                             detail: {
                                 timestamp: event.data.timestamp || Date.now()
                             }
+                        }));
+                        break;
+                    }
+                    case 'yui_guide_compact_chat_ready': {
+                        if (I.isStandaloneChatPage()) break;
+                        // requestId 由本轮教程生成，主页据此忽略上一轮迟到的展开回执。
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:compact-chat-ready', {
+                            detail: event.data
                         }));
                         break;
                     }
@@ -580,6 +600,90 @@
             return false;
         }
     }
+
+    I.prepareYuiGuideCompactChatSurface = function prepareYuiGuideCompactChatSurface(message) {
+        var requestId = message && message.requestId ? String(message.requestId) : '';
+        if (!requestId) return false;
+
+        var host = getReactChatWindowHost();
+        var nativeBridge = window.nekoChatWindow || null;
+        var hostMode = host && typeof host.getChatSurfaceMode === 'function'
+            ? host.getChatSurfaceMode()
+            : '';
+        var wasCollapsed = hostMode === 'minimized'
+            || !!(nativeBridge && typeof nativeBridge.isCollapsed === 'function' && nativeBridge.isCollapsed());
+
+        // 同一请求可能同时经 BroadcastChannel 与原生 relay 到达；只启动一次原生动画，
+        // 否则第二次调用会把正在展开的 surface 当成新的教程状态。
+        if (I.yuiGuideCompactChatPrepareRequestId === requestId) {
+            return true;
+        }
+        I.yuiGuideCompactChatPrepareRequestId = requestId;
+
+        var nativePreparation = null;
+        if (nativeBridge && typeof nativeBridge.prepareExpandedForTutorial === 'function') {
+            try {
+                nativePreparation = nativeBridge.prepareExpandedForTutorial();
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to prepare native compact chat surface:', error);
+            }
+        } else if (nativeBridge && typeof nativeBridge.ensureExpandedForTutorial === 'function') {
+            try {
+                nativeBridge.ensureExpandedForTutorial();
+            } catch (_) {}
+        }
+
+        // 浏览器和旧版桌面桥仍需同步 React 自己的 minimized 状态；新版桌面桥会在
+        // 原生展开完成后再次把 host 对齐到 compact，因此这一步是幂等的。
+        I.ensureYuiGuideExternalChatExpanded();
+
+        Promise.resolve(nativePreparation).then(function (result) {
+            var nativeResult = result && typeof result === 'object' ? result : {};
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: nativeResult.ready !== false,
+                wasCollapsed: nativeResult.wasCollapsed === true || wasCollapsed,
+                timestamp: Date.now()
+            });
+        }).catch(function (error) {
+            console.warn('[YuiGuide] Native compact chat preparation failed:', error);
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: false,
+                wasCollapsed: wasCollapsed,
+                timestamp: Date.now()
+            });
+        });
+        return true;
+    };
+
+    I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface(message) {
+        if (!message || message.wasCollapsed !== true) return false;
+        var requestId = message.requestId ? String(message.requestId) : '';
+        if (requestId && I.yuiGuideCompactChatRestoreRequestId === requestId) {
+            return true;
+        }
+        // BroadcastChannel 与原生 relay 可能各送一次；恢复动画同样只允许启动一次。
+        I.yuiGuideCompactChatRestoreRequestId = requestId;
+
+        var nativeBridge = window.nekoChatWindow || null;
+        if (nativeBridge && typeof nativeBridge.restoreCollapsedAfterTutorial === 'function') {
+            try {
+                nativeBridge.restoreCollapsedAfterTutorial();
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to restore native collapsed chat surface:', error);
+            }
+        }
+
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setChatSurfaceMode === 'function') {
+            // 旧版桌面桥及浏览器环境没有原生恢复 API，仍通过现有 surface 状态机折叠。
+            host.setChatSurfaceMode('minimized');
+            return true;
+        }
+        return false;
+    };
 
     function relayYuiGuideChatCommand(data) {
         var detail = data && typeof data === 'object' ? Object.assign({}, data) : {};

@@ -2623,7 +2623,11 @@ test('tutorial skip button reuses the manager tutorial end lifecycle', () => {
     assert.match(managerSource, /modelType === 'live3d'/);
     assert.match(managerSource, /live3d_sub_type/);
     assert.match(teardownBlock, /this\.restoreAvatarFloatingModelInteractionState\('teardown-early'\);/);
-    assert.match(teardownBlock, /\.then\(\(\) => this\.restoreAvatarFloatingModelInteractionState\('tutorial-avatar-restored'\)\)/);
+    // 最终恢复必须先判断猫咪业务形态，不能把旧 DOM 的穿透样式直接应用到重载后的模型。
+    assert.match(teardownBlock, /\.then\(\(\) => this\.restoreAvatarFloatingModelStateAfterTutorial\(\)\)/);
+    assert.match(managerSource, /goodbyeActive:/);
+    assert.match(avatarInteractionRestoreBlock, /window\.dispatchEvent\(new CustomEvent\('live2d-goodbye-click'/);
+    assert.match(avatarInteractionRestoreBlock, /this\._avatarFloatingModelLockSnapshot = null;/);
     assert.doesNotMatch(routerBlock, /requestAvatarFloatingGuideCooperativeEnd\(finalReason\)/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialEnd\(finalReason\);/);
     assert.match(routerBlock, /return director\.tutorialManager\.requestTutorialDestroy\(finalReason\);/);

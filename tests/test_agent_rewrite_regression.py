@@ -1514,13 +1514,14 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
     assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
-    assert ".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))" in tutorial_source
+    # 最终恢复统一按业务形态分流：普通模型回放交互快照，猫咪态重走 goodbye 链路。
+    assert ".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())" in tutorial_source
     assert tutorial_source.index(".then(() => this.restoreTutorialAvatarOverride())") < tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
     )
     assert tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
-    ) < tutorial_source.index(".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))")
+    ) < tutorial_source.index(".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())")
     assert "async clearTutorialYuiLive2dRuntimeResidue(reason = '')" in tutorial_source
     assert "this.isCurrentRuntimeModelLive2d()" in tutorial_source
     assert "await manager.removeModel({ skipCloseWindows: true });" in tutorial_source
@@ -1983,7 +1984,8 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     )[0]
     assert "this.dispatchAvatarFloatingTutorialInputRestored(" in tutorial_source
     assert "neko:yui-guide:tutorial-input-restored" in tutorial_source
-    assert teardown_block.index("this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored')") < teardown_block.index(
+    # 输入区域刷新必须发生在模型身份和猫咪/普通业务形态都恢复完成之后。
+    assert teardown_block.index("this.restoreAvatarFloatingModelStateAfterTutorial()") < teardown_block.index(
         "this.dispatchAvatarFloatingTutorialInputRestored("
     )
 

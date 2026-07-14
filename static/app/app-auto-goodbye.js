@@ -731,6 +731,15 @@
             scheduleStartupDefaultCatRetry();
             return;
         }
+        if (
+            isTutorialGuardActive()
+            || window.isNekoHomeTutorialPending === true
+            || window.isInTutorial === true
+        ) {
+            // 教程直启时页面上出现的是临时 YUI 模型按钮；继续等待，不能把启动默认猫咪请求消费在教程模型上。
+            scheduleStartupDefaultCatRetry();
+            return;
+        }
         if (isGoodbyeActive()) {
             cancelStartupDefaultCatRequest(true);
             return;
@@ -793,6 +802,8 @@
             lastSuppressionChangedAt: state.lastSuppressionChangedAt,
             conversationGraceUntil: state.conversationGraceUntil,
             lastConversationSource: state.lastConversationSource,
+            // 教程管理器需要区分“用户选择普通模型”和“PC 默认猫咪请求尚未执行”的冷启动状态。
+            startupDefaultCatRequested: state.startupDefaultCatRequested,
             thresholdsMs: {
                 cat1: AUTO_GOODBYE_MS,
                 cat2: CAT2_MS,

@@ -29,6 +29,7 @@ FLOATING_GUIDE_RESET_PATH = (
 CHARACTER_PERSONALITY_ONBOARDING_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "js/character_personality_onboarding.js"
 )
+APP_INTERPAGE_PARTS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
 
 
 def _read_manager() -> str:
@@ -818,6 +819,75 @@ def test_avatar_floating_guide_lifecycle_toggles_compact_chat_fixed_layout_class
     assert "this.syncYuiGuideCompactChatFixedLayout(false, reason)" in clear_method_block
     assert "action: 'yui_guide_set_compact_chat_fixed_layout'" in source
     assert "window.nekoTutorialOverlay.relayToChat(message)" in source
+
+
+def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_restores_ball():
+    source = _read_manager()
+    start_round_block = source.split("    async startAvatarFloatingGuideRound(day, options = {}) {", 1)[1].split(
+        "            const director = this.ensureYuiGuideDirector();",
+        1,
+    )[0]
+    lifecycle_block = source.split("    clearAllTutorialLifecycles(reason = 'destroy') {", 1)[1].split(
+        "    normalizeTutorialEndRawReason(reason) {",
+        1,
+    )[0]
+
+    # 原生毛球必须先展开并回执，随后才允许教程固定胶囊位置。
+    assert start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()") < start_round_block.index(
+        "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
+    )
+    assert "action: 'yui_guide_prepare_compact_chat'" in source
+    assert "neko:yui-guide:compact-chat-ready" in source
+    assert "wasCollapsed: response.wasCollapsed === true" in source
+    # 所有结束方式都经过 clearAllTutorialLifecycles，因此形态恢复不能只挂在 skip 或 complete 分支。
+    assert lifecycle_block.index("this.clearYuiGuideCompactChatFixedLayout(rawReason)") < lifecycle_block.index(
+        "this.restoreYuiGuideCompactChatSurface(rawReason)"
+    )
+    assert "action: 'yui_guide_restore_compact_chat'" in source
+
+
+def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reload():
+    source = _read_manager()
+    repo_root = Path(__file__).resolve().parents[2]
+    app_ui_source = read_js_parts(repo_root / "static/app/app-ui")
+    teardown_block = source.split("    _teardownTutorialUI() {", 1)[1].split(
+        "    /**\n     * 恢复所有在引导中修改过的元素",
+        1,
+    )[0]
+    restore_state_block = source.split("    restoreAvatarFloatingModelStateAfterTutorial() {", 1)[1].split(
+        "    applyTutorialChatIdentityOverride(detail) {",
+        1,
+    )[0]
+
+    # 用户模型先恢复，随后才重新进入教程前的猫咪形态，避免点击穿透状态套到普通模型上。
+    assert teardown_block.index("this.restoreTutorialAvatarOverride()") < teardown_block.index(
+        "this.restoreAvatarFloatingModelStateAfterTutorial()"
+    )
+    assert "snapshot.goodbyeActive !== true" in restore_state_block
+    # 直启教程没有用户模型可供读取，待执行的 PC 默认猫咪请求也必须成为恢复目标。
+    assert "autoGoodbyeState.startupDefaultCatRequested === true" in source
+    assert "startupDefaultCatPending ? 'startup-default-cat'" in source
+    assert "new CustomEvent('live2d-goodbye-click'" in restore_state_block
+    assert "restoreSavedGoodbyeRect: snapshot.goodbyeRect || null" in restore_state_block
+    assert "this._avatarFloatingModelLockSnapshot = null" in restore_state_block
+    assert "const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect" in app_ui_source
+
+
+def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state():
+    source = (APP_INTERPAGE_PARTS_PATH / "guide-message-relay.js").read_text(encoding="utf-8")
+    native_relay_source = (APP_INTERPAGE_PARTS_PATH / "cross-window-broadcast-and-bridge.js").read_text(
+        encoding="utf-8"
+    )
+
+    # 两种跨窗口传输路径必须落到同一实现，重复 relay 也只能启动一次原生展开动画。
+    assert "case 'yui_guide_prepare_compact_chat':" in source
+    assert "case 'yui_guide_prepare_compact_chat':" in native_relay_source
+    assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
+    assert "nativeBridge.prepareExpandedForTutorial()" in source
+    assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
+    # 只有教程前确实是毛球时才折叠，普通胶囊用户结束教程后保持胶囊。
+    assert "if (!message || message.wasCollapsed !== true) return false" in source
+    assert "nativeBridge.restoreCollapsedAfterTutorial()" in source
 
 
 def test_electron_shortcut_bridges_are_blocked_during_tutorial():

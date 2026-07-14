@@ -729,6 +729,18 @@
                 I.applyYuiGuideCompactChatFixedLayout(message.fixed === true);
                 return true;
             }
+            case 'yui_guide_prepare_compact_chat': {
+                if (!I.isStandaloneChatPage()) return true;
+                // 原生 relay 与 BroadcastChannel 共用同一准备函数，保证两条传输路径行为一致。
+                I.prepareYuiGuideCompactChatSurface(message);
+                return true;
+            }
+            case 'yui_guide_restore_compact_chat': {
+                if (!I.isStandaloneChatPage()) return true;
+                // 形态恢复留在胶囊窗口执行，避免主页猜测 Electron 的真实折叠状态。
+                I.restoreYuiGuideCompactChatSurface(message);
+                return true;
+            }
             case 'yui_guide_set_chat_spotlight': {
                 if (!I.isStandaloneChatPage() || !document.body) return true;
                 I.ensureYuiGuideExternalChatExpanded();
@@ -873,6 +885,14 @@
                     detail: {
                         timestamp: message.timestamp || Date.now()
                     }
+                }));
+                return true;
+            }
+            case 'yui_guide_compact_chat_ready': {
+                if (I.isStandaloneChatPage()) return true;
+                // 主页只接受当前 requestId 的回执，重启教程时不会误用上一轮迟到消息。
+                window.dispatchEvent(new CustomEvent('neko:yui-guide:compact-chat-ready', {
+                    detail: message
                 }));
                 return true;
             }
