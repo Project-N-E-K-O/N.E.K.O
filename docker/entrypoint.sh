@@ -439,10 +439,10 @@ setup_nginx_proxy() {
     
     # 生成SSL证书和密钥（如果不存在）
     echo "🔐 Setting up SSL certificates..."
-    mkdir -p /root/ssl
+    mkdir -p /home/neko/ssl
     
-    local cert_file="/root/ssl/N.E.K.O.crt"
-    local key_file="/root/ssl/N.E.K.O.key"
+    local cert_file="/home/neko/ssl/N.E.K.O.crt"
+    local key_file="/home/neko/ssl/N.E.K.O.key"
     
     # 如果证书或密钥不存在，直接生成新的
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
@@ -759,8 +759,8 @@ start_nginx_reloader() {
     # 记录初始配置文件的修改时间
     local nginx_conf="/etc/nginx/nginx.conf"
     local site_conf="/etc/nginx/conf.d/neko-proxy.conf"
-    local ssl_cert="/root/ssl/N.E.K.O.crt"
-    local ssl_key="/root/ssl/N.E.K.O.key"
+    local ssl_cert="/home/neko/ssl/N.E.K.O.crt"
+    local ssl_key="/home/neko/ssl/N.E.K.O.key"
     
     local last_conf_time=$(stat -c %Y "$nginx_conf" "$site_conf" 2>/dev/null)
     local last_ssl_time=""
@@ -952,8 +952,8 @@ start_openfang_daemon() {
     echo "🚀 Starting OpenFang A2A daemon..."
     cd /app
 
-    # OpenFang 工作目录（neko 用户的 home = /app → ~/.openfang = /app/.openfang）
-    local OF_HOME="/app/.openfang"
+    # OpenFang 工作目录（~neko/.openfang）
+    local OF_HOME="/home/neko/.openfang"
     local OF_CONFIG="$OF_HOME/config.toml"
 
     if [ ! -f "$OF_CONFIG" ]; then
@@ -961,6 +961,12 @@ start_openfang_daemon() {
         runuser -u neko -- openfang init 2>&1 || {
             echo "⚠️ OpenFang init failed (non-critical)"
         }
+    fi
+
+    # 清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
+    if [ -d "$OF_HOME/agents" ]; then
+        echo "   Removing pre-installed agents (no Groq API key configured)..."
+        rm -rf "$OF_HOME/agents"
     fi
 
     # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
@@ -1141,8 +1147,8 @@ main() {
     setup_nginx_proxy
     
     # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）
-    mkdir -p /app/.local/share/N.E.K.O
-    chown -R neko:neko /app/.local/share/N.E.K.O
+    mkdir -p /home/neko/.local/share/N.E.K.O
+    chown -R neko:neko /home/neko/.local/share/N.E.K.O
     
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon

@@ -183,9 +183,9 @@ RUN groupadd -r nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
     groupadd -r neko && \
-    useradd -r -g neko -d /app -s /bin/bash neko && \
-    mkdir -p /app/logs /app/N.E.K.O /root/ssl /opt/ms-playwright && \
-    chown -R neko:neko /app /opt/ms-playwright
+    useradd -r -g neko -d /home/neko -s /bin/bash neko && \
+    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
+    chown -R neko:neko /home/neko /app /opt/ms-playwright
 
 # 3. 创建 Python 符号链接
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \

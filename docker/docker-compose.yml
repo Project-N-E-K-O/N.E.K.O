@@ -50,13 +50,13 @@ services:
     # 卷挂载配置
     volumes:
       # 1. 持久化配置目录（XDG_DATA_HOME 规范路径）
-      - ./N.E.K.O:/app/.local/share/N.E.K.O
+      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
 
       # 2. 日志目录
       - ./logs:/app/logs
 
       # 3. SSL证书目录
-      - ./ssl:/root/ssl
+      - ./ssl:/home/neko/ssl
 
     # 环境变量
     environment:

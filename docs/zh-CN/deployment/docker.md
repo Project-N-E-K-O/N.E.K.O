@@ -32,9 +32,9 @@ services:
       - "48911:80"    # HTTP
       - "48912:443"   # HTTPS
     volumes:
-      - ./N.E.K.O:/app/.local/share/N.E.K.O
+      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
       - ./logs:/app/logs
-      - ./ssl:/root/ssl
+      - ./ssl:/home/neko/ssl
     networks:
       - neko-network
 
@@ -74,9 +74,9 @@ Docker 容器内置 Nginx 作为反向代理：
 
 | 挂载 | 容器路径 | 用途 |
 |------|----------|------|
-| `./N.E.K.O` | `/app/.local/share/N.E.K.O` | 配置、角色、记忆 |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 配置、角色、记忆 |
 | `./logs` | `/app/logs` | 应用日志 |
-| `./ssl` | `/root/ssl` | SSL 证书 |
+| `./ssl` | `/home/neko/ssl` | SSL 证书 |
 
 ## 服务商快速配置
 
@@ -108,7 +108,7 @@ docker logs neko
 docker exec -it neko bash
 
 # Check config
-docker exec neko cat /app/.local/share/N.E.K.O/core_config.json
+docker exec neko cat /home/neko/.local/share/N.E.K.O/core_config.json
 
 # Check environment
 docker exec neko env | grep NEKO_

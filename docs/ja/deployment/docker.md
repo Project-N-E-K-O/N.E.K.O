@@ -32,9 +32,9 @@ services:
       - "48911:80"    # HTTP
       - "48912:443"   # HTTPS
     volumes:
-      - ./N.E.K.O:/app/.local/share/N.E.K.O
+      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
       - ./logs:/app/logs
-      - ./ssl:/root/ssl
+      - ./ssl:/home/neko/ssl
     networks:
       - neko-network
 
@@ -74,9 +74,9 @@ Docker コンテナにはリバースプロキシとして Nginx が含まれて
 
 | マウント | コンテナパス | 用途 |
 |-------|----------------|---------|
-| `./N.E.K.O` | `/app/.local/share/N.E.K.O` | 設定、キャラクター、メモリ |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 設定、キャラクター、メモリ |
 | `./logs` | `/app/logs` | アプリケーションログ |
-| `./ssl` | `/root/ssl` | SSL 証明書 |
+| `./ssl` | `/home/neko/ssl` | SSL 証明書 |
 
 ## プロバイダークイックスタート
 
@@ -108,7 +108,7 @@ docker logs neko
 docker exec -it neko bash
 
 # 設定を確認
-docker exec neko cat /app/.local/share/N.E.K.O/core_config.json
+docker exec neko cat /home/neko/.local/share/N.E.K.O/core_config.json
 
 # 環境変数を確認
 docker exec neko env | grep NEKO_
