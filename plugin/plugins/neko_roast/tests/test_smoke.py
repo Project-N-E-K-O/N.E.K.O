@@ -126,12 +126,102 @@ def test_first_use_guide_is_local_resettable_and_mirrored() -> None:
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
-        assert 'const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v1"' in source
+        assert 'const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"' in source
         assert "window.localStorage.getItem(ONBOARDING_STORAGE_KEY)" in source
         assert "window.localStorage.setItem(ONBOARDING_STORAGE_KEY, \"done\")" in source
         assert "function resetOnboarding()" in source
         assert 'onClick={resetOnboarding}' in source
         assert 'open={onboardingOpen}' in source
+        assert 't("panel.onboarding.actionLabel")' in source
+        assert 't("panel.onboarding.successLabel")' in source
+
+
+def test_live_room_selection_requires_lookup_then_explicit_confirmation() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        compact_source = "".join(source.split())
+        confirm_source = source.split("async function confirmLiveRoom()", 1)[1].split("async function connectRoom()", 1)[0]
+        lookup_source = source.split("async function lookupLiveRoom()", 1)[1].split("async function confirmLiveRoom()", 1)[0]
+
+        assert 'const [queriedRoomRef, setQueriedRoomRef] = useState("")' in source
+        assert 'const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)' in source
+        assert 'onClick={lookupLiveRoom}' in source
+        assert 'disabled={!canConfirmLiveRoom}' in source
+        assert 't("panel.console.roomTwoStepHint")' in source
+        assert 't("panel.messages.roomLookupRequired")' in source
+        assert "lookupLiveRoom()" not in confirm_source
+        assert "props.api.refresh()" not in lookup_source
+        assert 'setLiveRoomResult(null);setQueriedRoomRef("")' in compact_source or 'setLiveRoomResult(null)setQueriedRoomRef("")' in compact_source
+
+
+def test_console_opens_stream_theme_modal_in_place_of_duplicate_diagnostics_action() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
+            '<Card title={t("panel.console.sessionTitle")}>', 1
+        )[0]
+        session_source = source.split('<Card title={t("panel.console.sessionTitle")}>', 1)[1].split(
+            '<Modal', 1
+        )[0]
+
+        assert "{streamThemePanel}" not in source
+        assert source.count("{streamThemeForm}") == 1
+        assert 'open={consoleDialog === "theme"}' in source
+        assert 'setConsoleDialog("theme")' in runtime_source
+        assert 't("panel.actions.showAdvanced")' not in runtime_source
+        assert 't("panel.actions.showAdvanced")' in session_source
+        assert 't("panel.fields.streamTheme")' in source
+        assert 't("panel.streamTheme.hint")' in source
+        assert 't("panel.fields.mode")' in source
+        assert 't("panel.fields.liveMode")' not in source
+        assert 'saveConfig(advancedConfigPatch())' in source
+
+
+def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
+            '<Card title={t("panel.console.sessionTitle")}>', 1
+        )[0]
+        dock_source = source.split('className="neko-roast-console-dock"', 1)[1].split("</footer>", 1)[0]
+        settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
+        toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
+
+        assert 'className="neko-roast-console-layout"' in source
+        assert 'gridTemplateRows: "minmax(0, 1fr) auto"' in source
+        assert 'className="neko-roast-console-scroll"' in source
+        assert 'overflowY: "auto"' in source
+        assert 'position: "fixed"' not in dock_source
+        assert 'gridTemplateColumns: "minmax(260px, 520px)"' in dock_source
+        assert 'justifyContent: "center"' in dock_source
+        assert 'setConsoleDialog("pacing")' in runtime_source
+        assert 'onClick={connectRoom}' not in runtime_source
+        assert 'open={consoleDialog === "pacing"}' in source
+        assert source.count("{pacingForm}") == 1
+        assert 't("panel.pacing.fast")' in source
+        assert 't("panel.pacing.standard")' in source
+        assert 't("panel.pacing.slow")' in source
+        assert 'onClick={connectRoom}' in dock_source
+        assert dock_source.count("<Button") == 2
+        assert "<StatusBadge" not in dock_source
+        assert 'callSimple("clear_queue")' not in dock_source
+        assert 'callSimple("pause_roast")' not in dock_source
+        assert 'const canStart = roomConfigured' in source
+        assert "primaryStatusLabel" in toolbar_source
+        assert "primaryStatusTone" in toolbar_source
+        assert "showSafetyStatus" in toolbar_source
+        assert 't("panel.liveStatusSummary.cooldown")' in toolbar_source
+        assert 't("panel.stats.queue")' in toolbar_source
+        assert 'dynamicLabel("liveState", "panel.liveState", liveStateName)' not in toolbar_source
+        assert 'callSimple("clear_queue")' not in settings_source
+        assert 'configForm.values.safety_auto_stop_enabled' in settings_source
+        assert 'configForm.values.queue_limit' in settings_source
 
 
 def test_live_room_entries_are_platform_neutral():

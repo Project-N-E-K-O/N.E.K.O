@@ -64,7 +64,7 @@ import {
 } from "./panel_helpers"
 import { LiveExplainSection, RecentResultsTable, ViewerProfilesTable } from "./panel_data_sections"
 
-const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v1"
+const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"
 
 export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
@@ -87,9 +87,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [sandboxResult, setSandboxResult] = useState<any>(null)
   const [lookupResult, setLookupResult] = useState<any>(null)
   const [liveRoomResult, setLiveRoomResult] = useState<any>(null)
+  const [queriedRoomRef, setQueriedRoomRef] = useState("")
   const [loginState, setLoginState] = useState<any>(null)
   const [douyinAuthState, setDouyinAuthState] = useState<any>(null)
-  const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "diagnostics" | "">("")
+  const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "theme" | "pacing" | "diagnostics" | "">("")
   const [connectPending, setConnectPending] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
@@ -242,29 +243,30 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     configForm.setField("live_room_id", "")
     configForm.setField("live_enabled", false)
     setLiveRoomResult(null)
+    setQueriedRoomRef("")
     saveConfig({ live_platform: next, live_enabled: false })
   }
 
-  async function lookupLiveRoom(): Promise<Record<string, any> | null> {
+  async function lookupLiveRoom(): Promise<void> {
     const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
     if (!roomRef) {
       toast.error(t("panel.messages.roomRequired"))
-      return null
+      return
     }
     try {
       const envelope = await props.api.call("lookup_live_room", { room_id: roomRef })
       const result = unwrapActionResult(envelope)
       setLiveRoomResult(result)
-      await props.api.refresh()
+      setQueriedRoomRef(roomRef)
       if (result.ok) {
         toast.success(t("panel.messages.roomLookupDone"))
       } else {
         toast.warning(result.message || t("panel.messages.roomLookupFailed"))
       }
-      return result
     } catch (err) {
+      setLiveRoomResult(null)
+      setQueriedRoomRef("")
       toast.error(err instanceof Error ? err.message : String(err))
-      return null
     }
   }
 
@@ -274,8 +276,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       toast.error(t("panel.messages.roomRequired"))
       return
     }
-    const lookup = await lookupLiveRoom()
-    if (!lookup?.ok) return
+    if (!liveRoomResult?.ok || queriedRoomRef !== roomRef) {
+      toast.warning(t("panel.messages.roomLookupRequired"))
+      return
+    }
     try {
       await props.api.call("set_live_room", { room_id: roomRef })
       await props.api.refresh()
@@ -622,6 +626,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const currentRoomRef = String(connection.room_ref || config.live_room_ref || config.live_room_id || "").trim()
   const lookupRoomRef = String(liveRoomResult?.room_ref || liveRoomResult?.room_id || "").trim()
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
+  const roomFormRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
+  const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
   const loginUid = (loginState && loginState.uid) || ""
@@ -655,22 +661,123 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : loginLoggedIn
   const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection
   const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection
-  const canStart = !!roomInputRef && (livePlatform === "bilibili" ? (loginLoggedIn || allowLimitedConnection) : douyinLoggedIn) && !connectPending
+  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || allowLimitedConnection) : douyinLoggedIn) && !connectPending
+  const primaryStatusLabel = started
+    ? t("panel.console.state.live")
+    : connectPending
+      ? t("panel.console.state.connecting")
+      : connectionFailed
+        ? t("panel.console.state.error")
+        : !roomConfigured
+          ? t("panel.console.roomMissing")
+          : (!accountReady && !limitedConnection)
+            ? t("panel.console.loginRequired")
+            : canStart
+              ? t("panel.liveStatusSummary.ready_to_stream")
+              : dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)
+  const primaryStatusTone: "success" | "warning" | "danger" | "info" = started || canStart
+    ? "success"
+    : connectionFailed
+      ? "danger"
+      : connectPending
+        ? "info"
+        : "warning"
+  const safetyStatus = String(safety.status || "")
+  const showSafetyStatus = started || (!!safetyStatus && safetyStatus !== "disconnected" && safetyStatus !== "unknown")
   const accountLabel = accountReady
     ? (livePlatform === "douyin" ? (douyinNickname || douyinUid || t("panel.douyinAuth.cookieReady")) : (loginName || loginUid || t("panel.auth.loggedIn")))
     : (limitedConnection ? t("panel.console.limitedConnection") : t("panel.auth.loggedOut"))
-  const consoleTone: "success" | "warning" | "danger" | "info" = consoleState === "live"
-    ? "success"
-    : consoleState === "error"
-      ? "danger"
-      : consoleState === "connecting"
-        ? "info"
-        : "warning"
   const modules = Array.isArray(safeState.modules) ? safeState.modules : []
+
+  const streamThemeForm = (
+    <Stack>
+      <Text>{t("panel.streamTheme.hint")}</Text>
+        <Field label={t("panel.fields.mode")}>
+          <Select
+            value={configForm.values.live_mode}
+            options={[
+              { value: "co_stream", label: t("panel.mode.co") },
+              { value: "solo_stream", label: t("panel.mode.solo") },
+            ]}
+            onChange={(value) => {
+              const next = String(value)
+              configForm.setField("live_mode", next)
+              saveConfig({ live_mode: next })
+            }}
+          />
+        </Field>
+        <Field label={t("panel.fields.streamTheme")}>
+          <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
+        </Field>
+        <Field label={t("panel.fields.streamGoal")}>
+          <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
+        </Field>
+        <Field label={t("panel.fields.streamColumns")}>
+          <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
+        </Field>
+        <Field label={t("panel.fields.streamAvoidTopics")}>
+          <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
+        </Field>
+    </Stack>
+  )
+
+  const pacingForm = (
+    <Stack>
+      <Text>{t("panel.pacing.hint")}</Text>
+      <Field label={t("panel.fields.activityLevel")}>
+        <Select
+          value={configForm.values.activity_level}
+          options={[
+            { value: "quiet", label: t("panel.activity.quiet") },
+            { value: "standard", label: t("panel.activity.standard") },
+            { value: "active", label: t("panel.activity.active") },
+          ]}
+          onChange={(value) => {
+            const next = String(value)
+            configForm.setField("activity_level", next)
+            saveConfig({ activity_level: next })
+          }}
+        />
+      </Field>
+      <Field label={t("panel.fields.rateLimit")}>
+        <Grid cols={3}>
+          {[
+            { seconds: 10, label: t("panel.pacing.fast") },
+            { seconds: 20, label: t("panel.pacing.standard") },
+            { seconds: 30, label: t("panel.pacing.slow") },
+          ].map((option) => (
+            <Button
+              key={option.seconds}
+              tone={Number(configForm.values.rate_limit_seconds) === option.seconds ? "primary" : "default"}
+              onClick={() => {
+                configForm.setField("rate_limit_seconds", String(option.seconds))
+                saveConfig({ rate_limit_seconds: option.seconds })
+              }}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </Grid>
+      </Field>
+      <Field label={t("panel.pacing.custom")}>
+        <Input value={configForm.values.rate_limit_seconds} onChange={(value) => configForm.setField("rate_limit_seconds", value)} />
+      </Field>
+    </Stack>
+  )
+
+  const queueSize = Number(safety.queue_size || 0)
+  const queueLimit = Number(safety.queue_limit || config.queue_limit || configForm.values.queue_limit || 0)
+  const configuredCooldownSeconds = Number(config.rate_limit_seconds ?? configForm.values.rate_limit_seconds ?? 20)
+  const cooldownSeconds = Number.isFinite(configuredCooldownSeconds) ? configuredCooldownSeconds : 20
 
   // Streamer-first console: routine live operations stay on one compact page.
   const consoleSection = (
-    <Stack>
+    <div
+      className="neko-roast-console-layout"
+      style={{ display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", height: "calc(100vh - 190px)", minHeight: "360px", overflow: "hidden" }}
+    >
+      <div className="neko-roast-console-scroll" style={{ minHeight: 0, overflowX: "hidden", overflowY: "auto", paddingRight: "4px" }}>
+        <Stack>
       <Grid cols={3}>
         <Card title={t("panel.platform.title")}>
           <Stack gap={8}>
@@ -694,7 +801,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
       <Card title={t("panel.console.runtimeTitle")}>
         <Stack>
-          <StatusBadge tone={consoleTone} label={t(`panel.console.state.${consoleState}`)} />
           <Text>
             {consoleState === "live"
               ? t("panel.console.liveHint")
@@ -712,21 +818,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           </Text>
           {loginRequired && !started ? <Alert tone="info">{t("panel.console.loginRequiredHint")}</Alert> : null}
           {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
-          {started ? (
-            <Grid cols={2}>
-              <Button tone={interactionPaused ? "primary" : "warning"} onClick={() => callSimple(interactionPaused ? "resume_roast" : "pause_roast")}>
-                {interactionPaused ? t("panel.actions.resume") : t("panel.actions.pause")}
-              </Button>
-              <Button tone="danger" onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
-            </Grid>
-          ) : (
-            <Grid cols={2}>
-              <Button tone="default" onClick={() => { setConsoleDialog("diagnostics") }}>{t("panel.actions.showAdvanced")}</Button>
-              <Button tone="success" disabled={!canStart} onClick={connectRoom}>
-                {connectPending ? t("panel.console.state.connecting") : t("panel.actions.connect")}
-              </Button>
-            </Grid>
-          )}
+          <Grid cols={2}>
+            <Button tone="default" onClick={() => { setConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
+            <Button tone="default" onClick={() => { setConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
+          </Grid>
         </Stack>
       </Card>
 
@@ -797,17 +892,48 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       </Modal>
 
       <Modal
-        open={consoleDialog === "room"}
-        title={t("panel.console.roomModalTitle")}
+        open={consoleDialog === "theme"}
+        title={t("panel.streamTheme.title")}
+        size="lg"
         onClose={() => { setConsoleDialog("") }}
         footer={(
           <Grid cols={2}>
             <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
-            <Button tone="success" onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button>
+            <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
+          </Grid>
+        )}
+      >
+        {streamThemeForm}
+      </Modal>
+
+      <Modal
+        open={consoleDialog === "pacing"}
+        title={t("panel.pacing.title")}
+        onClose={() => { setConsoleDialog("") }}
+        footer={(
+          <Grid cols={2}>
+            <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
+            <Button tone="success" onClick={() => saveConfig({ rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0 })}>{t("panel.actions.save")}</Button>
+          </Grid>
+        )}
+      >
+        {pacingForm}
+      </Modal>
+
+      <Modal
+        open={consoleDialog === "room"}
+        title={t("panel.console.roomModalTitle")}
+        onClose={() => { setConsoleDialog("") }}
+        footer={(
+          <Grid cols={3}>
+            <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
+            <Button tone="info" onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button>
+            <Button tone="success" disabled={!canConfirmLiveRoom} onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button>
           </Grid>
         )}
       >
         <Stack>
+          <Alert tone="info">{t("panel.console.roomTwoStepHint")}</Alert>
           <Field label={roomFieldLabel}>
             <Input
               value={configForm.values.live_room_ref}
@@ -816,6 +942,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                 configForm.setField("live_room_ref", value)
                 configForm.setField("live_room_id", value)
                 setLiveRoomResult(null)
+                setQueriedRoomRef("")
               }}
             />
           </Field>
@@ -895,7 +1022,22 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         }}
         onCancel={() => { setStopConfirmOpen(false) }}
       />
-    </Stack>
+        </Stack>
+      </div>
+      <footer
+        className="neko-roast-console-dock"
+        aria-label={t("panel.console.runtimeTitle")}
+        style={{ display: "grid", gridTemplateColumns: "minmax(260px, 520px)", alignItems: "center", justifyContent: "center", minHeight: "68px", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}
+      >
+        {started ? (
+          <Button tone="danger" onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
+        ) : (
+          <Button tone="success" disabled={!canStart} onClick={connectRoom}>
+            {connectPending ? t("panel.console.state.connecting") : t("panel.actions.connect")}
+          </Button>
+        )}
+      </footer>
+    </div>
   )
 
   const renderConfigField = (f: any, fi: number) => {
@@ -1190,54 +1332,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const viewerStore = safeState.viewer_store || {}
   const advancedSection = (
     <Stack>
-      <Card title={t("panel.streamTheme.title")}>
-        <Stack>
-          <Grid cols={2}>
-            <Field label={t("panel.fields.liveMode")}>
-              <Select
-                value={configForm.values.live_mode}
-                options={[
-                  { value: "co_stream", label: t("panel.mode.co") },
-                  { value: "solo_stream", label: t("panel.mode.solo") },
-                ]}
-                onChange={(value) => {
-                  const next = String(value)
-                  configForm.setField("live_mode", next)
-                  saveConfig({ live_mode: next })
-                }}
-              />
-            </Field>
-            <Field label={t("panel.fields.activityLevel")}>
-              <Select
-                value={configForm.values.activity_level}
-                options={[
-                  { value: "quiet", label: t("panel.activity.quiet") },
-                  { value: "standard", label: t("panel.activity.standard") },
-                  { value: "active", label: t("panel.activity.active") },
-                ]}
-                onChange={(value) => {
-                  const next = String(value)
-                  configForm.setField("activity_level", next)
-                  saveConfig({ activity_level: next })
-                }}
-              />
-            </Field>
-          </Grid>
-          <Field label={t("panel.fields.streamTheme")}>
-            <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamGoal")}>
-            <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamColumns")}>
-            <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
-          </Field>
-          <Field label={t("panel.fields.streamAvoidTopics")}>
-            <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
-          </Field>
-          <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
-        </Stack>
-      </Card>
       <Card title={t("panel.control.title")}>
         <Stack>
           {/* live_enabled is owned by the interaction module card; settings keep platform-level controls only. */}
@@ -1250,10 +1344,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
               <Input value={configForm.values.queue_limit} onChange={(value) => configForm.setField("queue_limit", value)} />
             </Field>
           </Grid>
-          <Grid cols={4}>
-            <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
-            <Button tone="info" onClick={() => callSimple("clear_queue")}>{t("panel.actions.clearQueue")}</Button>
-          </Grid>
+          <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
         </Stack>
       </Card>
       <Card title={t("panel.storage.title")}>
@@ -1467,10 +1558,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   const onboardingSteps = [
-    { title: t("panel.onboarding.welcomeTitle"), body: t("panel.onboarding.welcomeBody") },
-    { title: t("panel.onboarding.accountTitle"), body: t("panel.onboarding.accountBody") },
-    { title: t("panel.onboarding.roomTitle"), body: t("panel.onboarding.roomBody") },
-    { title: t("panel.onboarding.liveTitle"), body: t("panel.onboarding.liveBody") },
+    { title: t("panel.onboarding.welcomeTitle"), body: t("panel.onboarding.welcomeBody"), action: t("panel.onboarding.welcomeAction"), success: t("panel.onboarding.welcomeSuccess") },
+    { title: t("panel.onboarding.accountTitle"), body: t("panel.onboarding.accountBody"), action: t("panel.onboarding.accountAction"), success: t("panel.onboarding.accountSuccess") },
+    { title: t("panel.onboarding.roomTitle"), body: t("panel.onboarding.roomBody"), action: t("panel.onboarding.roomAction"), success: t("panel.onboarding.roomSuccess") },
+    { title: t("panel.onboarding.liveTitle"), body: t("panel.onboarding.liveBody"), action: t("panel.onboarding.liveAction"), success: t("panel.onboarding.liveSuccess") },
   ]
   const currentOnboarding = onboardingSteps[Math.min(onboardingStep, onboardingSteps.length - 1)]
 
@@ -1496,20 +1587,27 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Stack>
           <StatusBadge tone="info" label={`${onboardingStep + 1}/${onboardingSteps.length}`} />
           <Card title={currentOnboarding.title}>
-            <Text>{currentOnboarding.body}</Text>
+            <Stack gap={8}>
+              <Text>{currentOnboarding.body}</Text>
+              <Alert tone="info">{t("panel.onboarding.actionLabel")}: {currentOnboarding.action}</Alert>
+              <Alert tone="success">{t("panel.onboarding.successLabel")}: {currentOnboarding.success}</Alert>
+            </Stack>
           </Card>
         </Stack>
       </Modal>
       <Toolbar>
         <ToolbarGroup>
-          <StatusBadge
-            tone={liveStatusTone(liveStatusSummary)}
-            label={dynamicLabel("liveStatusSummary", "panel.liveStatusSummary", liveStatusSummary)}
-          />
-          <StatusBadge tone={liveStateTone(liveStateName)} label={dynamicLabel("liveState", "panel.liveState", liveStateName)} />
-          <StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />
+          <StatusBadge tone={primaryStatusTone} label={primaryStatusLabel} />
+          {showSafetyStatus ? <StatusBadge tone={statusTone(safetyStatus)} label={dynamicLabel("safety", "panel.safety", safetyStatus)} /> : null}
+          <StatusBadge tone="info" label={`${t("panel.liveStatusSummary.cooldown")} · ${cooldownSeconds.toFixed(0)}s`} />
+          <StatusBadge tone={queueSize > 0 ? "warning" : "default"} label={`${t("panel.stats.queue")} · ${queueSize}/${queueLimit}`} />
         </ToolbarGroup>
         <ToolbarGroup>
+          {started ? (
+            <Button tone={interactionPaused ? "primary" : "warning"} onClick={() => callSimple(interactionPaused ? "resume_roast" : "pause_roast")}>
+              {interactionPaused ? t("panel.actions.resume") : t("panel.actions.pause")}
+            </Button>
+          ) : null}
           <RefreshButton label={t("panel.actions.refreshStatus")} />
         </ToolbarGroup>
       </Toolbar>
