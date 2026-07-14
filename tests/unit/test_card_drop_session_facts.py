@@ -220,10 +220,7 @@ def test_facts_context_uses_only_validated_active_character(tmp_path):
         {"Active": "active prompt", "Other": "other prompt"},
     )
 
-    context = F._build_context(
-        manager,
-        runtime_character_hint="Other",
-    )
+    context = F._build_context(manager)
 
     assert context.lanlan_name == "Active"
     assert context.facts_path == tmp_path / "Active" / "facts.json"
@@ -250,7 +247,7 @@ def test_facts_context_fails_closed_without_valid_active_character(tmp_path, mon
     monkeypatch.setenv("NEKO_FACTS_JSON", str(tmp_path / "debug-facts.json"))
     manager = _FakeConfigManager(tmp_path, "../Other", {"Other": "other prompt"})
 
-    context = F._build_context(manager, runtime_character_hint="Other")
+    context = F._build_context(manager)
 
     assert context.lanlan_name == ""
     assert context.facts_path is None

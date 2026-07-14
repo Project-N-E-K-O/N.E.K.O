@@ -79,7 +79,6 @@ def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> 
 def _build_context(
     config_manager: Any,
     character_override: str | None = None,
-    runtime_character_hint: str | None = None,
 ) -> ActiveNekoContext:
     master_name, current_lanlan, *_rest = config_manager.get_character_data()
     master = str(master_name or "").strip()
@@ -120,7 +119,6 @@ def _build_context(
 
 async def resolve_active_neko_context(
     character_override: str | None = None,
-    runtime_character_hint: str | None = None,
 ) -> ActiveNekoContext:
     """Resolve the active, configured character without blocking the event loop."""
     import asyncio
@@ -132,7 +130,6 @@ async def resolve_active_neko_context(
         _build_context,
         config_manager,
         character_override,
-        runtime_character_hint,
     )
 
 
@@ -515,7 +512,6 @@ async def build_forge_facts_payload(
     try:
         context = await resolve_active_neko_context(
             character if allow_override else None,
-            runtime_character_hint,
         )
     except Exception as exc:
         logger.warning(

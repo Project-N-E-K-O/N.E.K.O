@@ -31,7 +31,10 @@ test('desktop port_config is used when environment ports are absent', () => {
       return JSON.stringify({ MAIN_SERVER_PORT: 43103 })
     },
   })
-  assert.equal(requestedPath, '/tmp/neko-config/N.E.K.O/port_config.json')
+  assert.equal(
+    requestedPath.replace(/\\/g, '/'),
+    '/tmp/neko-config/N.E.K.O/port_config.json',
+  )
   assert.equal(port, 43103)
 })
 
