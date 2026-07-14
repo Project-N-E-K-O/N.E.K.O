@@ -45,6 +45,7 @@ SILENCE_THRESHOLD_DBFS = -40.0  # 静音阈值 (dBFS)
 MIN_SILENCE_DURATION_MS = 200   # 最小静音持续时间 (ms)
 RETAINED_SILENCE_MS = 200       # 每段静音裁剪后保留的时长 (ms)
 RMS_FRAME_DURATION_MS = 10      # RMS 计算帧长 (ms)
+RMS_FLOAT32_RECHECK_MARGIN_DB = 1e-4  # 阈值附近用 float64 复核，保持边界语义
 
 
 @dataclass
@@ -95,16 +96,21 @@ class SilenceRemovalCancelledError(Exception):
 CancelledError = SilenceRemovalCancelledError
 
 
-def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
-    """Convert raw PCM bytes to a float32 numpy array (range -1.0 ~ 1.0)."""
+def _samples_to_float(
+    data: bytes | memoryview,
+    sample_width: int,
+    dtype=np.float32,
+) -> np.ndarray:
+    """Convert raw PCM bytes to a floating array (range -1.0 ~ 1.0)."""
+    float_dtype = np.dtype(dtype)
     if sample_width == 1:
         # 8-bit unsigned
-        arr = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
-        arr = (arr - np.float32(128.0)) / np.float32(128.0)
+        arr = np.frombuffer(data, dtype=np.uint8).astype(float_dtype)
+        arr = (arr - float_dtype.type(128.0)) / float_dtype.type(128.0)
     elif sample_width == 2:
         # 16-bit signed
-        arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-        arr = arr / np.float32(32768.0)
+        arr = np.frombuffer(data, dtype=np.int16).astype(float_dtype)
+        arr = arr / float_dtype.type(32768.0)
     elif sample_width == 3:
         # 24-bit signed – numpy 向量化解码
         n_samples = len(data) // 3
@@ -115,11 +121,11 @@ def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
                | (raw[:, 2].astype(np.int32) << 16))
         # 符号扩展: 如果最高位 (bit 23) 为 1，扩展为负数
         i32[i32 >= 0x800000] -= 0x1000000
-        arr = i32.astype(np.float32) / np.float32(8388608.0)
+        arr = i32.astype(float_dtype) / float_dtype.type(8388608.0)
     elif sample_width == 4:
         # 32-bit signed
-        arr = np.frombuffer(data, dtype=np.int32).astype(np.float32)
-        arr = arr / np.float32(2147483648.0)
+        arr = np.frombuffer(data, dtype=np.int32).astype(float_dtype)
+        arr = arr / float_dtype.type(2147483648.0)
     else:
         raise ValueError(f"不支持的采样宽度: {sample_width} bytes")
     return arr
@@ -145,7 +151,10 @@ def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
         raw[:, 2] = (u32 >> 16) & 0xFF
         return raw.tobytes()
     elif sample_width == 4:
-        out = (arr * 2147483648.0).astype(np.int32)
+        # float32 rounds the valid s32 maximum to 1.0. Scale in float64 and
+        # clamp before casting so +2147483647 never wraps to -2147483648.
+        scaled = arr.astype(np.float64, copy=False) * 2147483648.0
+        out = np.clip(scaled, -2147483648.0, 2147483647.0).astype(np.int32)
         return out.tobytes()
     else:
         raise ValueError(f"不支持的采样宽度: {sample_width} bytes")
@@ -155,7 +164,7 @@ def _rms_dbfs(samples: np.ndarray) -> float:
     """Compute the RMS value (dBFS) of one frame of samples"""
     if len(samples) == 0:
         return -100.0
-    rms = np.sqrt(np.mean(samples ** 2))
+    rms = np.sqrt(np.mean(np.square(samples, dtype=np.float64)))
     if rms < 1e-10:
         return -100.0
     return 20.0 * math.log10(rms)
@@ -191,8 +200,10 @@ def detect_silence(
 
     duration_ms = (n_frames / sample_rate) * 1000.0
 
-    # 转为 float
+    # 主分析数组使用 float32；只有落在阈值极近处的帧才按原始 PCM
+    # 以 float64 复核，从而保留旧实现的严格边界分类。
     float_samples = _samples_to_float(raw_data, sample_width)
+    raw_view = memoryview(raw_data)
 
     # 如果是多声道，取平均作为单声道进行分析
     if channels > 1:
@@ -219,6 +230,17 @@ def detect_silence(
         frame_data = float_samples_mono[start_idx:end_idx]
 
         rms = _rms_dbfs(frame_data)
+        if abs(rms - threshold_dbfs) <= RMS_FLOAT32_RECHECK_MARGIN_DB:
+            raw_start = start_idx * channels * sample_width
+            raw_end = end_idx * channels * sample_width
+            precise_samples = _samples_to_float(
+                raw_view[raw_start:raw_end],
+                sample_width,
+                dtype=np.float64,
+            )
+            if channels > 1:
+                precise_samples = precise_samples.reshape(-1, channels).mean(axis=1)
+            rms = _rms_dbfs(precise_samples)
 
         if rms < threshold_dbfs:
             if not in_silence:

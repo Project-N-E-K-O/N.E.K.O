@@ -17,6 +17,8 @@ from utils.audio_silence_remover import (
     SilenceSegment,
     _samples_to_float,
     _rms_dbfs,
+    _float_to_samples,
+    detect_silence,
     trim_silence,
 )
 
@@ -70,6 +72,30 @@ def test_float32_rms_preserves_near_threshold_decisions(level_dbfs: float) -> No
     candidate = _samples_to_float(pcm, 4)
 
     assert (_rms_dbfs(reference) < -40.0) == (_rms_dbfs(candidate) < -40.0)
+
+
+def test_s32_positive_full_scale_roundtrip() -> None:
+    pcm = np.asarray([np.iinfo(np.int32).max], dtype=np.int32).tobytes()
+
+    assert _float_to_samples(_samples_to_float(pcm, 4), 4) == pcm
+
+
+def test_detect_silence_rechecks_adversarial_threshold_frame() -> None:
+    low = 21474836
+    frame = np.asarray([low] * 249 + [low + 1] * 231, dtype=np.int32)
+    frame_pcm = frame.tobytes()
+    float32_dbfs = _rms_dbfs(_samples_to_float(frame_pcm, 4))
+    float64_dbfs = _rms_dbfs(_samples_to_float(frame_pcm, 4, dtype=np.float64))
+    assert float32_dbfs < -40.0 < float64_dbfs
+
+    source = io.BytesIO()
+    with wave.open(source, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(4)
+        wf.setframerate(48000)
+        wf.writeframes(np.tile(frame, 20).tobytes())
+
+    assert detect_silence(io.BytesIO(source.getvalue())).silence_segments == []
 
 
 def test_trim_silence_copies_original_s32_pcm_frames_exactly() -> None:
