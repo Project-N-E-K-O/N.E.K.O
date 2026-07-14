@@ -519,6 +519,19 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
     assert lifecycle_started_block.index(
         "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
     ) < lifecycle_started_block.index("const startedMessage = {")
+    # 没有原生 overlay 的浏览器独立聊天页也必须收到带稳定 runId 的 lifecycle-start。
+    overlay_start_block = source.split(
+        "    ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started') {",
+        1,
+    )[1].split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[0]
+    assert overlay_start_block.index("if (!tutorialRunId) {") < overlay_start_block.index(
+        "if (!overlay || typeof overlay.begin !== 'function')"
+    )
+    assert "return tutorialRunId;" in overlay_start_block
+    assert "channel.postMessage(startedMessage)" in lifecycle_started_block
 
     end_block = source.split("    onTutorialEnd() {", 1)[1].split(
         "    restoreYuiGuideChatInputState",
@@ -905,6 +918,8 @@ def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reloa
     assert "autoGoodbyeState.startupDefaultCatRequested === true" in source
     assert "startupDefaultCatPending ? 'startup-default-cat'" in source
     assert "new CustomEvent('live2d-goodbye-click'" in restore_state_block
+    # pending 启动猫咪快照的 visualTier 可能是 none；只允许回放真实猫咪层级。
+    assert "['cat1', 'cat2', 'cat3'].includes(goodbyeMeta.visualTier)" in restore_state_block
     consume_block = source.split("    consumePendingStartupDefaultCatRestoreRequest() {", 1)[1].split(
         "    applyTutorialChatIdentityOverride(detail) {",
         1,

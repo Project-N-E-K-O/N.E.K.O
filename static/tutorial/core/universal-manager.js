@@ -1308,11 +1308,6 @@ class UniversalTutorialManager {
     }
 
     ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started') {
-        const overlay = window.nekoTutorialOverlay;
-        if (!overlay || typeof overlay.begin !== 'function') {
-            return '';
-        }
-
         let tutorialRunId = '';
         try {
             tutorialRunId = window.localStorage
@@ -1326,6 +1321,13 @@ class UniversalTutorialManager {
                     window.localStorage.setItem('yuiGuidePcOverlayRunId', tutorialRunId);
                 }
             } catch (_) {}
+        }
+
+        const overlay = window.nekoTutorialOverlay;
+        if (!overlay || typeof overlay.begin !== 'function') {
+            // 纯 BroadcastChannel 页面同样需要稳定 runId，才能在上一轮 closed 后
+            // 用 lifecycle-start 重新打开独立聊天页，并过滤迟到的旧教程消息。
+            return tutorialRunId;
         }
 
         try {
@@ -1361,6 +1363,17 @@ class UniversalTutorialManager {
             tutorialRunId: tutorialRunId,
             timestamp: Date.now()
         };
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                // 浏览器独立聊天页没有原生 overlay relay；必须通过同一 BroadcastChannel
+                // 先打开本轮 lifecycle，随后发送的 prepare 才不会被 closed guard 丢弃。
+                channel.postMessage(startedMessage);
+            } catch (error) {
+                console.warn('[Tutorial] 广播 Yui Guide 生命周期开始到独立聊天窗失败:', error);
+            }
+        }
 
         try {
             if (
@@ -3369,10 +3382,12 @@ class UniversalTutorialManager {
             // 让可见形态、锁定状态、返回按钮和 PC 命中区由同一业务链路一致重建。
             window.dispatchEvent(new CustomEvent('live2d-goodbye-click', { detail: restoreDetail }));
             if (
-                goodbyeMeta.visualTier
+                ['cat1', 'cat2', 'cat3'].includes(goodbyeMeta.visualTier)
                 && window.nekoAutoGoodbye
                 && typeof window.nekoAutoGoodbye.setVisualTier === 'function'
             ) {
+                // startup-default-cat 的 pending 快照可能仍是 none；goodbye 事件已经建立 cat1，
+                // 这里只回放真实保存过的猫咪层级，不能再用 none 把刚恢复的猫咪视觉清空。
                 window.nekoAutoGoodbye.setVisualTier(goodbyeMeta.visualTier, {
                     source: 'tutorial-state-restore',
                     reason: restoreDetail.reason
