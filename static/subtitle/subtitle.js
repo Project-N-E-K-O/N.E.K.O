@@ -18,8 +18,8 @@ var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
 var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
-var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
-var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
+var WEB_DANMAKU_MIN_PANEL_WIDTH = 228;
+var WEB_DANMAKU_MIN_PANEL_HEIGHT = 40;
 var WEB_DANMAKU_LAYOUT_EPSILON = 0.25;
 var initialSubtitleSettings = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
     ? SubtitleShared.getSettings()

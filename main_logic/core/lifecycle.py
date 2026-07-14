@@ -1742,6 +1742,19 @@ class LifecycleMixin:
                 _selected, _deferred = _select_callbacks_within_token_budget(
                     list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
                 )
+                # Pull-model staleness guard (same contract as the voice/text
+                # delivery points): drop extras whose coalesce_key has a newer
+                # submission — the push-side eviction removes queue entries but
+                # cannot reach text already baked into final_prime_text, so the
+                # check must run here, synchronously between select and render
+                # (no await in between; a newer cue landing during the prime
+                # await below is an accepted residual window). Stale extras are
+                # NOT added to _deferred: their newer same-key mirror is (or will
+                # be) queued in their place.
+                _selected = [
+                    e for e in _selected
+                    if not self._coalesce_entry_is_stale(e)
+                ]
                 final_prime_text += _render_pending_extra_replies_by_origin(
                     _selected,
                     lang=_lang,

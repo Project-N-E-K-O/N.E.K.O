@@ -99,7 +99,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_PATHS: list[str] = [
     "main_routers",
-    "app/main_server.py",
+    "app/main_server",
     "app/memory_server",
     "app/agent_server",
     "plugin/server/routes",

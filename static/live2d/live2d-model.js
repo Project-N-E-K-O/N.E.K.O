@@ -205,6 +205,88 @@ Live2DManager.prototype.removeModel = async function(options = {}) {
     }
 };
 
+Live2DManager.prototype._stringifyCoreParameterId = function(paramId) {
+    if (paramId === undefined || paramId === null) return '';
+    if (typeof paramId === 'string') return paramId;
+    try {
+        if (typeof paramId.getString === 'function') {
+            const value = paramId.getString();
+            if (typeof value === 'string') return value;
+            if (value && typeof value.s === 'string') return value.s;
+            if (value !== undefined && value !== null) return String(value);
+        }
+    } catch (_) {}
+    try {
+        const value = String(paramId);
+        return value && value !== '[object Object]' ? value : '';
+    } catch (_) {
+        return '';
+    }
+};
+
+// Cubism 2/3/4/5 wrappers expose parameter IDs through different fields.
+// Keep the compatibility lookup in one place so editor/load/save paths never
+// invent different keys for the same parameter index.
+Live2DManager.prototype._getCoreParameterId = function(coreModel, index) {
+    if (!coreModel || !Number.isInteger(index) || index < 0) return '';
+
+    const candidates = [];
+    try { candidates.push(coreModel._parameterIds?.[index]); } catch (_) {}
+    try { candidates.push(coreModel._model?.parameters?.ids?.[index]); } catch (_) {}
+    try { candidates.push(coreModel.model?.parameters?.ids?.[index]); } catch (_) {}
+    try { candidates.push(coreModel.parameters?.ids?.[index]); } catch (_) {}
+    try {
+        if (typeof coreModel.getParameterId === 'function') {
+            candidates.push(coreModel.getParameterId(index));
+        }
+    } catch (_) {}
+
+    for (const candidate of candidates) {
+        const id = this._stringifyCoreParameterId(candidate);
+        if (id) return id;
+    }
+    return '';
+};
+
+Live2DManager.prototype._getCoreParameterDefaultValue = function(coreModel, index) {
+    if (!coreModel || !Number.isInteger(index) || index < 0) return undefined;
+    return this._readParameterValueByIndex(
+        coreModel,
+        index,
+        [
+            'getParameterDefaultValueByIndex',
+            'getParameterDefaultValue',
+            'getParamDefaultValue',
+            'getParamDefault'
+        ],
+        ['defaultValues', 'defaults', '_parameterDefaultValues'],
+        undefined
+    );
+};
+
+Live2DManager.prototype._buildModelParameterCatalog = function(coreModel) {
+    if (!coreModel || typeof coreModel.getParameterCount !== 'function') return [];
+
+    const catalog = [];
+    const usedKeys = new Set();
+    const parameterCount = coreModel.getParameterCount();
+    for (let index = 0; index < parameterCount; index++) {
+        const id = this._getCoreParameterId(coreModel, index);
+        let key = id || `param_${index}`;
+        // Model parameter IDs should be unique. Preserve every parameter even
+        // for malformed models by falling back to its stable runtime index.
+        if (usedKeys.has(key)) key = `param_${index}`;
+        usedKeys.add(key);
+        catalog.push({
+            index,
+            id: id || '',
+            key,
+            defaultValue: this._getCoreParameterDefaultValue(coreModel, index)
+        });
+    }
+    return catalog;
+};
+
 Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId) {
     if (!coreModel || paramId === undefined || paramId === null) return null;
 
@@ -221,15 +303,11 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
             : Number.POSITIVE_INFINITY;
         if (parsedIndex >= 0 && parsedIndex < parameterCount) {
             idx = parsedIndex;
-            try {
-                if (typeof coreModel.getParameterId === 'function') {
-                    const id = coreModel.getParameterId(idx);
-                    if (id) {
-                        resolvedId = id;
-                        hasResolvedId = true;
-                    }
-                }
-            } catch (_) {}
+            const id = this._getCoreParameterId(coreModel, idx);
+            if (id) {
+                resolvedId = id;
+                hasResolvedId = true;
+            }
         }
     } else {
         try {
@@ -242,6 +320,41 @@ Live2DManager.prototype._resolveModelParameterKey = function(coreModel, paramId)
     }
 
     return idx >= 0 ? { idx, resolvedId, hasResolvedId, isIndexKey } : null;
+};
+
+// Lazy migration for legacy parameter dictionaries. Historical param_N keys
+// have no parameter identity, so they are only safe when the runtime cannot
+// expose an official ID for that index. Once an official ID is available,
+// discard the ambiguous alias instead of guessing across model revisions.
+Live2DManager.prototype._normalizeModelParameters = function(coreModel, parameters) {
+    if (!coreModel || !parameters || typeof parameters !== 'object') return {};
+
+    const catalogByIndex = new Map(
+        this._buildModelParameterCatalog(coreModel).map(parameter => [parameter.index, parameter])
+    );
+    const normalizedByIndex = new Map();
+    for (const [paramId, value] of Object.entries(parameters)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+        const resolved = this._resolveModelParameterKey(coreModel, paramId);
+        if (!resolved) continue;
+        const catalogEntry = catalogByIndex.get(resolved.idx);
+        if (resolved.isIndexKey && catalogEntry?.id) continue;
+        const canonicalKey = catalogEntry?.key
+            || (resolved.hasResolvedId && resolved.resolvedId
+                ? String(resolved.resolvedId)
+                : `param_${resolved.idx}`);
+        const priority = resolved.isIndexKey ? 0 : 1;
+        const existing = normalizedByIndex.get(resolved.idx);
+        if (!existing || priority >= existing.priority) {
+            normalizedByIndex.set(resolved.idx, { key: canonicalKey, value, priority });
+        }
+    }
+
+    const normalized = {};
+    for (const { key, value } of normalizedByIndex.values()) {
+        normalized[key] = value;
+    }
+    return normalized;
 };
 
 Live2DManager.prototype._isRuntimeManagedAppearanceParam = function(paramId, resolvedParamId, coreModel) {
@@ -337,10 +450,16 @@ Live2DManager.prototype._findModelPreference = function(preferences, modelPath) 
     )) || null;
 };
 
-Live2DManager.prototype._mergeEffectiveModelParameters = function(modelDirectoryParameters, userPreferenceParameters) {
+Live2DManager.prototype._mergeEffectiveModelParameters = function(modelDirectoryParameters, userPreferenceParameters, coreModel) {
+    const directoryParameters = coreModel
+        ? this._normalizeModelParameters(coreModel, modelDirectoryParameters)
+        : (modelDirectoryParameters && typeof modelDirectoryParameters === 'object' ? modelDirectoryParameters : {});
+    const preferenceParameters = coreModel
+        ? this._normalizeModelParameters(coreModel, userPreferenceParameters)
+        : (userPreferenceParameters && typeof userPreferenceParameters === 'object' ? userPreferenceParameters : {});
     return {
-        ...(modelDirectoryParameters && typeof modelDirectoryParameters === 'object' ? modelDirectoryParameters : {}),
-        ...(userPreferenceParameters && typeof userPreferenceParameters === 'object' ? userPreferenceParameters : {})
+        ...directoryParameters,
+        ...preferenceParameters
     };
 };
 
@@ -357,9 +476,11 @@ Live2DManager.prototype._loadModelDirectoryParameters = async function(modelName
 };
 
 Live2DManager.prototype._applyEffectiveModelParameters = function(model, modelDirectoryParameters, userPreferenceParameters) {
+    const coreModel = model?.internalModel?.coreModel;
     const effectiveParameters = this._mergeEffectiveModelParameters(
         modelDirectoryParameters,
-        userPreferenceParameters
+        userPreferenceParameters,
+        coreModel
     );
     const hasEffectiveParameters = Object.keys(effectiveParameters).length > 0;
 

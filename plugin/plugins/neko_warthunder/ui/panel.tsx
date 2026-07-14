@@ -1,4 +1,4 @@
-﻿import {
+import {
   Page,
   Card,
   Grid,

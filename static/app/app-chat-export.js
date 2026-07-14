@@ -2,7 +2,7 @@
  * app-chat-export.js — Chat export for the React-first N.E.K.O chat window.
  *
  * Reads chat messages from window.reactChatWindowHost.getState() (the typed
- * React state managed by app-react-chat-window.js), renders a preview modal
+ * React state managed by app-react-chat-window), renders a preview modal
  * with per-message checkbox selection, and produces Canvas-based image
  * downloads. Pure client-side — no backend endpoints are required.
  *

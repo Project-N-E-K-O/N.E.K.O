@@ -710,7 +710,7 @@ compact top edge / 边缘探头：
 
 主项目运行验证：
 
-- `node --check static/avatar/avatar-ui-buttons.js`
+- `Get-ChildItem static/avatar/avatar-ui-buttons/*.js | ForEach-Object { node --check $_.FullName }`
 - `.venv/bin/python -m pytest tests/unit/test_avatar_return_button_idle_tiers_static.py -q`
 - `.venv/bin/python -m pytest tests/unit/test_avatar_return_button_idle_tiers_static.py tests/unit/test_react_chat_idle_dock_static.py::test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync -q`
 

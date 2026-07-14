@@ -35,7 +35,7 @@
   - `emitTutorialStarted()` 调用 `syncPcSystemCursorHidden(true, 'tutorial-started')`。
   - 教程结束路径调用 `syncPcSystemCursorHidden(false, reason)` 恢复。
 
-- `static/tutorial/yui-guide/director.js`
+- `static/tutorial/yui-guide/director/`
   - `setTutorialTakingOver(true)` 调用 `syncSystemCursorHidden(true, 'taking_over_started')`。
   - `syncSystemCursorHidden()` 转发到 `YuiGuideCommon.syncPcSystemCursorHidden()`。
 

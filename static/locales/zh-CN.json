@@ -2948,7 +2948,7 @@
         "playVRMAnimationFailed": "播放 VRM 动作失败:",
         "loadLightingConfigFailed": "加载打光配置失败:",
         "checkVoiceModeTimeout": "检查语音模式状态超时（服务器可能未响应）",
-        "cannotConnectToServer": "无法连接到服务器，请确保 main_server.py 正在运行",
+        "cannotConnectToServer": "无法连接到服务器，请确保主服务器正在运行",
         "checkVoiceModeFailed": "检查语音模式状态失败:",
         "markedUnsavedModel": "已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。",
         "parameterEditorSavedNeedsModelSave": "捏脸参数已保存，请点击「保存设置」同步到角色配置。",

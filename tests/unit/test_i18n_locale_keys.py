@@ -42,7 +42,7 @@ VOICE_DESIGN_ERROR_KEYS = (
     "errors.VOICE_DESIGN_PROMPT_TOO_LONG",
 )
 
-CHARACTER_MANAGER_JS = REPO_ROOT / "static" / "js" / "character_card_manager.js"
+CHARACTER_MANAGER_JS_DIR = REPO_ROOT / "static" / "js" / "character_card_manager"
 
 PNG_TUBER_PREVIEW_LABELS = {
     "zh-CN.json": ("测试说话", "状态预览"),
@@ -201,7 +201,10 @@ def test_voice_design_constraint_errors_exist_in_all_locales():
 
 @pytest.mark.unit
 def test_character_manager_voice_source_labels_do_not_use_cjk_fallbacks():
-    source = CHARACTER_MANAGER_JS.read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(CHARACTER_MANAGER_JS_DIR.glob("*.js"))
+    )
     relevant_start = source.index("function _panelVoiceProviderShortName(provider)")
     relevant_end = source.index("function _panelCreateVoiceSelectUi(selectEl)", relevant_start)
     relevant_source = source[relevant_start:relevant_end]

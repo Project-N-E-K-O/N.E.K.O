@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 import utils.config_manager as config_manager_module
 import utils.web_scraper as web_scraper
+import utils.web_scraper.window_context as window_context
 
 
 @pytest.mark.unit
@@ -44,7 +45,7 @@ async def test_generate_diverse_queries_sends_user_message(monkeypatch):
 
     monkeypatch.setattr(config_manager_module, "ConfigManager", FakeConfigManager)
     monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
-    monkeypatch.setattr(web_scraper, "is_china_region", lambda: True)
+    monkeypatch.setattr(window_context, "is_china_region", lambda: True)
 
     result = await web_scraper.generate_diverse_queries("Project N.E.K.O.")
 

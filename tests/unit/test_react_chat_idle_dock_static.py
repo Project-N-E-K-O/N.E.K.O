@@ -1,15 +1,16 @@
 from pathlib import Path
+from tests.static_app_parts import read_path_or_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_path_or_parts(path)
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -24,8 +25,8 @@ def _between(source: str, start: str, end: str) -> str:
 def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
-    assert "var IDLE_DOCK_TIER_CAT2 = 'cat2';" in source
-    assert "var IDLE_DOCK_TIER_CAT3 = 'cat3';" in source
+    assert "IDLE_DOCK_TIER_CAT2 = 'cat2';" in source
+    assert "IDLE_DOCK_TIER_CAT3 = 'cat3';" in source
     assert "function isIdleDockTierActive()" in source
     assert "detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3" in source
     goodbye_click_block = _between(
@@ -44,8 +45,8 @@ def test_idle_dock_does_not_pollute_normal_minimize_export_or_app_ui():
 
     export_block = _between(
         react_source,
-        "window.reactChatWindowHost = {",
-        "\n    };\n\n})();",
+        "Object.assign(window.reactChatWindowHost, {",
+        "\n    });",
     )
     assert "setMinimized:" not in export_block
     assert "setIdlePresentation" not in export_block
@@ -64,7 +65,7 @@ def test_setMinimized_has_no_options_parameter_and_no_idle_dock_branches():
     set_minimized_block = _between(
         source,
         "function setMinimized(nextMinimized) {",
-        "\n    function toggleMinimized()",
+        "function toggleMinimized()",
     )
     assert "idleDock" not in set_minimized_block
     assert "idleDockRequested" not in set_minimized_block
@@ -80,7 +81,7 @@ def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
     set_surface_block = _between(
         source,
         "function setChatSurfaceMode(nextMode) {",
-        "\n    function cycleChatSurfaceMode()",
+        "function cycleChatSurfaceMode()",
     )
 
     # enterIdleDock goes through chatSurfaceMode so compact/full/minimized state
@@ -271,8 +272,8 @@ def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync()
     source = _read(CHAT_TEMPLATE_PATH)
 
     assert 'class="electron-chat-window subtitle-web-host"' in source
-    assert source.index('/static/app/app-interpage.js') < source.index('/static/app/app-react-chat-window.js')
-    assert '/static/app/app-interpage.js?v={{ static_asset_version }}' in source
+    assert source.index('/static/app/app-interpage') < source.index('/static/app/app-react-chat-window')
+    assert '/static/app/app-interpage/bootstrap-resources-and-model-reload.js?v={{ static_asset_version }}' in source
 
 
 def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():

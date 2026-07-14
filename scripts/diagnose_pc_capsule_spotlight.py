@@ -37,6 +37,8 @@ def _check(condition: bool, name: str, ok_detail: str, fail_detail: str) -> Chec
 
 
 def _read(path: Path) -> str:
+    if path.is_dir():
+        return "\n".join(_read(part_path) for part_path in sorted(path.glob("*.js")))
     try:
         return path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
@@ -53,7 +55,7 @@ def _extract_function(source: str, signature: str, next_signature: str | None = 
 
 
 def run_neko_static_checks() -> list[Check]:
-    source_path = STATIC_DIR / "app/app-interpage.js"
+    source_path = STATIC_DIR / "app/app-interpage"
     source = _read(source_path)
     render_block = _extract_function(source, "function renderYuiGuideChatSpotlight(spotlight, kind, rect)", "function updateYuiGuideChatSpotlight(kind)")
     suppress_block = _extract_function(source, "function shouldSuppressYuiGuideChatLocalFx(kind)", "function getYuiGuideChatCircleSpotlightPadding")
@@ -148,7 +150,8 @@ def run_browser_probe() -> tuple[list[Check], dict[str, Any]]:
             }
             """
         )
-        page.add_script_tag(path=str(STATIC_DIR / "app/app-interpage.js"))
+        for part_path in sorted((STATIC_DIR / "app/app-interpage").glob("*.js")):
+            page.add_script_tag(path=str(part_path))
         result = page.evaluate(
             """
             async () => {

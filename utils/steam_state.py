@@ -16,7 +16,7 @@
 """
 Steamworks process-global handle.
 
-The Steamworks SDK is initialized once during app startup (``app/main_server.py``)
+The Steamworks SDK is initialized once during app startup (``app/main_server/__init__.py``)
 and consumed by code at every layer of the dependency stack:
 
 * high-level routers / brain agents (e.g. ``main_routers/workshop_router.py``,
@@ -75,7 +75,7 @@ def set_steamworks(steamworks: Optional[Any]) -> None:
 def set_steamworks_initializer(initializer: Optional[Callable[[], Optional[Any]]]) -> None:
     """Register a process-local Steamworks initializer for lazy reconnects.
 
-    The callback is installed by ``app/main_server.py`` because only that layer
+    The callback is installed by ``app/main_server/__init__.py`` because only that layer
     knows how to create and wire the SDK instance. Keeping the callback here
     lets routers ask for a retry without importing ``main_server``.
     """

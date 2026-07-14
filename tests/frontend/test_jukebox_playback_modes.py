@@ -6,9 +6,12 @@ from playwright.sync_api import Page
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-JUKEBOX_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "Jukebox.js").read_text(encoding="utf-8")
+JUKEBOX_PARTS_DIR = REPO_ROOT / "static" / "jukebox" / "jukebox"
+JUKEBOX_PARTS = sorted(JUKEBOX_PARTS_DIR.glob("*.js"))
+JUKEBOX_SCRIPT = "\n".join(part.read_text(encoding="utf-8") for part in JUKEBOX_PARTS)
 JUKEBOX_LOADER_SCRIPT = (REPO_ROOT / "static" / "jukebox" / "jukebox-loader.js").read_text(encoding="utf-8")
 JUKEBOX_TEMPLATE = (REPO_ROOT / "templates" / "jukebox.html").read_text(encoding="utf-8")
+JUKEBOX_MANAGER_TEMPLATE = (REPO_ROOT / "templates" / "jukebox_manager.html").read_text(encoding="utf-8")
 VRM_ANIMATION_SCRIPT = (REPO_ROOT / "static" / "vrm" / "vrm-animation.js").read_text(encoding="utf-8")
 
 HARNESS_HTML = """
@@ -200,6 +203,61 @@ def test_jukebox_loader_native_mode_keeps_animation_facade(mock_page: Page):
             "cursor:dance",
             "stop",
         ],
+    }
+
+
+def test_jukebox_parts_are_loaded_in_directory_order():
+    expected_paths = [f"/static/jukebox/jukebox/{part.name}" for part in JUKEBOX_PARTS]
+
+    loader_positions = [JUKEBOX_LOADER_SCRIPT.find(f"'{part_path}'") for part_path in expected_paths]
+    template_positions = [JUKEBOX_TEMPLATE.find(f'"{part_path}"') for part_path in expected_paths]
+    manager_positions = [JUKEBOX_MANAGER_TEMPLATE.find(f'"{part_path}"') for part_path in expected_paths]
+
+    assert all(position >= 0 for position in loader_positions)
+    assert all(position >= 0 for position in template_positions)
+    assert all(position >= 0 for position in manager_positions)
+    assert loader_positions == sorted(loader_positions)
+    assert template_positions == sorted(template_positions)
+    assert manager_positions == sorted(manager_positions)
+
+
+@pytest.mark.frontend
+def test_jukebox_loader_fetches_all_parts_sequentially(mock_page: Page):
+    loaded_parts = []
+
+    def serve_jukebox_part(route):
+        file_name = route.request.url.split("?", 1)[0].rsplit("/", 1)[-1]
+        loaded_parts.append(file_name)
+        route.fulfill(
+            status=200,
+            content_type="application/javascript",
+            body=(JUKEBOX_PARTS_DIR / file_name).read_text(encoding="utf-8"),
+        )
+
+    mock_page.route("**/static/jukebox/jukebox/*.js", serve_jukebox_part)
+    mock_page.set_content('<base href="http://jukebox.test/"><body></body>')
+    mock_page.add_script_tag(content=JUKEBOX_LOADER_SCRIPT)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+          const jukebox = await window.__nekoJukeboxLoader.load();
+          return {
+            keyCount: Object.keys(jukebox).length,
+            hasLoadSongs: typeof jukebox.loadSongs === 'function',
+            hasManager: typeof jukebox.SongActionManager === 'object',
+            hasScriptTag: window.__nekoJukeboxLoader.getState().hasScriptTag
+          };
+        }
+        """
+    )
+
+    assert loaded_parts == [part.name for part in JUKEBOX_PARTS]
+    assert result == {
+        "keyCount": 146,
+        "hasLoadSongs": True,
+        "hasManager": True,
+        "hasScriptTag": True,
     }
 
 
