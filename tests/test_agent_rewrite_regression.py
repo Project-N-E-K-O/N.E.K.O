@@ -1969,8 +1969,10 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     cancellation_release_index = start_round_block.index(
         "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {"
     )
-    assert "keepUserModelBootSkipped: true" in start_round_block[cancellation_release_index:]
-    assert "suppressPrediction: true" in start_round_block[cancellation_release_index:]
+    # 只检查取消分支的当前 release 调用，避免误命中后续正常 teardown 的同名参数。
+    cancellation_release_block = start_round_block[cancellation_release_index:].split("});", 1)[0]
+    assert "keepUserModelBootSkipped: true" in cancellation_release_block
+    assert "suppressPrediction: true" in cancellation_release_block
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
     assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
