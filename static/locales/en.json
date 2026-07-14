@@ -2577,10 +2577,10 @@
             "visionInterval": "Perception Interval"
         },
         "gameModeBeta": {
-            "enabledNotice": "Side Mode is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
+            "enabledNotice": "Edge Mode Beta is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
             "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
-            "disabledNotice": "Side Mode is off. Live2D now uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Game Mode. Please try again later.",
+            "disabledNotice": "Edge Mode Beta is off. Live2D now uses normal edge snapping.",
+            "toggleFailed": "Failed to switch Edge Mode Beta. Please try again later.",
             "memoryMetric": "memory",
             "resourceMetric": "resource",
             "statusOn": "On",
@@ -2603,7 +2603,7 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
-            "gameModeBeta": "Side Mode",
+            "gameModeBeta": "Edge Mode Beta",
             "gameModeBetaTooltip": "Drag Live2D to the left or right screen edge to make it peek. CPU, memory, and GPU pressure is diagnostic only and never changes the model automatically.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",

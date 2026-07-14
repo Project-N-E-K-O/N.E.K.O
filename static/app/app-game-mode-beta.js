@@ -311,13 +311,13 @@
                 clientState.promptedThisCycle = false;
                 showNotice(t(
                     'settings.gameModeBeta.enabledNotice',
-                    '侧边模式已开启。拖动 Live2D 到屏幕边缘即可进入探身状态；资源压力只记录状态，不会自动变猫。'
+                    '挂边模式 Beta 已开启。拖动 Live2D 到屏幕边缘即可进入探身状态；资源压力只记录状态，不会自动变猫。'
                 ));
             } else {
                 await handleDisabledRestore();
                 showNotice(t(
                     'settings.gameModeBeta.disabledNotice',
-                    '侧边模式已关闭。Live2D 将恢复普通边缘吸附行为。'
+                    '挂边模式 Beta 已关闭。Live2D 将恢复普通边缘吸附行为。'
                 ));
             }
             if (wasEnabled !== next) dispatchState();

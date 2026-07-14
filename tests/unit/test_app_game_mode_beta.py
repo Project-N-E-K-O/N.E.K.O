@@ -440,3 +440,24 @@ def test_game_mode_settings_rejections_restore_ui_and_notify_user():
     assert "checkbox.checked = !isChecked;" in toggle_block
     assert ".catch(function (error)" in toggle_block
     assert "showGameModeBetaMutationFailure(error);" in toggle_block
+
+
+def test_edge_mode_beta_uses_the_new_visible_name_in_every_locale():
+    expected_labels = {
+        "en": "Edge Mode Beta",
+        "es": "Modo de borde Beta",
+        "ja": "エッジモード Beta",
+        "ko": "가장자리 모드 Beta",
+        "pt": "Modo de borda Beta",
+        "ru": "Режим у края Beta",
+        "zh-CN": "挂边模式 Beta",
+        "zh-TW": "掛邊模式 Beta",
+    }
+
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    assert "'挂边模式 Beta'" in source
+
+    for locale, expected_label in expected_labels.items():
+        locale_path = PROJECT_ROOT / "static" / "locales" / f"{locale}.json"
+        messages = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert messages["settings"]["toggles"]["gameModeBeta"] == expected_label

@@ -2577,10 +2577,10 @@
             "visionInterval": "Intervalo de percepción"
         },
         "gameModeBeta": {
-            "enabledNotice": "El modo lateral está activado. Arrastra Live2D a un borde de la pantalla para que se asome; la presión de recursos solo se registra y nunca cambia el modelo automáticamente.",
+            "enabledNotice": "El modo de borde Beta está activado. Arrastra Live2D a un borde de la pantalla para que se asome; la presión de recursos solo se registra y nunca cambia el modelo automáticamente.",
             "autoSwitchNotice": "El uso de {metric} permaneció alto, por lo que NEKO cambió a forma de gato para reducir recursos.",
-            "disabledNotice": "El modo lateral está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar el modo juego. Inténtalo de nuevo más tarde.",
+            "disabledNotice": "El modo de borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
+            "toggleFailed": "No se pudo cambiar el modo de borde Beta. Inténtalo de nuevo más tarde.",
             "memoryMetric": "memoria",
             "resourceMetric": "recursos",
             "statusOn": "Activado",
@@ -2603,7 +2603,7 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "gameModeBeta": "Modo lateral",
+            "gameModeBeta": "Modo de borde Beta",
             "gameModeBetaTooltip": "Arrastra Live2D al borde izquierdo o derecho para que se asome. La presión de CPU, memoria y GPU es solo diagnóstica y nunca cambia el modelo automáticamente.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
