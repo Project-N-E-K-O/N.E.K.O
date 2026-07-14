@@ -11,7 +11,9 @@ class _Session:
         self.inputs = []
 
     def run(self, output_names, inputs):
-        self.inputs.append({key: np.asarray(value).copy() for key, value in inputs.items()})
+        self.inputs.append(
+            {key: np.asarray(value).copy() for key, value in inputs.items()}
+        )
         state = inputs["state"] + 1
         return [np.asarray([[0.9]], dtype=np.float32), state]
 
@@ -48,6 +50,11 @@ class _NoopVad:
         pass
 
 
+class _BatchVad(_NoopVad):
+    def process_pcm16(self, pcm16_le):
+        return [0.9, 0.1]
+
+
 def test_activity_gate_emits_pause_once_and_resume_without_force_commit():
     config = SmartTurnConfig(
         enabled=True,
@@ -55,16 +62,46 @@ def test_activity_gate_emits_pause_once_and_resume_without_force_commit():
         candidate_silence_ms=32,
     )
     gate = SileroActivityGate(_NoopVad(), config)
-    assert gate.process_probabilities([0.9]) is SpeechActivityEvent.SPEECH_STARTED
-    assert gate.process_probabilities([0.1]) is SpeechActivityEvent.CANDIDATE_PAUSE
-    assert gate.process_probabilities([0.1] * 100) is SpeechActivityEvent.NONE
-    assert gate.process_probabilities([0.9]) is SpeechActivityEvent.SPEECH_RESUMED
-    assert {event.value for event in SpeechActivityEvent}.isdisjoint({"force_end", "turn_complete"})
+    assert gate.process_probabilities([0.9]) == (SpeechActivityEvent.SPEECH_STARTED,)
+    assert gate.process_probabilities([0.1]) == (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    assert gate.process_probabilities([0.1] * 100) == ()
+    assert gate.process_probabilities([0.9]) == (SpeechActivityEvent.SPEECH_RESUMED,)
+    assert {event.value for event in SpeechActivityEvent}.isdisjoint(
+        {"force_end", "turn_complete"}
+    )
 
 
 def test_activity_gate_duration_thresholds_never_round_down():
     gate = SileroActivityGate(_NoopVad(), SmartTurnConfig(enabled=True))
-    assert gate.process_probabilities([0.9] * 6) is SpeechActivityEvent.NONE
-    assert gate.process_probabilities([0.9]) is SpeechActivityEvent.SPEECH_STARTED
-    assert gate.process_probabilities([0.1] * 9) is SpeechActivityEvent.NONE
-    assert gate.process_probabilities([0.1]) is SpeechActivityEvent.CANDIDATE_PAUSE
+    assert gate.process_probabilities([0.9] * 6) == ()
+    assert gate.process_probabilities([0.9]) == (SpeechActivityEvent.SPEECH_STARTED,)
+    assert gate.process_probabilities([0.1] * 9) == ()
+    assert gate.process_probabilities([0.1]) == (SpeechActivityEvent.CANDIDATE_PAUSE,)
+
+
+def test_activity_gate_preserves_all_ordered_events_from_one_batch():
+    config = SmartTurnConfig(
+        enabled=True,
+        minimum_speech_ms=32,
+        candidate_silence_ms=32,
+    )
+    gate = SileroActivityGate(_NoopVad(), config)
+
+    assert gate.process_probabilities([0.9, 0.1]) == (
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+    )
+
+
+def test_activity_gate_feed_preserves_ordered_events_from_vad_batch():
+    config = SmartTurnConfig(
+        enabled=True,
+        minimum_speech_ms=32,
+        candidate_silence_ms=32,
+    )
+    gate = SileroActivityGate(_BatchVad(), config)
+
+    assert gate.feed(b"pcm") == (
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+    )
