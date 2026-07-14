@@ -1,4 +1,4 @@
-import { useEffect, useState } from '@neko/plugin-ui';
+import { useEffect, useRef, useState } from '@neko/plugin-ui';
 import type { PluginSurfaceProps } from '@neko/plugin-ui';
 
 import { callPlugin, ensureBrandCSS } from './study_surface_utils';
@@ -213,6 +213,8 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
   const [summary, setSummary] = useState<Record<string, number>>({});
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     ensureBrandCSS();
@@ -239,10 +241,26 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
 
   useEffect(() => {
     if (!selectedNode) return undefined;
+    closeButtonRef.current?.focus();
     const closeNodeDialog = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         setSelectedNode(null);
+        return;
+      }
+      if (event.key === 'Tab') {
+        const focusableElements = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') || []);
+        const first = focusableElements[0];
+        const last = focusableElements[focusableElements.length - 1];
+        if (!first || !last) {
+          event.preventDefault();
+        } else if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener('keydown', closeNodeDialog);
@@ -356,6 +374,9 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
             </button>
           );
         })}
+        {visibleNodes.length > 60 ? (
+          <span className="knowledge-edge-more">+ {visibleNodes.length - 60} {text(props, 'ui.knowledge.edge_more_suffix', 'more')}</span>
+        ) : null}
       </div> : null}
       <div className="study-panel__reply-label">{text(props, 'ui.knowledge.edge_section', 'Relationships')}</div>
       {!isLoading && visibleEdges.length ? edgeGraph(props, visibleNodes, visibleEdges) : null}
@@ -398,6 +419,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       </div>
       {!isLoading && currentNode ? (
         <div
+          ref={dialogRef}
           className="knowledge-node-detail-dialog"
           role="dialog"
           aria-modal="true"
@@ -409,7 +431,7 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
           <div className="knowledge-node-detail-dialog__panel">
             <header className="knowledge-node-detail-dialog__header">
               <strong>{nodeLabel(currentNode)}</strong>
-              <button type="button" className="button button-secondary knowledge-node-detail-dialog__close" onClick={() => setSelectedNode(null)}>
+              <button ref={closeButtonRef} type="button" className="button button-secondary knowledge-node-detail-dialog__close" onClick={() => setSelectedNode(null)}>
                 {text(props, 'ui.button.close', 'Close')}
               </button>
             </header>
@@ -440,13 +462,13 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
                 <h4>{text(props, 'ui.knowledge.node_detail.next', 'Recommended next step')}</h4>
                 <ul className="knowledge-node-detail__list">
                   {visibleEdges
-                    .filter((edge) => edge.from === currentNode.id && ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').toLowerCase()))
+                    .filter((edge) => edge.from === currentNode.id && ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').trim().toLowerCase()))
                     .slice(0, 3)
                     .map((edge, index) => {
                       const target = visibleNodes.find((node) => node.id === edge.to);
                       return <li key={`${edge.to}:${index}`}>{relationLabel(props, edge.relation)}: {nodeLabel(target || { id: edge.to })}</li>;
                     })}
-                  {!visibleEdges.some((edge) => edge.from === currentNode.id && ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').toLowerCase())) ? <li>{emptyDetailItem}</li> : null}
+                  {!visibleEdges.some((edge) => edge.from === currentNode.id && ['application', 'procedure_step', 'extends'].includes(String(edge.relation || '').trim().toLowerCase())) ? <li>{emptyDetailItem}</li> : null}
                 </ul>
               </section>
               <section className="knowledge-node-detail__section">

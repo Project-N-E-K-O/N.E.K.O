@@ -195,6 +195,21 @@ function renderKnowledgeNodeDetailDialog(node = {}, edges = [], labelById = new 
     if (event.key === 'Escape') {
       event.preventDefault();
       onClose();
+      return;
+    }
+    if (event.key === 'Tab') {
+      const focusableElements = Array.from(dialog.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'));
+      const first = focusableElements[0];
+      const last = focusableElements[focusableElements.length - 1];
+      if (!first || !last) {
+        event.preventDefault();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
   });
   window.setTimeout(() => closeButton.focus?.(), 0);
@@ -206,7 +221,8 @@ function renderKnowledgeNodes(nodes = [], edges = []) {
   const labelById = new Map(nodes.map((node) => [String(node.id || node.topic_id || ''), knowledgeNodeLabel(node)]));
   const detailMount = drawerElement('div', 'knowledge-node-detail-mount');
   const groups = new Map();
-  nodes.slice(0, 80).forEach((node) => {
+  const cappedNodes = nodes.slice(0, 80);
+  cappedNodes.forEach((node) => {
     const stage = stageValueFromNode(node);
     groups.set(stage, [...(groups.get(stage) || []), node]);
   });
@@ -282,6 +298,9 @@ function renderKnowledgeNodes(nodes = [], edges = []) {
     });
     root.appendChild(section);
   });
+  if (nodes.length > cappedNodes.length) {
+    root.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: nodes.length - cappedNodes.length })));
+  }
   root.appendChild(detailMount);
   return root;
 }

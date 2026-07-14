@@ -140,6 +140,11 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "event.key === 'Escape'" in hosted
     assert "document.addEventListener('keydown', closeNodeDialog)" in hosted
     assert "document.removeEventListener('keydown', closeNodeDialog)" in hosted
+    assert "visibleNodes.length - 60" in hosted
+    assert "dialogRef" in hosted
+    assert "closeButtonRef" in hosted
+    assert "event.key === 'Tab'" in hosted
+    assert ".trim().toLowerCase()" in hosted
 
     assert "fromId: groupKey" in fallback
     assert "toId," in fallback
@@ -147,3 +152,6 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "to: String(item.toId || '').trim()" in fallback
     assert "String(edge.from || '') === nodeId && ['application', 'procedure_step', 'extends'].includes" in fallback
     assert "event.key === 'Escape'" in fallback
+    assert "event.key === 'Tab'" in fallback
+    assert "const cappedNodes = nodes.slice(0, 80)" in fallback
+    assert "nodes.length - cappedNodes.length" in fallback

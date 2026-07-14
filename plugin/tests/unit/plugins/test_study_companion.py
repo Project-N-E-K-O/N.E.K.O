@@ -4372,8 +4372,12 @@ def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
     surface_utils = (
         plugin_dir / "surfaces" / "study_surface_utils.ts"
     ).read_text(encoding="utf-8")
-    en_i18n = json.loads((plugin_dir / "i18n" / "en.json").read_text(encoding="utf-8"))
-    zh_i18n = json.loads((plugin_dir / "i18n" / "zh-CN.json").read_text(encoding="utf-8"))
+    locale_bundles = {
+        path.stem: json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((plugin_dir / "i18n").glob("*.json"))
+    }
+    en_i18n = locale_bundles["en"]
+    zh_i18n = locale_bundles["zh-CN"]
     relation_keys = {
         "application",
         "procedure_step",
@@ -4402,7 +4406,13 @@ def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
     assert "knowledge-edge-graph__svg" in surface_source
     for relation in relation_keys:
         assert en_i18n[f"ui.knowledge.edge_relation.{relation}"]
-        assert zh_i18n[f"ui.knowledge.edge_relation.{relation}"]
+        zh_value = zh_i18n[f"ui.knowledge.edge_relation.{relation}"]
+        assert zh_value and zh_value != "??"
+    assert len(locale_bundles) == 8
+    for locale, bundle in locale_bundles.items():
+        for key in ("ui.knowledge.subject_uncategorized", "ui.knowledge.edge_graph_label"):
+            value = bundle.get(key)
+            assert value and value != "??", f"{locale} is missing {key}"
     for source in (static_css, surface_utils):
         assert ".knowledge-edge-graph" in source
         assert ".knowledge-edge-graph__edge" in source
@@ -4412,7 +4422,7 @@ def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
         assert 'data-relation="procedure_step"' in source
         assert 'data-relation="extends"' in source
         assert 'data-relation="co_occurs"' in source
-    assert "-webkit-line-clamp: 2" in static_css
+    assert "white-space: nowrap" in static_css
     assert "function knowledgeEdgeMeta" in static_source
     assert "${relation} (${meta}): ${other}" in static_source
     assert "function renderKnowledgeNodeDetail" in static_source
