@@ -26,7 +26,7 @@ Rule schema::
         "id":      "ZH_001",          # stable, unique across all languages
         "name":    "heart pounding",  # short English label (for logs / management UI)
         "find":    r"...",            # a Python ``re`` pattern (NOT JavaScript)
-        "replace": ["...", ...],      # pool; one entry is chosen at random per match
+        "replace": ["...", ...],      # pool; one entry is chosen deterministically per match
         "flags":   re.IGNORECASE,     # optional; omitted when no flags are needed
     }
 
@@ -39,6 +39,16 @@ This table is curated. Patterns are kept specific (matching the full stock
 collocation, not a single common word) so they do not fire on ordinary prose.
 """
 import re
+
+
+# Bump this whenever rule matching or replacement pools change in a way that
+# should intentionally re-key deterministic prompt-side replacements.
+SLOP_RULESET_VERSION = 1
+
+# The third eligible occurrence of a rule is the first one rewritten. This is
+# deliberately an engine constant, not a user setting: the existing Natural
+# Speech switch remains the only product control.
+SLOP_REPEAT_THRESHOLD = 3
 
 
 SLOP_RULES: dict[str, list[dict]] = {
