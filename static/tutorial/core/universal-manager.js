@@ -1426,9 +1426,24 @@ class UniversalTutorialManager {
 
     prepareYuiGuideCompactChatForTutorial() {
         const requestId = `tutorial-compact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        let tutorialRunId = '';
+        try {
+            tutorialRunId = window.localStorage
+                ? (window.localStorage.getItem('yuiGuidePcOverlayRunId') || '')
+                : '';
+            if (!tutorialRunId) {
+                // prepare 早于 lifecycle-start relay，必须在排队前给本轮生成稳定 runId；
+                // PC 才能让迟到的旧 lifecycle-ended 只清理旧教程请求。
+                tutorialRunId = 'yui-guide-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+                if (window.localStorage) {
+                    window.localStorage.setItem('yuiGuidePcOverlayRunId', tutorialRunId);
+                }
+            }
+        } catch (_) {}
         const message = {
             action: 'yui_guide_prepare_compact_chat',
             requestId: requestId,
+            tutorialRunId: tutorialRunId,
             reason: 'avatar-floating-guide-start',
             timestamp: Date.now()
         };
@@ -3361,6 +3376,27 @@ class UniversalTutorialManager {
         }
     }
 
+    consumePendingStartupDefaultCatRestoreRequest() {
+        const snapshot = this._avatarFloatingModelLockSnapshot;
+        if (
+            !snapshot
+            || snapshot.goodbyeActive !== true
+            || !snapshot.goodbyeMeta
+            || snapshot.goodbyeMeta.reason !== 'startup-default-cat'
+        ) {
+            return false;
+        }
+        try {
+            const autoGoodbye = window.nekoAutoGoodbye;
+            if (autoGoodbye && typeof autoGoodbye.consumeStartupDefaultCatRequest === 'function') {
+                return autoGoodbye.consumeStartupDefaultCatRequest() === true;
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 消费待恢复的启动默认猫咪请求失败:', error);
+        }
+        return false;
+    }
+
     applyTutorialChatIdentityOverride(detail) {
         const payload = detail || {};
         if (window.appInterpage && typeof window.appInterpage.applyTutorialChatIdentityOverride === 'function') {
@@ -4258,6 +4294,9 @@ class UniversalTutorialManager {
         this.cachedValidSteps = null;
         this.lifecycleStateStore.resetEndReason();
         this.currentTutorialStartSource = 'auto';
+
+        // 在解除教程全局锁前消费启动默认猫咪重试；后续模型恢复链会按快照只重放一次猫咪形态。
+        this.consumePendingStartupDefaultCatRestoreRequest();
 
         // 清除全局引导标记
         window.isInTutorial = false;

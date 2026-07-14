@@ -837,6 +837,7 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )
     assert "action: 'yui_guide_prepare_compact_chat'" in source
+    assert "tutorialRunId: tutorialRunId" in source
     assert "neko:yui-guide:compact-chat-ready" in source
     assert "wasCollapsed: response.wasCollapsed === true" in source
     prepare_block = source.split("    prepareYuiGuideCompactChatForTutorial() {", 1)[1].split(
@@ -875,6 +876,15 @@ def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reloa
     assert "autoGoodbyeState.startupDefaultCatRequested === true" in source
     assert "startupDefaultCatPending ? 'startup-default-cat'" in source
     assert "new CustomEvent('live2d-goodbye-click'" in restore_state_block
+    consume_block = source.split("    consumePendingStartupDefaultCatRestoreRequest() {", 1)[1].split(
+        "    applyTutorialChatIdentityOverride(detail) {",
+        1,
+    )[0]
+    assert "snapshot.goodbyeMeta.reason !== 'startup-default-cat'" in consume_block
+    assert "autoGoodbye.consumeStartupDefaultCatRequest()" in consume_block
+    assert teardown_block.index("this.consumePendingStartupDefaultCatRestoreRequest()") < teardown_block.index(
+        "window.isInTutorial = false"
+    )
     assert "restoreSavedGoodbyeRect: snapshot.goodbyeRect || null" in restore_state_block
     assert "this._avatarFloatingModelLockSnapshot = null" in restore_state_block
     assert "const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect" in app_ui_source

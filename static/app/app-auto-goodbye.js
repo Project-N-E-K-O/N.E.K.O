@@ -715,6 +715,14 @@
         if (markApplied === true) state.startupDefaultCatApplied = true;
     }
 
+    function consumeStartupDefaultCatRequest() {
+        if (!state.startupDefaultCatRequested) return false;
+        // 教程恢复会自行重放同一个猫咪业务入口；先消费启动请求并清掉重试定时器，
+        // 避免教程锁释放后旧重试与恢复链各派发一次猫咪切换。
+        cancelStartupDefaultCatRequest(true);
+        return true;
+    }
+
     function scheduleStartupDefaultCatRetry() {
         state.startupDefaultCatTimerId = window.setTimeout(
             applyStartupDefaultCat,
@@ -977,6 +985,7 @@
         setAutoCatEnabled: setAutoCatEnabled,
         isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,
+        consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest,
         getState: getState,
     };
 
