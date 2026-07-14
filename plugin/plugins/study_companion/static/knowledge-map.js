@@ -1,4 +1,7 @@
 /* Knowledge-map fallback rendering. Loaded before main.js; function bodies run after bootstrap. */
+const UNCATEGORIZED_SUBJECT = '__uncategorized__';
+let knowledgeMapSubject = '';
+
 function knowledgeMapActiveStage() {
   return knowledgeMapStage || normalizeLearningStage(learningProfile.stage) || 'all';
 }
@@ -16,7 +19,8 @@ function knowledgeSubjectLabel(subject) {
 function knowledgeMapActiveSubject(nodes = []) {
   const selected = String(knowledgeMapSubject || '').trim();
   if (!selected) return 'all';
-  return nodes.some((node) => subjectValueFromNode(node) === selected) ? selected : 'all';
+  const subject = selected === UNCATEGORIZED_SUBJECT ? '' : selected;
+  return nodes.some((node) => subjectValueFromNode(node) === subject) ? selected : 'all';
 }
 
 function knowledgeMapRangeLabel(stage = knowledgeMapActiveStage()) {
@@ -26,16 +30,17 @@ function knowledgeMapRangeLabel(stage = knowledgeMapActiveStage()) {
 }
 
 function knowledgeMapSubjectLabel(subject = 'all') {
-  return subject === 'all'
-    ? t('ui.knowledge.subject_all', 'All subjects')
-    : knowledgeSubjectLabel(subject);
+  if (subject === 'all') return t('ui.knowledge.subject_all', 'All subjects');
+  if (subject === UNCATEGORIZED_SUBJECT) return t('ui.knowledge.subject_uncategorized', 'Uncategorized');
+  return knowledgeSubjectLabel(subject);
 }
 
 function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage(), subject = 'all') {
+  const subjectValue = subject === UNCATEGORIZED_SUBJECT ? '' : subject;
   return nodes.filter((node) => {
     const nodeStage = stageValueFromNode(node);
     const stageVisible = stage === 'all' || nodeStage === stage || !nodeStage;
-    const subjectVisible = subject === 'all' || subjectValueFromNode(node) === subject;
+    const subjectVisible = subject === 'all' || subjectValueFromNode(node) === subjectValue;
     return stageVisible && subjectVisible;
   });
 }
@@ -62,13 +67,14 @@ function renderKnowledgeSubjectSelector(nodes = [], stage = knowledgeMapActiveSt
   const subjects = ['all', ...knownSubjects, ...dynamicSubjects.sort((left, right) => (
     knowledgeSubjectLabel(left).localeCompare(knowledgeSubjectLabel(right))
   ))];
-  if (counts.has('')) subjects.push('');
+  if (counts.has('')) subjects.push(UNCATEGORIZED_SUBJECT);
   subjects.forEach((subject) => {
     const label = knowledgeMapSubjectLabel(subject);
-    const count = subject === 'all' ? stageNodes.length : (counts.get(subject) || 0);
+    const countKey = subject === UNCATEGORIZED_SUBJECT ? '' : subject;
+    const count = subject === 'all' ? stageNodes.length : (counts.get(countKey) || 0);
     const button = drawerElement('button', 'knowledge-stage-option', count ? `${label} ${count}` : label);
     button.type = 'button';
-    button.dataset.subject = subject || 'uncategorized';
+    button.dataset.subject = subject === UNCATEGORIZED_SUBJECT ? 'uncategorized' : subject;
     button.setAttribute('aria-pressed', subject === activeSubject ? 'true' : 'false');
     button.addEventListener('click', () => {
       knowledgeMapSubject = subject === 'all' ? '' : subject;
@@ -110,10 +116,8 @@ function renderKnowledgeStageSelector(nodes = []) {
     button.addEventListener('click', () => {
       knowledgeMapStage = stage === normalizeLearningStage(learningProfile.stage) ? '' : stage;
       knowledgeMapSubject = '';
-      if (surfaceDrawerBody) {
-        const requestId=mapRequestId += 1;
-        surfaceDrawerBody.replaceChildren(renderKnowledgeLoadingPanel(knowledgeMapSubject));
-        loadKnowledgeMapIntoDrawer('knowledge-map', requestId);
+      if (surfaceDrawerBody && lastKnowledgeMapPayload) {
+        surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload));
       }
     });
     actions.appendChild(button);
@@ -194,6 +198,7 @@ function renderKnowledgeNodeDetailDialog(node = {}, edges = [], labelById = new 
   dialog.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       onClose();
       return;
     }
@@ -482,11 +487,12 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
     ));
     return root;
   }
-  const graph = renderKnowledgeEdgeGraph(Array.from(groups.values()).slice(0, 12));
+  const visibleGroups = Array.from(groups.values()).slice(0, 12);
+  const graph = renderKnowledgeEdgeGraph(visibleGroups);
   if (graph) root.appendChild(graph);
   const cardList = drawerElement('div', 'knowledge-edge-list');
 
-  Array.from(groups.values()).slice(0, 12).forEach((group) => {
+  visibleGroups.forEach((group) => {
     const card = drawerElement('article', 'knowledge-edge-card');
     card.appendChild(drawerElement('h3', '', group.from));
     const list = drawerElement('div', 'knowledge-edge-card__items');
@@ -514,11 +520,17 @@ function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount 
     card.appendChild(list);
     cardList.appendChild(card);
   });
-  if (edges.length > 80 || groups.size > 12) {
-    const hidden = Math.max(0, edgeCount - Math.min(edgeCount, 80));
-    cardList.appendChild(drawerElement('span', 'knowledge-edge-more', hidden
-      ? tf('ui.knowledge.edge_more', '+ {count} more', { count: hidden })
-      : t('ui.knowledge.edge_more_groups', 'More relationship groups are hidden.')));
+  const displayedEdgeCount = visibleGroups.reduce(
+    (count, group) => count + Math.min(group.items.length, 6),
+    0,
+  );
+  const hidden = Math.max(0, edgeCount - displayedEdgeCount);
+  if (hidden) {
+    cardList.appendChild(drawerElement(
+      'span',
+      'knowledge-edge-more',
+      tf('ui.knowledge.edge_more', '+ {count} more', { count: hidden }),
+    ));
   }
   root.appendChild(cardList);
   return root;

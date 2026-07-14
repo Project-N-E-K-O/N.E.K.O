@@ -165,7 +165,6 @@ let currentQuestion = null;
 let currentSelectionContext = null;
 let learningProfile = readLearningProfile();
 let knowledgeMapStage = '';
-let knowledgeMapSubject = '';
 let lastKnowledgeMapPayload = null;
 const pasteControllers = { study: null, answer: null };
 

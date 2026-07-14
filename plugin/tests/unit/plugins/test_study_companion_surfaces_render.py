@@ -133,6 +133,7 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
 def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     hosted = _read("knowledge_map.tsx")
     fallback = (PLUGIN_DIR / "static" / "knowledge-map.js").read_text(encoding="utf-8")
+    main = (PLUGIN_DIR / "static" / "main.js").read_text(encoding="utf-8")
 
     assert "toId: string" in hosted
     assert "from: String(group.fromId || '').trim()" in hosted
@@ -153,5 +154,14 @@ def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
     assert "String(edge.from || '') === nodeId && ['application', 'procedure_step', 'extends'].includes" in fallback
     assert "event.key === 'Escape'" in fallback
     assert "event.key === 'Tab'" in fallback
+    assert "event.stopPropagation()" in fallback
     assert "const cappedNodes = nodes.slice(0, 80)" in fallback
     assert "nodes.length - cappedNodes.length" in fallback
+    assert "const UNCATEGORIZED_SUBJECT = '__uncategorized__'" in fallback
+    assert "subject === UNCATEGORIZED_SUBJECT ? '' : subject" in fallback
+    assert "let knowledgeMapSubject = '';" in fallback
+    assert "let knowledgeMapSubject = '';" not in main
+    assert "renderKnowledgePanel(lastKnowledgeMapPayload)" in fallback
+    assert "loadKnowledgeMapIntoDrawer('knowledge-map', requestId)" not in fallback
+    assert "const displayedEdgeCount = visibleGroups.reduce" in fallback
+    assert "edgeCount - displayedEdgeCount" in fallback

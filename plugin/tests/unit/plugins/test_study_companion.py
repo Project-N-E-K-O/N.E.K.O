@@ -4396,7 +4396,8 @@ def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
         assert "knowledge-edge-row__reason" in source
         assert "knowledge-edge-row__meta" in source
     assert "function renderKnowledgeEdgeGraph" in static_source
-    assert "renderKnowledgeEdgeGraph(Array.from(groups.values()).slice(0, 12))" in static_source
+    assert "const visibleGroups = Array.from(groups.values()).slice(0, 12)" in static_source
+    assert "renderKnowledgeEdgeGraph(visibleGroups)" in static_source
     assert ".flatMap((group) => (group.items || []).slice(0, 6)" in static_source
     assert "knowledge-edge-graph__svg" in static_source
     assert "marker-end" in static_source
