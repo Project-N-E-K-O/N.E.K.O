@@ -190,7 +190,7 @@ def test_dummy_requires_explicit_override_and_manual_mode(monkeypatch):
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         create_asr_session(
             "qwen",
-            config=AsrSessionConfig(endpointing_mode="server_vad"),
+            config=AsrSessionConfig(endpointing_mode="provider"),
             on_input_transcript=callback,
             on_connection_error=callback,
         )
@@ -207,24 +207,55 @@ def test_phase2_registry_routes_and_capabilities():
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
     assert CORE_ASR_ROUTES["qwen"].region == "cn"
+    assert CORE_ASR_ROUTES["qwen"].default_endpointing_mode == "manual"
     assert CORE_ASR_ROUTES["qwen_intl"].credential_field == ("ASSIST_API_KEY_QWEN_INTL")
     assert CORE_ASR_ROUTES["qwen_intl"].region == "intl"
     assert CORE_ASR_ROUTES["openai"].credential_field == "ASSIST_API_KEY_OPENAI"
     assert CORE_ASR_ROUTES["step"].credential_field == "ASSIST_API_KEY_STEP"
     assert CORE_ASR_ROUTES["grok"].credential_field == "ASSIST_API_KEY_GROK"
+    assert CORE_ASR_ROUTES["grok"].default_endpointing_mode == "provider"
 
     assert ASR_PROVIDER_REGISTRY["qwen"].supported_endpointing_modes == {
         "manual",
-        "server_vad",
+        "provider",
     }
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
-    assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"server_vad"}
+    assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
     for provider_key in ("qwen", "openai", "step", "grok"):
         assert (
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
+
+
+def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
+    callback = AsyncMock()
+    observed_modes: list[tuple[str, str]] = []
+
+    def fake_get_asr_worker(core_type, endpointing_mode="manual"):
+        observed_modes.append((core_type, endpointing_mode))
+        return dummy_asr_worker, "", "dummy"
+
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(asr_client, "_get_asr_worker", fake_get_asr_worker)
+
+    grok_session = create_asr_session(
+        "grok",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+    qwen_session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert grok_session._config.endpointing_mode == "provider"
+    assert qwen_session._config.endpointing_mode == "manual"
+    assert observed_modes == [("grok", "provider"), ("qwen", "manual")]
+    with pytest.raises(ValueError, match="manual.*provider"):
+        AsrSessionConfig(endpointing_mode="server_vad")
 
 
 def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
@@ -261,7 +292,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert intl_worker.keywords == {"region": "intl"}
 
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
-        asr_client._get_asr_worker("openai", "server_vad")
+        asr_client._get_asr_worker("openai", "provider")
 
     class AudioOnlyConfigManager:
         def get_core_config(self):
@@ -532,7 +563,7 @@ async def test_provider_mode_does_not_commit():
         api_key="",
         config=AsrSessionConfig(
             input_sample_rate_hz=48_000,
-            endpointing_mode="server_vad",
+            endpointing_mode="provider",
         ),
         on_input_transcript=transcripts.put,
         on_connection_error=errors,
@@ -551,7 +582,7 @@ async def test_provider_mode_does_not_commit():
     await session.close()
 
 
-async def test_server_vad_started_is_idempotent_and_finals_can_arrive_out_of_order():
+async def test_provider_started_is_idempotent_and_finals_are_delivered_in_order():
     observed_kinds: list[str] = []
 
     async def server_vad_worker(request_queue, response_queue, api_key, config):
@@ -632,7 +663,7 @@ async def test_server_vad_started_is_idempotent_and_finals_can_arrive_out_of_ord
     session = _RealtimeAsrSessionImpl(
         worker_fn=server_vad_worker,
         api_key="",
-        config=AsrSessionConfig(endpointing_mode="server_vad"),
+        config=AsrSessionConfig(endpointing_mode="provider"),
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
     )
@@ -641,12 +672,62 @@ async def test_server_vad_started_is_idempotent_and_finals_can_arrive_out_of_ord
     await session.stream_audio(b"\x00\x00" * 160)
     await session.signal_user_activity_end()
 
-    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     assert await asyncio.wait_for(transcripts.get(), 1) == "first"
+    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     await asyncio.sleep(0.05)
     assert transcripts.empty()
     assert "commit" not in observed_kinds
     assert session._utterance_id == 1
+    await session.close()
+
+
+async def test_manual_finals_are_delivered_in_commit_order():
+    async def out_of_order_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        commits = []
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                if request.kind == "commit":
+                    commits.append(request)
+                    if len(commits) == 2:
+                        for item, text in (
+                            (commits[1], "second"),
+                            (commits[0], "first"),
+                        ):
+                            await response_queue.put(
+                                _AsrWorkerEvent(
+                                    kind="final",
+                                    generation=item.generation,
+                                    buffer_epoch=item.buffer_epoch,
+                                    utterance_id=item.utterance_id,
+                                    text=text,
+                                )
+                            )
+                elif request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=out_of_order_worker,
+        api_key="",
+        config=AsrSessionConfig(endpointing_mode="manual"),
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    for _ in range(2):
+        await session.stream_audio(b"\x00\x00" * 160)
+        await session.signal_user_activity_end()
+
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
+    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     await session.close()
 
 
@@ -1052,7 +1133,7 @@ async def test_provider_final_waits_for_in_flight_audio_enqueue():
     session = _RealtimeAsrSessionImpl(
         worker_fn=racing_provider_worker,
         api_key="",
-        config=AsrSessionConfig(endpointing_mode="server_vad"),
+        config=AsrSessionConfig(endpointing_mode="provider"),
         on_input_transcript=capture_enqueue_state,
         on_connection_error=AsyncMock(),
     )

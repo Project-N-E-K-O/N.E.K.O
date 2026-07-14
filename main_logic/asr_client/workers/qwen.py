@@ -118,7 +118,7 @@ def _qwen_session_update(
 ) -> dict[str, Any]:
     if config.endpointing_mode == "manual":
         turn_detection: dict[str, str] | None = None
-    elif config.endpointing_mode == "server_vad":
+    elif config.endpointing_mode == "provider":
         turn_detection = {"type": "server_vad"}
     else:
         raise ValueError("unsupported Qwen ASR endpointing mode")
@@ -367,7 +367,7 @@ async def _qwen_receiver(
                 continue
 
             if event_type == "input_audio_buffer.speech_started":
-                if config.endpointing_mode != "server_vad":
+                if config.endpointing_mode != "provider":
                     continue
                 item_id = str(event.get("item_id") or "")
                 if not item_id or item_id in state.item_keys:

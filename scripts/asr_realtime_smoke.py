@@ -28,6 +28,7 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _RealtimeAsrSessionImpl,
 )
+from main_logic.asr_client._registry_meta import ASR_PROVIDER_REGISTRY
 
 
 _CREDENTIAL_FIELDS = {
@@ -203,7 +204,7 @@ async def _stream_turn(
         await session.stream_audio(chunk, sample_rate_hz=turn.sample_rate_hz)
         if realtime:
             await asyncio.sleep(len(chunk) / bytes_per_frame / turn.sample_rate_hz)
-    if endpointing_mode == "server_vad" and vad_silence_ms:
+    if endpointing_mode == "provider" and vad_silence_ms:
         silence = bytes(turn.sample_rate_hz * bytes_per_frame * vad_silence_ms // 1000)
         for offset in range(0, len(silence), chunk_bytes):
             chunk = silence[offset : offset + chunk_bytes]
@@ -321,7 +322,6 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         close_started = time.perf_counter()
         try:
             await session.close()
-            await session.close()
         except Exception as exc:
             safe_error = str(exc).strip() or type(exc).__name__
             if safe_error not in result.errors:
@@ -369,8 +369,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--endpointing-mode",
-        choices=("manual", "server_vad"),
-        default="manual",
+        choices=("manual", "provider"),
+        default=None,
+        help="Defaults to a supported provider mode (Grok uses provider; others manual).",
     )
     parser.add_argument("--language", default="zh")
     parser.add_argument("--api-key-env", default="")
@@ -379,7 +380,7 @@ def parse_args() -> argparse.Namespace:
         "--vad-silence-ms",
         type=int,
         default=1000,
-        help="Silence appended to each server_vad turn so the provider can finalize.",
+        help="Silence appended to each provider-endpointed turn so it can finalize.",
     )
     parser.add_argument("--timeout-s", type=float, default=30.0)
     parser.add_argument("--no-realtime", action="store_true")
@@ -394,8 +395,15 @@ def parse_args() -> argparse.Namespace:
         parser.error("--timeout-s must be positive")
     if args.vad_silence_ms < 0:
         parser.error("--vad-silence-ms must not be negative")
-    if args.endpointing_mode == "server_vad" and args.provider == "openai":
-        parser.error("OpenAI Phase 2 only supports manual endpointing")
+    supported_modes = ASR_PROVIDER_REGISTRY[
+        "qwen" if args.provider == "qwen_intl" else args.provider
+    ].supported_endpointing_modes
+    if args.endpointing_mode is None:
+        args.endpointing_mode = "manual" if "manual" in supported_modes else "provider"
+    if args.endpointing_mode not in supported_modes:
+        parser.error(
+            f"{args.provider} does not support {args.endpointing_mode} endpointing"
+        )
     return args
 
 
