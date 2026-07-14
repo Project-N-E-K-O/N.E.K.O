@@ -22,6 +22,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 from config.prompts.prompts_proactive import build_proactive_action_note
 from main_logic.core import LLMSessionManager
 from main_logic.session_state import SessionStateMachine
+from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 
 # 测试公用 master_name —— 任何字符串都行，关键是验证它会被原样展开进 note，
 # 而不是被替换成"主人/master/ご主人さま"等物化称呼。
@@ -206,10 +207,54 @@ def test_action_note_web_subchannels_all_route_to_web_template():
     误识别成"放歌"。
     """
     link = {'title': 'foo', 'source': 'bar'}
-    for ch in ('web', 'news', 'video', 'home', 'personal', 'window'):
+    for ch in ('web', 'news', 'video', 'home', 'personal', 'window', 'tieba'):
         note = build_proactive_action_note(ch, [link], 'zh', master_name=MASTER)
         assert note != '', f'channel={ch} 漏到 fallback'
         assert 'foo' in note and 'bar' in note
+
+
+def test_extract_links_from_tieba_raw_data():
+    raw = {
+        'posts': [
+            {
+                'title': '\u8d34\u5427\u70ed\u95e8\u5e16\u5b50',
+                'url': 'https://tieba.baidu.com/p/1',
+                'abstract': '\u793e\u533a\u8ba8\u8bba',
+            },
+            {
+                'title': '\u8d34\u5427\u5019\u8865\u5e16\u5b50',
+                'url': 'https://tieba.baidu.com/p/2',
+                'abstract': '\u6269\u5927\u5019\u9009\u6c60\u540e\u4f9b\u73b0\u6709\u53bb\u91cd\u9009\u7528',
+            },
+            {'title': '\u7f3a\u94fe\u63a5', 'url': ''},
+        ],
+        'topics': [
+            {
+                'title': '\u8d34\u5427\u70ed\u699c\u8bdd\u9898',
+                'url': 'https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=1',
+            },
+        ],
+    }
+
+    links = _extract_links_from_raw('tieba', raw)
+
+    assert links == [
+        {
+            'title': '\u8d34\u5427\u70ed\u95e8\u5e16\u5b50',
+            'url': 'https://tieba.baidu.com/p/1',
+            'source': '\u8d34\u5427',
+        },
+        {
+            'title': '\u8d34\u5427\u5019\u8865\u5e16\u5b50',
+            'url': 'https://tieba.baidu.com/p/2',
+            'source': '\u8d34\u5427',
+        },
+        {
+            'title': '\u8d34\u5427\u70ed\u699c\u8bdd\u9898',
+            'url': 'https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=1',
+            'source': '\u8d34\u5427',
+        },
+    ]
 
 
 def test_action_note_window_channel_with_music_recs_does_not_pick_music():
