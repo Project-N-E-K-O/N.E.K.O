@@ -1,15 +1,17 @@
 from pathlib import Path
 
+from tests.static_app_parts import read_js_parts
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_GAME_MODE_PATH = PROJECT_ROOT / "static" / "app" / "app-game-mode-beta.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
 def test_game_mode_auto_switch_transfers_the_live2d_edge_anchor_to_return_ball():
     game_mode_source = APP_GAME_MODE_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "edgeAnchor: clientState.restoreAnchor" in game_mode_source
     assert "const gameModeEdgeAnchor = goodbyeDetail.gameModeAuto === true ? goodbyeDetail.edgeAnchor : null;" in app_ui_source
@@ -18,7 +20,7 @@ def test_game_mode_auto_switch_transfers_the_live2d_edge_anchor_to_return_ball()
 
 
 def test_game_mode_return_ball_supports_exactly_four_corners_and_two_side_edges():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
     anchor_block = source.split("const NEKO_GAME_MODE_RETURN_EDGE_ANCHORS = [", 1)[1].split("];", 1)[0]
 
     for edge in ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right"):
@@ -32,7 +34,7 @@ def test_game_mode_return_ball_supports_exactly_four_corners_and_two_side_edges(
 
 
 def test_blocked_model_restore_keeps_the_game_mode_return_ball_anchor():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
     restore_block = source.split("function restoreReturnBallAfterBlockedModelViewport(event)", 1)[1].split(
         "const handleReturnClick", 1
     )[0]

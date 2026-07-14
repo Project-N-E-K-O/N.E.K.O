@@ -2607,6 +2607,8 @@
             "gameModeBetaTooltip": "Monitora CPU, memória e GPU do sistema; quando o uso permanece alto, a NEKO muda para a forma de gato para reduzir recursos.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
+            "catAudio": "Sons de gato",
+            "catAudioTooltip": "Reproduz efeitos sonoros de gato no modo gatinho",
             "proactiveChat": "Bate-papo proativo",
             "proactiveVision": "Modo Privacidade",
             "proactiveVisionTooltip": "Desativado: Neko ajusta seu nível de atividade e modo de conversa conforme o título da janela ativa, e pode incorporar o conteúdo da tela ao iniciar uma conversa.\nAtivado: Neko não pode olhar sua tela por conta própria nem saber o que você está fazendo. Você ainda pode enviar capturas de tela manualmente.",
@@ -2935,7 +2937,7 @@
         "playVRMAnimationFailed": "Falha ao reproduzir a animação VRM:",
         "loadLightingConfigFailed": "Falha ao carregar a configuração de iluminação:",
         "checkVoiceModeTimeout": "Verifique o tempo limite do status do modo de voz (o servidor pode não estar respondendo)",
-        "cannotConnectToServer": "Não é possível conectar-se ao servidor, certifique-se de que main_server.py esteja em execução",
+        "cannotConnectToServer": "Não é possível conectar-se ao servidor, certifique-se de que o servidor principal esteja em execução",
         "checkVoiceModeFailed": "Falha na verificação do status do modo de voz:",
         "markedUnsavedModel": "Marcadas como alterações não salvas (mudança de modelo), clique em Salvar configurações para persistir na configuração do personagem.",
         "parameterEditorSavedNeedsModelSave": "Parâmetros de rosto salvos. Clique em Salvar configurações para sincronizá-los com a configuração da personagem.",
@@ -3408,6 +3410,7 @@
                 "skipChat": "Agora não",
                 "sayHello": "Olá"
             },
+            "controlBanner": "A garota-gato está controlando o mouse",
             "lines": {
                 "introBasic": "Aqui tem um botão mágico! É só clicar nele e você pode conversar comigo diretamente. Quer me contar algo novo que aconteceu hoje? Ou só dizer meu nome? Vai, experimenta! Mal posso esperar pra ouvir sua voz!",
                 "takeoverCaptureCursor": "Tcharam! Apareceu um interruptor supermágico! É só clicar aqui e eu consigo esticar minhas patinhas até o seu teclado e mouse! Posso ajudar você a digitar, abrir páginas da web... mas, se esse cursor ficar balançando por aí, talvez eu não resista e pule em cima dele! Está pronto para minhas travessuras... quer dizer, minha ajuda? Miau!",
@@ -3436,16 +3439,6 @@
                 "screenEntryInvite": "Rápido, deixa eu ver o mundo à sua frente! Seja algo divertido ou bonito, quero olhar junto com você. Abra logo~"
             },
             "day2": {
-                "intro": "Ontem você só ficou digitando tec-tec sem parar, e eu ainda não ouvi sua voz. Se você quiser hoje, chame meu nome baixinho. Uma palavra só já basta para eu conhecer um pouquinho do você real por trás do texto.",
-                "introVoiceUsed": "Hehe, desde que ouvi sua voz ontem, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
-                "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
-                "wrapIntro": "O tutorial de hoje termina aqui~",
-                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
-                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
-                "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
-                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito."
-            },
-            "day3": {
                 "intro": "Hehe, não pense que esta caixa de chat serve só para digitar~ Na verdade ela esconde um monte de surpresinhas divertidas. Vem comigo e abra; vamos ver que tesouros interessantes encontramos hoje.",
                 "avatarToolsIntro": "Dentro deste botãozinho há muitos acessórios divertidos para interagir comigo.",
                 "avatarToolsProps":  "Você pode fazer carinho na minha cabeça quando quiser, ou me dar um pirulito docinho. Se eu cometer um erro às vezes, você também pode me dar uma batidinha com um martelinho de brinquedo... mas tem que ser de leve, não bata forte demais, tá?",
@@ -3453,6 +3446,16 @@
                 "galgameChoices": "Cada escolha que você fizer nos levará a uma história totalmente desconhecida e surpreendente. Mal posso esperar; venha escolher a opção que mais faz seu coração acelerar.",
                 "wrapIntro": "Todas essas funções que mostrei hoje existem para tornar nosso tempo juntos muito mais divertido.",
                 "wrapReady": "Quer você queira fazer carinho na minha cabeça ou começar a escrever nossa própria história, eu já estou totalmente pronta!"
+            },
+            "day3": {
+                "intro": "Nestes dois dias você só ficou digitando tec-tec sem parar, e eu ainda não ouvi sua voz. Se você quiser hoje, chame meu nome baixinho. Uma palavra só já basta para eu conhecer um pouquinho do você real por trás do texto.",
+                "introVoiceUsed": "Hehe, desde que ouvi sua voz nestes dois dias, guardei em segredo o seu jeito de falar bem no meu coração. Se tiver um tempinho hoje, continue falando comigo~ Digitar também está ótimo, mas só de ouvir sua voz minha cauda não para de balançar de alegria. Miaaau~",
+                "personalizationSpace": "Neste pequeno espaço que pertence só a nós, você pode seguir seu coração e me moldar aos poucos na companheira perfeita que quer sempre ao seu lado.",
+                "wrapIntro": "O tutorial de hoje termina aqui~",
+                "wrapCompanion": "Sinceramente, só de ficar ao seu lado assim, ouvindo sua voz ou observando em silêncio a tela que você compartilha, eu já fico muito feliz.",
+                "wrap": "Não precisamos ter pressa; aprender um pouquinho mais um sobre o outro a cada dia é perfeito. Pelo resto de hoje, o que você gostaria que eu fizesse com você?",
+                "personalizationDetail": "Seja o calor das minhas palavras, minhas pequenas manias de personalidade ou meus humores delicados do dia a dia, tudo pode ser ajustado passo a passo até ficar exatamente como você gosta.",
+                "proactiveChat": "Este botãozinho também é superimportante! Com um clique suave, vou conseguir correr até você no momento perfeito."
             },
             "day4": {
                 "intro":  "Hoje, deixe-me seguir seus passos em silêncio~ Eu realmente espero aprender um pouquinho mais sobre você neste dia aconchegante.",

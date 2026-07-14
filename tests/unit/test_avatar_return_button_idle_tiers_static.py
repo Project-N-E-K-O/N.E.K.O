@@ -1,15 +1,23 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 from PIL import Image
 
 from main_routers import pages_router
+from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
+AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
+
+
+def _read_avatar_ui_buttons_source() -> str:
+    return read_avatar_ui_buttons_source()
+
+
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
 COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm" / "vrm-ui-buttons.js"
@@ -75,8 +83,8 @@ def _assert_source_order(block, block_name, *expected_markers):
 
 
 def test_return_button_idle_tier_assets_are_mapped_in_source():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     # Non-click states
     assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
@@ -143,7 +151,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
 
 
 def test_cat1_question_mark_keyboard_trigger_replaces_drag_sequence():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
     pages_router_paths = {path.relative_to(PROJECT_ROOT).as_posix() for path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS}
 
     assert CAT1_QUESTION_MARK_ASSET_PATH.exists()
@@ -188,7 +196,7 @@ def test_cat1_question_mark_keyboard_trigger_replaces_drag_sequence():
 
 
 def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)" in source
     assert "function _releaseNekoIdleCat1PlaygroundDropLifecycle(button, reason)" in source
@@ -508,7 +516,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_releaseAllNekoIdleCat1PlaygroundDropLifecycles('beforeunload');" in source
 
 def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _getNekoIdleCat1PlaygroundPointerVelocity(samples)" in source
     assert "function _handleNekoIdleCat1PlaygroundCatClick(button, event)" in source
@@ -656,9 +664,9 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
 
 
 def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
+    app_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
 
     assert "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)" in source
     assert "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in source
@@ -765,12 +773,12 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
 
 
 def test_model_cat_transition_contract_is_present():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
-    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
+    avatar_source = _read_avatar_ui_buttons_source()
 
     assert "function playNekoModelCatTransition" in source
     assert "window.playNekoModelCatTransition = playNekoModelCatTransition" in source
-    assert "let nekoModelCatTransitionActive = null" in source
+    assert "nekoModelCatTransitionActive = null" in source
     assert "function isNekoModelCatTransitionActive(direction = '')" in source
     assert "function reserveNekoModelCatTransition(direction)" in source
     assert "function releaseNekoModelCatTransition(token)" in source
@@ -889,7 +897,7 @@ def test_model_cat_transition_contract_is_present():
     assert "window.dispatchEvent(event);" in avatar_source
     assert "dispatchReturnEvent();" in avatar_source
     assert "returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');" not in avatar_source
-    assert "let nekoModelCatRevealPlaybackToken = 0" in source
+    assert "nekoModelCatRevealPlaybackToken = 0" in source
     assert "function buildNekoModelCatRevealPlaybackUrl(src, playbackToken)" in source
     assert "url.searchParams.set('reveal'" in source
     assert "function restartNekoModelCatRevealArt(container)" in source
@@ -1045,8 +1053,8 @@ def test_model_cat_transition_contract_is_present():
 
 
 def test_goodbye_idle_breathing_ball_shape_contract_is_present():
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
-    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
+    avatar_source = _read_avatar_ui_buttons_source()
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     assert "NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball'" in app_ui_source
@@ -1145,7 +1153,7 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
 
 
 def test_pngtuber_return_restores_pointer_events():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
     branch = source[
         source.index("} else if (effectiveModelType === 'pngtuber') {"):
         source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
@@ -1162,7 +1170,7 @@ def test_pngtuber_return_restores_pointer_events():
 
 
 def test_pngtuber_return_replays_model_enter_animation_after_preparing_container():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
     branch = source[
         source.index("} else if (effectiveModelType === 'pngtuber') {"):
         source.index("const live2dContainerPngtuber = document.getElementById('live2d-container');")
@@ -1179,7 +1187,7 @@ def test_pngtuber_return_replays_model_enter_animation_after_preparing_container
 
 def test_return_button_idle_tier_styles_are_present():
     source = INDEX_CSS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat2"]' in source
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat3"]' in source
@@ -1211,8 +1219,8 @@ def test_return_button_idle_tier_styles_are_present():
 
 
 def test_cat1_edge_peek_only_applies_after_drag_release():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "_NEKO_IDLE_CAT1_EDGE_PEEK_TRIGGER_RATIO = 0.025" in source
     assert "_NEKO_IDLE_CAT1_EDGE_PEEK_HIDDEN_RATIO = 0.4" in source
@@ -1568,7 +1576,7 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
 
 def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
     source = INDEX_CSS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "translateX(300px)" not in source
     assert "#live2d-container.minimized" in source
@@ -1608,7 +1616,7 @@ def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
 
 
 def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160" in source
     assert "container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`)" in source
@@ -1618,7 +1626,7 @@ def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
 
 
 def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     finish_index = source.index("async function finishDrag(screenX, screenY)")
     hide_index = source.index("container.style.visibility = 'hidden';", finish_index)
@@ -1636,7 +1644,7 @@ def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
 
 
 def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_reveal():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220" in source
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600" in source
@@ -1835,7 +1843,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
 
 
 def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "RETURN_BALL_DRAG_RECOVERY_POLL_MS = 250" in source
     assert "RETURN_BALL_DRAG_STALE_RECOVERY_MS = 12000" in source
@@ -1876,7 +1884,7 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
 
 
 def test_return_button_drag_has_single_owner_per_runtime_path():
-    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    avatar_source = _read_avatar_ui_buttons_source()
     live2d_source = LIVE2D_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     vrm_source = VRM_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
@@ -1898,7 +1906,7 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
 
 
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
-    button_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    button_source = _read_avatar_ui_buttons_source()
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     assert '_NEKO_IDLE_RETURN_TRANSITION_MS = 820' in button_source
@@ -1915,7 +1923,7 @@ def test_return_button_idle_tier_switch_uses_crossfade_motion():
 
 
 def test_return_button_hover_click_gif_finishes_before_restore():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert '_NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map()' in source
     assert '_NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map()' in source
@@ -1934,7 +1942,7 @@ def test_return_button_hover_click_gif_finishes_before_restore():
 
 
 def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     play_hover_block = source[
         source.index('function _playNekoIdleHoverArt'):
@@ -1952,8 +1960,8 @@ def test_cat1_walk_hover_invalidates_pending_playback_rate_source():
 
 
 def test_idle_thought_bubble_hides_during_drag_action():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending'" in source
@@ -2016,7 +2024,7 @@ def test_idle_thought_bubble_hides_during_drag_action():
 
 
 def test_return_button_drag_randomizes_asset_once_per_drag_action():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     set_drag_art_block = _source_slice_between(
         source,
@@ -2080,7 +2088,7 @@ def test_return_button_drag_randomizes_asset_once_per_drag_action():
 
 
 def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     safety_block = _source_slice_between(
         source,
@@ -2098,7 +2106,7 @@ def test_local_return_button_drag_safety_timer_does_not_end_active_drag():
 
 
 def test_local_return_button_drag_recovers_lost_release_without_active_timeout():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     drag_setup = _source_slice_between(
         source,
@@ -2152,8 +2160,8 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
 
 
 def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-move-5.gif'" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
@@ -2522,8 +2530,8 @@ def test_cat1_rapid_drag_reaction_is_same_drag_motion_only():
 
 
 def test_idle_thought_bubble_is_sound_triggered_with_fade():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     assert "_NEKO_IDLE_THOUGHT_BUBBLE_ACTIVE_CLASS = 'is-thought-bubble-active'" in source
@@ -2906,7 +2914,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
 
 
 def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "Dev-only short interval for CAT2/CAT3 sleep sounds and their thought bubble." not in source
     assert "window.nekoIdleCatAudio = Object.freeze({" in source
@@ -2967,7 +2975,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
 
 
 def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "Dev-only short interval for tuning cat sounds and the linked thought bubble." not in source
     assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
@@ -3052,8 +3060,8 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
 
 def test_cat1_walk_to_minimized_chat_contract_is_present():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
-    app_ui_source = (PROJECT_ROOT / "static" / "app" / "app-ui.js").read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(PROJECT_ROOT / "static" / "app" / "app-ui")
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
@@ -3177,7 +3185,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "_isAnyNekoIdleCat1PlaygroundDropLifecycleActive()" in minimized_state_block
     assert "_isNekoIdleCat1PlaygroundPairMoveFeedback(detail)" in minimized_state_block
     assert "const pairMoveFeedback = _isNekoIdleCat1PlaygroundPairMoveFeedback(detail);" in minimized_state_block
-    react_chat_source = (PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js").read_text(encoding="utf-8")
+    react_chat_source = read_js_parts(PROJECT_ROOT / "static" / "app" / "app-react-chat-window")
     assert "async function applyElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "function scheduleElectronCat1PairMoveBounds(bounds, options)" in react_chat_source
     assert "if (isElectronLinuxRuntime() && !force) return;" in react_chat_source
@@ -3258,7 +3266,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
 
 def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "_NEKO_IDLE_RETURN_DRAG_LONG_PRESS_MS" not in source
     assert "_NEKO_IDLE_RETURN_LONG_PRESS_PENDING_ATTR" not in source
@@ -3507,7 +3515,7 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
 
 
 def test_return_button_local_no_move_release_clears_pending_drag_state():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     drag_setup = _source_slice_between(
         source,
@@ -3535,7 +3543,7 @@ def test_return_button_local_no_move_release_clears_pending_drag_state():
 def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
     core_source = LIVE2D_CORE_PATH.read_text(encoding="utf-8")
     interaction_source = LIVE2D_INTERACTION_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
 
     assert "const LIVE2D_RETURN_BALL_VIEWPORT_MAX_SIZE = 200;" in core_source
     assert "function isLive2DReturnBallViewportSize(width, height)" in core_source
@@ -3649,7 +3657,7 @@ def test_live2d_renderer_ignores_and_recovers_return_ball_viewport_size():
 
 
 def test_cat1_minimized_ball_inside_cat_finishes_without_side_retarget_jitter():
-    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    source = _read_avatar_ui_buttons_source()
 
     assert "function _isNekoIdleRectCenterInsideRect(innerRect, outerRect)" in source
     assert "function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options)" in source
@@ -3714,13 +3722,21 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  THOUGHT_BUBBLE_ASSET_PATH, THOUGHT_BUBBLE_POP_ASSET_PATH,
                  SLEEPING_THOUGHT_BUBBLE_ASSET_PATH,
                  *THOUGHT_BUBBLE_ITEM_ASSET_PATHS):
-        assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
-        assert path.is_file()
+        if path.is_dir():
+            part_paths = tuple(sorted(path.glob("*.js")))
+            assert part_paths
+            assert all(part_path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS for part_path in part_paths)
+            assert all(part_path.is_file() for part_path in part_paths)
+        else:
+            assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+            assert path.is_file()
 
-    # app-interpage.js follows the static/tutorial asset version because it owns tutorial bridges.
-    assert APP_INTERPAGE_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    # app-interpage follows the static/tutorial asset version because it owns tutorial bridges.
+    interpage_parts = tuple(sorted(APP_INTERPAGE_PATH.glob("*.js")))
+    assert interpage_parts
+    assert all(part_path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS for part_path in interpage_parts)
     assert APP_INTERPAGE_PATH not in pages_router._REACT_CHAT_ASSET_VERSION_PATHS
-    assert APP_INTERPAGE_PATH.is_file()
+    assert all(part_path.is_file() for part_path in interpage_parts)
 
 
 def test_sleep_sound_assets_match_current_tier_assignment():

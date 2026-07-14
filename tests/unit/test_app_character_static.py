@@ -1,9 +1,10 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 APP_CHARACTER_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-character.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage.js"
-APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-ui.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
+APP_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-ui"
 INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 
 
@@ -71,7 +72,7 @@ def test_character_switch_clears_goodbye_state_only_after_commit():
 
 
 def test_app_ui_exposes_shared_return_ball_hide_helper():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "function hideReturnBallContainer(container, reason = 'return-ball-hide')" in source
     assert "scheduleIdleReturnBallDesktopBridge(reason || 'return-ball-hide', container)" in source
@@ -82,8 +83,8 @@ def test_app_ui_exposes_shared_return_ball_hide_helper():
 
 def test_character_switch_does_not_restore_full_container_pointer_events():
     character_source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     live2d_css = css_source[
@@ -107,7 +108,7 @@ def test_character_switch_does_not_restore_full_container_pointer_events():
 
 def test_character_model_switch_repeated_paths_keep_only_model_entities_interactive():
     source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "window.pngtuberManager.image.style.pointerEvents = 'auto';" in source
     assert "live2dCanvas2.style.pointerEvents = 'auto';" in interpage_source

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import textwrap
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 import pytest
 
@@ -11,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_MODEL_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-model.js"
 LIVE2D_EMOTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-emotion.js"
 PARAMETER_EDITOR_PATH = PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 MAO_PRO_MODEL_PATH = PROJECT_ROOT / "static" / "mao_pro" / "mao_pro.model3.json"
 
 
@@ -100,8 +101,9 @@ def test_parameter_editor_saves_draft_instead_of_runtime_core_values():
 
     assert "currentParameters" not in source
     assert "draftParameters[paramId] = clampedValue" in source
-    assert "draftParameters[paramId] = resetValue" in source
-    assert "buildParametersFromDraft(draftParameters" in save_source
+    assert "draftParameters[parameter.key] = resetValue" in source
+    assert "buildParametersFromDraft(" in save_source
+    assert "draftParameters," in save_source
     assert "coreModel.getParameterValueByIndex(i)" not in save_source
 
     build_function = _extract_js_function(source, "buildParametersFromDraft")
@@ -144,6 +146,226 @@ def test_user_preference_parameters_override_model_directory_parameters():
     assert result.returncode == 0, result.stderr
 
 
+def test_cubism4_parameter_catalog_uses_official_ids_and_model_defaults():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        const ids = [
+          { getString() { return { s: 'ParamHair_Color1' }; } },
+          'ParamClothes_Color1',
+        ];
+        const coreModel = {
+          _parameterIds: ids,
+          parameters: { defaultValues: [0.25, 0.5] },
+          getParameterCount() { return ids.length; },
+          getParameterIndex(id) {
+            return ['ParamHair_Color1', 'ParamClothes_Color1'].indexOf(id);
+          },
+        };
+
+        const catalog = manager._buildModelParameterCatalog(coreModel);
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(catalog)),
+          [
+            { index: 0, id: 'ParamHair_Color1', key: 'ParamHair_Color1', defaultValue: 0.25 },
+            { index: 1, id: 'ParamClothes_Color1', key: 'ParamClothes_Color1', defaultValue: 0.5 },
+          ],
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_parameter_catalog_reuses_all_supported_default_value_sources():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        const ids = ['ParamFromGetter', 'ParamFromArray'];
+        const coreModel = {
+          _parameterIds: ids,
+          defaults: [undefined, '0.75'],
+          getParameterCount() { return ids.length; },
+          getParameterIndex(id) { return ids.indexOf(id); },
+          getParamDefault(index) { return index === 0 ? '0.25' : Number.NaN; },
+        };
+
+        const catalog = manager._buildModelParameterCatalog(coreModel);
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(catalog)),
+          [
+            { index: 0, id: 'ParamFromGetter', key: 'ParamFromGetter', defaultValue: 0.25 },
+            { index: 1, id: 'ParamFromArray', key: 'ParamFromArray', defaultValue: 0.75 },
+          ],
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_index_aliases_are_normalized_and_user_preferences_remain_authoritative():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        const ids = ['ParamHair_Color1', 'ParamClothes_Color1', 'ParamBangs_Hairstyle'];
+        const coreModel = {
+          _model: { parameters: { ids, defaultValues: [0, 0, 0] } },
+          getParameterCount() { return ids.length; },
+          getParameterIndex(id) { return ids.indexOf(id); },
+        };
+
+        const legacy = {
+          param_0: 5.42,
+          param_1: 4.57,
+          ParamHair_Color1: 0,
+          ParamClothes_Color1: 0,
+        };
+        const normalized = manager._normalizeModelParameters(coreModel, legacy);
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(normalized)),
+          { ParamHair_Color1: 0, ParamClothes_Color1: 0 },
+        );
+        assert.strictEqual(Object.keys(normalized).some((key) => key.startsWith('param_')), false);
+
+        // An index-only value cannot be tied safely to an official parameter
+        // after a model revision may have reordered its parameter table.
+        const ambiguousLegacyOnly = manager._normalizeModelParameters(
+          coreModel,
+          { param_0: 5.42, param_1: 4.57 },
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(ambiguousLegacyOnly)),
+          {},
+        );
+
+        // Official IDs are authoritative regardless of JSON insertion order.
+        const reverseOrdered = manager._normalizeModelParameters(
+          coreModel,
+          { ParamHair_Color1: 0, param_0: 5.42 },
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(reverseOrdered)),
+          { ParamHair_Color1: 0 },
+        );
+
+        // Normalize each source before merging so aliases and official IDs
+        // cannot both survive in the effective parameter dictionary.
+        const effective = manager._mergeEffectiveModelParameters(
+          { ParamHair_Color1: 0.1, param_0: 0.2, ParamClothes_Color1: 0.3 },
+          {},
+          coreModel,
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(effective)),
+          { ParamHair_Color1: 0.1, ParamClothes_Color1: 0.3 },
+        );
+
+        const preferenceOverride = manager._mergeEffectiveModelParameters(
+          { ParamHair_Color1: 0.1, ParamClothes_Color1: 0.3 },
+          { param_0: 0.7, ParamHair_Color1: 0.8 },
+          coreModel,
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(preferenceOverride)),
+          { ParamHair_Color1: 0.8, ParamClothes_Color1: 0.3 },
+        );
+
+        // Editing one unrelated parameter must preserve the normalized
+        // appearance values and must not re-emit legacy aliases.
+        const draft = { ...normalized, ParamBangs_Hairstyle: 1 };
+        const saved = manager._normalizeModelParameters(coreModel, draft);
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(saved)),
+          {
+            ParamHair_Color1: 0,
+            ParamClothes_Color1: 0,
+            ParamBangs_Hairstyle: 1,
+          },
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_parameter_catalog_keeps_stable_index_fallback_when_model_ids_are_unavailable():
+    script = _manager_harness(
+        """
+        const manager = new context.Live2DManager();
+        const coreModel = {
+          parameters: { defaultValues: [0.2, -0.5] },
+          getParameterCount() { return 2; },
+          getParameterIndex() { return -1; },
+        };
+
+        const catalog = manager._buildModelParameterCatalog(coreModel);
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(catalog)),
+          [
+            { index: 0, id: '', key: 'param_0', defaultValue: 0.2 },
+            { index: 1, id: '', key: 'param_1', defaultValue: -0.5 },
+          ],
+        );
+        assert.deepStrictEqual(
+          JSON.parse(JSON.stringify(manager._normalizeModelParameters(coreModel, { param_0: 0.7, param_1: -0.1 }))),
+          { param_0: 0.7, param_1: -0.1 },
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_parameter_editor_initializes_and_resets_through_canonical_catalog():
+    source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    record_start = source.index("function recordInitialParameters()")
+    record_end = source.index("// 获取参数的范围和默认值", record_start)
+    record_source = source[record_start:record_end]
+    reset_start = source.index("if (resetAllBtn) {")
+    reset_end = source.index("function buildParametersFromDraft", reset_start)
+    reset_source = source[reset_start:reset_end]
+
+    assert "manager._buildModelParameterCatalog(coreModel)" in record_source
+    assert "manager._normalizeModelParameters(coreModel, rawEffectiveParameters)" in record_source
+    assert "coreModel.getParameterId(i)" not in record_source
+    assert "draftParameters = {};" in reset_source
+    assert "resetValue = parameter.defaultValue" in reset_source
+    assert "range.hasDefault === true" in reset_source
+    assert "initialParameters[paramId]" not in reset_source
+
+
+def test_parameter_range_marks_synthetic_zero_as_not_a_model_default():
+    source = PARAMETER_EDITOR_PATH.read_text(encoding="utf-8")
+    get_range_function = _extract_js_function(source, "getParameterRange")
+    script = textwrap.dedent(
+        f"""
+        const assert = require('node:assert');
+        {get_range_function}
+
+        const unknownDefault = getParameterRange({{}}, 0);
+        assert.deepStrictEqual(
+          unknownDefault,
+          {{ min: -1, max: 1, default: 0, hasDefault: false }},
+        );
+
+        const declaredDefault = getParameterRange({{
+          parameters: {{
+            minimumValues: [-2],
+            maximumValues: [3],
+            defaultValues: [1.25],
+          }},
+        }}, 0);
+        assert.deepStrictEqual(
+          declaredDefault,
+          {{ min: -2, max: 3, default: 1.25, hasDefault: true }},
+        );
+        """
+    )
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
 def test_effective_parameter_refresh_reinstalls_overlay_with_new_values():
     script = _manager_harness(
         """
@@ -156,7 +378,12 @@ def test_effective_parameter_refresh_reinstalls_overlay_with_new_values():
           manager.installedSnapshot = { ...(manager.savedModelParameters || {}) };
           manager.installCount = (manager.installCount || 0) + 1;
         };
-        const model = { internalModel: { coreModel: {} } };
+        const ids = ['ParamAllColor1'];
+        const model = { internalModel: { coreModel: {
+          _parameterIds: ids,
+          getParameterCount() { return ids.length; },
+          getParameterIndex(id) { return ids.indexOf(id); },
+        } } };
 
         manager._applyEffectiveModelParameters(model, { ParamAllColor1: 0.2 }, {});
         manager._applyEffectiveModelParameters(model, { ParamAllColor1: 0.2 }, { ParamAllColor1: 0.8 });
@@ -395,7 +622,7 @@ def test_file_save_failure_with_preference_success_survives_parameter_reload():
 
 
 def test_reload_model_parameters_is_received_on_all_cross_page_channels():
-    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "async function handleReloadModelParametersMessage" in source
     assert "case 'reload_model_parameters':" in source

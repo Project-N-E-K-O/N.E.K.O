@@ -1,0 +1,42 @@
+{
+  "_README": "Reviewed exact-profile identity aliases. These keep existing runtime/datamine compatibility keys while naming the Wiki /unit/<gameId> canonical candidate. This file is metadata only and does not change runtime profile matching.",
+  "policy": {
+    "canonical_candidate": "War Thunder Wiki /unit/<gameId>",
+    "runtime_authority": "/api/processed.vehicle_type",
+    "do_not_delete_alias_without_live_confirmation": true
+  },
+  "aliases": [
+    {
+      "canonical": "a_10a_early",
+      "aliases": [
+        "a-10a_early"
+      ],
+      "source": "https://wiki.warthunder.com/unit/a_10a_early",
+      "status": "keep_until_live_vehicle_type_confirmed"
+    },
+    {
+      "canonical": "a_10c",
+      "aliases": [
+        "a-10c"
+      ],
+      "source": "https://wiki.warthunder.com/unit/a_10c",
+      "status": "keep_until_live_vehicle_type_confirmed"
+    },
+    {
+      "canonical": "f-5th_thailand",
+      "aliases": [
+        "f_5th_thailand"
+      ],
+      "source": "https://wiki.warthunder.com/unit/f-5th_thailand",
+      "status": "keep_until_live_vehicle_type_confirmed"
+    },
+    {
+      "canonical": "lagg-3-8",
+      "aliases": [
+        "lagg_3_8"
+      ],
+      "source": "https://wiki.warthunder.com/unit/lagg-3-8",
+      "status": "keep_until_live_vehicle_type_confirmed"
+    }
+  ]
+}

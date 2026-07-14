@@ -22,11 +22,51 @@ from pathlib import Path
 import httpx
 import pytest
 
+import main_logic.omni_offline_client as _ofc_package
+import main_logic.omni_offline_client._genai_support as _ofc_genai
+import main_logic.omni_offline_client._streaming as _ofc_streaming
+
 # Ensure the project root is importable when pytest is invoked from
 # anywhere (mirrors other tests/unit/* files).
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+
+def test_offline_package_state_reexports_follow_canonical_owner(monkeypatch):
+    sentinel_genai = object()
+    sentinel_types = object()
+
+    monkeypatch.setattr(_ofc_package, "_GENAI_AVAILABLE", False)
+    monkeypatch.setattr(_ofc_package, "_genai", sentinel_genai)
+    monkeypatch.setattr(_ofc_genai, "_genai_types", sentinel_types)
+
+    assert _ofc_genai._GENAI_AVAILABLE is False
+    assert _ofc_genai._genai is sentinel_genai
+    assert _ofc_package._genai_types is sentinel_types
+
+
+def _init_bare(client):
+    """Populate the ``__init__``-guaranteed baseline attributes that
+    ``stream_text`` / ``switch_model`` read but that these ``__new__``-bypassing
+    harnesses don't otherwise establish (proactive-vision staging slot + vision
+    provider type). Real clients always have these set in ``__init__``; the tests
+    build a minimal object, so mirror that minimal state here."""
+    client._proactive_image_to_inject = None
+    client._proactive_image_staged_at = 0.0
+    client._proactive_image_history_len = 0
+    if not hasattr(client, "vision_provider_type"):
+        client.vision_provider_type = None
+    # stream_text 在到达 astream 前读 self.llm.max_completion_tokens（focus overrides /
+    # summary budget）。真实 client 恒有 self.llm；harness 里若测试自己设了 fake llm
+    # 就用它的，否则给个 max_completion_tokens=None 的占位（= 不限 budget，与加
+    # summary/focus 之前的老行为一致）。注意不能设成 None —— stream_text 会把
+    # ``self.llm is None`` 当成「client 已 close」提前 break。
+    if not hasattr(client, "llm"):
+        from types import SimpleNamespace
+        client.llm = SimpleNamespace(max_completion_tokens=None)
+    return client
+
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +296,7 @@ async def test_offline_openai_path_runs_tool_then_text():
     # construction. We bypass __init__ entirely and patch the minimum
     # state needed by _astream_openai_with_tools.
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -331,6 +372,7 @@ async def test_offline_openai_path_filters_pretool_leak_before_history():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
@@ -400,6 +442,7 @@ async def test_offline_openai_path_emits_finalized_pretool_tail():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
@@ -443,6 +486,7 @@ async def test_visible_tool_leak_filter_flushes_pending_text_before_stream_error
     monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_with_tools_then_raise)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.model = "fake"
     client._tool_definitions = []
@@ -499,6 +543,7 @@ async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -560,6 +605,7 @@ async def test_offline_openai_path_pulses_thinking_on_reasoning_chunk():
         LLMStreamChunk(content="答案是 42。", finish_reason="stop"),
     ]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -600,6 +646,7 @@ async def test_offline_openai_path_no_thinking_pulse_without_reasoning():
 
     chunks = [LLMStreamChunk(content="直接答。", finish_reason="stop")]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -630,6 +677,7 @@ async def test_notify_reasoning_done_clears_only_after_a_pulse():
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_active_pulse_seq = None
     pulses = []
 
@@ -658,6 +706,7 @@ async def test_notify_reasoning_done_owner_seq_guards_cross_stream_clear():
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_stream_seq = 0
     client._reasoning_active_pulse_seq = None
     pulses = []
@@ -692,6 +741,7 @@ async def test_notify_reasoning_done_clears_own_pulse_after_preemption_without_n
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._reasoning_stream_seq = 0
     client._reasoning_active_pulse_seq = None
     pulses = []
@@ -724,6 +774,7 @@ async def test_offline_openai_path_pulses_when_reasoning_bundled_with_other_sign
     # pure-reasoning skip (has content/finish) yet must still pulse.
     chunks = [LLMStreamChunk(content="答案", reasoning_content="先想想", finish_reason="stop")]
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = _FakeLLM([chunks])
     client._tool_definitions = []
     client.max_tool_iterations = 4
@@ -780,6 +831,7 @@ async def test_offline_openai_path_omits_reasoning_when_absent():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -812,13 +864,13 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
     本测试只验状态切换的纯逻辑——monkeypatch ``_GENAI_AVAILABLE=True``
     让 ``_should_use_genai_sdk`` 在没装 google-genai 的 CI 上也能跑出
     ``True`` 分支，避免环境不全时这条回归保护被静默 skip 掉。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     # 建 client：conversation 走 OpenAI，vision_base_url 指向 Gemini native endpoint。
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gpt-4o-mini"
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "sk-fake"
@@ -857,10 +909,10 @@ async def test_offline_switch_model_recomputes_genai_routing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gpt-4o-mini"
     client.base_url = "https://api.openai.com/v1"
     client.api_key = "sk-fake"
@@ -890,7 +942,7 @@ async def test_offline_switch_model_serializes_concurrent_switches(monkeypatch):
         created.append(llm)
         return llm
 
-    monkeypatch.setattr(_ofc, "create_chat_llm_async", fake_create_chat_llm_async)
+    monkeypatch.setattr(_ofc_streaming, "create_chat_llm_async", fake_create_chat_llm_async)
 
     await asyncio.gather(
         client.switch_model("vision-model", use_vision_config=True),
@@ -912,12 +964,11 @@ async def test_offline_genai_transient_error_does_not_disable_tools(monkeypatch)
     退化到 OpenAI-compat 路径，工具调用永久失效。
 
     回归保护：CodeRabbit PR #1035 第 4 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import (
-        OmniOfflineClient, _GenaiToolsUnsupported,
+        OmniOfflineClient,
     )
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     class _BoomClient:
         class _aio:
@@ -932,6 +983,7 @@ async def test_offline_genai_transient_error_does_not_disable_tools(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -955,11 +1007,10 @@ async def test_offline_genai_streamed_text_persisted_with_tool_call(monkeypatch)
     说过的前半句，会重复或改口。
 
     回归保护：CodeRabbit PR #1035 第 5 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.tool_calling import ToolCall, ToolResult
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     # 构造一个 fake stream：单个 chunk 同时携带 text part + function_call part
     class _Part:
@@ -1024,6 +1075,7 @@ async def test_offline_genai_streamed_text_persisted_with_tool_call(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -1694,12 +1746,11 @@ async def test_genai_unsupported_keyword_matches_underscore_variant(monkeypatch)
     genai 再回退的额外抖动。
 
     回归保护：CodeRabbit PR #1035 第 8 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import (
         OmniOfflineClient, _GenaiToolsUnsupported,
     )
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     class _UnderscoreErrorClient:
         class _aio:
@@ -1711,6 +1762,7 @@ async def test_genai_unsupported_keyword_matches_underscore_variant(monkeypatch)
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-old"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -1733,11 +1785,10 @@ async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
     让 stream_text 的 retry/discard 流程清空气泡后重试。
 
     回归保护：CodeRabbit PR #1035 第 7 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     async def _genai_yields_then_raises(self, messages, **overrides):
         # 先吐两块文本，然后抛 transient 异常
@@ -1754,6 +1805,7 @@ async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_should_not_run)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -1777,11 +1829,10 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
     新契约 (genai_emitted_text 后 raise) 真正生效的关键。
 
     回归保护：CodeRabbit PR #1035 第 9 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
-    from utils.llm_client import HumanMessage, LLMStreamChunk, SystemMessage
+    from utils.llm_client import LLMStreamChunk, SystemMessage
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     async def _astream_partial_then_raise(self, messages, **overrides):
         yield LLMStreamChunk(content="正在查询天气，")
@@ -1808,6 +1859,7 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1865,6 +1917,7 @@ async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(m
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1939,6 +1992,7 @@ async def test_stream_text_empty_safety_completion_reports_policy_violation(monk
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -1994,6 +2048,7 @@ async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "Test"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2018,9 +2073,9 @@ async def test_stream_text_length_guard_finishes_visible_long_reply_without_disc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, SystemMessage
 
-    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(_ofc_streaming, "count_tokens", lambda text: len((text or "").split()))
     monkeypatch.setattr(
-        _ofc,
+        _ofc_streaming,
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
@@ -2060,6 +2115,7 @@ async def test_stream_text_length_guard_finishes_visible_long_reply_without_disc
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2095,11 +2151,10 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
     `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——
     用户感知不到失败，体验最佳。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     async def _genai_raises_immediately(self, messages, **overrides):
         # 关键：还没 yield 任何东西就抛
@@ -2114,6 +2169,7 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -2130,12 +2186,11 @@ async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
 @pytest.mark.asyncio
 async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monkeypatch):
     """Silent fallback must reset leak-filter state that did not emit text."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
     from utils.llm_tool_leak_filter import ToolLeakFilter
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     async def _genai_consumes_filter_then_raises(self, messages, **overrides):
         leak_filter = overrides["_tool_leak_filter"]
@@ -2153,6 +2208,7 @@ async def test_offline_silent_fallback_resets_unemitted_genai_filter_state(monke
     monkeypatch.setattr(OmniOfflineClient, "_astream_openai_with_tools", _openai_emits)
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._use_genai_sdk = True
     client._genai_tools_unsupported = False
 
@@ -2175,12 +2231,11 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
     """与上一条对偶：当 genai 真的报"tools not supported"时，必须被包装成
     `_GenaiToolsUnsupported`，让 `_astream_with_tools` 翻 `_genai_tools_unsupported`
     并 fallback 到 OpenAI-compat 路径。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import (
         OmniOfflineClient, _GenaiToolsUnsupported,
     )
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     class _ToolsRejectClient:
         class _aio:
@@ -2194,6 +2249,7 @@ async def test_offline_genai_tools_unsupported_error_correctly_disables_path(mon
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-old"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -2251,6 +2307,7 @@ async def test_offline_openai_path_persists_streamed_text_with_tool_calls():
     fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool_def]
     client.max_tool_iterations = 4
@@ -2286,11 +2343,10 @@ async def test_offline_genai_path_drops_empty_name_function_calls(monkeypatch):
     被 schema reject。
 
     回归保护：CodeRabbit PR #1035 第 11 轮 review."""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.tool_calling import ToolCall, ToolResult
 
-    monkeypatch.setattr(_ofc, "_GENAI_AVAILABLE", True)
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
 
     # 构造 fake stream：一个 function_call 有 name，另一个 name 为空
     class _Part:
@@ -2350,6 +2406,7 @@ async def test_offline_genai_path_drops_empty_name_function_calls(monkeypatch):
         def close(self): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.model = "gemini-2.5-flash"
     client.api_key = "fake"
     client._tool_definitions = []
@@ -2392,6 +2449,7 @@ async def test_set_tools_resets_genai_unsupported_flag():
     from main_logic.tool_calling import ToolDefinition
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client._tool_definitions = [
         ToolDefinition(name="bad", description="", handler=lambda _: 0),
     ]
@@ -2446,6 +2504,7 @@ async def test_stream_text_does_not_double_write_pretool_text(monkeypatch):
     async def noop(*_a, **_kw): pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2495,13 +2554,12 @@ async def test_stream_text_length_guard_after_tool_call_does_not_double_write_pr
     pre-tool 文本已经由 _astream_*_with_tools inline 写进 assistant.tool_calls.content。
     recovery 分支如果把整轮文本再 append 一次，会让下一轮上下文重复看到 pre-tool 文本。
     """
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, AIMessage, SystemMessage
 
-    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(_ofc_streaming, "count_tokens", lambda text: len((text or "").split()))
     monkeypatch.setattr(
-        _ofc,
+        _ofc_streaming,
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
@@ -2542,6 +2600,7 @@ async def test_stream_text_length_guard_after_tool_call_does_not_double_write_pr
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2581,13 +2640,12 @@ async def test_stream_text_length_guard_after_tool_call_does_not_double_write_pr
 @pytest.mark.asyncio
 async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_recovery(monkeypatch):
     """tool 后续写还没有完整句子时，不能只用 pre-tool 文本当作成功恢复。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, AIMessage, SystemMessage
 
-    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(_ofc_streaming, "count_tokens", lambda text: len((text or "").split()))
     monkeypatch.setattr(
-        _ofc,
+        _ofc_streaming,
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
@@ -2628,6 +2686,7 @@ async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_rec
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2694,6 +2753,7 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     fake_llm = _FakeLLM([loop_chunks(), loop_chunks(), loop_chunks(), final_text_chunks])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.llm = fake_llm
     client._tool_definitions = [tool]
     client.max_tool_iterations = 3
@@ -2897,18 +2957,18 @@ def _build_summary_client(monkeypatch, *, max_response_length: int = 4):
     单测里 count_tokens 走"按词切空格"，刚好让 ``one two three four. ...``
     这种字符串里每个词都恰好 1 token，方便控制何时跨阈值。
     """
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import SystemMessage
 
-    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(_ofc_streaming, "count_tokens", lambda text: len((text or "").split()))
     monkeypatch.setattr(
-        _ofc,
+        _ofc_streaming,
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -2932,7 +2992,6 @@ async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatc
     """Summary 路径 happy path：模型超 budget 很多，越过 budget 后第一个
     terminator 后的尾巴替换成 emotion-tier 摘要。UI 看完整原文，TTS 听
     prefix+summary，history 存 prefix+summary。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
 
@@ -3075,15 +3134,14 @@ async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(mo
     不发 RESPONSE_INVALID（那会触发 core 端 _clear_tts_pipeline 把队列里未播完
     的 prefix 一起清掉，反而让用户已经在听的话被截断）。history 只留 prefix，
     TTS 自然把队列残余播完。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
 
     # 降低 gibberish 重检阈值，避免单测吐 100+ tokens 才触发
-    monkeypatch.setattr(_ofc, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 2)
+    monkeypatch.setattr(_ofc_streaming, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 2)
 
     # 强制 _is_gibberish_response 在尾巴被检测时返 True
-    monkeypatch.setattr(_ofc, "_is_gibberish_response", lambda text: "GIB" in text)
+    monkeypatch.setattr(_ofc_streaming, "_is_gibberish_response", lambda text: "GIB" in text)
 
     summarize_called = []
 
@@ -3195,7 +3253,6 @@ async def test_stream_text_summary_budget_bump_scoped_to_stream_text(monkeypatch
     _SUMMARY_API_BUDGET_FLOOR，结束后精确还原 —— 不泄漏给共用同一 self.llm 的
     prompt_ephemeral（proactive 没长度 guard，被抬到 3000 会吐超长回复）。"""
     from types import SimpleNamespace
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import (
         OmniOfflineClient, _budget_to_max_tokens, _SUMMARY_API_BUDGET_FLOOR,
     )
@@ -3235,13 +3292,12 @@ async def test_stream_text_summary_budget_bump_scoped_to_stream_text(monkeypatch
 async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypatch):
     """没开 summary 的 client（game/默认 stream_text 调用）必须保持原来的
     abort+inline truncate 行为，不被新路径干扰，并且小模型摘要器一次也不能调。"""
-    from main_logic import omni_offline_client as _ofc
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, SystemMessage
 
-    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(_ofc_streaming, "count_tokens", lambda text: len((text or "").split()))
     monkeypatch.setattr(
-        _ofc,
+        _ofc_streaming,
         "truncate_to_tokens",
         lambda text, budget: " ".join((text or "").split()[:budget]),
     )
@@ -3276,6 +3332,7 @@ async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypa
         pass
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.lanlan_name = "T"
     client.master_name = "M"
     client._prefix_buffer_size = 0
@@ -3314,6 +3371,7 @@ def _minimal_offline_client_for_leak_tests():
     from utils.llm_client import SystemMessage
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
     client.base_url = "free"
     client.lanlan_name = "T"
     client.master_name = "M"

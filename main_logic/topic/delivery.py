@@ -73,7 +73,7 @@ def register_topic_session_manager_getter(getter: _SessionManagerGetter | None) 
     """Install the runtime session-manager lookup used by topic delivery.
 
     ``main_logic.topic.delivery`` lives below the app entrypoint layer, so it must not
-    import ``app.main_server`` for state: running ``python app/main_server.py``
+    import ``app.main_server`` for state: running ``python -m app.main_server``
     stores the real state under ``__main__`` and importing ``app.main_server``
     creates a second, empty module copy.
     """

@@ -13,12 +13,37 @@ concurrent ``start_session`` winner. The fix combines three guards:
   ``wait_for``/``close`` *swallowed* the cancel (Python 3.11 returns
   ``fut.result()`` and clears ``_must_cancel`` without re-raising);
 - the promote itself is a locked CAS mirroring the start-side guard.
+
+Also covers the follow-up (greptile P1 on PR #2283): the budget-selected
+``pending_extra_replies`` entries used to be removed from the queue right
+after being primed, so every abort exit that discarded the primed session
+lost them. The fix keeps the queue UNTOUCHED through the prime window and
+removes the selected entries (by object identity) only at promote success:
+pre-promote aborts keep the queue intact with zero restore code, concurrent
+removers (voice proactive delivery's success prune, retraction purge, the
+topic voice-block sweep, the flood cap) hit queue-resident entries normally
+— no checked-out-entry TOCTOU — and the one exit where removal has already
+happened but the promoted session dies unspoken (post-promote ws-invalid
+fail-close) restores the removed entries to the queue head. Aborts where
+the promoted session survives must NOT re-queue anything (the primed
+context delivers on the next turn; re-queueing would double-deliver).
+
+The restore tests run the swap in PRODUCTION topology (registered as
+``mgr.final_swap_task``, exactly as turn.py creates it): the in-handler
+``_reset_preparation_state`` calls used to snapshot-and-cancel that very
+task (self-cancel), killing every handler line after the reset — restores
+AND the pre-existing fail-closes — while direct-await tests stayed green.
+``_reset_preparation_state`` now excludes ``asyncio.current_task()`` from
+its cancel set; ``assert not swap_task.cancelled()`` pins that guard.
 """
 import asyncio
 
 import pytest
 
 import main_logic.core as core_module
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 
 
 class _FakeSession:
@@ -261,3 +286,616 @@ async def test_final_swap_happy_path_still_promotes():
     finally:
         await _drain_task(mgr.message_handler_task)
         await _drain_task(old_listener_task)
+
+
+def _extra_entry(delivery_id, summary):
+    """A pending_extra_replies entry in the exact shape enqueue_agent_callback produces."""
+    return {
+        "_callback_delivery_id": delivery_id,
+        "origin": "event",
+        "summary": summary,
+        "detail": "",
+        "status": "completed",
+        "context_source": "proactive.callback",
+        "source_kind": "unknown",
+        "source_name": "",
+        "error_message": "",
+    }
+
+
+def _make_fake_realtime_session(name):
+    """A _FakeSession-alike that passes ``isinstance(x, OmniRealtimeClient)``.
+
+    Needed to reach the post-promote ws-invalid exit, which is gated on the
+    real client type. Bypasses ``__init__`` (no network) and shadows the
+    methods the swap sequence calls with instance-level fakes.
+    """
+    s = object.__new__(OmniRealtimeClient)
+    s.name = name
+    s.ws = object()  # truthy: passes the entry ws check
+    s._fatal_error_occurred = False
+    s.closed = False
+    s.prime_calls = []
+
+    async def _prime(text, *, skipped=False):
+        s.prime_calls.append((text, skipped))
+
+    async def _close():
+        # Mirror the real client: close() clears the ws reference.
+        s.closed = True
+        s.ws = None
+
+    async def _handle():
+        await asyncio.Event().wait()
+
+    s.prime_context = _prime
+    s.close = _close
+    s.handle_messages = _handle
+    return s
+
+
+async def _run_swap_as_final_swap_task(mgr):
+    """Run the swap exactly as production does (turn.py): registered as
+    ``mgr.final_swap_task``. This is the topology where the in-handler
+    ``_reset_preparation_state`` used to self-cancel the running swap task,
+    killing every handler line after it (restores, fail-closes) — awaiting
+    the coroutine directly would silently skip that whole failure mode."""
+    mgr.final_swap_task = asyncio.create_task(mgr._perform_final_swap_sequence())
+    task = mgr.final_swap_task
+    try:
+        await asyncio.wait_for(task, timeout=10)
+    except asyncio.CancelledError:
+        # A regressed self-cancel would end the task CANCELLED and re-raise
+        # here; swallow it so the caller's `assert not task.cancelled()` can
+        # report the regression instead of the test erroring out.
+        pass
+    return task
+
+
+@pytest.mark.asyncio
+async def test_final_swap_promote_cas_loss_restores_injected_extras():
+    """Promote CAS loss discards the primed session — the selected extras
+    must remain queued for the takeover epoch's next hot-swap (the queue is
+    kept untouched through the prime window), mirroring _deferred."""
+    mgr = _make_swap_manager()
+    winner_session = _FakeSession("winner")
+    new_session = _FakeSession("pending")
+
+    class _TakeoverOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            mgr.session = winner_session
+            mgr.message_handler_task = object()
+
+    old_session = _TakeoverOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    extra_a = _extra_entry("id-a", "task A finished")
+    extra_b = _extra_entry("id-b", "task B finished")
+    mgr.pending_extra_replies = [extra_a, extra_b]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled(), "abort cleanup must not self-cancel the swap task"
+    assert mgr.session is winner_session
+    assert new_session.closed
+    assert new_session.prime_calls and new_session.prime_calls[0][1] is False, \
+        "extras must have actually been primed (skipped=False) before the abort"
+    assert mgr.pending_extra_replies == [extra_a, extra_b], \
+        "CAS-loss abort must restore the injected extras to the queue"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_swallowed_cancel_restores_injected_extras():
+    """The pre-promote checkpoint exit (external cancel swallowed by an inner
+    await) also discards the primed session — injected extras must be restored."""
+    mgr = _make_swap_manager()
+    new_session = _FakeSession("pending")
+
+    class _SwallowExternalCancelOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            t = asyncio.current_task()
+            t.cancel()
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                # Swallow on purpose — this reproduces the 3.11 quirk where an
+                # inner await consumes the cancel (_must_cancel clears while
+                # cancelling() stays 1), so only the pre-promote checkpoint
+                # can catch it.
+                pass
+
+    old_session = _SwallowExternalCancelOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    extra = _extra_entry("id-cancel", "task C finished")
+    mgr.pending_extra_replies = [extra]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled(), \
+        "the handler must survive its own cleanup (no reset self-cancel)"
+    assert new_session.prime_calls and new_session.prime_calls[0][1] is False
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert mgr.pending_extra_replies == [extra], \
+        "cancelled swap must restore the injected extras to the queue"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_listener_cancel_timeout_restores_injected_extras():
+    """Step 1's old-listener cancel timeout aborts via RuntimeError into the
+    fail-close path (session cleared). The primed session never speaks — the
+    injected extras must be restored before the early return."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+
+    async def _stubborn_listener():
+        # Absorb the swap's cancel and keep hanging so its 2s wait_for times
+        # out; the second cancel (test teardown) is allowed through.
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+            raise
+
+    listener_task = asyncio.create_task(_stubborn_listener())
+    mgr.message_handler_task = listener_task
+    await asyncio.sleep(0)
+
+    extra = _extra_entry("id-timeout", "task T finished")
+    mgr.pending_extra_replies = [extra]
+
+    try:
+        swap_task = await _run_swap_as_final_swap_task(mgr)
+
+        assert not swap_task.cancelled(), \
+            "the handler must survive its own cleanup (no reset self-cancel)"
+        assert mgr.session is None, "listener-timeout abort fail-closes the session"
+        assert mgr.is_active is False
+        assert new_session.closed
+        assert mgr.pending_extra_replies == [extra], \
+            "listener-timeout abort must restore the injected extras to the queue"
+    finally:
+        await _drain_task(listener_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_post_promote_ws_invalid_restores_injected_extras():
+    """The 4th exit: promote succeeds (removal happens) but the new session's
+    ws is already dead, so the swap raises and fail-closes (session cleared).
+    The primed session never speaks — the promote-removed extras must be
+    restored; topic-hook extras are excluded from the restore (their
+    lifecycle belongs to the voice-block sweep / TopicHookPool retry)."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True  # fail-close 必须真的把它翻回 False，默认 False 会假绿
+    mgr.message_handler_task = None
+
+    async def _kill_new_session_ws(*args, **kwargs):
+        # Models the server dropping the new connection inside the swap window.
+        mgr.session.ws = None
+
+    mgr._apply_pending_tts_route_after_swap = _kill_new_session_ws
+
+    extra = _extra_entry("id-ws", "task W finished")
+    extra_topic = _extra_entry("id-ws-topic", "deep topic hook")
+    extra_topic["source_kind"] = "topic"
+    mgr.pending_extra_replies = [extra, extra_topic]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled(), \
+        "the handler must survive its own cleanup (no reset self-cancel)"
+    assert mgr.session is None, "post-promote ws-invalid must fail-close the session"
+    assert mgr.is_active is False
+    assert mgr.pending_extra_replies == [extra], \
+        "post-promote ws-invalid abort must restore the removed extras (topic excluded)"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_post_promote_failure_with_live_session_does_not_restore():
+    """Double-delivery guard: when a post-promote step fails but the promoted
+    session survives as self.session, the primed extras are already in its
+    context and will be spoken next turn — they must NOT be restored."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("post-promote step failed")
+
+    mgr._prime_late_next_session_context_after_swap = _boom
+
+    extra = _extra_entry("id-live", "task L finished")
+    mgr.pending_extra_replies = [extra]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is new_session, "session survives the post-promote failure"
+    assert not new_session.closed
+    assert mgr.pending_extra_replies == [], \
+        "extras already primed into the live session must not be re-queued"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_restore_preserves_order_with_deferred_and_new_entries(monkeypatch):
+    """After an abort the queue preserves original order: selected entries
+    stay in place at the head (never checked out), ahead of the deferred ones
+    and of entries enqueued during the swap window."""
+    mgr = _make_swap_manager()
+    winner_session = _FakeSession("winner")
+    new_session = _FakeSession("pending")
+
+    extra_a = _extra_entry("id-1", "first")
+    extra_b = _extra_entry("id-2", "second")
+    extra_c = _extra_entry("id-3", "arrived mid-swap")
+
+    monkeypatch.setattr(
+        "main_logic.core.lifecycle._select_callbacks_within_token_budget",
+        lambda callbacks, budget: (callbacks[:1], list(callbacks[1:])),
+    )
+
+    class _TakeoverOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            mgr.pending_extra_replies.append(extra_c)  # new arrival inside the swap window
+            mgr.session = winner_session
+            mgr.message_handler_task = object()
+
+    old_session = _TakeoverOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.pending_extra_replies = [extra_a, extra_b]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.pending_extra_replies == [extra_a, extra_b, extra_c], \
+        "restore must preserve original relative order: selected, deferred, new arrivals"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_abort_leaves_retracted_extras_purgeable():
+    """A retraction landing inside the swap window must stay effective: the
+    selected entries remain queue-resident through the window (no checkout),
+    so the standard retraction purge still sees and removes them after the
+    abort — nothing escapes and nothing resurrects."""
+    mgr = _make_swap_manager()
+    winner_session = _FakeSession("winner")
+    new_session = _FakeSession("pending")
+
+    extra_kept = _extra_entry("id-kept", "still wanted")
+    extra_retracted = _extra_entry("id-retracted", "withdrawn mid-swap")
+
+    class _TakeoverOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            mgr.pending_agent_callbacks = [
+                {"_callback_delivery_id": "id-retracted", DELIVERY_RETRACTED_KEY: True},
+            ]
+            mgr.session = winner_session
+            mgr.message_handler_task = object()
+
+    old_session = _TakeoverOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.pending_extra_replies = [extra_kept, extra_retracted]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    # 中止后条目仍在队列（原地保留），常规 purge 照常清掉窗口期内 retract 的那条
+    mgr._purge_retracted_agent_callbacks()
+    assert mgr.pending_extra_replies == [extra_kept], \
+        "a retraction inside the swap window must remain purgeable after the abort"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_abort_does_not_resurrect_concurrently_delivered_extra():
+    """greptile P1 on this PR: a voice proactive delivery completing inside
+    the swap window prunes the delivered extra from the queue by delivery_id.
+    Because selected entries stay queue-resident (no checkout), that prune
+    hits them normally and an aborted swap must NOT bring them back."""
+    mgr = _make_swap_manager()
+    winner_session = _FakeSession("winner")
+    new_session = _FakeSession("pending")
+
+    extra_spoken = _extra_entry("id-spoken", "delivered by voice mid-swap")
+    extra_other = _extra_entry("id-other", "still pending")
+
+    class _VoiceDeliverThenTakeoverOnClose(_FakeSession):
+        async def close(self):
+            await super().close()
+            # 模拟 trigger_agent_callbacks 语音投递成功清除（按 delivery_id）
+            mgr.pending_extra_replies = [
+                e for e in mgr.pending_extra_replies
+                if e.get("_callback_delivery_id") != "id-spoken"
+            ]
+            mgr.session = winner_session
+            mgr.message_handler_task = object()
+
+    old_session = _VoiceDeliverThenTakeoverOnClose("old")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.pending_extra_replies = [extra_spoken, extra_other]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.pending_extra_replies == [extra_other], \
+        "an extra delivered by voice during the swap window must not be resurrected"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_ws_invalid_restore_excludes_concurrently_delivered_extra():
+    """The ws-invalid exit restores only what the promote actually removed:
+    an extra pruned by a concurrent voice delivery BEFORE promote is not in
+    the removed set and must stay gone even on the restore-carrying exit."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _make_fake_realtime_session("pending")
+
+    extra_spoken = _extra_entry("id-spoken", "delivered by voice mid-swap")
+    extra_other = _extra_entry("id-other", "still pending")
+
+    async def _voice_deliver_on_old_close():
+        mgr.pending_extra_replies = [
+            e for e in mgr.pending_extra_replies
+            if e.get("_callback_delivery_id") != "id-spoken"
+        ]
+        old_session.closed = True
+
+    old_session.close = _voice_deliver_on_old_close
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    async def _kill_new_session_ws(*args, **kwargs):
+        mgr.session.ws = None
+
+    mgr._apply_pending_tts_route_after_swap = _kill_new_session_ws
+    mgr.pending_extra_replies = [extra_spoken, extra_other]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert mgr.session is None
+    assert mgr.pending_extra_replies == [extra_other], \
+        "ws-invalid restore must re-queue only the promote-removed entries"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_happy_path_consumes_selected_keeps_deferred(monkeypatch):
+    """A successful swap must not restore anything: selected extras were
+    delivered into the promoted session, deferred ones stay for the next swap."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    extra_sel = _extra_entry("id-sel", "goes into this swap")
+    extra_def = _extra_entry("id-def", "waits for the next swap")
+    mgr.pending_extra_replies = [extra_sel, extra_def]
+
+    monkeypatch.setattr(
+        "main_logic.core.lifecycle._select_callbacks_within_token_budget",
+        lambda callbacks, budget: (callbacks[:1], list(callbacks[1:])),
+    )
+
+    try:
+        swap_task = await _run_swap_as_final_swap_task(mgr)
+
+        assert not swap_task.cancelled()
+        assert mgr.session is new_session
+        assert new_session.prime_calls and new_session.prime_calls[0][1] is False
+        assert mgr.pending_extra_replies == [extra_def], \
+            "successful swap consumes selected extras and keeps only deferred ones"
+    finally:
+        await _drain_task(mgr.message_handler_task)
+
+
+@pytest.mark.asyncio
+async def test_final_swap_cancel_after_old_close_fail_closes_instead_of_restarting():
+    """Cancellation landing after step 2 closed the old session but before
+    promote leaves self.session pointing at a closed client (ws=None). The
+    CancelledError handler must fail-close instead of restarting a listener
+    on the dead session (coderabbit Major on this PR)."""
+    mgr = _make_swap_manager()
+    new_session = _FakeSession("pending")
+    old_session = _make_fake_realtime_session("old")
+
+    _orig_close = old_session.close
+
+    async def _close_then_swallowed_cancel():
+        # Step 2 closes the old session (ws cleared), then the external cancel
+        # arrives and is swallowed — the pre-promote checkpoint re-raises it.
+        await _orig_close()
+        t = asyncio.current_task()
+        t.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # Swallow on purpose: reproduces the checkpoint-only cancel path.
+            pass
+
+    old_session.close = _close_then_swallowed_cancel
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert new_session.closed
+    assert mgr.session is None, \
+        "cancel after old close must fail-close, not keep the dead session"
+    assert mgr.is_active is False
+    assert mgr.message_handler_task is None, \
+        "no listener may be restarted on a closed session"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_cancel_after_old_close_fail_closes_text_session_too():
+    """Same scenario for a TEXT session: OmniOfflineClient clears ``llm`` on
+    close() (it has no ws), so the dead-session fail-close must recognize it
+    instead of restarting its keep-alive listener on a closed client
+    (coderabbit follow-up on this PR)."""
+    mgr = _make_swap_manager()
+    new_session = _FakeSession("pending")
+
+    old_session = object.__new__(OmniOfflineClient)
+    old_session.llm = object()  # 活跃文本会话的标志；close 后被清空
+
+    async def _close_then_swallowed_cancel():
+        old_session.llm = None  # mirror OmniOfflineClient.close()
+        t = asyncio.current_task()
+        t.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # Swallow on purpose: reproduces the checkpoint-only cancel path.
+            pass
+
+    old_session.close = _close_then_swallowed_cancel
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled()
+    assert new_session.closed
+    assert mgr.session is None, \
+        "a closed text session must be fail-closed, not kept as self.session"
+    assert mgr.is_active is False
+    assert mgr.message_handler_task is None, \
+        "no keep-alive listener may be restarted on a closed text session"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_post_promote_cancel_restores_removed_extras():
+    """Cancellation after promote comes only from external reset/end_session/
+    start_session preludes, all of which close the promoted session next — the
+    primed content never delivers, so the promote-removed extras must go back
+    to the queue (coderabbit Major on this PR)."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.is_active = True
+    mgr.message_handler_task = None
+
+    async def _cancelled_mid_post_promote(*args, **kwargs):
+        # External cancel lands on the swap task during a post-promote await.
+        t = asyncio.current_task()
+        t.cancel()
+        await asyncio.sleep(0)
+        return 0
+
+    mgr._prime_late_next_session_context_after_swap = _cancelled_mid_post_promote
+
+    extra = _extra_entry("id-post-promote", "task P finished")
+    mgr.pending_extra_replies = [extra]
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled(), \
+        "the handler absorbs the cancel and finishes its cleanup normally"
+    assert mgr.session is new_session, \
+        "the handler leaves the promoted session for the canceller to close"
+    assert mgr.pending_extra_replies == [extra], \
+        "post-promote cancel must restore the promote-removed extras"
+    # 双投守卫：restore 之后不得给将死的 promoted 会话重启 listener——
+    # 没有 listener，服务器响应不会被消费播出，塞回的条目才是唯一投递路径。
+    assert mgr.message_handler_task is None, \
+        "no listener may be restarted on the about-to-close promoted session"
+
+
+@pytest.mark.asyncio
+async def test_final_swap_restore_excludes_extra_delivered_after_promote():
+    """greptile follow-up P1: a voice delivery can consume a callback AFTER
+    promote removed its extra (the delivery's extras prune no-ops on the
+    checked-out entry). The restore detects this via the paired callback
+    vanishing from pending_agent_callbacks inside the window and must not
+    re-queue the already-announced entry; an entry whose callback is still
+    pending restores normally."""
+    mgr = _make_swap_manager()
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+
+    extra_spoken = _extra_entry("id-spoken", "delivered by voice after promote")
+    extra_kept = _extra_entry("id-kept", "still undelivered")
+    mgr.pending_extra_replies = [extra_spoken, extra_kept]
+    mgr.pending_agent_callbacks = [
+        {"_callback_delivery_id": "id-spoken"},
+        {"_callback_delivery_id": "id-kept"},
+    ]
+
+    async def _voice_delivery_then_external_cancel(*args, **kwargs):
+        # 窗口期内语音投递成功消费 id-spoken：cb 侧被 prune；extras 侧因条目
+        # 已在 promote 时摘走而 no-op（正是被复活的那半边）。随后外部取消命中。
+        mgr.pending_agent_callbacks = [
+            cb for cb in mgr.pending_agent_callbacks
+            if cb.get("_callback_delivery_id") != "id-spoken"
+        ]
+        mgr.pending_extra_replies = [
+            e for e in mgr.pending_extra_replies
+            if e.get("_callback_delivery_id") != "id-spoken"
+        ]
+        t = asyncio.current_task()
+        t.cancel()
+        await asyncio.sleep(0)
+        return 0
+
+    mgr._prime_late_next_session_context_after_swap = _voice_delivery_then_external_cancel
+
+    swap_task = await _run_swap_as_final_swap_task(mgr)
+
+    assert not swap_task.cancelled(), \
+        "the handler absorbs the cancel and finishes its cleanup normally"
+    assert mgr.session is new_session
+    assert mgr.pending_extra_replies == [extra_kept], \
+        "an extra whose callback was consumed inside the window must not be re-queued"

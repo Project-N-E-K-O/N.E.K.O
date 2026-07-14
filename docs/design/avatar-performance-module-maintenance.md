@@ -36,17 +36,17 @@ Live2D 正常链路保护：
 1. `static/tutorial/avatar/yui-stage.js`
    - 首页专用 adapter
    - 把 director 的 step、speech、timeline、wakeup 事件翻译成 AvatarPerformance sequence
-2. `static/tutorial/yui-guide/director.js`
+2. `static/tutorial/yui-guide/director/`
    - 首页新手引导导演层
    - 仍负责高亮、文本、语音、步骤推进和业务动作
 3. `templates/index.html`
-   - 加载顺序为 `avatar-performance-stage.js`、`tutorial/avatar/yui-stage.js`、`tutorial/yui-guide/director.js`
+   - 加载顺序为 `avatar-performance-stage.js`、`tutorial/avatar/yui-stage.js`、`tutorial/yui-guide/director/`
 4. `main_routers/pages_router.py`
    - 静态资源版本缓存包含上述新模块
 
 兼容入口：
 
-1. `static/tutorial/yui-guide/wakeup.js` 仍保留为兼容/预热桥接入口，由 `tutorial/yui-guide/director.js` 和新的演出适配层承接实际流程。
+1. `static/tutorial/yui-guide/wakeup.js` 仍保留为兼容/预热桥接入口，由 `tutorial/yui-guide/director/` 和新的演出适配层承接实际流程。
 2. `window.YuiGuideWakeup` 只允许作为兼容桥接对象存在，不应恢复为独立视觉演出链路或新增剧情逻辑。
 
 ## 模块边界
@@ -459,7 +459,7 @@ VRM / MMD / 其他 3D avatar 后续应作为新的 driver 接入同一套 `Avata
 .venv\Scripts\python.exe -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
 node --check static/avatar/avatar-performance-stage.js
 node --check static/tutorial/avatar/yui-stage.js
-node --check static/tutorial/yui-guide/director.js
+Get-ChildItem static/tutorial/yui-guide/director/*.js | ForEach-Object { node --check $_.FullName }
 python -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
 git diff --check
 ```
@@ -470,7 +470,7 @@ macOS / Linux 可使用等价命令：
 ./.venv/bin/python -m pytest tests/test_agent_rewrite_regression.py tests/test_emotion_heuristic.py tests/frontend/test_yui_guide_avatar_performance_flow.py -q
 node --check static/avatar/avatar-performance-stage.js
 node --check static/tutorial/avatar/yui-stage.js
-node --check static/tutorial/yui-guide/director.js
+find static/tutorial/yui-guide/director -name '*.js' -print0 | xargs -0 -n1 node --check
 python3 -m py_compile main_routers/pages_router.py config/prompts/prompts_emotion.py
 git diff --check
 ```

@@ -63,7 +63,7 @@ Alternatively, start the required servers manually in separate terminals:
 uv run python app/memory_server.py
 
 # Terminal 2 — Main server (required)
-uv run python app/main_server.py
+uv run python -m app.main_server
 
 # Terminal 3 — Agent server (optional)
 uv run python -m app.agent_server
@@ -82,7 +82,7 @@ codesign --force --sign - steamworks/libsteam_api.dylib
 codesign --force --sign - steamworks/SteamworksPy.dylib
 ```
 
-- After that, retry `uv run python launcher.py` or `uv run python app/main_server.py`.
+- After that, retry `uv run python launcher.py` or `uv run python -m app.main_server`.
 
 ## Configuration
 
@@ -96,7 +96,7 @@ Alternatively, set environment variables before starting:
 ```bash
 export NEKO_CORE_API_KEY="sk-your-key"
 export NEKO_CORE_API="qwen"
-uv run python app/main_server.py
+uv run python -m app.main_server
 ```
 
 ## Alternative: pip install
@@ -108,7 +108,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python app/memory_server.py
-python app/main_server.py
+python -m app.main_server
 ```
 
 ## Verify

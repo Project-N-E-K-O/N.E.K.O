@@ -494,7 +494,7 @@ button * {
      1) 静态容器：avatar 三家（live2d/vrm/mmd）+ chat 主面板 + 字幕条 +
         React chat 浮窗 + avatar preview 弹窗 + status toast。
         #sidebar 自带 inline display:none 不需要再列。
-     2) 动态浮动 UI：avatar-ui-buttons.js 用 `{prefix}-floating-buttons` /
+     2) 动态浮动 UI：avatar-ui-buttons parts 用 `{prefix}-floating-buttons` /
         `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
         命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
         匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */

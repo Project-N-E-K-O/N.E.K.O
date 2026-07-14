@@ -1866,7 +1866,7 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
                 lockIcon.style.setProperty('display', 'none', 'important');
             }
             // goodbye 状态下这里只维护锁图标/浮动按钮可见性。
-            // 返回球必须由 app-ui.js 在完成定位后再显示，避免先以默认 (0, 0) 闪现。
+            // 返回球必须由 app-ui 在完成定位后再显示，避免先以默认 (0, 0) 闪现。
             if (floatingButtons) {
                 floatingButtons.style.display = 'none';
             }
