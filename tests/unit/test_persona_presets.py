@@ -80,3 +80,25 @@ def test_persona_prompts_replace_literal_catchphrase_lists_with_speech_disciplin
         assert "- Natural Speech:" in prompt
         assert "{_persona_speech_discipline}" not in prompt
         assert "下不为例喵" not in prompt
+
+    assert "grumble first and help second" not in get_persona_prompt_guidance("tsundere_helper", lang)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("lang", "old_unconditional_marker"),
+    [
+        ("zh", "常带「喵」"),
+        ("zh-TW", "常帶「喵」"),
+        ("en", "often peppered"),
+        ("ja", "よく「にゃ」"),
+        ("ko", "자주 \"냐\""),
+        ("ru", "часто с «мяу»"),
+        ("es", "a menudo salpicado"),
+        ("pt", "muitas vezes pontuado"),
+    ],
+)
+def test_classic_catlike_flourish_is_context_gated(lang, old_unconditional_marker):
+    language_tail = _PERSONA_L10N["classic_genki"][lang]["language_tail"]
+
+    assert old_unconditional_marker not in language_tail
