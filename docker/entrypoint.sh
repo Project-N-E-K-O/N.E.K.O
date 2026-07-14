@@ -576,6 +576,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
         
         # WebSocket支持
         proxy_http_version 1.1;
@@ -640,38 +641,6 @@ server {
     ssl_certificate $cert_file;
     ssl_certificate_key $key_file;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
-    
-    # 设置HSTS头（增强安全性）
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    
-    server_name _;
-    
-    # 禁用默认的Nginx版本显示
-    server_tokens off;
-    
-    # 取消客户端请求体大小限制
-    client_max_body_size 0;
-
-    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
-        proxy_pass http://127.0.0.1:48916;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$http_host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 86400;
-    }
-    
-    # 代理到N.E.K.O主服务
     ssl_prefer_server_ciphers on;
     ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
     
