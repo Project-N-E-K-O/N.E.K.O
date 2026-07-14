@@ -164,6 +164,7 @@
         proactiveNewsChatEnabled: false,
         proactiveVideoChatEnabled: true,
         proactivePersonalChatEnabled: false,
+        proactiveTiebaChatEnabled: false,
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: true,
         proactiveMiniGameInviteEnabled: true,
@@ -284,6 +285,7 @@
     const proactiveKeys = [
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+        'proactiveTiebaChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',

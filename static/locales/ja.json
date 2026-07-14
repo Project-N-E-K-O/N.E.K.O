@@ -2596,6 +2596,8 @@
             "proactiveVideoChatTooltip": "動画コンテンツを使用してチャット",
             "proactivePersonalChat": "アクティビティ更新",
             "proactivePersonalChatTooltip": "連携しているプラットフォームの更新情報をもとに話しかける",
+            "proactiveTiebaChat": "Tieba Hot Posts",
+            "proactiveTiebaChatTooltip": "Use public Tieba posts as community discussion material",
             "proactiveMusicChat": "音楽提案",
             "proactiveMusicChatTooltip": "おすすめの音楽を提案しながら話しかける",
             "proactiveMemeChat": "ミーム共有",

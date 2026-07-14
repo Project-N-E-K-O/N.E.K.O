@@ -2596,6 +2596,8 @@
             "proactiveVideoChatTooltip": "使用视频内容进行搭话",
             "proactivePersonalChat": "个人动态",
             "proactivePersonalChatTooltip": "使用已连接平台的个人动态进行搭话",
+            "proactiveTiebaChat": "贴吧热门帖子",
+            "proactiveTiebaChatTooltip": "使用贴吧公开热门帖子作为社区讨论素材",
             "proactiveMusicChat": "音乐推荐",
             "proactiveMusicChatTooltip": "使用推荐音乐进行搭话",
             "proactiveMemeChat": "表情包分享",

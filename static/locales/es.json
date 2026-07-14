@@ -2596,6 +2596,8 @@
             "proactiveVideoChatTooltip": "Utilice contenido de vídeo para un chat proactivo",
             "proactivePersonalChat": "Actualizaciones personales",
             "proactivePersonalChatTooltip": "Utilice actualizaciones personales de plataformas conectadas para un chat proactivo",
+            "proactiveTiebaChat": "Tieba Hot Posts",
+            "proactiveTiebaChatTooltip": "Use public Tieba posts as community discussion material",
             "proactiveMusicChat": "Recomendación musical",
             "proactiveMusicChatTooltip": "Utilice música recomendada para un chat proactivo",
             "proactiveMemeChat": "Compartir memes",
