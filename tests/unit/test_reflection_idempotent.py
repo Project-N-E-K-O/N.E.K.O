@@ -101,7 +101,7 @@ async def test_synth_with_same_facts_does_not_duplicate_reflection(tmp_path):
     mock_cm = _build_mock_cm(str(tmp_path))
     _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -178,7 +178,7 @@ async def test_synth_different_fact_set_produces_different_id(tmp_path):
     """facts 变化 → 新 reflection 写入（不会被错误 dedup）。"""
     mock_cm = _build_mock_cm(str(tmp_path))
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -238,7 +238,7 @@ async def test_synth_concurrent_dedup_returns_empty(tmp_path):
     _write_unabsorbed_facts(str(tmp_path), "小天", fact_ids)
     expected_rid = _reflection_id_from_facts(sorted(fact_ids))
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -319,7 +319,7 @@ async def test_synth_failure_bumps_backoff_and_dead_letters(tmp_path):
     mock_cm = _build_mock_cm(str(tmp_path))
     _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -375,7 +375,7 @@ async def test_synth_success_clears_backoff(tmp_path):
     fact_ids = [f"f{i}" for i in range(6)]
     _write_unabsorbed_facts(str(tmp_path), "小天", fact_ids)
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -449,7 +449,7 @@ async def test_synth_dead_letter_resets_when_full_input_changes(tmp_path):
     poison = [(f"p{i:02d}", 9) for i in range(REFLECTION_SYNTHESIS_FACTS_MAX)]
     _write_facts_with_importance(str(tmp_path), "小天", poison)
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -512,7 +512,7 @@ async def test_synth_dead_letter_self_heals_after_cooldown(tmp_path):
     mock_cm = _build_mock_cm(str(tmp_path))
     _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -571,7 +571,7 @@ async def test_synth_backoff_survives_disk_write_failure(tmp_path):
     mock_cm = _build_mock_cm(str(tmp_path))
     _write_unabsorbed_facts(str(tmp_path), "小天", [f"f{i}" for i in range(6)])
 
-    with patch("memory.reflection.get_config_manager", return_value=mock_cm), \
+    with patch("memory.reflection.manager.get_config_manager", return_value=mock_cm), \
          patch("memory.facts.get_config_manager", return_value=mock_cm):
         from memory.facts import FactStore
         from memory.persona import PersonaManager
@@ -602,7 +602,7 @@ async def test_synth_backoff_survives_disk_write_failure(tmp_path):
         with patch("utils.llm_client.create_chat_llm", _FakeLLM), \
              patch("config.prompts.prompts_memory.get_reflection_prompt", lambda lang: "{FACTS}|{LANLAN_NAME}|{MASTER_NAME}"), \
              patch("utils.language_utils.get_global_language", return_value="zh"), \
-             patch("memory.reflection.atomic_write_json_async",
+             patch("memory.reflection.persistence.atomic_write_json_async",
                    AsyncMock(side_effect=OSError("read-only fs"))):
             for _ in range(MEMORY_LIVENESS_MAX_ATTEMPTS + 3):
                 assert await re.synthesize_reflections("小天") == []

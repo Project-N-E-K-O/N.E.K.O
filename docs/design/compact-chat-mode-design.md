@@ -105,7 +105,7 @@
 
 主要文件：
 
-1. `static/app/app-react-chat-window.js`
+1. `static/app/app-react-chat-window`
 2. `static/app/app-buttons.js`
 3. `templates/index.html`
 4. `templates/chat.html`
@@ -116,7 +116,7 @@
 1. `templates/index.html` 和 `templates/chat.html` 都加载 `/static/react/neko-chat/neko-chat-window.css` 和 `neko-chat-window.iife.js`。
 2. 因此 compact surface 的 React CSS 在首页、独立 `/chat` 和 NEKO-PC 承载页上是同一份构建产物。
 3. 改 `frontend/react-neko-chat/src/*` 后必须运行 `bash build_frontend.sh`，确保 `static/react/neko-chat/neko-chat-window.css` 已同步。
-4. `static/app/app-react-chat-window.js` 负责：
+4. `static/app/app-react-chat-window` 负责：
    - `compact ↔ minimized` 形态切换。
    - compact surface 位置和宽度持久化。
    - `--compact-surface-left/top/width/height` 和 `--desktop-compact-surface-*` CSS 变量同步。
@@ -186,7 +186,7 @@
 
 ### 默认形态来源
 
-宿主 `static/app/app-react-chat-window.js` 的 `getDefaultChatSurfaceMode()`（用户无持久化偏好时）：
+宿主 `static/app/app-react-chat-window` 的 `getDefaultChatSurfaceMode()`（用户无持久化偏好时）：
 
 - **Web / 浏览器** → `full`。
 - **Electron 桌面壳** → `compact`：chat.html（electron chat body class）与 index.html 宠物窗（`window.__LANLAN_IS_ELECTRON_PET__`）都识别为 compact。
@@ -350,7 +350,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 ### 页面 Geometry 来源
 
 1. 页面真实 DOM rect 是 geometry 的事实来源。
-2. `static/app/app-react-chat-window.js` 聚合 compact DOM、avatar bounds、Electron override，并输出：
+2. `static/app/app-react-chat-window` 聚合 compact DOM、avatar bounds、Electron override，并输出：
    - `surfaceItems`
    - `surfaceUnion`
    - `surfaceHitRects`

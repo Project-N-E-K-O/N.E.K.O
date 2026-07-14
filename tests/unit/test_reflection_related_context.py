@@ -18,11 +18,11 @@ def _make_engine(facts_on_disk: list[dict]):
     fact_store.aload_facts_full = AsyncMock(return_value=facts_on_disk)
     cm = MagicMock()
     cm.memory_dir = "/tmp/dummy"
-    # Patch 必须 target `memory.reflection.get_config_manager` —— 因为
+    # Patch the manager submodule because it consumes get_config_manager.
     # reflection.py 用 `from utils.config_manager import get_config_manager`
     # 把名字 bind 到本模块 namespace，patch source module 对已 bind 的
     # 局部引用无效（CodeRabbit minor #1392）。
-    with patch("memory.reflection.get_config_manager", return_value=cm):
+    with patch("memory.reflection.manager.get_config_manager", return_value=cm):
         engine = ReflectionEngine(fact_store=fact_store, persona_manager=MagicMock())
     return engine
 

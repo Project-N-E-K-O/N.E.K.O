@@ -281,7 +281,7 @@ uv run pytest -q \
 - `utils/steam_cloud_bundle.py`
 - `main_routers/cloudsave_router.py`
 - `launcher.py`
-- `main_server.py`
+- `app/main_server/__init__.py`
 - `static/js/cloudsave_manager.js`
 - `static/js/character_card_manager.js`（涉及 cloudsave）
 

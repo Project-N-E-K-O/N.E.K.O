@@ -10,7 +10,7 @@ Project N.E.K.O. is built as a **multi-process microservice system** where three
 
 | Server | Port | Entry point | Role |
 |--------|------|-------------|------|
-| **Main Server** | 48911 | `app/main_server.py` | Web UI, REST API, WebSocket chat, TTS |
+| **Main Server** | 48911 | `app/main_server/__init__.py` | Web UI, REST API, WebSocket chat, TTS |
 | **Memory Server** | 48912 | `app/memory_server.py` | Semantic recall, time-indexed history, memory compression |
 | **Agent Server** | 48915 | `app/agent_server.py` | Background task execution (Computer Use, Browser Use, OpenClaw remote agent, OpenFang standalone agent, User Plugins) |
 

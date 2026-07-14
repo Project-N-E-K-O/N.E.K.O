@@ -18,7 +18,7 @@ import pytest
 
 @pytest.fixture
 def srv(monkeypatch: pytest.MonkeyPatch):
-    from app import agent_server as agent_srv
+    from app.agent_server import api_routes as agent_srv
 
     M = agent_srv.Modules
     saved_registry = dict(M.task_registry)

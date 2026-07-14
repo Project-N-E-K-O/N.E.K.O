@@ -15,8 +15,10 @@
     var SUBTITLE_FONT_SIZE_OPTIONS = [16, 21, 26, 34, 44];
     var DEFAULT_SUBTITLE_COLOR_SCHEME = 'default';
     var SUBTITLE_COLOR_SCHEME_OPTIONS = ['default', 'red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
-    var MIN_PANEL_WIDTH = 48;
-    var MIN_PANEL_HEIGHT = 28;
+    // Keep the three 22px controls and the corner decorations inside the panel,
+    // with comfortable vertical space around the controls.
+    var MIN_PANEL_WIDTH = 228;
+    var MIN_PANEL_HEIGHT = 40;
     var DEFAULT_TRANSLATION_LANGUAGE = 'zh';
     var DEFAULT_UI_LOCALE = 'zh-CN';
     var CONTROLS_HIDE_DELAY_MS = 600;
@@ -973,25 +975,35 @@
 
     function applySubtitlePanelBounds(display, bounds, options) {
         var resolved = getPanelBounds(bounds);
+        var rendered = resolved;
+        if (options && options.host === 'web') {
+            var viewportWidth = Math.max(1, Math.floor(Number(window.innerWidth) || resolved.width));
+            var viewportHeight = Math.max(1, Math.floor(Number(window.innerHeight) || resolved.height));
+            rendered = {
+                width: Math.min(resolved.width, viewportWidth),
+                height: Math.min(resolved.height, viewportHeight)
+            };
+        }
         var fontSize = normalizeSubtitleFontSize(options && hasOwn(options, 'fontSize')
             ? options.fontSize
             : getSettings().subtitleFontSize);
         if (!display) return resolved;
-        display.dataset.subtitlePanelWidth = String(resolved.width);
-        display.dataset.subtitlePanelHeight = String(resolved.height);
-        display.style.width = resolved.width + 'px';
-        display.style.height = resolved.height + 'px';
-        display.style.minHeight = MIN_PANEL_HEIGHT + 'px';
+        display.dataset.subtitlePanelWidth = String(rendered.width);
+        display.dataset.subtitlePanelHeight = String(rendered.height);
+        display.style.width = rendered.width + 'px';
+        display.style.height = rendered.height + 'px';
+        display.style.minWidth = Math.min(MIN_PANEL_WIDTH, rendered.width) + 'px';
+        display.style.minHeight = Math.min(MIN_PANEL_HEIGHT, rendered.height) + 'px';
         display.style.maxHeight = 'none';
         display.style.fontSize = fontSize + 'px';
         display.dataset.subtitleFontSize = String(fontSize);
         display.style.setProperty('--subtitle-font-size', fontSize + 'px');
-        display.style.setProperty('--subtitle-panel-width', resolved.width + 'px');
-        display.style.setProperty('--subtitle-panel-height', resolved.height + 'px');
-        applySubtitleControlScale(display, resolved);
-        display.style.setProperty('--subtitle-content-max-height', Math.max(24, resolved.height - 24) + 'px');
+        display.style.setProperty('--subtitle-panel-width', rendered.width + 'px');
+        display.style.setProperty('--subtitle-panel-height', rendered.height + 'px');
+        applySubtitleControlScale(display, rendered);
+        display.style.setProperty('--subtitle-content-max-height', Math.max(24, rendered.height - 24) + 'px');
         if (!options || options.host !== 'window') {
-            display.style.setProperty('--subtitle-max-width', resolved.width + 'px');
+            display.style.setProperty('--subtitle-max-width', rendered.width + 'px');
         }
         return resolved;
     }
@@ -1696,8 +1708,12 @@
             });
         }
 
-        function clampManualPosition() {
+        function fitPanelToViewport() {
             var state = getSettings();
+            applySubtitlePanelBounds(refs.display, state.subtitlePanelBounds, {
+                host: 'web',
+                fontSize: state.subtitleFontSize
+            });
             if (!state.subtitlePanelPosition) return;
             var clamped = applyWebPanelPosition(refs, state.subtitlePanelPosition);
             if (clamped && !samePanelPosition(clamped, state.subtitlePanelPosition)) {
@@ -1714,14 +1730,14 @@
             beginTouchDrag(e);
         }
 
-        clampManualPosition();
+        fitPanelToViewport();
         refs.display.addEventListener('mousedown', onDisplayMouseDown);
         refs.display.addEventListener('touchstart', onDisplayTouchStart, { passive: false });
         document.addEventListener('touchmove', handleTouchMove, { passive: false });
         document.addEventListener('touchend', handleMouseUp);
         document.addEventListener('touchcancel', handleMouseUp);
-        window.addEventListener('resize', clampManualPosition);
-        window.addEventListener('orientationchange', clampManualPosition);
+        window.addEventListener('resize', fitPanelToViewport);
+        window.addEventListener('orientationchange', fitPanelToViewport);
 
         return function detachWebDrag() {
             handleMouseUp();
@@ -1730,8 +1746,8 @@
             document.removeEventListener('touchmove', handleTouchMove, { passive: false });
             document.removeEventListener('touchend', handleMouseUp);
             document.removeEventListener('touchcancel', handleMouseUp);
-            window.removeEventListener('resize', clampManualPosition);
-            window.removeEventListener('orientationchange', clampManualPosition);
+            window.removeEventListener('resize', fitPanelToViewport);
+            window.removeEventListener('orientationchange', fitPanelToViewport);
             document.removeEventListener('mousemove', handleMouseMove);
             document.removeEventListener('mouseup', handleMouseUp);
         };

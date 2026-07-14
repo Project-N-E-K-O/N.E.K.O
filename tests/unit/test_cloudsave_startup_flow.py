@@ -7,7 +7,7 @@ import pytest
 
 @pytest.mark.unit
 def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatch, tmp_path):
-    import launcher
+    from launcher_core import runtime as launcher
 
     config_manager = SimpleNamespace(
         app_docs_dir=tmp_path / "N.E.K.O",
@@ -77,7 +77,7 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
 
 @pytest.mark.unit
 def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     class _LocalStateFailure(OSError):
         local_state_directory_error = True
@@ -129,7 +129,7 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
 
 @pytest.mark.unit
 def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch, tmp_path):
-    import launcher
+    from launcher_core import runtime as launcher
 
     anchor_root = (tmp_path / "anchor" / "N.E.K.O").resolve()
     selected_root = (tmp_path / "selected" / "N.E.K.O").resolve()
@@ -192,7 +192,7 @@ def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch,
 
 @pytest.mark.unit
 def test_launcher_uses_multi_process_mode_by_default_in_source(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     monkeypatch.delenv("NEKO_MERGED", raising=False)
     monkeypatch.setattr(launcher, "IS_FROZEN", False)
@@ -202,7 +202,7 @@ def test_launcher_uses_multi_process_mode_by_default_in_source(monkeypatch):
 
 @pytest.mark.unit
 def test_launcher_uses_merged_mode_by_default_when_frozen(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     monkeypatch.delenv("NEKO_MERGED", raising=False)
     monkeypatch.setattr(launcher, "IS_FROZEN", True)
@@ -212,7 +212,7 @@ def test_launcher_uses_merged_mode_by_default_when_frozen(monkeypatch):
 
 @pytest.mark.unit
 def test_launcher_env_override_beats_default_process_mode(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     monkeypatch.setattr(launcher, "IS_FROZEN", False)
     monkeypatch.setenv("NEKO_MERGED", "1")
@@ -225,7 +225,7 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
 
 @pytest.mark.unit
 def test_launcher_suppresses_startup_failure_events_during_expected_shutdown(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     emitted_events = []
 
@@ -243,7 +243,7 @@ def test_launcher_suppresses_startup_failure_events_during_expected_shutdown(mon
 
 @pytest.mark.unit
 def test_launcher_post_startup_root_state_preserves_non_normal_modes(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     config_manager = SimpleNamespace(
         app_docs_dir="/tmp/runtime/N.E.K.O",
@@ -260,7 +260,7 @@ def test_launcher_post_startup_root_state_preserves_non_normal_modes(monkeypatch
 
 @pytest.mark.unit
 def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_migration(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     emitted_events = []
     released = {"called": False}
@@ -324,7 +324,7 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
 def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovered_from_stale_maintenance(
     monkeypatch,
 ):
-    import launcher
+    from launcher_core import runtime as launcher
 
     released = {"called": False}
     spawned = {"called": False}
@@ -367,7 +367,7 @@ def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovere
 
 @pytest.mark.unit
 def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     popen_calls = []
 
@@ -396,7 +396,7 @@ def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(mon
 
 @pytest.mark.unit
 def test_spawn_restarted_launcher_preserves_stdio_when_not_running_in_tty(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     popen_calls = []
 
@@ -425,7 +425,7 @@ def test_spawn_restarted_launcher_preserves_stdio_when_not_running_in_tty(monkey
 
 @pytest.mark.unit
 def test_spawn_restarted_launcher_clears_main_server_init_marker_from_relaunch_env(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     popen_calls = []
 
@@ -533,7 +533,7 @@ async def test_main_server_uses_runtime_shutdown_bridge_when_available(monkeypat
 
 @pytest.mark.unit
 def test_launcher_cleanup_waits_for_main_server_shutdown_completion(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     class _DummyEvent:
         def __init__(self, *, wait_result=True):
@@ -604,7 +604,7 @@ def test_launcher_cleanup_waits_for_main_server_shutdown_completion(monkeypatch)
 
 @pytest.mark.unit
 def test_launcher_cleanup_requests_main_before_memory(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     call_order = []
 
@@ -680,7 +680,7 @@ def test_launcher_cleanup_requests_main_before_memory(monkeypatch):
 
 @pytest.mark.unit
 def test_launcher_cleanup_survives_keyboardinterrupt_during_shutdown_wait(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     class _InterruptingEvent:
         def set(self):
@@ -736,7 +736,7 @@ def test_launcher_cleanup_survives_keyboardinterrupt_during_shutdown_wait(monkey
 
 @pytest.mark.unit
 def test_wait_for_servers_treats_main_server_exit_as_storage_restart_during_startup(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     marked_shutdown = []
     startup_failures = []
@@ -778,7 +778,7 @@ def test_wait_for_servers_treats_main_server_exit_as_storage_restart_during_star
 
 @pytest.mark.unit
 def test_launcher_main_schedules_restart_for_storage_restart_requested_during_startup(monkeypatch):
-    import launcher
+    from launcher_core import runtime as launcher
 
     started_modules = []
     cleanup_calls = []

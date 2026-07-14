@@ -2915,7 +2915,7 @@
         "playVRMAnimationFailed": "播放 VRM 動作失敗:",
         "loadLightingConfigFailed": "加載打光配置失敗:",
         "checkVoiceModeTimeout": "檢查語音模式狀態超時（服務器可能未響應）",
-        "cannotConnectToServer": "無法連接到服務器，請確保 main_server.py 正在運行",
+        "cannotConnectToServer": "無法連接到服務器，請確保主服務器正在運行",
         "checkVoiceModeFailed": "檢查語音模式狀態失敗:",
         "markedUnsavedModel": "已標記為未保存更改（模型切換），請點擊 保存設置 持久化到角色配置。",
         "parameterEditorSavedNeedsModelSave": "捏臉參數已保存，請點擊「保存設置」同步到角色配置。",

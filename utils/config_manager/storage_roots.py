@@ -52,7 +52,7 @@ class StorageRootsMixin:
             app_name: application name, defaults to APP_NAME from config
         """
         self.app_name = app_name if app_name is not None else APP_NAME
-        # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
+        # 检测是否在子进程中，子进程静默初始化（通过 main_server 设置的环境变量）
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
         default_app_docs_dir = self.docs_dir / self.app_name

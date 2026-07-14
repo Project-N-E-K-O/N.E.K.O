@@ -43,7 +43,7 @@ static/
 - **グローバル変数**: `window.NekoChatWindow`
 - **開発サーバー**: `npm run dev`（ポート 5174）
 
-グルーレイヤー `static/app/app-react-chat-window.js` が React コンポーネントを DOM に読み込んでマウントします。
+グルーレイヤー `static/app/app-react-chat-window` が React コンポーネントを DOM に読み込んでマウントします。
 
 ## プラグインマネージャー（Vue）
 

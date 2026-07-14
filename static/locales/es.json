@@ -2915,7 +2915,7 @@
         "playVRMAnimationFailed": "No se pudo reproducir la animación VRM:",
         "loadLightingConfigFailed": "No se pudo cargar la configuración de iluminación:",
         "checkVoiceModeTimeout": "Verifique el tiempo de espera del estado del modo de voz (es posible que el servidor no responda)",
-        "cannotConnectToServer": "No se puede conectar al servidor, asegúrese de que main_server.py se esté ejecutando",
+        "cannotConnectToServer": "No se puede conectar al servidor, asegúrese de que el servidor principal se esté ejecutando",
         "checkVoiceModeFailed": "Error al comprobar el estado del modo de voz:",
         "markedUnsavedModel": "Marcados como cambios no guardados (cambio de modelo), haga clic en Guardar configuración para conservar la configuración de caracteres.",
         "parameterEditorSavedNeedsModelSave": "Parámetros de rostro guardados. Haz clic en Guardar ajustes para sincronizarlos con la configuración del personaje.",
