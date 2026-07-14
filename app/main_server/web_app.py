@@ -179,6 +179,7 @@ from main_routers.cookies_login_router import router as cookies_login_router  # 
 from main_routers.game_router import router as game_router  # noqa
 from main_routers.card_drop_router import (  # noqa
     _facts_cors_headers as _card_forge_cors_headers,
+    _local_mutation_origin_allowed as _card_forge_mutation_origin_allowed,
     router as card_drop_router,
 )
 from main_routers.debug_router import (
@@ -213,8 +214,10 @@ def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
 
 
 @app.post("/card-forge/active-character")
-async def set_card_forge_active_character(payload: dict):
+async def set_card_forge_active_character(request: Request, payload: dict):
     """Update only fields explicitly supplied by the avatar runtime."""
+    if not _card_forge_mutation_origin_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     if not isinstance(payload, dict):
         return {"ok": True}
     if "dataUrl" in payload:

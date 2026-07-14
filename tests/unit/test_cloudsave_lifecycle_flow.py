@@ -574,6 +574,50 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("encoded_path", "escaped_control", "raw_control"),
+    [
+        ("/blocked/%1B%5B31m", r"\x1b", "\x1b"),
+        ("/blocked/%00", r"\x00", "\x00"),
+        ("/blocked/%C2%85", r"\x85", "\x85"),
+        ("/blocked/%E2%80%A8", r"\u2028", "\u2028"),
+    ],
+)
+def test_main_server_limited_mode_log_escapes_control_characters(
+    encoded_path,
+    escaped_control,
+    raw_control,
+):
+    from app import main_server
+
+    with (
+        patch.object(main_server, "_IS_MAIN_PROCESS", False),
+        patch.object(main_server, "_runtime_startup_init_completed", False),
+        patch.object(main_server, "_main_runtime_limited_mode_enabled", True),
+        patch.object(
+            main_server,
+            "_main_runtime_limited_mode_reason",
+            "selection_required",
+        ),
+        patch.object(main_server.logger, "info") as mock_info,
+    ):
+        with TestClient(main_server.app) as client:
+            response = client.get(encoded_path)
+
+    log_call = next(
+        call
+        for call in mock_info.call_args_list
+        if call.args
+        and call.args[0].startswith("[Main] limited-mode blocks request path=")
+    )
+    rendered = log_call.args[0] % log_call.args[1:]
+
+    assert response.status_code == 409
+    assert raw_control not in rendered
+    assert escaped_control in rendered
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_release_storage_startup_barrier_restores_memory_limited_mode_when_main_init_fails():
     from app import main_server

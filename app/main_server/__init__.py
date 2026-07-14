@@ -583,7 +583,7 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
 
     blocking_reason = _main_runtime_limited_mode_reason or "runtime_initializing"
     logger.info(
-        "[Main] limited-mode blocks request path=%s reason=%s",
+        "[Main] limited-mode blocks request path=%r reason=%s",
         request.url.path,
         blocking_reason,
     )

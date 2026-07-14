@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import main_routers.card_drop_router as C
@@ -17,6 +17,87 @@ pytestmark = pytest.mark.unit
 
 USER_A_ID = "11111111-1111-4111-8111-111111111111"
 USER_B_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
+    headers = [(b"host", b"127.0.0.1:48911")]
+    if origin:
+        headers.append((b"origin", origin.encode("ascii")))
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "server": ("127.0.0.1", 48911),
+            "client": ("127.0.0.1", 50000),
+            "root_path": "",
+            "path": "/card-forge/active-character",
+            "raw_path": b"/card-forge/active-character",
+            "query_string": b"",
+            "headers": headers,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_main_active_character_post_allows_native_and_local_origin(monkeypatch):
+    from app.main_server import web_app
+
+    snapshot: dict[str, str] = {}
+    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+
+    native_response = await web_app.set_card_forge_active_character(
+        _main_server_request(),
+        {"name": "Native"},
+    )
+    local_response = await web_app.set_card_forge_active_character(
+        _main_server_request(origin="http://localhost:48911"),
+        {"name": "Local"},
+    )
+
+    assert native_response == {"ok": True}
+    assert local_response == {"ok": True}
+    assert snapshot == {"name": "Local"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "origin",
+    ["https://evil.example", "https://community.example"],
+)
+async def test_main_active_character_post_rejects_cross_origin_before_mutation(
+    monkeypatch,
+    origin,
+):
+    from app.main_server import web_app
+
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+    snapshot = {"name": "Before"}
+    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+
+    response = await web_app.set_card_forge_active_character(
+        _main_server_request(origin=origin),
+        {"name": "After", "dataUrl": "private-avatar-data"},
+    )
+
+    assert response.status_code == 403
+    assert json.loads(response.body) == {"detail": "origin_not_allowed"}
+    assert snapshot == {"name": "Before"}
+
+
+def test_main_active_character_read_cors_remains_social_origin_only(monkeypatch):
+    from app.main_server import web_app
+
+    monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
+
+    headers = web_app._active_character_cors_headers(
+        _main_server_request(method="GET", origin="https://community.example")
+    )
+
+    assert headers is not None
+    assert headers["Access-Control-Allow-Origin"] == "https://community.example"
+    assert headers["Access-Control-Allow-Methods"] == "GET, OPTIONS"
 
 
 def test_card_drop_client_id_persists_fresh_default_before_returning(

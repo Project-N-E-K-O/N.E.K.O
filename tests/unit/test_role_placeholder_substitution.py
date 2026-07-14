@@ -216,7 +216,7 @@ def _patch_main_server(monkeypatch, fake_mgr):
 
 
 @pytest.mark.unit
-async def test_main_server_direct_reply_substitutes_master_name(monkeypatch):
+async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, capsys):
     """task_result + direct_reply → text goes verbatim to send_lanlan_response
     (skipping the LLM). The placeholder must be expanded at this boundary or
     the literal token reaches TTS."""
@@ -224,13 +224,14 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch):
 
     fake_mgr = _mgr_for_main_server()
     _patch_main_server(monkeypatch, fake_mgr)
+    private_reply = "PRIVATE_DIRECT_REPLY_MARKER"
 
     await main_server._handle_agent_event(
         {
             "event_type": "task_result",
             "lanlan_name": "兰兰",
             "text": "ignored",
-            "detail": "搞定了，要不要跟 {MASTER_NAME} 报告一下？",
+            "detail": f"搞定了，{private_reply}，要不要跟 {{MASTER_NAME}} 报告一下？",
             "direct_reply": True,
             "channel": "plugin:demo",
             "task_id": "t-1",
@@ -242,6 +243,7 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch):
     sent_text = fake_mgr.send_lanlan_response.await_args.args[0]
     assert "{MASTER_NAME}" not in sent_text
     assert "跟 小明 报告" in sent_text
+    assert private_reply not in capsys.readouterr().out
 
 
 @pytest.mark.unit
@@ -277,19 +279,22 @@ async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch)
 
 
 @pytest.mark.unit
-async def test_main_server_hud_notification_substitutes_master_name(monkeypatch):
+async def test_main_server_hud_notification_substitutes_master_name(
+    monkeypatch, capsys
+):
     """visibility=["hud"] toast text reaches the frontend verbatim. Without
     substitution the placeholder shows up in the toast literal."""
     from app import main_server
 
     fake_mgr = _mgr_for_main_server()
     _patch_main_server(monkeypatch, fake_mgr)
+    private_notification = "PRIVATE_HUD_NOTIFICATION_MARKER"
 
     await main_server._handle_agent_event(
         {
             "event_type": "proactive_message",
             "lanlan_name": "兰兰",
-            "text": "提醒 {MASTER_NAME}：番茄钟到点了",
+            "text": f"提醒 {{MASTER_NAME}}：{private_notification}，番茄钟到点了",
             "channel": "plugin:demo",
             "task_id": "t-3",
             "ai_behavior": "blind",
@@ -308,4 +313,38 @@ async def test_main_server_hud_notification_substitutes_master_name(monkeypatch)
     assert len(hud_calls) == 1
     notif_text = hud_calls[0].get("text", "")
     assert "{MASTER_NAME}" not in notif_text
-    assert "提醒 小明：番茄钟到点了" in notif_text
+    assert "提醒 小明：" in notif_text
+    assert private_notification not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
+    """Unexpected dispatch failures stay visible without persisting private text."""
+    from app import main_server
+    from app.main_server import character_runtime
+
+    private_error = "PRIVATE_EXCEPTION_MESSAGE_MARKER"
+
+    def fail_session_lookup(_lanlan_name):
+        raise RuntimeError(private_error)
+
+    test_logger = MagicMock()
+    monkeypatch.setattr(character_runtime, "_get_session_manager", fail_session_lookup)
+    monkeypatch.setattr(character_runtime, "logger", test_logger)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "task_update",
+            "lanlan_name": "兰兰",
+            "task": {},
+        }
+    )
+
+    test_logger.warning.assert_called_once_with(
+        "[EventBus] handle_agent_event failed (error_type=%s)",
+        "RuntimeError",
+    )
+    rendered = (
+        test_logger.warning.call_args.args[0] % test_logger.warning.call_args.args[1:]
+    )
+    assert private_error not in rendered

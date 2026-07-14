@@ -633,9 +633,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] direct task_result reply delivered (detail_len=%d)",
                             len(detail_text),
                         )
-                        print(
-                            f"[EventBus] direct task_result reply: {detail_text[:60]}"
-                        )
                         return
 
                 # Build structured callback and enqueue for LLM injection
@@ -888,7 +885,6 @@ async def _handle_agent_event(event: dict):
                             "[EventBus] agent_notification sent to frontend (text_len=%d)",
                             len(text),
                         )
-                        print(f"[EventBus] agent_notification text: {text[:60]}")
                     except Exception as e:
                         logger.warning(
                             "[EventBus] agent_notification WS send failed: %s", e
@@ -938,8 +934,11 @@ async def _handle_agent_event(event: dict):
                     "[EventBus] task_update dropped: WebSocket not connected for lanlan=%s",
                     lanlan,
                 )
-    except Exception as e:
-        logger.debug(f"handle_agent_event error: {e}")
+    except Exception as exc:
+        logger.warning(
+            "[EventBus] handle_agent_event failed (error_type=%s)",
+            type(exc).__name__,
+        )
 
 
 async def _refresh_character_globals():
