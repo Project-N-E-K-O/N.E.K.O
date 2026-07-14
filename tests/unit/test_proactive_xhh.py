@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.web_scraper.xhh import (
+from utils.web_scraper.trending_content import (
     fetch_xhh_feed_content,
     format_xhh_feed,
     normalize_xhh_feed,
 )
-from utils.xhh_client import (
+from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
     build_xhh_request_keys,
     build_xhh_token_id,
@@ -68,7 +68,7 @@ def test_build_xhh_token_and_cookie_header():
 
 def test_build_xhh_cookie_header_replaces_saved_token():
     with patch(
-        "utils.xhh_client.build_xhh_token_id",
+        "utils.web_scraper.platform_helpers.build_xhh_token_id",
         return_value="fresh-token",
     ):
         header = build_xhh_cookie_header(
@@ -121,10 +121,10 @@ class _FakeClient:
 async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     client = _FakeClient()
     with patch(
-        "utils.web_scraper.xhh.get_external_http_client",
+        "utils.web_scraper.trending_content.get_external_http_client",
         return_value=client,
     ), patch(
-        "utils.web_scraper.xhh.load_cookies_from_file",
+        "utils.web_scraper.trending_content.load_cookies_from_file",
         return_value={},
     ):
         result = await fetch_xhh_feed_content(limit=1)
@@ -143,10 +143,10 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
 async def test_fetch_xhh_feed_injects_saved_credentials():
     client = _FakeClient()
     with patch(
-        "utils.web_scraper.xhh.get_external_http_client",
+        "utils.web_scraper.trending_content.get_external_http_client",
         return_value=client,
     ), patch(
-        "utils.web_scraper.xhh.load_cookies_from_file",
+        "utils.web_scraper.trending_content.load_cookies_from_file",
         return_value={"user_heybox_id": "123", "user_pkey": "secret"},
     ):
         result = await fetch_xhh_feed_content(limit=1)
@@ -171,10 +171,10 @@ async def test_fetch_xhh_feed_reports_empty_payload_as_source_failure():
             return EmptyResponse()
 
     with patch(
-        "utils.web_scraper.xhh.get_external_http_client",
+        "utils.web_scraper.trending_content.get_external_http_client",
         return_value=EmptyClient(),
     ), patch(
-        "utils.web_scraper.xhh.load_cookies_from_file",
+        "utils.web_scraper.trending_content.load_cookies_from_file",
         return_value={},
     ):
         result = await fetch_xhh_feed_content()

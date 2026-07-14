@@ -14,7 +14,7 @@ from main_routers.cookies_login_router import (
     validate_platform_fields,
 )
 from utils import cookies_login
-from utils.cookies_login import _read_encryption_key, _write_encryption_key
+from utils.cookies_login import PlatformLoginManager, _read_encryption_key, _write_encryption_key
 from utils.cookies_login import validate_cookies
 
 
@@ -51,6 +51,18 @@ def test_xhh_manual_credentials_require_core_fields():
     with pytest.raises(HTTPException, match="user_pkey"):
         validate_platform_fields("xhh", {"user_heybox_id": "123"})
     assert not validate_cookies("xhh", {"user_heybox_id": "123"})
+
+
+def test_xhh_request_params_use_login_manager_entrypoint():
+    params = PlatformLoginManager().build_request_params(
+        "xhh",
+        "/account/qr_state/",
+        extra={"qr": "1"},
+    )
+
+    assert params["qr"] == "1"
+    assert params["hkey"]
+    assert params["nonce"]
 
 
 def test_xhh_encryption_key_uses_json(tmp_path: Path):

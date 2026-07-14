@@ -49,7 +49,6 @@ from utils.cookies_login import (
     get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
-from utils.xhh_client import build_xhh_request_params
 
 logger = get_module_logger(__name__, "Main")
 
@@ -328,7 +327,7 @@ def _render_qrcode_data_url(qrcode_url: str) -> str:
 
 
 async def _request_xhh_qr(path: str, extra_params: dict | None = None):
-    params = build_xhh_request_params(path, extra=extra_params)
+    params = login_manager.build_request_params("xhh", path, extra=extra_params)
     async with httpx.AsyncClient(follow_redirects=True, trust_env=True) as client:
         response = await client.get(
             f"{_XHH_API_BASE}{path}",

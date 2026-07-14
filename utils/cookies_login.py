@@ -414,6 +414,20 @@ class PlatformLoginManager:
         if platform in self.platforms:
             return self.platforms[platform]['func'](method)
         return None
+
+    def build_request_params(
+        self,
+        platform: str,
+        path: str,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build platform-specific request parameters through one login entry point."""
+        if platform == 'xhh':
+            from utils.web_scraper.platform_helpers import build_xhh_request_params
+
+            return build_xhh_request_params(path, extra=extra)
+        return dict(extra or {})
     
     def get_supported_platforms(self) -> Dict[str, Dict[str, Any]]:
         """Get supported platforms and their login methods"""

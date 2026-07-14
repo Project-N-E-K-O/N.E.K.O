@@ -70,9 +70,12 @@ from .trending_content import (
     fetch_twitter_trending,
     fetch_video_content,
     fetch_weibo_trending,
+    fetch_xhh_feed_content,
     format_news_content,
     format_trending_content,
     format_video_content,
+    format_xhh_feed,
+    normalize_xhh_feed,
 )
 from .window_context import (
     _SEARCH_TEXT_WS_RE,
@@ -102,5 +105,4 @@ from .personal_dynamics import (
     fetch_weibo_personal_dynamic,
     format_personal_dynamics,
 )
-from .xhh import fetch_xhh_feed_content, format_xhh_feed, normalize_xhh_feed
 from .__main__ import main
