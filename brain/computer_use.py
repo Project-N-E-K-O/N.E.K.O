@@ -38,7 +38,6 @@ from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
 from utils.pyautogui_diagnostics import (
     classify_pyautogui_import_error,
-    format_pyautogui_import_error,
 )
 from utils.token_tracker import set_call_type
 from utils.screenshot_utils import compress_screenshot
@@ -687,10 +686,7 @@ class ComputerUseAdapter:
         try:
             pyautogui_module = _load_pyautogui()
             if pyautogui_module is None:
-                self.last_error = format_pyautogui_import_error(
-                    _PYAUTOGUI_IMPORT_ERROR,
-                    platform_name=platform.system(),
-                )
+                self.last_error = _pyautogui_unavailable_reason()
                 return
 
             self.screen_width, self.screen_height = pyautogui_module.size()

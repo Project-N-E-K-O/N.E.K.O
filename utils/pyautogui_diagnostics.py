@@ -59,26 +59,3 @@ def classify_pyautogui_import_error(
         return "AGENT_PYAUTOGUI_NOT_INSTALLED"
 
     return "AGENT_PYAUTOGUI_IMPORT_FAILED"
-
-
-def format_pyautogui_import_error(
-    exc: BaseException | None,
-    *,
-    platform_name: Optional[str] = None,
-) -> str:
-    reason = classify_pyautogui_import_error(exc, platform_name=platform_name)
-    text = str(exc or "").strip()
-
-    if reason == "AGENT_PYAUTOGUI_NOT_INSTALLED":
-        return "pyautogui not installed"
-
-    if reason == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE":
-        return text or "desktop display session unavailable"
-
-    if reason == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING":
-        prefix = "pyautogui macOS bridge unavailable (PyObjC/Quartz/AppKit missing from the environment or packaged app)"
-        return f"{prefix}: {text}" if text else prefix
-
-    if text:
-        return f"pyautogui import failed: {text}"
-    return "pyautogui import failed"
