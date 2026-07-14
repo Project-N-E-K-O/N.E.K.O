@@ -29,7 +29,7 @@ import websockets
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 
 
-_OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-whisper"
+_OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
 _OPENAI_MODEL = "gpt-realtime-whisper"
 _CLOSE_TIMEOUT_SECONDS = 0.5
 
