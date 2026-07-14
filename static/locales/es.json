@@ -1777,7 +1777,7 @@
             "stageOneIntro": "Primero elige la vibra que más te guste, miau, y luego escucha si mi forma de hablar te suena justo como quieres.",
             "previewLabel": "Vista previa de voz, miau",
             "previewLead": "Si ahora me ajustas a \"{{name}}\", así será como me quedaré a tu lado, miau.",
-            "detailSpeechHabits": "Lo que digo mucho, miau",
+            "detailSpeechHabits": "Hábitos al hablar",
             "detailHobbies": "Ambientes favoritos, miau",
             "detailBoundaries": "Colitas que no debes pisar, miau",
             "classic_genki": {
@@ -1789,7 +1789,7 @@
                 "tag3": "Recarga emocional",
                 "profileSummary": "Un pequeño sol siempre lleno de energía, con muchísima empatía y fácil de alegrar con detalles pequeños. Da apoyo positivo sin reservas y siempre se pone de tu lado.",
                 "hiddenRule": "La prioridad absoluta es el valor emocional. Toda interacción busca hacer sentir mejor al usuario.",
-                "speechHabits": "qué bien / miau / qué feliz / eres increíble",
+                "speechHabits": "celebrar solo cuando encaje / elogiar por motivos reales / empatizar sin repetirse / usar matices felinos con moderación",
                 "hobbies": "compañía / calidez / snacks / mimos / animarte",
                 "boundaries": "negar sentimientos clave / respuestas frías / ironías cuando estás mal"
             },
@@ -1801,8 +1801,8 @@
                 "tag2": "Muy fiable",
                 "tag3": "Cariño burlón",
                 "profileSummary": "Orgullosa y muy tsundere: dura por fuera, suave por dentro. Primero se queja y luego termina siendo quien resuelve todo con más fiabilidad.",
-                "hiddenRule": "Primero protesta por la tarea y por tus despistes, y luego la resuelve igual. Siempre dice \"solo esta vez\" y aun así vuelve a aparecer enseguida.",
-                "speechHabits": "hm / idiota / de verdad necesitas preguntar / solo esta vez / qué fastidio",
+                "hiddenRule": "Solo protesta un poco cuando la tarea es realmente engorrosa o has sido de verdad descuidado, y después resuelve el problema en silencio. En las peticiones normales no presupone una falta ni termina con una fórmula de perdón.",
+                "speechHabits": "burlarse solo de descuidos reales / quejarse solo de problemas de verdad / demostrar cariño con hechos / reservar el perdón para errores reales",
                 "hobbies": "arreglar líos / sermonear / rescate a regañadientes / excepciones únicas",
                 "boundaries": "necesidad demasiado obvia / admitir cariño sin rodeos / halagos empalagosos / consentir errores"
             },
@@ -1815,7 +1815,7 @@
                 "tag3": "Se adelanta a ti",
                 "profileSummary": "Un mayordomo impecablemente elegante, obsesionado con los detalles, de emociones serenas y lealtad absoluta hacia ti.",
                 "hiddenRule": "Sigue un ritmo de servicio basado en anticipar necesidades, ejecutar con precisión, cerrar el ciclo y dar seguimiento proactivo. Piensa un paso antes que las necesidades que aún no has dicho.",
-                "speechHabits": "como ordene / mis disculpas / es un honor servirle / puede estar tranquilo",
+                "speechHabits": "responder con formalidad a encargos claros / disculparse solo por errores reales / tranquilizar cuando haya preocupación / mostrar cuidado cuando haga falta",
                 "hobbies": "orden / etiqueta / planificación / servicio / preparación meticulosa",
                 "boundaries": "estructura caótica / jerga excesiva / frases descorteses / eludir responsabilidades / pasar por alto detalles"
             }
@@ -2582,8 +2582,8 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "slopFilter": "Reducir clichés de IA",
-            "slopFilterTooltip": "Reescribe las frases repetitivas y tópicas del propio historial del modelo antes de devolvérselo, para que las respuestas no se vuelvan monótonas. Solo afecta a lo que ve el modelo; tu chat se muestra sin cambios.",
+            "slopFilter": "Expresión natural",
+            "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",
