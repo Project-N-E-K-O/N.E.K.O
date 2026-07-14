@@ -203,6 +203,8 @@ def test_phase2_registry_routes_and_capabilities():
         "openai",
         "step",
         "grok",
+        "glm",
+        "gemini",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
@@ -227,6 +229,10 @@ def test_phase2_registry_routes_and_capabilities():
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
+    for provider_key in ("glm", "gemini"):
+        meta = ASR_PROVIDER_REGISTRY[provider_key]
+        assert meta.implementation_status == "implemented"
+        assert meta.requires_smart_turn is True
 
 
 def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
