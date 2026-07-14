@@ -43,7 +43,7 @@ concurrency:
 
 env:
   REGISTRY_GHCR: ghcr.io
-  IMAGE_NAME: project-n-e-k-o/n.e.k.o
+  IMAGE_NAME: ${{ github.repository }}
   # Embedding model pin (kept identical to .github/workflows/build-desktop.yml and
   # docker/Dockerfile{,.full} ARG defaults). The weights are pre-fetched on the
   # native runner and cached so the Docker build never hits huggingface.co — see
