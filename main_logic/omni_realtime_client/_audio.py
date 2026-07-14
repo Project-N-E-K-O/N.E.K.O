@@ -75,6 +75,13 @@ class _AudioMixin:
                 audio_chunk,
             )
 
+    async def set_audio_noise_reduction_enabled(self, enabled: bool) -> None:
+        """Apply a live denoiser toggle after active processing quiesces."""
+        async with self._audio_processing_lock:
+            processor = self._audio_processor
+            if processor is not None:
+                processor.set_enabled(enabled)
+
     async def _close_audio_processor(self) -> None:
         """Quiesce executor processing before releasing RNNoise/soxr state."""
         async with self._audio_processing_lock:

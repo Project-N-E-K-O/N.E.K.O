@@ -122,6 +122,41 @@ async def test_audio_close_waits_for_executor_chunk_processing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_noise_reduction_toggle_waits_for_chunk_processing() -> None:
+    processing_started = threading.Event()
+    release_processing = threading.Event()
+
+    class _Processor:
+        def __init__(self) -> None:
+            self.enabled_calls: list[bool] = []
+
+        def process_chunk(self, audio_chunk: bytes) -> bytes:
+            processing_started.set()
+            assert release_processing.wait(timeout=2.0)
+            return audio_chunk
+
+        def set_enabled(self, enabled: bool) -> None:
+            self.enabled_calls.append(enabled)
+
+    client = object.__new__(OmniRealtimeClient)
+    processor = _Processor()
+    client._audio_processor = processor
+    client._audio_processing_lock = asyncio.Lock()
+
+    process_task = asyncio.create_task(client.process_audio_chunk_async(b"chunk"))
+    assert await asyncio.to_thread(processing_started.wait, 2.0)
+    toggle_task = asyncio.create_task(client.set_audio_noise_reduction_enabled(False))
+    await asyncio.sleep(0)
+
+    assert processor.enabled_calls == []
+    release_processing.set()
+
+    assert await process_task == b"chunk"
+    assert await toggle_task is None
+    assert processor.enabled_calls == [False]
+
+
+@pytest.mark.asyncio
 async def test_audio_close_failure_does_not_escape_cleanup() -> None:
     class _Processor:
         def save_debug_audio(self) -> None:

@@ -245,6 +245,46 @@ async def test_browser_use_ensure_waits_for_teardown(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_browser_use_close_keeps_adapter_for_shutdown_retry() -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_lock = modules.browser_use_init_lock
+    original_capability = dict(modules.capability_cache["browser_use"])
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            close_started.set()
+            await release_close.wait()
+
+    adapter = _Adapter()
+    modules.browser_use = adapter
+    modules.browser_use_init_lock = None
+    try:
+        close_task = asyncio.create_task(capabilities._close_browser_use_adapter())
+        await close_started.wait()
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        assert modules.browser_use is adapter
+        release_close.set()
+        assert await capabilities._close_browser_use_adapter() is None
+        assert adapter.close_calls == 2
+        assert modules.browser_use is None
+    finally:
+        release_close.set()
+        modules.browser_use = original_adapter
+        modules.browser_use_init_lock = original_lock
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
 async def test_browser_adapter_close_stops_keep_alive_session() -> None:
     class _Session:
         def __init__(self) -> None:

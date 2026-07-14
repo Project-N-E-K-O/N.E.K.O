@@ -104,14 +104,19 @@ async def _close_browser_use_adapter(
             _rewire_browser_use_dependents()
             _set_capability("browser_use", False, capability_reason)
             return
+        cancelled = False
         try:
             await current.close()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as exc:
             logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
         finally:
-            _shared.Modules.browser_use = None
-            _rewire_browser_use_dependents()
-            _set_capability("browser_use", False, capability_reason)
+            if not cancelled:
+                _shared.Modules.browser_use = None
+                _rewire_browser_use_dependents()
+                _set_capability("browser_use", False, capability_reason)
 
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
