@@ -108,6 +108,16 @@ def test_dry_run_defaults_off_and_is_hidden_from_normal_panel():
         assert "config.dry_run !== false" not in source
 
 
+def test_developer_tools_default_off_until_explicitly_enabled():
+    root = Path(__file__).resolve().parents[1]
+    with (root / "plugin.toml").open("rb") as handle:
+        manifest = tomllib.load(handle)
+
+    assert manifest["neko_roast"]["developer_tools_enabled"] is False
+    assert "developer_tools_enabled: false" in (root / "ui" / "panel_state.ts").read_text(encoding="utf-8")
+    assert "developer_tools_enabled: false" in (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+
+
 def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -> None:
     root = Path(__file__).resolve().parents[1]
 
