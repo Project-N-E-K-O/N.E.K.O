@@ -1278,7 +1278,12 @@ function initSubtitleHostUi() {
         host: 'web',
         onClose: function() {
             if (window.subtitleBridge && typeof window.subtitleBridge.setSubtitleEnabled === 'function') {
-                window.subtitleBridge.setSubtitleEnabled(false);
+                window.subtitleBridge.setSubtitleEnabled(false, {
+                    source: 'subtitle-ui-close'
+                });
+            }
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
             }
         },
         onLanguageChange: function(lang) {
