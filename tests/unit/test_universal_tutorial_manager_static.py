@@ -900,6 +900,7 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
     assert "case 'yui_guide_prepare_compact_chat':" in source
     assert "case 'yui_guide_prepare_compact_chat':" in native_relay_source
     assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
+    assert "I.yuiGuideCompactChatPrepareRequestId !== requestId" in source
     assert "nativeBridge.prepareExpandedForTutorial()" in source
     assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
     # 新旧原生桥同步抛错时都必须回执失败，不能让 null 被当成准备成功。

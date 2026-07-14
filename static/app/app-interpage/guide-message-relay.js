@@ -666,6 +666,11 @@
     I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface(message) {
         if (!message || message.wasCollapsed !== true) return false;
         var requestId = message.requestId ? String(message.requestId) : '';
+        // restore 必须属于当前最近一次 prepare；快速重启教程时，旧 run 的迟到恢复
+        // 不能把新教程刚展开的胶囊重新折叠。新版恢复消息始终携带 requestId。
+        if (!requestId || I.yuiGuideCompactChatPrepareRequestId !== requestId) {
+            return false;
+        }
         if (requestId && I.yuiGuideCompactChatRestoreRequestId === requestId) {
             return true;
         }
