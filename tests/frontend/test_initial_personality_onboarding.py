@@ -1875,9 +1875,9 @@ def test_onboarding_uses_i18n_copy_for_user_visible_text(mock_page: Page):
         timeout=5000,
     )
     expect(mock_page.locator(".detail-group-title").first).to_have_text("Speaking habits")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(0)).to_have_text("celebrate when it fits")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(1)).to_have_text("praise for a real reason")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(2)).to_have_text("empathize without repeating")
+    expect(mock_page.locator("#detailSpeechHabits .detail-pill").nth(0)).to_have_text("celebrate when it fits")
+    expect(mock_page.locator("#detailSpeechHabits .detail-pill").nth(1)).to_have_text("praise for a real reason")
+    expect(mock_page.locator("#detailSpeechHabits .detail-pill").nth(2)).to_have_text("empathize without repeating")
 
 
 @pytest.mark.frontend
@@ -1983,7 +1983,7 @@ def test_onboarding_uses_dynamic_character_name_and_split_detail_pills(mock_page
     expect(mock_page.locator("#previewTitleBadge")).to_have_text("经典元气猫娘")
     expect(mock_page.locator(".preview-avatar")).to_have_text("小天")
 
-    speech_pills = mock_page.locator("#detailCatchphrases .detail-pill")
+    speech_pills = mock_page.locator("#detailSpeechHabits .detail-pill")
     expect(speech_pills).to_have_count(2)
     expect(speech_pills.nth(0)).to_have_text("太棒了喵！")
     expect(speech_pills.nth(1)).to_have_text("喵呜~")
