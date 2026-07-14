@@ -14,6 +14,10 @@ def test_macos_pyobjc_build_uses_background_app_with_electron_wrapper():
     assert "dist/build_nuitka_launcher.app" in workflow
     assert "dist/Xiao8/projectneko_server.app" in workflow
     assert 'projectneko_server.app/Contents/MacOS/projectneko_server' in workflow
+    assert (
+        "chmod +x electron-app/bin/projectneko_server.app/Contents/MacOS/"
+        "projectneko_server"
+    ) in workflow
     assert 'NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR' in workflow
 
 

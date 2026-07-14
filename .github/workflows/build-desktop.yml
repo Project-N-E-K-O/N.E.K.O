@@ -697,7 +697,12 @@ jobs:
 
       - name: Make server binary executable (Unix)
         if: runner.os != 'Windows'
-        run: chmod +x electron-app/bin/projectneko_server
+        shell: bash
+        run: |
+          chmod +x electron-app/bin/projectneko_server
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            chmod +x electron-app/bin/projectneko_server.app/Contents/MacOS/projectneko_server
+          fi
 
       # --- Cache Electron binary to avoid download failures ---
       - name: Cache Electron binary
