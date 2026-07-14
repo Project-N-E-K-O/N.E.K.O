@@ -1474,6 +1474,9 @@ class UniversalTutorialManager {
                 this._avatarFloatingChatSurfaceSnapshot = {
                     requestId: requestId,
                     wasCollapsed: response.wasCollapsed === true,
+                    // 浏览器主页可能同时准备本地 host 并广播给独立 /chat；恢复时必须区分两者，
+                    // 不能因 BroadcastChannel 已发送就跳过本地毛球形态的恢复。
+                    localHostPrepared: response.localHostPrepared === true,
                     // 超时只说明主页没收到回执；聊天窗可能已保存真实形态并仍在异步展开。
                     // teardown 通过同一 requestId 请求它按自己的 prepare 快照恢复，避免主页猜测。
                     restoreFromPrepareSnapshot: response.restoreFromPrepareSnapshot === true
@@ -1493,6 +1496,18 @@ class UniversalTutorialManager {
             }, YUI_GUIDE_COMPACT_CHAT_PREPARE_TIMEOUT_MS);
             window.addEventListener('neko:yui-guide:compact-chat-ready', handleReady);
 
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    // BroadcastChannel 是否有接收端无法从主页判断；先发送给可能存在的独立 /chat，
+                    // 再由下方本地 fallback 决定是否需要等待回执。
+                    channel.postMessage(message);
+                    posted = true;
+                } catch (error) {
+                    console.warn('[Tutorial] 广播胶囊聊天框准备请求失败:', error);
+                }
+            }
+
             const localHost = window.reactChatWindowHost || null;
             const hasNativeChatRelay = !!(
                 window.nekoTutorialOverlay
@@ -1506,19 +1521,16 @@ class UniversalTutorialManager {
                     && localHost.getChatSurfaceMode() === 'minimized'
                 );
                 localHost.openWindow();
-                finish(true, { wasCollapsed: wasCollapsed });
+                finish(true, {
+                    wasCollapsed: wasCollapsed,
+                    localHostPrepared: true,
+                    // 若独立 /chat 实际存在，它已按同 requestId 保存自己的折叠快照；
+                    // teardown 仍要广播恢复，但单窗口页面不等待一个不存在的回执。
+                    restoreFromPrepareSnapshot: posted
+                });
                 return;
             }
 
-            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-            if (channel && typeof channel.postMessage === 'function') {
-                try {
-                    channel.postMessage(message);
-                    posted = true;
-                } catch (error) {
-                    console.warn('[Tutorial] 广播胶囊聊天框准备请求失败:', error);
-                }
-            }
             if (
                 window.nekoTutorialOverlay
                 && typeof window.nekoTutorialOverlay.relayToChat === 'function'
@@ -1583,11 +1595,14 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 原生转发胶囊聊天框形态恢复失败:', error);
             }
         }
-        if (!posted && snapshot.wasCollapsed === true) {
+        if (
+            snapshot.wasCollapsed === true
+            && (snapshot.localHostPrepared === true || !posted)
+        ) {
             const host = window.reactChatWindowHost || null;
             if (host && typeof host.setChatSurfaceMode === 'function') {
-                // 只有明确回执过毛球状态才能走本地 fallback；超时未知状态必须由
-                // 保存过 prepare 快照的独立聊天窗判断，主页不能猜测并强制折叠。
+                // 只恢复明确由主页准备过、或完全没有 carrier 的本地毛球；外部回执/超时
+                // 仍由保存过 prepare 快照的独立聊天窗判断，主页不能猜测并强制折叠。
                 host.setChatSurfaceMode('minimized');
                 return true;
             }

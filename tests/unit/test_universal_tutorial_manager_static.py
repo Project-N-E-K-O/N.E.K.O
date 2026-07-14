@@ -880,15 +880,20 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         "    clearPcTutorialGlobalOverlay(reason = 'destroy') {",
         1,
     )[0]
-    # 单窗口浏览器虽然有 BroadcastChannel，却没有独立聊天页回执；必须先走本地 host。
+    # 主页无法判断 BroadcastChannel 是否有独立 /chat 接收端：先广播，再立即走本地 host，
+    # 既不能漏掉外部 prepare，也不能让单窗口浏览器等待不存在的回执。
     assert "const hasNativeChatRelay" in prepare_block
-    assert prepare_block.index("if (!hasNativeChatRelay") < prepare_block.index("channel.postMessage(message)")
+    assert prepare_block.index("channel.postMessage(message)") < prepare_block.index("if (!hasNativeChatRelay")
+    assert "localHostPrepared: true" in prepare_block
+    assert "restoreFromPrepareSnapshot: posted" in prepare_block
+    # BroadcastChannel 与本地 host 同时准备时，两边都必须按各自快照恢复启动前形态。
+    assert "localHostPrepared: response.localHostPrepared === true" in prepare_block
+    assert "snapshot.localHostPrepared === true || !posted" in restore_block
     # 原生请求超时后不能猜用户原本是毛球；交给聊天窗按同 request 的 prepare 快照恢复。
     assert "finish(false, { restoreFromPrepareSnapshot: posted })" in prepare_block
     assert "restoreFromPrepareSnapshot: response.restoreFromPrepareSnapshot === true" in prepare_block
     assert "snapshot.restoreFromPrepareSnapshot !== true" in restore_block
     assert "restoreFromPrepareSnapshot: snapshot.restoreFromPrepareSnapshot === true" in restore_block
-    assert "if (!posted && snapshot.wasCollapsed === true)" in restore_block
     # 所有结束方式都经过 clearAllTutorialLifecycles，因此形态恢复不能只挂在 skip 或 complete 分支。
     assert lifecycle_block.index("this.clearYuiGuideCompactChatFixedLayout(rawReason)") < lifecycle_block.index(
         "this.restoreYuiGuideCompactChatSurface(rawReason)"
