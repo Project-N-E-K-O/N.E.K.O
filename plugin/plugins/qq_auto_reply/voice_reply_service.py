@@ -12,11 +12,16 @@ from typing import Any
 
 import websockets
 
+from main_logic.voice_registration.providers.mimo import MimoVoiceCloneClient, MimoVoiceCloneError
+from main_logic.voice_registration.providers.minimax import (
+    MinimaxVoiceCloneClient,
+    MinimaxVoiceCloneError,
+    get_minimax_base_url,
+)
 from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
 from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 from utils.tts.providers.gemini import normalize_gemini_tts_voice
-from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
 from utils.voice_config import read_legacy_voice_id
 
 
@@ -115,7 +120,6 @@ class QQVoiceReplyService:
                 minimax_api_key = config_manager.get_tts_api_key(provider)
                 if not minimax_api_key:
                     raise RuntimeError("MINIMAX_API_KEY_MISSING")
-                from utils.voice_clone import get_minimax_base_url
                 minimax_base_url = (voice_data or {}).get("minimax_base_url") or get_minimax_base_url(provider)
                 minimax_client = MinimaxVoiceCloneClient(api_key=minimax_api_key, base_url=minimax_base_url)
                 audio_data = await minimax_client.synthesize_preview(voice_id=voice_id, text=text)

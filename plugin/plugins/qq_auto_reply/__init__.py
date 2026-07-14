@@ -35,7 +35,8 @@ from utils.api_config_loader import get_free_voices
 from utils.config_manager import get_reserved
 from utils.tts.native_voice_registry import get_active_realtime_native_provider_for_ui
 from utils.tts.providers.gemini import normalize_gemini_tts_voice
-from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError, MinimaxVoiceCloneClient, MinimaxVoiceCloneError
+from main_logic.voice_registration.providers.mimo import MimoVoiceCloneClient, MimoVoiceCloneError
+from main_logic.voice_registration.providers.minimax import MinimaxVoiceCloneClient, MinimaxVoiceCloneError
 from utils.voice_config import read_legacy_voice_id
 from .dashboard_service import QQDashboardService
 from .feedback_classifier import QQFeedbackClassifier

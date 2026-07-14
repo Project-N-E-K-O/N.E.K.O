@@ -287,7 +287,10 @@ def _minimax_clone_resolve(ctx):
     logger.info("检测到 MiniMax 克隆音色: %s (provider=%s)，使用 MiniMax TTS Worker",
                 ctx.voice_id, provider)
     api_key = ctx.cm.get_tts_api_key(provider)
-    from utils.voice_clone import MINIMAX_DOMESTIC_BASE_URL, MINIMAX_INTL_BASE_URL
+    from main_logic.voice_registration.providers.minimax import (
+        MINIMAX_DOMESTIC_BASE_URL,
+        MINIMAX_INTL_BASE_URL,
+    )
     base_url = vm.get('minimax_base_url') or (
         MINIMAX_INTL_BASE_URL if provider == 'minimax_intl' else MINIMAX_DOMESTIC_BASE_URL
     )

@@ -20,7 +20,19 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 """
 
 from ._shared import logger, router
-from .voice_providers import ElevenLabsUpstreamError, _elevenlabs_synthesize_preview
+from main_logic.voice_registration.providers.elevenlabs import (
+    ElevenLabsUpstreamError,
+    synthesize_preview as _elevenlabs_synthesize_preview,
+)
+from main_logic.voice_registration.providers.minimax import (
+    MinimaxVoiceCloneClient,
+    MinimaxVoiceCloneError,
+    get_minimax_base_url,
+)
+from main_logic.voice_registration.providers.mimo import (
+    MimoVoiceCloneClient,
+    MimoVoiceCloneError,
+)
 
 import json
 import io
@@ -62,13 +74,6 @@ from utils.tts.native_voice_registry import (
     resolve_native_voice_for_routing,
 )
 from utils.tts import provider_registry as tts_provider_registry
-from utils.voice_clone import (
-    MinimaxVoiceCloneClient,
-    MinimaxVoiceCloneError,
-    get_minimax_base_url,
-    MimoVoiceCloneClient,
-    MimoVoiceCloneError,
-)
 from utils.language_utils import is_supported_language_code, normalize_language_code
 
 

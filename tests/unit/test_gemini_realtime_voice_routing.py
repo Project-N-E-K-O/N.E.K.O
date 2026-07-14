@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 import main_logic.core as core_module
 import main_routers.characters_router.voice_preview as characters_router
-import main_routers.characters_router.voice_providers as characters_voice_providers
+import main_routers.characters_router.voice_runtime as characters_voice_providers
 import main_routers.characters_router.crud as characters_crud
 from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager

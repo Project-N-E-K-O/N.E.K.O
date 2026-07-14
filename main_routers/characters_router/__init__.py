@@ -81,28 +81,36 @@ from .direct_link import (  # noqa: F401
     _request_direct_link_follow_redirects,
     _download_direct_link_audio,
 )
-from .voice_providers import (  # noqa: F401
+from main_logic.voice_registration.providers.base import (  # noqa: F401
+    first_nested_value as _first_nested_value,
+)
+from main_logic.voice_registration.providers.cosyvoice import (  # noqa: F401
     COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE,
+    _cosyvoice_customization_url,
+    _cosyvoice_design_language_hints,
+    _cosyvoice_design_voice,
+)
+from main_logic.voice_registration.providers.elevenlabs import (  # noqa: F401
     ElevenLabsUpstreamError,
-    _build_minimax_request_prefix,
     _get_elevenlabs_base_url,
-    _config_value_is_enabled,
     _prefixed_elevenlabs_voice_id,
     _raw_elevenlabs_voice_id,
     _raise_for_elevenlabs_response,
     _elevenlabs_clone_voice,
     ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
-    _cosyvoice_customization_url,
-    _cosyvoice_design_language_hints,
-    _cosyvoice_design_voice,
-    _first_nested_value,
-    _minimax_voice_design_url,
-    _minimax_design_voice,
     _elevenlabs_design_previews,
     _elevenlabs_create_voice_from_preview,
+    _elevenlabs_synthesize_preview,
+)
+from main_logic.voice_registration.providers.minimax import (  # noqa: F401
+    _build_minimax_request_prefix,
+    _minimax_voice_design_url,
+    _minimax_design_voice,
+)
+from .voice_runtime import (  # noqa: F401
+    _config_value_is_enabled,
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
-    _elevenlabs_synthesize_preview,
 )
 from .live2d_models import (  # noqa: F401
     _derive_live2d_model_name,
@@ -200,7 +208,7 @@ from .voice_preview import (  # noqa: F401
     get_voices,
     get_voice_preview,
 )
-from .voice_cloning import (  # noqa: F401
+from .voice_registration import (  # noqa: F401
     _cosyvoice_design_default_preview_text,
     _voice_design_preview_language,
     _voice_design_preview_text,

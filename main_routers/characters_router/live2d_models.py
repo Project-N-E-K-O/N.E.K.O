@@ -20,7 +20,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 """
 
 from ._shared import logger, router
-from .voice_providers import _config_value_is_enabled
+from .voice_runtime import _config_value_is_enabled
 
 import re
 import os
