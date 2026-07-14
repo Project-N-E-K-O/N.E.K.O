@@ -31,7 +31,10 @@ from ._registry_meta import (
     CORE_ASR_ROUTES as _CORE_ASR_ROUTES,
     AsrEndpointingMode as _AsrEndpointingMode,
 )
+from ._voice_turn import _create_voice_turn_adapter
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
+from .workers.gemini import gemini_asr_worker as _gemini_asr_worker
+from .workers.glm import glm_asr_worker as _glm_asr_worker
 from .workers.grok import grok_asr_worker as _grok_asr_worker
 from .workers.openai import openai_asr_worker as _openai_asr_worker
 from .workers.qwen import qwen_asr_worker as _qwen_asr_worker
@@ -51,6 +54,8 @@ _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
     "openai": _openai_asr_worker,
     "step": _step_asr_worker,
     "grok": _grok_asr_worker,
+    "glm": _glm_asr_worker,
+    "gemini": _gemini_asr_worker,
 }
 
 
@@ -153,4 +158,9 @@ def create_asr_session(
         on_input_transcript=on_input_transcript,
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
+        voice_turn_factory=(
+            _create_voice_turn_adapter
+            if _ASR_PROVIDER_REGISTRY[provider_key].requires_smart_turn
+            else None
+        ),
     )

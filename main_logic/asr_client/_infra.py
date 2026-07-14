@@ -177,6 +177,35 @@ AsrWorkerFn: TypeAlias = Callable[
 ]
 
 
+class _VoiceTurnAdapterProtocol(Protocol):
+    async def start(self) -> None: ...
+
+    async def push_audio(
+        self,
+        *,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+        pcm16: bytes,
+    ) -> None: ...
+
+    async def reset(
+        self,
+        *,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+VoiceTurnFactory: TypeAlias = Callable[
+    [Callable[[int, int, int], Awaitable[None]]],
+    _VoiceTurnAdapterProtocol,
+]
+
+
 class _SessionState(Enum):
     NEW = "new"
     CONNECTING = "connecting"
@@ -203,6 +232,7 @@ class _RealtimeAsrSessionImpl:
         on_input_transcript: Callable[[str], Awaitable[None]],
         on_connection_error: Callable[[str], Awaitable[None]],
         on_status_message: Callable[[str], Awaitable[None]] | None = None,
+        voice_turn_factory: VoiceTurnFactory | None = None,
     ) -> None:
         if not isinstance(config, AsrSessionConfig):
             raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
@@ -219,6 +249,8 @@ class _RealtimeAsrSessionImpl:
         self._on_input_transcript = on_input_transcript
         self._on_connection_error = on_connection_error
         self._on_status_message = on_status_message
+        self._voice_turn_factory = voice_turn_factory
+        self._voice_turn_adapter: _VoiceTurnAdapterProtocol | None = None
 
         self._state = _SessionState.NEW
         self._generation = 0
@@ -321,6 +353,10 @@ class _RealtimeAsrSessionImpl:
                     "worker exited immediately after becoming ready",
                 )
                 raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
+            if self._voice_turn_factory is not None:
+                adapter = self._voice_turn_factory(self._handle_voice_turn_commit)
+                await adapter.start()
+                self._voice_turn_adapter = adapter
 
     async def update_session(self, config: Mapping[str, Any]) -> None:
         if not isinstance(config, Mapping):
@@ -400,6 +436,13 @@ class _RealtimeAsrSessionImpl:
                         audio=normalized_audio,
                     )
                 )
+                if self._voice_turn_adapter is not None:
+                    await self._voice_turn_adapter.push_audio(
+                        generation=self._generation,
+                        buffer_epoch=self._buffer_epoch,
+                        utterance_id=self._utterance_id,
+                        pcm16=normalized_audio,
+                    )
             # Even if soxr is still buffering, valid input belongs to this turn.
             self._utterance_has_audio = True
 
@@ -409,36 +452,7 @@ class _RealtimeAsrSessionImpl:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
             if not self._utterance_has_audio:
                 return
-
-            tail = self._flush_resampler()
-            if tail:
-                await self._enqueue_request(
-                    _AsrWorkerRequest(
-                        kind="audio",
-                        generation=self._generation,
-                        buffer_epoch=self._buffer_epoch,
-                        utterance_id=self._utterance_id,
-                        audio=tail,
-                    )
-                )
-            if self._config.endpointing_mode == "provider":
-                # Provider endpointing still needs a local activity boundary
-                # to drain soxr's buffered 48 kHz tail. It deliberately does
-                # not send a commit or advance a worker-owned utterance ID.
-                self._utterance_has_audio = False
-                self._reset_resampler()
-                return
-            await self._enqueue_request(
-                _AsrWorkerRequest(
-                    kind="commit",
-                    generation=self._generation,
-                    buffer_epoch=self._buffer_epoch,
-                    utterance_id=self._utterance_id,
-                )
-            )
-            self._utterance_id += 1
-            self._utterance_has_audio = False
-            self._reset_resampler()
+            await self._commit_current_utterance_locked()
 
     async def clear_audio_buffer(self) -> None:
         async with self._operation_lock:
@@ -460,6 +474,12 @@ class _RealtimeAsrSessionImpl:
                     utterance_id=self._utterance_id,
                 )
             )
+            if self._voice_turn_adapter is not None:
+                await self._voice_turn_adapter.reset(
+                    generation=self._generation,
+                    buffer_epoch=self._buffer_epoch,
+                    utterance_id=self._utterance_id,
+                )
 
     async def close(self) -> None:
         current = asyncio.current_task()
@@ -497,6 +517,10 @@ class _RealtimeAsrSessionImpl:
             self._utterance_order.clear()
             self._pending_finals.clear()
             self._reset_resampler()
+
+            if self._voice_turn_adapter is not None:
+                await self._voice_turn_adapter.close()
+                self._voice_turn_adapter = None
 
             if self._request_queue is not None:
                 request = _AsrWorkerRequest(
@@ -542,6 +566,67 @@ class _RealtimeAsrSessionImpl:
             await self._shutdown()
             self._state = _SessionState.CLOSED
             await self._emit_status("ASR_CLOSED")
+
+    async def _handle_voice_turn_commit(
+        self,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        async with self._operation_lock:
+            if (
+                self._state is not _SessionState.READY
+                or generation != self._generation
+                or buffer_epoch != self._buffer_epoch
+                or utterance_id != self._utterance_id
+                or not self._utterance_has_audio
+            ):
+                return
+            await self._commit_current_utterance_locked()
+
+    async def _commit_current_utterance_locked(self) -> None:
+        generation = self._generation
+        buffer_epoch = self._buffer_epoch
+        utterance_id = self._utterance_id
+        tail = self._flush_resampler()
+        if tail:
+            await self._enqueue_request(
+                _AsrWorkerRequest(
+                    kind="audio",
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=utterance_id,
+                    audio=tail,
+                )
+            )
+            if self._voice_turn_adapter is not None:
+                await self._voice_turn_adapter.push_audio(
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=utterance_id,
+                    pcm16=tail,
+                )
+        if self._config.endpointing_mode == "provider":
+            self._utterance_has_audio = False
+            self._reset_resampler()
+            return
+        await self._enqueue_request(
+            _AsrWorkerRequest(
+                kind="commit",
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
+            )
+        )
+        self._utterance_id += 1
+        self._utterance_has_audio = False
+        self._reset_resampler()
+        if self._voice_turn_adapter is not None:
+            await self._voice_turn_adapter.reset(
+                generation=self._generation,
+                buffer_epoch=self._buffer_epoch,
+                utterance_id=self._utterance_id,
+            )
 
     async def _run_worker(self) -> None:
         assert self._request_queue is not None

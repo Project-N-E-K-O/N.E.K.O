@@ -48,6 +48,7 @@ class AsrProviderMeta:
     wire_sample_rate_hz: int
     supported_endpointing_modes: frozenset[AsrEndpointingMode]
     implementation_status: AsrImplementationStatus
+    requires_smart_turn: bool = False
 
 
 # Business code must route through this table rather than scattering
@@ -138,7 +139,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
-        implementation_status="planned",
+        implementation_status="implemented",
+        requires_smart_turn=True,
     ),
     "gemini": AsrProviderMeta(
         provider_key="gemini",
@@ -146,7 +148,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
-        implementation_status="planned",
+        implementation_status="implemented",
+        requires_smart_turn=True,
     ),
     "free": AsrProviderMeta(
         provider_key="free",
