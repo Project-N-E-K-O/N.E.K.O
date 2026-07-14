@@ -386,13 +386,20 @@ def test_disabling_game_mode_clears_model_reload_markers_before_restore_event():
     assert block.index("clearModelReloadProtection();") < block.index("live2d-return-click")
 
 
-def test_backend_restore_clears_model_reload_markers_before_restore_event():
+def test_backend_restore_reloads_invalidated_model_before_restore_event():
     source = APP_GAME_MODE_BETA_PATH.read_text(encoding="utf-8")
+    helper = source.split("async function restoreAfterBackendLifecycle", 1)[1].split(
+        "async function handleLifecycleMessage", 1
+    )[0]
     block = source.split("payload.type === 'game_mode_restore'", 1)[1].split(
         "payload.type === 'game_mode_semantic_signal_unavailable'", 1
     )[0]
 
-    assert block.index("clearModelReloadProtection();") < block.index("live2d-return-click")
+    assert helper.index("await ensureInvalidatedModelReloaded();") < helper.index(
+        "clearModelReloadProtection();"
+    )
+    assert helper.index("clearModelReloadProtection();") < helper.index("live2d-return-click")
+    assert "await restoreAfterBackendLifecycle(payload.reason || 'game-mode-restore');" in block
 
 
 def test_game_mode_settings_rejections_restore_ui_and_notify_user():

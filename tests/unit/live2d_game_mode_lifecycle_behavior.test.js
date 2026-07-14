@@ -46,6 +46,7 @@ function createHarness(options = {}) {
   const goodbyeEvents = [];
   let activityStarted = 0;
   let activityStopped = 0;
+  let modelRestoreAttempts = 0;
   let cat = false;
 
   doc.readyState = 'complete';
@@ -82,6 +83,7 @@ function createHarness(options = {}) {
     restoreAnchor: async () => true,
   };
   win.showCurrentModel = async () => {
+    modelRestoreAttempts += 1;
     if (options.failModelRestore) throw new Error('model restore failed');
     if (options.blockModelRestore) return false;
     return true;
@@ -154,6 +156,7 @@ function createHarness(options = {}) {
     get activityStarted() { return activityStarted; },
     get activityStopped() { return activityStopped; },
     get vrmPauseAttempts() { return vrmPauseAttempts; },
+    get modelRestoreAttempts() { return modelRestoreAttempts; },
   };
 }
 
@@ -286,7 +289,7 @@ test('failed model restore keeps the pet protected for another click', async () 
 });
 
 test('failed switch restores a pet that the frontend already moved into cat form', async () => {
-  const harness = createHarness();
+  const harness = createHarness({ invalidateLoad: true });
   await flush();
   harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
     type: 'game_mode_auto_switch',
@@ -297,15 +300,46 @@ test('failed switch restores a pet that the frontend already moved into cat form
   });
   await flush();
 
-  harness.win.nekoGameModeBeta.handleLifecycleMessage({
+  await harness.win.nekoGameModeBeta.handleLifecycleMessage({
     type: 'game_mode_switch_failed',
     source: 'game_mode_auto',
     cycle_id: 'cycle-ack-failed',
   });
   await flush();
 
+  assert.equal(harness.modelRestoreAttempts, 1);
   assert.equal(harness.win.live2dManager._goodbyeClicked, false);
   assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, false);
+  assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
+});
+
+test('blocked backend restore keeps canceled model protection for another click', async () => {
+  const harness = createHarness({ invalidateLoad: true, blockModelRestore: true });
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-backend-restore-blocked',
+    trigger_source: 'resource_pressure',
+    reason: 'cpu',
+  });
+  await flush();
+
+  await harness.win.nekoGameModeBeta.handleLifecycleMessage({
+    type: 'game_mode_restore',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-backend-restore-blocked',
+    pet_instance_ids: ['pet-test-1'],
+  });
+  await flush();
+
+  assert.equal(harness.modelRestoreAttempts, 1);
+  assert.equal(harness.win.live2dManager._goodbyeClicked, true);
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
+  assert.equal(
+    harness.win.nekoGameModeBeta.getState().currentCycleId,
+    'cycle-backend-restore-blocked',
+  );
   assert.equal(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'), false);
 });
 
