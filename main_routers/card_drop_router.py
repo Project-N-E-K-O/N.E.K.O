@@ -20,6 +20,8 @@ import logging
 import os
 import secrets
 import time
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -34,10 +36,13 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
 _SOCIAL_SESSION_FILENAME = "social_session.json"
+_SOCIAL_SESSION_SCHEMA_VERSION = 2
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
+_PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
 _SYNC_TICKET_MAX_ACTIVE = 16
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
 _native_sync_tickets: dict[str, float] = {}
 
 
@@ -45,6 +50,26 @@ class _ClientBindingConflict(Exception):
     """The local client belongs to another cloud user; do not publish new JWTs."""
 
     detail = _BIND_OWNERSHIP_CONFLICT
+
+
+class _InvalidIdentityResponse(Exception):
+    """The cloud accepted a token but did not return the frozen identity contract."""
+
+    detail = "invalid_identity_response"
+
+
+@dataclass(frozen=True)
+class _CloudIdentity:
+    local_user_id: str
+    auth_source: str
+    user: dict
+
+
+@dataclass(frozen=True)
+class _CloudIdentityLookup:
+    identity: _CloudIdentity | None
+    status_code: int
+    failure: str | None = None
 
 
 def _sync_ticket_digest(ticket: str) -> str:
@@ -170,6 +195,30 @@ def _same_originish(a: str, b: str) -> bool:
     return ha in _LOOPBACK_HOSTS and hb in _LOOPBACK_HOSTS
 
 
+def _normalized_origin(value: str) -> str:
+    """Return a browser-style HTTP(S) origin, or an empty string when invalid."""
+    try:
+        parsed = urlparse((value or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        if parsed.username is not None or parsed.password is not None:
+            return ""
+        host = parsed.hostname.lower()
+        if ":" in host:
+            host = f"[{host}]"
+        port = _origin_port(parsed)
+    except (TypeError, ValueError):
+        return ""
+    default_port = 80 if parsed.scheme == "http" else 443
+    suffix = f":{port}" if port is not None and port != default_port else ""
+    return f"{parsed.scheme}://{host}{suffix}"
+
+
+def _exact_origin_matches(a: str, b: str) -> bool:
+    left = _normalized_origin(a)
+    return bool(left and left == _normalized_origin(b))
+
+
 def _local_mutation_origin_allowed(request: Request) -> bool:
     """Allow native callers or browser requests from the local NEKO origin only."""
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
@@ -188,6 +237,28 @@ def _local_mutation_origin_allowed(request: Request) -> bool:
     )
 
 
+def _sync_ticket_request_allowed(request: Request) -> bool:
+    """Allow same-origin local browser calls and non-browser native clients only."""
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if not origin:
+        # Native HTTP clients do not send Fetch Metadata.  A browser-originated
+        # blind GET (img/fetch no-cors) does, so it cannot churn the bounded pool.
+        return fetch_site in {"", "same-origin"}
+    request_origin = str(request.base_url).rstrip("/")
+    try:
+        origin_host = (urlparse(origin).hostname or "").lower()
+        request_host = (urlparse(request_origin).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return (
+        origin_host in _LOOPBACK_HOSTS
+        and request_host in _LOOPBACK_HOSTS
+        and _exact_origin_matches(origin, request_origin)
+        and fetch_site in {"", "same-origin"}
+    )
+
+
 def _sync_cors_headers(request: Request) -> dict[str, str] | None:
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
@@ -199,6 +270,25 @@ def _sync_cors_headers(request: Request) -> dict[str, str] | None:
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "content-type",
         "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
+    if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
+        headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers
+
+
+def _session_status_cors_headers(request: Request) -> dict[str, str] | None:
+    """Exact configured-origin CORS for the read-only desktop sync status check."""
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin or not _exact_origin_matches(origin, _social_base_url()):
+        return None
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "authorization",
+        "Access-Control-Max-Age": "600",
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
         "Vary": "Origin",
     }
     if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
@@ -260,15 +350,72 @@ def _social_session_paths() -> list[Path]:
     return paths
 
 
-def _load_auth() -> dict | None:
-    p = _auth_path()
-    if not p or not p.exists():
+def _read_json_dict(path: Path | None) -> dict | None:
+    if not path or not path.exists():
         return None
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _load_auth() -> dict | None:
+    return _read_json_dict(_auth_path())
+
+
+def _load_social_session() -> dict | None:
+    """Load the authoritative Electron session, with the legacy path as fallback."""
+    for path in _social_session_paths():
+        data = _read_json_dict(path)
+        if data and isinstance(data.get("token"), str) and data["token"].strip():
+            return data
+    return None
+
+
+def _normalize_local_user_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        return str(uuid.UUID(value.strip()))
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _normalize_auth_source(value: object) -> str:
+    source = value.strip().lower() if isinstance(value, str) else ""
+    return source if source in _SUPPORTED_AUTH_SOURCES else ""
+
+
+def _desktop_session_snapshot() -> dict | None:
+    """Normalize the desktop session while preferring Electron's refreshed token."""
+    social = _load_social_session()
+    if social is not None:
+        return {
+            "base_url": str(social.get("baseUrl") or _social_base_url()).strip().rstrip("/"),
+            "access_token": str(social.get("token") or "").strip(),
+            "refresh_token": (
+                str(social.get("refresh_token") or "").strip() or None
+            ),
+            "local_user_id": _normalize_local_user_id(social.get("local_user_id")),
+            "auth_source": _normalize_auth_source(social.get("auth_source")),
+        }
+
+    auth = _load_auth()
+    if auth is None:
+        return None
+    access = auth.get("access_token")
+    if not isinstance(access, str) or not access.strip():
+        return None
+    return {
+        "base_url": _social_base_url(),
+        "access_token": access.strip(),
+        "refresh_token": (
+            str(auth.get("refresh_token") or "").strip() or None
+        ),
+        "local_user_id": _normalize_local_user_id(auth.get("local_user_id")),
+        "auth_source": _normalize_auth_source(auth.get("auth_source")),
+    }
 
 
 def _write_private_json(path: Path, data: dict) -> None:
@@ -302,15 +449,27 @@ def _save_auth(data: dict) -> bool:
     return True
 
 
-def _save_social_session(base: str, access: str | None, refresh: str | None) -> bool:
-    if not access:
+def _save_social_session(
+    base: str,
+    access: str | None,
+    refresh: str | None,
+    *,
+    local_user_id: str,
+    auth_source: str,
+) -> bool:
+    normalized_user_id = _normalize_local_user_id(local_user_id)
+    normalized_source = _normalize_auth_source(auth_source)
+    if not access or not normalized_user_id or not normalized_source:
         return False
     p = _social_session_path()
     if not p:
         return False
     data = {
+        "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "baseUrl": (base or _social_base_url()).strip().rstrip("/"),
         "token": access,
+        "local_user_id": normalized_user_id,
+        "auth_source": normalized_source,
     }
     if refresh:
         data["refresh_token"] = refresh
@@ -320,6 +479,76 @@ def _save_social_session(base: str, access: str | None, refresh: str | None) -> 
         logger.warning("card_drop: save social session failed: %s", exc)
         return False
     return True
+
+
+def _persist_session_identity_metadata(
+    snapshot: dict,
+    local_user_id: str,
+    auth_source: str,
+) -> bool:
+    """Upgrade a validated legacy session without copying the request's bearer.
+
+    Electron may rotate the file while the cloud identity lookup is in flight.
+    Merge only into the exact credential snapshot that was validated, preserving
+    refresh-manager fields instead of reconstructing (and potentially rolling
+    back) the whole session record.
+    """
+    normalized_user_id = _normalize_local_user_id(local_user_id)
+    normalized_source = _normalize_auth_source(auth_source)
+    if not normalized_user_id or not normalized_source:
+        return False
+
+    expected_access = str(snapshot.get("access_token") or "").strip()
+    expected_base = str(snapshot.get("base_url") or _social_base_url()).strip().rstrip("/")
+    expected_refresh = str(snapshot.get("refresh_token") or "").strip()
+    social_saved = False
+    found_social_session = False
+    for path in _social_session_paths():
+        data = _read_json_dict(path)
+        access = str((data or {}).get("token") or "").strip()
+        if not data or not access:
+            continue
+        found_social_session = True
+        base = str(data.get("baseUrl") or _social_base_url()).strip().rstrip("/")
+        refresh = str(data.get("refresh_token") or "").strip()
+        if (access, base, refresh) != (expected_access, expected_base, expected_refresh):
+            # The authoritative Electron session changed after validation.
+            return False
+        upgraded = {
+            **data,
+            "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
+            "local_user_id": normalized_user_id,
+            "auth_source": normalized_source,
+        }
+        try:
+            _write_private_json(path, upgraded)
+        except OSError as exc:
+            logger.warning("card_drop: save social identity metadata failed: %s", exc)
+            return False
+        social_saved = True
+        break
+
+    if not found_social_session:
+        # A pre-Electron community_auth.json session still needs the companion
+        # file. It is safe to create because no authoritative social file exists.
+        social_saved = _save_social_session(
+            expected_base,
+            expected_access,
+            expected_refresh or None,
+            local_user_id=normalized_user_id,
+            auth_source=normalized_source,
+        )
+
+    auth = _load_auth()
+    auth_saved = True
+    if auth is not None:
+        auth["schema_version"] = _SOCIAL_SESSION_SCHEMA_VERSION
+        auth["local_user_id"] = normalized_user_id
+        auth["auth_source"] = normalized_source
+        user = auth.get("user") if isinstance(auth.get("user"), dict) else {}
+        auth["user"] = {**user, "id": auth["local_user_id"]}
+        auth_saved = _save_auth(auth)
+    return social_saved and auth_saved
 
 
 def _clear_auth() -> bool:
@@ -350,16 +579,118 @@ def _clear_auth() -> bool:
 
 
 def _access_token() -> str | None:
-    a = _load_auth()
-    return a.get("access_token") if a else None
+    session = _desktop_session_snapshot()
+    return session.get("access_token") if session else None
 
 
-async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> dict:
+async def _lookup_cloud_identity(base: str, access: str) -> _CloudIdentityLookup:
+    """Validate one bearer with Servers without logging or persisting it."""
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            response = await client.get(
+                f"{base}/api/users/me",
+                headers={"Authorization": f"Bearer {access}"},
+            )
+    except (httpx.HTTPError, OSError):
+        return _CloudIdentityLookup(None, 503, "unavailable")
+
+    if response.status_code >= 400:
+        failure = "unavailable" if response.status_code >= 500 else "rejected"
+        return _CloudIdentityLookup(None, response.status_code, failure)
+    try:
+        payload = response.json() or {}
+    except (ValueError, TypeError):
+        return _CloudIdentityLookup(None, 502, "malformed")
+    if not isinstance(payload, dict):
+        return _CloudIdentityLookup(None, 502, "malformed")
+    user = payload.get("user")
+    if not isinstance(user, dict):
+        return _CloudIdentityLookup(None, 502, "malformed")
+    local_user_id = _normalize_local_user_id(user.get("id"))
+    auth_source = _normalize_auth_source(payload.get("auth_source"))
+    if not local_user_id or not auth_source:
+        return _CloudIdentityLookup(None, 502, "malformed")
+    return _CloudIdentityLookup(
+        _CloudIdentity(
+            local_user_id=local_user_id,
+            auth_source=auth_source,
+            user=user,
+        ),
+        200,
+    )
+
+
+async def _resolve_saved_desktop_identity(base: str) -> _CloudIdentityLookup:
+    """Return persisted UUID metadata, securely upgrading pre-v2 sessions."""
+    for _attempt in range(3):
+        snapshot = _desktop_session_snapshot()
+        if snapshot is None:
+            return _CloudIdentityLookup(None, 200, "missing")
+        local_user_id = snapshot.get("local_user_id") or ""
+        auth_source = snapshot.get("auth_source") or ""
+        if local_user_id and auth_source:
+            return _CloudIdentityLookup(
+                _CloudIdentity(local_user_id, auth_source, {}),
+                200,
+            )
+
+        lookup = await _lookup_cloud_identity(base, snapshot["access_token"])
+        if lookup.identity is None:
+            return lookup
+        if _persist_session_identity_metadata(
+            snapshot,
+            lookup.identity.local_user_id,
+            lookup.identity.auth_source,
+        ):
+            return lookup
+
+        current = _desktop_session_snapshot()
+        if current is not None and all(
+            current.get(field) == snapshot.get(field)
+            for field in ("base_url", "access_token", "refresh_token")
+        ):
+            # Metadata persistence failed, but the validated desktop credential
+            # did not change. The proof remains valid for this request.
+            return lookup
+        # A concurrent refresh/account switch won. Re-resolve the current file
+        # rather than comparing the request against stale identity A.
+    return _CloudIdentityLookup(None, 503, "unavailable")
+
+
+async def _request_matches_desktop_session(base: str, access: str) -> str:
+    """Return ``match``, ``mismatch``, or ``unavailable`` for a request bearer."""
+    request_lookup = await _lookup_cloud_identity(base, access)
+    if request_lookup.identity is None:
+        return "unavailable" if request_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+    desktop_lookup = await _resolve_saved_desktop_identity(base)
+    if desktop_lookup.identity is None:
+        return "unavailable" if desktop_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+    if secrets.compare_digest(
+        request_lookup.identity.local_user_id,
+        desktop_lookup.identity.local_user_id,
+    ):
+        return "match"
+    return "mismatch"
+
+
+async def _store_session(
+    base: str,
+    access: str | None,
+    refresh: str | None,
+    user: dict,
+    *,
+    auth_source: str = "legacy",
+) -> dict:
     """Store JWTs and bind the local client so guest cards migrate to the user.
 
     Email/password and Steam login share this path. The bind result is persisted
     and exposed through auth-status so client-binding conflicts are visible.
     """
+    local_user_id = _normalize_local_user_id(user.get("id"))
+    normalized_source = _normalize_auth_source(auth_source)
+    if not access or not local_user_id or not normalized_source:
+        raise _InvalidIdentityResponse()
+
     # Bind before publishing either local credential file.  A client that belongs to another
     # user is a non-recoverable identity conflict: publishing the new JWT even briefly would let
     # Electron observe and use the wrong account before this request reports the conflict.
@@ -393,13 +724,26 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
         raise _ClientBindingConflict()
 
     auth_payload = {
+        "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "access_token": access,
         "refresh_token": refresh,
-        "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+        "local_user_id": local_user_id,
+        "auth_source": normalized_source,
+        "user": {
+            "id": local_user_id,
+            "display_name": user.get("display_name"),
+            "email": user.get("email"),
+        },
         "bind": bind,
     }
     auth_saved = _save_auth(auth_payload)
-    social_saved = _save_social_session(base, access, refresh)
+    social_saved = _save_social_session(
+        base,
+        access,
+        refresh,
+        local_user_id=local_user_id,
+        auth_source=normalized_source,
+    )
     if not (auth_saved and social_saved):
         bind["local_save_failed"] = True
         # If auth was written before the Electron session failed, persist the
@@ -415,10 +759,16 @@ async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
     user = login_out.get("user") or {}
     try:
         bind = await _store_session(
-            base, tokens.get("access_token"), tokens.get("refresh_token"), user
+            base,
+            tokens.get("access_token"),
+            tokens.get("refresh_token"),
+            user,
+            auth_source="legacy",
         )
     except _ClientBindingConflict as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
+    except _InvalidIdentityResponse as exc:
+        raise HTTPException(status_code=502, detail=exc.detail) from exc
     return user, bind
 
 
@@ -530,8 +880,8 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint():
-    a = _load_auth()
-    if a and a.get("access_token"):
+    a = _load_auth() or {}
+    if _access_token():
         u = a.get("user") or {}
         # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
         bind = a.get("bind") or {"bound": True, "error": None}
@@ -544,8 +894,14 @@ async def auth_status_endpoint():
 
 
 @router.get("/sync-ticket", summary="签发一次性社区网页登录态同步票据")
-async def sync_ticket_endpoint():
+async def sync_ticket_endpoint(request: Request):
     """Issue a short-lived ticket readable only by the local NEKO page."""
+    if not _sync_ticket_request_allowed(request):
+        return JSONResponse(
+            {"detail": "origin_not_allowed"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     return JSONResponse(
         {"sync_ticket": _issue_sync_ticket(), "expires_in": _SYNC_TICKET_TTL_SEC},
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
@@ -558,6 +914,49 @@ async def sync_session_options(request: Request):
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     return JSONResponse({"ok": True}, headers=cors)
+
+
+def _sync_status_response(
+    synced: bool,
+    *,
+    status_code: int,
+    cors: dict[str, str],
+) -> JSONResponse:
+    return JSONResponse(
+        {"ok": True, "synced": synced},
+        status_code=status_code,
+        headers=cors,
+    )
+
+
+@router.options("/sync-session/status", summary="社区网页登录态与本地 Desktop 状态预检")
+async def sync_session_status_options(request: Request):
+    cors = _session_status_cors_headers(request)
+    if cors is None:
+        return JSONResponse(
+            {"ok": True, "synced": False},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    return _sync_status_response(False, status_code=200, cors=cors)
+
+
+@router.get("/sync-session/status", summary="检查网页账号是否与本地 Desktop 同步")
+async def sync_session_status_endpoint(request: Request):
+    cors = _session_status_cors_headers(request)
+    if cors is None:
+        return JSONResponse(
+            {"ok": True, "synced": False},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    access = _request_bearer_token(request)
+    if not access:
+        return _sync_status_response(False, status_code=401, cors=cors)
+    match = await _request_matches_desktop_session(_social_base_url(), access)
+    if match == "unavailable":
+        return _sync_status_response(False, status_code=503, cors=cors)
+    return _sync_status_response(match == "match", status_code=200, cors=cors)
 
 
 @router.post("/sync-session", summary="同步社区网页登录态到本地 NEKO / PC 掉券引擎")
@@ -610,34 +1009,43 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     if not access:
         return JSONResponse({"detail": "missing_access_token"}, status_code=400, headers=cors)
 
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.get(
-                f"{base}/api/users/me",
-                headers={"Authorization": f"Bearer {access}"},
+    lookup = await _lookup_cloud_identity(base, access)
+    if lookup.identity is None:
+        if lookup.failure in {"unavailable", "malformed"}:
+            return JSONResponse(
+                {"detail": "identity_verification_unavailable"},
+                status_code=503,
+                headers=cors,
             )
-    except (httpx.HTTPError, OSError) as exc:
-        return JSONResponse({"detail": f"cloud_unreachable: {exc}"}, status_code=502, headers=cors)
-    if r.status_code >= 400:
-        try:
-            detail = r.json().get("detail") or f"http_{r.status_code}"
-        except Exception:  # noqa: BLE001
-            detail = f"http_{r.status_code}"
-        return JSONResponse({"detail": detail}, status_code=r.status_code, headers=cors)
-
-    try:
-        user = (r.json() or {}).get("user") or {}
-    except ValueError:
-        user = {}
+        return JSONResponse(
+            {"detail": "invalid_token"},
+            status_code=lookup.status_code,
+            headers=cors,
+        )
+    if lookup.identity.auth_source != "legacy":
+        return JSONResponse(
+            {"detail": _PLATFORM_TOKEN_SYNC_FORBIDDEN},
+            status_code=409,
+            headers=cors,
+        )
+    user = lookup.identity.user
     # Consume only after the cloud token is validated.  A 401 keeps the ticket usable so the
     # current browser tab can finish login and retry; concurrent reuse still has exactly one
     # winner at this atomic pop.
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
     try:
-        bind = await _store_session(base, access, refresh, user)
+        bind = await _store_session(
+            base,
+            access,
+            refresh,
+            user,
+            auth_source=lookup.identity.auth_source,
+        )
     except _ClientBindingConflict as exc:
         return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
+    except _InvalidIdentityResponse as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=502, headers=cors)
     return JSONResponse(
         {
             "ok": True,
@@ -656,10 +1064,11 @@ def _request_bearer_token(request: Request) -> str:
     return token.strip()
 
 
-def _facts_request_is_authenticated(request: Request) -> bool:
-    expected = _access_token() or ""
+async def _facts_request_auth_state(request: Request) -> str:
     supplied = _request_bearer_token(request)
-    return bool(expected and supplied and secrets.compare_digest(expected, supplied))
+    if not supplied:
+        return "mismatch"
+    return await _request_matches_desktop_session(_social_base_url(), supplied)
 
 
 async def _build_local_forge_facts(**kwargs):
@@ -690,7 +1099,14 @@ async def forge_facts_endpoint(
     cors = _facts_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
-    if not _facts_request_is_authenticated(request):
+    auth_state = await _facts_request_auth_state(request)
+    if auth_state == "unavailable":
+        return JSONResponse(
+            {"detail": "identity_verification_unavailable"},
+            status_code=503,
+            headers=cors,
+        )
+    if auth_state != "match":
         return JSONResponse({"detail": "local_session_mismatch"}, status_code=401, headers=cors)
     payload = await _build_local_forge_facts(
         runtime_character_hint=runtime_character_hint,
@@ -832,27 +1248,30 @@ async def steam_callback_endpoint(
         logger.info("card_drop: steam-callback exchange failed: %s", exc)
     if not access_token:
         return _steam_callback_html("登录失败", "换取登录凭证失败，请回到 NEKO 重试。")
-    user: dict = {}
+    identity_lookup = await _lookup_cloud_identity(base, access_token)
+    if identity_lookup.identity is None:
+        logger.info(
+            "card_drop: steam-callback identity verification failed (%s)",
+            identity_lookup.failure or "rejected",
+        )
+        return _steam_callback_html("登录失败", "无法验证社区身份，请回到 NEKO 重试。")
+    user = identity_lookup.identity.user
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.get(
-                f"{base}/api/users/me",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-        if r.status_code == 200:
-            user = (r.json() or {}).get("user") or {}
-        else:
-            logger.info("card_drop: steam-callback /me returned %s", r.status_code)
-    except (httpx.HTTPError, OSError, ValueError) as exc:
-        logger.info("card_drop: steam-callback fetch /me failed: %s", exc)
-    try:
-        bind = await _store_session(base, access_token, refresh_token, user)
+        bind = await _store_session(
+            base,
+            access_token,
+            refresh_token,
+            user,
+            auth_source=identity_lookup.identity.auth_source,
+        )
     except _ClientBindingConflict:
         return _steam_callback_html(
             "登录冲突",
             "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
             status_code=409,
         )
+    except _InvalidIdentityResponse:
+        return _steam_callback_html("登录失败", "社区身份响应无效，请回到 NEKO 重试。")
     name = user.get("display_name") or "你"
     if bind.get("bound"):
         sub = "卡片会存进你的卡册了，可以关掉本页回到 NEKO。"
