@@ -16,7 +16,6 @@ from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
     HostedClient as RandomPressureHostedClient,
     build_test_config as build_random_pressure_config,
     parse_args as parse_random_pressure_args,
-    prepare_log_path as prepare_random_pressure_log,
     require_action_success,
     run as run_random_pressure,
     submit_one,
@@ -24,11 +23,11 @@ from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
 from plugin.plugins.neko_roast.tools.live_silence_pressure import (
     compact_result as compact_silence_result,
     parse_args as parse_silence_pressure_args,
-    prepare_log_path as prepare_silence_pressure_log,
     require_action_success as require_silence_action_success,
     run as run_silence_pressure,
 )
 from plugin.plugins.neko_roast.tools.live_silence_pressure import summarize_context as summarize_silence_context
+from plugin.plugins.neko_roast.tools.pressure_guard import prepare_log_path
 
 
 def test_monitor_live_script_defaults_to_plugin_host_port() -> None:
@@ -51,20 +50,27 @@ def test_silence_pressure_summary_uses_director_next_auto_action() -> None:
     assert summary["director"] == {"action": "idle_hosting", "reason": "solo_idle"}
 
 
-@pytest.mark.parametrize("prepare_log", [prepare_random_pressure_log, prepare_silence_pressure_log])
-def test_pressure_logs_require_an_explicit_existing_file_mode(tmp_path: Path, prepare_log) -> None:
+def test_pressure_logs_require_an_explicit_existing_file_mode(tmp_path: Path) -> None:
     log_path = tmp_path / "pressure.jsonl"
     log_path.write_text("keep\n", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="--append or --overwrite"):
-        prepare_log(log_path, append=False, overwrite=False)
+        prepare_log_path(log_path, append=False, overwrite=False)
     assert log_path.read_text(encoding="utf-8") == "keep\n"
 
-    prepare_log(log_path, append=True, overwrite=False)
+    prepare_log_path(log_path, append=True, overwrite=False)
     assert log_path.read_text(encoding="utf-8") == "keep\n"
 
-    prepare_log(log_path, append=False, overwrite=True)
+    prepare_log_path(log_path, append=False, overwrite=True)
     assert log_path.read_text(encoding="utf-8") == ""
+
+
+def test_pressure_log_append_rejects_directory(tmp_path: Path) -> None:
+    log_path = tmp_path / "pressure"
+    log_path.mkdir()
+
+    with pytest.raises(IsADirectoryError):
+        prepare_log_path(log_path, append=True, overwrite=False)
 
 
 def test_random_pressure_defaults_to_dry_run() -> None:

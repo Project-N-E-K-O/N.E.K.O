@@ -29,12 +29,14 @@ def write_jsonl(path: Path, payload: dict[str, Any]) -> None:
 
 
 def prepare_log_path(path: Path, *, append: bool, overwrite: bool) -> None:
-    if not path.exists() or append:
+    if not path.exists():
+        return
+    if not path.is_file():
+        raise IsADirectoryError(path)
+    if append:
         return
     if not overwrite:
         raise FileExistsError(f"log already exists: {path}; use --append or --overwrite")
-    if not path.is_file():
-        raise IsADirectoryError(path)
     path.write_text("", encoding="utf-8")
 
 
