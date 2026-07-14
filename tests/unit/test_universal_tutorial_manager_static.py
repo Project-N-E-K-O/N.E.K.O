@@ -495,11 +495,12 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
 
     assert "clearStartupGreetingRelease(reason = 'tutorial-started')" in source
     assert "delete window.__NEKO_STARTUP_GREETING_RELEASED__;" in source
-    emit_block = source.split("    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {", 1)[1].split(
+    emit_block = source.split("    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {", 1)[1].split(
         "    /**",
         1,
     )[0]
     assert "this.clearStartupGreetingRelease('tutorial-started');" in emit_block
+    assert "options.lifecycleAlreadyStarted !== true" in emit_block
     assert "this.relayYuiGuideTutorialLifecycleStarted(page, source);" in emit_block
     assert emit_block.index("this.clearStartupGreetingRelease('tutorial-started');") < emit_block.index(
         "this.relayYuiGuideTutorialLifecycleStarted(page, source);"
@@ -832,9 +833,15 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         1,
     )[0]
 
-    # 原生毛球必须先展开并回执，随后才允许教程固定胶囊位置。
+    # 重启教程时聊天桥仍是 closed；只提前打开本轮 lifecycle，用户可见 started 仍等准备成功。
+    assert start_round_block.index("this.relayYuiGuideTutorialLifecycleStarted('home', source)") < start_round_block.index(
+        "await this.prepareYuiGuideCompactChatForTutorial()"
+    )
     assert start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()") < start_round_block.index(
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
+    )
+    assert start_round_block.index("this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')") < start_round_block.index(
+        "this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true })"
     )
     assert "action: 'yui_guide_prepare_compact_chat'" in source
     assert "tutorialRunId: tutorialRunId" in source

@@ -3676,6 +3676,10 @@ class UniversalTutorialManager {
         this.lockBodyScroll();
 
         try {
+            // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
+            // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
+            // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
+            this.relayYuiGuideTutorialLifecycleStarted('home', source);
             // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
             // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
             const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
@@ -3687,7 +3691,7 @@ class UniversalTutorialManager {
             }
             this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
             this._tutorialModelPrefix = 'live2d';
-            this.emitTutorialStarted('home', source);
+            this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true });
             if (directTutorialBoot) {
                 this.claimDirectAvatarFloatingTutorialBoot(round, source);
             }
@@ -3930,9 +3934,12 @@ class UniversalTutorialManager {
         this._teardownTutorialUI();
     }
 
-    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {
+    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {
         this.clearStartupGreetingRelease('tutorial-started');
-        this.relayYuiGuideTutorialLifecycleStarted(page, source);
+        // 胶囊准备链可能已提前打开当前 lifecycle；避免向 chat/pet 重复发送开始消息。
+        if (options.lifecycleAlreadyStarted !== true) {
+            this.relayYuiGuideTutorialLifecycleStarted(page, source);
+        }
         this.syncPcSystemCursorHidden(true, 'tutorial-started');
         window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
             detail: {
