@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import platform
 from pathlib import Path
 
 import pytest
@@ -56,9 +57,13 @@ def _load_wt_server_module(monkeypatch: pytest.MonkeyPatch):
     return module
 
 
-def test_data_layer_cors_only_echoes_approved_neko_origins(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_data_layer_cors_only_echoes_approved_neko_origins(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
     monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
     wt_server_module = _load_wt_server_module(monkeypatch)
     handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
     emitted: list[tuple[str, str]] = []
@@ -112,4 +117,25 @@ def test_data_layer_cors_supports_legacy_main_server_port_env(
     wt_server_module = _load_wt_server_module(monkeypatch)
 
     assert "http://localhost:43103" in wt_server_module._ALLOWED_CORS_ORIGINS
+    assert "http://localhost:48911" not in wt_server_module._ALLOWED_CORS_ORIGINS
+
+
+def test_data_layer_cors_uses_electron_port_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
+    monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    config_dir = tmp_path / "Library" / "Application Support" / "N.E.K.O"
+    config_dir.mkdir(parents=True)
+    (config_dir / "port_config.json").write_text(
+        '{"MAIN_SERVER_PORT": 43104}',
+        encoding="utf-8",
+    )
+
+    wt_server_module = _load_wt_server_module(monkeypatch)
+
+    assert "http://localhost:43104" in wt_server_module._ALLOWED_CORS_ORIGINS
     assert "http://localhost:48911" not in wt_server_module._ALLOWED_CORS_ORIGINS
