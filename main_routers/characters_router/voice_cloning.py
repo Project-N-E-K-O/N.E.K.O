@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Voice registration endpoints: clone, design, preview creation, and audio preparation.
+"""Voice cloning endpoints: upload trimming/silence analysis, clone,
+voice design preview/create and direct-link clone.
 
 Split out of the former monolithic ``main_routers/characters_router.py``.
 """
@@ -25,44 +26,16 @@ from .direct_link import (
     _request_direct_link_follow_redirects,
     _validate_direct_link_target,
 )
-from main_logic.voice_registration.providers.cosyvoice import (
-    CosyVoiceRegistrationClient,
-    QwenVoiceCloneError,
-    design_language_hints as _cosyvoice_design_language_hints,
-    design_voice as _cosyvoice_design_voice,
-    qwen_language_hints,
-)
-from main_logic.voice_registration.providers.elevenlabs import (
+from .voice_providers import (
     ElevenLabsUpstreamError,
-    clone_voice as _elevenlabs_clone_voice,
-    create_voice_from_preview as _elevenlabs_create_voice_from_preview,
-    design_previews as _elevenlabs_design_previews,
-    get_base_url as _get_elevenlabs_base_url,
-    raw_voice_id as _raw_elevenlabs_voice_id,
-)
-from main_logic.voice_registration.providers.minimax import (
-    MINIMAX_PREFIX_MAX_LENGTH,
-    MinimaxVoiceCloneClient,
-    MinimaxVoiceCloneError,
-    build_request_prefix as _build_minimax_request_prefix,
-    design_voice as _minimax_design_voice,
-    get_minimax_base_url,
-    get_minimax_storage_prefix,
-    minimax_normalize_language,
-    sanitize_minimax_voice_prefix,
-)
-from main_logic.voice_registration.providers.mimo import (
-    MIMO_VOICE_STORAGE_KEY,
-    MimoVoiceCloneClient,
-    MimoVoiceCloneError,
-)
-from .voice_runtime import (
+    _build_minimax_request_prefix,
+    _elevenlabs_clone_voice,
+    _get_elevenlabs_base_url,
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
+    _raw_elevenlabs_voice_id,
 )
 from .voice_preview import _normalize_voice_preview_language
-
-QwenVoiceCloneClient = CosyVoiceRegistrationClient
 
 import io
 import re
@@ -83,6 +56,33 @@ from utils.doubao_tts import (
     DOUBAO_VOICE_STORAGE_KEY,
     DoubaoTtsError,
     DoubaoVoiceCloneClient,
+)
+from utils.voice_clone import (
+    MINIMAX_PREFIX_MAX_LENGTH,
+    MinimaxVoiceCloneClient,
+    MinimaxVoiceCloneError,
+    minimax_normalize_language,
+    get_minimax_base_url,
+    get_minimax_storage_prefix,
+    MimoVoiceCloneClient,
+    MimoVoiceCloneError,
+    MIMO_VOICE_STORAGE_KEY,
+    QwenVoiceCloneClient,
+    QwenVoiceCloneError,
+    qwen_language_hints,
+    sanitize_minimax_voice_prefix,
+)
+from utils.voice_design import (
+    CosyVoiceDesignError,
+    ElevenLabsVoiceDesignError,
+    MiniMaxVoiceDesignError,
+    MimoVoiceDesignClient,
+    MimoVoiceDesignError,
+    _cosyvoice_design_language_hints,
+    _cosyvoice_design_voice,
+    _elevenlabs_create_voice_from_preview,
+    _elevenlabs_design_previews,
+    _minimax_design_voice,
 )
 from config import (
     TFLINK_UPLOAD_URL,
@@ -1036,7 +1036,7 @@ async def voice_design(request: Request):
                 if generated_voice_id:
                     break
             if not generated_voice_id:
-                raise ElevenLabsUpstreamError(502, "ElevenLabs did not return generated_voice_id")
+                raise ElevenLabsVoiceDesignError(502, "ElevenLabs did not return generated_voice_id")
             voice_id = await _elevenlabs_create_voice_from_preview(
                 api_key=api_key,
                 base_url=base_url,
@@ -1063,7 +1063,7 @@ async def voice_design(request: Request):
             core_config = await asyncio.to_thread(config_manager.get_core_config)
             assist_api_type = str(core_config.get('assistApi') or '').strip().lower()
             mimo_base_url = (core_config.get('OPENROUTER_URL') or '').strip() if assist_api_type == 'mimo' else ''
-            client = MimoVoiceCloneClient(api_key=api_key, base_url=mimo_base_url or None)
+            client = MimoVoiceDesignClient(api_key=api_key, base_url=mimo_base_url or None)
             await client.validate_design_prompt(voice_prompt, sample_text=preview_text)
 
             import uuid
@@ -1072,28 +1072,28 @@ async def voice_design(request: Request):
             voice_id = f"mimo-design-{safe_prefix}-{uuid.uuid4().hex[:8]}"
             storage_key = f'{MIMO_VOICE_STORAGE_KEY}{api_key[-8:]}'
             voice_data.update({'mimo_base_url': mimo_base_url})
-    except QwenVoiceCloneError as exc:
+    except CosyVoiceDesignError as exc:
         logger.error(f"{provider_label} voice design failed: {exc}")
         return JSONResponse({
             'error': f'{provider_label} voice design failed: {str(exc)}',
             'code': 'COSYVOICE_VOICE_DESIGN_FAILED',
             'provider': provider,
         }, status_code=502)
-    except MinimaxVoiceCloneError as exc:
+    except MiniMaxVoiceDesignError as exc:
         logger.error(f"{provider_label} voice design failed: {exc}")
         return JSONResponse({
             'error': f'{provider_label} voice design failed: {str(exc)}',
             'code': 'MINIMAX_VOICE_DESIGN_FAILED',
             'provider': provider,
         }, status_code=502)
-    except ElevenLabsUpstreamError as exc:
+    except ElevenLabsVoiceDesignError as exc:
         logger.error(f"{provider_label} voice design failed: {exc}")
         return JSONResponse({
             'error': f'{provider_label} voice design failed: {str(exc)}',
             'code': 'ELEVENLABS_VOICE_DESIGN_FAILED',
             'provider': provider,
         }, status_code=502)
-    except MimoVoiceCloneError as exc:
+    except MimoVoiceDesignError as exc:
         logger.error(f"{provider_label} voice design failed: {exc}")
         return JSONResponse({
             'error': f'{provider_label} voice design failed: {str(exc)}',
@@ -1205,7 +1205,7 @@ async def voice_design_preview(request: Request):
         previews = await _elevenlabs_design_previews(
             api_key=api_key, base_url=base_url, voice_description=description,
         )
-    except ElevenLabsUpstreamError as e:
+    except ElevenLabsVoiceDesignError as e:
         logger.error(f"ElevenLabs voice design 上游错误 ({e.status_code}): {e}")
         return JSONResponse({
             'error': f'ElevenLabs上游服务错误: {str(e)}',
@@ -1281,7 +1281,7 @@ async def voice_design_create(request: Request):
             voice_description=description,
             generated_voice_id=generated_voice_id,
         )
-    except ElevenLabsUpstreamError as e:
+    except ElevenLabsVoiceDesignError as e:
         logger.error(f"ElevenLabs voice design create 上游错误 ({e.status_code}): {e}")
         return JSONResponse({
             'error': f'ElevenLabs上游服务错误: {str(e)}',
@@ -1409,8 +1409,17 @@ async def voice_clone_direct(request: Request):
                 'code': 'TTS_AUDIO_API_KEY_MISSING'
             }, status_code=400)
 
+    # 导入所有可能用到的异常类（用于后面的异常捕获）
+    from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
+
     # 设置服务商相关参数
     if provider in ('minimax', 'minimax_intl'):
+        from utils.voice_clone import (
+            MinimaxVoiceCloneClient,
+            minimax_normalize_language,
+            get_minimax_base_url,
+            get_minimax_storage_prefix
+        )
         base_url = get_minimax_base_url(provider)
         storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
@@ -1419,6 +1428,7 @@ async def voice_clone_direct(request: Request):
         storage_key = f'__ELEVENLABS__{api_key[-8:]}'
         provider_label = 'ElevenLabs'
     else:  # cosyvoice / cosyvoice_intl
+        from utils.voice_clone import QwenVoiceCloneClient, qwen_language_hints
         base_url = (cosyvoice_runtime or {}).get('base_url', '')
         storage_key = (cosyvoice_runtime or {}).get('storage_key') or api_key
         provider_label = (cosyvoice_runtime or {}).get('provider_label') or '阿里百炼CosyVoice'

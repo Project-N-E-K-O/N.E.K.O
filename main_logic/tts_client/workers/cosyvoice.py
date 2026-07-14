@@ -57,7 +57,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     _voice_provider = _voice_meta.get('provider') if _voice_meta else None
 
     # dashscope.api_key 和 dashscope.base_*_api_url 是模块级全局状态，同一进程内
-    # /voice_preview 路由和 main_logic.voice_registration 的注册适配器
+    # /voice_preview 端点 (characters_router.py) 和声音克隆 (utils/voice_clone.py)
     # 也会改写它们。worker 只在启动时设一次，下次 _create_synthesizer 重连时会
     # 继承到别人最后一次设置的地域/key，混用国内+国际场景下会出现"voice 没换
     # 但请求打到错地域"的 401。地域 URL 先在启动时算好捕获到闭包里，每次

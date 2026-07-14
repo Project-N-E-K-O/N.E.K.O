@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from main_logic.voice_registration.providers.minimax import (
+from utils.voice_clone import (
     MINIMAX_PREFIX_MAX_LENGTH,
     MinimaxVoiceCloneClient,
     sanitize_minimax_voice_prefix,

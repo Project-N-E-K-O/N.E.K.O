@@ -274,26 +274,6 @@ def test_get_tts_worker_routes_mimo_design_voice(monkeypatch):
 
 
 @pytest.mark.unit
-def test_mimo_design_payload_preserves_assistant_text_without_text_optimization():
-    from utils.tts.providers.mimo import MIMO_TTS_VOICEDESIGN_MODEL
-    from main_logic.voice_registration.providers.mimo import MimoVoiceCloneClient
-
-    payload = MimoVoiceCloneClient(api_key="mimo-key")._build_design_payload(
-        "a bright energetic anime girl voice",
-        "hello there",
-    )
-
-    assert payload["model"] == MIMO_TTS_VOICEDESIGN_MODEL
-    assert payload["audio"]["format"] == "wav"
-    assert "optimize_text_preview" not in payload["audio"]
-    assert "optimize_text_preview" not in payload
-    assert payload["messages"] == [
-        {"role": "user", "content": "a bright energetic anime girl voice"},
-        {"role": "assistant", "content": "hello there"},
-    ]
-
-
-@pytest.mark.unit
 def test_get_tts_worker_mimo_clone_uses_token_plan_base_url(monkeypatch):
     """When MiMo Token Plan is active (assistApi=mimo), get_core_config resolves
     OPENROUTER_URL to the token-plan endpoint and get_tts_api_key returns the
@@ -469,7 +449,7 @@ def test_mimo_chat_completions_url_maps_ws_to_https_not_plaintext():
 
 @pytest.mark.unit
 def test_extract_mimo_audio_bytes_tolerates_non_string_audio():
-    from main_logic.voice_registration.providers.mimo import _extract_mimo_audio_bytes
+    from utils.voice_clone import _extract_mimo_audio_bytes
     # a malformed upstream payload (audio.data is a number/list) must not raise TypeError
     assert _extract_mimo_audio_bytes({"choices": [{"message": {"audio": {"data": 12345}}}]}) == b""
     assert _extract_mimo_audio_bytes({"choices": [{"message": {"audio": {"data": ["x"]}}}]}) == b""
@@ -477,7 +457,7 @@ def test_extract_mimo_audio_bytes_tolerates_non_string_audio():
 
 @pytest.mark.unit
 async def test_mimo_validate_sample_requires_audio(monkeypatch):
-    from main_logic.voice_registration.providers.mimo import MimoVoiceCloneClient, MimoVoiceCloneError
+    from utils.voice_clone import MimoVoiceCloneClient, MimoVoiceCloneError
 
     class _Transport(httpx.AsyncBaseTransport):
         def __init__(self, with_audio):
@@ -550,7 +530,7 @@ def test_get_voices_strips_sample_b64_for_listing(monkeypatch):
 
 @pytest.mark.unit
 async def test_mimo_synthesize_preview_returns_audio(monkeypatch):
-    from main_logic.voice_registration.providers.mimo import MimoVoiceCloneClient
+    from utils.voice_clone import MimoVoiceCloneClient
 
     pcm = (np.arange(128, dtype=np.int16)).tobytes()
 
@@ -629,7 +609,7 @@ async def test_mimo_design_voice_preview_uses_voice_preview_template(monkeypatch
             return b"RIFFfake-wav"
 
     monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
-    monkeypatch.setattr(cr, "MimoVoiceCloneClient", _FakeMimoClient)
+    monkeypatch.setattr(cr, "MimoVoiceDesignClient", _FakeMimoClient)
 
     request = Request({
         "type": "http",

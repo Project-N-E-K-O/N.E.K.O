@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ElevenLabs voice design (text description → generated voice).
-
-design lands as a normal ElevenLabs voice (source='design') and reuses the
-existing ElevenLabs clone dispatch path, so no separate worker is needed.
-"""
+"""Voice Design provider, routing, storage, and validation tests."""
 
 import json
 from functools import partial
@@ -118,13 +114,13 @@ def test_registry_declares_design_for_minimax_and_mimo():
 
 @pytest.mark.unit
 def test_cosyvoice_design_language_hints_are_limited_to_zh_en():
-    from main_logic.voice_registration.providers import cosyvoice
     from main_routers.characters_router import voice_cloning, voice_preview
+    from utils import voice_design
 
-    assert cosyvoice._cosyvoice_design_language_hints("ch") == ["zh"]
-    assert cosyvoice._cosyvoice_design_language_hints("zh") == ["zh"]
-    assert cosyvoice._cosyvoice_design_language_hints("en") == ["en"]
-    assert cosyvoice._cosyvoice_design_language_hints("ru") == ["zh"]
+    assert voice_design._cosyvoice_design_language_hints("ch") == ["zh"]
+    assert voice_design._cosyvoice_design_language_hints("zh") == ["zh"]
+    assert voice_design._cosyvoice_design_language_hints("en") == ["en"]
+    assert voice_design._cosyvoice_design_language_hints("ru") == ["zh"]
     assert voice_cloning._cosyvoice_design_default_preview_text("en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
     assert voice_cloning._cosyvoice_design_default_preview_text("ru") == voice_preview.VOICE_PREVIEW_TEXTS["zh-CN"]
     assert voice_cloning._voice_design_preview_text("ru", "ch") == voice_preview.VOICE_PREVIEW_TEXTS["ru"]
@@ -156,7 +152,7 @@ class _FakeElevenTransport(httpx.AsyncBaseTransport):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_previews_and_create(monkeypatch):
-    from main_logic.voice_registration.providers import elevenlabs as cr
+    from utils import voice_design as cr
 
     transport = _FakeElevenTransport()
     original = httpx.AsyncClient
@@ -268,7 +264,7 @@ class _FakeMiniMaxDesignTransport(httpx.AsyncBaseTransport):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_payload_and_parse(monkeypatch):
-    from main_logic.voice_registration.providers import cosyvoice as cr
+    from utils import voice_design as cr
 
     transport = _FakeCosyVoiceDesignTransport()
     async with httpx.AsyncClient(transport=transport) as client:
@@ -305,7 +301,7 @@ async def test_cosyvoice_design_payload_and_parse(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_design_parses_preview_audio_url():
-    from main_logic.voice_registration.providers import cosyvoice as cr
+    from utils import voice_design as cr
 
     async with httpx.AsyncClient(transport=_UrlCosyVoiceDesignTransport()) as client:
         voice_id, preview_audio, media_type, request_id = await cr._cosyvoice_design_voice(
@@ -327,7 +323,7 @@ async def test_cosyvoice_design_parses_preview_audio_url():
 
 @pytest.mark.unit
 async def test_minimax_design_payload_and_parse():
-    from main_logic.voice_registration.providers import minimax as cr
+    from utils import voice_design as cr
 
     transport = _FakeMiniMaxDesignTransport()
     async with httpx.AsyncClient(transport=transport) as client:
@@ -359,14 +355,14 @@ async def test_minimax_design_payload_and_parse():
     ],
 )
 def test_minimax_voice_design_url_preserves_provider_region(resolved_base_url, expected):
-    from main_logic.voice_registration.providers import minimax as cr
+    from utils import voice_design as cr
 
     assert cr._minimax_voice_design_url(resolved_base_url) == expected
 
 
 @pytest.mark.unit
 def test_minimax_voice_design_url_rejects_missing_resolved_base_url():
-    from main_logic.voice_registration.providers import minimax as cr
+    from utils import voice_design as cr
 
     with pytest.raises(ValueError, match="base URL is required"):
         cr._minimax_voice_design_url("")
@@ -374,10 +370,10 @@ def test_minimax_voice_design_url_rejects_missing_resolved_base_url():
 
 @pytest.mark.unit
 async def test_cosyvoice_design_network_error_is_actionable():
-    from main_logic.voice_registration.providers import cosyvoice as cr
+    from utils import voice_design as cr
 
     async with httpx.AsyncClient(transport=_FailingCosyVoiceDesignTransport()) as client:
-        with pytest.raises(cr.QwenVoiceCloneError) as exc_info:
+        with pytest.raises(cr.CosyVoiceDesignError) as exc_info:
             await cr._cosyvoice_design_voice(
                 api_key="cosy-key",
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -601,7 +597,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
             validated.update(prompt=prompt, sample_text=sample_text)
 
     monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
-    monkeypatch.setattr(cr, "MimoVoiceCloneClient", _MimoClient)
+    monkeypatch.setattr(cr, "MimoVoiceDesignClient", _MimoClient)
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "mimo",
@@ -698,3 +694,21 @@ async def test_cosyvoice_design_endpoint_rejects_underscore_prefix():
     assert response.status_code == 400
     assert body["code"] == "VOICE_DESIGN_PREFIX_INVALID"
     assert "Underscores" in body["message"]
+@pytest.mark.unit
+def test_mimo_design_payload_preserves_assistant_text_without_text_optimization():
+    from utils.tts.providers.mimo import MIMO_TTS_VOICEDESIGN_MODEL
+    from utils.voice_design import MimoVoiceDesignClient
+
+    payload = MimoVoiceDesignClient(api_key="mimo-key")._build_design_payload(
+        "a bright energetic anime girl voice",
+        "hello there",
+    )
+
+    assert payload["model"] == MIMO_TTS_VOICEDESIGN_MODEL
+    assert payload["audio"]["format"] == "wav"
+    assert "optimize_text_preview" not in payload["audio"]
+    assert "optimize_text_preview" not in payload
+    assert payload["messages"] == [
+        {"role": "user", "content": "a bright energetic anime girl voice"},
+        {"role": "assistant", "content": "hello there"},
+    ]

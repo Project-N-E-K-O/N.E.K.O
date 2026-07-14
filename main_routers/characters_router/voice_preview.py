@@ -20,19 +20,7 @@ Split out of the former monolithic ``main_routers/characters_router.py``.
 """
 
 from ._shared import logger, router
-from main_logic.voice_registration.providers.elevenlabs import (
-    ElevenLabsUpstreamError,
-    synthesize_preview as _elevenlabs_synthesize_preview,
-)
-from main_logic.voice_registration.providers.minimax import (
-    MinimaxVoiceCloneClient,
-    MinimaxVoiceCloneError,
-    get_minimax_base_url,
-)
-from main_logic.voice_registration.providers.mimo import (
-    MimoVoiceCloneClient,
-    MimoVoiceCloneError,
-)
+from .voice_providers import ElevenLabsUpstreamError, _elevenlabs_synthesize_preview
 
 import json
 import io
@@ -74,6 +62,14 @@ from utils.tts.native_voice_registry import (
     resolve_native_voice_for_routing,
 )
 from utils.tts import provider_registry as tts_provider_registry
+from utils.voice_clone import (
+    MinimaxVoiceCloneClient,
+    MinimaxVoiceCloneError,
+    get_minimax_base_url,
+    MimoVoiceCloneClient,
+    MimoVoiceCloneError,
+)
+from utils.voice_design import MimoVoiceDesignClient, MimoVoiceDesignError
 from utils.language_utils import is_supported_language_code, normalize_language_code
 
 
@@ -530,14 +526,14 @@ async def get_voice_preview(
                 else:
                     mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
                 try:
-                    mimo_client = MimoVoiceCloneClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                    mimo_client = MimoVoiceDesignClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
                     audio_data = await mimo_client.synthesize_design_preview(design_prompt, text=text)
                     audio_base64 = base64.b64encode(audio_data).decode('utf-8')
                     logger.info(
                         f"MiMo designed voice {voice_id} preview generated, size: {len(audio_data)} bytes"
                     )
                     return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
-                except MimoVoiceCloneError as exc:
+                except MimoVoiceDesignError as exc:
                     logger.error(f"MiMo designed voice {voice_id} preview failed: {exc}")
                     return JSONResponse({
                         'success': False,

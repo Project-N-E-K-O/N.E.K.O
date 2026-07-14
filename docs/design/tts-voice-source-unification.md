@@ -4,28 +4,6 @@
 > #1818 已落地的 `tts_provider_registry` 是这套架构的种子，本设计把它扩成完整的
 > provider 注册表，并把"声音来源"提升为一等维度。
 
-### 当前代码放置约定
-
-Voice Clone 和 Voice Design 都属于可复用音色的**注册阶段**，provider
-差异统一放在 `main_logic/voice_registration/providers/`：
-
-```text
-main_logic/voice_registration/providers/
-├── base.py          # provider-neutral primitives
-├── cosyvoice.py     # CosyVoice Clone + Design
-├── minimax.py       # MiniMax CN/Intl Clone + Design
-├── elevenlabs.py    # ElevenLabs Clone + two-stage Design
-└── mimo.py          # MiMo Clone + Design
-```
-
-- `main_routers/characters_router/voice_cloning.py` 只承载 HTTP 请求编排；
-  provider 的 endpoint、payload、响应解析和上游异常不得放进 Router。
-- `main_logic/tts_client/workers/` 只负责注册完成后的运行时语音合成。
-- 历史 `utils/voice_clone.py` 已移除；新代码直接 import 对应 provider adapter，
-  不再为领域 client 提供 Utils 入口。
-- 四个 hosted provider 必须保持模块对偶。上游不提供远端 `voice_id` 等能力时，
-  差异写在该 provider 模块中并附官方 API 依据，不得靠散落的跨模块分支模拟对偶。
-
 ## 1. 问题
 
 当前 `voice_id` 一个字段被迫编码两个正交的东西，再加上第三个维度完全缺失：
