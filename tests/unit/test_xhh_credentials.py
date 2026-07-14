@@ -171,12 +171,35 @@ async def test_poll_xhh_qr_returns_credentials_when_local_save_fails():
     ), patch(
         "main_routers.cookies_login_router.save_cookies_to_file",
         return_value=False,
-    ):
+    ), patch("main_routers.cookies_login_router.logger.warning") as warning_mock:
         result = await _poll_xhh_qr_login("state=abc")
 
     assert result["success"] is True
     assert result["data"]["local_save_failed"] is True
+    warning_mock.assert_called_once_with("⚠️ 小黑盒登录凭证自动保存失败 (不影响登录)")
     assert result["data"]["cookies"] == {
         "user_heybox_id": "123",
         "user_pkey": "secret",
     }
+
+
+@pytest.mark.asyncio
+async def test_poll_xhh_qr_logs_once_when_local_save_raises():
+    response = _response_with_cookies(
+        {"user_heybox_id": "123", "user_pkey": "secret"}
+    )
+    payload = {"status": "ok", "result": {"error": "ok", "nickname": "盒友"}}
+    with patch(
+        "main_routers.cookies_login_router._request_xhh_qr",
+        new=AsyncMock(return_value=(response, payload)),
+    ), patch(
+        "main_routers.cookies_login_router.save_cookies_to_file",
+        side_effect=OSError("disk full"),
+    ), patch("main_routers.cookies_login_router.logger.warning") as warning_mock:
+        result = await _poll_xhh_qr_login("state=abc")
+
+    assert result["success"] is True
+    assert result["data"]["local_save_failed"] is True
+    warning_mock.assert_called_once_with(
+        "⚠️ 小黑盒登录凭证自动保存异常 (不影响登录): OSError"
+    )

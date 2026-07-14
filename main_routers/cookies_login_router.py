@@ -404,8 +404,9 @@ async def _poll_xhh_qr_login(qrcode_key: str):
     except Exception as save_error:
         save_ok = False
         logger.warning(f"⚠️ 小黑盒登录凭证自动保存异常 (不影响登录): {type(save_error).__name__}")
-    if not save_ok:
-        logger.warning("⚠️ 小黑盒登录凭证自动保存失败 (不影响登录)")
+    else:
+        if not save_ok:
+            logger.warning("⚠️ 小黑盒登录凭证自动保存失败 (不影响登录)")
     return {
         "success": True,
         "data": {
