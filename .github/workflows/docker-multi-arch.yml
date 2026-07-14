@@ -145,7 +145,8 @@ jobs:
   build-standard:
     needs: calculate-version
     # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -289,8 +290,8 @@ jobs:
   # ============================================================================
   build-full:
     needs: calculate-version
-    # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -417,7 +418,8 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
