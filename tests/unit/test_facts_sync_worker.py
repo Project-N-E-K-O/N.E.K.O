@@ -49,19 +49,15 @@ def test_get_client_id_persists_fresh_default_before_returning(tmp_path, monkeyp
     class FakeConfigManager:
         cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
 
-        def load_cloudsave_local_state(self) -> dict:
-            return {"client_id": "fresh-client-id"}
-
-        def build_default_cloudsave_local_state(self) -> dict:
-            raise AssertionError("loaded default already contains a client_id")
-
-        def save_cloudsave_local_state(self, state: dict) -> None:
-            saved.append(dict(state))
+        def ensure_cloudsave_client_credentials(self) -> tuple[str, str]:
+            state = {"client_id": "fresh-client-id", "client_proof": "p" * 43}
+            saved.append(state)
+            return state["client_id"], state["client_proof"]
 
     monkeypatch.setattr(sync_worker, "get_config_manager", lambda: FakeConfigManager())
 
     assert sync_worker._get_client_id() == "fresh-client-id"
-    assert saved == [{"client_id": "fresh-client-id"}]
+    assert saved == [{"client_id": "fresh-client-id", "client_proof": "p" * 43}]
 
 
 def test_get_client_id_fails_closed_when_fresh_default_cannot_be_saved(
@@ -71,18 +67,45 @@ def test_get_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     class FakeConfigManager:
         cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
 
-        def load_cloudsave_local_state(self) -> dict:
-            return {"client_id": "volatile-client-id"}
-
-        def build_default_cloudsave_local_state(self) -> dict:
-            raise AssertionError("loaded default already contains a client_id")
-
-        def save_cloudsave_local_state(self, _state: dict) -> None:
+        def ensure_cloudsave_client_credentials(self) -> tuple[str, str]:
             raise OSError("disk unavailable")
 
     monkeypatch.setattr(sync_worker, "get_config_manager", lambda: FakeConfigManager())
 
     assert sync_worker._get_client_id() is None
+
+
+@pytest.mark.asyncio
+async def test_register_client_sends_persisted_binding_proof(monkeypatch) -> None:
+    sent: list[dict] = []
+
+    class Response:
+        status_code = 204
+        text = ""
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, _url, **kwargs):
+            sent.append(kwargs["json"])
+            return Response()
+
+    monkeypatch.setattr(sync_worker.httpx, "AsyncClient", FakeAsyncClient)
+    sync_worker._client_registered.clear()
+
+    assert await sync_worker._ensure_client_registered(
+        "https://community.example",
+        "fresh-client-id",
+        "p" * 43,
+    )
+    assert sent == [{"client_id": "fresh-client-id", "client_proof": "p" * 43}]
 
 
 @pytest.mark.asyncio

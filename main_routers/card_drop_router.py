@@ -129,27 +129,24 @@ def _social_base_url() -> str:
     return raw or _DEFAULT_SOCIAL_BASE_URL
 
 
-def _get_client_id() -> str | None:
-    """Return a persisted ``client_id`` from the local cloudsave state."""
+def _get_client_credentials() -> tuple[str, str] | None:
+    """Return the persisted local client id and binding proof."""
     try:
         from utils.config_manager import get_config_manager
 
         cm = get_config_manager()
-        needs_persist = not cm.cloudsave_local_state_path.exists()
-        state = cm.load_cloudsave_local_state()
-        cid = state.get("client_id") if isinstance(state, dict) else None
-        if not isinstance(cid, str) or not cid:
-            state = cm.build_default_cloudsave_local_state()
-            cid = state.get("client_id")
-            needs_persist = True
-        if not isinstance(cid, str) or not cid:
+        client_id, client_proof = cm.ensure_cloudsave_client_credentials()
+        if not client_id or not client_proof:
             return None
-        if needs_persist:
-            cm.save_cloudsave_local_state(state)
-        return cid
+        return client_id, client_proof
     except Exception as exc:  # noqa: BLE001
-        logger.warning("card_drop: failed to load or persist client_id: %s", exc)
+        logger.warning("card_drop: failed to load or persist client credentials: %s", exc)
     return None
+
+
+def _get_client_id() -> str | None:
+    credentials = _get_client_credentials()
+    return credentials[0] if credentials else None
 
 
 def _require_ctx() -> tuple[str, str]:
@@ -952,16 +949,21 @@ async def bind_client_approve_endpoint(request: Request, payload: dict = Body(..
         return JSONResponse(
             {"detail": "invalid_client_binding_challenge"}, status_code=400, headers=cors
         )
-    client_id = _get_client_id()
-    if not client_id:
+    credentials = _get_client_credentials()
+    if not credentials:
         return JSONResponse(
             {"detail": "client_not_registered"}, status_code=409, headers=cors
         )
+    client_id, client_proof = credentials
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
             response = await client.post(
                 f"{_social_base_url()}/api/clients/bind-approval",
-                json={"client_id": client_id, "binding_challenge": challenge},
+                json={
+                    "client_id": client_id,
+                    "binding_challenge": challenge,
+                    "client_proof": client_proof,
+                },
             )
     except (httpx.HTTPError, OSError):
         return JSONResponse(

@@ -110,19 +110,15 @@ def test_card_drop_client_id_persists_fresh_default_before_returning(
     class FakeConfigManager:
         cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
 
-        def load_cloudsave_local_state(self) -> dict:
-            return {"client_id": "fresh-client-id"}
-
-        def build_default_cloudsave_local_state(self) -> dict:
-            raise AssertionError("loaded default already contains a client_id")
-
-        def save_cloudsave_local_state(self, state: dict) -> None:
-            saved.append(dict(state))
+        def ensure_cloudsave_client_credentials(self) -> tuple[str, str]:
+            state = {"client_id": "fresh-client-id", "client_proof": "p" * 43}
+            saved.append(state)
+            return state["client_id"], state["client_proof"]
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
 
     assert C._get_client_id() == "fresh-client-id"
-    assert saved == [{"client_id": "fresh-client-id"}]
+    assert saved == [{"client_id": "fresh-client-id", "client_proof": "p" * 43}]
 
 
 def test_card_drop_client_id_fails_closed_when_fresh_default_cannot_be_saved(
@@ -133,13 +129,7 @@ def test_card_drop_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     class FakeConfigManager:
         cloudsave_local_state_path = tmp_path / "state" / "cloudsave_local_state.json"
 
-        def load_cloudsave_local_state(self) -> dict:
-            return {"client_id": "volatile-client-id"}
-
-        def build_default_cloudsave_local_state(self) -> dict:
-            raise AssertionError("loaded default already contains a client_id")
-
-        def save_cloudsave_local_state(self, _state: dict) -> None:
+        def ensure_cloudsave_client_credentials(self) -> tuple[str, str]:
             raise OSError("disk unavailable")
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
@@ -491,6 +481,7 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     client, monkeypatch,
 ):
     actual_client_id = "00112233445566778899aabbccddeeff"
+    actual_client_proof = "p" * 43
     challenge = "C" * 43
     sent: list[tuple[str, dict]] = []
 
@@ -508,7 +499,11 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
             sent.append((url, kwargs["json"]))
             return _CloudResponse(204, {})
 
-    monkeypatch.setattr(C, "_get_client_id", lambda: actual_client_id)
+    monkeypatch.setattr(
+        C,
+        "_get_client_credentials",
+        lambda: (actual_client_id, actual_client_proof),
+    )
     monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
     ticket = _issue_sync_ticket(client)
 
@@ -533,7 +528,11 @@ def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
     assert sent == [
         (
             "https://community.example/api/clients/bind-approval",
-            {"client_id": actual_client_id, "binding_challenge": challenge},
+            {
+                "client_id": actual_client_id,
+                "binding_challenge": challenge,
+                "client_proof": actual_client_proof,
+            },
         )
     ]
     assert replay.status_code == 403

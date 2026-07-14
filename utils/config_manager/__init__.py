@@ -161,7 +161,7 @@ class ConfigManager(
     _quota_notify_last_monotonic = 0.0
     _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
-    CLOUDSAVE_LOCAL_STATE_VERSION = 1
+    CLOUDSAVE_LOCAL_STATE_VERSION = 2
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
 
     # Combined region cache (None = not checked, True = non-mainland, False = mainland)
