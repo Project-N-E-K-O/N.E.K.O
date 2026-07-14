@@ -5,13 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from main_routers.system_router.proactive_xhh import (
-    build_xhh_cookie_header,
-    build_xhh_request_keys,
-    build_xhh_token_id,
+from utils.web_scraper.xhh import (
     fetch_xhh_feed_content,
     format_xhh_feed,
     normalize_xhh_feed,
+)
+from utils.xhh_client import (
+    build_xhh_cookie_header,
+    build_xhh_request_keys,
+    build_xhh_token_id,
 )
 
 
@@ -38,6 +40,12 @@ SAMPLE_PAYLOAD = {
 }
 
 
+def test_proactive_controller_allows_xhh_source_updates():
+    from plugin.plugins.proactive_controller import _PROACTIVE_BOOL_FIELDS
+
+    assert "proactiveXhhChatEnabled" in _PROACTIVE_BOOL_FIELDS
+
+
 def test_build_xhh_request_keys_matches_openxhh_vector():
     assert build_xhh_request_keys(
         "/bbs/app/feeds",
@@ -60,7 +68,7 @@ def test_build_xhh_token_and_cookie_header():
 
 def test_build_xhh_cookie_header_replaces_saved_token():
     with patch(
-        "main_routers.system_router.proactive_xhh.build_xhh_token_id",
+        "utils.xhh_client.build_xhh_token_id",
         return_value="fresh-token",
     ):
         header = build_xhh_cookie_header(
@@ -113,10 +121,10 @@ class _FakeClient:
 async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     client = _FakeClient()
     with patch(
-        "main_routers.system_router.proactive_xhh.get_external_http_client",
+        "utils.web_scraper.xhh.get_external_http_client",
         return_value=client,
     ), patch(
-        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        "utils.web_scraper.xhh.load_cookies_from_file",
         return_value={},
     ):
         result = await fetch_xhh_feed_content(limit=1)
@@ -135,10 +143,10 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
 async def test_fetch_xhh_feed_injects_saved_credentials():
     client = _FakeClient()
     with patch(
-        "main_routers.system_router.proactive_xhh.get_external_http_client",
+        "utils.web_scraper.xhh.get_external_http_client",
         return_value=client,
     ), patch(
-        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        "utils.web_scraper.xhh.load_cookies_from_file",
         return_value={"user_heybox_id": "123", "user_pkey": "secret"},
     ):
         result = await fetch_xhh_feed_content(limit=1)
@@ -163,10 +171,10 @@ async def test_fetch_xhh_feed_reports_empty_payload_as_source_failure():
             return EmptyResponse()
 
     with patch(
-        "main_routers.system_router.proactive_xhh.get_external_http_client",
+        "utils.web_scraper.xhh.get_external_http_client",
         return_value=EmptyClient(),
     ), patch(
-        "main_routers.system_router.proactive_xhh.load_cookies_from_file",
+        "utils.web_scraper.xhh.load_cookies_from_file",
         return_value={},
     ):
         result = await fetch_xhh_feed_content()

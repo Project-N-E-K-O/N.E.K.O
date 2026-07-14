@@ -102,4 +102,5 @@ from .personal_dynamics import (
     fetch_weibo_personal_dynamic,
     format_personal_dynamics,
 )
+from .xhh import fetch_xhh_feed_content, format_xhh_feed, normalize_xhh_feed
 from .__main__ import main

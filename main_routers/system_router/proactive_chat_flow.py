@@ -96,7 +96,6 @@ from .proactive_sources import (
     _should_skip_source,
     _source_hash,
 )
-from .proactive_xhh import fetch_xhh_feed_content
 import asyncio
 import json
 import random
@@ -174,6 +173,7 @@ from utils.web_scraper import (
     fetch_window_context_content, format_window_context_content,
     fetch_video_content, format_video_content,
     fetch_news_content, format_news_content,
+    fetch_xhh_feed_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content

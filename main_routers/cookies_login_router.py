@@ -49,9 +49,7 @@ from utils.cookies_login import (
     get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
-from main_routers.system_router.proactive_xhh import (
-    build_xhh_request_params,
-)
+from utils.xhh_client import build_xhh_request_params
 
 logger = get_module_logger(__name__, "Main")
 
