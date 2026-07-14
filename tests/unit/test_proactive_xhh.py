@@ -58,6 +58,19 @@ def test_build_xhh_token_and_cookie_header():
     assert "x_xhh_tokenid=" in header
 
 
+def test_build_xhh_cookie_header_replaces_saved_token():
+    with patch(
+        "main_routers.system_router.proactive_xhh.build_xhh_token_id",
+        return_value="fresh-token",
+    ):
+        header = build_xhh_cookie_header(
+            {"user_heybox_id": "123", "x_xhh_tokenid": "stale-token"}
+        )
+
+    assert "x_xhh_tokenid=fresh-token" in header
+    assert "stale-token" not in header
+
+
 def test_normalize_and_format_xhh_feed():
     posts = normalize_xhh_feed(SAMPLE_PAYLOAD, limit=10)
 

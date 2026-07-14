@@ -36,8 +36,7 @@ const PLATFORM_CONFIG_DATA = {
         instructionKey: 'cookiesLogin.instructions.xhh',
         fields: [
             { key: 'user_heybox_id', labelKey: 'cookiesLogin.fields.user_heybox_id.label', descKey: 'cookiesLogin.fields.user_heybox_id.desc', required: true },
-            { key: 'user_pkey', labelKey: 'cookiesLogin.fields.user_pkey.label', descKey: 'cookiesLogin.fields.user_pkey.desc', required: true },
-            { key: 'x_xhh_tokenid', labelKey: 'cookiesLogin.fields.x_xhh_tokenid.label', descKey: 'cookiesLogin.fields.x_xhh_tokenid.desc', required: false }
+            { key: 'user_pkey', labelKey: 'cookiesLogin.fields.user_pkey.label', descKey: 'cookiesLogin.fields.user_pkey.desc', required: true }
         ]
     },
     'douyin': {
@@ -511,12 +510,14 @@ function startQrPoll(config, platformKey) {
                 });
 
                 // 统一成功提醒
-                let customAlert = safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置');
+                let customAlert = data.local_save_failed
+                    ? safeT('cookiesLogin.qrLogin.localSaveFailed', '扫码登录成功，但自动保存失败。凭证已填入，请手动点击保存配置。')
+                    : safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置');
                 if (capturedCount === 0 && cookieFields.length > 0) {
                   customAlert = safeT('cookiesLogin.qrLogin.extractFailed', '扫码成功但未能自动提取到字段，请手动检查。');
                 }
 
-                showAlert(capturedCount > 0, customAlert);
+                showAlert(capturedCount > 0 && !data.local_save_failed, customAlert);
 
                 if (qrRefreshTimeout) {
                     clearTimeout(qrRefreshTimeout);

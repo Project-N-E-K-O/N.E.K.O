@@ -51,7 +51,6 @@ from utils.cookies_login import (
 from utils.logger_config import get_module_logger
 from main_routers.system_router.proactive_xhh import (
     build_xhh_request_params,
-    build_xhh_token_id,
 )
 
 logger = get_module_logger(__name__, "Main")
@@ -375,6 +374,11 @@ async def _poll_xhh_qr_login(qrcode_key: str):
     if not state_params:
         raise HTTPException(status_code=400, detail="小黑盒二维码状态参数无效")
     response, payload = await _request_xhh_qr(_XHH_QR_POLL_PATH, state_params)
+    if str(payload.get("status") or "").lower() != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail=str(payload.get("msg") or payload.get("message") or "小黑盒登录状态查询失败"),
+        )
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     error = str(result.get("error") or "").strip()
     message = str(result.get("error_msg") or payload.get("msg") or "等待扫码").strip()
@@ -394,11 +398,14 @@ async def _poll_xhh_qr_login(qrcode_key: str):
     cookies = {str(key): str(value) for key, value in response.cookies.items() if value}
     if not cookies:
         raise HTTPException(status_code=502, detail="小黑盒扫码成功但未返回登录凭证")
-    cookies.setdefault("x_xhh_tokenid", build_xhh_token_id())
     validate_platform_fields("xhh", cookies)
-    save_ok = await asyncio.to_thread(save_cookies_to_file, "xhh", cookies)
+    try:
+        save_ok = await asyncio.to_thread(save_cookies_to_file, "xhh", cookies)
+    except Exception as save_error:
+        save_ok = False
+        logger.warning(f"⚠️ 小黑盒登录凭证自动保存异常 (不影响登录): {type(save_error).__name__}")
     if not save_ok:
-        raise HTTPException(status_code=500, detail="小黑盒登录成功，但凭证保存失败")
+        logger.warning("⚠️ 小黑盒登录凭证自动保存失败 (不影响登录)")
     return {
         "success": True,
         "data": {
@@ -408,6 +415,7 @@ async def _poll_xhh_qr_login(qrcode_key: str):
             "cookies": cookies,
             "cookie_fields": NetworkQRLoginInfo["xhh"]["cookie_fields"],
             "cookies_count": len(cookies),
+            "local_save_failed": not save_ok,
         },
     }
 
@@ -615,7 +623,7 @@ NetworkQRLoginInfo = {
         "get": f"{_XHH_API_BASE}{_XHH_QR_CREATE_PATH}",
         "login": f"{_XHH_API_BASE}{_XHH_QR_POLL_PATH}",
         "timeout": 180,
-        "cookie_fields": ["user_heybox_id", "user_pkey", "x_xhh_tokenid"],
+        "cookie_fields": ["user_heybox_id", "user_pkey"],
         "headers": _XHH_HEADERS,
         "response": {},
         "status_codes": {},

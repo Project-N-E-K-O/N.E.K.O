@@ -153,7 +153,7 @@ def build_xhh_cookie_header(cookies: dict[str, str]) -> str:
         for key, value in (cookies or {}).items()
         if str(key).strip() and str(value).strip()
     }
-    normalized.setdefault("x_xhh_tokenid", build_xhh_token_id())
+    normalized["x_xhh_tokenid"] = build_xhh_token_id()
     return "; ".join(f"{key}={value}" for key, value in normalized.items())
 
 

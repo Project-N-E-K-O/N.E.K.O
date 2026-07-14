@@ -119,6 +119,20 @@ async def test_poll_xhh_qr_reports_waiting_state():
 
 
 @pytest.mark.asyncio
+async def test_poll_xhh_qr_rejects_top_level_error_before_waiting_state():
+    payload = {"status": "error", "msg": "服务暂不可用"}
+    with patch(
+        "main_routers.cookies_login_router._request_xhh_qr",
+        new=AsyncMock(return_value=(_response_with_cookies({}), payload)),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _poll_xhh_qr_login("state=abc")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail == "服务暂不可用"
+
+
+@pytest.mark.asyncio
 async def test_poll_xhh_qr_saves_and_returns_credentials():
     response = _response_with_cookies(
         {"user_heybox_id": "123", "user_pkey": "secret"}
@@ -128,9 +142,6 @@ async def test_poll_xhh_qr_saves_and_returns_credentials():
         "main_routers.cookies_login_router._request_xhh_qr",
         new=AsyncMock(return_value=(response, payload)),
     ), patch(
-        "main_routers.cookies_login_router.build_xhh_token_id",
-        return_value="token-id",
-    ), patch(
         "main_routers.cookies_login_router.save_cookies_to_file",
         return_value=True,
     ) as save_mock:
@@ -138,12 +149,34 @@ async def test_poll_xhh_qr_saves_and_returns_credentials():
 
     assert result["success"] is True
     assert result["data"]["status"] == "success"
-    assert result["data"]["cookies"]["x_xhh_tokenid"] == "token-id"
+    assert result["data"]["local_save_failed"] is False
     save_mock.assert_called_once_with(
         "xhh",
         {
             "user_heybox_id": "123",
             "user_pkey": "secret",
-            "x_xhh_tokenid": "token-id",
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_poll_xhh_qr_returns_credentials_when_local_save_fails():
+    response = _response_with_cookies(
+        {"user_heybox_id": "123", "user_pkey": "secret"}
+    )
+    payload = {"status": "ok", "result": {"error": "ok", "nickname": "盒友"}}
+    with patch(
+        "main_routers.cookies_login_router._request_xhh_qr",
+        new=AsyncMock(return_value=(response, payload)),
+    ), patch(
+        "main_routers.cookies_login_router.save_cookies_to_file",
+        return_value=False,
+    ):
+        result = await _poll_xhh_qr_login("state=abc")
+
+    assert result["success"] is True
+    assert result["data"]["local_save_failed"] is True
+    assert result["data"]["cookies"] == {
+        "user_heybox_id": "123",
+        "user_pkey": "secret",
+    }
