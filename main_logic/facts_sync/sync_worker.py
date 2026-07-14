@@ -213,11 +213,13 @@ async def _post_facts_batch(
     if r.status_code >= 300:
         logger.warning("facts_sync: %s returned %s: %s", url, r.status_code, r.text[:200])
         return False, None
+    # Any 2xx response confirms the mutation. The caller does not depend on a
+    # response body, and valid 201/204 responses may be empty or non-JSON.
     try:
-        return True, r.json()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("facts_sync: parse response failed: %s", exc)
-        return False, None
+        response_payload = r.json()
+    except (TypeError, ValueError):
+        response_payload = None
+    return True, response_payload if isinstance(response_payload, dict) else None
 
 
 async def _sync_one_lanlan(

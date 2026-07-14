@@ -217,10 +217,12 @@
 
   function renderForgeBadge(count, bump) {
     ensureStyles();
+    var n = Math.max(0, Number(count) || 0);
+    // The authoritative refresh can finish before the floating button exists.
+    // Cache first so the MutationObserver can render once the button mounts.
+    cachedCredits = n;
     var badge = ensureForgeBadge();
     if (!badge) return;
-    var n = Math.max(0, Number(count) || 0);
-    cachedCredits = n;
     var wantHidden = n <= 0;
     var wantText = wantHidden ? '' : (n > 99 ? '99+' : String(n));
     if (badge.classList.contains('hidden') === wantHidden && badge.textContent === wantText && !bump) {

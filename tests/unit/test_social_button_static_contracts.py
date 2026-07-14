@@ -30,6 +30,11 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
     assert "native_sync: String(ticketJson.sync_ticket)" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
+    assert protocol_guard in listener
+    assert listener.index(protocol_guard) < listener.index(
+        "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })"
+    )
 
 
 @pytest.mark.unit
@@ -74,6 +79,16 @@ def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
     assert "document.addEventListener('visibilitychange'" in source
     assert "scheduleExpiryRefresh(data.credits);" in source
     assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_credit_badge_caches_count_before_button_mount():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    render_start = source.index("function renderForgeBadge(count, bump) {")
+    render_end = source.index("function startForgeBadgeObserver()", render_start)
+    render = source[render_start:render_end]
+
+    assert render.index("cachedCredits = n;") < render.index("if (!badge) return;")
 
 
 @pytest.mark.unit

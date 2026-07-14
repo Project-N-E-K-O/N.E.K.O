@@ -264,6 +264,9 @@
                     return;
                 }
                 const targetUrl = new URL(url, window.location.href);
+                if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+                    throw new Error('unsupported social URL protocol');
+                }
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
                 try {
