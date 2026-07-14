@@ -17,5 +17,6 @@ def test_backend_screenshot_reason_is_localized_without_exposing_raw_error():
     assert "json.reason" in fallback
     assert "json.error" not in fallback
     assert "e && e.message" not in fallback
+    assert "if (json && json.success && json.data)" in fallback
     assert "translateBackendScreenshotReason(result.reason)" in source
     assert "'agent.precheck.' + reason" in source

@@ -559,7 +559,7 @@
                     reason: (json && json.reason) ? json.reason : null
                 };
             }
-            if (json.success && json.data) {
+            if (json && json.success && json.data) {
                 console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
                 return { dataUrl: json.data, status: 200, reason: null };
             }
