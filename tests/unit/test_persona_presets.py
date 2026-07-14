@@ -59,7 +59,7 @@ def test_persona_override_fields_cover_supported_profile_keys():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru"])
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
 def test_persona_prompts_replace_literal_catchphrase_lists_with_speech_discipline(lang):
     literal_list_markers = (
         "常用口癖",
