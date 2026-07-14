@@ -72,7 +72,14 @@ def test_activity_gate_emits_pause_once_and_resume_without_force_commit():
 
 
 def test_activity_gate_duration_thresholds_never_round_down():
-    gate = SileroActivityGate(_NoopVad(), SmartTurnConfig(enabled=True))
+    gate = SileroActivityGate(
+        _NoopVad(),
+        SmartTurnConfig(
+            enabled=True,
+            minimum_speech_ms=200,
+            candidate_silence_ms=300,
+        ),
+    )
     assert gate.process_probabilities([0.9] * 6) == ()
     assert gate.process_probabilities([0.9]) == (SpeechActivityEvent.SPEECH_STARTED,)
     assert gate.process_probabilities([0.1] * 9) == ()
