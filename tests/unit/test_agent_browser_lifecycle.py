@@ -269,8 +269,9 @@ async def test_cancelled_browser_use_close_keeps_adapter_for_shutdown_retry() ->
         close_task = asyncio.create_task(capabilities._close_browser_use_adapter())
         await close_started.wait()
         close_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await close_task
+        cancelled_result = await asyncio.gather(close_task, return_exceptions=True)
+        assert len(cancelled_result) == 1
+        assert isinstance(cancelled_result[0], asyncio.CancelledError)
 
         assert modules.browser_use is adapter
         release_close.set()
