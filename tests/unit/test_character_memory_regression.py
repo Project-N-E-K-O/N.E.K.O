@@ -1163,7 +1163,7 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
+async def test_deleted_workshop_character_casefold_variant_is_not_restored_by_startup_sync():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -1192,7 +1192,7 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
 
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
-            characters["猫娘"]["工坊角色"] = {"昵称": "会复活吗"}
+            characters["猫娘"]["N.E.K.O"] = {"昵称": "会复活吗"}
             cm.save_characters(characters, bypass_write_fence=True)
 
             fake_response = type(
@@ -1206,14 +1206,14 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             fake_client.post.return_value = fake_response
 
             with patch("main_routers.characters_router.notify.httpx.AsyncClient", return_value=fake_client):
-                delete_result = await characters_router_module.delete_catgirl("工坊角色")
+                delete_result = await characters_router_module.delete_catgirl("N.E.K.O")
             assert delete_result["success"] is True
-            assert "工坊角色" not in cm.load_characters().get("猫娘", {})
+            assert "N.E.K.O" not in cm.load_characters().get("猫娘", {})
 
             installed_folder = Path(td) / "mock_workshop_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
             (installed_folder / "角色卡.chara.json").write_text(
-                json.dumps({"档案名": "工坊角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                json.dumps({"档案名": "n.e.k.o", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
@@ -1237,7 +1237,7 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             assert sync_result["added"] == 0
             assert sync_result["skipped"] >= 1
             current_characters = cm.load_characters()
-            assert "工坊角色" not in current_characters.get("猫娘", {})
+            assert "n.e.k.o" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
 
 

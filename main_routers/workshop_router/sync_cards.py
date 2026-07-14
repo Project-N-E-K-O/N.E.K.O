@@ -282,7 +282,15 @@ async def sync_workshop_character_cards(
                                 continue
                             _append_unique(found_character_names, chara_name)
 
-                            if chara_name in deleted_character_names:
+                            deleted_name = (
+                                chara_name
+                                if chara_name in deleted_character_names
+                                else _find_casefold_conflict_name(
+                                    deleted_character_names,
+                                    chara_name,
+                                )
+                            )
+                            if deleted_name is not None:
                                 _append_unique(deleted_character_names_seen, chara_name)
                                 if restore_deleted:
                                     pending_restore_tombstone_names.add(chara_name)
@@ -509,7 +517,13 @@ async def sync_workshop_character_cards(
                     actually_added_count = 0
                     skipped_due_to_race_count = 0
                     for pending_name, pending_payload in pending_added_catgirls.items():
-                        pending_name_is_deleted = pending_name in latest_deleted_character_names
+                        pending_name_is_deleted = (
+                            pending_name in latest_deleted_character_names
+                            or _find_casefold_conflict_name(
+                                latest_deleted_character_names,
+                                pending_name,
+                            ) is not None
+                        )
                         conflict_name = _find_casefold_conflict_name(
                             latest_catgirls.keys(),
                             pending_name,
