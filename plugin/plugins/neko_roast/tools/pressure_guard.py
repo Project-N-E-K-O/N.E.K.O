@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 
@@ -12,6 +16,26 @@ EXIT_PREFLIGHT = 3
 EXIT_CONNECTION = 4
 EXIT_RUN = 5
 EXIT_RESTORE = 6
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def write_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def prepare_log_path(path: Path, *, append: bool, overwrite: bool) -> None:
+    if not path.exists() or append:
+        return
+    if not overwrite:
+        raise FileExistsError(f"log already exists: {path}; use --append or --overwrite")
+    if not path.is_file():
+        raise IsADirectoryError(path)
+    path.write_text("", encoding="utf-8")
 
 
 class PressureClient(Protocol):
@@ -186,3 +210,30 @@ def disconnect_owned_connection(client: PressureClient, *, owned_room: str) -> b
     except Exception as exc:  # noqa: BLE001
         raise PressureError(str(exc), EXIT_RESTORE) from exc
     return True
+
+
+def finalize_cleanup_failure(
+    cleanup_error: PressureError | None,
+    *,
+    primary_exception_active: bool,
+    record_event: Callable[[dict[str, Any]], None],
+    timestamp: Callable[[], str],
+    warning_prefix: str,
+) -> None:
+    """Report cleanup failure after a primary error, otherwise raise it."""
+    if cleanup_error is None:
+        return
+    if primary_exception_active:
+        record_event(
+            {
+                "type": "cleanup_error_after_primary_failure",
+                "time": timestamp(),
+                "error": f"{type(cleanup_error).__name__}: {cleanup_error}",
+            }
+        )
+        print(
+            f"{warning_prefix} WARNING: cleanup also failed: {cleanup_error}",
+            file=sys.stderr,
+        )
+        return
+    raise cleanup_error

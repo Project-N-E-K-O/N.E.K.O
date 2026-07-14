@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import datetime as dt
 import json
 import random
 import sys
@@ -25,10 +24,14 @@ from plugin.plugins.neko_roast.tools.pressure_guard import (
     PressureError,
     compare_and_restore_config,
     disconnect_owned_connection,
+    finalize_cleanup_failure,
+    now_iso,
+    prepare_log_path,
     require_action_success,
     require_real_output_confirmation,
     require_safe_preflight,
     wait_for_connection,
+    write_jsonl,
 )
 
 
@@ -76,10 +79,6 @@ DANMAKU_SAMPLES = (
     "\u6211\u9009A",
     "\u6211\u9009B",
 )
-
-
-def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def request_json(
@@ -210,24 +209,6 @@ def summarize_context(context: dict[str, Any]) -> dict[str, Any]:
             "last_output_age_sec": live_state.get("last_output_age_sec"),
         },
     }
-
-
-def write_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def prepare_log_path(path: Path, *, append: bool, overwrite: bool) -> None:
-    if not path.exists():
-        return
-    if append:
-        return
-    if not overwrite:
-        raise FileExistsError(f"log already exists: {path}; use --append or --overwrite")
-    if not path.is_file():
-        raise IsADirectoryError(path)
-    path.write_text("", encoding="utf-8")
 
 
 def build_test_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -519,19 +500,13 @@ def run(args: argparse.Namespace) -> int:
                 print(f"[mass] restored={json.dumps(restored, ensure_ascii=False)} skipped={skipped}")
             except PressureError as exc:
                 cleanup_error = cleanup_error or exc
-        if cleanup_error is not None:
-            if primary_exception_active:
-                write_jsonl(
-                    log_path,
-                    {
-                        "type": "cleanup_error_after_primary_failure",
-                        "time": now_iso(),
-                        "error": f"{type(cleanup_error).__name__}: {cleanup_error}",
-                    },
-                )
-                print(f"[mass] WARNING: cleanup also failed: {cleanup_error}", file=sys.stderr)
-            else:
-                raise cleanup_error
+        finalize_cleanup_failure(
+            cleanup_error,
+            primary_exception_active=primary_exception_active,
+            record_event=lambda event: write_jsonl(log_path, event),
+            timestamp=now_iso,
+            warning_prefix="[mass]",
+        )
 
     return 0
 
