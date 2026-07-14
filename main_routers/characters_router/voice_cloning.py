@@ -1145,9 +1145,13 @@ def _validate_voice_design_description(raw: object) -> tuple[str, JSONResponse |
     return description, None
 
 
+# Reserved ElevenLabs two-stage flow. The current registration UI uses the
+# unified /voice_design endpoint, which creates and saves the first usable
+# preview in one request. Keep these endpoints for a future workflow where the
+# user auditions multiple candidates and explicitly chooses which one to save.
 @router.post('/voice_design_preview')
 async def voice_design_preview(request: Request):
-    """Generate ElevenLabs voice-design previews from a text description.
+    """Reserved stage 1: generate ElevenLabs candidates for future selection UI.
 
     Returns a list of previews ``[{generated_voice_id, audio (base64 mp3),
     media_type, duration_secs}]`` for the user to audition; nothing is persisted
@@ -1213,7 +1217,7 @@ async def voice_design_preview(request: Request):
 
 @router.post('/voice_design_create')
 async def voice_design_create(request: Request):
-    """Persist a chosen ElevenLabs design preview into a reusable voice.
+    """Reserved stage 2: persist a candidate selected by the future preview UI.
 
     The voice lands as a normal ElevenLabs voice (``source='design'``) in the
     ElevenLabs voice_storage bucket, so dispatch reuses the existing ElevenLabs
