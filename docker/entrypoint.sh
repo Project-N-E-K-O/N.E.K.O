@@ -13,6 +13,9 @@ export SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
 export SSL_DAYS=${SSL_DAYS:-365000}  # 1000年
 export NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用自动重载，默认启用
 
+# Docker 容器内 Nginx 作为反向代理前置，强制启用 uvicorn proxy_headers
+export NEKO_BEHIND_PROXY=true
+
 # 1. 信号处理优化
 setup_signal_handlers() {
     trap 'echo "🛑 Received shutdown signal"; nginx -s stop 2>/dev/null || true; for pid in "${PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; [ -n "$RELOADER_PID" ] && kill -TERM "$RELOADER_PID" 2>/dev/null || true; wait; exit 0' TERM INT
@@ -669,12 +672,45 @@ server {
     }
     
     # 代理到N.E.K.O主服务
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+    
+    # 设置HSTS头（增强安全性）
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    
+    server_name _;
+    
+    # 禁用默认的Nginx版本显示
+    server_tokens off;
+    
+    # 取消客户端请求体大小限制
+    client_max_body_size 0;
+
+    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+    
+    # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
         proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
         
         # WebSocket支持
         proxy_http_version 1.1;
