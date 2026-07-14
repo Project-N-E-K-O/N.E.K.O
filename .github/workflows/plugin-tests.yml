@@ -16,6 +16,7 @@ on:
       - 'main_logic/card_forge_facts.py'
       - 'tests/unit/test_card_drop_session_facts.py'
       - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_neko_warthunder_review_regressions.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
       - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
@@ -34,6 +35,7 @@ on:
       - 'main_logic/card_forge_facts.py'
       - 'tests/unit/test_card_drop_session_facts.py'
       - 'tests/unit/test_card_drop_steam_pkce.py'
+      - 'tests/unit/test_neko_warthunder_review_regressions.py'
       - 'tests/unit/test_plugin_sdk_packaging.py'
       - 'specs/launcher.spec'
       - '.github/workflows/plugin-tests.yml'
@@ -96,4 +98,5 @@ jobs:
           tests/unit/test_plugin_sdk_packaging.py
           tests/unit/test_card_drop_session_facts.py
           tests/unit/test_card_drop_steam_pkce.py
+          tests/unit/test_neko_warthunder_review_regressions.py
           -q

@@ -410,7 +410,14 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(referenceBody)
-        }).then(function () {
+        }).then(function (response) {
+            if (!response.ok) {
+                console.warn(
+                    '[chat-avatar] card-forge character reference sync returned HTTP',
+                    response.status
+                );
+                return false;
+            }
             return true;
         }).catch(function (err) {
             console.warn('[chat-avatar] card-forge character reference sync failed:', err);

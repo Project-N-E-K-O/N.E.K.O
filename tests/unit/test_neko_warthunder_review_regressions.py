@@ -14,6 +14,13 @@ from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import BattleEn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_PROCESS_DIR = PROJECT_ROOT / "plugin" / "plugins" / "neko_warthunder" / "data_layer" / "data process"
+PLUGIN_TEST_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "plugin-tests.yml"
+
+
+def test_warthunder_review_regressions_are_in_plugin_ci() -> None:
+    workflow = PLUGIN_TEST_WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("tests/unit/test_neko_warthunder_review_regressions.py") == 3
 
 
 def test_coalesced_kill_bypasses_post_flush_event_cooldown() -> None:
