@@ -156,6 +156,46 @@ def test_packaged_facts_modules_use_package_qualified_imports():
     assert callable(shared.resolve_active_neko_context)
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected_port"),
+    [
+        ({"NEKO_MAIN_SERVER_PORT": "43101", "MAIN_SERVER_PORT": "43102"}, 43101),
+        ({"MAIN_SERVER_PORT": "43102"}, 43102),
+        ({"NEKO_MAIN_SERVER_PORT": "invalid", "MAIN_SERVER_PORT": "43102"}, 43102),
+        ({"NEKO_MAIN_SERVER_PORT": "70000", "MAIN_SERVER_PORT": "invalid"}, 48911),
+    ],
+)
+def test_forge_main_active_character_url_tracks_main_server_port(
+    monkeypatch, environment, expected_port
+):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    for key in (
+        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
+        "NEKO_MAIN_SERVER_PORT",
+        "MAIN_SERVER_PORT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+
+    assert server._resolve_main_server_active_character_url() == (
+        f"http://127.0.0.1:{expected_port}/card-forge/active-character"
+    )
+
+
+def test_forge_main_active_character_url_allows_explicit_override(monkeypatch):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    monkeypatch.setenv(
+        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
+        "http://localhost:43103/custom-active-character",
+    )
+    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "43101")
+
+    assert server._resolve_main_server_active_character_url() == (
+        "http://localhost:43103/custom-active-character"
+    )
+
+
 def test_packaging_manifests_collect_shared_card_forge_module():
     project = Path(__file__).resolve().parents[2]
 

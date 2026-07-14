@@ -189,12 +189,30 @@ def _read_card_face_data_url(name: str) -> str:
     return data_url
 
 
+def _resolve_main_server_active_character_url() -> str:
+    """Resolve the active-character endpoint using the main-server port precedence."""
+    override = os.environ.get("NEKO_MAIN_ACTIVE_CHARACTER_URL", "").strip()
+    if override:
+        return override
+
+    port = 48911
+    for key in ("NEKO_MAIN_SERVER_PORT", "MAIN_SERVER_PORT"):
+        raw = os.environ.get(key, "").strip()
+        if not raw:
+            continue
+        try:
+            candidate = int(raw)
+        except ValueError:
+            continue
+        if 1 <= candidate <= 65535:
+            port = candidate
+            break
+    return f"http://127.0.0.1:{port}/card-forge/active-character"
+
+
 def _read_main_server_active_character_snapshot(include_avatar: bool = False) -> dict[str, str]:
     """Read the runtime-synced active character snapshot from the main NEKO server."""
-    base_url = os.environ.get(
-        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
-        "http://127.0.0.1:48911/card-forge/active-character",
-    )
+    base_url = _resolve_main_server_active_character_url()
     parsed = urlsplit(base_url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     if include_avatar:
