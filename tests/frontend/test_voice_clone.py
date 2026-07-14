@@ -51,6 +51,16 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
 }
 
 
+@pytest.mark.frontend
+def test_voice_clone_script_is_cache_versioned(mock_page: Page, running_server: str):
+    mock_page.goto(f"{running_server}/voice_clone")
+    script = mock_page.locator("script[src^='/static/js/voice_clone.js?v=']")
+
+    expect(script).to_have_count(1)
+    src = script.get_attribute("src")
+    assert src and src != "/static/js/voice_clone.js?v=0"
+
+
 def route_voice_clone_region_dependencies(page: Page, steam_language_payload: dict, steam_language_status: int = 200) -> None:
     page.add_init_script("localStorage.setItem('neko_tutorial_voice_clone', 'true');")
     page.route(

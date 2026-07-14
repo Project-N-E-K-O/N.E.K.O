@@ -139,6 +139,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
+    _PROJECT_ROOT / "static/js/voice_clone.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
     *_MODEL_MANAGER_JS_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
