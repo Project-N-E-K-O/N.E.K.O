@@ -242,13 +242,21 @@ class FactsMixin:
         """
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
-            seen = {
-                (entity, " ".join(str(item.get('text', '')).casefold().split()))
-                for entity, section in persona.items()
-                if isinstance(section, dict)
-                for item in section.get('facts', [])
-                if isinstance(item, dict) and item.get('text')
-            }
+            seen = set()
+            for entity, section in persona.items():
+                if not isinstance(section, dict):
+                    continue
+                for item in section.get('facts', []):
+                    if isinstance(item, str):
+                        existing_text = item
+                    elif isinstance(item, dict):
+                        existing_text = item.get('text')
+                        if not isinstance(existing_text, str) or not existing_text:
+                            continue
+                    else:
+                        continue
+                    normalized_text = " ".join(existing_text.casefold().split())
+                    seen.add((entity, normalized_text))
             added = 0
             skipped = 0
             for candidate in entries:
