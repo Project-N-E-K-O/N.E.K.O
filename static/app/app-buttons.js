@@ -3434,7 +3434,10 @@
                             return null;
                         }
                         if (desktopRegionResult.pinned) {
-                            return null;
+                            return {
+                                pinned: true,
+                                pinId: desktopRegionResult.pinId || null
+                            };
                         }
                         return {
                             dataUrl: desktopRegionResult.dataUrl,
@@ -3610,6 +3613,9 @@
                 window.showStatusToast(window.t ? window.t('app.capturing') : '\u6B63\u5728\u622A\u56FE...', 2000);
 
                 var result = await mod.captureScreenshotDataUrl();
+                if (result && result.pinned) {
+                    return;
+                }
                 if (!result) {
                     window.showStatusToast(window.t ? window.t('app.screenshotCancelled') : '\u5DF2\u53D6\u6D88\u622A\u56FE', 2000);
                     return;

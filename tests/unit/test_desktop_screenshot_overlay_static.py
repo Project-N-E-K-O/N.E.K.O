@@ -49,6 +49,26 @@ def test_desktop_pin_is_opt_in_and_does_not_enter_chat_attachments():
     assert "if (desktopRegionResult.pinned)" in APP_BUTTONS
 
 
+def test_successful_desktop_pin_is_not_reported_as_cancelled():
+    capture_block = APP_BUTTONS.split(
+        "mod.captureScreenshotDataUrl = async function captureScreenshotDataUrl()",
+        1,
+    )[1].split("window.captureScreenshotDataUrl = mod.captureScreenshotDataUrl", 1)[0]
+    pending_block = APP_BUTTONS.split(
+        "mod.captureScreenshotToPendingList = async function captureScreenshotToPendingList()",
+        1,
+    )[1].split("screenshotButton.addEventListener", 1)[0]
+
+    assert "pinned: true" in capture_block
+    assert "pinId: desktopRegionResult.pinId || null" in capture_block
+    assert pending_block.index("if (result && result.pinned)") < pending_block.index(
+        "if (!result)"
+    )
+    assert pending_block.index("if (result && result.pinned)") < pending_block.index(
+        "app.screenshotCancelled"
+    )
+
+
 def test_react_chat_marks_screenshot_capability_ready_after_binding_the_button():
     button_index = APP_BUTTONS.index(
         "screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);"
