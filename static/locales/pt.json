@@ -2648,10 +2648,10 @@
             "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde."
         },
         "gameModeBeta": {
-            "enabledNotice": "O modo lateral está ativo. Arraste o Live2D para uma borda da tela para ele espiar; a pressão de recursos é apenas registrada e nunca altera o modelo automaticamente.",
+            "enabledNotice": "O modo de borda Beta está ativo. Arraste o Live2D para uma borda da tela para ele espiar; a pressão de recursos é apenas registrada e nunca altera o modelo automaticamente.",
             "autoSwitchNotice": "O uso de {metric} permaneceu alto, então a NEKO mudou para a forma de gato para reduzir recursos.",
-            "disabledNotice": "O modo lateral está desativado. O Live2D voltou ao encaixe normal nas bordas.",
-            "toggleFailed": "Não foi possível alternar o modo de jogo. Tente novamente mais tarde.",
+            "disabledNotice": "O modo de borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
+            "toggleFailed": "Não foi possível alternar o modo de borda Beta. Tente novamente mais tarde.",
             "memoryMetric": "memória",
             "resourceMetric": "recursos",
             "statusOn": "Ativado",
@@ -2678,7 +2678,7 @@
             "widgetModeTooltip": "Ative manualmente o modo de encaixe para o Live2D espiar por seis âncoras da borda.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
-            "gameModeBeta": "Modo lateral",
+            "gameModeBeta": "Modo de borda Beta",
             "gameModeBetaTooltip": "Arraste o Live2D para a borda esquerda ou direita da tela para ele espiar. A pressão de CPU, memória e GPU é apenas diagnóstica e nunca altera o modelo automaticamente.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",

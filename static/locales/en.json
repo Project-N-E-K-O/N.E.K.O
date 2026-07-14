@@ -2648,10 +2648,10 @@
             "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
         },
         "gameModeBeta": {
-            "enabledNotice": "Side Mode is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
+            "enabledNotice": "Edge Mode Beta is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
             "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
-            "disabledNotice": "Side Mode is off. Live2D now uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Game Mode. Please try again later.",
+            "disabledNotice": "Edge Mode Beta is off. Live2D now uses normal edge snapping.",
+            "toggleFailed": "Failed to switch Edge Mode Beta. Please try again later.",
             "memoryMetric": "memory",
             "resourceMetric": "resource",
             "statusOn": "On",
@@ -2678,7 +2678,7 @@
             "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
-            "gameModeBeta": "Side Mode",
+            "gameModeBeta": "Edge Mode Beta",
             "gameModeBetaTooltip": "Drag Live2D to the left or right screen edge to make it peek. CPU, memory, and GPU pressure is diagnostic only and never changes the model automatically.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
