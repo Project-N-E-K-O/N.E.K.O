@@ -647,6 +647,24 @@ async def test_cosyvoice_design_endpoint_enforces_documented_prompt_max():
     assert response.status_code == 400
     assert body["code"] == "VOICE_DESIGN_PROMPT_TOO_LONG"
     assert body["max"] == 500
+    assert body["details"] == {"max": 500}
+
+
+@pytest.mark.unit
+async def test_elevenlabs_design_endpoint_exposes_prompt_min_for_i18n():
+    from main_routers.characters_router import voice_cloning as cr
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "elevenlabs",
+        "prefix": "aria",
+        "voice_prompt": "too short",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PROMPT_TOO_SHORT"
+    assert body["min"] == 20
+    assert body["details"] == {"min": 20}
 
 
 @pytest.mark.unit

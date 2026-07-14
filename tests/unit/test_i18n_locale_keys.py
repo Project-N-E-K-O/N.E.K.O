@@ -37,6 +37,11 @@ CHARACTER_MANAGER_VOICE_KEYS = (
     "voice.nativeVoice.wenrounansheng",
 )
 
+VOICE_DESIGN_ERROR_KEYS = (
+    "errors.VOICE_DESIGN_PROMPT_TOO_SHORT",
+    "errors.VOICE_DESIGN_PROMPT_TOO_LONG",
+)
+
 CHARACTER_MANAGER_JS = REPO_ROOT / "static" / "js" / "character_card_manager.js"
 
 PNG_TUBER_PREVIEW_LABELS = {
@@ -175,6 +180,19 @@ def test_character_manager_voice_source_labels_exist_in_all_locales():
     for locale_path in sorted(LOCALES_DIR.glob("*.json")):
         data = json.loads(locale_path.read_text(encoding="utf-8"))
         missing = [key for key in CHARACTER_MANAGER_VOICE_KEYS if not _has_nested_key(data, key)]
+        if missing:
+            missing_by_locale[locale_path.name] = missing
+
+    assert missing_by_locale == {}
+
+
+@pytest.mark.unit
+def test_voice_design_constraint_errors_exist_in_all_locales():
+    missing_by_locale: dict[str, list[str]] = {}
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        missing = [key for key in VOICE_DESIGN_ERROR_KEYS if not _has_nested_key(data, key)]
         if missing:
             missing_by_locale[locale_path.name] = missing
 

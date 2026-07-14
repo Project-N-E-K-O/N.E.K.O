@@ -390,6 +390,52 @@ def test_voice_design_toggle_for_supported_providers_except_vllm_omni(mock_page:
 
 
 @pytest.mark.frontend
+def test_elevenlabs_design_hint_falls_back_when_constraints_are_missing(mock_page: Page, running_server: str):
+    providers_response = json.loads(json.dumps(VOICE_CLONE_API_PROVIDERS_RESPONSE))
+    elevenlabs = next(meta for meta in providers_response["tts_providers"] if meta["key"] == "elevenlabs")
+    elevenlabs["voice_design"] = {}
+
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.route(
+            "**/api/config/api_providers",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(providers_response),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'elevenlabs';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        mock_page.locator("#btnVoiceSourceDesign").click()
+
+        expect(mock_page.locator("#voiceDesignHint")).to_contain_text("声音克隆")
+        expect(mock_page.locator("#voiceDesignHint")).not_to_contain_text("NaN")
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+
+
+@pytest.mark.frontend
 def test_voice_design_submit_creates_voice_without_preview_audio_ui(mock_page: Page, running_server: str):
     captured = {}
     try:

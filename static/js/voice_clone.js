@@ -1459,19 +1459,22 @@ function updateVoiceDesignHint(provider) {
         const constraints = getVoiceDesignMetadata(provider);
         const promptMin = Number(constraints.prompt_min);
         const promptMax = Number(constraints.prompt_max);
-        setVoiceCloneI18nText(
-            hint,
-            'voice.designHintElevenlabs',
-            `Describe only the voice, not the character personality. ElevenLabs requires ${promptMin}-${promptMax} characters.`,
-            { min: promptMin, max: promptMax }
-        );
-    } else {
-        setVoiceCloneI18nText(
-            hint,
-            'voice.designHint',
-            'Describe only the voice, not the character personality. Previews use the same template as Voice Cloning.'
-        );
+        if (Number.isFinite(promptMin) && promptMin > 0 && Number.isFinite(promptMax) && promptMax >= promptMin) {
+            setVoiceCloneI18nText(
+                hint,
+                'voice.designHintElevenlabs',
+                `Describe only the voice, not the character personality. ElevenLabs requires ${promptMin}-${promptMax} characters.`,
+                { min: promptMin, max: promptMax }
+            );
+            return;
+        }
     }
+
+    setVoiceCloneI18nText(
+        hint,
+        'voice.designHint',
+        'Describe only the voice, not the character personality. Previews use the same template as Voice Cloning.'
+    );
 }
 
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端

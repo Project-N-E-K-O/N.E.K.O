@@ -926,12 +926,14 @@ async def voice_design(request: Request):
             'error': 'VOICE_DESIGN_PROMPT_TOO_SHORT',
             'code': 'VOICE_DESIGN_PROMPT_TOO_SHORT',
             'min': prompt_min,
+            'details': {'min': prompt_min},
         }, status_code=400)
     if prompt_max is not None and len(voice_prompt) > prompt_max:
         return JSONResponse({
             'error': 'VOICE_DESIGN_PROMPT_TOO_LONG',
             'code': 'VOICE_DESIGN_PROMPT_TOO_LONG',
             'max': prompt_max,
+            'details': {'max': prompt_max},
         }, status_code=400)
 
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
