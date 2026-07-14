@@ -177,6 +177,17 @@ def _validate_local_mutation_request(
     if has_valid_csrf and has_valid_origin:
         return None
 
+    # 端口无关的 hostname 降级匹配：Docker 端口映射下内部端口（如 48911）
+    # 与浏览器 Origin 端口（如 1081）不一致，CSRF token 有效时放宽检查
+    if has_valid_csrf and request_origin:
+        parsed_origin = urlparse(request_origin)
+        origin_host = parsed_origin.hostname
+        if origin_host:
+            for allowed in allowed_origins:
+                parsed_allowed = urlparse(allowed)
+                if parsed_allowed.hostname == origin_host:
+                    return None
+
     logger.warning(
         "Rejected local mutation request due to failed CSRF/origin validation: "
         "method=%r path=%r origin=%r allowed_origins=%r has_csrf=%s referer=%r",
