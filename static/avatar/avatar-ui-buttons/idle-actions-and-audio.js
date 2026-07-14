@@ -305,7 +305,11 @@ function _getNekoIdleCat1PlayYarnReleasePayload(button, state, reason) {
         : null;
     if (!rect || rect.width <= 0 || rect.height <= 0) return payload;
 
-    const ballSize = _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX;
+    // 原生 Wayland bridge 接收 58px 可见矩形，并在 Chat preload 中转换回
+    // 88px 输入锚点；继续发送最终目标，避免只解除隐藏却留在上一次 pair-move 位置。
+    const ballSize = _isNekoIdleCat1NativeWaylandSelfBallRuntime()
+        ? _NEKO_IDLE_CAT1_NATIVE_YARN_VISIBLE_SIZE_PX
+        : _NEKO_IDLE_CAT1_PLAY_YARN_RELEASE_SIZE_PX;
     const gap = 12;
     const facingRight = state && typeof state.releaseFacingRight === 'boolean'
         ? state.releaseFacingRight

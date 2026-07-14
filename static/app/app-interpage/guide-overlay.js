@@ -221,6 +221,9 @@
 
     I.isYuiGuideLifecycleScopedAction = function isYuiGuideLifecycleScopedAction(action) {
         switch (action) {
+            // 教程准备会改写当前胶囊快照；必须和后续 fixed-layout 一样绑定当前 run，
+            // 否则快速重启时迟到的旧 prepare 会覆盖新教程的恢复身份。
+            case 'yui_guide_prepare_compact_chat':
             case 'yui_guide_set_chat_buttons_disabled':
             case 'yui_guide_set_chat_input_locked':
             case 'yui_guide_set_compact_chat_fixed_layout':

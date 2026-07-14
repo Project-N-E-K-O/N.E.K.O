@@ -38,6 +38,7 @@ import tempfile
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from PIL import Image
+from utils.pyautogui_diagnostics import classify_pyautogui_import_error
 from utils.screenshot_utils import (
     compress_screenshot,
     COMPRESS_TARGET_HEIGHT,
@@ -138,8 +139,21 @@ async def backend_screenshot(request: Request):
 
     try:
         import pyautogui
-    except ImportError:
-        return _json_no_store_response({"success": False, "error": "pyautogui not installed"}, status_code=501)
+    except Exception as exc:
+        reason = classify_pyautogui_import_error(exc, platform_name=sys.platform)
+        logger.error(
+            "后端截图初始化失败: reason=%s, error_type=%s",
+            reason,
+            type(exc).__name__,
+        )
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "pyautogui unavailable",
+                "reason": reason,
+            },
+            status_code=501,
+        )
 
     try:
         def _capture_rgb_screenshot():

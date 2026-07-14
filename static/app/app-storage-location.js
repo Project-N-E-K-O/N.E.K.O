@@ -5,6 +5,7 @@
     var STORAGE_RESTART_MESSAGE_TYPE = 'storage_location_restart_initiated';
     var STORAGE_RESTART_CHANNEL = 'neko_storage_location_channel';
     var STORAGE_COMPLETION_NOTICE_DISMISSED_KEY = 'neko.storageLocation.completionNoticeDismissedKey.v1';
+    var HOME_TUTORIAL_STARTUP_RELEASE_EVENT = 'neko:startup-greeting-release';
     var STORAGE_RESTART_PAGE_ID = window.__nekoStorageLocationPageId || (
         'storage-location-' + Date.now() + '-' + Math.random().toString(36).slice(2)
     );
@@ -46,6 +47,8 @@
         completionPollTimer: null,
         completionPollAttempts: 0,
         completionNotice: null,
+        completionNoticeStartupReleased: false,
+        completionNoticeDeferredKey: '',
         completionCard: null,
         completionTitle: null,
         completionTarget: null,
@@ -174,6 +177,18 @@
         if (state.completionCard) {
             state.completionCard.hidden = true;
         }
+    }
+
+    function deferCompletionNoticeForSession() {
+        state.completionNoticeDeferredKey = buildCompletionNoticeDismissKey(state.completionNotice);
+        if (state.completionCard) {
+            state.completionCard.hidden = true;
+        }
+    }
+
+    function isCompletionNoticeDeferredForSession(notice) {
+        var key = buildCompletionNoticeDismissKey(notice);
+        return !!key && state.completionNoticeDeferredKey === key;
     }
 
     function trimPathTrailingSeparators(value) {
@@ -1084,32 +1099,36 @@
         card.appendChild(buildStorageLocationCloseButton(dismissCompletionNotice));
 
         var title = createElement('h3', 'storage-location-panel-title', translate('storage.completionTitle', '存储迁移已完成'));
-        var pathList = createElement('div', 'storage-location-path-list');
+        var pathList = createElement('div', 'storage-location-path-list storage-location-completion-path-list');
 
-        var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget');
-        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '旧数据目录'), 'completionRetained');
-        pathList.appendChild(targetItem);
-        pathList.appendChild(retainedItem);
-
-        var actions = createElement('div', 'storage-location-actions');
-        var openTargetButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openTargetRoot', '打开当前路径'));
+        var targetItem = buildInfoPathRow(translate('storage.targetLabel', '当前生效路径'), 'completionTarget', 'storage-location-completion-path-item');
+        var retainedItem = buildInfoPathRow(translate('storage.retainedRoot', '旧数据目录'), 'completionRetained', 'storage-location-completion-path-item');
+        var openTargetButton = createElement('button', 'storage-location-completion-link', translate('storage.openTargetRoot', '打开当前路径'));
         openTargetButton.type = 'button';
         openTargetButton.addEventListener('click', function () {
             openPathWithHostBridge(state.completionNotice && state.completionNotice.target_root);
         });
-        actions.appendChild(openTargetButton);
+        targetItem.appendChild(openTargetButton);
 
-        var openRetainedButton = createElement('button', 'storage-location-btn storage-location-btn--secondary', translate('storage.openRetainedRoot', '打开旧数据目录'));
+        var openRetainedButton = createElement('button', 'storage-location-completion-link', translate('storage.openRetainedRoot', '打开旧数据目录'));
         openRetainedButton.type = 'button';
         openRetainedButton.addEventListener('click', function () {
             openPathWithHostBridge(state.completionNotice && state.completionNotice.retained_root);
         });
-        actions.appendChild(openRetainedButton);
+        retainedItem.appendChild(openRetainedButton);
+        pathList.appendChild(targetItem);
+        pathList.appendChild(retainedItem);
 
-        var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据目录'));
+        var actions = createElement('div', 'storage-location-actions storage-location-completion-actions');
+        var cleanupButton = createElement('button', 'storage-location-btn storage-location-btn--primary', translate('storage.cleanupRetainedRoot', '清理旧数据'));
         cleanupButton.type = 'button';
         cleanupButton.addEventListener('click', cleanupRetainedSourceRoot);
         actions.appendChild(cleanupButton);
+
+        var deferButton = createElement('button', 'storage-location-btn storage-location-completion-later', translate('storage.deferRetainedRootCleanup', '暂时不处理'));
+        deferButton.type = 'button';
+        deferButton.addEventListener('click', deferCompletionNoticeForSession);
+        actions.appendChild(deferButton);
 
         state.completionCard = card;
         state.completionTitle = title;
@@ -1203,6 +1222,18 @@
             }
             return;
         }
+        if (isCompletionNoticeDeferredForSession(state.completionNotice)) {
+            if (state.completionCard) {
+                state.completionCard.hidden = true;
+            }
+            return;
+        }
+        if (!state.completionNoticeStartupReleased) {
+            if (state.completionCard) {
+                state.completionCard.hidden = true;
+            }
+            return;
+        }
 
         var card = buildCompletionNoticeCard();
         state.completionTarget.textContent = String(state.completionNotice.target_root || '').trim();
@@ -1211,6 +1242,25 @@
         state.completionOpenRetainedButton.hidden = !String(state.completionNotice.retained_root || '').trim();
         state.completionCleanupButton.hidden = !state.completionNotice.cleanup_available;
         card.hidden = false;
+    }
+
+    function handleHomeTutorialStartupRelease(event) {
+        var detail = event && event.detail;
+        if (!detail || typeof detail.released !== 'boolean') {
+            return;
+        }
+
+        // Storage initializes before the tutorial manager. Keep this gate closed by default,
+        // then follow the manager's teardown-safe release signal instead of tutorial-completed.
+        state.completionNoticeStartupReleased = detail.released === true;
+        if (!state.completionNoticeStartupReleased) {
+            if (state.completionCard) {
+                state.completionCard.hidden = true;
+            }
+            return;
+        }
+
+        applyCompletionNotice(state.completionNotice);
     }
 
     async function checkReadyStateCompletionNotice() {
@@ -2336,6 +2386,7 @@
         if (event.origin !== window.location.origin) return;
         handleExternalStorageRestartMessage(event.data);
     });
+    window.addEventListener(HOME_TUTORIAL_STARTUP_RELEASE_EVENT, handleHomeTutorialStartupRelease);
 
     try {
         if (typeof BroadcastChannel !== 'undefined') {
