@@ -122,6 +122,23 @@ def test_unicode_word_ngrams_by_language(language, phrase, normalized):
     assert _candidate(report, normalized)["occurrence_count"] == 3
 
 
+def test_word_tokenization_normalizes_decomposed_accents_before_counting():
+    messages = [
+        miner.SourceMessage("pt", "café tranquilo", 1),
+        miner.SourceMessage("pt", "cafe\u0301 tranquilo", 2),
+        miner.SourceMessage("pt", "cafe\u0301 tranquilo", 3),
+    ]
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(),
+        rules_by_language={},
+    )
+
+    assert _candidate(report, "café tranquilo")["occurrence_count"] == 3
+
+
 @pytest.mark.parametrize(
     ("language", "phrase"),
     [
@@ -274,6 +291,25 @@ def test_traditional_chinese_is_not_covered_by_simplified_runtime_rules():
     )
 
     assert _candidate(report, phrase)["covered_by_rule_ids"] == []
+
+
+def test_cjk_coverage_checks_the_complete_matched_collocation():
+    phrase = "嘴角微微勾起一抹笑意"
+    messages = [miner.SourceMessage("zh-CN", phrase, index) for index in range(1, 4)]
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(),
+    )
+    assert _candidate(report, "嘴角微微")["covered_by_rule_ids"] == ["ZH_002"]
+
+    excluded = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(exclude_covered=True),
+    )
+    assert excluded["candidates"] == []
 
 
 def test_output_schema_is_pending_and_not_a_runtime_rule_schema():

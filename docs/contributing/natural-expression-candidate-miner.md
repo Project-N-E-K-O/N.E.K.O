@@ -70,6 +70,9 @@ opposite sides of `。`, `！`, `？`, `，`, or related punctuation.
 
 Fenced code, inline code, URLs, numeric-only material, and obvious placeholder
 templates are excluded. System and user content never enters candidate counts.
+Coverage is checked against complete punctuation-bounded assistant fragments in
+memory, so a runtime pattern longer than an individual n-gram can still be
+recognized. Those source fragments are never written to the review artifact.
 
 ## Review artifact
 

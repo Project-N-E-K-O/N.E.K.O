@@ -127,6 +127,7 @@ class _CandidateStats:
     occurrence_count: int
     source_lines: set[int]
     phrases: set[str]
+    coverage_texts: set[str]
 
 
 def normalize_language(raw: str) -> str:
@@ -322,24 +323,33 @@ def _is_meaningful(value: str, min_length: int) -> bool:
     return len(compact) >= min_length and any(char.isalpha() for char in compact)
 
 
-def _word_candidates(text: str, config: MiningConfig) -> Iterator[tuple[str, str]]:
+def _word_candidates(
+    text: str,
+    config: MiningConfig,
+) -> Iterator[tuple[str, str, str]]:
     for unprotected in _unprotected_segments(text):
         for segment in _TEXT_BOUNDARY_RE.split(unprotected):
+            normalized_segment = unicodedata.normalize("NFKC", segment)
             token_run: list[str] = []
-            for match in _WORD_RE.finditer(segment):
-                token = unicodedata.normalize("NFKC", match.group(0))
+            for match in _WORD_RE.finditer(normalized_segment):
+                token = match.group(0)
                 if not any(char.isalpha() for char in token):
-                    yield from _word_run_candidates(token_run, config)
+                    yield from _word_run_candidates(
+                        token_run,
+                        config,
+                        normalized_segment,
+                    )
                     token_run = []
                     continue
                 token_run.append(token)
-            yield from _word_run_candidates(token_run, config)
+            yield from _word_run_candidates(token_run, config, normalized_segment)
 
 
 def _word_run_candidates(
     token_run: Sequence[str],
     config: MiningConfig,
-) -> Iterator[tuple[str, str]]:
+    coverage_text: str,
+) -> Iterator[tuple[str, str, str]]:
     for gram in _bounded_ngrams(
         token_run,
         config.word_ngram_min,
@@ -348,7 +358,7 @@ def _word_run_candidates(
         phrase = " ".join(gram)
         normalized = " ".join(token.casefold() for token in gram)
         if _is_meaningful(normalized, config.min_length):
-            yield normalized, phrase
+            yield normalized, phrase, coverage_text
 
 
 def _is_han(char: str) -> bool:
@@ -398,25 +408,27 @@ def _character_candidates(
     text: str,
     config: MiningConfig,
     predicate,
-) -> Iterator[tuple[str, str]]:
+) -> Iterator[tuple[str, str, str]]:
     for unprotected in _unprotected_segments(text):
-        for run in _script_runs(unprotected, predicate):
-            characters = list(run)
-            for gram in _bounded_ngrams(
-                characters,
-                config.cjk_ngram_min,
-                config.cjk_ngram_max,
-            ):
-                phrase = "".join(gram)
-                normalized = phrase.casefold()
-                if _is_meaningful(normalized, config.min_length):
-                    yield normalized, phrase
+        for segment in _TEXT_BOUNDARY_RE.split(unprotected):
+            coverage_text = unicodedata.normalize("NFKC", segment)
+            for run in _script_runs(coverage_text, predicate):
+                characters = list(run)
+                for gram in _bounded_ngrams(
+                    characters,
+                    config.cjk_ngram_min,
+                    config.cjk_ngram_max,
+                ):
+                    phrase = "".join(gram)
+                    normalized = phrase.casefold()
+                    if _is_meaningful(normalized, config.min_length):
+                        yield normalized, phrase, coverage_text
 
 
 def _message_candidates(
     message: SourceMessage,
     config: MiningConfig,
-) -> Iterator[tuple[str, str]]:
+) -> Iterator[tuple[str, str, str]]:
     language = message.language
     if language in _WHITESPACE_LANGUAGES:
         yield from _word_candidates(message.content, config)
@@ -444,9 +456,13 @@ def _coverage_language(language: str) -> str:
 def _covered_rule_ids(
     language: str,
     phrases: Iterable[str],
+    coverage_texts: Iterable[str],
     rules_by_language: Mapping[str, Sequence[Mapping[str, object]]],
 ) -> list[str]:
     covered: set[str] = set()
+    normalized_phrases = {
+        unicodedata.normalize("NFKC", phrase).casefold() for phrase in phrases
+    }
     for rule in rules_by_language.get(_coverage_language(language), ()):
         rule_id = rule.get("id")
         pattern = rule.get("find")
@@ -459,8 +475,15 @@ def _covered_rule_ids(
             raise CandidateMinerError(
                 f"existing rule {rule_id} has an invalid pattern"
             ) from exc
-        if any(compiled.search(phrase) for phrase in phrases):
-            covered.add(rule_id)
+        for coverage_text in coverage_texts:
+            if any(
+                normalized_phrase
+                in unicodedata.normalize("NFKC", match.group(0)).casefold()
+                for match in compiled.finditer(coverage_text)
+                for normalized_phrase in normalized_phrases
+            ):
+                covered.add(rule_id)
+                break
     return sorted(covered)
 
 
@@ -488,15 +511,16 @@ def build_report(
     stats: dict[tuple[str, str], _CandidateStats] = {}
 
     for message in messages:
-        for normalized, phrase in _message_candidates(message, config):
+        for normalized, phrase, coverage_text in _message_candidates(message, config):
             key = (message.language, normalized)
             candidate_stats = stats.get(key)
             if candidate_stats is None:
-                candidate_stats = _CandidateStats(0, set(), set())
+                candidate_stats = _CandidateStats(0, set(), set(), set())
                 stats[key] = candidate_stats
             candidate_stats.occurrence_count += 1
             candidate_stats.source_lines.add(message.source_line)
             candidate_stats.phrases.add(phrase)
+            candidate_stats.coverage_texts.add(coverage_text)
 
     candidates: list[dict[str, object]] = []
     for (language, normalized), candidate_stats in stats.items():
@@ -505,6 +529,7 @@ def build_report(
         covered_by = _covered_rule_ids(
             language,
             sorted(candidate_stats.phrases),
+            sorted(candidate_stats.coverage_texts),
             current_rules,
         )
         if config.exclude_covered and covered_by:
