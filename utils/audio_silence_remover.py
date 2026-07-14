@@ -96,15 +96,15 @@ CancelledError = SilenceRemovalCancelledError
 
 
 def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
-    """Convert raw PCM bytes to a float64 numpy array (range -1.0 ~ 1.0)"""
+    """Convert raw PCM bytes to a float32 numpy array (range -1.0 ~ 1.0)."""
     if sample_width == 1:
         # 8-bit unsigned
-        arr = np.frombuffer(data, dtype=np.uint8).astype(np.float64)
-        arr = (arr - 128.0) / 128.0
+        arr = np.frombuffer(data, dtype=np.uint8).astype(np.float32)
+        arr = (arr - np.float32(128.0)) / np.float32(128.0)
     elif sample_width == 2:
         # 16-bit signed
-        arr = np.frombuffer(data, dtype=np.int16).astype(np.float64)
-        arr = arr / 32768.0
+        arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        arr = arr / np.float32(32768.0)
     elif sample_width == 3:
         # 24-bit signed – numpy 向量化解码
         n_samples = len(data) // 3
@@ -115,18 +115,18 @@ def _samples_to_float(data: bytes, sample_width: int) -> np.ndarray:
                | (raw[:, 2].astype(np.int32) << 16))
         # 符号扩展: 如果最高位 (bit 23) 为 1，扩展为负数
         i32[i32 >= 0x800000] -= 0x1000000
-        arr = i32.astype(np.float64) / 8388608.0
+        arr = i32.astype(np.float32) / np.float32(8388608.0)
     elif sample_width == 4:
         # 32-bit signed
-        arr = np.frombuffer(data, dtype=np.int32).astype(np.float64)
-        arr = arr / 2147483648.0
+        arr = np.frombuffer(data, dtype=np.int32).astype(np.float32)
+        arr = arr / np.float32(2147483648.0)
     else:
         raise ValueError(f"不支持的采样宽度: {sample_width} bytes")
     return arr
 
 
 def _float_to_samples(arr: np.ndarray, sample_width: int) -> bytes:
-    """Convert a float64 numpy array (-1.0 ~ 1.0) back to raw PCM bytes"""
+    """Convert a floating-point numpy array (-1.0 ~ 1.0) to raw PCM bytes."""
     arr = np.clip(arr, -1.0, 1.0)
     if sample_width == 1:
         out = ((arr * 128.0) + 128.0).astype(np.uint8)
@@ -324,14 +324,6 @@ def trim_silence(
         n_frames = wf.getnframes()
         raw_data = wf.readframes(n_frames)
 
-    float_samples = _samples_to_float(raw_data, sample_width)
-
-    # 对于多声道，reshape 为 (n_frames, channels)
-    if channels > 1:
-        float_samples = float_samples.reshape(-1, channels)
-    else:
-        float_samples = float_samples.reshape(-1, 1)
-
     # 每侧保留的采样数
     retain_half_samples = int(sample_rate * (RETAINED_SILENCE_MS / 2) / 1000.0)
 
@@ -340,66 +332,55 @@ def trim_silence(
 
     # 按顺序遍历音频，对每段静音只保留首尾各 retain_half，移除正中间部分
     total_segs = len(analysis.silence_segments)
-    result_parts: list[np.ndarray] = []
     prev_end = 0  # 上一次拷贝到的样本位置
-
-    for idx, seg in enumerate(analysis.silence_segments):
-        if cancel_check and cancel_check():
-            raise SilenceRemovalCancelledError("裁剪处理已被用户取消")
-
-        seg_start = int(seg.start_ms * sample_rate / 1000.0)
-        seg_end = int(seg.end_ms * sample_rate / 1000.0)
-
-        # 计算中心裁剪区域
-        cut_start = seg_start + retain_half_samples  # 前半保留结束点
-        cut_end = seg_end - retain_half_samples       # 后半保留起始点
-
-        if cut_start >= cut_end:
-            # 静音段不足以裁剪（≤ RETAINED_SILENCE_MS），保留完整静音
-            continue
-
-        # 拷贝: 从 prev_end 到 cut_start（包含语音 + 静音前半段保留）
-        if cut_start > prev_end:
-            result_parts.append(float_samples[prev_end:cut_start])
-
-        # 跳过中间部分 [cut_start, cut_end)
-        prev_end = cut_end
-
-        # 进度回调
-        if progress_callback:
-            pct = int(((idx + 1) / total_segs) * 100)
-            progress_callback(min(pct, 100))
-
-    # 拷贝最后一段静音之后的剩余音频
-    total_samples_per_channel = float_samples.shape[0]
-    if prev_end < total_samples_per_channel:
-        result_parts.append(float_samples[prev_end:total_samples_per_channel])
-
-    if not result_parts:
-        # 极端情况：没有任何内容需要保留（理论上不会发生）
-        result_parts.append(float_samples[:0])  # 空数组，保持 shape 兼容
-
-    # 拼接所有段
-    final_samples = np.concatenate(result_parts, axis=0)
-
-    # reshape 回一维 (多声道交错)
-    final_flat = final_samples.reshape(-1)
-
-    # 转回 PCM bytes
-    pcm_data = _float_to_samples(final_flat, sample_width)
-
-    # 写入 WAV
+    kept_frames = 0
+    frame_width = sample_width * channels
+    raw_view = memoryview(raw_data)
     output_buf = io.BytesIO()
     with wave.open(output_buf, 'wb') as out_wf:
         out_wf.setnchannels(channels)
         out_wf.setsampwidth(sample_width)
         out_wf.setframerate(sample_rate)
-        out_wf.writeframes(pcm_data)
+
+        for idx, seg in enumerate(analysis.silence_segments):
+            if cancel_check and cancel_check():
+                raise SilenceRemovalCancelledError("裁剪处理已被用户取消")
+
+            seg_start = int(seg.start_ms * sample_rate / 1000.0)
+            seg_end = int(seg.end_ms * sample_rate / 1000.0)
+
+            # 计算中心裁剪区域
+            cut_start = seg_start + retain_half_samples  # 前半保留结束点
+            cut_end = seg_end - retain_half_samples       # 后半保留起始点
+
+            if cut_start >= cut_end:
+                # 静音段不足以裁剪（≤ RETAINED_SILENCE_MS），保留完整静音
+                continue
+
+            # 直接写入原始 PCM 帧，避免浮点往返和整段 concatenate。
+            if cut_start > prev_end:
+                out_wf.writeframesraw(
+                    raw_view[prev_end * frame_width : cut_start * frame_width]
+                )
+                kept_frames += cut_start - prev_end
+
+            # 跳过中间部分 [cut_start, cut_end)
+            prev_end = cut_end
+
+            # 进度回调
+            if progress_callback:
+                pct = int(((idx + 1) / total_segs) * 100)
+                progress_callback(min(pct, 100))
+
+        # 拷贝最后一段静音之后的剩余音频
+        if prev_end < n_frames:
+            out_wf.writeframesraw(raw_view[prev_end * frame_width :])
+            kept_frames += n_frames - prev_end
 
     output_data = output_buf.getvalue()
     md5 = hashlib.md5(output_data).hexdigest()
 
-    trimmed_duration_ms = (final_samples.shape[0] / sample_rate) * 1000.0
+    trimmed_duration_ms = (kept_frames / sample_rate) * 1000.0
 
     if progress_callback:
         progress_callback(100)
