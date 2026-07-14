@@ -48,7 +48,9 @@ class SileroVad(OnnxModelRuntime):
             while self._pending.size >= self.WINDOW_SAMPLES:
                 window = self._pending[: self.WINDOW_SAMPLES]
                 self._pending = self._pending[self.WINDOW_SAMPLES :]
-                model_input = np.concatenate((self._context, window))[None].astype(np.float32)
+                model_input = np.concatenate((self._context, window))[None].astype(
+                    np.float32
+                )
                 outputs = self._run_session(
                     None,
                     {
@@ -88,22 +90,27 @@ class SileroActivityGate:
         self._speech_confirmed = False
         self._candidate_emitted = False
 
-    def feed(self, pcm16_le: bytes) -> SpeechActivityEvent:
+    def feed(self, pcm16_le: bytes) -> tuple[SpeechActivityEvent, ...]:
         return self.process_probabilities(self._vad.process_pcm16(pcm16_le))
 
-    def process_probabilities(self, probabilities: Iterable[float]) -> SpeechActivityEvent:
-        event = SpeechActivityEvent.NONE
+    def process_probabilities(
+        self, probabilities: Iterable[float]
+    ) -> tuple[SpeechActivityEvent, ...]:
+        events: list[SpeechActivityEvent] = []
         for probability in probabilities:
             if probability >= self._config.onset_probability:
                 was_paused = self._candidate_emitted
                 self._speech_windows += 1
                 self._silence_windows = 0
                 self._candidate_emitted = False
-                if not self._speech_confirmed and self._speech_windows >= self._minimum_speech_windows:
+                if (
+                    not self._speech_confirmed
+                    and self._speech_windows >= self._minimum_speech_windows
+                ):
                     self._speech_confirmed = True
-                    event = SpeechActivityEvent.SPEECH_STARTED
+                    events.append(SpeechActivityEvent.SPEECH_STARTED)
                 elif self._speech_confirmed and was_paused:
-                    event = SpeechActivityEvent.SPEECH_RESUMED
+                    events.append(SpeechActivityEvent.SPEECH_RESUMED)
             elif probability < self._config.offset_probability:
                 if not self._speech_confirmed:
                     self._speech_windows = 0
@@ -114,5 +121,5 @@ class SileroActivityGate:
                     and self._silence_windows >= self._candidate_silence_windows
                 ):
                     self._candidate_emitted = True
-                    event = SpeechActivityEvent.CANDIDATE_PAUSE
-        return event
+                    events.append(SpeechActivityEvent.CANDIDATE_PAUSE)
+        return tuple(events)
