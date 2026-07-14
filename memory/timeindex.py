@@ -274,7 +274,7 @@ class TimeIndexedMemory:
                     logger.error(f"[TimeIndexedMemory] 表 {table} 未能成功创建喵！")
 
     def _check_and_migrate_schema(self, engine, lanlan_name: str) -> None:
-        """Check and backfill the timestamp column table by table; each table handled independently so they can't affect each other."""
+        """Backfill timestamp columns and their read indexes table by table."""
         migration_errors = []
         for table_name in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
             table = self._validate_table_name(table_name)
@@ -284,8 +284,16 @@ class TimeIndexedMemory:
                     columns = [row[1] for row in result.fetchall()]
                     if 'timestamp' not in columns:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN timestamp DATETIME"))
-                        conn.commit()
                         logger.info(f"[TimeIndexedMemory] 已为 {lanlan_name} 的表 {table} 补齐 timestamp 列")
+                    # SQLite secondary indexes carry rowid as their implicit
+                    # tie-breaker, matching ORDER BY timestamp, rowid in the
+                    # paginated reader without requiring a redundant column.
+                    index_name = f"idx_{table}_timestamp"
+                    conn.execute(text(
+                        f"CREATE INDEX IF NOT EXISTS {index_name} "
+                        f"ON {table}(timestamp)"
+                    ))
+                    conn.commit()
             except Exception as exc:
                 logger.exception(f"[TimeIndexedMemory] 迁移 {lanlan_name} 表 {table} 失败")
                 migration_errors.append(f"{table}: {exc}")
@@ -502,7 +510,7 @@ class TimeIndexedMemory:
                 )
             except Exception as exc:
                 logger.warning(f"[TimeIndexedMemory] 分批读取原始对话失败: {exc}")
-                return
+                raise
             if not rows:
                 return
             if remaining is not None:
@@ -549,7 +557,7 @@ class TimeIndexedMemory:
                 )
             except Exception as exc:
                 logger.warning(f"[TimeIndexedMemory] 异步分批读取原始对话失败: {exc}")
-                return
+                raise
             if not rows:
                 return
             if remaining is not None:

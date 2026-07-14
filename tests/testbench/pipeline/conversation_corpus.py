@@ -253,6 +253,10 @@ def load_time_indexed_turns(
                     "origin": "time_indexed_db",
                 })
     except Exception as exc:  # noqa: BLE001 — soft error, never crash the graph
+        # A later batch may fail after earlier rows were normalized. Preserve
+        # the previous one-shot reader's all-or-empty contract rather than
+        # exposing an incomplete archive as a valid corpus prefix.
+        turns.clear()
         warnings.append(
             f"time_indexed.db 读取失败 ({type(exc).__name__}): {exc}"
         )

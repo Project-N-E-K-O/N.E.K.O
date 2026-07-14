@@ -254,7 +254,7 @@ def test_connection_is_closed_before_yield_and_fetchmany_is_bounded(timeindex_mo
     assert tracker["exits"] == 1
 
 
-def test_fetch_exception_is_soft_and_still_closes_connection(timeindex_module):
+def test_fetch_exception_propagates_and_still_closes_connection(timeindex_module):
     tracker = {"active": 0, "exits": 0, "threads": []}
     manager = _fake_manager(
         timeindex_module,
@@ -262,16 +262,35 @@ def test_fetch_exception_is_soft_and_still_closes_connection(timeindex_module):
         tracker,
     )
 
-    assert (
+    with pytest.raises(RuntimeError, match="read failed"):
         list(
             manager.iter_original_by_timeframe_batches(
                 "cat", _START, _END, batch_size=8
             )
         )
-        == []
-    )
     assert tracker["active"] == 0
     assert tracker["exits"] == 1
+
+
+def test_later_page_exception_marks_partial_iteration_failed(timeindex_module):
+    tracker = {"active": 0, "exits": 0, "threads": []}
+    manager = _fake_manager(
+        timeindex_module,
+        [
+            _FakeResult([("2026-01-01 00:00:00.000000", 1, "session", "message")]),
+            _FakeResult(error=RuntimeError("later page failed")),
+        ],
+        tracker,
+    )
+
+    iterator = manager.iter_original_by_timeframe_batches(
+        "cat", _START, _END, batch_size=1
+    )
+    assert next(iterator) == [("2026-01-01 00:00:00.000000", "session", "message")]
+    with pytest.raises(RuntimeError, match="later page failed"):
+        next(iterator)
+    assert tracker["active"] == 0
+    assert tracker["exits"] == 2
 
 
 @pytest.mark.asyncio
@@ -303,13 +322,39 @@ async def test_async_batches_finish_worker_connection_before_crossing_thread(
     await iterator.aclose()
 
 
+@pytest.mark.asyncio
+async def test_async_later_page_exception_propagates_after_closing_connection(
+    timeindex_module,
+):
+    tracker = {"active": 0, "exits": 0, "threads": []}
+    manager = _fake_manager(
+        timeindex_module,
+        [
+            _FakeResult([("2026-01-01 00:00:00.000000", 1, "session", "message")]),
+            _FakeResult(error=RuntimeError("async later page failed")),
+        ],
+        tracker,
+    )
+
+    iterator = manager.aiter_original_by_timeframe_batches(
+        "cat", _START, _END, batch_size=1
+    )
+    assert await anext(iterator) == [
+        ("2026-01-01 00:00:00.000000", "session", "message")
+    ]
+    with pytest.raises(RuntimeError, match="async later page failed"):
+        await anext(iterator)
+    assert tracker["active"] == 0
+    assert tracker["exits"] == 2
+
+
 def test_wide_corpus_reader_consumes_batches_and_still_cleans_up(
     timeindex_module,
     tmp_path,
     monkeypatch,
 ):
     logger_module = types.ModuleType("tests.testbench.logger")
-    logger_module.python_logger = lambda: _NullLogger()
+    logger_module.python_logger = _NullLogger
     monkeypatch.setitem(sys.modules, "tests.testbench.logger", logger_module)
 
     calls: dict = {"cleanup": 0}
@@ -338,6 +383,8 @@ def test_wide_corpus_reader_consumes_batches_and_still_cleans_up(
                 ("2026-01-01", "s0", '{"type":"human","data":{"content":"hello"}}'),
                 ("2026-01-02", "s1", '{"type":"ai","data":{"content":""}}'),
             ]
+            if calls.get("fail_after_first"):
+                raise RuntimeError("later page failed")
             yield [
                 ("2026-01-03", "s2", '{"type":"ai","data":{"content":"world"}}'),
             ]
@@ -372,6 +419,43 @@ def test_wide_corpus_reader_consumes_batches_and_still_cleans_up(
     assert calls["args"][0] == "cat"
     assert calls["args"][3:] == (module._TIME_INDEX_BATCH_SIZE, 3)
     assert calls["cleanup"] == 1
+
+    calls["fail_after_first"] = True
+    turns, warnings, present = module.load_time_indexed_turns("cat", limit_rows=3)
+    assert present is True
+    assert turns == []
+    assert len(warnings) == 1
+    assert "later page failed" in warnings[0]
+    assert calls["cleanup"] == 2
+
+
+def test_schema_migration_adds_timestamp_indexes(timeindex_module, tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
+    tables = [_TABLE, "time_indexed_compressed"]
+    try:
+        with engine.begin() as conn:
+            for table in tables:
+                conn.execute(
+                    text(f"CREATE TABLE {table} (session_id TEXT, message TEXT)")
+                )
+
+        manager = timeindex_module.TimeIndexedMemory.__new__(
+            timeindex_module.TimeIndexedMemory
+        )
+        manager._check_and_migrate_schema(engine, "cat")
+
+        with engine.connect() as conn:
+            for table in tables:
+                columns = {
+                    row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))
+                }
+                indexes = {
+                    row[1] for row in conn.execute(text(f"PRAGMA index_list({table})"))
+                }
+                assert "timestamp" in columns
+                assert f"idx_{table}_timestamp" in indexes
+    finally:
+        engine.dispose()
 
 
 def test_batched_read_reduces_python_peak_memory(timeindex_module, tmp_path):
