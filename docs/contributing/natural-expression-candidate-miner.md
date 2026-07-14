@@ -70,9 +70,12 @@ opposite sides of `。`, `！`, `？`, `，`, or related punctuation.
 
 Fenced code, inline code, URLs, numeric-only material, and obvious placeholder
 templates are excluded. System and user content never enters candidate counts.
-Coverage is checked against complete punctuation-bounded assistant fragments in
-memory, so a runtime pattern longer than an individual n-gram can still be
-recognized. Those source fragments are never written to the review artifact.
+Coverage checks run curated patterns against the original assistant message so
+runtime punctuation, normalization, and line boundaries are preserved; matches
+overlapping runtime-protected code or URLs are ignored. Original message context
+is retained only in memory and is never written to the report.
+Candidate spans are compared with complete runtime matches, so a pattern longer
+than an individual n-gram can still be recognized.
 
 ## Review artifact
 

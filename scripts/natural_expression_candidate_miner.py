@@ -71,7 +71,6 @@ _LANGUAGE_ALIASES = {
     "zh-hant": "zh-TW",
 }
 _WHITESPACE_LANGUAGES = frozenset({"en", "es", "pt", "ru"})
-_WORD_RE = re.compile(r"[^\W_]+(?:[\u2019'][^\W_]+)*", re.UNICODE)
 _TEXT_BOUNDARY_RE = re.compile(r"[\r\n.!?。！？；;:：,，、]+")
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>()]+", re.IGNORECASE)
 _TEMPLATE_RE = re.compile(
@@ -289,10 +288,20 @@ def _inline_code_spans(
 
 def _protected_spans(text: str) -> list[tuple[int, int]]:
     """Return merged spans for code, URLs, and obvious template placeholders."""
+    spans = _runtime_protected_spans(text)
+    spans.extend(match.span() for match in _TEMPLATE_RE.finditer(text))
+    return _merge_spans(spans)
+
+
+def _runtime_protected_spans(text: str) -> list[tuple[int, int]]:
+    """Mirror the runtime filter's fenced-code, inline-code, and URL spans."""
     fenced = _fenced_code_spans(text)
     spans = fenced + _inline_code_spans(text, fenced)
     spans.extend(match.span() for match in _URL_RE.finditer(text))
-    spans.extend(match.span() for match in _TEMPLATE_RE.finditer(text))
+    return _merge_spans(spans)
+
+
+def _merge_spans(spans: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     if not spans:
         return []
 
@@ -305,15 +314,26 @@ def _protected_spans(text: str) -> list[tuple[int, int]]:
     return merged
 
 
-def _unprotected_segments(text: str) -> Iterator[str]:
-    """Yield text outside protected spans without bridging across a removed span."""
+def _unprotected_segments(text: str) -> Iterator[tuple[str, int]]:
+    """Yield text and offsets outside protected spans without bridging them."""
     cursor = 0
     for start, end in _protected_spans(text):
         if cursor < start:
-            yield text[cursor:start]
+            yield text[cursor:start], cursor
         cursor = end
     if cursor < len(text):
-        yield text[cursor:]
+        yield text[cursor:], cursor
+
+
+def _text_segments(text: str, base_offset: int) -> Iterator[tuple[str, int]]:
+    """Yield punctuation-bounded mining segments with original-text offsets."""
+    cursor = 0
+    for match in _TEXT_BOUNDARY_RE.finditer(text):
+        if cursor < match.start():
+            yield text[cursor : match.start()], base_offset + cursor
+        cursor = match.end()
+    if cursor < len(text):
+        yield text[cursor:], base_offset + cursor
 
 
 _T = TypeVar("_T")
@@ -335,26 +355,53 @@ def _is_meaningful(value: str, min_length: int) -> bool:
     return len(compact) >= min_length and any(char.isalpha() for char in compact)
 
 
+def _word_tokens(text: str) -> Iterator[tuple[str, int, int]]:
+    """Yield NFKC-normalized word tokens with spans in the original text."""
+    index = 0
+    while index < len(text):
+        if not text[index].isalnum() or text[index] == "_":
+            index += 1
+            continue
+        start = index
+        index += 1
+        while index < len(text):
+            char = text[index]
+            if char.isalnum() and char != "_":
+                index += 1
+                continue
+            if unicodedata.category(char).startswith("M"):
+                index += 1
+                continue
+            if (
+                char in {"'", "\u2019"}
+                and index + 1 < len(text)
+                and text[index + 1].isalnum()
+                and text[index + 1] != "_"
+            ):
+                index += 1
+                continue
+            break
+        yield unicodedata.normalize("NFKC", text[start:index]), start, index
+
+
 def _word_candidates(
     text: str,
     config: MiningConfig,
 ) -> Iterator[_CandidateOccurrence]:
-    for unprotected in _unprotected_segments(text):
-        for segment in _TEXT_BOUNDARY_RE.split(unprotected):
-            normalized_segment = unicodedata.normalize("NFKC", segment)
+    for unprotected, unprotected_start in _unprotected_segments(text):
+        for segment, segment_start in _text_segments(unprotected, unprotected_start):
             token_run: list[tuple[str, int, int]] = []
-            for match in _WORD_RE.finditer(normalized_segment):
-                token = match.group(0)
+            for token, start, end in _word_tokens(segment):
                 if not any(char.isalpha() for char in token):
                     yield from _word_run_candidates(
                         token_run,
                         config,
-                        normalized_segment,
+                        text,
                     )
                     token_run = []
                     continue
-                token_run.append((token, match.start(), match.end()))
-            yield from _word_run_candidates(token_run, config, normalized_segment)
+                token_run.append((token, segment_start + start, segment_start + end))
+            yield from _word_run_candidates(token_run, config, text)
 
 
 def _word_run_candidates(
@@ -413,19 +460,48 @@ def _is_hangul(char: str) -> bool:
     )
 
 
-def _script_runs(text: str, predicate) -> Iterator[tuple[str, int]]:
-    run: list[str] = []
-    run_start = 0
-    for index, char in enumerate(text):
+def _is_hangul_jamo(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        0x1100 <= codepoint <= 0x11FF
+        or 0x3130 <= codepoint <= 0x318F
+        or 0xA960 <= codepoint <= 0xA97F
+        or 0xD7B0 <= codepoint <= 0xD7FF
+    )
+
+
+def _normalized_characters(text: str) -> Iterator[tuple[str, int, int]]:
+    """Yield normalized characters mapped to their original source spans."""
+    index = 0
+    while index < len(text):
+        start = index
+        index += 1
+        if _is_hangul_jamo(text[start]):
+            while index < len(text) and _is_hangul_jamo(text[index]):
+                index += 1
+        while index < len(text) and (
+            unicodedata.category(text[index]).startswith("M")
+            or text[index] in {"\uff9e", "\uff9f"}
+        ):
+            index += 1
+        normalized = unicodedata.normalize("NFKC", text[start:index])
+        for char in normalized:
+            yield char, start, index
+
+
+def _script_runs(
+    text: str,
+    predicate,
+) -> Iterator[list[tuple[str, int, int]]]:
+    run: list[tuple[str, int, int]] = []
+    for char, start, end in _normalized_characters(text):
         if predicate(char):
-            if not run:
-                run_start = index
-            run.append(char)
+            run.append((char, start, end))
         elif run:
-            yield "".join(run), run_start
+            yield run
             run = []
     if run:
-        yield "".join(run), run_start
+        yield run
 
 
 def _character_candidates(
@@ -433,24 +509,22 @@ def _character_candidates(
     config: MiningConfig,
     predicate,
 ) -> Iterator[_CandidateOccurrence]:
-    for unprotected in _unprotected_segments(text):
-        for segment in _TEXT_BOUNDARY_RE.split(unprotected):
-            coverage_text = unicodedata.normalize("NFKC", segment)
-            for run, run_start in _script_runs(coverage_text, predicate):
-                characters = list(run)
-                upper = min(config.cjk_ngram_max, len(characters))
+    for unprotected, unprotected_start in _unprotected_segments(text):
+        for segment, segment_start in _text_segments(unprotected, unprotected_start):
+            for run in _script_runs(segment, predicate):
+                upper = min(config.cjk_ngram_max, len(run))
                 for size in range(config.cjk_ngram_min, upper + 1):
-                    for start in range(0, len(characters) - size + 1):
-                        gram = characters[start : start + size]
-                        phrase = "".join(gram)
+                    for start in range(0, len(run) - size + 1):
+                        gram = run[start : start + size]
+                        phrase = "".join(char for char, _, _ in gram)
                         normalized = phrase.casefold()
                         if _is_meaningful(normalized, config.min_length):
                             yield _CandidateOccurrence(
                                 normalized=normalized,
                                 phrase=phrase,
-                                coverage_text=coverage_text,
-                                start=run_start + start,
-                                end=run_start + start + size,
+                                coverage_text=text,
+                                start=segment_start + gram[0][1],
+                                end=segment_start + gram[-1][2],
                             )
 
 
@@ -508,6 +582,8 @@ def _coverage_result(
     rules_by_language: Mapping[str, Sequence[Mapping[str, object]]],
 ) -> tuple[list[str], bool]:
     compiled_rules: list[tuple[str, re.Pattern[str]]] = []
+    protected_cache: dict[str, list[tuple[int, int]]] = {}
+    match_cache: dict[tuple[str, int], tuple[tuple[int, int], ...]] = {}
     covered: set[str] = set()
     for rule in rules_by_language.get(_coverage_language(language), ()):
         rule_id = rule.get("id")
@@ -526,10 +602,27 @@ def _coverage_result(
     all_occurrences_covered = bool(occurrences)
     for occurrence in occurrences:
         occurrence_covered = False
-        for rule_id, compiled in compiled_rules:
+        protected = protected_cache.get(occurrence.coverage_text)
+        if protected is None:
+            protected = _runtime_protected_spans(occurrence.coverage_text)
+            protected_cache[occurrence.coverage_text] = protected
+        for rule_index, (rule_id, compiled) in enumerate(compiled_rules):
+            cache_key = (occurrence.coverage_text, rule_index)
+            match_spans = match_cache.get(cache_key)
+            if match_spans is None:
+                match_spans = tuple(
+                    (match.start(), match.end())
+                    for match in compiled.finditer(occurrence.coverage_text)
+                    if match.start() != match.end()
+                    and not any(
+                        match.start() < protected_end and match.end() > protected_start
+                        for protected_start, protected_end in protected
+                    )
+                )
+                match_cache[cache_key] = match_spans
             if any(
-                match.start() <= occurrence.start and occurrence.end <= match.end()
-                for match in compiled.finditer(occurrence.coverage_text)
+                start <= occurrence.start and occurrence.end <= end
+                for start, end in match_spans
             ):
                 covered.add(rule_id)
                 occurrence_covered = True

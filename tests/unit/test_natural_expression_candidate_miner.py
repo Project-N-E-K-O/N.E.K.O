@@ -333,6 +333,112 @@ def test_partially_covered_candidate_is_annotated_but_not_excluded():
     assert candidate["occurrence_count"] == 4
 
 
+def test_word_coverage_uses_original_sentence_delimiters():
+    text = "Он смотрел. Словно само время замерло"
+    messages = [miner.SourceMessage("ru", text, index) for index in range(1, 4)]
+    rules = {
+        "ru": [
+            {
+                "id": "RU_011",
+                "find": (
+                    r"(^|[.!?…]\s)(?:Словно|Будто)\s+(?:само\s+)?"
+                    r"время\s+(?:замерло|остановилось|застыло)\b"
+                ),
+            }
+        ]
+    }
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(
+            word_ngram_min=4,
+            word_ngram_max=4,
+            exclude_covered=True,
+        ),
+        rules_by_language=rules,
+    )
+
+    assert report["candidates"] == []
+
+
+def test_cjk_coverage_uses_original_punctuation_context():
+    text = "张了张嘴，欲言又止"
+    messages = [miner.SourceMessage("zh-CN", text, index) for index in range(1, 4)]
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(),
+    )
+
+    assert _candidate(report, "张了张嘴")["covered_by_rule_ids"] == ["ZH_026"]
+    assert _candidate(report, "欲言又止")["covered_by_rule_ids"] == ["ZH_026"]
+
+    excluded = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(exclude_covered=True),
+    )
+    assert excluded["candidates"] == []
+
+
+def test_coverage_does_not_normalize_original_runtime_text():
+    text = "aguanto\u0301 el aliento"
+    messages = [miner.SourceMessage("es", text, index) for index in range(1, 4)]
+    rules = {
+        "es": [
+            {
+                "id": "ES_002",
+                "find": r"\b(?:contuvo|aguant[oó]) el aliento\b",
+            }
+        ]
+    }
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(
+            word_ngram_min=3,
+            word_ngram_max=3,
+            exclude_covered=True,
+        ),
+        rules_by_language=rules,
+    )
+
+    assert _candidate(report, "aguantó el aliento")["covered_by_rule_ids"] == []
+
+
+def test_coverage_preserves_protected_suffixes_in_original_text():
+    text = "A beat of silence passed `token`"
+    messages = [miner.SourceMessage("en", text, index) for index in range(1, 4)]
+    rules = {
+        "en": [
+            {
+                "id": "EN_023",
+                "find": (
+                    r"\b(?:[Aa]\s+)?(?:beat|moment)\s+of\s+silence\s+"
+                    r"(?:passed|hung|stretched|fell|followed|settled)"
+                    r"(?=\s*[.,;:!?]|\s*$)"
+                ),
+            }
+        ]
+    }
+
+    report = miner.build_report(
+        messages,
+        input_record_count=3,
+        config=_config(
+            word_ngram_min=5,
+            word_ngram_max=5,
+            exclude_covered=True,
+        ),
+        rules_by_language=rules,
+    )
+
+    assert _candidate(report, "a beat of silence passed")["covered_by_rule_ids"] == []
+
+
 def test_coverage_reads_the_real_curated_rule_table():
     messages = [
         miner.SourceMessage("en", "She smiled warmly", index) for index in range(1, 4)
