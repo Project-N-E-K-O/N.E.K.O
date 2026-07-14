@@ -428,10 +428,6 @@ const PANEL_STYLES = `
   .wt-control-guide-row { display: grid; grid-template-columns: minmax(150px, 190px) minmax(0, 1fr); gap: 20px; padding: 15px 0; border-bottom: 1px solid var(--wt-border); }
   .wt-control-guide-row strong { font-size: 15px; }
   .wt-control-guide-row span { color: var(--wt-muted-soft); font-size: 14px; line-height: 1.55; }
-  .wt-data-error-details { display: grid; margin-top: 18px; border-top: 1px solid var(--wt-border); }
-  .wt-data-error-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 18px; padding: 14px 0; border-bottom: 1px solid var(--wt-border); }
-  .wt-data-error-row span { color: var(--wt-muted-soft); font-size: 13px; }
-  .wt-data-error-row strong { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
   @media (prefers-color-scheme: dark) {
     :root {
       --wt-bg: #16181d;
@@ -497,7 +493,7 @@ const PANEL_STYLES = `
     .wt-settings-control { justify-content: flex-start; }
     .wt-settings-select { width: 100%; min-width: 0; }
     .wt-onboarding-task-head { display: grid; }
-    .wt-control-guide-row, .wt-data-error-row { grid-template-columns: 1fr; gap: 6px; }
+    .wt-control-guide-row { grid-template-columns: 1fr; gap: 6px; }
   }
 `
 
@@ -588,8 +584,26 @@ function currentPlayerName(identity: IdentityState): string {
   return String(identity.player_name || identity.saved_player_name || identity.self?.name || "").trim()
 }
 
+function safetyIsTripped(state: DashboardState): boolean {
+  return state.safety?.status === "tripped" || state.safety?.auto_paused === true
+}
+
+function safetyIsPaused(state: DashboardState): boolean {
+  return state.safety?.status === "paused" || state.safety?.manual_paused === true
+}
+
+function outputWasPushed(record: ObserveRecord | null | undefined): boolean {
+  return record?.stage === "dispatcher_pushed"
+    || record?.stage === "test_say_pushed"
+    || record?.pushed === true
+    || record?.outcome === "pushed"
+}
+
+function outputFailed(record: ObserveRecord | null | undefined): boolean {
+  return record?.stage?.includes("failed") === true || record?.outcome === "failed"
+}
+
 function derivePanelSummary(state: DashboardState): PanelSummary {
-  const safetyStatus = state.safety?.status
   const dataHealthy = state.data_layer?.health
   const dataLayerMode = String(state.data_layer?.mode || "unknown")
   const playerName = currentPlayerName(state.identity || {})
@@ -612,7 +626,7 @@ function derivePanelSummary(state: DashboardState): PanelSummary {
       modeLabel: "连接异常",
     }
   }
-  if (safetyStatus === "tripped" || state.safety?.auto_paused) {
+  if (safetyIsTripped(state)) {
     return {
       kind: "safety",
       tone: "danger",
@@ -621,7 +635,7 @@ function derivePanelSummary(state: DashboardState): PanelSummary {
       modeLabel: "安全保护",
     }
   }
-  if (safetyStatus === "paused") {
+  if (safetyIsPaused(state)) {
     return {
       kind: "paused",
       tone: "warning",
@@ -677,13 +691,13 @@ function activityStatus(record: ObserveRecord): { status: string; tone: PanelTon
   const outcome = String(record.outcome || "")
   const reason = String(record.reason || "")
 
-  if (stage === "dispatcher_pushed" || stage === "test_say_pushed" || record.pushed === true || outcome === "pushed") {
+  if (outputWasPushed(record)) {
     return { status: "已交给猫娘", tone: "success", detail: "请求已经提交给猫娘，等待宿主继续处理。" }
   }
   if (stage === "dispatcher_dry_run" || record.dry_run === true || outcome === "dry_run") {
     return { status: "仅记录", tone: "info", detail: "插件已识别该事件，当前不会提交语音。" }
   }
-  if (stage.includes("failed") || outcome === "failed") {
+  if (outputFailed(record)) {
     return { status: "提交失败", tone: "danger", detail: "本次请求没有成功提交，可以前往诊断页查看。" }
   }
   if (stage.includes("safety") || stage === "test_say_blocked" || reason.includes("paused")) {
@@ -756,7 +770,6 @@ function battleStatus(state: DashboardState): { title: string; detail: string; t
 }
 
 function diagnosticStatus(state: DashboardState, kind: string): { label: string; tone: PanelTone; detail: string } {
-  const safetyStatus = state.safety?.status
   const output = state.observe?.last_output_status
   if (kind === "game") {
     return state.in_battle
@@ -779,17 +792,17 @@ function diagnosticStatus(state: DashboardState, kind: string): { label: string;
       : { label: "已待命", tone: "success", detail: "插件连接正常，等待战局数据" }
   }
   if (kind === "policy") {
-    if (safetyStatus === "tripped" || state.safety?.auto_paused) {
+    if (safetyIsTripped(state)) {
       return { label: "安全保护", tone: "danger", detail: "自动保护阻止新的输出" }
     }
-    if (safetyStatus === "paused") return { label: "已暂停", tone: "warning", detail: "事件只记录，不提交语音" }
+    if (safetyIsPaused(state)) return { label: "已暂停", tone: "warning", detail: "事件只记录，不提交语音" }
     if (state.dry_run) return { label: "播报未启动", tone: "info", detail: "按当前选择，事件只记录、不提交语音" }
     return { label: "正常", tone: "success", detail: "允许提交可信提醒" }
   }
-  if (output?.stage === "dispatcher_pushed" || output?.stage === "test_say_pushed" || output?.outcome === "pushed") {
+  if (outputWasPushed(output)) {
     return { label: "已接收", tone: "success", detail: "最近一次请求已交给猫娘" }
   }
-  if (output?.stage?.includes("failed") || output?.outcome === "failed") {
+  if (outputFailed(output)) {
     return { label: "异常", tone: "danger", detail: "最近一次提交失败" }
   }
   return { label: "尚未测试", tone: "info", detail: "当前没有已提交的语音请求" }
@@ -801,13 +814,13 @@ function diagnosticOverview(state: DashboardState): { title: string; detail: str
   if (state.data_layer?.health === false && dataMode !== "starting" && dataMode !== "unknown") {
     return { title: "数据服务暂时不可用", detail: "战雷数据在进入插件前已经中断，请先重新检查；仍未恢复时再重载插件。", tone: "danger" }
   }
-  if (output?.stage?.includes("failed") || output?.outcome === "failed") {
+  if (outputFailed(output)) {
     return { title: "最近一次输出没有成功", detail: "战局识别仍可能正常，可以展开“猫娘接收”查看原因并重新测试。", tone: "danger" }
   }
-  if (state.safety?.status === "tripped" || state.safety?.auto_paused) {
+  if (safetyIsTripped(state)) {
     return { title: "安全保护已暂停新的输出", detail: "事件仍会继续识别和记录；处理安全保护后再恢复播报。", tone: "danger" }
   }
-  if (state.safety?.status === "paused" || state.safety?.manual_paused) {
+  if (safetyIsPaused(state)) {
     return { title: "战斗播报已临时暂停", detail: "数据链路仍然工作，返回概览页点击“恢复”即可继续输出。", tone: "warning" }
   }
   if (!state.in_battle) {
@@ -836,14 +849,14 @@ function diagnosticGuidance(state: DashboardState, kind: string): string {
       : "确认数据服务正常后重新检查；若仍未连接，再重载插件。"
   }
   if (kind === "policy") {
-    if (state.safety?.status === "tripped" || state.safety?.auto_paused) return "先处理安全保护原因，再返回概览页恢复播报。"
-    if (state.safety?.status === "paused" || state.safety?.manual_paused) return "返回概览页点击“恢复”。"
+    if (safetyIsTripped(state)) return "先处理安全保护原因，再返回概览页恢复播报。"
+    if (safetyIsPaused(state)) return "返回概览页点击“恢复”。"
     if (state.dry_run) return "这是用户选择，不是故障。需要语音提醒时，在概览页点击“开启战斗播报”。"
     return "无需处理。可信事件可以按当前插话规则提交给猫娘。"
   }
   const output = state.observe?.last_output_status
-  if (output?.stage?.includes("failed") || output?.outcome === "failed") return "点击“测试开口”复验声音链路；失败时再查看高级详情中的最近输出原因。"
-  if (output?.stage === "dispatcher_pushed" || output?.stage === "test_say_pushed" || output?.outcome === "pushed") return "最近一次请求已成功交给猫娘，无需处理。"
+  if (outputFailed(output)) return "点击“测试开口”复验声音链路；失败时再查看高级详情中的最近输出原因。"
+  if (outputWasPushed(output)) return "最近一次请求已成功交给猫娘，无需处理。"
   return "点击“测试开口”可独立验证猫娘接收和声音输出，不需要先进入战局或开启战斗播报。"
 }
 
@@ -1056,7 +1069,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
           onChange={(event: any) => setDialogueIntrusionMode(event.target.value)}
         >
           {DIALOGUE_OPTIONS.map((option) => (
-            <option value={option.value} selected={(outputPolicy.dialogue_intrusion_mode || "critical_only") === option.value}>{option.label}</option>
+            <option key={option.value} value={option.value}>{option.label}</option>
           ))}
         </select>
       </div>
@@ -1459,7 +1472,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
                 onChange={(event: any) => setDialogueIntrusionMode(event.target.value)}
               >
                 {DIALOGUE_OPTIONS.map((option) => (
-                  <option value={option.value} selected={(outputPolicy.dialogue_intrusion_mode || "critical_only") === option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
             </div>
