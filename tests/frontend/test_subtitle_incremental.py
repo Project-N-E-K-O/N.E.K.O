@@ -2877,6 +2877,70 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
 
 
 @pytest.mark.frontend
+def test_web_subtitle_panel_close_persists_app_settings(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'en');
+            window.appState = { subtitleEnabled: true };
+            window.__subtitleSaveSettingsCalls = 0;
+            window.__savedSubtitleEnabled = null;
+            window.appSettings = {
+                saveSettings: () => {
+                    window.__subtitleSaveSettingsCalls += 1;
+                    window.__savedSubtitleEnabled = window.appState.subtitleEnabled;
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            initSubtitleHostUi();
+            document.getElementById('subtitle-close-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            return {
+                saveSettingsCalls: window.__subtitleSaveSettingsCalls,
+                savedEnabled: window.__savedSubtitleEnabled,
+                enabled: window.nekoSubtitleShared.getSettings().subtitleEnabled,
+                storedEnabled: window.localStorage.getItem('subtitleEnabled'),
+                appStateEnabled: window.appState.subtitleEnabled,
+                isHidden: display.classList.contains('hidden'),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "saveSettingsCalls": 1,
+        "savedEnabled": False,
+        "enabled": False,
+        "storedEnabled": "false",
+        "appStateEnabled": False,
+        "isHidden": True,
+    }
+
+
+@pytest.mark.frontend
 def test_react_translate_button_tracks_external_subtitle_enabled_changes(
     mock_page: Page,
 ):
