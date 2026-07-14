@@ -106,8 +106,19 @@ def _tree_processes(root_pids: Iterable[int]) -> list[psutil.Process]:
     return list(found.values())
 
 
-def _sample(root_pids: Iterable[int]) -> dict[str, Any]:
-    rows = [row for process in _tree_processes(root_pids) if (row := _process_row(process))]
+def _sample(
+    root_pids: Iterable[int],
+    *,
+    observed_processes: dict[tuple[int, float], psutil.Process] | None = None,
+) -> dict[str, Any]:
+    processes = _tree_processes(root_pids)
+    if observed_processes is not None:
+        for process in processes:
+            try:
+                observed_processes[(process.pid, process.create_time())] = process
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+    rows = [row for process in processes if (row := _process_row(process))]
     categories: dict[str, dict[str, float | int | None]] = {}
     for row in rows:
         entry = categories.setdefault(
@@ -188,11 +199,12 @@ def _sample_window(
     seconds: float,
     interval: float,
     traced_python_pid: int | None = None,
+    observed_processes: dict[tuple[int, float], psutil.Process] | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(seconds, 0.0)
     samples: list[dict[str, Any]] = []
     while True:
-        samples.append(_sample(root_pids))
+        samples.append(_sample(root_pids, observed_processes=observed_processes))
         if time.monotonic() >= deadline:
             break
         time.sleep(interval)
@@ -422,19 +434,54 @@ def _ports_ready(ports: list[int]) -> bool:
     return True
 
 
-def _terminate_process_tree(process: subprocess.Popen[Any], timeout: float = 12.0) -> None:
-    try:
-        root = psutil.Process(process.pid)
-        targets = root.children(recursive=True)
-        targets.append(root)
-    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
-        targets = []
-    for target in reversed(targets):
+def _assert_ports_available(ports: list[int]) -> None:
+    busy: list[int] = []
+    for port in ports:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            busy.append(port)
+        finally:
+            probe.close()
+    if busy:
+        raise RuntimeError(
+            "benchmark ports must be free before startup; refusing launcher "
+            f"fallback because it would invalidate readiness attribution: {busy}"
+        )
+
+
+def _terminate_process_trees(
+    processes: Iterable[subprocess.Popen[Any]],
+    observed_processes: Iterable[psutil.Process],
+    timeout: float = 12.0,
+) -> None:
+    targets: dict[tuple[int, float], psutil.Process] = {}
+    for target in observed_processes:
+        try:
+            targets[(target.pid, target.create_time())] = target
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+    for process in processes:
+        try:
+            root = psutil.Process(process.pid)
+            current = [root, *root.children(recursive=True)]
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            continue
+        for target in current:
+            try:
+                targets[(target.pid, target.create_time())] = target
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+    target_list = list(targets.values())
+    for target in reversed(target_list):
         try:
             target.terminate()
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             pass
-    _, alive = psutil.wait_procs(targets, timeout=timeout)
+    _, alive = psutil.wait_procs(target_list, timeout=timeout)
     for target in alive:
         try:
             target.kill()
@@ -541,10 +588,31 @@ def _decode_command(raw: str) -> list[str]:
     try:
         command = json.loads(raw)
     except json.JSONDecodeError:
-        command = raw.split("|")
-    if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
+        command = [item.strip() for item in raw.split("|")]
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(item, str) and item for item in command)
+    ):
         raise ValueError("command must be a JSON array or a pipe-delimited string")
     return command
+
+
+def _decode_ports(raw: str) -> list[int]:
+    items = [item.strip() for item in raw.split(",")]
+    if not items or any(not item for item in items):
+        raise ValueError("--ports must be a comma-separated list of port numbers")
+    try:
+        ports = [int(item) for item in items]
+    except ValueError as exc:
+        raise ValueError(
+            "--ports must be a comma-separated list of port numbers"
+        ) from exc
+    if any(port < 1 or port > 65535 for port in ports):
+        raise ValueError("--ports values must be between 1 and 65535")
+    if len(set(ports)) != len(ports):
+        raise ValueError("--ports values must be unique")
+    return ports
 
 
 def _parse_env(items: list[str]) -> dict[str, str]:
@@ -585,11 +653,13 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
     env.update(_parse_env(args.env))
     backend_command = _decode_command(args.backend_command)
     electron_command = _decode_command(args.electron_command) if args.electron_command else None
-    ports = [int(item) for item in args.ports.split(",") if item.strip()]
+    ports = _decode_ports(args.ports)
+    _assert_ports_available(ports)
     processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
     checkpoints: list[dict[str, Any]] = []
     startup_samples: list[dict[str, Any]] = []
     roots: list[int] = []
+    observed_processes: dict[tuple[int, float], psutil.Process] = {}
     started_at = time.perf_counter()
     ports_ready_elapsed_s: float | None = None
 
@@ -604,14 +674,16 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
         roots.append(backend.pid)
         deadline = time.monotonic() + args.timeout
         while not _ports_ready(ports):
-            startup_samples.append(_sample(roots))
+            startup_samples.append(
+                _sample(roots, observed_processes=observed_processes)
+            )
             if backend.poll() is not None:
                 raise RuntimeError(f"backend exited before ready with code {backend.returncode}")
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"ports did not become ready: {ports}")
             time.sleep(args.interval)
         ports_ready_elapsed_s = time.perf_counter() - started_at
-        startup_samples.append(_sample(roots))
+        startup_samples.append(_sample(roots, observed_processes=observed_processes))
         time.sleep(args.settle)
         checkpoints.append(
             _sample_window(
@@ -619,6 +691,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                 roots,
                 seconds=args.window,
                 interval=args.interval,
+                observed_processes=observed_processes,
             )
         )
 
@@ -640,6 +713,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                     roots,
                     seconds=args.window,
                     interval=args.interval,
+                    observed_processes=observed_processes,
                 )
             )
 
@@ -660,6 +734,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                     roots,
                     seconds=args.window,
                     interval=args.interval,
+                    observed_processes=observed_processes,
                 )
             )
 
@@ -677,8 +752,10 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
     finally:
-        for _name, process, _log_file in reversed(processes):
-            _terminate_process_tree(process)
+        _terminate_process_trees(
+            (process for _name, process, _log_file in processes),
+            observed_processes.values(),
+        )
         for _name, _process, log_file in processes:
             log_file.close()
 
