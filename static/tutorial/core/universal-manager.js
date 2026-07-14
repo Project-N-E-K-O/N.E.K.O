@@ -3402,11 +3402,38 @@ class UniversalTutorialManager {
 
     consumePendingStartupDefaultCatRestoreRequest() {
         const snapshot = this._avatarFloatingModelLockSnapshot;
+        if (!snapshot) {
+            return false;
+        }
+        let startupDefaultCatPending = false;
+        try {
+            const autoGoodbye = window.nekoAutoGoodbye;
+            const currentState = autoGoodbye && typeof autoGoodbye.getState === 'function'
+                ? autoGoodbye.getState()
+                : null;
+            startupDefaultCatPending = !!(
+                currentState && currentState.startupDefaultCatRequested === true
+            );
+            if (startupDefaultCatPending && snapshot.goodbyeActive !== true) {
+                // 默认猫咪事件可能晚于首次快照；在解除教程锁前读取实时 pending 状态，
+                // 仅当原快照不是猫咪态时升级业务形态，保留既有猫咪层级及教程前交互/位置。
+                snapshot.goodbyeActive = true;
+                snapshot.goodbyeMeta = {
+                    autoGoodbye: currentState.autoGoodbyeTriggered === true,
+                    reason: 'startup-default-cat',
+                    visualTier: currentState.visualTier || ''
+                };
+            }
+        } catch (error) {
+            console.warn('[Tutorial] 刷新待恢复的启动默认猫咪状态失败:', error);
+        }
         if (
-            !snapshot
-            || snapshot.goodbyeActive !== true
-            || !snapshot.goodbyeMeta
-            || snapshot.goodbyeMeta.reason !== 'startup-default-cat'
+            !startupDefaultCatPending
+            && (
+                snapshot.goodbyeActive !== true
+                || !snapshot.goodbyeMeta
+                || snapshot.goodbyeMeta.reason !== 'startup-default-cat'
+            )
         ) {
             return false;
         }

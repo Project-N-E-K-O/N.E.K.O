@@ -924,6 +924,15 @@ def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reloa
         "    applyTutorialChatIdentityOverride(detail) {",
         1,
     )[0]
+    # 默认猫咪事件可能晚于首个快照；teardown 必须在解锁前按实时状态升级原始快照。
+    assert "currentState.startupDefaultCatRequested === true" in consume_block
+    assert "startupDefaultCatPending && snapshot.goodbyeActive !== true" in consume_block
+    assert consume_block.index("snapshot.goodbyeActive = true") < consume_block.index(
+        "snapshot.goodbyeMeta.reason !== 'startup-default-cat'"
+    )
+    assert "reason: 'startup-default-cat'" in consume_block
+    # 原快照已是猫咪态时保留其层级，但实时 pending 仍必须进入消费链。
+    assert "!startupDefaultCatPending" in consume_block
     assert "snapshot.goodbyeMeta.reason !== 'startup-default-cat'" in consume_block
     assert "autoGoodbye.consumeStartupDefaultCatRequest()" in consume_block
     assert teardown_block.index("this.consumePendingStartupDefaultCatRestoreRequest()") < teardown_block.index(
