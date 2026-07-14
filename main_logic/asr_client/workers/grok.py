@@ -374,7 +374,7 @@ async def grok_asr_worker(
         return action
 
     try:
-        if config.endpointing_mode not in {"manual", "server_vad"}:
+        if config.endpointing_mode not in {"manual", "provider"}:
             await _emit_error(
                 "ASR_ENDPOINTING_NOT_SUPPORTED",
                 "xAI endpointing mode is unsupported",
@@ -387,6 +387,10 @@ async def grok_asr_worker(
             "encoding": "pcm",
             "interim_results": "true",
         }
+        if config.endpointing_mode == "provider":
+            # Pin xAI's documented default so provider behavior cannot drift
+            # silently if the upstream default changes.
+            query["endpointing"] = 10
         if language is not None:
             query["language"] = language
         url = f"{_GROK_STT_URL}?{urlencode(query)}"

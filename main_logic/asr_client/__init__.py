@@ -54,6 +54,16 @@ _IMPLEMENTED_WORKERS: dict[str, _AsrWorkerFn] = {
 }
 
 
+def _get_default_endpointing_mode(core_type: str) -> _AsrEndpointingMode:
+    core_key = str(core_type or "").strip().lower()
+    route = _CORE_ASR_ROUTES.get(core_key)
+    if route is None:
+        raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
+    if os.getenv("ASR_PROVIDER", "").strip().lower() == "dummy":
+        return "manual"
+    return route.default_endpointing_mode
+
+
 def _get_asr_worker(
     core_type: str,
     endpointing_mode: _AsrEndpointingMode = "manual",
@@ -126,7 +136,11 @@ def create_asr_session(
 
     if config is not None and not isinstance(config, AsrSessionConfig):
         raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
-    session_config = config if config is not None else AsrSessionConfig()
+    session_config = (
+        config
+        if config is not None
+        else AsrSessionConfig(endpointing_mode=_get_default_endpointing_mode(core_type))
+    )
     worker_fn, api_key_override, provider_key = _get_asr_worker(
         core_type,
         session_config.endpointing_mode,

@@ -257,7 +257,7 @@ async def test_qwen_server_vad_maps_items_and_reconnects_on_clear(monkeypatch) -
             requests,
             responses,
             "key",
-            AsrSessionConfig(endpointing_mode="server_vad"),
+            AsrSessionConfig(endpointing_mode="provider"),
         )
     )
     await _next_event(responses, "ready")
@@ -412,7 +412,7 @@ async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> No
             requests,
             responses,
             "key",
-            AsrSessionConfig(endpointing_mode="server_vad"),
+            AsrSessionConfig(endpointing_mode="provider"),
         )
     )
     await _next_event(responses, "ready")
@@ -589,7 +589,7 @@ async def test_openai_native_clear_and_mode_rejection(monkeypatch) -> None:
             rejected_requests,
             rejected_responses,
             "key",
-            AsrSessionConfig(endpointing_mode="server_vad"),
+            AsrSessionConfig(endpointing_mode="provider"),
         )
     )
     error = await _next_event(rejected_responses, "error")
@@ -823,10 +823,12 @@ async def test_grok_server_vad_three_states_and_clear_reconnect(monkeypatch) -> 
             requests,
             responses,
             "key",
-            AsrSessionConfig(endpointing_mode="server_vad"),
+            AsrSessionConfig(endpointing_mode="provider"),
         )
     )
     await _next_event(responses, "ready")
+    query = parse_qs(urlparse(connector.calls[0][0]).query)
+    assert query["endpointing"] == ["10"]
     await requests.put(
         _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
     )
@@ -914,6 +916,93 @@ async def test_workers_reject_unsupported_languages_without_connecting(
     assert connect_calls == 0
 
 
+@pytest.mark.parametrize(
+    ("worker", "expected_code"),
+    [
+        (qwen.qwen_asr_worker, "ASR_INVALID_CONFIG"),
+        (step.step_asr_worker, "ASR_INVALID_CONFIG"),
+        (grok.grok_asr_worker, "ASR_ENDPOINTING_NOT_SUPPORTED"),
+    ],
+)
+async def test_workers_reject_unknown_endpointing_before_connect(
+    worker,
+    expected_code,
+) -> None:
+    config = AsrSessionConfig()
+    object.__setattr__(config, "endpointing_mode", "vendor_private_mode")
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+
+    await worker(requests, responses, "key", config)
+
+    assert (await _next_event(responses, "error")).error_code == expected_code
+    assert (await _next_event(responses, "closed")).kind == "closed"
+
+
+@pytest.mark.parametrize("worker", [qwen.qwen_asr_worker, step.step_asr_worker])
+async def test_workers_report_missing_credentials_without_connecting(worker) -> None:
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+
+    await worker(requests, responses, "", AsrSessionConfig())
+
+    assert (await _next_event(responses, "error")).error_code == (
+        "ASR_CREDENTIALS_MISSING"
+    )
+    assert (await _next_event(responses, "closed")).kind == "closed"
+
+
+async def test_qwen_rejects_unknown_region_without_connecting() -> None:
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+
+    await qwen.qwen_asr_worker(
+        requests,
+        responses,
+        "key",
+        AsrSessionConfig(),
+        region="unknown",
+    )
+
+    assert (await _next_event(responses, "error")).error_code == "ASR_INVALID_CONFIG"
+    assert (await _next_event(responses, "closed")).kind == "closed"
+
+
+@pytest.mark.parametrize(
+    ("module", "worker", "expected_code"),
+    [
+        (qwen, qwen.qwen_asr_worker, "ASR_QWEN_PROTOCOL_ERROR"),
+        (step, step.step_asr_worker, "ASR_STEP_PROTOCOL_ERROR"),
+    ],
+)
+async def test_provider_endpointing_rejects_manual_commit(
+    monkeypatch,
+    module,
+    worker,
+    expected_code,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(module.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        worker(
+            requests, responses, "key", AsrSessionConfig(endpointing_mode="provider")
+        )
+    )
+    await _next_event(responses, "ready")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+
+    assert (await _next_event(responses, "error")).error_code == expected_code
+    assert (await _next_event(responses, "closed")).kind == "closed"
+    await asyncio.wait_for(task, 1)
+
+
 async def test_workers_report_unexpected_disconnect(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
@@ -951,3 +1040,10 @@ def test_auth_rejection_classification() -> None:
     assert not step._step_is_auth_rejection(ordinary_error)
     assert not openai._openai_is_auth_rejection(ordinary_error)
     assert not grok._grok_is_auth_rejection(ordinary_error)
+
+
+def test_workers_preserve_provider_auto_language_detection() -> None:
+    assert qwen._qwen_language_code("auto") is None
+    assert step._step_language_code("auto") is None
+    assert openai._normalize_openai_language("auto") is None
+    assert grok._normalize_grok_language("auto") is None
