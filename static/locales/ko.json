@@ -2918,7 +2918,7 @@
         "playVRMAnimationFailed": "VRM 애니메이션 재생 실패:",
         "loadLightingConfigFailed": "조명 구성을 로드하지 못했습니다:",
         "checkVoiceModeTimeout": "음성 모드 상태 시간 초과 확인(서버가 응답하지 않을 수 있음)",
-        "cannotConnectToServer": "서버에 연결할 수 없습니다. main_server.py가 실행 중인지 확인하세요.",
+        "cannotConnectToServer": "서버에 연결할 수 없습니다. 메인 서버가 실행 중인지 확인하세요.",
         "checkVoiceModeFailed": "음성 모드 상태 확인 실패:",
         "markedUnsavedModel": "저장되지 않은 변경 사항(모델 스위치)으로 표시됩니다. 캐릭터 구성을 유지하려면 설정 저장을 클릭하세요.",
         "parameterEditorSavedNeedsModelSave": "얼굴 조정 파라미터를 저장했습니다. 캐릭터 설정에 동기화하려면 '설정 저장'을 클릭하세요.",

@@ -238,7 +238,7 @@ async def test_passthrough_synthesizes_turn_id_when_missing():
 #
 # Verifies that the visibility=["chat"] + ai_behavior="blind" branch in
 # ``_handle_agent_event`` actually invokes ``passthrough_to_chat_bubble``
-# on the resolved manager. We don't run main_server.py wholesale —
+# on the resolved manager. We don't run the main_server package wholesale —
 # we extract the function under test and call it with a stubbed event +
 # a stubbed manager.
 
@@ -259,9 +259,9 @@ async def test_main_server_proactive_chat_blind_invokes_passthrough(monkeypatch)
     fake_mgr._pending_agent_callback_task = None
 
     # Force the manager resolution helpers in main_server to find our fake.
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
     # Also bypass ``_is_websocket_connected`` so HUD path is skipped.
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -308,8 +308,8 @@ async def test_main_server_proactive_chat_blind_preserves_verbatim_whitespace(mo
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -349,8 +349,8 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -399,8 +399,8 @@ async def test_blind_with_proactive_delivery_mode_does_not_enqueue_callback(monk
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -441,8 +441,8 @@ async def test_blind_with_passive_delivery_mode_does_not_enqueue_callback(monkey
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -481,8 +481,8 @@ async def test_passthrough_uses_resolved_source_kind_from_channel(monkeypatch):
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -518,8 +518,8 @@ async def test_main_server_proactive_hud_only_blind_does_not_invoke_passthrough(
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -584,8 +584,8 @@ def _hud_fake_mgr():
 def _patch_main_server(monkeypatch, fake_mgr):
     from app import main_server  # noqa: F401  (imported by callers)
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: True)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: True)
 
 
 def _hud_send_count(fake_mgr) -> int:
@@ -705,7 +705,7 @@ async def test_visibility_absent_field_legacy_fires_hud(monkeypatch):
 # "in-progress" and proactive rescheduling never fires. The canonical
 # helper that emits this turn-end is
 # :py:meth:`LLMSessionManager.handle_proactive_complete`; the direct
-# task_result reply path at main_server.py:714 already calls it. The
+# task_result reply path in character_runtime.py already calls it. The
 # chat-blind passthrough branch must do the same.
 #
 # The HUD-only branch (agent_notification) does NOT open an assistant
@@ -731,8 +731,8 @@ async def test_chat_blind_passthrough_emits_turn_end_via_proactive_complete(monk
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     event = {
         "event_type": "proactive_message",
@@ -838,8 +838,8 @@ async def test_chat_blind_passthrough_noop_skips_turn_end(monkeypatch):
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-noop"))
 
@@ -865,8 +865,8 @@ async def test_chat_blind_passthrough_unexpected_raise_skips_turn_end(monkeypatc
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-raise"))
 
@@ -895,8 +895,8 @@ async def test_chat_blind_passthrough_real_helper_swallowed_send_skips_turn_end(
     real_mgr.trigger_agent_callbacks = AsyncMock()
     real_mgr._pending_agent_callback_task = None
 
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: real_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: False)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: real_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: False)
 
     await main_server._handle_agent_event(_blind_chat_event("task-blind-swallowed"))
 

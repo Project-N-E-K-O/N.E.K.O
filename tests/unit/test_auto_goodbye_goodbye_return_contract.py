@@ -1,14 +1,15 @@
 from pathlib import Path
+from tests.static_app_parts import read_path_or_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_path_or_parts(path)
 
 
 def _between(source: str, start: str, end: str) -> str:

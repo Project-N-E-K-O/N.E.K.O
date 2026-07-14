@@ -17,15 +17,15 @@
 Shared State Module
 
 This module provides access to shared state variables (session managers, etc.)
-that are initialized in main_server.py but need to be accessed by routers.
+that are initialized in the main_server package but need to be accessed by routers.
 
-Design: Routers import getters from this module, main_server.py sets the state
+Design: Routers import getters from this module, main_server sets the state
 after initialization.
 
 History
 -------
 Issue #857 / PR #855 review consolidated 6 parallel per-catgirl module-globals
-in main_server.py (sync_message_queue / sync_shutdown_event / session_id /
+in main_server (sync_message_queue / sync_shutdown_event / session_id /
 sync_process / websocket_locks / session_manager) into a single
 ``role_state: dict[str, RoleState]`` container. To avoid touching dozens of
 consumer call-sites in this PR, the legacy getters
@@ -55,7 +55,7 @@ from utils.steam_state import (  # noqa: F401  (re-export)
 
 _UNSET = object()
 
-# Global state containers (set by main_server.py).
+# Global state containers (set by main_server).
 # ``steamworks`` is intentionally NOT in this dict; it lives in
 # utils.steam_state and is re-exported above.
 _state = {
@@ -180,12 +180,12 @@ def init_shared_state(
     request_app_shutdown=None,
     release_storage_startup_barrier=None,
 ):
-    """Initialize shared state from main_server.py.
+    """Initialize shared state from main_server.
 
     Builds adapter views over ``role_state`` so legacy getters
     (``get_sync_message_queue`` etc.) keep their old observable behavior.
     The adapters hold a live reference to ``role_state`` — future mutations
-    in main_server.py are reflected without a re-init step.
+    in main_server are reflected without a re-init step.
     """
     _state['role_state'] = role_state
     # Steamworks now lives in utils.steam_state (see top of this file). The
@@ -219,7 +219,7 @@ def _check_initialized(key: str) -> None:
     if value is _UNSET:
         raise RuntimeError(
             f"Shared state '{key}' is not initialized. "
-            "Call init_shared_state() from main_server.py before accessing shared state."
+            "Call init_shared_state() from main_server before accessing shared state."
         )
 
 # Getters for all shared state

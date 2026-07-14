@@ -1,16 +1,17 @@
 from pathlib import Path
 
 import pytest
+from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
 
 
 @pytest.mark.unit
 def test_social_open_request_is_deduped_before_fetching_config():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "const SOCIAL_OPEN_DEDUPE_MS = 1200;" in source
     assert "window.__nekoSocialOpenState" in source
@@ -33,7 +34,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
 
 @pytest.mark.unit
 def test_social_browser_fallback_preopens_popup_before_async_fetches():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
     listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)

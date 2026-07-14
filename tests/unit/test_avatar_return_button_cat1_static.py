@@ -1,4 +1,5 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 from main_routers import pages_router
 from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
@@ -12,9 +13,9 @@ def _read_avatar_ui_buttons_source() -> str:
     return read_avatar_ui_buttons_source()
 
 
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
-APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app" / "app-react-chat-window"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
@@ -50,10 +51,10 @@ def test_cat1_return_button_assets_are_version_tracked():
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
     source = _read_avatar_ui_buttons_source()
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css = INDEX_CSS_PATH.read_text(encoding="utf-8")
-    chat_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    chat_source = read_js_parts(APP_REACT_CHAT_WINDOW_PATH)
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
 
     assert "_NEKO_IDLE_CAT1_PLAY_ASSET_URL = '/static/assets/neko-idle/cat-idle-cat-play-1.gif'" in source
     assert "_NEKO_IDLE_CAT1_PLAY_SOUND_URL = '/static/assets/neko-idle/cat1-voice3.mp3'" in source

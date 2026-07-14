@@ -52,7 +52,9 @@ task_timeout_seconds = 120.0
 # when there's no pending task. The LLM sees a "GAME_SYSTEM" prompt with
 # accumulated logs and is asked to either issue the next minecraft_task or
 # provide voice commentary.
-system_prompt_interval_seconds = 5.0
+system_prompt_interval_seconds = 15.0   # [THROTTLE] was 5.0
+# [THROTTLE] cap inline screenshot stream (was implicit 1.0s → ~60/min)
+screenshot_stream_min_interval_seconds = 6.0
 
 # Skip a system-prompt nudge if a tool call is already pending — the LLM is
 # busy and an extra prompt would just queue up.

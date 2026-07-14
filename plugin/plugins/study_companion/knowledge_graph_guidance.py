@@ -45,6 +45,16 @@ GENERIC_QUERY_TERMS = {
     "\u4e0d\u4e00\u5b9a",
 }
 SUBJECT_QUERY_HINTS = {
+    "math": {
+        "\u6570\u5b66",
+        "\u51fd\u6570",
+        "\u65b9\u7a0b",
+        "\u51e0\u4f55",
+        "\u6982\u7387",
+        "\u4ee3\u6570",
+        "math",
+        "mathematics",
+    },
     "physics": {
         "\u725b\u987f",
         "\u53d7\u529b",
@@ -86,6 +96,54 @@ SUBJECT_QUERY_HINTS = {
         "bfs",
         "dfs",
         "\u904d\u5386",
+    },
+    "politics": {
+        "\u653f\u6cbb",
+        "\u6cd5\u6cbb",
+        "\u516c\u6c11",
+        "\u6c11\u4e3b",
+        "\u54f2\u5b66",
+        "politics",
+        "civics",
+        "government",
+    },
+    "chinese": {
+        "\u8bed\u6587",
+        "\u4e2d\u6587",
+        "\u9605\u8bfb",
+        "\u4f5c\u6587",
+        "\u6587\u8a00\u6587",
+        "\u8bd7\u6b4c",
+        "chinese",
+        "literature",
+    },
+    "history": {
+        "\u5386\u53f2",
+        "\u671d\u4ee3",
+        "\u9769\u547d",
+        "\u6218\u4e89",
+        "\u6587\u660e",
+        "history",
+        "historical",
+    },
+    "geography": {
+        "\u5730\u7406",
+        "\u6c14\u5019",
+        "\u5730\u5f62",
+        "\u7ecf\u7eac\u5ea6",
+        "\u533a\u57df",
+        "geography",
+        "climate",
+    },
+    "economics": {
+        "\u7ecf\u6d4e",
+        "\u4f9b\u7ed9",
+        "\u9700\u6c42",
+        "\u5e02\u573a",
+        "\u901a\u8d27\u81a8\u80c0",
+        "economics",
+        "economy",
+        "market",
     },
 }
 RELATION_GROUP_TITLES = {
@@ -234,13 +292,26 @@ def build_topic_edges(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
             related_id = _ref_id(ref)
             if not related_id:
                 continue
+            relation = _edge_relation("related", ref)
+            if relation == "prerequisite":
+                edges.append(
+                    _edge_payload(
+                        source=by_id.get(related_id),
+                        target=topic,
+                        source_id=related_id,
+                        target_id=target_id,
+                        relation=relation,
+                        ref=ref,
+                    )
+                )
+                continue
             edges.append(
                 _edge_payload(
                     source=topic,
                     target=by_id.get(related_id),
                     source_id=target_id,
                     target_id=related_id,
-                    relation=_edge_relation("related", ref),
+                    relation=relation,
                     ref=ref,
                 )
             )
@@ -377,8 +448,6 @@ def match_topics(
                 score += 18
             elif subject:
                 score -= 10
-        if score and subject == "math":
-            score += 2
         if score:
             scored.append(
                 {
@@ -563,6 +632,10 @@ def _build_diagnosis_questions(
                 )
             )
             continue
+        if len(
+            [item for item in questions if item["kind"] == "prerequisite_probe"]
+        ) >= 3:
+            continue
         add(
             _question_payload(
                 kind="prerequisite_probe",
@@ -575,8 +648,6 @@ def _build_diagnosis_questions(
                 edge=edge,
             )
         )
-        if len([item for item in questions if item["kind"] == "prerequisite_probe"]) >= 3:
-            break
 
     for edge in confusions:
         topic_id, topic_label = _other_topic_for_edge(edge, selected_id)
@@ -689,6 +760,7 @@ def build_knowledge_guidance_payload(
     subgraph_budget = SubgraphBudget(
         focus_topics=max(1, min(3, int(match_limit or 3))),
         max_depth=max(1, min(2, int(max_depth or 2))),
+        max_nodes=24,
     )
     relevant_subgraph = build_relevant_subgraph(
         graph_index,

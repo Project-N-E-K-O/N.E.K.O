@@ -841,7 +841,7 @@ describe('App', () => {
     await waitFor(() => expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull());
     const closeButton = container.querySelector('.compact-meme-overlay-close');
     // ⚠️ host 只把带 data-compact-hit-region 的子元素登记成 native 可交互区；漏了它 Electron
-    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window.js collectCompactCompositeGeometryItems）。
+    // pass-through 窗口里点击会穿到桌面（见 app-react-chat-window collectCompactCompositeGeometryItems）。
     expect(closeButton).toHaveAttribute('data-compact-hit-region', 'true');
 
     fireEvent.click(closeButton as Element);

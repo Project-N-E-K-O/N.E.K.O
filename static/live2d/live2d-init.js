@@ -721,10 +721,11 @@ async function _initLive2DModelInner() {
                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                 // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
                 onResidentExpressionApplied: (model) => {
-                    if (modelPreferences && modelPreferences.parameters &&
+                    const effectiveParameters = window.live2dManager.effectiveModelParameters;
+                    if (effectiveParameters && Object.keys(effectiveParameters).length > 0 &&
                         model && model.internalModel && model.internalModel.coreModel) {
-                        window.live2dManager.applyModelParameters(model, modelPreferences.parameters);
-                        console.log('[Live2D Init] 在常驻表情应用后已重新应用用户偏好参数');
+                        window.live2dManager.applyModelParameters(model, effectiveParameters);
+                        console.log('[Live2D Init] 在常驻表情应用后已重新应用规范化有效参数');
                     }
                 },
                 // 模型完全就绪后恢复待机动作（延迟 500ms 确保模型完全稳定）
