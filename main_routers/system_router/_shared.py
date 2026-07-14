@@ -25,7 +25,7 @@ import sys
 import ipaddress
 import secrets
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import get_config_manager

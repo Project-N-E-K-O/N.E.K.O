@@ -553,7 +553,7 @@ server {
     client_max_body_size 0;
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -570,7 +570,7 @@ server {
     }
 
     # 插件 WebSocket 路径 → 插件服务器 (48916)
-    location ~ ^/ws/(run|admin|logs) {
+    location ~ ^/ws/(run|admin|logs)(/|$) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -673,7 +673,7 @@ server {
     client_max_body_size 0;
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -690,7 +690,7 @@ server {
     }
 
     # 插件 WebSocket 路径 → 插件服务器 (48916)
-    location ~ ^/ws/(run|admin|logs) {
+    location ~ ^/ws/(run|admin|logs)(/|$) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -995,12 +995,11 @@ start_openfang_daemon() {
         runuser -u neko -- openfang init 2>&1 || {
             echo "⚠️ OpenFang init failed (non-critical)"
         }
-    fi
-
-    # 清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
-    if [ -d "$OF_HOME/agents" ]; then
-        echo "   Removing pre-installed agents (no Groq API key configured)..."
-        rm -rf "$OF_HOME/agents"
+        # 首次初始化时清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
+        if [ -d "$OF_HOME/agents" ]; then
+            echo "   Removing pre-installed agents (no Groq API key configured)..."
+            rm -rf "$OF_HOME/agents"
+        fi
     fi
 
     # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
@@ -1011,8 +1010,9 @@ start_openfang_daemon() {
         fi
     fi
 
-    echo "   Starting openfang daemon (API listen: 127.0.0.1:50051)..."
-    OPENFANG_LISTEN=127.0.0.1:50051 runuser -u neko -- openfang start &
+    local OF_PORT="${OPENFANG_PORT:-50051}"
+    echo "   Starting openfang daemon (API listen: 127.0.0.1:${OF_PORT})..."
+    OPENFANG_LISTEN="127.0.0.1:${OF_PORT}" runuser -u neko -- openfang start &
     local of_pid=$!
     PIDS+=("$of_pid")
     echo "     OpenFang daemon PID: $of_pid"
@@ -1020,7 +1020,7 @@ start_openfang_daemon() {
     # 等待健康检查
     local of_retries=15
     while [ $of_retries -gt 0 ]; do
-        if curl -sf http://127.0.0.1:50051/api/health >/dev/null 2>&1; then
+        if curl -sf "http://127.0.0.1:${OF_PORT}/api/health" >/dev/null 2>&1; then
             echo "✅ OpenFang daemon is healthy"
             return 0
         fi

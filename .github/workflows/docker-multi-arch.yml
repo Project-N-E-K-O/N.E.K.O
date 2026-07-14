@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
-      skip_dockerhub: $steps.calc_skip.outputs.SKIP_DOCKERHUB }}
+      skip_dockerhub: ${{ steps.calc_skip.outputs.SKIP_DOCKERHUB }}
       is_main_commit: ${{ steps.calc_is_main.outputs.IS_MAIN_COMMIT }}
       image_name: ${{ steps.lowercase_image.outputs.IMAGE_NAME }}
     steps:
