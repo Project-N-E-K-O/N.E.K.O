@@ -1683,12 +1683,26 @@
                 return;
             }
             payload.acknowledge_warnings = true;
-            setExternalImportStatus(translate('memory.externalImportWorking', 'Importing memory...'), 'working');
+            // persona 融合是同步阻塞的 LLM 调用（可能数十秒）：置 in-flight 标志，
+            // beforeunload 据此拦截关闭；状态区追加「勿关闭」提示——现代 Chromium 会
+            // 忽略 beforeunload 的自定义文案，真正的中文提示只能落在这里。
+            window._memoryImportInProgress = true;
+            setExternalImportStatus(
+                translate('memory.externalImportWorking', 'Importing memory...')
+                + ' '
+                + translate(
+                    'memory.externalImportDoNotClose',
+                    'Fusing memories — do not close this window or quit the app, or the import will fail.'
+                ),
+                'working'
+            );
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 覆盖 persona 融合的整段耗时。
             const commitResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/commit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            }, 120000);
+            }, 270000);
             const result = await commitResponse.json();
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {
@@ -1720,6 +1734,7 @@
                 'error'
             );
         } finally {
+            window._memoryImportInProgress = false;
             updateExternalImportButton();
         }
     }
@@ -2125,7 +2140,18 @@
         teardownMemoryChatPanelHeightSync();
         teardownMemoryParticleCanvas();
     });
-    window.addEventListener('beforeunload', function () {
+    window.addEventListener('beforeunload', function (e) {
+        if (window._memoryImportInProgress) {
+            // 记忆融合进行中：拦住关闭，避免中断同步导入。真正的中文提示已在状态区
+            // 常驻（现代 Chromium 会忽略这里的自定义文案，只弹通用确认框）。
+            const message = translate(
+                'memory.externalImportDoNotClose',
+                'Fusing memories — do not close this window or quit the app, or the import will fail.'
+            );
+            e.preventDefault();
+            e.returnValue = message;
+            return message;
+        }
         teardownMemoryChatPanelHeightSync();
         teardownMemoryParticleCanvas();
     });

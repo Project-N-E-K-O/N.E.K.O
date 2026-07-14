@@ -1738,6 +1738,7 @@
         "externalImportConfirm": "将 {{persona}} 条人设和 {{facts}} 条事实导入 {{character}}？检测到 {{warnings}} 条可疑内容警告。",
         "externalImportCancelled": "已取消导入。",
         "externalImportWorking": "正在导入记忆…",
+        "externalImportDoNotClose": "正在融合记忆，请勿关闭本窗口或退出程序，否则导入会失败。",
         "externalImportSuccess": "已导入 {{persona}} 条人设和 {{facts}} 条事实，跳过 {{duplicates}} 条重复内容。",
         "externalImportPartial": "导入在保存 {{persona}} 条人设后中断。请重试以完成导入；重复内容会自动跳过。",
         "chatHistory": "聊天记录",

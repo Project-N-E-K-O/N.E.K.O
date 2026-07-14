@@ -41,6 +41,7 @@ from .persistence import PersistenceMixin
 from .facts import FactsMixin
 from .corrections import CorrectionsMixin
 from .refinement import RefinementMixin
+from .fusion import ExternalFusionMixin
 from .mentions import MentionsMixin
 from .rendering import RenderingMixin
 
@@ -50,6 +51,7 @@ class PersonaManager(
     FactsMixin,
     CorrectionsMixin,
     RefinementMixin,
+    ExternalFusionMixin,
     MentionsMixin,
     RenderingMixin,
 ):

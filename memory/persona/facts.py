@@ -231,60 +231,6 @@ class FactsMixin:
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
 
-    async def aimport_external_facts(self, name: str, entries: list[dict]) -> dict:
-        """Batch-import trusted, user-confirmed persona Markdown entries.
-
-        This deliberately performs exact deduplication only: migration should
-        preserve the source material instead of routing it through the
-        conversational contradiction/correction heuristic. The normal
-        per-character lock keeps the batch coordinated with all other persona
-        mutations in this process.
-        """
-        async with self._get_alock(name):
-            persona = await self._aensure_persona_locked(name)
-            seen = set()
-            for entity, section in persona.items():
-                if not isinstance(section, dict):
-                    continue
-                for item in section.get('facts', []):
-                    if isinstance(item, str):
-                        existing_text = item
-                    elif isinstance(item, dict):
-                        existing_text = item.get('text')
-                        if not isinstance(existing_text, str) or not existing_text:
-                            continue
-                    else:
-                        continue
-                    normalized_text = " ".join(existing_text.casefold().split())
-                    seen.add((entity, normalized_text))
-            added = 0
-            skipped = 0
-            for candidate in entries:
-                if not isinstance(candidate, dict):
-                    continue
-                text = str(candidate.get('text') or '').strip()
-                entity = str(candidate.get('entity') or 'master')
-                if not text or entity not in {'master', 'neko', 'relationship'}:
-                    continue
-                key = (entity, " ".join(text.casefold().split()))
-                if key in seen:
-                    skipped += 1
-                    continue
-                entry = self._build_fact_entry(
-                    text,
-                    'external_import',
-                    str(candidate.get('source_id') or '') or None,
-                )
-                metadata = candidate.get('external_import')
-                if isinstance(metadata, dict):
-                    entry['external_import'] = dict(metadata)
-                self._get_section_facts(persona, entity).append(entry)
-                seen.add(key)
-                added += 1
-            if added:
-                await self.asave_persona(name, persona)
-            return {'added': added, 'skipped': skipped}
-
     @staticmethod
     def _find_entry_in_section(section_facts: list, entry_id: str) -> dict | None:
         for entry in section_facts:

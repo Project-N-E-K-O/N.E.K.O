@@ -1738,6 +1738,7 @@
         "externalImportConfirm": "Импортировать {{persona}} записей личности и {{facts}} фактов в {{character}}? Предупреждений о подозрительном содержимом: {{warnings}}.",
         "externalImportCancelled": "Импорт отменён.",
         "externalImportWorking": "Импорт памяти…",
+        "externalImportDoNotClose": "Идёт слияние воспоминаний. Не закрывайте это окно и не выходите из приложения, иначе импорт не удастся.",
         "externalImportSuccess": "Импортировано записей личности: {{persona}}, фактов: {{facts}}; пропущено дубликатов: {{duplicates}}.",
         "externalImportPartial": "Импорт прерван после сохранения {{persona}} записей личности. Повторите попытку для завершения; дубликаты будут пропущены.",
         "chatHistory": "История чата",

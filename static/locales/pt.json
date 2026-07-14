@@ -1738,6 +1738,7 @@
         "externalImportConfirm": "Importar {{persona}} entradas de personalidade e {{facts}} fatos para {{character}}? Avisos de conteúdo suspeito: {{warnings}}.",
         "externalImportCancelled": "Importação cancelada.",
         "externalImportWorking": "Importando memória…",
+        "externalImportDoNotClose": "Fundindo memórias: não feche esta janela nem saia do aplicativo, ou a importação falhará.",
         "externalImportSuccess": "Foram importadas {{persona}} entradas de personalidade e {{facts}} fatos; {{duplicates}} duplicatas foram ignoradas.",
         "externalImportPartial": "A importação foi interrompida após salvar {{persona}} entradas de personalidade. Tente novamente para concluir; as duplicatas serão ignoradas.",
         "chatHistory": "Histórico de bate-papo",

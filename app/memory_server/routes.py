@@ -44,6 +44,7 @@ from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.persona.fusion import ExternalMemoryFusionError
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -65,7 +66,22 @@ class ExternalMemoryImportRequest(BaseModel):
 
 @app.post("/internal/memory/import_external_markdown")
 async def import_external_markdown(request: ExternalMemoryImportRequest):
-    """Persist already-previewed OpenClaw/Hermes entries via live managers."""
+    """Persist already-previewed OpenClaw/Hermes entries via live managers.
+
+    persona 与 facts 两条落盘路径**不对称**，因为它们的下游预算不同：
+
+    - **facts** 走 ``_apersist_new_facts(semantic_dedup=False)`` 纯追加——facts
+      池没有渲染进 system prompt 的硬 token 上限，检索时才按需召回，逐条保留即可。
+    - **persona** 必须先经 ``afuse_external_facts`` 做一次 LLM 融合。persona 渲染
+      进 system prompt 时所有 non-protected 条目共抢一个**严格的 token 上限**；
+      ``USER.md`` / ``SOUL.md`` 是几十行自由 Markdown，若原样逐条追加会迅速撑爆
+      这个池，把角色在对话里自然积累的印象挤掉。融合把素材归纳/合并/去重/按
+      per-entity 预算截断后再落盘。候选按 entity（master / neko）分组分别融合。
+
+    融合失败 (``ExternalMemoryFusionError``) 时**不降级**成逐条追加（那会绕过预算
+    把池撑爆）——保留用户素材、返回 ``external_import_partial`` 让前端重试，重试
+    是幂等的（同指纹整批 skip / 变更 replace-then-fuse）。
+    """
     name = validate_lanlan_name(request.character_name)
     if request.source_format not in {"openclaw", "hermes"}:
         raise HTTPException(status_code=400, detail="Invalid source_format")
@@ -80,7 +96,8 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     )
 
     imported_at = datetime.now().astimezone().isoformat()
-    persona_entries: list[dict] = []
+    # persona 候选按 entity(master / neko) 分组，各自送 LLM 融合；facts 走纯追加。
+    persona_candidates_by_entity: dict[str, list[dict]] = {}
     extracted_facts: list[dict] = []
     for candidate in request.candidates:
         if not isinstance(candidate, dict):
@@ -96,19 +113,18 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             or not source_file
         ):
             raise HTTPException(status_code=400, detail="Invalid candidate fields")
-        metadata = {
-            "format": request.source_format,
-            "file": source_file,
-            "section": str(candidate.get("source_section") or ""),
-            "event_date": candidate.get("event_date"),
-            "imported_at": imported_at,
-        }
+        source_section = str(candidate.get("source_section") or "")
+        event_date = candidate.get("event_date")
         if target == "persona":
-            persona_entries.append({
+            # 带齐 provenance（source_file / source_section / event_date）传给融合层：
+            # source_section 用于融合 prompt 分节，source_file 进 Phase 3 落盘 metadata，
+            # 指纹由 afuse_external_facts 内部按候选文本自算（幂等重导）。
+            persona_candidates_by_entity.setdefault(entity, []).append({
                 "text": text,
                 "entity": entity,
-                "source_id": f"{request.source_format}:{source_file}",
-                "external_import": metadata,
+                "source_file": source_file,
+                "source_section": source_section,
+                "event_date": event_date,
             })
         else:
             extracted_facts.append({
@@ -116,10 +132,46 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 "entity": entity,
                 "importance": 7,
                 "source": "user_observation",
-                "_external_import": metadata,
+                "_external_import": {
+                    "format": request.source_format,
+                    "file": source_file,
+                    "section": source_section,
+                    "event_date": event_date,
+                    "imported_at": imported_at,
+                },
             })
 
-    persona_result = await runtime.persona_manager.aimport_external_facts(name, persona_entries)
+    # ── persona 阶段：按 entity 分别 LLM 融合（不降级纯追加，见端点 docstring）──
+    added_persona = 0
+    skipped_persona = 0
+    try:
+        for entity, entity_candidates in persona_candidates_by_entity.items():
+            fusion_result = await runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            added_persona += fusion_result["added"]
+            skipped_persona += fusion_result["skipped"]
+    except ExternalMemoryFusionError:
+        # 融合终态失败：保留用户素材，返回 partial（added_persona = 已成功融合的
+        # entity 计数），前端重试幂等。绝不回退成逐条 append 撑爆 persona 池。
+        logger.exception(
+            "External Markdown import: persona fusion failed: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+
     try:
         new_facts = await runtime.fact_store._apersist_new_facts(
             name,
@@ -131,7 +183,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
         logger.exception(
             "External Markdown import stopped after persona persistence: character=%s added_persona=%s",
             name,
-            persona_result["added"],
+            added_persona,
         )
         return JSONResponse(
             status_code=500,
@@ -140,7 +192,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 "error_code": "external_import_partial",
                 "partial_import": {
                     "character_name": name,
-                    "added_persona": persona_result["added"],
+                    "added_persona": added_persona,
                     "added_facts": 0,
                 },
             },
@@ -152,9 +204,9 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
         "character_name": name,
         "source_format": request.source_format,
         "imported_files": request.imported_files,
-        "added_persona": persona_result["added"],
+        "added_persona": added_persona,
         "added_facts": added_facts,
-        "skipped_duplicates": persona_result["skipped"] + skipped_facts,
+        "skipped_duplicates": skipped_persona + skipped_facts,
         "warning_count": max(0, request.warning_count),
     }
 

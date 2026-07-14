@@ -391,6 +391,24 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
 
+# ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
+# 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
+# token 上限（PERSONA_RENDER_MAX_TOKENS，non-protected 条目共抢一个池），外部工作
+# 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
+# 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
+# USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），
+# 把内容压进下面的预算，再落盘为 non-protected persona 条目。
+# 两个 entity 各自的融合产出上限（token）。neko(SOUL.md 助手人格) 给得比
+# master(USER.md 用户) 多；两者合计 < PERSONA_RENDER_MAX_TOKENS，给对话中自然
+# 积累的 persona 条目留出竞争空间。
+EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS = 1000
+EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS = 600
+# 喂给融合 LLM 的输入池上限（原始候选拼起来的 token 上界，防超长 prompt）。
+EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS = 6000
+# 融合产出的单条 soft cap（token）：防 LLM 把多条揉成一条超长文本，在渲染层
+# whole-entry 贪心截断里挤掉大量其它条目。
+EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
+
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。
 - 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N
