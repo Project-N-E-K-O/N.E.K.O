@@ -251,6 +251,11 @@ async def sync_workshop_character_cards(
                                 continue
                             name_validation = validate_character_name(
                                 chara_name_raw,
+                                # Workshop 中仍有严格命名规则启用前发布的角色卡（例如
+                                # ``N.E.K.O``）。嵌入式点号本身是安全的，现有角色路径、
+                                # memory 与 cloudsave 也已兼容；这里只放宽点号，统一校验仍会
+                                # 拒绝 ``..``、尾随点号、路径分隔符和其它危险名称。
+                                allow_dots=True,
                                 max_units=PROFILE_NAME_MAX_UNITS,
                             )
                             chara_name = name_validation.normalized

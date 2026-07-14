@@ -1092,6 +1092,77 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            installed_folder = Path(td) / "legacy_dotted_name_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+
+            card_payloads = {
+                "legacy.chara.json": {"档案名": "N.E.K.O", "昵称": "历史点号角色"},
+                "traversal.chara.json": {"档案名": "..", "昵称": "路径穿越"},
+                "trailing-dot.chara.json": {"档案名": "角色.", "昵称": "尾随点号"},
+                "separator.chara.json": {"档案名": "角色/子目录", "昵称": "路径分隔符"},
+            }
+            for filename, payload in card_payloads.items():
+                (installed_folder / filename).write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["found_character_names"] == ["N.E.K.O"]
+            assert sync_result["added_character_names"] == ["N.E.K.O"]
+            current_catgirls = cm.load_characters().get("猫娘", {})
+            assert "N.E.K.O" in current_catgirls
+            assert ".." not in current_catgirls
+            assert "角色." not in current_catgirls
+            assert "角色/子目录" not in current_catgirls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
