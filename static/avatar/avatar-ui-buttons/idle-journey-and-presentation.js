@@ -380,11 +380,14 @@ function _computeNekoIdleCat1SideTargetForLook(rect, chatRect, lookFacingRight) 
         chatRect,
         lookFacingRight
     );
-    const rawLeft = Number.isFinite(nativeVisualTargetLeft)
-        ? nativeVisualTargetLeft
-        : lookFacingRight
-            ? chatRect.left - rect.width - profile.target.gapPx
-            : chatRect.right + profile.target.gapPx - approachOffsetPx;
+    let rawLeft;
+    if (Number.isFinite(nativeVisualTargetLeft)) {
+        rawLeft = nativeVisualTargetLeft;
+    } else if (lookFacingRight) {
+        rawLeft = chatRect.left - rect.width - profile.target.gapPx;
+    } else {
+        rawLeft = chatRect.right + profile.target.gapPx - approachOffsetPx;
+    }
     return _makeNekoIdleCat1SideTarget(rect, chatRect, {
         facingRight: lookFacingRight,
         rawLeft: rawLeft,
