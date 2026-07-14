@@ -130,6 +130,9 @@ def _sample(
         if row["uss_mib"] is not None:
             entry["uss_mib"] = float(entry["uss_mib"]) + float(row["uss_mib"])
             entry["uss_processes"] = int(entry["uss_processes"]) + 1
+    for entry in categories.values():
+        if entry["uss_processes"] == 0:
+            entry["uss_mib"] = None
 
     total_rss = sum(float(row["rss_mib"] or 0.0) for row in rows)
     total_uss_values = [float(row["uss_mib"]) for row in rows if row["uss_mib"] is not None]
@@ -156,10 +159,11 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             float(sample["categories"].get(name, {}).get("rss_mib", 0.0))
             for sample in samples
         ]
-        uss_values = [
-            float(sample["categories"].get(name, {}).get("uss_mib", 0.0))
-            for sample in samples
-        ]
+        uss_values: list[float] = []
+        for sample in samples:
+            uss_mib = sample["categories"].get(name, {}).get("uss_mib")
+            if uss_mib is not None:
+                uss_values.append(float(uss_mib))
         count_values = [
             int(sample["categories"].get(name, {}).get("count", 0))
             for sample in samples
@@ -169,8 +173,10 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "max_count": max(count_values),
             "median_rss_mib": round(statistics.median(rss_values), 3),
             "peak_rss_mib": round(max(rss_values), 3),
-            "median_uss_mib": round(statistics.median(uss_values), 3),
-            "peak_uss_mib": round(max(uss_values), 3),
+            "median_uss_mib": round(statistics.median(uss_values), 3)
+            if uss_values
+            else None,
+            "peak_uss_mib": round(max(uss_values), 3) if uss_values else None,
         }
 
     total_rss = [float(sample["total"]["rss_mib"] or 0.0) for sample in samples]
@@ -304,6 +310,10 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     vector = await service.embed("N.E.K.O runtime memory baseline")
+    if vector is None:
+        raise RuntimeError(
+            f"embedding inference failed after READY: {service.disable_reason()}"
+        )
     checkpoints.append(
         _sample_window(
             "embedding_first_inference",
@@ -319,7 +329,7 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
             "ready": ready,
             "model_id": service.model_id(),
             "model_root": str(Path(args.embedding_root).resolve()),
-            "vector_dimensions": len(vector or []),
+            "vector_dimensions": len(vector),
         },
         "checkpoints": checkpoints,
     }
@@ -403,9 +413,9 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
         )
     )
     session = await adapter._get_browser_session()
-    await session.start()
-    adapter._session_ever_started = True
     try:
+        await session.start()
+        adapter._session_ever_started = True
         checkpoints.append(
             _sample_window(
                 "browser_use_playwright_started",
@@ -575,7 +585,6 @@ async def _run_synthetic_chat(
         await websocket.send(json.dumps({"action": "end_session"}))
 
     return {
-        "character": character,
         "elapsed_s": round(time.perf_counter() - started_at, 3),
         "message_type_counts": dict(sorted(counts.items())),
         "status_code_counts": dict(sorted(status_codes.items())),

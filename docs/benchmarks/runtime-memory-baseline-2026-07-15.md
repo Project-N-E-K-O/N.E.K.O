@@ -3,7 +3,7 @@
 This document is the reproducible **before** baseline for runtime-memory work in
 Xiao8. Measurements were collected from commit
 `5ca2f416db2e09b4628b395c51a108ead7fc13a4` (`origin/main` on 2026-07-15) with
-[`scripts/runtime_memory_baseline.py`](../../scripts/runtime_memory_baseline.py).
+`scripts/runtime_memory_baseline.py`.
 
 ## Scope and interpretation
 
@@ -137,8 +137,8 @@ state, with a material temporary Python allocation peak.
 
 ### browser-use and Playwright
 
-The measured transition launches a real headed Chromium against `about:blank`
-with no network navigation.
+The measured transition launches a real Chromium process in headed mode against
+`about:blank` with no network navigation.
 
 | Checkpoint | Python RSS / USS | Chromium RSS / USS | traced current / peak |
 | --- | ---: | ---: | ---: |
