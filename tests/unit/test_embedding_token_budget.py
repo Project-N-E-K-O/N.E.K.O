@@ -19,6 +19,7 @@ Test goals:
 """
 from __future__ import annotations
 
+import asyncio
 import types
 
 import pytest
@@ -110,6 +111,18 @@ def _run_with_lengths(svc, fake_sess, embeddings_mod, lengths):
     # texts 列表只起占位作用,长度跟 encoded 对齐就行
     texts = ["x"] * len(lengths)
     return svc._infer_blocking(texts)
+
+
+def test_embedding_service_close_releases_native_owners(service_with_fake_session):
+    svc, _session, embeddings_mod = service_with_fake_session
+    svc._state = embeddings_mod.EmbeddingState.READY
+
+    svc.close()
+
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
+    assert asyncio.run(svc.request_load()) is False
 
 
 def test_short_batch_runs_in_single_bucket(service_with_fake_session):

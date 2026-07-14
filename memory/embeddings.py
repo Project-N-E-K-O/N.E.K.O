@@ -159,6 +159,7 @@ class EmbeddingState(enum.Enum):
     LOADING = "loading"
     READY = "ready"
     DISABLED = "disabled"
+    CLOSED = "closed"
 
 
 class _DisableReason(enum.Enum):
@@ -1099,10 +1100,14 @@ class EmbeddingService:
         On any failure, transitions to DISABLED and returns False — the
         service stays off for the lifetime of the process.
         """
+        if self._state is EmbeddingState.CLOSED:
+            return False
         if self._state in (EmbeddingState.READY, EmbeddingState.DISABLED):
             return self.is_available()
 
         async with self._load_lock:
+            if self._state is EmbeddingState.CLOSED:
+                return False
             if self._state in (EmbeddingState.READY, EmbeddingState.DISABLED):
                 return self.is_available()
             self._state = EmbeddingState.LOADING
@@ -1124,6 +1129,12 @@ class EmbeddingService:
                 self.model_id(), self._ram_gb or 0.0, self._has_vnni, self._has_avx2,
             )
             return True
+
+    def close(self) -> None:
+        """Drop the native ONNX session/tokenizer references at process shutdown."""
+        self._session = None
+        self._tokenizer = None
+        self._state = EmbeddingState.CLOSED
 
     async def embed(self, text: str) -> list[float] | None:
         """Single-text embedding. Returns None when not READY — caller
@@ -1434,6 +1445,15 @@ def reset_embedding_service_for_tests() -> None:
     global _SERVICE, _VNNI_DECISION_LOGGED
     _SERVICE = _service_lifecycle.reset_for_tests()
     _VNNI_DECISION_LOGGED = False
+
+
+def release_embedding_service() -> None:
+    """Release the process singleton and its native session references."""
+    global _SERVICE
+    service = _SERVICE
+    _SERVICE = None
+    if service is not None:
+        service.close()
 
 
 def _build_default_service() -> EmbeddingService:

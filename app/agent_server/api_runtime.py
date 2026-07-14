@@ -70,6 +70,7 @@ from .api_shared import (  # noqa: F401
     _collect_active_openclaw_task_ids,
     _collect_agent_status_snapshot,
     _collect_existing_task_descriptions,
+    _close_browser_use_adapter,
     _computer_use_scheduler_loop,
     _create_tracked_task,
     _default_openclaw_task_description,
@@ -532,24 +533,6 @@ async def startup():
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()
 
-    async def _init_browser_use_background():
-        try:
-            bu = await asyncio.to_thread(BrowserUseAdapter)
-            Modules.browser_use = bu
-            Modules.task_executor.browser_use = bu
-            logger.info("[Agent] BrowserUseAdapter ready (background init)")
-            # fire-and-forget capability 刷新：check_connectivity 可能因网络不稳
-            # 走到几十秒级的重试，绝不能把 OpenFang 初始化链 gate 在它上面。
-            # queue=True：这是"BU 刚就绪"这种状态变化触发，不能被启动期 LLM probe
-            # 持锁时的早退路径吞掉，否则 browser_use capability 会停在 PENDING。
-            _refresh_task = asyncio.create_task(
-                _fire_agent_llm_connectivity_check(queue=True)
-            )
-            Modules._persistent_tasks.add(_refresh_task)
-            _refresh_task.add_done_callback(Modules._persistent_tasks.discard)
-        except Exception as exc:
-            logger.error("[Agent] BrowserUseAdapter background init failed: %s", exc)
-
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
@@ -622,16 +605,12 @@ async def startup():
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
 
-    # BrowserUse 与 OpenFang 都涉及较重的初始化（CPU 密集模块加载 / 进程连通性轮询），
-    # 放在同一个后台任务里串行执行，避免两者并发时启动期 CPU 双峰。LLM connectivity
-    # probe 是轻量 HTTP，独立 task 与这条串行链并行。
-    async def _init_heavy_adapters_serial():
-        await _init_browser_use_background()
-        await _init_openfang_background()
-
-    _heavy_adapters_task = asyncio.create_task(_init_heavy_adapters_serial())
-    Modules._persistent_tasks.add(_heavy_adapters_task)
-    _heavy_adapters_task.add_done_callback(Modules._persistent_tasks.discard)
+    # BrowserUse stays unloaded until its toggle, availability endpoint, or
+    # direct run is requested.  OpenFang remains an independent background
+    # connectivity task because Electron owns that external daemon lifecycle.
+    _openfang_task = asyncio.create_task(_init_openfang_background())
+    Modules._persistent_tasks.add(_openfang_task)
+    _openfang_task.add_done_callback(Modules._persistent_tasks.discard)
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -849,6 +828,11 @@ async def shutdown():
             logger.warning("[Agent] ⚠️ 部分后台任务取消超时")
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
+
+    # BrowserSession.keep_alive keeps Chromium running between tasks; closing
+    # the adapter is therefore required at service shutdown, not just task
+    # cancellation, to reap the browser subprocess tree.
+    await _close_browser_use_adapter()
 
     cu = Modules.computer_use
     if cu is not None and hasattr(cu, "wait_for_completion"):

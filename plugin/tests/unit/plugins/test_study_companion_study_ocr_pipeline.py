@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -189,6 +191,20 @@ def test_ocr_pipeline_imagehash_module_import_is_optional(
     assert StudyOcrPipeline._calculate_thumbnail_phash(
         Image.new("RGB", (16, 16), "white")
     ) is None
+
+
+def test_study_plugin_registration_import_does_not_load_numpy() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import plugin.plugins.study_companion; "
+                "raise SystemExit(1 if 'numpy' in sys.modules else 0)"
+            ),
+        ],
+        check=True,
+    )
 
 
 def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
@@ -415,6 +431,33 @@ def test_ocr_pipeline_reuses_executor_and_closes_it(
 
     assert len(created) == 1
     assert created[0].shutdown_calls == 1
+
+
+def test_ocr_pipeline_close_releases_only_owned_backend() -> None:
+    class _ClosableBackend:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    external = _ClosableBackend()
+    external_pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=external,
+    )
+    external_pipeline.close()
+    assert external.close_calls == 0
+
+    owned = _ClosableBackend()
+    owned_pipeline = StudyOcrPipeline(logger=_Logger(), config=StudyConfig())
+    owned_pipeline._ocr_backend = owned
+    owned_pipeline._owns_ocr_backend = True
+    owned_pipeline.close()
+    owned_pipeline.close()
+
+    assert owned.close_calls == 1
 
 
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:

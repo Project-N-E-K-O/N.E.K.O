@@ -5106,7 +5106,7 @@ def test_build_config_defaults_ocr_languages_to_chi_sim_jpn_eng(tmp_path: Path) 
     )
 
 
-def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
+def test_ocr_reader_manager_defers_rapidocr_until_first_ocr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5127,7 +5127,8 @@ def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
     )
 
     assert manager._writer.bridge_root == bridge_root
-    assert warmup_calls
+    assert warmup_calls == []
+    assert manager._rapidocr_backend_cache is None
 
 
 @pytest.mark.asyncio
@@ -5343,8 +5344,50 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         assert first._ensure_runtime() is runtime
         assert second._ensure_runtime() is runtime
         assert len(load_calls) == 1
+        first.close()
+        assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+        second.close()
+        assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
     finally:
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_backend_close_releases_cached_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+    runtime = object()
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+
+    assert backend._ensure_runtime() is runtime
+    assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+
+    backend.close()
+    backend.close()
+
+    assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
+    assert backend._runtime is None
+    with pytest.raises(RuntimeError, match="closed"):
+        backend._ensure_runtime()
 
 
 def test_rapidocr_runtime_cache_reloads_after_idle_timeout(

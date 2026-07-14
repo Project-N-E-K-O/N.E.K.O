@@ -30,6 +30,7 @@ from typing import Dict, Any, Optional, Tuple
 from . import _shared
 from ._shared import (
     logger,
+    BrowserUseAdapter,
     ComputerUseAdapter,
     ThrottledLogger,
     _set_capability,
@@ -37,6 +38,66 @@ from ._shared import (
 )
 from .registry import _cleanup_task_registry, _now_iso
 from .results import _emit_main_event
+
+
+def _rewire_browser_use_dependents() -> None:
+    """Keep task_executor in sync after BrowserUse lifecycle changes."""
+    try:
+        executor = _shared.Modules.task_executor
+        if executor is not None and hasattr(executor, "browser_use"):
+            executor.browser_use = _shared.Modules.browser_use
+    except Exception:
+        pass
+
+
+async def _ensure_browser_use_adapter():
+    """Build the heavy BrowserUse adapter only when the feature is requested."""
+    current = _shared.Modules.browser_use
+    if current is not None:
+        return current
+
+    if _shared.Modules.browser_use_init_lock is None:
+        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+
+    async with _shared.Modules.browser_use_init_lock:
+        current = _shared.Modules.browser_use
+        if current is not None:
+            return current
+        try:
+            current = await asyncio.to_thread(BrowserUseAdapter)
+        except Exception as exc:
+            logger.error("[Agent] BrowserUseAdapter on-demand init failed: %s", exc)
+            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            return None
+
+        _shared.Modules.browser_use = current
+        _rewire_browser_use_dependents()
+        logger.info("[Agent] BrowserUseAdapter ready (on-demand init)")
+        return current
+
+
+async def _close_browser_use_adapter(
+    *,
+    capability_reason: str = "AGENT_BU_MODULE_NOT_LOADED",
+) -> None:
+    """Close Chromium/browser-use resources and detach the singleton adapter."""
+    if _shared.Modules.browser_use_init_lock is None:
+        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+
+    async with _shared.Modules.browser_use_init_lock:
+        current = _shared.Modules.browser_use
+        if current is None:
+            _rewire_browser_use_dependents()
+            _set_capability("browser_use", False, capability_reason)
+            return
+        try:
+            await current.close()
+        except Exception as exc:
+            logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
+        finally:
+            _shared.Modules.browser_use = None
+            _rewire_browser_use_dependents()
+            _set_capability("browser_use", False, capability_reason)
 
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
@@ -164,6 +225,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
                     _shared.Modules.agent_flags["browser_use_enabled"] = False
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
+                    await _close_browser_use_adapter(capability_reason=reason)
 
             _bump_state_revision()
             await _emit_agent_status_update()
@@ -180,6 +242,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 _shared.Modules.agent_flags["computer_use_enabled"] = False
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
                 _shared.Modules.agent_flags["browser_use_enabled"] = False
+                await _close_browser_use_adapter(capability_reason="AGENT_LLM_UNREACHABLE")
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()

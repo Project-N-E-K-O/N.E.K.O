@@ -57,6 +57,11 @@ class _TransportMixin:
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
 
+        # ``close()`` releases RNNoise/soxr state. The client object is reused
+        # across sessions, so recreate that session-owned processor on demand.
+        if self._audio_processor is None:
+            self._audio_processor = self._create_audio_processor()
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -1209,9 +1214,12 @@ class _TransportMixin:
             except Exception as e:
                 logger.error(f"Error saving debug audio: {e}")
 
-        # 重置音频处理器状态
+        # 会话结束后显式释放 RNNoise 原生 state 和 soxr 流式缓冲。
         if self._audio_processor is not None:
-            self._audio_processor.reset()
+            try:
+                self._audio_processor.close()
+            finally:
+                self._audio_processor = None
 
         # Gemini uses different cleanup
         if self._is_gemini:

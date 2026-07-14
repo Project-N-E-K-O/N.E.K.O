@@ -211,6 +211,12 @@ class PollMixin:
     async def shutdown(self) -> None:
         self._stop_foreground_advance_monitor()
         self._shutdown_capture_worker()
+        self._release_rapidocr_backend()
+        classifier = self.vision_classifier
+        self.vision_classifier = None
+        close_classifier = getattr(classifier, "close", None)
+        if callable(close_classifier):
+            close_classifier()
         if self._writer.session_id:
             self._writer.end_session(ts=utc_now_iso(self._time_fn()))
             self._ocr_lang_detector.reset(clear_switch_time=True)

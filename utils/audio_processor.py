@@ -184,15 +184,18 @@ class _LiteDenoiser:
         if old_state:
             self._lib.destroy(old_state)
 
+    def close(self) -> None:
+        """Destroy the owned native RNNoise state exactly once."""
+        state = self._state
+        self._state = None
+        if state:
+            self._lib.destroy(state)
+
     def __del__(self):
-        lib = getattr(self, "_lib", None)
-        state = getattr(self, "_state", None)
-        if lib is not None and state:
-            try:
-                lib.destroy(state)
-            except Exception:
-                pass
-            self._state = None
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class AudioProcessor:
@@ -446,6 +449,19 @@ class AudioProcessor:
         self._reset_internal_state()
         self._last_speech_time = time.time()
         logger.info("🔄 AudioProcessor state reset (external call)")
+
+    def close(self) -> None:
+        """Release native denoiser and streaming-buffer resources."""
+        denoiser = self._denoiser
+        self._denoiser = None
+        if denoiser is not None:
+            close = getattr(denoiser, "close", None)
+            if callable(close):
+                close()
+        self._downsample_resampler = None
+        self._frame_buffer = np.array([], dtype=np.int16)
+        self._debug_audio_before.clear()
+        self._debug_audio_after.clear()
     
     def request_reset(self) -> None:
         """Request a reset on the next process_chunk call."""
@@ -504,6 +520,9 @@ class AudioProcessor:
         self.noise_reduce_enabled = enabled
         if enabled and self._denoiser is None:
             self._init_denoiser()
+        elif not enabled and self._denoiser is not None:
+            self._denoiser.close()
+            self._denoiser = None
         if prev != enabled:
             self._frame_buffer = np.array([], dtype=np.int16)
             self._agc_gain = 1.0

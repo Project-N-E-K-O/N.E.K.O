@@ -4,18 +4,14 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import io
+import importlib
+import importlib.util
 import subprocess
 import sys
 import time
 from typing import Any
 
 from PIL import Image
-
-try:
-    import imagehash
-except ImportError:
-    imagehash = None
-
 from .models import (
     ActivitySnapshot,
     OCR_SNIPPET_MAX_CHARS,
@@ -24,6 +20,25 @@ from .models import (
     utc_now_iso,
 )
 from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
+
+_IMAGEHASH_UNLOADED = object()
+imagehash: Any = _IMAGEHASH_UNLOADED
+
+
+def _get_imagehash() -> Any | None:
+    global imagehash
+    if imagehash is _IMAGEHASH_UNLOADED:
+        try:
+            imagehash = importlib.import_module("imagehash")
+        except ImportError:
+            imagehash = None
+    return imagehash
+
+
+def _imagehash_is_available() -> bool:
+    if imagehash is not _IMAGEHASH_UNLOADED:
+        return imagehash is not None
+    return importlib.util.find_spec("imagehash") is not None
 
 CAPTURE_BACKEND_AUTO = "auto"
 CAPTURE_BACKEND_DXCAM = "dxcam"
@@ -94,6 +109,7 @@ class StudyOcrPipeline:
         self._logger = logger
         self._config = config
         self._ocr_backend = ocr_backend
+        self._owns_ocr_backend = ocr_backend is None
         self._capture_backend = capture_backend
         self._latest_vision_snapshot: dict[str, Any] = {}
         self._latest_vision_image_base64 = ""
@@ -101,24 +117,36 @@ class StudyOcrPipeline:
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="study-ocr"
         )
-        if imagehash is None:
+        if not _imagehash_is_available():
             self._logger.warning(
                 "study OCR content-change detection disabled: imagehash is unavailable"
             )
 
     def update_config(self, config: StudyConfig) -> None:
+        self._release_owned_ocr_backend()
         self._config = config
-        self._ocr_backend = None
         self._capture_backend = None
         self._last_thumbnail_phash = ""
         self._clear_vision_snapshot()
 
     def close(self) -> None:
+        self._release_owned_ocr_backend()
         executor = self._executor
         if executor is None:
             return
         executor.shutdown(wait=False)
         self._executor = None
+
+    def _release_owned_ocr_backend(self) -> None:
+        backend = self._ocr_backend
+        owns_backend = self._owns_ocr_backend
+        self._ocr_backend = None
+        self._owns_ocr_backend = True
+        if not owns_backend or backend is None:
+            return
+        close = getattr(backend, "close", None)
+        if callable(close):
+            close()
 
     def _retire_executor(self, executor: ThreadPoolExecutor) -> None:
         if self._executor is not executor:
@@ -388,9 +416,10 @@ class StudyOcrPipeline:
 
     @staticmethod
     def _calculate_thumbnail_phash(image: Image.Image) -> str | None:
-        if imagehash is None:
+        imagehash_module = _get_imagehash()
+        if imagehash_module is None:
             return None
-        return str(imagehash.phash(image, hash_size=8))
+        return str(imagehash_module.phash(image, hash_size=8))
 
     def _has_content_change(self, thumbnail_phash: str) -> bool:
         previous = str(self._last_thumbnail_phash or "").strip()
@@ -616,6 +645,7 @@ class StudyOcrPipeline:
                 install_target_dir_raw=self._config.ocr_install_target_dir,
                 languages=self._config.ocr_languages,
             )
+            self._owns_ocr_backend = True
         else:
             from plugin.plugins._shared.rapidocr.ocr_backends import RapidOcrBackend
 
@@ -627,6 +657,7 @@ class StudyOcrPipeline:
                 ocr_version=self._config.rapidocr_ocr_version,
                 plugin_id="study_companion",
             )
+            self._owns_ocr_backend = True
         return self._ocr_backend
 
     def _resolve_capture_backend(self) -> Any:

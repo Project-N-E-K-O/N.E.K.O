@@ -70,6 +70,7 @@ from .api_shared import (  # noqa: F401
     _collect_active_openclaw_task_ids,
     _collect_agent_status_snapshot,
     _collect_existing_task_descriptions,
+    _close_browser_use_adapter,
     _computer_use_scheduler_loop,
     _create_tracked_task,
     _default_openclaw_task_description,
@@ -78,6 +79,7 @@ from .api_shared import (  # noqa: F401
     _emit_task_result,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
+    _ensure_browser_use_adapter,
     _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
@@ -602,7 +604,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            bu = getattr(Modules, "browser_use", None)
+            bu = await _ensure_browser_use_adapter()
             if not bu:
                 Modules.agent_flags["browser_use_enabled"] = False
                 Modules.notification = json.dumps({"code": "AGENT_BU_MODULE_NOT_LOADED"})
@@ -618,6 +620,14 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 _set_capability("browser_use", True, "")
         else:
             Modules.agent_flags["browser_use_enabled"] = False
+
+    # Explicit disable and automatic gate demotion both release the heavy
+    # browser-use graph and any keep-alive Chromium subprocess immediately.
+    if bf is False or (
+        old_flags.get("browser_use_enabled", False)
+        and not Modules.agent_flags.get("browser_use_enabled", False)
+    ):
+        await _close_browser_use_adapter()
 
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
@@ -1186,7 +1196,7 @@ async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    bu = Modules.browser_use
+    bu = await _ensure_browser_use_adapter()
     if not bu:
         raise HTTPException(503, "BrowserUse not ready")
     if not getattr(bu, "_ready_import", False):
@@ -1235,7 +1245,7 @@ async def computer_use_run(payload: Dict[str, Any]):
 
 @app.post("/browser_use/run")
 async def browser_use_run(payload: Dict[str, Any]):
-    if not Modules.browser_use:
+    if not await _ensure_browser_use_adapter():
         raise HTTPException(503, "BrowserUse not ready")
     instruction = (payload or {}).get("instruction", "").strip()
     if not instruction:

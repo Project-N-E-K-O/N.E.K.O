@@ -8,7 +8,11 @@ import httpx
 import pytest
 
 from plugin.plugins._shared.rapidocr import rapidocr_support
-from plugin.plugins._shared.rapidocr.ocr_runtime_types import _rapidocr_runtime_cache_key
+from plugin.plugins._shared.rapidocr.ocr_rapidocr_backend import RapidOcrBackend
+from plugin.plugins._shared.rapidocr.ocr_runtime_types import (
+    _RAPIDOCR_RUNTIME_CACHE,
+    _rapidocr_runtime_cache_key,
+)
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -80,6 +84,54 @@ def test_shared_rapidocr_runtime_cache_key_includes_plugin_id() -> None:
         "PP-OCRv5",
     )
     assert other_key != study_key
+
+
+def test_shared_rapidocr_backend_close_releases_plugin_scoped_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = object()
+    install_target_dir = str(tmp_path / "RapidOCR")
+    monkeypatch.setattr(
+        "plugin.plugins._shared.rapidocr.ocr_rapidocr_backend.load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    second = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+
+    assert backend._ensure_runtime() is runtime
+    assert second._ensure_runtime() is runtime
+    assert _RAPIDOCR_RUNTIME_CACHE[key][0] is runtime
+
+    backend.close()
+
+    assert _RAPIDOCR_RUNTIME_CACHE[key][0] is runtime
+
+    second.close()
+
+    assert key not in _RAPIDOCR_RUNTIME_CACHE
 
 
 def test_default_rapidocr_install_target_rejects_path_traversal_plugin_id(

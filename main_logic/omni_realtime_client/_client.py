@@ -186,12 +186,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Auto-resets after 2 seconds of no speech to prevent state drift
         # Input: 48kHz from PC, 16kHz from mobile
         # Output: 16kHz for API
-        self._audio_processor = AudioProcessor(
-            input_sample_rate=48000,
-            output_sample_rate=16000,
-            noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
-            on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
-        )
+        self._audio_processor = self._create_audio_processor()
 
         # ── Uplink (client→provider) sample rate ──────────────────────
         # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k、主动
@@ -367,6 +362,15 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # signal_user_activity_end) could content-match a lingering — already
         # succeeded — proactive handler and wrongly re-enqueue its cb.
         self._proactive_inject_awaiting_outcome = False
+
+    def _create_audio_processor(self) -> AudioProcessor:
+        """Create session-owned audio state, including native RNNoise state."""
+        return AudioProcessor(
+            input_sample_rate=48000,
+            output_sample_rate=16000,
+            noise_reduce_enabled=True,
+            on_silence_reset=self._on_silence_reset,
+        )
 
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
