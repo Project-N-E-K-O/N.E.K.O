@@ -234,7 +234,7 @@ async def sync_workshop_character_cards(
             pending_added_catgirls = {}
             pending_card_face_writes = {}
             pending_item_ids = {}
-            pending_restore_tombstone_names: set[str] = set()
+            pending_restore_tombstone_names: dict[str, str] = {}
             confirmed_recoverable_existing_names: set[str] = set()
             
             # 2. 遍历所有已安装的物品
@@ -293,7 +293,7 @@ async def sync_workshop_character_cards(
                             if deleted_name is not None:
                                 _append_unique(deleted_character_names_seen, chara_name)
                                 if restore_deleted:
-                                    pending_restore_tombstone_names.add(chara_name)
+                                    pending_restore_tombstone_names[chara_name] = deleted_name
                                 else:
                                     skipped_count += 1
                                     logger.info(
@@ -339,7 +339,9 @@ async def sync_workshop_character_cards(
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
                                 if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
-                                    confirmed_recoverable_existing_names.add(chara_name)
+                                    confirmed_recoverable_existing_names.add(
+                                        pending_restore_tombstone_names[chara_name]
+                                    )
                                 if existing_matches_item:
                                     try:
                                         blocked_result = _abort_if_write_fence_active(
@@ -544,7 +546,9 @@ async def sync_workshop_character_cards(
                                         pending_item_ids.get(pending_name, ""),
                                     )
                                 ):
-                                    confirmed_recoverable_existing_names.add(pending_name)
+                                    confirmed_recoverable_existing_names.add(
+                                        pending_restore_tombstone_names[pending_name]
+                                    )
                             elif conflict_name is not None:
                                 logger.warning(
                                     "sync_workshop_character_cards: 保存前跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold）",
@@ -579,7 +583,8 @@ async def sync_workshop_character_cards(
 
                     if restore_deleted and actually_added_names:
                         restored_candidates = [
-                            name for name in actually_added_names
+                            pending_restore_tombstone_names[name]
+                            for name in actually_added_names
                             if name in pending_restore_tombstone_names
                         ]
                         if restored_candidates:

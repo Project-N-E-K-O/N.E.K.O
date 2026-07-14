@@ -1439,7 +1439,8 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
 
             workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
-            deleted_name = "手动恢复工坊角色"
+            deleted_name = "N.E.K.O"
+            restored_name = "n.e.k.o"
             cm.save_character_tombstones_state({
                 "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
                 "tombstones": [
@@ -1454,7 +1455,7 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
             installed_folder = Path(td) / "mock_workshop_manual_restore_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
             (installed_folder / "角色卡.chara.json").write_text(
-                json.dumps({"档案名": deleted_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
+                json.dumps({"档案名": restored_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
@@ -1484,15 +1485,15 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                 )
 
             assert sync_result["added"] == 1
-            assert sync_result["added_character_names"] == [deleted_name]
+            assert sync_result["added_character_names"] == [restored_name]
             assert sync_result["restored_deleted_names"] == [deleted_name]
             current_characters = cm.load_characters()
-            assert deleted_name in current_characters.get("猫娘", {})
+            assert restored_name in current_characters.get("猫娘", {})
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
 
             assert second_result["added"] == 0
-            assert second_result["existing_character_names"] == [deleted_name]
+            assert second_result["existing_character_names"] == [restored_name]
 
 
 @pytest.mark.unit
