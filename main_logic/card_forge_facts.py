@@ -84,13 +84,15 @@ def _build_context(
     master_name, current_lanlan, *_rest = config_manager.get_character_data()
     master = str(master_name or "").strip()
     active_lanlan = _safe_character_segment(str(current_lanlan or ""))
+    override_lanlan = _safe_character_segment(str(character_override or ""))
     known_names = _known_character_names(config_manager)
-    # Browser-provided hints and debug overrides must never select another role's
-    # memory.  Only the current character returned by the trusted config manager
-    # may determine the facts directory, and it must also exist in the prompt map.
+    # Browser-provided runtime hints never select another role's memory.  A
+    # character override reaches this helper only after the standalone/debug
+    # feature flag is checked, and must still name a configured character.
+    selected_lanlan = override_lanlan if character_override is not None else active_lanlan
     lanlan = (
-        active_lanlan
-        if active_lanlan and known_names and active_lanlan in known_names
+        selected_lanlan
+        if selected_lanlan and known_names and selected_lanlan in known_names
         else ""
     )
 
@@ -101,7 +103,7 @@ def _build_context(
         source = "env-facts-json"
     elif memory_dir and lanlan:
         facts_path = memory_dir / lanlan / "facts.json"
-        source = "neko-config"
+        source = "character-override" if character_override is not None else "neko-config"
     else:
         facts_path = None
         source = "unresolved"

@@ -222,7 +222,6 @@ def test_facts_context_uses_only_validated_active_character(tmp_path):
 
     context = F._build_context(
         manager,
-        character_override="Other",
         runtime_character_hint="Other",
     )
 
@@ -230,6 +229,21 @@ def test_facts_context_uses_only_validated_active_character(tmp_path):
     assert context.facts_path == tmp_path / "Active" / "facts.json"
     assert context.lanlan_prompt == "active prompt"
     assert context.source == "neko-config"
+
+
+def test_facts_context_honors_validated_character_override(tmp_path):
+    manager = _FakeConfigManager(
+        tmp_path,
+        "Active",
+        {"Active": "active prompt", "Other": "other prompt"},
+    )
+
+    context = F._build_context(manager, character_override="Other")
+
+    assert context.lanlan_name == "Other"
+    assert context.facts_path == tmp_path / "Other" / "facts.json"
+    assert context.lanlan_prompt == "other prompt"
+    assert context.source == "character-override"
 
 
 def test_facts_context_fails_closed_without_valid_active_character(tmp_path, monkeypatch):
