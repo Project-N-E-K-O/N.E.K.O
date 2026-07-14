@@ -37,6 +37,23 @@ def _page_config_state(page: Page, timeout_ms: int = 250) -> str:
     )
 
 
+def _set_home_tutorial_startup_released(page: Page, released: bool) -> None:
+    page.evaluate(
+        """
+        (released) => {
+            window.dispatchEvent(new CustomEvent('neko:startup-greeting-release', {
+                detail: {
+                    released,
+                    page: 'home',
+                    reason: released ? 'test-tutorial-settled' : 'test-tutorial-started',
+                },
+            }));
+        }
+        """,
+        released,
+    )
+
+
 def _continue_storage_intro(page: Page) -> None:
     expect(page.get_by_role("heading", name="为什么要迁移？")).to_have_count(0)
     expect(page.locator(".storage-location-intro-card")).to_be_visible(timeout=15_000)
@@ -1330,7 +1347,7 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     target_root = str((tmp_path / "target-root" / "N.E.K.O").resolve())
     page.add_init_script(
         """
-        () => {
+        {
             window.__nekoOpenPathCalls = [];
             window.nekoHost = {
                 openPath: async (payload) => {
@@ -1434,6 +1451,7 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 
     completion_card = page.locator(".storage-location-completion-card")
     cleanup_button = completion_card.locator("button.storage-location-btn--primary")
+    defer_button = completion_card.get_by_role("button", name="暂时不处理")
     completion_paths = page.locator(".storage-location-completion-card .storage-location-path")
 
     expect(page.locator("#storage-location-overlay")).to_be_hidden(timeout=10_000)
@@ -1458,6 +1476,20 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
         """,
         timeout=10_000,
     )
+    _set_home_tutorial_startup_released(page, False)
+    page.evaluate("window.appStorageLocation.refreshCompletionNotice()")
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    page.evaluate(
+        """
+        () => window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+            detail: { page: 'home' },
+        }))
+        """
+    )
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    _set_home_tutorial_startup_released(page, True)
     page.wait_for_function(
         """
         async () => {
@@ -1474,11 +1506,77 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
     expect(completion_paths.nth(0)).to_have_text(target_root, timeout=10_000)
     expect(completion_paths.nth(1)).to_have_text(source_root, timeout=10_000)
     expect(cleanup_button).to_be_visible(timeout=10_000)
+    expect(cleanup_button).to_have_text("清理旧数据")
+    expect(defer_button).to_be_visible(timeout=10_000)
+    expect(defer_button).to_have_class(re.compile(r"\bstorage-location-completion-later\b"))
     open_target_button = completion_card.get_by_role("button", name="打开当前路径")
     open_retained_button = completion_card.get_by_role("button", name="打开旧数据目录")
     expect(open_target_button).to_be_visible(timeout=10_000)
     expect(open_retained_button).to_be_visible(timeout=10_000)
+    expect(open_target_button).to_have_class(re.compile(r"\bstorage-location-completion-link\b"))
+    expect(open_retained_button).to_have_class(re.compile(r"\bstorage-location-completion-link\b"))
+    expect(open_target_button.locator("xpath=..")).to_have_class(
+        re.compile(r"\bstorage-location-completion-path-item\b")
+    )
+    link_style = open_target_button.evaluate(
+        """
+        (element) => ({
+            borderTopWidth: getComputedStyle(element).borderTopWidth,
+            backgroundColor: getComputedStyle(element).backgroundColor,
+            underlineHeight: getComputedStyle(element, '::after').height,
+            underlineOpacity: getComputedStyle(element, '::after').opacity,
+        })
+        """
+    )
+    assert link_style == {
+        "borderTopWidth": "0px",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "underlineHeight": "1px",
+        "underlineOpacity": "0.28",
+    }
+    cleanup_box = cleanup_button.bounding_box()
+    defer_box = defer_button.bounding_box()
+    assert cleanup_box is not None
+    assert defer_box is not None
+    assert cleanup_box["x"] < defer_box["x"]
+    assert abs(cleanup_box["y"] - defer_box["y"]) <= 1
+    defer_style = defer_button.evaluate(
+        """
+        (element) => ({
+            borderTopWidth: getComputedStyle(element).borderTopWidth,
+            color: getComputedStyle(element).color,
+            backgroundImage: getComputedStyle(element).backgroundImage,
+        })
+        """
+    )
+    cleanup_border_width = cleanup_button.evaluate(
+        "(element) => getComputedStyle(element).borderTopWidth"
+    )
+    assert cleanup_border_width == "0px"
+    assert defer_style["borderTopWidth"] == "0px"
+    assert defer_style["color"] == "rgb(248, 251, 255)"
+    assert "linear-gradient" in defer_style["backgroundImage"]
+    assert "rgb(174, 181, 188)" in defer_style["backgroundImage"]
     expect(completion_card.locator(".storage-location-actions button", has_text="关闭")).to_have_count(0)
+
+    original_viewport = page.viewport_size
+    assert original_viewport is not None
+    page.set_viewport_size({"width": 390, "height": 800})
+    narrow_card_box = completion_card.bounding_box()
+    narrow_path_item_box = open_target_button.locator("xpath=..").bounding_box()
+    narrow_link_box = open_target_button.bounding_box()
+    narrow_cleanup_box = cleanup_button.bounding_box()
+    narrow_defer_box = defer_button.bounding_box()
+    assert narrow_card_box is not None
+    assert narrow_path_item_box is not None
+    assert narrow_link_box is not None
+    assert narrow_cleanup_box is not None
+    assert narrow_defer_box is not None
+    assert narrow_card_box["x"] >= 0
+    assert narrow_card_box["x"] + narrow_card_box["width"] <= 390
+    assert abs(narrow_link_box["x"] - narrow_path_item_box["x"]) <= 1
+    assert abs(narrow_cleanup_box["y"] - narrow_defer_box["y"]) <= 1
+    page.set_viewport_size(original_viewport)
 
     open_target_button.click()
     open_retained_button.click()
@@ -1510,7 +1608,7 @@ def test_storage_location_ready_state_shows_completion_notice_and_allows_manual_
 
 
 @pytest.mark.frontend
-def test_storage_location_completion_notice_close_is_remembered_per_migration(
+def test_storage_location_completion_notice_close_is_remembered_and_defer_is_session_only(
     mock_page: Page,
     running_server: str,
     tmp_path,
@@ -1596,7 +1694,46 @@ def test_storage_location_completion_notice_close_is_remembered_per_migration(
 
     page.goto(f"{running_server}/", wait_until="domcontentloaded")
     completion_card = page.locator(".storage-location-completion-card")
+    _set_home_tutorial_startup_released(page, True)
 
+    page.wait_for_function(
+        """
+        async () => {
+            if (!window.appStorageLocation) return false;
+            await window.appStorageLocation.refreshCompletionNotice();
+            const card = document.querySelector('.storage-location-completion-card');
+            return !!(card && !card.hidden);
+        }
+        """,
+        timeout=10_000,
+    )
+    expect(completion_card).to_be_visible(timeout=10_000)
+
+    completion_card.get_by_role("button", name="暂时不处理").click()
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    page.evaluate("window.appStorageLocation.refreshCompletionNotice()")
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    completion_notice["completed_at"] = "2026-04-26T00:00:00Z"
+    page.wait_for_function(
+        """
+        async () => {
+            await window.appStorageLocation.refreshCompletionNotice();
+            const card = document.querySelector('.storage-location-completion-card');
+            return !!(card && !card.hidden);
+        }
+        """,
+        timeout=10_000,
+    )
+    expect(completion_card).to_be_visible(timeout=10_000)
+
+    completion_notice["completed_at"] = "2026-04-25T00:00:00Z"
+    page.evaluate("window.appStorageLocation.refreshCompletionNotice()")
+    expect(completion_card).to_be_hidden(timeout=10_000)
+
+    page.reload(wait_until="domcontentloaded")
+    _set_home_tutorial_startup_released(page, True)
     page.wait_for_function(
         """
         async () => {
@@ -1614,6 +1751,7 @@ def test_storage_location_completion_notice_close_is_remembered_per_migration(
     expect(completion_card).to_be_hidden(timeout=10_000)
 
     page.reload(wait_until="domcontentloaded")
+    _set_home_tutorial_startup_released(page, True)
     page.wait_for_function(
         """
         async () => {

@@ -1,3 +1,4 @@
+import builtins
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -123,6 +124,57 @@ def test_backend_screenshot_rejects_missing_csrf_headers():
     assert payload["success"] is False
     assert payload["error_code"] == "csrf_validation_failed"
     assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
+
+
+@pytest.mark.unit
+def test_backend_screenshot_returns_safe_macos_pyobjc_reason(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+    monkeypatch.setattr(system_router_module.sys, "platform", "darwin")
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pyautogui":
+            raise AssertionError("You must first install pyobjc-core and pyobjc")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with _build_client() as client:
+        response = client.post(SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error"] == "pyautogui unavailable"
+    assert payload["reason"] == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
+    assert "pyobjc-core and pyobjc" not in str(payload)
+
+
+@pytest.mark.unit
+def test_backend_screenshot_does_not_expose_raw_import_details(monkeypatch):
+    monkeypatch.setattr(system_router_module, "_is_loopback_request", lambda _request: True)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pyautogui":
+            raise RuntimeError("dlopen(/Users/alice/private/libbackend.dylib) failed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with _build_client() as client:
+        response = client.post(SCREENSHOT_ENDPOINT, headers=_local_headers())
+
+    assert response.status_code == 501
+    payload = response.json()
+    assert payload == {
+        "success": False,
+        "error": "pyautogui unavailable",
+        "reason": "AGENT_PYAUTOGUI_IMPORT_FAILED",
+    }
+    assert "/Users/alice" not in response.text
 
 
 @pytest.mark.unit
@@ -387,4 +439,3 @@ def test_interactive_screenshot_returns_cropped_image_data(monkeypatch):
     assert payload["size"] > 0
     assert payload["data"].startswith("data:image/jpeg;base64,")
     assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
-

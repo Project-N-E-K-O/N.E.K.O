@@ -92,7 +92,7 @@ LEGACY_DEFAULT_LIVE2D_MODELS = {
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
 
-# 挂载用户Live2D目录（与main_server.py保持一致，CFA感知）
+# 挂载用户Live2D目录（与 main_server 包保持一致，CFA感知）
 _readable_live2d = _config_manager.readable_live2d_dir
 _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
 if os.path.exists(_serve_live2d_path):
@@ -105,7 +105,7 @@ if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
         app.mount("/user_live2d_local", StaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
-# 挂载创意工坊目录（与main_server.py保持一致）
+# 挂载创意工坊目录（与 main_server 包保持一致）
 workshop_path = get_default_workshop_folder()
 if workshop_path and os.path.exists(workshop_path):
     app.mount("/workshop", StaticFiles(directory=workshop_path), name="workshop")
@@ -170,7 +170,7 @@ async def get_page_config(lanlan_name: str = ""):
 
 @app.get("/api/config/preferences")
 async def get_preferences():
-    """Get user preferences (consistent with main_server.py)"""
+    """Get user preferences consistent with the main server package."""
     preferences = await aload_user_preferences()
     return preferences
 

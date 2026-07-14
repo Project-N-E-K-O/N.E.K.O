@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 UNIVERSAL_TUTORIAL_MANAGER_PATH = (
@@ -28,6 +29,7 @@ FLOATING_GUIDE_RESET_PATH = (
 CHARACTER_PERSONALITY_ONBOARDING_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "js/character_personality_onboarding.js"
 )
+APP_INTERPAGE_PARTS_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
 
 
 def _read_manager() -> str:
@@ -493,11 +495,12 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
 
     assert "clearStartupGreetingRelease(reason = 'tutorial-started')" in source
     assert "delete window.__NEKO_STARTUP_GREETING_RELEASED__;" in source
-    emit_block = source.split("    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {", 1)[1].split(
+    emit_block = source.split("    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {", 1)[1].split(
         "    /**",
         1,
     )[0]
     assert "this.clearStartupGreetingRelease('tutorial-started');" in emit_block
+    assert "options.lifecycleAlreadyStarted !== true" in emit_block
     assert "this.relayYuiGuideTutorialLifecycleStarted(page, source);" in emit_block
     assert emit_block.index("this.clearStartupGreetingRelease('tutorial-started');") < emit_block.index(
         "this.relayYuiGuideTutorialLifecycleStarted(page, source);"
@@ -516,6 +519,19 @@ def test_universal_tutorial_manager_resets_and_delays_startup_greeting_release()
     assert lifecycle_started_block.index(
         "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
     ) < lifecycle_started_block.index("const startedMessage = {")
+    # 没有原生 overlay 的浏览器独立聊天页也必须收到带稳定 runId 的 lifecycle-start。
+    overlay_start_block = source.split(
+        "    ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started') {",
+        1,
+    )[1].split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[0]
+    assert overlay_start_block.index("if (!tutorialRunId) {") < overlay_start_block.index(
+        "if (!overlay || typeof overlay.begin !== 'function')"
+    )
+    assert "return tutorialRunId;" in overlay_start_block
+    assert "channel.postMessage(startedMessage)" in lifecycle_started_block
 
     end_block = source.split("    onTutorialEnd() {", 1)[1].split(
         "    restoreYuiGuideChatInputState",
@@ -696,7 +712,7 @@ def test_tutorial_yui_teardown_clears_non_live2d_runtime_residue_before_replay()
 def test_tutorial_live2d_preparing_hides_model_side_controls():
     repo_root = Path(__file__).resolve().parents[2]
     css_source = (repo_root / "static/css/yui-guide.css").read_text(encoding="utf-8")
-    app_ui_source = (repo_root / "static/app/app-ui.js").read_text(encoding="utf-8")
+    app_ui_source = read_js_parts(repo_root / "static/app/app-ui")
     live2d_buttons_source = (repo_root / "static/live2d/live2d-ui-buttons.js").read_text(encoding="utf-8")
     manager_source = _read_manager()
     reload_controller_source = (repo_root / "static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
@@ -817,6 +833,162 @@ def test_avatar_floating_guide_lifecycle_toggles_compact_chat_fixed_layout_class
     assert "this.syncYuiGuideCompactChatFixedLayout(false, reason)" in clear_method_block
     assert "action: 'yui_guide_set_compact_chat_fixed_layout'" in source
     assert "window.nekoTutorialOverlay.relayToChat(message)" in source
+
+
+def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_restores_ball():
+    source = _read_manager()
+    start_round_block = source.split("    async startAvatarFloatingGuideRound(day, options = {}) {", 1)[1].split(
+        "            const director = this.ensureYuiGuideDirector();",
+        1,
+    )[0]
+    lifecycle_block = source.split("    clearAllTutorialLifecycles(reason = 'destroy') {", 1)[1].split(
+        "    normalizeTutorialEndRawReason(reason) {",
+        1,
+    )[0]
+
+    # 重启教程时聊天桥仍是 closed；只提前打开本轮 lifecycle，用户可见 started 仍等准备成功。
+    assert start_round_block.index("this.relayYuiGuideTutorialLifecycleStarted('home', source)") < start_round_block.index(
+        "await this.prepareYuiGuideCompactChatForTutorial()"
+    )
+    # prepare 等待期间允许 skip/远程结束；回执回来后只能恢复形态，不能复活已拆除的教程。
+    prepare_ready_index = start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()")
+    cancellation_index = start_round_block.index("this._tutorialEndHandled", prepare_ready_index)
+    fixed_layout_index = start_round_block.index(
+        "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
+    )
+    assert prepare_ready_index < cancellation_index < fixed_layout_index
+    assert "this._isDestroyed" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "!this.isTutorialRunning" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "window.isInTutorial !== true" in start_round_block[cancellation_index:fixed_layout_index]
+    assert "this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare')" in start_round_block
+    assert "return false;" in start_round_block[cancellation_index:fixed_layout_index]
+    assert start_round_block.index("await this.prepareYuiGuideCompactChatForTutorial()") < start_round_block.index(
+        "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
+    )
+    assert start_round_block.index("this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')") < start_round_block.index(
+        "this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true })"
+    )
+    assert "action: 'yui_guide_prepare_compact_chat'" in source
+    assert "tutorialRunId: tutorialRunId" in source
+    assert "neko:yui-guide:compact-chat-ready" in source
+    assert "wasCollapsed: response.wasCollapsed === true" in source
+    prepare_block = source.split("    prepareYuiGuideCompactChatForTutorial() {", 1)[1].split(
+        "    restoreYuiGuideCompactChatSurface(reason = 'tutorial-ended') {",
+        1,
+    )[0]
+    restore_block = source.split("    restoreYuiGuideCompactChatSurface(reason = 'tutorial-ended') {", 1)[1].split(
+        "    clearPcTutorialGlobalOverlay(reason = 'destroy') {",
+        1,
+    )[0]
+    # 主页无法判断 BroadcastChannel 是否有独立 /chat 接收端：先广播，再立即走本地 host，
+    # 既不能漏掉外部 prepare，也不能让单窗口浏览器等待不存在的回执。
+    assert "const hasNativeChatRelay" in prepare_block
+    assert prepare_block.index("channel.postMessage(message)") < prepare_block.index("if (!hasNativeChatRelay")
+    assert "localHostPrepared: true" in prepare_block
+    assert "restoreFromPrepareSnapshot: posted" in prepare_block
+    # BroadcastChannel 与本地 host 同时准备时，两边都必须按各自快照恢复启动前形态。
+    assert "localHostPrepared: response.localHostPrepared === true" in prepare_block
+    assert "snapshot.localHostPrepared === true || !posted" in restore_block
+    # 原生请求超时后不能猜用户原本是毛球；交给聊天窗按同 request 的 prepare 快照恢复。
+    assert "finish(false, { restoreFromPrepareSnapshot: posted })" in prepare_block
+    assert "restoreFromPrepareSnapshot: response.restoreFromPrepareSnapshot === true" in prepare_block
+    assert "snapshot.restoreFromPrepareSnapshot !== true" in restore_block
+    assert "restoreFromPrepareSnapshot: snapshot.restoreFromPrepareSnapshot === true" in restore_block
+    # 所有结束方式都经过 clearAllTutorialLifecycles，因此形态恢复不能只挂在 skip 或 complete 分支。
+    assert lifecycle_block.index("this.clearYuiGuideCompactChatFixedLayout(rawReason)") < lifecycle_block.index(
+        "this.restoreYuiGuideCompactChatSurface(rawReason)"
+    )
+    assert "action: 'yui_guide_restore_compact_chat'" in source
+
+
+def test_avatar_floating_guide_restores_goodbye_business_state_after_model_reload():
+    source = _read_manager()
+    repo_root = Path(__file__).resolve().parents[2]
+    app_ui_source = read_js_parts(repo_root / "static/app/app-ui")
+    teardown_block = source.split("    _teardownTutorialUI() {", 1)[1].split(
+        "    /**\n     * 恢复所有在引导中修改过的元素",
+        1,
+    )[0]
+    restore_state_block = source.split("    restoreAvatarFloatingModelStateAfterTutorial() {", 1)[1].split(
+        "    applyTutorialChatIdentityOverride(detail) {",
+        1,
+    )[0]
+
+    # 用户模型先恢复，随后才重新进入教程前的猫咪形态，避免点击穿透状态套到普通模型上。
+    assert teardown_block.index("this.restoreTutorialAvatarOverride()") < teardown_block.index(
+        "this.restoreAvatarFloatingModelStateAfterTutorial()"
+    )
+    assert "snapshot.goodbyeActive !== true" in restore_state_block
+    # 直启教程没有用户模型可供读取，待执行的 PC 默认猫咪请求也必须成为恢复目标。
+    assert "autoGoodbyeState.startupDefaultCatRequested === true" in source
+    assert "startupDefaultCatPending ? 'startup-default-cat'" in source
+    assert "new CustomEvent('live2d-goodbye-click'" in restore_state_block
+    # pending 启动猫咪快照的 visualTier 可能是 none；只允许回放真实猫咪层级。
+    assert "['cat1', 'cat2', 'cat3'].includes(goodbyeMeta.visualTier)" in restore_state_block
+    consume_block = source.split("    consumePendingStartupDefaultCatRestoreRequest() {", 1)[1].split(
+        "    applyTutorialChatIdentityOverride(detail) {",
+        1,
+    )[0]
+    # 默认猫咪事件可能晚于首个快照；teardown 必须在解锁前按实时状态升级原始快照。
+    assert "currentState.startupDefaultCatRequested === true" in consume_block
+    assert "startupDefaultCatPending && snapshot.goodbyeActive !== true" in consume_block
+    assert consume_block.index("snapshot.goodbyeActive = true") < consume_block.index(
+        "snapshot.goodbyeMeta.reason !== 'startup-default-cat'"
+    )
+    assert "reason: 'startup-default-cat'" in consume_block
+    # 原快照已是猫咪态时保留其层级，但实时 pending 仍必须进入消费链。
+    assert "!startupDefaultCatPending" in consume_block
+    assert "snapshot.goodbyeMeta.reason !== 'startup-default-cat'" in consume_block
+    assert "autoGoodbye.consumeStartupDefaultCatRequest()" in consume_block
+    assert teardown_block.index("this.consumePendingStartupDefaultCatRestoreRequest()") < teardown_block.index(
+        "window.isInTutorial = false"
+    )
+    assert "restoreSavedGoodbyeRect: snapshot.goodbyeRect || null" in restore_state_block
+    assert "this._avatarFloatingModelLockSnapshot = null" in restore_state_block
+    assert "const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect" in app_ui_source
+
+
+def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state():
+    source = (APP_INTERPAGE_PARTS_PATH / "guide-message-relay.js").read_text(encoding="utf-8")
+    native_relay_source = (APP_INTERPAGE_PARTS_PATH / "cross-window-broadcast-and-bridge.js").read_text(
+        encoding="utf-8"
+    )
+    prepare_surface_block = source.split(
+        "I.prepareYuiGuideCompactChatSurface = function prepareYuiGuideCompactChatSurface",
+        1,
+    )[1].split("I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface", 1)[0]
+    host_wait_block = prepare_surface_block.split("if (!hasNativePreparation && !hasReadyHost)", 1)[1].split(
+        "var hostMode",
+        1,
+    )[0]
+    host_expand_failure_block = prepare_surface_block.split(
+        "if (!hasNativePreparation && !hostExpanded)",
+        1,
+    )[1].split("Promise.resolve(nativePreparation)", 1)[0]
+
+    # 两种跨窗口传输路径必须落到同一实现，重复 relay 也只能启动一次原生展开动画。
+    assert "case 'yui_guide_prepare_compact_chat':" in source
+    assert "case 'yui_guide_prepare_compact_chat':" in native_relay_source
+    assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
+    assert "I.yuiGuideCompactChatPrepareRequestId !== requestId" in source
+    assert "I.yuiGuideCompactChatPrepareWasCollapsed = wasCollapsed" in source
+    # /chat 的 relay 早于 React host 加载；无原生 prepare 时必须等待 host 方法，不能误报 ready。
+    assert "YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_LIMIT = 80" in source
+    assert "typeof host.openWindow === 'function'" in source
+    assert "typeof host.getChatSurfaceMode === 'function'" in source
+    assert "I.prepareYuiGuideCompactChatSurface(message, retryAttempt + 1)" in source
+    assert "I.yuiGuidePcOverlayLifecycleClosed" in source
+    assert "ready: false" in host_wait_block
+    assert "ready: false" in host_expand_failure_block
+    assert "nativeBridge.prepareExpandedForTutorial()" in source
+    assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
+    # 新旧原生桥同步抛错时都必须回执失败，不能让 null 被当成准备成功。
+    assert source.count("nativePreparation = { ready: false };") == 2
+    # 明确回执或同 request 的本地 prepare 快照确认是毛球时才折叠，原本胶囊保持不变。
+    assert "if (!shouldRestoreCollapsed) return false" in source
+    assert "message.restoreFromPrepareSnapshot === true" in source
+    assert "I.yuiGuideCompactChatPrepareWasCollapsed === true" in source
+    assert "nativeBridge.restoreCollapsedAfterTutorial()" in source
 
 
 def test_electron_shortcut_bridges_are_blocked_during_tutorial():

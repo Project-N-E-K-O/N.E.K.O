@@ -7,6 +7,8 @@
     const CONVERSATION_GRACE_MS = 15 * 1000;
     const TICK_INTERVAL_MS = 500;
     const CAT3_DRAG_RELEASES_BEFORE_CAT2 = 2;
+    const STARTUP_DEFAULT_CAT_RETRY_MS = 200;
+    const STARTUP_DEFAULT_CAT_MAX_ATTEMPTS = 300;
 
     const TIER_NONE = 'none';
     const TIER_CAT1 = 'cat1';
@@ -69,6 +71,10 @@
         // 用户「自动变猫」开关：true=启用自动变猫（默认）。禁用时 getIdleBlockReasons 持续上报
         // 'user-disabled'，从而挡掉自动 idle 变猫；不影响已处猫态或手动请离开。init 时从 localStorage 读取。
         autoCatEnabled: true,
+        startupDefaultCatRequested: false,
+        startupDefaultCatApplied: false,
+        startupDefaultCatAttempts: 0,
+        startupDefaultCatTimerId: 0,
     };
 
     function nowMs() {
@@ -693,10 +699,95 @@
         return true;
     }
 
+    function hasStartupDefaultCatTarget() {
+        return !!document.querySelector(
+            '#live2d-btn-goodbye, #vrm-btn-goodbye, #mmd-btn-goodbye, #pngtuber-btn-goodbye'
+        );
+    }
+
+    function cancelStartupDefaultCatRequest(markApplied) {
+        if (state.startupDefaultCatTimerId) {
+            window.clearTimeout(state.startupDefaultCatTimerId);
+            state.startupDefaultCatTimerId = 0;
+        }
+        state.startupDefaultCatRequested = false;
+        state.startupDefaultCatAttempts = 0;
+        if (markApplied === true) state.startupDefaultCatApplied = true;
+    }
+
+    function consumeStartupDefaultCatRequest() {
+        if (!state.startupDefaultCatRequested) return false;
+        // 教程恢复会自行重放同一个猫咪业务入口；先消费启动请求并清掉重试定时器，
+        // 避免教程锁释放后旧重试与恢复链各派发一次猫咪切换。
+        cancelStartupDefaultCatRequest(true);
+        return true;
+    }
+
+    function scheduleStartupDefaultCatRetry() {
+        state.startupDefaultCatTimerId = window.setTimeout(
+            applyStartupDefaultCat,
+            STARTUP_DEFAULT_CAT_RETRY_MS
+        );
+    }
+
+    function applyStartupDefaultCat() {
+        state.startupDefaultCatTimerId = 0;
+        if (!state.startupDefaultCatRequested || state.startupDefaultCatApplied) return;
+        // The startup event can arrive before the storage-location barrier is released.
+        // Do not spend the avatar-readiness retry budget while app startup is still blocked.
+        if (!state.started) {
+            scheduleStartupDefaultCatRetry();
+            return;
+        }
+        if (
+            isTutorialGuardActive()
+            || window.isNekoHomeTutorialPending === true
+            || window.isInTutorial === true
+        ) {
+            // 教程直启时页面上出现的是临时 YUI 模型按钮；继续等待，不能把启动默认猫咪请求消费在教程模型上。
+            scheduleStartupDefaultCatRetry();
+            return;
+        }
+        if (isGoodbyeActive()) {
+            cancelStartupDefaultCatRequest(true);
+            return;
+        }
+        if (!hasCoreInfrastructure() || !hasStartupDefaultCatTarget()) {
+            state.startupDefaultCatAttempts += 1;
+            if (state.startupDefaultCatAttempts < STARTUP_DEFAULT_CAT_MAX_ATTEMPTS) {
+                scheduleStartupDefaultCatRetry();
+            } else {
+                // Let a later startup-form signal start a fresh readiness attempt.
+                cancelStartupDefaultCatRequest(false);
+            }
+            return;
+        }
+        state.startupDefaultCatRequested = false;
+        state.startupDefaultCatApplied = true;
+        window.dispatchEvent(new CustomEvent('live2d-goodbye-click', {
+            detail: {
+                startupDefaultForm: 'cat',
+                source: 'startup-default-form',
+                reason: 'startup-default-cat',
+            },
+        }));
+    }
+
+    function requestStartupDefaultCat() {
+        if (state.startupDefaultCatRequested || state.startupDefaultCatApplied) return;
+        state.startupDefaultCatRequested = true;
+        state.startupDefaultCatAttempts = 0;
+        applyStartupDefaultCat();
+    }
+
     function clearTimers(reason) {
         if (state.timerId) {
             window.clearInterval(state.timerId);
             state.timerId = 0;
+        }
+        if (state.startupDefaultCatTimerId) {
+            window.clearTimeout(state.startupDefaultCatTimerId);
+            state.startupDefaultCatTimerId = 0;
         }
         if (typeof reason === 'string' && reason) {
             state.lastReason = reason;
@@ -719,6 +810,8 @@
             lastSuppressionChangedAt: state.lastSuppressionChangedAt,
             conversationGraceUntil: state.conversationGraceUntil,
             lastConversationSource: state.lastConversationSource,
+            // 教程管理器需要区分“用户选择普通模型”和“PC 默认猫咪请求尚未执行”的冷启动状态。
+            startupDefaultCatRequested: state.startupDefaultCatRequested,
             thresholdsMs: {
                 cat1: AUTO_GOODBYE_MS,
                 cat2: CAT2_MS,
@@ -778,9 +871,17 @@
             }
             noteUserInteraction(source);
         });
+        window.addEventListener('neko:startup-default-form', (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.form === 'cat') requestStartupDefaultCat();
+        });
 
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested) {
+                // A manual goodbye is a newer user choice; never let a delayed startup retry override it.
+                cancelStartupDefaultCatRequest(true);
+            }
             clearConversationGrace();
             // 记录"变成猫咪"的时刻与入口，供变回时按猫咪停留时长触发专属问候。
             // goodbye-click 只在真正进入猫咪态时派发（手动按钮 / 自动 idle-timeout），
@@ -792,11 +893,12 @@
                 state.lastReason = typeof detail.reason === 'string' ? detail.reason : 'idle-timeout';
                 syncVisualTierFromCurrentState('goodbye-event');
             } else {
+                const isStartupDefaultCat = detail.startupDefaultForm === 'cat';
                 state.autoGoodbyeTriggered = false;
-                state.lastReason = 'manual-goodbye';
+                state.lastReason = isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye';
                 clearDragTierMemory();
                 setVisualTier(TIER_CAT1, {
-                    source: 'manual-goodbye',
+                    source: isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye',
                     reason: state.lastReason,
                 });
             }
@@ -804,6 +906,8 @@
         });
 
         const handleReturn = () => {
+            // Returning is an explicit user override of any startup request still waiting for avatar readiness.
+            cancelStartupDefaultCatRequest(true);
             // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
             // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
             syncGoodbyeSilentState(false, 'return-click');
@@ -881,6 +985,7 @@
         setAutoCatEnabled: setAutoCatEnabled,
         isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,
+        consumeStartupDefaultCatRequest: consumeStartupDefaultCatRequest,
         getState: getState,
     };
 

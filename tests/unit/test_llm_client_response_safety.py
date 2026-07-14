@@ -16,6 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import utils.llm_client as llm_client_module
+import utils.llm_client.anthropic_client as anthropic_client_module
+import utils.llm_client.factory as llm_factory_module
+import utils.llm_client.lifecycle as lifecycle_module
 
 
 def _make_client_with_response(resp) -> llm_client_module.ChatOpenAI:
@@ -110,7 +113,7 @@ async def test_create_chat_llm_async_offloads_factory(monkeypatch):
         calls.append((threading.get_ident(), args, kwargs))
         return sentinel
 
-    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr(llm_factory_module, "create_chat_llm", fake_create_chat_llm)
 
     result = await llm_client_module.create_chat_llm_async(
         "model-a",
@@ -148,7 +151,7 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
         release.wait(timeout=5)
         return _LateLLM()
 
-    monkeypatch.setattr(llm_client_module, "create_chat_llm", fake_create_chat_llm)
+    monkeypatch.setattr(llm_factory_module, "create_chat_llm", fake_create_chat_llm)
 
     task = asyncio.create_task(
         llm_client_module.create_chat_llm_async(
@@ -185,8 +188,8 @@ def test_create_chat_llm_routes_kimi_code_to_anthropic_client(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
 
     client = llm_client_module.create_chat_llm(
         "kimi-for-coding",
@@ -253,8 +256,8 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
 
     client = llm_client_module.ChatAnthropic(
         model="claude-test",
@@ -336,10 +339,10 @@ def test_chat_anthropic_explicit_empty_extra_body_skips_default(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
     monkeypatch.setattr(
-        llm_client_module,
+        anthropic_client_module,
         "_record_anthropic_token_usage",
         lambda model, usage: recorded.append((model, dict(usage))),
     )
@@ -380,9 +383,9 @@ def test_chat_anthropic_max_completion_tokens_property_sync(monkeypatch):
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="claude-test",
@@ -728,9 +731,9 @@ async def test_chat_anthropic_stream_helper_does_not_forward_stream_kwarg(monkey
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="kimi-for-coding",
@@ -809,10 +812,10 @@ async def test_chat_anthropic_stream_records_partial_usage_when_closed_early(mon
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
     monkeypatch.setattr(
-        llm_client_module,
+        anthropic_client_module,
         "_record_anthropic_token_usage",
         lambda model, usage: recorded.append((model, dict(usage))),
     )
@@ -904,9 +907,9 @@ async def test_chat_anthropic_stream_converts_tool_use_to_openai_deltas(monkeypa
         async def close(self):
             pass
 
-    monkeypatch.setattr(llm_client_module, "Anthropic", _FakeAnthropic)
-    monkeypatch.setattr(llm_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
-    monkeypatch.setattr(llm_client_module, "_record_anthropic_token_usage", lambda *_args: None)
+    monkeypatch.setattr(anthropic_client_module, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "AsyncAnthropic", _FakeAsyncAnthropic)
+    monkeypatch.setattr(anthropic_client_module, "_record_anthropic_token_usage", lambda *_args: None)
 
     client = llm_client_module.ChatAnthropic(
         model="kimi-for-coding",
@@ -951,16 +954,16 @@ async def test_chat_anthropic_stream_converts_tool_use_to_openai_deltas(monkeypa
 
 @pytest.mark.asyncio
 async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
-    original_create_default_context = llm_client_module.ssl.create_default_context
+    original_create_default_context = lifecycle_module.ssl.create_default_context
     calls = []
 
     def counting_create_default_context(*args, **kwargs):
         calls.append((args, kwargs))
         return original_create_default_context(*args, **kwargs)
 
-    monkeypatch.setattr(llm_client_module, "_DEFAULT_SSL_CONTEXT", None)
+    monkeypatch.setattr(lifecycle_module, "_DEFAULT_SSL_CONTEXT", None)
     monkeypatch.setattr(
-        llm_client_module.ssl,
+        lifecycle_module.ssl,
         "create_default_context",
         counting_create_default_context,
     )

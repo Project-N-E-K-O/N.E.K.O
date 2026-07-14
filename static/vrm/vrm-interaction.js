@@ -645,6 +645,9 @@ class VRMInteraction {
         // 2. 计算目标角度
         // VRM 默认朝向 +Z，atan2(x, z) 对应 Y 轴旋转
         let targetAngle = Math.atan2(dx, dz);
+        if (this.manager.__soccerFixedCameraNormalizeYaw) {
+            targetAngle += Math.PI;
+        }
 
         // 3. 平滑插值处理角度突变
         const currentAngle = model.rotation.y;

@@ -17,6 +17,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import utils.token_tracker as tt
+import utils.token_tracker.reporting as reporting
+import utils.token_tracker.telemetry as telemetry
 
 
 @contextmanager
@@ -44,7 +46,7 @@ def _patched_env(*, is_release, steam_id, workshop_subs, workshop_file_exists):
     )
     cm = SimpleNamespace(config_dir=fake_config_dir)
 
-    with patch.object(tt, "_is_release_build", return_value=is_release), \
+    with patch.object(telemetry, "_is_release_build", return_value=is_release), \
          patch("utils.steam_state.get_steamworks", return_value=sw), \
          patch("utils.config_manager.get_config_manager", return_value=cm):
         yield get_steam_id
@@ -127,8 +129,17 @@ def test_exceptions_swallowed():
     )
     cm = SimpleNamespace(config_dir=fake_config_dir)
 
-    with patch.object(tt, "_is_release_build", return_value=True), \
+    with patch.object(telemetry, "_is_release_build", return_value=True), \
          patch("utils.steam_state.get_steamworks", return_value=sw), \
          patch("utils.config_manager.get_config_manager", return_value=cm):
         # 全程异常仍应安全返回 release + 空，绝不抛
         assert tt._get_telemetry_metadata() == ("release", "")
+
+
+def test_facade_telemetry_url_remains_live(monkeypatch):
+    """Facade writes and owner-module rebinds must observe the same URL state."""
+    monkeypatch.setattr(tt, "_TELEMETRY_SERVER_URL", "http://127.0.0.1:18099")
+    assert reporting._TELEMETRY_SERVER_URL == "http://127.0.0.1:18099"
+
+    reporting._TELEMETRY_SERVER_URL = ""
+    assert tt._TELEMETRY_SERVER_URL == ""

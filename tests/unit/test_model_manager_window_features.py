@@ -1,10 +1,23 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
+
+
+MODEL_MANAGER_PART_NAMES = (
+    "runtime-loaders.js",
+    "dropdown-manager.js",
+    "page-bridge.js",
+    "card-face.js",
+    "path-request-fullscreen.js",
+    "page-controller.js",
+    "window-lifecycle.js",
+)
 
 
 def read_model_manager_source() -> str:
+    parts_dir = Path("static/js/model_manager")
     return "".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(Path("static/js/model_manager").glob("*.js"))
+        (parts_dir / part_name).read_text(encoding="utf-8")
+        for part_name in MODEL_MANAGER_PART_NAMES
     )
 
 
@@ -35,7 +48,7 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
     model_manager_source = read_model_manager_source()
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
 
     assert "hide_main_ui" not in model_manager_source
     assert "show_main_ui" not in model_manager_source

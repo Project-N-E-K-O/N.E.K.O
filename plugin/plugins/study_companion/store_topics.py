@@ -166,65 +166,65 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(id) DO UPDATE SET
-                name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
-                subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
-                chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
+                name = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.name ELSE excluded.name END,
+                subject = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.subject ELSE excluded.subject END,
+                chapter = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.chapter ELSE excluded.chapter END,
                 stage = CASE
-                    WHEN topics.source = 'seed' AND topics.stage = '' AND excluded.stage != '' THEN excluded.stage
-                    WHEN topics.source = 'seed' THEN topics.stage
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.stage = '' AND excluded.stage != '' THEN excluded.stage
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.stage
                     ELSE excluded.stage
                 END,
                 unit = CASE
-                    WHEN topics.source = 'seed' AND (topics.unit = '' OR topics.unit = topics.chapter) AND excluded.unit != '' THEN excluded.unit
-                    WHEN topics.source = 'seed' THEN topics.unit
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND (topics.unit = '' OR topics.unit = topics.chapter) AND excluded.unit != '' THEN excluded.unit
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.unit
                     ELSE excluded.unit
                 END,
-                depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
-                difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
-                prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
-                related = CASE WHEN topics.source = 'seed' THEN topics.related ELSE excluded.related END,
-                typical_misconceptions = CASE WHEN topics.source = 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
+                depth = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.depth ELSE excluded.depth END,
+                difficulty = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
+                prerequisites = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
+                related = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.related ELSE excluded.related END,
+                typical_misconceptions = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
                 skills = CASE
-                    WHEN topics.source = 'seed' AND topics.skills = '[]' AND excluded.skills != '[]' THEN excluded.skills
-                    WHEN topics.source = 'seed' THEN topics.skills
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.skills = '[]' AND excluded.skills != '[]' THEN excluded.skills
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.skills
                     ELSE excluded.skills
                 END,
                 question_types = CASE
-                    WHEN topics.source = 'seed' AND topics.question_types = '[]' AND excluded.question_types != '[]' THEN excluded.question_types
-                    WHEN topics.source = 'seed' THEN topics.question_types
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.question_types = '[]' AND excluded.question_types != '[]' THEN excluded.question_types
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.question_types
                     ELSE excluded.question_types
                 END,
                 examples = CASE
-                    WHEN topics.source = 'seed' AND topics.examples = '[]' AND excluded.examples != '[]' THEN excluded.examples
-                    WHEN topics.source = 'seed' THEN topics.examples
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.examples = '[]' AND excluded.examples != '[]' THEN excluded.examples
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.examples
                     ELSE excluded.examples
                 END,
                 course_family = CASE
-                    WHEN topics.source = 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
-                    WHEN topics.source = 'seed' THEN topics.course_family
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.course_family = '' AND excluded.course_family != '' THEN excluded.course_family
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.course_family
                     ELSE excluded.course_family
                 END,
                 curriculum_version = CASE
-                    WHEN topics.source = 'seed' AND topics.curriculum_version = '[]' AND excluded.curriculum_version != '[]' THEN excluded.curriculum_version
-                    WHEN topics.source = 'seed' THEN topics.curriculum_version
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.curriculum_version = '[]' AND excluded.curriculum_version != '[]' THEN excluded.curriculum_version
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.curriculum_version
                     ELSE excluded.curriculum_version
                 END,
                 exam_region = CASE
-                    WHEN topics.source = 'seed' AND topics.exam_region = '[]' AND excluded.exam_region != '[]' THEN excluded.exam_region
-                    WHEN topics.source = 'seed' THEN topics.exam_region
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.exam_region = '[]' AND excluded.exam_region != '[]' THEN excluded.exam_region
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.exam_region
                     ELSE excluded.exam_region
                 END,
                 exam_type = CASE
-                    WHEN topics.source = 'seed' AND topics.exam_type = '[]' AND excluded.exam_type != '[]' THEN excluded.exam_type
-                    WHEN topics.source = 'seed' THEN topics.exam_type
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.exam_type = '[]' AND excluded.exam_type != '[]' THEN excluded.exam_type
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.exam_type
                     ELSE excluded.exam_type
                 END,
                 aliases = CASE
-                    WHEN topics.source = 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
-                    WHEN topics.source = 'seed' THEN topics.aliases
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' AND topics.aliases = '[]' AND excluded.aliases != '[]' THEN excluded.aliases
+                    WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.aliases
                     ELSE excluded.aliases
                 END,
-                source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
+                source = CASE WHEN topics.source = 'seed' AND excluded.source != 'seed' THEN topics.source ELSE excluded.source END,
                 updated_at = datetime('now')
             """,
             (
