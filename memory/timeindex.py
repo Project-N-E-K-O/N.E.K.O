@@ -19,6 +19,7 @@ from memory.stop_names import collect_stop_names, strip_stop_names
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
+from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
 import asyncio
 import os
@@ -419,6 +420,141 @@ class TimeIndexedMemory:
         return await asyncio.to_thread(
             self.retrieve_original_by_timeframe, lanlan_name, start_time, end_time, limit_rows
         )
+
+    def _fetch_original_timeframe_page(
+        self,
+        lanlan_name: str,
+        start_time,
+        end_time,
+        *,
+        page_size: int,
+        cursor: tuple[object, int] | None,
+    ) -> tuple[list[tuple[object, object, object]], tuple[object, int] | None]:
+        """Fetch one stable keyset page and close its connection before returning."""
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        sql = (
+            f"SELECT timestamp, rowid, session_id, message FROM {table_name} "
+            f"WHERE timestamp BETWEEN :start_time AND :end_time"
+        )
+        params: dict = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "page_size": page_size,
+        }
+        if cursor is not None:
+            sql += (
+                " AND (timestamp > :cursor_timestamp "
+                "OR (timestamp = :cursor_timestamp AND rowid > :cursor_rowid))"
+            )
+            params["cursor_timestamp"], params["cursor_rowid"] = cursor
+        sql += " ORDER BY timestamp ASC, rowid ASC LIMIT :page_size"
+
+        # The connection and Result stay entirely inside this call. In
+        # particular, async callers run this whole method in ``to_thread`` and
+        # only receive the materialized, bounded page after ``__exit__``.
+        with self.engines[lanlan_name].connect() as conn:
+            result = conn.execute(text(sql), params)
+            raw_rows = result.fetchmany(page_size)
+
+        if not raw_rows:
+            return [], None
+        rows = [(row[0], row[2], row[3]) for row in raw_rows]
+        next_cursor = (raw_rows[-1][0], int(raw_rows[-1][1]))
+        return rows, next_cursor
+
+    def iter_original_by_timeframe_batches(
+        self,
+        lanlan_name: str,
+        start_time,
+        end_time,
+        *,
+        batch_size: int = 256,
+        limit_rows: int | None = None,
+    ) -> Iterator[list[tuple[object, object, object]]]:
+        """Yield bounded raw-conversation batches in stable chronological order.
+
+        Unlike ``retrieve_original_by_timeframe``, this interface never keeps a
+        live SQLAlchemy connection attached to the yielded iterator: every
+        keyset page opens, consumes, and closes its connection before the batch
+        reaches the caller. ``limit_rows`` is a total cap across all batches;
+        non-positive values retain the list API's historical "no LIMIT" meaning.
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+        try:
+            if not self._ensure_engine_exists(lanlan_name, readonly=True):
+                return
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过分批读取 {lanlan_name} 的历史对话: {exc}")
+            return
+
+        remaining = int(limit_rows) if limit_rows is not None and limit_rows > 0 else None
+        cursor: tuple[object, int] | None = None
+        while remaining is None or remaining > 0:
+            page_size = batch_size if remaining is None else min(batch_size, remaining)
+            try:
+                rows, cursor = self._fetch_original_timeframe_page(
+                    lanlan_name,
+                    start_time,
+                    end_time,
+                    page_size=page_size,
+                    cursor=cursor,
+                )
+            except Exception as exc:
+                logger.warning(f"[TimeIndexedMemory] 分批读取原始对话失败: {exc}")
+                return
+            if not rows:
+                return
+            if remaining is not None:
+                remaining -= len(rows)
+            yield rows
+
+    async def aiter_original_by_timeframe_batches(
+        self,
+        lanlan_name: str,
+        start_time,
+        end_time,
+        *,
+        batch_size: int = 256,
+        limit_rows: int | None = None,
+    ) -> AsyncIterator[list[tuple[object, object, object]]]:
+        """Async batch iterator whose SQLite work is fully contained in workers."""
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than zero")
+        try:
+            ready = await asyncio.to_thread(
+                self._ensure_engine_exists,
+                lanlan_name,
+                None,
+                True,
+            )
+            if not ready:
+                return
+        except MaintenanceModeError as exc:
+            logger.debug(f"[TimeIndexedMemory] 维护态跳过异步分批读取 {lanlan_name} 的历史对话: {exc}")
+            return
+
+        remaining = int(limit_rows) if limit_rows is not None and limit_rows > 0 else None
+        cursor: tuple[object, int] | None = None
+        while remaining is None or remaining > 0:
+            page_size = batch_size if remaining is None else min(batch_size, remaining)
+            try:
+                rows, cursor = await asyncio.to_thread(
+                    self._fetch_original_timeframe_page,
+                    lanlan_name,
+                    start_time,
+                    end_time,
+                    page_size=page_size,
+                    cursor=cursor,
+                )
+            except Exception as exc:
+                logger.warning(f"[TimeIndexedMemory] 异步分批读取原始对话失败: {exc}")
+                return
+            if not rows:
+                return
+            if remaining is not None:
+                remaining -= len(rows)
+            yield rows
 
     # ── FTS5 事实索引 ─────────────────────────────────────────────
 

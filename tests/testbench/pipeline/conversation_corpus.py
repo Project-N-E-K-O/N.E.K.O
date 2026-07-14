@@ -53,6 +53,10 @@ _WIDE_END = datetime.max
 # table into memory at once. Aggregator/attribution can override.
 _DEFAULT_LIMIT_ROWS = 5000
 
+# Keep the widest "read every turn" path from holding both the complete raw
+# SQLAlchemy row list and the normalized trace list at the same time.
+_TIME_INDEX_BATCH_SIZE = 256
+
 
 def _normalize_role(raw_type: Any) -> str:
     """Map LangChain message ``type`` to the trace graph's role vocabulary."""
@@ -222,25 +226,32 @@ def load_time_indexed_turns(
         # recent_history_manager is unused on the readonly retrieve path; None
         # keeps construction cheap and side-effect free.
         tm = TimeIndexedMemory(None)  # type: ignore[arg-type]
-        rows = tm.retrieve_original_by_timeframe(
-            character, _WIDE_START, _WIDE_END, limit_rows=limit_rows,
-        )
-        for idx, row in enumerate(rows):
-            try:
-                ts_raw, session_id, message_raw = row[0], row[1], row[2]
-            except (IndexError, TypeError):
-                continue
-            role, content = _parse_db_message(message_raw)
-            if not content.strip():
-                continue
-            turns.append({
-                "id": _db_turn_id(session_id, idx),
-                "ts": _normalize_ts(ts_raw),
-                "session_id": str(session_id) if session_id is not None else None,
-                "role": role,
-                "content": content,
-                "origin": "time_indexed_db",
-            })
+        row_index = 0
+        for batch in tm.iter_original_by_timeframe_batches(
+            character,
+            _WIDE_START,
+            _WIDE_END,
+            batch_size=_TIME_INDEX_BATCH_SIZE,
+            limit_rows=limit_rows,
+        ):
+            for row in batch:
+                idx = row_index
+                row_index += 1
+                try:
+                    ts_raw, session_id, message_raw = row[0], row[1], row[2]
+                except (IndexError, TypeError):
+                    continue
+                role, content = _parse_db_message(message_raw)
+                if not content.strip():
+                    continue
+                turns.append({
+                    "id": _db_turn_id(session_id, idx),
+                    "ts": _normalize_ts(ts_raw),
+                    "session_id": str(session_id) if session_id is not None else None,
+                    "role": role,
+                    "content": content,
+                    "origin": "time_indexed_db",
+                })
     except Exception as exc:  # noqa: BLE001 — soft error, never crash the graph
         warnings.append(
             f"time_indexed.db 读取失败 ({type(exc).__name__}): {exc}"
