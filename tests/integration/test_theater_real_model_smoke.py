@@ -48,3 +48,46 @@ async def test_real_model_returns_safe_narration_and_dialogue():
     assert result["narration"].strip()
     assert result["dialogue"].strip()
     assert not any(term in (result["narration"] + result["dialogue"]) for term in ("node_id", "scene_id", "prompt"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_message", "expected_match"),
+    [
+        ("你为什么还留着这张照片？", ""),
+        ("我把照片放回文件袋。", "choice_return_photo"),
+    ],
+)
+async def test_real_model_routes_only_explicit_current_choice(user_message, expected_match):
+    """真实模型必须区分围绕 Choice 的追问与已经实施的当前行动。"""  # noqa: DOCSTRING_CJK
+    _require_environment()
+    result = await llm.generate_turn_async(
+        config_manager=_EnvConfigManager(),
+        lanlan_name="霜瞳",
+        story={"background": "活动散场后的酒店走廊", "theme": "久别重逢"},
+        scene={"title": "灯影里的重逢", "text": "一张七年前的合照落在你们之间。"},
+        node={"title": "认出彼此", "summary": "玩家和猫娘已经认出对方。"},
+        user_message=user_message,
+        progress_kind="roleplay_response",
+        callback="",
+        state={"scene_notes": []},
+        recent_turns=[],
+        choice_options=[
+            {
+                "choice_id": "choice_return_photo",
+                "label": "把照片放回文件袋，不追问她为何留着",
+                "author_label": "把照片放回文件袋，不追问她为何留着",
+                "choice_mode": "action",
+                "callback": "你将照片平整地放回文件袋，给她留出决定是否解释的空间。",
+                "target_summary": "玩家归还照片，没有把保存照片当作复合承诺。",
+                "target_catgirl_intent": "猫娘嘴硬地接过照片。",
+                "target_scripted_dialogue": "照片只是夹在旧文件里忘了扔喵。",
+            }
+        ],
+    )
+    assert result["matched_choice_id"] == expected_match
+    if expected_match:
+        assert result["choice_rewrites"] == []
+    else:
+        assert result["choice_rewrites"]
+        assert "不追问她为何留着" not in result["choice_rewrites"][0]["label"]

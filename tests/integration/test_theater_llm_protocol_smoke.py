@@ -47,7 +47,7 @@ def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
                 "object": "chat.completion",
                 "created": 1,
                 "model": payload.get("model"),
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"narration":"雨声轻了一点。","dialogue":"我听见你说的话了喵。"}'}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"narration":"雨声轻了一点。","dialogue":"我听见你说的话了喵。","matched_choice_id":"","choice_rewrites":[]}'}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
             }
             encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
@@ -73,7 +73,7 @@ def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
 
 @pytest.mark.asyncio
 async def test_single_turn_uses_one_model_request():
-    """一次剧情演绎只产生一个兼容协议请求。"""  # noqa: DOCSTRING_CJK
+    """单个目标节点的剧情演绎只产生一个兼容协议请求。"""  # noqa: DOCSTRING_CJK
     with _compatible_server() as (base_url, requests):
         result = await llm.generate_turn_async(
             config_manager=_ProtocolConfigManager(base_url),
@@ -87,6 +87,13 @@ async def test_single_turn_uses_one_model_request():
             state={},
             recent_turns=[],
         )
-    assert result == {"narration": "雨声轻了一点。", "dialogue": "我听见你说的话了喵。", "choice_rewrites": []}
+    # 模型仍只调用一次，但剧情推进旁白必须采用作者 callback，不能被模型改写已发生动作。
+    assert result == {
+        "narration": "你把灯放在桌边。",
+        "dialogue": "我听见你说的话了喵。",
+        "choice_rewrites": [],
+        "matched_choice_id": "",
+        "observed_intent_id": "",
+    }
     assert len(requests) == 1
     assert requests[0]["model"] == "theater-light-smoke"

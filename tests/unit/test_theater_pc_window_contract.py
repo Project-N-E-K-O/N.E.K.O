@@ -60,3 +60,19 @@ def test_pc_child_windows_expose_host_controls_for_theater_window():
     assert "typeof host.closeWindow !== 'function'" in window_controls
     assert "const result = await host.closeWindow();" in window_controls
     assert "if (await closeCurrentWindowViaHost())" in window_controls
+
+
+def test_pc_opens_theater_on_primary_display_without_settings_classification():
+    """小剧场复用通用设置的主屏定位，但不能被误标为 settings 窗口。"""  # noqa: DOCSTRING_CJK
+    pet_lifecycle = _read_pc_file("src/main/pet-window-lifecycle.js")
+
+    assert "const PRIMARY_DISPLAY_POPUP_PATHS = new Set([\n  '/theater'," in pet_lifecycle
+    assert "function isPrimaryDisplayPopupUrl(childUrl)" in pet_lifecycle
+    assert "isManagerSettingsPopupUrl(details.url) || isPrimaryDisplayPopupUrl(details.url)" in pet_lifecycle
+    assert "...getManagerPopupInitialBounds(screen, details.features)" in pet_lifecycle
+    assert "childWindow._nekoKind = 'theater';" in pet_lifecycle
+    assert "childWindow.on('focus', centerTheaterOnPrimaryDisplay);" in pet_lifecycle
+    assert "if (childWindow.isMaximized() || childWindow.isFullScreen()) return;" in pet_lifecycle
+    assert "childWindow.setBounds(target);" in pet_lifecycle
+    manager_paths = pet_lifecycle.split("const MANAGER_SETTINGS_POPUP_PATHS", 1)[1].split("]);", 1)[0]
+    assert "'/theater'" not in manager_paths

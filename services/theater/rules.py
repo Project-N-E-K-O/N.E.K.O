@@ -20,6 +20,13 @@ def initial_state(story: dict[str, Any], *, initial_node_id: str) -> dict[str, A
         "scene_notes": [],
         # 只覆盖当前节点按钮文案，不改变 Choice ID、目标节点或作者事实。
         "choice_label_overrides": {},
+        # v2.4 的局部意图跟踪只服务隐藏边路由；这些字段不是角色知识，也不会投影给前端。
+        "active_goal_id": "",
+        "focused_intent_id": "",
+        "intent_streak": 0,
+        "goal_pullback_count": 0,
+        # 已正式进入的隐藏边在后续汇流中保留，供作者节点读取支线余波。
+        "branch_commitment": "",
     }
 
 
@@ -42,6 +49,8 @@ def apply_node(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any
     state["completed_node_ids"] = completed
     # 进入新节点后，上一节点根据自由对话生成的临时按钮文案立即失效。
     state["choice_label_overrides"] = {}
+    # 拉回次数只属于原节点的当前目标；节点推进后必须清零，不能污染下一段剧情。
+    clear_latent_intent_tracking(state)
 
     facts = [dict(item) for item in state.get("narrative_facts") or [] if isinstance(item, dict)]
     diff = node.get("state_diff") if isinstance(node.get("state_diff"), dict) else {}
@@ -73,6 +82,37 @@ def apply_node(story: dict[str, Any], state: dict[str, Any], node: dict[str, Any
 
     # 旧 Story 没有 flags 字段；存在时只接受作者节点中声明的稳定字符串。
     state["flags"] = _append_unique(state.get("flags"), diff.get("add_flags"))
+
+
+def record_latent_intent(state: dict[str, Any], transition: dict[str, Any]) -> bool:
+    """记录同一目标内的连续意图；超过作者拉回阈值时才允许提交隐藏边。"""  # noqa: DOCSTRING_CJK
+    goal_id = str(transition.get("goal_id") or "")
+    intent_id = str(transition.get("intent_id") or "")
+    threshold = max(0, int(transition.get("pullbacks_before_transition") or 0))
+    same_intent = (
+        str(state.get("active_goal_id") or "") == goal_id
+        and str(state.get("focused_intent_id") or "") == intent_id
+    )
+    streak = int(state.get("intent_streak") or 0) + 1 if same_intent else 1
+    state["active_goal_id"] = goal_id
+    state["focused_intent_id"] = intent_id
+    state["intent_streak"] = streak
+    state["goal_pullback_count"] = min(streak, threshold)
+    # 阈值表示仍留在当前节点自然回应的次数；配置为 2 时第三次连续表达才进入支线。
+    return streak > threshold
+
+
+def clear_latent_intent_tracking(state: dict[str, Any]) -> None:
+    """清除当前节点的连续意图，不影响已经提交的支线承诺。"""  # noqa: DOCSTRING_CJK
+    state["active_goal_id"] = ""
+    state["focused_intent_id"] = ""
+    state["intent_streak"] = 0
+    state["goal_pullback_count"] = 0
+
+
+def commit_latent_transition(state: dict[str, Any], transition_id: str) -> None:
+    """记录已经正式进入的作者隐藏边，供汇流后的演绎保留上下文。"""  # noqa: DOCSTRING_CJK
+    state["branch_commitment"] = str(transition_id or "").strip()
 
 
 def append_scene_note(state: dict[str, Any], user_message: str, *, limit: int = 6) -> None:

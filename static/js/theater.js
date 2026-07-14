@@ -17,6 +17,8 @@
         busy: false,
         inputClosed: false,
         restoreReason: '',
+        loggedSceneKey: '',
+        generationLoadingRow: null,
     };
 
     // 统一按 ID 读取页面节点，避免业务函数重复查询表达式。
@@ -57,6 +59,36 @@
         // 切换界面语言时刷新当前状态文案，避免折叠按钮停留在旧语言。
         window.addEventListener('localechange', function () {
             renderToggle(shell.dataset.stageCollapsed === 'true');
+        });
+        renderToggle(false);
+    }
+
+    // 剧本面板默认只显示标题；展开状态仅属于当前页面，不写入剧情快照或浏览器存储。
+    function initScenarioBoardToggle() {
+        const button = $('theater-board-toggle');
+        const label = $('theater-board-toggle-label');
+        const groups = $('theater-board-groups');
+        const workspace = document.querySelector('.theater-workspace');
+        if (!button || !label || !groups || !workspace) return;
+
+        function renderToggle(expanded) {
+            groups.hidden = !expanded;
+            // 折叠时把侧栏收成横向标题条，避免空面板继续占用演绎日志宽度。
+            workspace.dataset.boardExpanded = expanded ? 'true' : 'false';
+            button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            const key = expanded ? 'theater.collapseScenarioBoard' : 'theater.expandScenarioBoard';
+            const text = t(key, expanded ? '折叠剧本面板' : '展开剧本面板');
+            label.textContent = text;
+            label.setAttribute('data-i18n', key);
+            button.title = text;
+            button.setAttribute('data-i18n-title', key);
+        }
+
+        button.addEventListener('click', function () {
+            renderToggle(button.getAttribute('aria-expanded') !== 'true');
+        });
+        window.addEventListener('localechange', function () {
+            renderToggle(button.getAttribute('aria-expanded') === 'true');
         });
         renderToggle(false);
     }
@@ -172,6 +204,53 @@
         return row;
     }
 
+    // 清空演绎日志时同时重置已展示 Scene，后续开场或恢复才能重新补入完整场景旁白。
+    function clearPerformanceLog() {
+        $('theater-log').textContent = '';
+        state.loggedSceneKey = '';
+        state.generationLoadingRow = null;
+    }
+
+    // Scene 只进入演绎日志，并按场景追加一次；舞台不再重复显示同一段文字。
+    function renderScene(scene, fallbackText, append) {
+        const payload = scene || {};
+        const text = String(payload.text || fallbackText || '').trim();
+        if (!append || !text) return;
+        const sceneKey = String(payload.scene_id || '') + '\n' + text;
+        if (sceneKey === state.loggedSceneKey) return;
+        appendTurn('narrator', text);
+        state.loggedSceneKey = sceneKey;
+    }
+
+    // 模型请求期间在对话流尾部展示临时旁白气泡；真实响应到达后由同一函数移除。
+    function setGenerationLoading(active) {
+        if (state.generationLoadingRow) {
+            state.generationLoadingRow.remove();
+            state.generationLoadingRow = null;
+        }
+        if (!active) return;
+
+        const row = document.createElement('div');
+        row.className = 'theater-turn narration theater-generation-loading';
+        row.setAttribute('role', 'status');
+        row.setAttribute('aria-live', 'polite');
+
+        const label = document.createElement('span');
+        label.textContent = t('theater.generating', '片刻之后');
+        row.appendChild(label);
+
+        const dots = document.createElement('span');
+        dots.className = 'theater-generation-dots';
+        dots.setAttribute('aria-hidden', 'true');
+        for (let index = 0; index < 3; index += 1) {
+            dots.appendChild(document.createElement('span'));
+        }
+        row.appendChild(dots);
+        $('theater-log').appendChild(row);
+        $('theater-log').scrollTop = $('theater-log').scrollHeight;
+        state.generationLoadingRow = row;
+    }
+
     // 把公开故事卡渲染为启动前下拉选项。
     function renderStoryOptions(stories) {
         const select = $('theater-story-select');
@@ -225,7 +304,8 @@
         const scene = scenes.find(function (item) {
             return item && item.scene_id === story.initial_scene_id;
         }) || scenes[0] || null;
-        $('theater-scene-text').textContent = String(scene && scene.text || story && story.summary || t('theater.ready', '准备中'));
+        clearPerformanceLog();
+        renderScene(scene, story && story.summary || t('theater.ready', '准备中'), true);
         renderStoryIntro(story);
     }
 
@@ -321,6 +401,7 @@
     // 用一次公开响应同步 Scene、日志、Board、Choice、Ending 和 revision。
     function applyPayload(payload, options) {
         const append = !options || options.append !== false;
+        setGenerationLoading(false);
         state.sessionId = String(payload.session_id || state.sessionId || '');
         state.storyId = String(payload.story_id || state.storyId || '');
         state.stateRevision = Number.isInteger(payload.state_revision) ? payload.state_revision : null;
@@ -329,9 +410,26 @@
         // 刷新恢复可能切换到服务端活动剧本，因此按恢复后的 story_id 同步顶部开场卡。
         renderStoryIntro(state.stories.find(function (item) { return item.id === state.storyId; }));
         const scene = payload.scene || {};
-        $('theater-scene-text').textContent = String(scene.text || '');
         if (append) {
-            appendTurn('narrator', payload.narration && payload.narration.text);
+            const narrationText = String(payload.narration && payload.narration.text || '').trim();
+            const sceneText = String(scene.text || '').trim();
+            const sceneKey = String(scene.scene_id || '') + '\n' + sceneText;
+            const sceneChanged = Boolean(sceneText && sceneKey !== state.loggedSceneKey);
+            const sceneFirst = Boolean(options && (options.opening || options.restoring));
+            const appendNarration = function () {
+                // 模型回退可能把 Scene 原文同时作为 narration 返回；两者相同就只保留场景旁白一条。
+                if (narrationText !== sceneText) appendTurn('narrator', narrationText);
+            };
+
+            if (sceneFirst || !sceneChanged) {
+                // 开场、恢复和同 Scene 回合先保证当前环境已存在，再追加本轮旁白。
+                renderScene(scene, '', true);
+                appendNarration();
+            } else {
+                // 实时跨 Scene 时，Choice callback 先完成离开/抵达动作，新环境随后才成立。
+                appendNarration();
+                renderScene(scene, '', true);
+            }
             appendTurn('assistant', payload.dialogue && payload.dialogue.text);
         }
         renderBoard(payload.scenario_board);
@@ -348,6 +446,16 @@
             state.sessionId = '';
             state.stateRevision = null;
             state.inputClosed = false;
+            // 删除内置故事后，旧 Session 仍可能携带已不存在的 story_id；只在这种情况下
+            // 回到当前列表第一项，否则 start 会因 storyReady=false 永久禁用。
+            const endedStoryStillAvailable = state.stories.some(function (story) {
+                return story && String(story.id || '') === state.storyId;
+            });
+            if (!endedStoryStillAvailable && state.stories.length) {
+                state.storyId = String(state.stories[0].id || '');
+                $('theater-story-select').value = state.storyId;
+                previewSelectedStory();
+            }
         }
         setBusy(state.busy);
     }
@@ -387,8 +495,8 @@
             state.restoreReason = result.reason;
         }
         if (!result || !result.ok || !result.can_resume) return false;
-        $('theater-log').textContent = '';
-        applyPayload(result);
+        clearPerformanceLog();
+        applyPayload(result, { restoring: true });
         return true;
     }
 
@@ -413,7 +521,7 @@
         }
 
         // 当前猫娘没有活动演出时，清空旧表现并回到可选剧本、可重新开场的稳定状态。
-        $('theater-log').textContent = '';
+        clearPerformanceLog();
         renderSuggestions([]);
         renderBoard({});
         renderTrace(null);
@@ -456,6 +564,8 @@
     // 使用当前故事启动唯一轻量演绎链。
     async function startSession() {
         if (state.busy) return;
+        clearPerformanceLog();
+        setGenerationLoading(true);
         setBusy(true);
         try {
             const result = await requestJson(api.start, {
@@ -468,13 +578,15 @@
                 }
             });
             if (!result || !result.ok) throw new Error('start');
-            $('theater-log').textContent = '';
             state.inputClosed = false;
             state.restoreReason = '';
-            applyPayload(result);
+            applyPayload(result, { opening: true });
         } catch (_) {
+            // 启动失败时恢复所选故事的 Scene 旁白，不能留下永远转动的空等待气泡。
+            previewSelectedStory();
             setStatus(t('theater.failed', '启动失败'));
         } finally {
+            setGenerationLoading(false);
             setBusy(false);
         }
     }
@@ -488,6 +600,7 @@
         if (!message) return;
         if (!selected) input.value = '';
         const optimistic = appendTurn('user', message);
+        setGenerationLoading(true);
         setBusy(true);
         try {
             const body = {
@@ -515,6 +628,7 @@
             if (!selected) input.value = message;
             setStatus(t('theater.failed', '提交失败'));
         } finally {
+            setGenerationLoading(false);
             setBusy(false);
         }
     }
@@ -553,6 +667,7 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         initStageToggle();
+        initScenarioBoardToggle();
         $('theater-story-select').addEventListener('change', function () {
             state.storyId = this.value;
             previewSelectedStory();

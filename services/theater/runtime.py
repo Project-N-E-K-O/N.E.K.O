@@ -8,7 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from . import projector, rules, session_store, story_graph, story_loader, turn_service
+from . import llm, projector, rules, session_store, story_graph, story_loader, turn_service
 
 
 THEATER_SESSION_TTL_MS = 24 * 60 * 60 * 1000
@@ -65,6 +65,7 @@ async def start_session(
             story_id=story_id,
             start_client_id=normalized_start_id,
             replaced_session=active_session,
+            config_manager=config_manager,
         )
 
 
@@ -88,6 +89,7 @@ async def _create_session(
     story_id: str | None,
     start_client_id: str,
     replaced_session: dict[str, Any] | None = None,
+    config_manager: Any | None = None,
 ) -> dict[str, Any]:
     """在角色锁内创建、保存并切换活动 Session。"""  # noqa: DOCSTRING_CJK
     story = await story_loader.load_story(story_id)
@@ -104,6 +106,27 @@ async def _create_session(
     phase = str(node.get("belong_phase") or "setup")
     scene = story_loader.scene_by_id(story, str(story.get("initial_scene_id") or ""))
     opening_dialogue = str(story.get("opening_dialogue") or f"{lanlan_name}已经准备好和你一起开始了喵。")
+    opening_narration = str(scene.get("text") or "")
+    if config_manager is not None:
+        # 正式开场也属于猫娘演绎，不能绕过人格层直接朗读作者文案。这里把 opening_dialogue 放进节点副本，
+        # 让模型按当前猫娘人格转述；模型不可用时 generate_turn_async 仍会安全回退到作者原文。
+        opening_node = dict(node)
+        opening_node["scripted_dialogue"] = opening_dialogue
+        opening_performance = await llm.generate_turn_async(
+            config_manager=config_manager,
+            lanlan_name=lanlan_name,
+            story=story,
+            scene=scene,
+            node=opening_node,
+            user_message="",
+            progress_kind="opening",
+            callback=opening_narration,
+            state=state,
+            recent_turns=[],
+            choice_options=story_graph.suggestion_options(story, state, lanlan_name=lanlan_name),
+        )
+        opening_narration = str(opening_performance.get("narration") or opening_narration)
+        opening_dialogue = str(opening_performance.get("dialogue") or opening_dialogue)
     session: dict[str, Any] = {
         "schema_version": session_store.SESSION_SCHEMA_VERSION,
         "session_id": session_id,
@@ -112,7 +135,7 @@ async def _create_session(
         "start_client_id": start_client_id,
         "phase": phase,
         "story_state": state,
-        "turns": [{"role": "assistant", "text": opening_dialogue, "narration": str(scene.get("text") or ""), "created_at": now}],
+        "turns": [{"role": "assistant", "text": opening_dialogue, "narration": opening_narration, "created_at": now}],
         "state_revision": 0,
         "turn_results_by_client_id": {},
         # TTS 去重只记录公开快照 revision，不保存音频或额外台词副本。
@@ -126,7 +149,7 @@ async def _create_session(
         session=session,
         story=story,
         scene=scene,
-        narration=str(scene.get("text") or ""),
+        narration=opening_narration,
         dialogue=opening_dialogue,
         trace=None,
         ending=ending,

@@ -48,7 +48,16 @@ def public_response(
 ) -> dict[str, Any]:
     """统一组装启动、回合和恢复响应。"""  # noqa: DOCSTRING_CJK
     state = session.get("story_state") if isinstance(session.get("story_state"), dict) else {}
-    options = story_graph.suggestion_options(story, state) if can_resume else []
+    # 推荐对白必须使用当前 Session 的真实猫娘名，恢复页面时也不能退回作者占位符。
+    options = (
+        story_graph.suggestion_options(
+            story,
+            state,
+            lanlan_name=str(session.get("lanlan_name") or "猫娘"),
+        )
+        if can_resume
+        else []
+    )
     public_options = [
         {key: option[key] for key in ("choice_id", "label", "choice_mode")}
         for option in options

@@ -75,11 +75,8 @@
                 </details>
             </section>
 
-            <!-- 舞台底部只保留当前场景和演出状态，避免重复展示“小剧场”大标题。 -->
+            <!-- 舞台底部只保留演出状态和折叠入口；Scene 正文统一进入下方旁白日志。 -->
             <div class="theater-stage-footer">
-                <div class="theater-stage-copy">
-                    <p id="theater-scene-text" data-i18n="theater.loading">正在准备舞台...</p>
-                </div>
                 <!-- 状态与折叠入口收在同一区域，避免右下角按钮覆盖演出状态。 -->
                 <div class="theater-stage-controls">
                     <div class="theater-status" id="theater-status" data-i18n="theater.ready">准备中</div>
@@ -87,7 +84,7 @@
                         type="button"
                         class="theater-stage-toggle"
                         id="theater-stage-toggle"
-                        aria-controls="theater-story-intro theater-scene-text theater-status"
+                        aria-controls="theater-story-intro theater-status"
                         aria-expanded="true"
                         data-i18n-title="theater.collapseStage"
                         title="折叠舞台"
@@ -107,13 +104,24 @@
             </div>
 
             <!-- 轻量工作区只保留玩家需要的道具、线索、演出日志和本轮行动。 -->
-            <div class="theater-workspace" data-board-visible="false">
+            <div class="theater-workspace" data-board-visible="false" data-board-expanded="false">
                 <aside class="theater-scenario-board" id="theater-scenario-board" hidden aria-labelledby="theater-scenario-board-title">
                     <div class="theater-panel-heading">
                         <h3 id="theater-scenario-board-title" data-i18n="theater.scenarioBoardTitle">剧本面板</h3>
-                        <div class="theater-board-status" id="theater-board-status"></div>
+                        <button
+                            type="button"
+                            class="theater-board-toggle"
+                            id="theater-board-toggle"
+                            aria-controls="theater-board-groups"
+                            aria-expanded="false"
+                            data-i18n-title="theater.expandScenarioBoard"
+                            title="展开剧本面板"
+                        >
+                            <span class="theater-board-toggle-icon" aria-hidden="true">⌄</span>
+                            <span id="theater-board-toggle-label" data-i18n="theater.expandScenarioBoard">展开剧本面板</span>
+                        </button>
                     </div>
-                    <div class="theater-board-groups">
+                    <div class="theater-board-groups" id="theater-board-groups" hidden>
                         <section class="theater-board-group" id="theater-board-available-section" hidden>
                             <h4 data-i18n="theater.availableProps">可用道具</h4>
                             <ul id="theater-board-available-props"></ul>

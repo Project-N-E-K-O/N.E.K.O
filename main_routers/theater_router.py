@@ -116,7 +116,15 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
 async def list_theater_stories():
     """返回故事列表，并在打开小剧场时顺手清理过期 session。"""  # noqa: DOCSTRING_CJK
     await _cleanup_expired_theater_sessions(_theater_root())
-    return {"ok": True, "stories": await runtime.list_stories()}
+    stories = await runtime.list_stories()
+    lanlan_name = _resolve_lanlan_name(None) or "Lan"
+    for story in stories:
+        card = story.get("scenario_card") if isinstance(story, dict) else None
+        if isinstance(card, dict):
+            # 故事 JSON 不能写死创作时的角色名；列表接口以服务端当前猫娘替换公开背景占位符，
+            # 保证切换角色后预览卡与随后创建的 1v1 Session 指向同一个角色。
+            card["brief"] = str(card.get("brief") or "").replace("{{lanlan_name}}", lanlan_name)
+    return {"ok": True, "stories": stories}
 
 
 @router.post("/session/start")

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from services.theater import runtime, session_store, turn_service
+from services.theater import rules, runtime, session_store, story_graph, story_loader, turn_service
 
 
 @pytest.mark.asyncio
@@ -84,6 +84,85 @@ async def test_start_uses_author_initial_scene_id(monkeypatch, tmp_path):
         "title": "指定场景",
         "text": "正确开场",
     }
+
+
+@pytest.mark.asyncio
+async def test_start_personalizes_opening_with_active_catgirl(monkeypatch, tmp_path):
+    """正式开场必须经过当前猫娘人格演绎，不能直接把作者 opening_dialogue 当成朗读稿。"""  # noqa: DOCSTRING_CJK
+
+    class _CurrentCatgirlConfig:
+        """只提供 Runtime 角色归属校验所需的当前猫娘。"""  # noqa: DOCSTRING_CJK
+
+        def load_characters(self):
+            return {"当前猫娘": "霜瞳", "猫娘": {"霜瞳": {}}}
+
+    captured = {}
+
+    async def _fake_opening_performance(**kwargs):
+        """模拟模型按霜瞳人格转述开场，同时记录收到的作者语义和下一组选项。"""  # noqa: DOCSTRING_CJK
+        captured.update(kwargs)
+        return {
+            "narration": kwargs["callback"],
+            "dialogue": "哼，先帮本小姐接住那颗快掉下去的星星，别让它摔了喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+        }
+
+    monkeypatch.setattr(runtime.llm, "generate_turn_async", _fake_opening_performance)
+    started = await runtime.start_session(
+        tmp_path / "theater",
+        lanlan_name="霜瞳",
+        story_id="date_list_last_item_story",
+        config_manager=_CurrentCatgirlConfig(),
+    )
+
+    assert started["dialogue"]["text"].startswith("哼，先帮本小姐")
+    assert captured["progress_kind"] == "opening"
+    author_opening = captured["node"]["scripted_dialogue"]
+    assert author_opening.startswith("今天旧街有纪念祭")
+    assert "两张票" in author_opening
+    assert "帮我接一下" in author_opening
+    assert {item["choice_id"] for item in captured["choice_options"]} == {
+        "choice_catch_star_charm",
+        "choice_praise_star_charm",
+    }
+
+
+@pytest.mark.asyncio
+async def test_graph_progress_gives_model_the_next_visible_choices(monkeypatch, tmp_path):
+    """人格化当前对白时必须提供下一轮按钮，避免模型省略按钮所依赖的剧情邀请。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="霜瞳", story_id="date_list_last_item_story")
+    captured = {}
+
+    async def _fake_performance(**kwargs):
+        captured.update(kwargs)
+        return {
+            "narration": kwargs["callback"],
+            "dialogue": "这颗歪星星就先留着；本小姐带了两张票，就是来约你一起出发的喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="choice",
+        choice_id="choice_catch_star_charm",
+        client_turn_id="turn_personalized_handoff",
+        base_revision=0,
+    )
+
+    assert captured["progress_kind"] == "graph_progress"
+    assert [item["choice_id"] for item in captured["choice_options"]] == [
+        "choice_promise_one_surprise",
+        "choice_take_ticket_and_list",
+    ]
+    assert [item["choice_id"] for item in result["suggestion_options"]] == [
+        "choice_promise_one_surprise",
+        "choice_take_ticket_and_list",
+    ]
 
 
 @pytest.mark.asyncio
@@ -828,44 +907,404 @@ async def test_active_session_index_serializes_updates_across_characters(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_free_input_never_submits_even_when_it_repeats_choice_label(tmp_path):
-    """自由输入即使逐字复述按钮也只能演绎，权威推进必须提交 choice_id。"""  # noqa: DOCSTRING_CJK
+async def test_free_input_matching_current_choice_advances_author_node(monkeypatch, tmp_path):
+    """自由输入明确完成当前 Choice 时复用稳定 ID 推进，不要求玩家重复点击。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
-    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="tape_for_tomorrow_story")
-    choice_ids = [item["choice_id"] for item in started["suggestion_options"]]
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
+    selected = started["suggestion_options"][0]
+    before = await session_store.load_session(root, started["session_id"])
+
+    async def _fake_performance(**kwargs):
+        """模拟模型把玩家自然语言安全映射到本轮提供的稳定 Choice。"""  # noqa: DOCSTRING_CJK
+        if kwargs["progress_kind"] == "graph_progress":
+            return {
+                "narration": kwargs["callback"],
+                "dialogue": "我会从这一刻的选择继续回应你喵。",
+                "choice_rewrites": [],
+                "matched_choice_id": "",
+            }
+        return {
+            "narration": "",
+            "dialogue": "我知道你已经作出决定了喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": kwargs["choice_options"][0]["choice_id"],
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message=selected["label"],
+        client_turn_id="turn_repeat_choice_label",
+        base_revision=0,
+    )
+    assert result["scenario_trace"] == {
+        "progress_kind": "graph_progress",
+        "action_label": selected["label"],
+    }
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["story_state"]["current_node_id"] != before["story_state"]["current_node_id"]
+    assert selected["choice_id"] not in [item["choice_id"] for item in result["suggestion_options"]]
+
+
+@pytest.mark.asyncio
+async def test_repeated_latent_intent_branches_only_after_two_goal_pullbacks(monkeypatch, tmp_path):
+    """普通岔题会清零计数；同一作者意图连续第三次出现时才进入隐藏支线。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="糖糖", story_id="date_list_last_item_story")
+    story = await story_loader.load_story("date_list_last_item_story")
+    session = await session_store.load_session(root, started["session_id"])
+    state = rules.initial_state(story, initial_node_id=story_loader.initial_node_id(story))
+    # 直接构造已经抵达试点节点的权威状态，避免本测试重复验证前十轮主线选择。
+    for node_id in (
+        "node_date_list_seed",
+        "node_protect_charm",
+        "node_theme_question",
+        "node_festival_invitation",
+        "node_choose_real_start",
+        "node_enter_festival",
+        "node_handhold_lane",
+        "node_exchange_gifts",
+        "node_share_dessert",
+        "node_photo_booth",
+        "node_honest_observation",
+    ):
+        rules.apply_node(story, state, story_graph.node_by_id(story, node_id))
+    session["story_state"] = state
+    session["phase"] = "closeness"
+    session["turns"] = []
+    await session_store.save_session(root, session)
+
+    async def _fake_performance(**kwargs):
+        """用稳定 intent_id 模拟语义分类；目标节点演出不再返回任何路由字段。"""  # noqa: DOCSTRING_CJK
+        if kwargs["progress_kind"] == "graph_progress":
+            return {
+                "narration": kwargs["callback"],
+                "dialogue": "糖糖会把刚才的问题认真说完喵。",
+                "choice_rewrites": [],
+                "matched_choice_id": "",
+                "observed_intent_id": "",
+            }
+        observed = (
+            "intent_continue_mutual_impression_talk"
+            if kwargs["user_message"].startswith("印象")
+            else ""
+        )
+        return {
+            "narration": "",
+            "dialogue": "糖糖先回应你现在说的这句话喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+            "observed_intent_id": observed,
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    messages = [
+        "印象一：你怎么看我？",
+        "雨是不是快停了？",
+        "印象二：我还是想知道你怎么看我。",
+        "印象三：再说具体一点吧。",
+        "印象四：先把这个问题说完。",
+    ]
+    results = []
+    for revision, message in enumerate(messages):
+        results.append(
+            await runtime.submit_input(
+                root,
+                session_id=started["session_id"],
+                input_kind="free_input",
+                message=message,
+                client_turn_id=f"turn_latent_{revision}",
+                base_revision=revision,
+            )
+        )
+        saved = await session_store.load_session(root, started["session_id"])
+        if revision == 0:
+            assert saved["story_state"]["intent_streak"] == 1
+        elif revision == 1:
+            assert saved["story_state"]["intent_streak"] == 0
+        elif revision == 2:
+            assert saved["story_state"]["intent_streak"] == 1
+        elif revision == 3:
+            assert saved["story_state"]["intent_streak"] == 2
+
+    assert [item["scenario_trace"]["progress_kind"] for item in results] == [
+        "roleplay_response",
+        "roleplay_response",
+        "roleplay_response",
+        "roleplay_response",
+        "graph_progress",
+    ]
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["story_state"]["current_node_id"] == "node_deep_impression_conversation"
+    assert saved["story_state"]["branch_commitment"] == "transition_deep_impression"
+    assert saved["story_state"]["intent_streak"] == 0
+    assert {item["choice_id"] for item in results[-1]["suggestion_options"]} == {
+        "choice_continue_impression_talk",
+        "choice_meet_tomorrow_without_list",
+    }
+    # 内部图谱身份和拉回计数不经过 Projector，前端只能看到作者推荐按钮。
+    serialized = json.dumps(results[-1], ensure_ascii=False)
+    assert "intent_continue_mutual_impression_talk" not in serialized
+    assert "transition_deep_impression" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_natural_language_match_regenerates_performance_from_target_node(monkeypatch, tmp_path):
+    """自然语言命中后必须立刻演目标节点，不能把旧节点台词延迟显示一轮。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="糖糖", story_id="date_list_last_item_story")
+    first_choice = next(item for item in started["suggestion_options"] if item["choice_mode"] == "dialogue")
+    routed_calls = []
+
+    async def _fake_performance(**kwargs):
+        """先返回旧节点坏台词与命中 ID，再验证正式演出改用目标节点上下文。"""  # noqa: DOCSTRING_CJK
+        if kwargs["progress_kind"] == "roleplay_response":
+            routed_calls.append((kwargs["node"]["node_id"], kwargs["progress_kind"], kwargs["choice_options"]))
+            return {
+                "narration": "",
+                "dialogue": "既然你喜欢这颗歪星星，那糖糖就放心啦喵。",
+                "choice_rewrites": [],
+                "matched_choice_id": "choice_promise_one_surprise",
+            }
+        if kwargs["node"]["node_id"] == "node_theme_question":
+            routed_calls.append((kwargs["node"]["node_id"], kwargs["progress_kind"], kwargs["choice_options"]))
+            return {
+                "narration": kwargs["callback"],
+                "dialogue": "那就出发喵，到了入口我们先去星灯长廊看看。",
+                "choice_rewrites": [],
+                "matched_choice_id": "",
+            }
+        return {
+            "narration": kwargs["callback"],
+            "dialogue": "糖糖很珍惜你的话，也想邀请你一起出发喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    progressed = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="choice",
+        choice_id=first_choice["choice_id"],
+        client_turn_id="turn_keep_handmade_star",
+        base_revision=0,
+    )
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message="出发吧，目标星灯祭",
+        client_turn_id="turn_depart_by_natural_language",
+        base_revision=progressed["state_revision"],
+    )
+
+    assert [(node_id, kind) for node_id, kind, _options in routed_calls] == [
+        ("node_protect_charm", "roleplay_response"),
+        ("node_theme_question", "graph_progress"),
+    ]
+    assert [item["choice_id"] for item in routed_calls[1][2]] == [
+        "choice_wear_pair_wristband",
+        "choice_explain_reflective_wristband",
+    ]
+    assert "星星" not in result["dialogue"]["text"]
+    assert "出发" in result["dialogue"]["text"]
+    assert result["scenario_trace"]["progress_kind"] == "graph_progress"
+    assert result["suggestion_options"][0]["choice_id"] == "choice_wear_pair_wristband"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["出发", "出发吧", "出发，目标星灯祭", "走吧"])
+async def test_authored_completion_advances_before_old_node_generation(monkeypatch, tmp_path, message):
+    """作者声明的完成表达必须直接演目标节点，不能先生成一次旧邀请。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="糖糖", story_id="date_list_last_item_story")
+    first_choice = next(item for item in started["suggestion_options"] if item["choice_mode"] == "dialogue")
+    calls = []
+
+    async def _fake_performance(**kwargs):
+        """记录实际演绎节点，确保确定性路由没有先请求旧节点。"""  # noqa: DOCSTRING_CJK
+        calls.append((kwargs["node"]["node_id"], kwargs["progress_kind"]))
+        return {
+            "narration": kwargs["callback"],
+            "dialogue": "那就出发喵，先去旧街入口。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    progressed = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="choice",
+        choice_id=first_choice["choice_id"],
+        client_turn_id="turn_keep_handmade_star",
+        base_revision=0,
+    )
+    calls.clear()
+
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message=message,
+        client_turn_id=f"turn_authored_depart_{message}",
+        base_revision=progressed["state_revision"],
+    )
+
+    assert calls == [("node_theme_question", "graph_progress")]
+    assert result["scenario_trace"] == {"progress_kind": "graph_progress", "action_label": message}
+    assert result["suggestion_options"][0]["choice_id"] == "choice_wear_pair_wristband"
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["story_state"]["current_node_id"] == "node_theme_question"
+    assert message not in saved["story_state"]["scene_notes"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["先别出发", "为什么出发"])
+async def test_authored_completion_does_not_consume_negation_or_question(monkeypatch, tmp_path, message):
+    """含否定或疑问的长句不是作者完成表达，必须保留为当前节点互动。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="糖糖", story_id="date_list_last_item_story")
+    first_choice = next(item for item in started["suggestion_options"] if item["choice_mode"] == "dialogue")
+    calls = []
+
+    async def _fake_performance(**kwargs):
+        """明确返回未命中，隔离确定性匹配与模型自由路由。"""  # noqa: DOCSTRING_CJK
+        calls.append((kwargs["node"]["node_id"], kwargs["progress_kind"]))
+        return {
+            "narration": kwargs["callback"] if kwargs["progress_kind"] == "graph_progress" else "",
+            "dialogue": "糖糖先回答你眼前的问题喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": "",
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    progressed = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="choice",
+        choice_id=first_choice["choice_id"],
+        client_turn_id="turn_keep_handmade_star",
+        base_revision=0,
+    )
+    calls.clear()
+
+    result = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message=message,
+        client_turn_id=f"turn_hold_depart_{message}",
+        base_revision=progressed["state_revision"],
+    )
+
+    assert calls == [("node_protect_charm", "roleplay_response")]
+    assert result["scenario_trace"]["progress_kind"] == "roleplay_response"
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["story_state"]["current_node_id"] == "node_protect_charm"
+    assert saved["story_state"]["scene_notes"][-1] == message
+
+
+@pytest.mark.asyncio
+async def test_free_input_without_valid_model_match_stays_on_current_node(tmp_path):
+    """模型不可用时即使玩家复述按钮也不得由服务端猜测推进。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
+    before = await session_store.load_session(root, started["session_id"])
+
     result = await runtime.submit_input(
         root,
         session_id=started["session_id"],
         input_kind="free_input",
         message=started["suggestion_options"][0]["label"],
-        client_turn_id="turn_repeat_choice_label",
+        client_turn_id="turn_model_unavailable_hold",
         base_revision=0,
     )
+
+    after = await session_store.load_session(root, started["session_id"])
     assert result["scenario_trace"]["progress_kind"] == "roleplay_response"
-    assert [item["choice_id"] for item in result["suggestion_options"]] == choice_ids
+    assert after["story_state"]["current_node_id"] == before["story_state"]["current_node_id"]
+
+
+@pytest.mark.asyncio
+async def test_natural_language_and_click_commit_same_author_state(monkeypatch, tmp_path):
+    """自然语言只是 Choice 的第二入口，提交后的作者权威状态必须与点击完全一致。"""  # noqa: DOCSTRING_CJK
+    click_root = tmp_path / "click" / "theater"
+    natural_root = tmp_path / "natural" / "theater"
+    clicked_start = await runtime.start_session(
+        click_root,
+        lanlan_name="测试猫娘",
+        story_id="date_list_last_item_story",
+    )
+    natural_start = await runtime.start_session(
+        natural_root,
+        lanlan_name="测试猫娘",
+        story_id="date_list_last_item_story",
+    )
+    selected = clicked_start["suggestion_options"][0]
+
+    async def _fake_performance(**kwargs):
+        """只在自由输入时返回当前稳定 ID，点击链保持原有显式路由。"""  # noqa: DOCSTRING_CJK
+        choice_options = kwargs.get("choice_options") or []
+        return {
+            "narration": kwargs.get("callback") or "作者回调会在自然语言命中后补入。",
+            "dialogue": "这一步由你决定喵。",
+            "choice_rewrites": [],
+            "matched_choice_id": (
+                choice_options[0]["choice_id"]
+                if kwargs["progress_kind"] == "roleplay_response" and choice_options
+                else ""
+            ),
+        }
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    await runtime.submit_input(
+        click_root,
+        session_id=clicked_start["session_id"],
+        input_kind="choice",
+        choice_id=selected["choice_id"],
+        client_turn_id="turn_click_choice",
+        base_revision=0,
+    )
+    await runtime.submit_input(
+        natural_root,
+        session_id=natural_start["session_id"],
+        input_kind="free_input",
+        message=selected["label"],
+        client_turn_id="turn_natural_choice",
+        base_revision=0,
+    )
+
+    clicked = await session_store.load_session(click_root, clicked_start["session_id"])
+    natural = await session_store.load_session(natural_root, natural_start["session_id"])
+    assert natural["story_state"] == clicked["story_state"]
 
 
 @pytest.mark.asyncio
 async def test_free_dialogue_rewrites_choice_label_without_changing_target(monkeypatch, tmp_path):
     """自由对话可以更新按钮表达，但点击后仍进入作者原定节点并清除旧覆盖。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
-    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="always_like_you_story")
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
 
     async def _fake_performance(**kwargs):
-        """用可控演绎复现“承认保留照片后按钮应承接”的真实问题。"""  # noqa: DOCSTRING_CJK
+        """用当前约会剧情复现“自由追问后按钮应承接”的更新链。"""  # noqa: DOCSTRING_CJK
         if kwargs["progress_kind"] == "roleplay_response":
             current = kwargs["choice_options"][0]
             return {
-                "narration": "她轻轻抚过照片折角。",
-                "dialogue": "因为我一直舍不得丢掉它喵。",
+                "narration": "她把约会清单折到只剩路线的一面。",
+                "dialogue": "真正想说的话，我希望你留到看着我的时候再决定喵。",
+                "matched_choice_id": "",
                 "choice_rewrites": [
                     {
                         "choice_id": current["choice_id"],
-                        "label": "把照片轻轻收好，回应她迟到的坦白",
+                        "label": "“真正想说的话，我留到你面前再说。”",
                     }
                 ],
             }
-        return {"narration": "照片被重新收好。", "dialogue": "谢谢你愿意听我说完喵。", "choice_rewrites": []}
+        return {"narration": "清单只留下路线，背面的答案被重新折起。", "dialogue": "好，那我等你亲口告诉我喵。", "choice_rewrites": []}
 
     monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
     first_choice = next(item for item in started["suggestion_options"] if item["choice_mode"] == "action")
@@ -874,25 +1313,27 @@ async def test_free_dialogue_rewrites_choice_label_without_changing_target(monke
         session_id=started["session_id"],
         input_kind="choice",
         choice_id=first_choice["choice_id"],
-        client_turn_id="turn_pick_photo",
+        client_turn_id="turn_keep_handmade_charm",
         base_revision=0,
     )
     static_choice_id = recognized["suggestion_options"][0]["choice_id"]
+    unchanged_choice = recognized["suggestion_options"][1]
 
     roleplay = await runtime.submit_input(
         root,
         session_id=started["session_id"],
         input_kind="free_input",
-        message="你怎么还留着这张相片？",
-        client_turn_id="turn_ask_photo",
+        message="那你希望我今天哪件事不要提前计划？",
+        client_turn_id="turn_ask_what_to_leave_open",
         base_revision=1,
     )
     assert roleplay["suggestion_options"] == [
         {
             "choice_id": static_choice_id,
-            "label": "把照片轻轻收好，回应她迟到的坦白",
-            "choice_mode": "action",
-        }
+            "label": "“真正想说的话，我留到你面前再说。”",
+            "choice_mode": "dialogue",
+        },
+        unchanged_choice,
     ]
 
     progressed = await runtime.submit_input(
@@ -900,13 +1341,101 @@ async def test_free_dialogue_rewrites_choice_label_without_changing_target(monke
         session_id=started["session_id"],
         input_kind="choice",
         choice_id=static_choice_id,
-        client_turn_id="turn_store_photo",
+        client_turn_id="turn_leave_words_unplanned",
         base_revision=2,
     )
-    assert progressed["dialogue"]["text"] == "谢谢你愿意听我说完喵。"
+    assert progressed["dialogue"]["text"] == "好，那我等你亲口告诉我喵。"
     assert progressed["suggestion_options"][0]["choice_id"] != static_choice_id
     saved = await session_store.load_session(root, started["session_id"])
     assert saved["story_state"]["choice_label_overrides"] == {}
+
+
+@pytest.mark.asyncio
+async def test_free_dialogue_does_not_keep_previous_choice_rewrite(monkeypatch, tmp_path):
+    """下一轮模型漏写改写时必须清掉旧覆盖，不能让按钮永远停在旧上文。"""  # noqa: DOCSTRING_CJK
+    root = tmp_path / "theater"
+    started = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
+    first_choice = next(item for item in started["suggestion_options"] if item["choice_mode"] == "action")
+    calls = 0
+
+    async def _fake_performance(**kwargs):
+        """第一轮返回上下文化按钮，第二轮故意漏写以验证旧值不会继续遗留。"""  # noqa: DOCSTRING_CJK
+        nonlocal calls
+        if kwargs["progress_kind"] == "roleplay_response":
+            calls += 1
+            current = kwargs["choice_options"][0]
+            return {
+                "narration": "",
+                "dialogue": "我听见了喵。",
+                "matched_choice_id": "",
+                "choice_rewrites": (
+                    [{"choice_id": current["choice_id"], "label": "“先收好票，我们到入口再决定。”"}]
+                    if calls == 1
+                    else []
+                ),
+            }
+        return {"narration": kwargs.get("callback") or "挂坠被收好。", "dialogue": "一起出发吗？", "choice_rewrites": []}
+
+    monkeypatch.setattr("services.theater.llm.generate_turn_async", _fake_performance)
+    progressed = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="choice",
+        choice_id=first_choice["choice_id"],
+        client_turn_id="turn_keep_charm_before_rewrites",
+        base_revision=0,
+    )
+    author_label = progressed["suggestion_options"][0]["label"]
+
+    first = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message="先去哪里？",
+        client_turn_id="turn_contextual_rewrite",
+        base_revision=1,
+    )
+    assert first["suggestion_options"][0]["label"] == "“先收好票，我们到入口再决定。”"
+
+    second = await runtime.submit_input(
+        root,
+        session_id=started["session_id"],
+        input_kind="free_input",
+        message="那就走吧。",
+        client_turn_id="turn_missing_rewrite",
+        base_revision=2,
+    )
+    assert second["suggestion_options"][0]["label"] == author_label
+    saved = await session_store.load_session(root, started["session_id"])
+    assert saved["story_state"]["choice_label_overrides"] == {}
+
+
+def test_choice_rewrite_rejects_action_text_inside_dialogue_option():
+    """对白按钮改写混入“轻声说”等动作说明时必须保留作者原文。"""  # noqa: DOCSTRING_CJK
+    options = [
+        {
+            "choice_id": "choice_name",
+            "label": "“霜瞳。”",
+            "author_label": "“霜瞳。”",
+            "choice_mode": "dialogue",
+        }
+    ]
+    rewrites = [{"choice_id": "choice_name", "label": "轻声唤她的名字：“霜瞳。”"}]
+    assert turn_service._validated_choice_rewrites(rewrites, options) == {}
+
+
+def test_choice_rewrite_rejects_unchanged_author_label():
+    """只改引号或标点不能冒充承接新上文的推荐文案。"""  # noqa: DOCSTRING_CJK
+    options = [
+        {
+            "choice_id": "choice_depart",
+            "label": "“好，那就一起出发吧。”",
+            "author_label": "“好，那就一起出发吧。”",
+            "choice_mode": "dialogue",
+        }
+    ]
+    rewrites = [{"choice_id": "choice_depart", "label": '"好，那就一起出发吧!"'}]
+    assert turn_service._validated_choice_rewrites(rewrites, options) == {}
 
 
 @pytest.mark.asyncio
@@ -963,19 +1492,27 @@ async def test_legacy_session_returns_upgrade_result_without_discarding_active_i
 
 
 @pytest.mark.asyncio
-async def test_tape_story_completes_through_structured_runtime(tmp_path):
-    """新剧本通过真实 Runtime 连续推进后必须回到现实并正式落幕。"""  # noqa: DOCSTRING_CJK
+async def test_date_story_completes_through_structured_runtime(tmp_path):
+    """甜蜜新剧本通过真实 Runtime 连续推进后必须确认约会并正式落幕。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
-    result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="tape_for_tomorrow_story")
+    result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
+    player_facing_turns = [result["dialogue"]["text"], result["narration"]["text"]]
     path = [
-        "choice_ask_permission",
-        "choice_play_tape",
-        "choice_enter_memory_dialogue",
-        "choice_ask_why_push_away",
-        "choice_go_broadcast_room",
-        "choice_offer_present_words",
-        "choice_finish_broadcast",
-        "choice_return_present",
+        "choice_catch_star_charm",
+        "choice_promise_one_surprise",
+        "choice_wear_pair_wristband",
+        "choice_hold_hands",
+        "choice_propose_blind_gift",
+        "choice_choose_star_bell",
+        "choice_place_selected_gift",
+        "choice_offer_favorite_bite",
+        "choice_take_four_photos",
+        "choice_write_small_observation",
+        "choice_stop_checking_cards",
+        "choice_pick_up_script_cards",
+        "choice_go_off_map_together",
+        "choice_confess_without_script",
+        "choice_write_tomorrow_together",
     ]
     for revision, choice_id in enumerate(path):
         assert choice_id in {option["choice_id"] for option in result["suggestion_options"]}
@@ -984,23 +1521,39 @@ async def test_tape_story_completes_through_structured_runtime(tmp_path):
             session_id=result["session_id"],
             input_kind="choice",
             choice_id=choice_id,
-            client_turn_id=f"turn_tape_{revision}",
+            client_turn_id=f"turn_date_{revision}",
             base_revision=revision,
         )
         assert result["ok"] is True
-    assert result["ending"]["ending_id"] == "ending_tape_for_tomorrow"
+        dialogue_text = result["dialogue"]["text"]
+        player_facing_turns.extend([dialogue_text, result["narration"]["text"]])
+        if choice_id == "choice_promise_one_surprise":
+            assert "两条腕带" in dialogue_text
+            assert "各自戴" in dialogue_text
+    assert result["ending"]["ending_id"] == "ending_last_item_is_tomorrow"
     assert result["can_resume"] is False
     assert result["phase"] == "ending"
+    complete_visible_path = "\n".join(player_facing_turns)
+    for obsolete_positive_phrase in (
+        "双人券上的七项",
+        "入场券上的任务",
+        "七项挑战规则",
+        "领取同步印章",
+        "挑战设备",
+        "计分牌",
+        "盖章提示",
+    ):
+        assert obsolete_positive_phrase not in complete_visible_path
 
 
 @pytest.mark.asyncio
-async def test_long_romance_story_completes_after_twenty_eight_runtime_turns(tmp_path):
-    """二十八回合都市爱情主线必须通过 Runtime 连续提交并正常落幕。"""  # noqa: DOCSTRING_CJK
+async def test_date_story_completes_after_fifteen_runtime_turns(tmp_path):
+    """十五轮规整主线必须通过 Runtime 连续提交并正常落幕。"""  # noqa: DOCSTRING_CJK
     root = tmp_path / "theater"
-    result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="always_like_you_story")
+    result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id="date_list_last_item_story")
 
     # 每轮使用首个作者选项；测试重点是完整链路、revision 和结局，不锁死文案细节。
-    for revision in range(28):
+    for revision in range(15):
         assert result["suggestion_options"], revision
         choice_id = result["suggestion_options"][0]["choice_id"]
         result = await runtime.submit_input(
@@ -1008,12 +1561,12 @@ async def test_long_romance_story_completes_after_twenty_eight_runtime_turns(tmp
             session_id=result["session_id"],
             input_kind="choice",
             choice_id=choice_id,
-            client_turn_id=f"turn_long_romance_{revision}",
+            client_turn_id=f"turn_date_first_choice_{revision}",
             base_revision=revision,
         )
         assert result["ok"] is True
 
-    assert result["state_revision"] == 28
-    assert result["ending"]["ending_id"] == "ending_meet_again_before_evening_wind"
+    assert result["state_revision"] == 15
+    assert result["ending"]["ending_id"] == "ending_last_item_is_tomorrow"
     assert result["can_resume"] is False
     assert result["phase"] == "ending"

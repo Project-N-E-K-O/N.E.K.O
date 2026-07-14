@@ -31,7 +31,7 @@ body {
 
 /* 折叠后把舞台收成一条控制栏，将主要窗口高度归还给下方演绎区。 */
 .theater-shell[data-stage-collapsed="true"] {
-    grid-template-rows: 38px 52px minmax(0, 1fr);
+    grid-template-rows: 38px 64px minmax(0, 1fr);
 }
 
 .theater-title-bar {
@@ -252,7 +252,7 @@ body {
 .theater-stage-footer {
     display: flex;
     align-items: flex-end;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 20px;
 }
 
@@ -299,7 +299,7 @@ body {
     transition: transform 180ms ease;
 }
 
-/* 紧凑舞台只保留右下角展开入口，背景介绍和场景状态恢复后仍保持原内容。 */
+/* 紧凑舞台保留当前场景和展开入口，让玩家折叠背景介绍后仍能看到剧情推进。 */
 .theater-shell[data-stage-collapsed="true"] .theater-stage {
     grid-template-rows: 1fr;
     gap: 0;
@@ -307,7 +307,6 @@ body {
 }
 
 .theater-shell[data-stage-collapsed="true"] .theater-story-intro,
-.theater-shell[data-stage-collapsed="true"] .theater-stage-copy,
 .theater-shell[data-stage-collapsed="true"] .theater-status {
     display: none;
 }
@@ -315,6 +314,7 @@ body {
 .theater-shell[data-stage-collapsed="true"] .theater-stage-footer {
     align-items: center;
     justify-content: flex-end;
+    gap: 12px;
 }
 
 .theater-shell[data-stage-collapsed="true"] .theater-stage-toggle-icon {
@@ -335,12 +335,6 @@ body {
 /* 银河动态已经交给视频；保留伪元素为空，避免旧动画继续叠加消耗。 */
 .theater-stage::after {
     content: none;
-}
-
-.theater-stage-copy p {
-    margin: 0;
-    max-width: 720px;
-    line-height: 1.5;
 }
 
 .theater-status {
@@ -391,6 +385,23 @@ body {
     grid-template-columns: minmax(0, 1fr);
 }
 
+/* 折叠 Board 时仅保留横向标题条，把完整宽度还给演绎日志。 */
+.theater-workspace[data-board-visible="true"][data-board-expanded="false"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+}
+
+.theater-workspace[data-board-visible="true"][data-board-expanded="false"] .theater-scenario-board {
+    padding: 0 0 8px;
+    overflow: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--theater-line);
+}
+
+.theater-workspace[data-board-visible="true"][data-board-expanded="false"] .theater-panel-heading {
+    margin-bottom: 0;
+}
+
 .theater-performance-column {
     min-width: 0;
     min-height: 0;
@@ -428,6 +439,32 @@ body {
     letter-spacing: 0;
 }
 
+.theater-board-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 7px;
+    border: 1px solid rgba(38, 114, 107, 0.24);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--theater-accent);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.74rem;
+}
+
+.theater-board-toggle:hover {
+    background: rgba(38, 114, 107, 0.08);
+}
+
+.theater-board-toggle-icon {
+    transition: transform 160ms ease;
+}
+
+.theater-board-toggle[aria-expanded="true"] .theater-board-toggle-icon {
+    transform: rotate(180deg);
+}
+
 .theater-board-status,
 .theater-trace-action {
     min-width: 0;
@@ -449,6 +486,11 @@ body {
 .theater-board-groups {
     display: grid;
     gap: 14px;
+}
+
+/* author 样式的 display:grid 会覆盖浏览器默认 [hidden]；显式隐藏才能保证初始折叠。 */
+.theater-board-groups[hidden] {
+    display: none;
 }
 
 .theater-board-group[hidden] {
@@ -638,6 +680,53 @@ body {
     color: rgba(50, 43, 38, 0.82);
     font-style: italic;
     background: rgba(255, 255, 255, 0.42);
+}
+
+/* 模型生成期间沿用旁白气泡位置，用三个错峰圆点表达持续工作而不伪装成猫娘对白。 */
+.theater-generation-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.theater-generation-dots {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.theater-generation-dots > span {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: theater-generation-pulse 1s ease-in-out infinite;
+}
+
+.theater-generation-dots > span:nth-child(2) {
+    animation-delay: 140ms;
+}
+
+.theater-generation-dots > span:nth-child(3) {
+    animation-delay: 280ms;
+}
+
+@keyframes theater-generation-pulse {
+    0%, 70%, 100% {
+        opacity: 0.28;
+        transform: translateY(0);
+    }
+    35% {
+        opacity: 0.9;
+        transform: translateY(-2px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .theater-generation-dots > span {
+        animation: none;
+        opacity: 0.58;
+    }
 }
 
 /* Phase A 演绎结构：猫娘对白行保留角色回应的视觉重点，和旧 assistant 回退样式区分。 */

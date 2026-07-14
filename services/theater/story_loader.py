@@ -121,11 +121,37 @@ def _validate_story(story: dict[str, Any], path: Path) -> dict[str, Any]:
     node_ids = [str(node.get("node_id") or "") for node in nodes]
     if not node_ids or any(not node_id for node_id in node_ids) or len(node_ids) != len(set(node_ids)):
         raise ValueError(f"Theater story {path} has invalid or duplicate node ids")
+    transition_ids: set[str] = set()
+    latent_intents_by_node: set[tuple[str, str]] = set()
     for edge in story.get("edges") or []:
         if not isinstance(edge, dict):
             raise ValueError(f"Theater story {path} has invalid edge")
         if str(edge.get("from_node") or "") not in node_ids or str(edge.get("to_node") or "") not in node_ids:
             raise ValueError(f"Theater story {path} edge references unknown node")
+        # v2.4 沿用原 edges 数组；未声明可见性的旧边等同推荐边，避免迁移无关 Story Package。
+        visibility = str(edge.get("visibility") or "recommended").strip()
+        if visibility not in {"recommended", "latent"}:
+            raise ValueError(f"Theater story {path} edge has invalid visibility: {visibility}")
+        if visibility != "latent":
+            continue
+        # 隐藏语义边必须完全由作者声明。模型只能返回 intent_id，不能补写目标、阈值或事实。
+        transition_id = str(edge.get("transition_id") or "").strip()
+        goal_id = str(edge.get("goal_id") or "").strip()
+        intent_id = str(edge.get("intent_id") or "").strip()
+        intent_summary = str(edge.get("intent_summary") or "").strip()
+        examples = [str(item).strip() for item in edge.get("intent_examples") or [] if str(item).strip()]
+        pullbacks = edge.get("pullbacks_before_transition")
+        if not transition_id or not goal_id or not intent_id or not intent_summary or not examples:
+            raise ValueError(f"Theater story {path} latent edge is missing routing metadata")
+        if isinstance(pullbacks, bool) or not isinstance(pullbacks, int) or pullbacks < 0:
+            raise ValueError(f"Theater story {path} latent edge has invalid pullback threshold")
+        if transition_id in transition_ids:
+            raise ValueError(f"Theater story {path} has duplicate transition id: {transition_id}")
+        intent_key = (str(edge.get("from_node") or ""), intent_id)
+        if intent_key in latent_intents_by_node:
+            raise ValueError(f"Theater story {path} has ambiguous latent intent at one node: {intent_id}")
+        transition_ids.add(transition_id)
+        latent_intents_by_node.add(intent_key)
     if not initial_node_id(story):
         raise ValueError(f"Theater story {path} has no setup node")
     _validate_reachable_ending(story, path)

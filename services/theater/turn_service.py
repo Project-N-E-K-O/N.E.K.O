@@ -1,9 +1,10 @@
-"""编排当前版单猫娘小剧场的一条线性回合链。"""  # noqa: DOCSTRING_CJK
+"""编排当前版单猫娘小剧场的作者状态图回合。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any
 
 from . import llm, projector, rules, session_store, story_graph, story_loader
@@ -135,29 +136,52 @@ async def _apply_turn(
     choice: dict[str, Any] = {}
     progress_kind = "roleplay_response"
     message = request["message"]
+    lanlan_name = str(session.get("lanlan_name") or "猫娘")
 
     if request["input_kind"] == "choice":
-        choice = story_graph.resolve_choice(story, state, request["choice_id"])
+        # 选择解析与公开按钮使用同一真实猫娘名，保证玩家回合和 Trace 不出现作者占位符。
+        choice = story_graph.resolve_choice(
+            story,
+            state,
+            request["choice_id"],
+            lanlan_name=lanlan_name,
+        )
         if not choice:
             return {"ok": False, "reason": "choice_not_available"}
         message = str(choice.get("label") or "")
         progress_kind = "graph_progress"
+    elif request["input_kind"] == "free_input":
+        # 作者明确列出的短表达先于模型路由；唯一命中后直接演目标节点，避免旧节点先生成重复邀请。
+        choice = story_graph.resolve_authored_completion(
+            story,
+            state,
+            message,
+            lanlan_name=lanlan_name,
+        )
+        if choice:
+            # Trace 保留玩家实际说法，Choice ID、目标与 callback 仍使用作者静态声明。
+            choice["label"] = message
+            progress_kind = "graph_progress"
 
     target = current
     if choice:
         target = story_graph.node_by_id(story, str(choice.get("target_node_id") or ""))
         rules.apply_node(story, state, target)
-    else:
-        # 自由互动只形成短期非权威笔记，不改变节点、线索或结局。
-        rules.append_scene_note(state, message)
 
     phase = str(target.get("belong_phase") or session.get("phase") or "setup")
     scene = story_loader.scene_for_phase(story, phase)
-    # 自由回合把当前稳定 Choice 提供给同一次模型调用，只允许生成上下文化标签。
-    choice_options = story_graph.suggestion_options(story, state) if progress_kind == "roleplay_response" else []
+    # 两类回合都读取“本轮结束后真实可见”的稳定 Choice：自由回合用它做保守路由，剧情推进用它约束人格化对白
+    # 必须先铺垫哪些问题、邀请和道具。模型仍不能改变 ID、目标节点、callback 或权威状态。
+    choice_options = story_graph.suggestion_options(story, state, lanlan_name=lanlan_name)
+    # 隐藏语义边只在未推进的自由回合提供给模型；点击 Choice 和目标节点演出不需要再次分类。
+    latent_transitions = (
+        story_graph.latent_transition_options(story, state)
+        if progress_kind == "roleplay_response"
+        else []
+    )
     performance = await llm.generate_turn_async(
         config_manager=config_manager,
-        lanlan_name=str(session.get("lanlan_name") or "Lan"),
+        lanlan_name=lanlan_name,
         story=story,
         scene=scene,
         node=target,
@@ -167,24 +191,75 @@ async def _apply_turn(
         state=state,
         recent_turns=list(session.get("turns") or []),
         choice_options=choice_options,
+        latent_transitions=latent_transitions,
     )
+    matched_choice_id = str(performance.pop("matched_choice_id", "") or "")
+    observed_intent_id = str(performance.pop("observed_intent_id", "") or "")
     rewrites = performance.pop("choice_rewrites", [])
     if progress_kind == "roleplay_response":
-        allowed_ids = {item["choice_id"] for item in choice_options}
-        # 再做一次本地白名单收口，防止模型增加按钮或覆盖已经过期的 Choice。
-        next_overrides = {
-            str(choice_id): str(label)
-            for choice_id, label in (state.get("choice_label_overrides") or {}).items()
-            if choice_id in allowed_ids and str(label).strip()
-        }
-        next_overrides.update(
-            {
-                str(item["choice_id"]): str(item["label"])
-                for item in rewrites
-                if isinstance(item, dict) and item.get("choice_id") in allowed_ids and str(item.get("label") or "").strip()
-            }
-        )
-        state["choice_label_overrides"] = next_overrides
+        inferred_transition: dict[str, Any] = {}
+        if matched_choice_id:
+            # 可见 Choice 永远优先于隐藏意图；目标和 callback 仍从本轮服务端白名单读取。
+            inferred_transition = next(
+                (dict(item) for item in choice_options if item["choice_id"] == matched_choice_id),
+                {},
+            )
+        elif observed_intent_id:
+            latent_transition = story_graph.resolve_latent_transition(
+                latent_transitions,
+                observed_intent_id,
+            )
+            if latent_transition and rules.record_latent_intent(state, latent_transition):
+                # 前两次只保留模型的自然回应；第三次才把稳定隐藏边转换成普通作者节点提交。
+                inferred_transition = {
+                    "choice_id": str(latent_transition.get("transition_id") or ""),
+                    "label": message,
+                    "target_node_id": str(latent_transition.get("target_node_id") or ""),
+                    "callback": str(latent_transition.get("callback") or ""),
+                    "transition_id": str(latent_transition.get("transition_id") or ""),
+                }
+        else:
+            # 普通聊天、换话题、越界或未知 ID 会打断连续性，避免分散的两句话意外累加成支线。
+            rules.clear_latent_intent_tracking(state)
+
+        if inferred_transition:
+            choice = inferred_transition
+            choice["label"] = message
+            target = story_graph.node_by_id(story, str(choice.get("target_node_id") or ""))
+            if target:
+                rules.apply_node(story, state, target)
+                if choice.get("transition_id"):
+                    # apply_node 会清除局部计数；正式分支承诺在其后写入，供延迟汇流节点保留余波。
+                    rules.commit_latent_transition(state, str(choice["transition_id"]))
+                progress_kind = "graph_progress"
+                phase = str(target.get("belong_phase") or session.get("phase") or "setup")
+                scene = story_loader.scene_for_phase(story, phase)
+                # 第一次调用基于旧节点，只负责路由且不能展示；提交后必须用目标节点重演当轮输入。
+                choice_options = story_graph.suggestion_options(story, state, lanlan_name=lanlan_name)
+                performance = await llm.generate_turn_async(
+                    config_manager=config_manager,
+                    lanlan_name=lanlan_name,
+                    story=story,
+                    scene=scene,
+                    node=target,
+                    user_message=message,
+                    progress_kind=progress_kind,
+                    callback=str(choice.get("callback") or ""),
+                    state=state,
+                    recent_turns=list(session.get("turns") or []),
+                    choice_options=choice_options,
+                    latent_transitions=[],
+                )
+                # 目标节点演出不再承担输入路由；删除全部内部字段，公开响应只保留演出内容。
+                performance.pop("matched_choice_id", None)
+                performance.pop("observed_intent_id", None)
+                performance.pop("choice_rewrites", None)
+    if progress_kind == "roleplay_response":
+        # 未明确命中唯一 Choice 的自由互动只形成非权威笔记，不参与静态可达性和结局判断。
+        rules.append_scene_note(state, message)
+        # 每次自由互动都替换上一轮显示覆盖，不能在模型漏写时继续展示与当前上文无关的旧按钮。
+        # 本轮改写不合格时回到作者原文；ID、目标节点和 callback 始终仍由静态图控制。
+        state["choice_label_overrides"] = _validated_choice_rewrites(rewrites, choice_options)
     outgoing = story_graph.outgoing_nodes(story, state)
     ending = rules.ending_for_state(story, state, target, has_outgoing=bool(outgoing))
     if progress_kind == "roleplay_response":
@@ -236,6 +311,49 @@ def _apply_exit(session: dict[str, Any], story: dict[str, Any]) -> dict[str, Any
         ending=ending,
         can_resume=False,
     )
+
+
+def _validated_choice_rewrites(
+    rewrites: list[dict[str, Any]],
+    choice_options: list[dict[str, str]],
+) -> dict[str, str]:
+    """仅接受当前稳定 ID 且保持行动/对白类型的上下文化显示文案。"""  # noqa: DOCSTRING_CJK
+    option_by_id = {str(item.get("choice_id") or ""): item for item in choice_options}
+    accepted: dict[str, str] = {}
+    for item in rewrites:
+        if not isinstance(item, dict):
+            continue
+        choice_id = str(item.get("choice_id") or "")
+        candidate = str(item.get("label") or "").strip()
+        option = option_by_id.get(choice_id)
+        if not option or not candidate:
+            continue
+        dialogue_mode = str(option.get("choice_mode") or "") == "dialogue"
+        if dialogue_mode != _is_quoted_dialogue_label(candidate):
+            continue
+        # 原样返回当前或作者文案不算上下文化，避免把旧覆盖值永久带入后续自由对话。
+        candidate_key = _choice_label_key(candidate)
+        if candidate_key in {
+            _choice_label_key(str(option.get("label") or "")),
+            _choice_label_key(str(option.get("author_label") or option.get("label") or "")),
+        }:
+            continue
+        # 文案不再要求逐字包含作者原句，否则无法删除已经被自由互动完成的“不追问”等过时修饰语。
+        # ID、类型、目标节点和 callback 仍由 option 保留，改写失败最多影响显示而不会污染权威剧情。
+        accepted[choice_id] = candidate
+    return accepted
+
+
+def _is_quoted_dialogue_label(label: str) -> bool:
+    """判断按钮是否为纯引号对白，防止“轻声说”等动作混入对白分组。"""  # noqa: DOCSTRING_CJK
+    text = str(label or "").strip()
+    quote_pairs = (("“", "”"), ("「", "」"), ('"', '"'))
+    return any(text.startswith(left) and text.endswith(right) for left, right in quote_pairs)
+
+
+def _choice_label_key(label: str) -> str:
+    """忽略引号、标点和空白比较推荐文案，拒绝没有实质变化的模型改写。"""  # noqa: DOCSTRING_CJK
+    return re.sub(r"[\s，。！？、；：,.!?;:\"'“”‘’「」（）()…—]+", "", str(label or "")).lower()
 
 
 def _append_turns(

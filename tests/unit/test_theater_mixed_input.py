@@ -1,4 +1,4 @@
-"""按七成自由输入、三成作者选项压力测试两份正式剧本。"""  # noqa: DOCSTRING_CJK
+"""按七成自由输入、三成作者选项压力测试当前正式剧本。"""  # noqa: DOCSTRING_CJK
 
 from copy import deepcopy
 
@@ -35,8 +35,7 @@ AUTHORITATIVE_STATE_KEYS = (
 @pytest.mark.parametrize(
     ("story_id", "choice_turns", "ending_id"),
     (
-        ("tape_for_tomorrow_story", 8, "ending_tape_for_tomorrow"),
-        ("always_like_you_story", 28, "ending_meet_again_before_evening_wind"),
+        ("date_list_last_item_story", 15, "ending_last_item_is_tomorrow"),
     ),
 )
 async def test_seventy_thirty_mixed_inputs_keep_story_controllable(

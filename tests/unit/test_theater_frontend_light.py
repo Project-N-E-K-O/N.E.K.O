@@ -68,7 +68,7 @@ def test_frontend_uses_brown_stage_with_galaxy_video():
 
 
 def test_frontend_can_collapse_stage_for_more_performance_space():
-    """舞台右下角必须可折叠，并通过公开属性驱动紧凑布局和无障碍状态。"""  # noqa: DOCSTRING_CJK
+    """舞台可折叠，Scene 正文只进入演绎日志而不在舞台内重复展示。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
@@ -78,7 +78,26 @@ def test_frontend_can_collapse_stage_for_more_performance_space():
     assert "shell.dataset.stageCollapsed" in script
     assert "theater.expandStage" in script
     assert '.theater-shell[data-stage-collapsed="true"]' in styles
-    assert "grid-template-rows: 38px 52px minmax(0, 1fr)" in styles
+    assert 'id="theater-scene-text"' not in html
+    assert "theater-stage-copy" not in styles
+    assert "appendTurn('narrator', text);" in script
+
+
+def test_scenario_board_is_collapsible_and_defaults_to_collapsed():
+    """有公开道具或线索时保留面板标题，但内容必须默认折叠并可展开。"""  # noqa: DOCSTRING_CJK
+    html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
+
+    assert 'id="theater-board-toggle"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'id="theater-board-groups" hidden' in html
+    assert "function initScenarioBoardToggle()" in script
+    assert "renderToggle(false);" in script
+    assert "groups.hidden = !expanded" in script
+    assert "workspace.dataset.boardExpanded" in script
+    assert '.theater-board-toggle[aria-expanded="true"]' in styles
+    assert '[data-board-expanded="false"]' in styles
 
 
 def test_frontend_right_aligns_adaptive_player_turns():
@@ -94,6 +113,35 @@ def test_frontend_right_aligns_adaptive_player_turns():
     assert "margin-left: auto" in player_rule.group(1)
     assert "text-align: right" in player_rule.group(1)
     assert "rgba(83, 99, 156" in player_rule.group(1)
+
+
+def test_frontend_logs_each_scene_as_narration_and_animates_model_generation():
+    """Scene 文本必须进入对话流，模型请求期间则显示可访问、可移除的旁白加载气泡。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+    styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
+
+    assert "function renderScene(scene, fallbackText, append)" in script
+    assert "if (sceneKey === state.loggedSceneKey) return;" in script
+    assert "appendTurn('narrator', text);" in script
+    assert "narrationText !== sceneText" in script
+    assert "const sceneFirst = Boolean(options && (options.opening || options.restoring));" in script
+    assert "if (sceneFirst || !sceneChanged)" in script
+    assert "applyPayload(result, { restoring: true });" in script
+    assert "applyPayload(result, { opening: true });" in script
+    assert "function setGenerationLoading(active)" in script
+    assert "row.setAttribute('role', 'status');" in script
+    assert "t('theater.generating', '片刻之后')" in script
+    # 开场和普通回合都会调用模型；离场请求不应伪装成剧情生成。
+    assert script.count("setGenerationLoading(true);") == 2
+    end_session_source = script[script.index("async function endSession()") :]
+    assert "setGenerationLoading(true);" not in end_session_source
+    assert ".theater-generation-loading" in styles
+    assert "@keyframes theater-generation-pulse" in styles
+    assert "prefers-reduced-motion: reduce" in styles
+
+    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
+        payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
+        assert payload["theater"]["generating"]
 
 
 def test_frontend_separates_turn_trace_from_performance_log():
@@ -149,6 +197,16 @@ def test_frontend_disables_start_until_selected_story_is_loaded():
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     assert "const storyReady = Boolean(state.storyId" in script
     assert "busy || active || !storyReady" in script
+
+
+def test_frontend_recovers_after_ending_session_for_removed_story():
+    """旧 Session 的剧本被删除后，离场必须回到现有故事，不能永久禁用开始按钮。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+
+    assert "const endedStoryStillAvailable = state.stories.some" in script
+    assert "if (!endedStoryStillAvailable && state.stories.length)" in script
+    assert "state.storyId = String(state.stories[0].id || '')" in script
+    assert "previewSelectedStory();" in script
 
 
 def test_locale_files_remain_valid_json():
