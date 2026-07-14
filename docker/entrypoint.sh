@@ -553,7 +553,24 @@ server {
     client_max_body_size 0;
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+    location ~ ^/(ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+
+    # 插件 WebSocket 路径 → 插件服务器 (48916)
+    location ~ ^/ws/(run|admin|logs) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -656,7 +673,24 @@ server {
     client_max_body_size 0;
 
     # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
-    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+    location ~ ^/(ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+
+    # 插件 WebSocket 路径 → 插件服务器 (48916)
+    location ~ ^/ws/(run|admin|logs) {
         proxy_pass http://127.0.0.1:48916;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
