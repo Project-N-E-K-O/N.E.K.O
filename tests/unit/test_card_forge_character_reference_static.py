@@ -34,3 +34,22 @@ def test_card_forge_character_reference_retries_independently_of_avatar_cache():
     ) in source
     assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" not in source
     assert "captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl)" not in source
+
+
+@pytest.mark.unit
+def test_card_forge_name_sync_does_not_wait_for_avatar_capture():
+    source = _read(APP_CHAT_AVATAR_PATH)
+    model_loaded_block = source.split("function handleModelLoaded(reason)", 1)[1].split(
+        "function bindModelLoadListeners()",
+        1,
+    )[0]
+    empty_init_block = source.split("} else {\n            cachedPreview = null;", 1)[1].split(
+        "bindModelLoadListeners();",
+        1,
+    )[0]
+
+    assert "syncAvatarToCardForge('');" in model_loaded_block
+    assert model_loaded_block.index("syncAvatarToCardForge('');") < model_loaded_block.index(
+        "scheduleAutoCapture(reason);"
+    )
+    assert "syncAvatarToCardForge('');" in empty_init_block
