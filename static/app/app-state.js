@@ -195,6 +195,9 @@
         // 注意与上面的 focusModeEnabled（=麦克风静音/允许打断）是两回事。
         focusCognitionEnabled: true,
         avatarReactionBubbleEnabled: true,
+        // 降低 AI 味（slop reduction）总开关，默认开。promptOnly：仅改喂回模型的
+        // 历史副本，用户看到的原文与持久化历史都不动（后端 utils/slop_filter.py）。
+        slopFilterEnabled: true,
         renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
@@ -287,6 +290,7 @@
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
         'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
         'proactiveChatInterval', 'proactiveVisionInterval', 'avatarReactionBubbleEnabled',
+        'slopFilterEnabled',
         'renderQuality', 'targetFrameRate', 'isRecording',
     ];
 

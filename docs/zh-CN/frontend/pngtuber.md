@@ -35,7 +35,7 @@ PNGTuber 模型是一个包含 `model.json` 文件的文件夹，其 `model_type
 | `talking_image` | 助手说话时显示。 |
 | `drag_image` | 拖拽形象时显示。 |
 | `click_image` | 点击形象时短暂显示。 |
-| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | 情绪帧（见 [情绪状态](#情绪状态尚未由情绪分析驱动)）。 |
+| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | 情绪帧（见 [情绪状态](#情绪状态)）。 |
 
 相对路径在包文件夹内解析；绝对路径（`/…`）与 `http(s)://` URL 原样保留。图片引用会在服务端规范化为 `/user_pngtuber/<folder>/<file>`。
 
@@ -49,38 +49,69 @@ PNGTuber 模型是一个包含 `model.json` 文件的文件夹，其 `model_type
 
 服务端会在接受包之前校验：`idle_image` 必须存在，且每个 `*_image` 引用都指向一个存在的、扩展名合法的文件。
 
-## 情绪状态（尚未由情绪分析驱动）
+## 情绪状态
 
-::: warning 诚实说明
-`happy_image` / `sad_image` / `angry_image` / `surprised_image` 这几个键属于包的 schema，且会经过**服务端校验**（上传时检查路径与扩展名），但 PNGTuber 运行时**尚未**根据情绪分析切换到它们。
+`window.applyEmotion('happy')` 在运行时驱动 PNGTuber 的情绪。`applyEmotion`（位于 `static/app-buttons.js`）会在当前 `model_type` 为 `pngtuber` 时，先路由到 `window.pngtuberManager.setEmotion(emotion)`，再决定是否回退到 Live2D 路径。
 
-`PNGTuberManager` 目前只驱动：
+- **simple package** —— `setEmotion('happy')` 切换到 `happy_image` / `sad_image` / `angry_image` / `surprised_image`，默认保持 5 秒后回到 idle。中性值（`neutral`、`idle`、`default`、`none`、`clear` 或空字符串）会立即清除情绪。
+- **分层包** —— `setEmotion` 通过 `setLayeredEmotion` 把情绪映射到某个 layered state。Remix 的 `emotion_mappings` 优先；否则在模型至少暴露 5 个 state 时，采用 happy → 1、sad → 2、angry → 3、surprised → 4 的兜底顺序。
 
-- `idle` ↔ `talking`，由助手**语音**开始/结束事件切换。
-- `drag` 与 `click`，由指针**交互**切换。
-
-它没有 Live2D / MMD / VRM 那样的 `setEmotion` 钩子，也没有专门的 PNGTuber 情绪管理页面。这四个情绪图片键会随包一起存储和分发，以便为将来的情绪驱动路径做好准备，但目前提供它们除了能通过校验外没有任何可见效果。
-:::
+`idle` ↔ `talking` 仍由助手**语音**开始/结束事件切换，`drag` / `click` 仍由指针**交互**切换。若没有匹配的情绪图片或 state，`setEmotion` 会直接返回、不改变画面，并打印 `[PNGTuber] emotion unavailable`。
 
 ## 导入格式
 
 上传接口会检测包类型并就地规范化。检测出的类型会以 `source_format` 回传。
 
-| 来源 | 检测方式 | 结果 |
-|--------|-----------|--------|
-| 原生 simple package | 文件夹根目录有 `model.json` | `source_format: simple_package`——直接使用。 |
-| **PNGTuber-Plus** | 存在 `.save` 工程文件 | 转换为 `layered_canvas_v1` 适配器。 |
-| **PNGTube-Remix** | 存在 `.pngremix` 工程文件 | 转换为 `layered_canvas_v1` 适配器。 |
-| veadotube | 存在 `.veadomini` / `.veado` 文件 | **已识别但暂不支持**——上传会被拒绝并附说明性错误。 |
+| 来源 | 检测方式 | `source_format` |
+|--------|-----------|-----------------|
+| 原生 simple package | 文件夹根目录有 `model.json` | `source_format: "simple_package"` |
+| PNGTuber-Plus | 存在 `.save` 工程文件 | `source_format: "pngtuber_plus_save"` |
+| PNGTube-Remix | 存在 `.pngRemix` 工程文件 | `source_format: "pngtube_remix_pngremix"` |
+| veadotube | 存在 `.veadomini` / `.veado` 文件 | `source_format: "veadotube"` |
+| 只有图片、无工程文件 | 有图片但无 `model.json` | `source_format: "image_pair_candidate"` |
 
 ### 分层适配器（`layered_canvas_v1`）
 
-导入 PNGTuber-Plus 或 PNGTube-Remix 工程时，转换器会生成一份分层元数据文件并把 `adapter` 设为 `layered_canvas_v1`。运行时 `PNGTuberManager` 会把各图层绘制到一张 `<canvas>` 上，而不是切换单个 `<img>`，并额外加入：
+导入 PNGTuber-Plus 或 PNGTube-Remix 工程时，转换器会生成一份分层元数据文件（`adapter_version: 2`）并把 `adapter` 设为 `layered_canvas_v1`。运行时 `PNGTuberManager` 会把各图层绘制到一张 `<canvas>` 上，而不是切换单个 `<img>`。Plus 与 Remix 按 `source_format` 分流，运行时互不污染。两者都会加入随机眨眼定时器和说话弹跳；若元数据加载失败，运行时会回退到普通的单图模式。
 
-- **眨眼（blink）**——眼睛图层按随机定时器眨眼。
-- **说话弹跳（speech bounce）**——说话时形象上下弹跳/挤压。
+## 能力表
 
-源工程中的热键、物理和多帧动画会保存在元数据中以备将来运行时支持，但目前尚未全部驱动。若元数据加载失败，运行时会回退到普通的单图模式。
+`window.pngtuberManager.getDebugState()` 会报告当前模型启用了哪些能力。
+
+| 能力 | `simple_package` | `pngtuber_plus_save` | `pngtube_remix_pngremix` |
+|------|:----------------:|:--------------------:|:------------------------:|
+| idle / talking 切换 | ✅ | ✅ | ✅ |
+| 情绪 `window.applyEmotion('happy')` | ✅ 切图 | ✅ 切 state | ✅ 切 state |
+| 眨眼 + 说话弹跳 | —— | ✅ | ✅ |
+| costume 热键 / toggle | —— | ✅ | —— |
+| sprite sheet 多帧 | —— | ✅ | ✅ |
+| `physics_v2` | —— | 近似 | ✅ |
+| mesh 变形 | —— | —— | ✅ 存在真实几何时 |
+
+只有当 Remix 工程带有真实的 vertices / triangles / UVs 时，debug state 里的 `meshRuntime` 才会为 `true`；否则 `meshMetadata` 保持 `true`、`meshRuntime` 保持 `false`，并在 `unsupportedFeatures` 中说明原因。
+
+### 失败提示
+
+- **veadotube**（`.veadomini` / `.veado`）→ `source_format: "veadotube"`；上传被拒绝，并请求提供真实样本以便适配。
+- **只有图片** → `source_format: "image_pair_candidate"`；上传被拒绝，提示改用双图导入或补 `model.json`。
+- **多个无法唯一确定的 `.save`** → 返回 HTTP 400，附 `source_format: "pngtuber_plus_save"` 与 `warnings` 中的候选列表。
+- **无法解析的 `.pngRemix`** → 归类为 PNGTube-Remix 转换失败（`source_format: "pngtube_remix_pngremix"`），绝不退化为“缺少 `model.json`”错误。
+
+## 验收清单
+
+静态契约（在仓库根目录执行）：
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_maker_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
+
+手动验收：
+
+- 导入 PNGTuber-Plus `.save`，确认 costume、toggle、说话/眨眼、sprite sheet 多帧、父子 transform 与矩形 clip 均正常渲染。
+- 导入多 state 的 PNGTube-Remix `.pngRemix`，确认 `window.applyEmotion('happy')` 映射到正确的 state。
+- 检查 `window.pngtuberManager.getDebugState()` 中的 `sourceFormat`、`adapterVersion`、`runtimeFeatures`、`meshRuntime` 与 `physicsVersion`。
 
 ## 静态服务
 

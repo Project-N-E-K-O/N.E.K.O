@@ -2606,6 +2606,8 @@
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
             "gameModeBeta": "Modo de borda Beta",
             "gameModeBetaTooltip": "Arraste o Live2D para a borda esquerda ou direita da tela para ele espiar. A pressão de CPU, memória e GPU é apenas diagnóstica e nunca altera o modelo automaticamente.",
+            "slopFilter": "Reduzir clichês de IA",
+            "slopFilterTooltip": "Reescreve frases repetitivas e clichês no próprio histórico do modelo antes de devolvê-lo, para que as respostas não fiquem monótonas. Afeta apenas o que o modelo vê; seu chat é exibido sem alterações.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Vira um gatinho automaticamente após um tempo de inatividade",
             "catAudio": "Sons de gato",

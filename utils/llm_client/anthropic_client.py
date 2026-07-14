@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     pass
 
 from .lifecycle import (
-    _active_character, _close_async_openai_client_from_sync_best_effort,
+    _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_clients_best_effort, _substitute_character_placeholders,
 )
 from .messages import LLMResponse, LLMStreamChunk, _normalize_messages
@@ -699,6 +699,15 @@ class ChatAnthropic:
                 payload["system"] = _substitute_character_placeholders(
                     [{"role": "system", "content": payload["system"]}], active[0], active[1]
                 )[0]["content"]
+
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                payload["messages"] = apply_slop_reduction(payload["messages"], slop_lang)
+            except Exception:
+                # Prompt-only rewriting is best effort and must not break an LLM call.
+                pass
         return payload
 
     def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:

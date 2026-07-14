@@ -1274,12 +1274,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             pngtuber: pngtuberConfig,
         };
 
-        if (window.loadPNGTuberAvatar) {
-            await window.loadPNGTuberAvatar(pngtuberConfig);
-        } else {
-            throw new Error('PNGTuber runtime not loaded');
+        try {
+            if (window.loadPNGTuberAvatar) {
+                await window.loadPNGTuberAvatar(pngtuberConfig);
+            } else {
+                throw new Error('PNGTuber runtime not loaded');
+            }
+            await loadPNGTuberPreviewControls(pngtuberConfig);
+        } catch (error) {
+            console.error('[PNGTuber] preview failed:', error);
+            const message = error && error.message ? error.message : String(error || 'Unknown error');
+            showStatus(`PNGTuber 模型加载失败: ${message}`, 3000);
+            return false;
         }
-        await loadPNGTuberPreviewControls(pngtuberConfig);
         if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.classList.add('hidden');
@@ -7703,7 +7710,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    async function uploadPNGTuberFiles(files) {
+    async function uploadPNGTuberFiles(files, inputElement = null) {
         if (!files || files.length === 0) return;
 
         uploadStatus.textContent = '正在上传PNGTuber模型...';
@@ -7750,28 +7757,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             setTimeout(() => { uploadStatus.textContent = ''; }, 5000);
         } finally {
             uploadBtn.disabled = false;
+            if (inputElement) {
+                inputElement.value = '';
+            }
         }
     }
 
     if (pngtuberModelUpload) {
         pngtuberModelUpload.addEventListener('change', async (e) => {
             if (e.target.files.length === 0) return;
-            try {
-                await uploadPNGTuberFiles(Array.from(e.target.files));
-            } finally {
-                pngtuberModelUpload.value = '';
-            }
+            await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);
         });
     }
 
     if (pngtuberPackageUpload) {
         pngtuberPackageUpload.addEventListener('change', async (e) => {
             if (e.target.files.length === 0) return;
-            try {
-                await uploadPNGTuberFiles(Array.from(e.target.files));
-            } finally {
-                pngtuberPackageUpload.value = '';
-            }
+            await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);
         });
     }
 

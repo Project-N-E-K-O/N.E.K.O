@@ -2606,6 +2606,8 @@
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
             "gameModeBeta": "挂边模式 Beta",
             "gameModeBetaTooltip": "拖动 Live2D 到屏幕左右边缘即可探身。CPU、内存和 GPU 压力仅用于诊断，不会自动改变模型。",
+            "slopFilter": "降低 AI 味",
+            "slopFilterTooltip": "把模型历史回复里反复出现的套路化措辞在回传前改写成多样表达，让回复不再千篇一律。只影响模型看到的内容，你看到的聊天原文不变。",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "catAudio": "猫猫音效",

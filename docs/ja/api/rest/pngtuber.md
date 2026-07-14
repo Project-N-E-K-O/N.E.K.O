@@ -61,12 +61,44 @@ PNGTuber パッケージを複数ファイルの `multipart/form-data` リクエ
 
 #### インポートアダプター
 
-パッケージがまだネイティブの `model.json` でない場合、アップローダーがソース形式を判定し、その場で変換します:
+パッケージがまだネイティブの `model.json` でない場合、アップローダーがソース形式を判定し、その場で変換します。判定された形式は `source_format` として返されます:
 
-- **`simple_package`** —— ネイティブ N.E.K.O パッケージ: ルートの `model.json`（`model_type: "pngtuber"`）。そのまま使用します。
-- **PNGTuber-Plus**（`.save`）→ `source_format: "pngtuber_plus_save"`、**`layered_canvas_v1`** アダプター経由で変換。発話レイヤーとまばたきレイヤーを優先的に有効化し、物理とマルチフレームアニメーションは後続のランタイム対応に備えてメタデータとして保持します。
-- **PNGTube-Remix**（`.pngRemix`）→ `source_format: "pngtube_remix_pngremix"`、**`layered_canvas_v1`** アダプター経由で変換。発話レイヤーとまばたきレイヤーを優先的に有効化し、ホットキー・物理・メッシュはメタデータとして保持します。
-- **veadotube**（`.veadomini` / `.veado`）→ 認識はされますが**未対応**です。アップロードは拒否され、`source_format: "veadotube"` を返すとともに、対応のためのサンプル提供を求めます。
+- `source_format: "simple_package"` —— ネイティブ N.E.K.O パッケージ: ルートの `model.json`（`model_type: "pngtuber"`）。そのまま使用し、idle/talking/drag/click と軽量な感情画像を駆動します。
+- `source_format: "pngtuber_plus_save"` —— PNGTuber-Plus（`.save`）、**`layered_canvas_v1`** アダプター経由で変換（`adapter_version: 2`）: コスチューム、トグル、発話/まばたき、スプライトシート多フレーム、Plus ノードツリー、矩形クリップ、近似物理をサポート。
+- `source_format: "pngtube_remix_pngremix"` —— PNGTube-Remix（`.pngRemix`）、**`layered_canvas_v1`** アダプター経由で変換（`adapter_version: 2`）: ステート切り替え、`emotion_mappings`、スプライトシート、`effective_z_index` 順序、`physics_v2`、利用可能なメッシュ変形をサポート。
+- `source_format: "veadotube"` —— veadotube（`.veadomini` / `.veado`）。認識はされますが**未対応**で、アップロードは拒否され、対応のためのサンプル提供を求めます。
+- `source_format: "image_pair_candidate"` —— `model.json` やプロジェクトファイルのない画像のみ。拒否され、2 枚画像インポートを案内します。
+
+#### 機能と失敗マトリクス
+
+`window.pngtuberManager.getDebugState()` は `source_format` ごとに有効な機能を報告します。感情は `window.applyEmotion('happy')` で駆動され、`pngtuber` モデルでは `pngtuberManager.setEmotion` にルーティングされます。
+
+| 機能 | `simple_package` | `pngtuber_plus_save` | `pngtube_remix_pngremix` |
+|------|:----------------:|:--------------------:|:------------------------:|
+| idle / talking 切り替え | ✅ | ✅ | ✅ |
+| 感情 `window.applyEmotion('happy')` | ✅ 画像切替 | ✅ ステート切替 | ✅ ステート切替 |
+| まばたき + 発話バウンス | —— | ✅ | ✅ |
+| コスチュームホットキー / トグル | —— | ✅ | —— |
+| スプライトシート多フレーム | —— | ✅ | ✅ |
+| `physics_v2` | —— | 近似 | ✅ |
+| メッシュ変形（`meshRuntime`） | —— | —— | ✅ 実ジオメトリがある場合 |
+
+Remix プロジェクトが実際の vertices / triangles / UVs を含む場合にのみ、debug state の `meshRuntime` が `true` になります。そうでない場合は `meshMetadata` が `true`、`meshRuntime` が `false` のままとなり、理由が `unsupportedFeatures` に列挙されます。
+
+失敗レスポンス:
+
+- `source_format: "veadotube"` → 認識されるが拒否され、実サンプルを待ちます。
+- `source_format: "image_pair_candidate"` → 拒否され、2 枚画像インポートまたは `model.json` の追加を案内します。
+- 一意に決められない複数の `.save` → HTTP 400 を返し、`source_format: "pngtuber_plus_save"` と `warnings` の候補リストを含みます。
+- 解析できない `.pngRemix` → PNGTube-Remix 変換失敗（`source_format: "pngtube_remix_pngremix"`）に分類され、`model.json` 欠落エラーには決してなりません。
+
+#### 受け入れチェック
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_maker_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
 
 ## 一覧
 

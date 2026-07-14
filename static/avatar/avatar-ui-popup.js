@@ -858,6 +858,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '降低 AI 味', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
         { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true, dependsOnToggleId: 'auto-cat' },
     ];
@@ -1531,6 +1532,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     // 全屏/局部跟踪复选框（右半部分）
+    const supportsTrackingModeToggle = prefix === 'live2d' || prefix === 'vrm' || prefix === 'mmd';
     const modeCheckbox = document.createElement('input');
     modeCheckbox.type = 'checkbox';
     modeCheckbox.style.display = 'none';
@@ -1539,6 +1541,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
     const updateTrackingModeToggleState = () => {
+        if (!modeClickArea || !supportsTrackingModeToggle) return;
         const isEnabled = checkbox.checked;
         modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
         modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
@@ -1623,7 +1626,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     trackingRow.appendChild(trackingClickArea);
-    trackingRow.appendChild(modeClickArea);
+    if (supportsTrackingModeToggle) {
+        trackingRow.appendChild(modeClickArea);
+    }
     container.appendChild(trackingRow);
 
     // ── 取消隐藏（锁定悬停淡化）开关 ──
@@ -2456,6 +2461,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
+        checkbox.checked = window.slopFilterEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2592,6 +2599,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
             // 思考气泡随之不再出现；master 情绪读不受影响。
             window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'slop-filter') {
+            // 降低 AI 味（slop reduction）总开关。关掉后端 _params 不再改写历史
+            // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
+            // 不影响用户看到的原文。
+            window.slopFilterEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
