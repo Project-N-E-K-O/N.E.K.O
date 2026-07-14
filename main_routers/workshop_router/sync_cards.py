@@ -313,6 +313,7 @@ async def sync_workshop_character_cards(
                                 chara_name,
                             )
                             if conflict_name is not None:
+                                _append_unique(existing_character_names, conflict_name)
                                 skipped_count += 1
                                 logger.warning(
                                     "sync_workshop_character_cards: 跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold，物品 %s）",
@@ -556,6 +557,7 @@ async def sync_workshop_character_cards(
                                         pending_restore_tombstone_names[pending_name]
                                     )
                             elif conflict_name is not None:
+                                _append_unique(existing_character_names, conflict_name)
                                 logger.warning(
                                     "sync_workshop_character_cards: 保存前跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold）",
                                     pending_name,

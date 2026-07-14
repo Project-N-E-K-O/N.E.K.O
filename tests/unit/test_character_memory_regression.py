@@ -1305,8 +1305,11 @@ async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
             assert len(current_catgirls) == len(
                 {name.casefold() for name in current_catgirls}
             )
-            assert {"N.E.K.O", "n.e.k.o"} & set(current_catgirls)
-            assert not {"N.E.K.O", "n.e.k.o"} <= set(current_catgirls)
+            imported_names = {"N.E.K.O", "n.e.k.o"} & set(current_catgirls)
+            assert len(imported_names) == 1
+            assert sync_result["existing_character_names"] == [
+                next(iter(imported_names))
+            ]
 
 
 @pytest.mark.unit
