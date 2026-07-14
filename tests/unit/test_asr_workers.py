@@ -396,6 +396,81 @@ async def test_step_manual_payload_and_cumulative_partial(monkeypatch) -> None:
     await _stop_worker(task, requests, responses)
 
 
+async def test_step_manual_uses_transcription_item_id_not_committed_item_id(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.append":
+            await ws.server_send(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"id": "step-audio-item"},
+                }
+            )
+            await ws.server_send(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"id": "step-transcription-item"},
+                }
+            )
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.delta",
+                    "item_id": "step-transcription-item",
+                    "text": "hello",
+                }
+            )
+        elif message["type"] == "input_audio_buffer.commit":
+            await ws.server_send(
+                {
+                    "type": "input_audio_buffer.committed",
+                    "item_id": "step-audio-item",
+                }
+            )
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "step-transcription-item",
+                    "transcript": "hello step",
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(step.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "step-key",
+            AsrSessionConfig(language="en", endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    try:
+        await requests.put(
+            _AsrWorkerRequest(
+                kind="audio",
+                generation=0,
+                utterance_id=7,
+                audio=b"\x11\x22" * 160,
+            )
+        )
+        await requests.put(
+            _AsrWorkerRequest(kind="commit", generation=0, utterance_id=7)
+        )
+        final = await _next_event(responses, "final")
+        assert (final.utterance_id, final.text) == (7, "hello step")
+    finally:
+        await _stop_worker(task, requests, responses, utterance_id=8)
+
+
 async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
