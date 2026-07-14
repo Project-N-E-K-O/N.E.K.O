@@ -621,7 +621,29 @@
         dispatchState();
     }
 
-    function handleLifecycleMessage(payload) {
+    async function restoreAfterBackendLifecycle(reason) {
+        if (!clientState.autoSwitched || !isCatFormActive()) return true;
+        clientState.restoringFromDisable = true;
+        try {
+            leaveDeepSleep();
+            const modelReady = await ensureInvalidatedModelReloaded();
+            if (!modelReady) {
+                keepProtectedAfterRestoreFailure();
+                return false;
+            }
+            clearModelReloadProtection();
+            window.dispatchEvent(new CustomEvent('live2d-return-click', {
+                detail: { source: 'game_mode_auto', reason: reason },
+            }));
+            clientState.autoSwitched = false;
+            clientState.currentCycleId = null;
+            return true;
+        } finally {
+            clientState.restoringFromDisable = false;
+        }
+    }
+
+    async function handleLifecycleMessage(payload) {
         if (!payload || payload.source !== 'game_mode_auto') return;
         if (payload.type === 'game_mode_switch_confirmed') {
             if (payload.cycle_id !== clientState.currentCycleId) return;
@@ -634,20 +656,14 @@
             }
         } else if (payload.type === 'game_mode_switch_failed') {
             if (payload.cycle_id !== clientState.currentCycleId) return;
+            let restored = true;
             if (clientState.autoSwitched && isCatFormActive()) {
-                clearModelReloadProtection();
-                clientState.restoringFromDisable = true;
-                try {
-                    window.dispatchEvent(new CustomEvent('live2d-return-click', {
-                        detail: { source: 'game_mode_auto', reason: 'game-mode-switch-failed' },
-                    }));
-                } finally {
-                    clientState.restoringFromDisable = false;
-                    leaveDeepSleep();
-                }
+                restored = await restoreAfterBackendLifecycle('game-mode-switch-failed');
             }
-            clientState.autoSwitched = false;
-            clientState.currentCycleId = null;
+            if (restored) {
+                clientState.autoSwitched = false;
+                clientState.currentCycleId = null;
+            }
             showNotice(t(
                 'settings.gameModeBeta.switchFailed',
                 '切换到猫猫形态失败，稍后会重新完整确认。'
@@ -659,18 +675,7 @@
             const host = clientState.hostContract;
             if (targetIds.length && host && !targetIds.includes(host.petInstanceId)) return;
             if (clientState.autoSwitched && isCatFormActive()) {
-                clearModelReloadProtection();
-                clientState.restoringFromDisable = true;
-                try {
-                    window.dispatchEvent(new CustomEvent('live2d-return-click', {
-                        detail: { source: 'game_mode_auto', reason: payload.reason || 'game-mode-restore' },
-                    }));
-                } finally {
-                    clientState.restoringFromDisable = false;
-                    clientState.autoSwitched = false;
-                    clientState.currentCycleId = null;
-                    leaveDeepSleep();
-                }
+                await restoreAfterBackendLifecycle(payload.reason || 'game-mode-restore');
             }
         } else if (payload.type === 'game_mode_semantic_signal_unavailable') {
             showNotice(t(
@@ -753,7 +758,7 @@
             handleAutoSwitchEvent(event && event.detail);
         });
         window.addEventListener('neko:game-mode-beta-message', function (event) {
-            handleLifecycleMessage(event && event.detail);
+            void handleLifecycleMessage(event && event.detail);
         });
         window.addEventListener('live2d-goodbye-click', function (event) {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
