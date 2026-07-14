@@ -1243,6 +1243,74 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
+            installed_folder = Path(td) / "casefold_conflict_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+
+            for filename, payload in {
+                "upper.chara.json": {"档案名": "N.E.K.O", "昵称": "历史点号角色"},
+                "lower.chara.json": {"档案名": "n.e.k.o", "昵称": "大小写冲突角色"},
+            }.items():
+                (installed_folder / filename).write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["skipped"] >= 1
+            current_catgirls = cm.load_characters().get("猫娘", {})
+            assert sorted(name.casefold() for name in current_catgirls) == sorted(
+                {name.casefold() for name in current_catgirls}
+            )
+            assert {"N.E.K.O", "n.e.k.o"} & set(current_catgirls)
+            assert not {"N.E.K.O", "n.e.k.o"} <= set(current_catgirls)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_is_unavailable(monkeypatch):
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

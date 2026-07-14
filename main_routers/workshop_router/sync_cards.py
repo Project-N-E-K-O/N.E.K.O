@@ -53,6 +53,19 @@ _ugc_sync_lock = asyncio.Lock()
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
+def _find_casefold_conflict_name(existing_names, candidate_name: str) -> str | None:
+    candidate = str(candidate_name or "").strip()
+    if not candidate:
+        return None
+    candidate_casefold = candidate.casefold()
+    for existing_name in existing_names:
+        normalized_existing = str(existing_name or "").strip()
+        if not normalized_existing or normalized_existing == candidate:
+            continue
+        if normalized_existing.casefold() == candidate_casefold:
+            return normalized_existing
+    return None
+
 async def sync_workshop_character_cards(
     target_item_id: str | int | None = None,
     restore_deleted: bool = False,
@@ -281,6 +294,19 @@ async def sync_workshop_character_cards(
                                         item_id,
                                     )
                                     continue
+                            conflict_name = _find_casefold_conflict_name(
+                                characters.get('猫娘', {}).keys(),
+                                chara_name,
+                            )
+                            if conflict_name is not None:
+                                skipped_count += 1
+                                logger.warning(
+                                    "sync_workshop_character_cards: 跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold，物品 %s）",
+                                    chara_name,
+                                    conflict_name,
+                                    item_id,
+                                )
+                                continue
                             chara_file_stem = Path(chara_file_path).name[:-11]
                             preview_image_path = find_preview_image_in_folder(
                                 installed_folder,
@@ -484,9 +510,14 @@ async def sync_workshop_character_cards(
                     skipped_due_to_race_count = 0
                     for pending_name, pending_payload in pending_added_catgirls.items():
                         pending_name_is_deleted = pending_name in latest_deleted_character_names
+                        conflict_name = _find_casefold_conflict_name(
+                            latest_catgirls.keys(),
+                            pending_name,
+                        )
                         if (
                             (pending_name_is_deleted and not restore_deleted)
                             or pending_name in latest_catgirls
+                            or conflict_name is not None
                         ):
                             skipped_due_to_race_count += 1
                             if pending_name in latest_catgirls:
@@ -500,6 +531,12 @@ async def sync_workshop_character_cards(
                                     )
                                 ):
                                     confirmed_recoverable_existing_names.add(pending_name)
+                            elif conflict_name is not None:
+                                logger.warning(
+                                    "sync_workshop_character_cards: 保存前跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold）",
+                                    pending_name,
+                                    conflict_name,
+                                )
                             continue
                         latest_catgirls[pending_name] = pending_payload
                         actually_added_count += 1
