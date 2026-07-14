@@ -282,7 +282,7 @@ const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
 const _NEKO_IDLE_CAT1_CHAT_GAP_PX = 24;
 const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
-const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
+const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0;
 // GNOME Wayland 的自带毛球发布真实的 58px 可见区域。CAT1 与毛球素材仍使用
 // 各自的透明画布，因此这一条路径按素材坐标计算接触点，再应用实机截图校准。
 const _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX = 116;
