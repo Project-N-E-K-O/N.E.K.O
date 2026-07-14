@@ -19,7 +19,7 @@ from typing import Literal
 
 
 AsrProviderCategory = Literal["dummy", "ws_streaming", "segmented_request"]
-AsrEndpointingMode = Literal["manual", "server_vad"]
+AsrEndpointingMode = Literal["manual", "provider"]
 AsrImplementationStatus = Literal[
     "implemented",
     "planned",
@@ -35,6 +35,7 @@ class AsrCoreRoute:
     provider_key: str
     credential_field: str
     region: Literal["cn", "intl"] | None = None
+    default_endpointing_mode: AsrEndpointingMode = "manual"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
     "grok": AsrCoreRoute(
         provider_key="grok",
         credential_field="ASSIST_API_KEY_GROK",
+        default_endpointing_mode="provider",
     ),
     "glm": AsrCoreRoute(
         provider_key="glm",
@@ -103,7 +105,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
-        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
+        supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="blocked_credentials",
     ),
     "openai": AsrProviderMeta(
@@ -119,7 +121,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
-        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
+        supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="blocked_credentials",
     ),
     "grok": AsrProviderMeta(
@@ -127,7 +129,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
-        supported_endpointing_modes=frozenset({"server_vad"}),
+        supported_endpointing_modes=frozenset({"provider"}),
         implementation_status="blocked_credentials",
     ),
     "glm": AsrProviderMeta(

@@ -77,7 +77,7 @@ def _step_session_update(
     config: AsrSessionConfig,
     language: str | None,
 ) -> dict[str, Any]:
-    if config.endpointing_mode not in ("manual", "server_vad"):
+    if config.endpointing_mode not in ("manual", "provider"):
         raise ValueError("unsupported Step ASR endpointing mode")
 
     transcription: dict[str, Any] = {
@@ -97,7 +97,7 @@ def _step_session_update(
         },
         "transcription": transcription,
     }
-    if config.endpointing_mode == "server_vad":
+    if config.endpointing_mode == "provider":
         audio_input["turn_detection"] = {"type": "server_vad"}
     return {
         "event_id": _step_event_id(),
@@ -299,7 +299,7 @@ async def _step_receiver(
                 return "error"
 
             if event_type == "input_audio_buffer.speech_started":
-                if config.endpointing_mode != "server_vad":
+                if config.endpointing_mode != "provider":
                     continue
                 item_id = str(event.get("item_id") or "")
                 if not item_id or item_id in state.item_keys:
