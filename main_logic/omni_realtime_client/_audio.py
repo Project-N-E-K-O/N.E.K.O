@@ -62,18 +62,33 @@ class _AudioMixin:
         Asynchronously process audio chunk using RNNoise in a separate thread.
         This prevents blocking the main event loop during heavy calculation.
         """
-        if self._audio_processor is None:
-            return audio_chunk
-
         async with self._audio_processing_lock:
+            processor = self._audio_processor
+            if processor is None:
+                return audio_chunk
             # Use run_in_executor to offload heavy processing
             # None = use default ThreadPoolExecutor
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(
-                None, 
-                self._audio_processor.process_chunk, 
-                audio_chunk
+                None,
+                processor.process_chunk,
+                audio_chunk,
             )
+
+    async def _close_audio_processor(self) -> None:
+        """Quiesce executor processing before releasing RNNoise/soxr state."""
+        async with self._audio_processing_lock:
+            processor = self._audio_processor
+            if processor is None:
+                return
+            try:
+                processor.save_debug_audio()
+            except Exception as exc:
+                logger.error(f"Error saving debug audio: {exc}")
+            try:
+                processor.close()
+            finally:
+                self._audio_processor = None
 
     async def _check_silence_timeout(self):
         """Periodically check whether the silence timeout has been exceeded; if so, trigger the timeout callback"""

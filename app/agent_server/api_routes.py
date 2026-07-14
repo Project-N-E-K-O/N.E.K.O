@@ -625,7 +625,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         old_flags.get("browser_use_enabled", False)
         and not Modules.agent_flags.get("browser_use_enabled", False)
     ):
-        await _close_browser_use_adapter()
+        _create_tracked_task(_close_browser_use_adapter())
 
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)

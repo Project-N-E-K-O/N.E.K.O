@@ -79,6 +79,49 @@ async def test_browser_use_enable_returns_without_constructing_adapter(
 
 
 @pytest.mark.asyncio
+async def test_browser_use_disable_schedules_close_outside_flag_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_flags = dict(modules.agent_flags)
+    original_notification = modules.notification
+    scheduled = []
+    close_calls = []
+
+    async def _close_adapter():
+        close_calls.append(True)
+
+    async def _ignore_status_update(*_args, **_kwargs):
+        return None
+
+    def _capture_task(coro):
+        scheduled.append(coro)
+        return None
+
+    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
+    monkeypatch.setattr(api_routes, "_close_browser_use_adapter", _close_adapter)
+    monkeypatch.setattr(api_routes, "_create_tracked_task", _capture_task)
+    monkeypatch.setattr(api_routes, "_emit_agent_status_update", _ignore_status_update)
+    modules.agent_flags["browser_use_enabled"] = True
+    try:
+        result = await api_routes.set_agent_flags(
+            {"browser_use_enabled": False, "_persist_intent": False}
+        )
+
+        assert result["success"] is True
+        assert modules.agent_flags["browser_use_enabled"] is False
+        assert close_calls == []
+        assert len(scheduled) == 1
+
+        await scheduled[0]
+        assert close_calls == [True]
+    finally:
+        modules.agent_flags.clear()
+        modules.agent_flags.update(original_flags)
+        modules.notification = original_notification
+
+
+@pytest.mark.asyncio
 async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

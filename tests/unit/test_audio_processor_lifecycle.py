@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-import numpy as np
+import asyncio
+import threading
 
+import numpy as np
+import pytest
+
+from main_logic.omni_realtime_client import OmniRealtimeClient
 from utils.audio_processor import AudioProcessor, _LiteDenoiser
 
 
@@ -75,3 +80,42 @@ def test_disabling_noise_reduction_releases_native_denoiser() -> None:
     assert denoiser.close_calls == 1
     assert processor._denoiser is None
     assert processor._frame_buffer.size == 0
+
+
+@pytest.mark.asyncio
+async def test_audio_close_waits_for_executor_chunk_processing() -> None:
+    processing_started = threading.Event()
+    release_processing = threading.Event()
+
+    class _Processor:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def process_chunk(self, audio_chunk: bytes) -> bytes:
+            processing_started.set()
+            assert release_processing.wait(timeout=2.0)
+            return audio_chunk
+
+        def save_debug_audio(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = object.__new__(OmniRealtimeClient)
+    processor = _Processor()
+    client._audio_processor = processor
+    client._audio_processing_lock = asyncio.Lock()
+
+    process_task = asyncio.create_task(client.process_audio_chunk_async(b"chunk"))
+    assert await asyncio.to_thread(processing_started.wait, 2.0)
+    close_task = asyncio.create_task(client._close_audio_processor())
+    await asyncio.sleep(0)
+
+    assert processor.close_calls == 0
+    release_processing.set()
+
+    assert await process_task == b"chunk"
+    await close_task
+    assert processor.close_calls == 1
+    assert client._audio_processor is None
