@@ -173,6 +173,7 @@ from utils.web_scraper import (
     fetch_window_context_content, format_window_context_content,
     fetch_video_content, format_video_content,
     fetch_news_content, format_news_content,
+    fetch_tieba_content, format_tieba_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content
@@ -1173,6 +1174,17 @@ async def proactive_chat(request: Request):
                 links = _extract_links_from_raw(mode, news_content)
                 return (mode, {'formatted_content': formatted, 'raw_data': news_content, 'links': links})
             
+            elif mode == 'tieba':
+                tieba_content = await fetch_tieba_content(
+                    limit=_PHASE1_FETCH_PER_SOURCE,
+                    candidate_limit=max(_PHASE1_FETCH_PER_SOURCE * 4, 20),
+                )
+                if not tieba_content['success']:
+                    raise ValueError(f"fetch Tieba posts failed: {tieba_content.get('error')}")
+                formatted = format_tieba_content(tieba_content)
+                links = _extract_links_from_raw(mode, tieba_content)
+                return (mode, {'formatted_content': formatted, 'raw_data': tieba_content, 'links': links})
+
             elif mode == 'video':
                 video_content = await fetch_video_content(limit=_PHASE1_FETCH_PER_SOURCE)
                 if not video_content['success']:

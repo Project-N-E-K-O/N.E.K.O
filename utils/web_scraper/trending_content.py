@@ -21,7 +21,7 @@ from utils.external_http_client import get_external_http_client
 import random
 import re
 from typing import TYPE_CHECKING, Dict, List, Any
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
@@ -774,6 +774,367 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
         non_china_log_msg="检测到非中文区域，获取Twitter热门话题"
     )
 
+_TIEBA_DEFAULT_BARS = ("原神", "明日方舟", "崩坏星穹铁道", "steam", "minecraft")
+_TIEBA_HOT_TOPIC_URL = "https://tieba.baidu.com/hottopic/browse/topicList"
+_TIEBA_LOW_QUALITY_RE = re.compile(
+    r"(同城|人到付款|外围|约\s*吗|相\s*约|上门|招募吧主|撤销.*吧主|吧主管理权限|"
+    r"点击这里提交贴吧bug|贷款|兼职|代练接单|加群|私聊|vx|微信|qq|资源合集|"
+    r"全集|完结|4k|网盘|你懂的|软件可以直接|哪里都有|水楼|水贴|建个楼水|"
+    r"氵|灌水|闲聊楼|记录楼|直播.*记录|打卡|签到|集中贴|专楼|长期楼|镇楼|"
+    r"公告|吧务|交易|出物|收物|拼车|代购|擦边)",
+    re.IGNORECASE,
+)
+_TIEBA_CONVERSATION_RE = re.compile(
+    r"(如何评价|为什么|有没有|感觉|建议|版本|角色|剧情|机制|强度|攻略|新手|问题|讨论|"
+    r"怎么看|怎么|求助|推荐|分析|体验|变化|更新)",
+    re.IGNORECASE,
+)
+
+
+def _tieba_limit(limit: int) -> int:
+    try:
+        return max(1, min(int(limit), 10))
+    except Exception:
+        return 5
+
+
+def _tieba_candidate_limit(limit: int | None, fallback: int) -> int:
+    try:
+        value = int(limit) if limit is not None else int(fallback)
+    except Exception:
+        value = fallback
+    return max(1, min(value, 50))
+
+
+def _clean_tieba_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _safe_tieba_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _tieba_heat_score(item: dict[str, Any]) -> float:
+    return _safe_tieba_int(item.get("reply_num")) * 3 + _safe_tieba_int(item.get("view_num")) / 100
+
+
+def _tieba_conversation_score(item: dict[str, Any]) -> float:
+    text = f"{_clean_tieba_text(item.get('title'))} {_clean_tieba_text(item.get('abstract'))}"
+    score = 0.0
+    if _TIEBA_CONVERSATION_RE.search(text):
+        score += 250.0
+    title_len = len(_clean_tieba_text(item.get("title")))
+    if 8 <= title_len <= 40:
+        score += 40.0
+    if title_len <= 4:
+        score -= 80.0
+    return score
+
+
+def _tieba_sort_priority(item: dict[str, Any]) -> int:
+    if item.get("type") == "post" and item.get("origin") == "bar":
+        return 2
+    if item.get("type") == "post":
+        return 1
+    return 0
+
+
+def _tieba_rank_key(item: dict[str, Any]) -> tuple[int, float, float]:
+    return (_tieba_sort_priority(item), _tieba_conversation_score(item), _tieba_heat_score(item))
+
+
+def _is_low_quality_tieba_item(item: dict[str, Any], *, check_interaction: bool = True) -> bool:
+    title = _clean_tieba_text(item.get("title"))
+    abstract = _clean_tieba_text(item.get("abstract"))
+    if not title:
+        return True
+    if item.get("is_top"):
+        return True
+    if _TIEBA_LOW_QUALITY_RE.search(f"{title} {abstract}"):
+        return True
+    if check_interaction and _safe_tieba_int(item.get("reply_num")) < 1 and _safe_tieba_int(item.get("view_num")) < 100:
+        return True
+    return False
+
+
+def _diversify_tieba_posts(posts: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[str] = set()
+    used_bars: set[str] = set()
+
+    for post in posts:
+        bar_name = _clean_tieba_text(post.get("bar_name"))
+        key = _clean_tieba_text(post.get("tid")) or _clean_tieba_text(post.get("url"))
+        if not key or not bar_name or bar_name in used_bars:
+            continue
+        selected.append(post)
+        selected_keys.add(key)
+        used_bars.add(bar_name)
+        if len(selected) >= limit:
+            return selected
+
+    for post in posts:
+        key = _clean_tieba_text(post.get("tid")) or _clean_tieba_text(post.get("url"))
+        if not key or key in selected_keys:
+            continue
+        selected.append(post)
+        selected_keys.add(key)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _get_aiotieba_client_class():
+    import aiotieba
+
+    return aiotieba.Client
+
+
+def _tieba_thread_to_post(thread: Any, bar_name: str) -> dict[str, Any] | None:
+    tid = _clean_tieba_text(getattr(thread, "tid", ""))
+    title = _clean_tieba_text(getattr(thread, "title", ""))
+    if not tid or not title:
+        return None
+    text = _clean_tieba_text(getattr(thread, "text", ""))
+    post = {
+        "title": title,
+        "url": f"https://tieba.baidu.com/p/{tid}",
+        "abstract": text,
+        "source": "贴吧",
+        "bar_name": bar_name,
+        "reply_num": _safe_tieba_int(getattr(thread, "reply_num", 0)),
+        "view_num": _safe_tieba_int(getattr(thread, "view_num", 0)),
+        "is_top": bool(getattr(thread, "is_top", False)),
+        "tid": tid,
+        "type": "post",
+        "origin": "bar",
+    }
+    if _is_low_quality_tieba_item(post):
+        return None
+    return post
+
+
+async def _fetch_tieba_bar_posts(bar_name: str, *, rn: int) -> list[dict[str, Any]]:
+    Client = _get_aiotieba_client_class()
+    async with Client() as client:
+        threads = await client.get_threads(bar_name, pn=1, rn=rn)
+    err = getattr(threads, "err", None)
+    if err:
+        raise RuntimeError(str(err))
+    posts: list[dict[str, Any]] = []
+    for thread in list(threads or []):
+        post = _tieba_thread_to_post(thread, bar_name)
+        if post:
+            posts.append(post)
+    return posts
+
+
+def _tieba_topic_from_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    title = _clean_tieba_text(item.get("topic_name") or item.get("title"))
+    url = _clean_tieba_text(item.get("topic_url") or item.get("url"))
+    if not title or not url:
+        return None
+    topic = {
+        "title": title,
+        "url": url,
+        "abstract": _clean_tieba_text(item.get("topic_desc") or item.get("abstract")),
+        "source": "贴吧",
+        "bar_name": _clean_tieba_text(item.get("forum_name") or ""),
+        "reply_num": _safe_tieba_int(item.get("discuss_num")),
+        "view_num": _safe_tieba_int(item.get("idx_num")),
+        "is_top": False,
+        "topic_id": _clean_tieba_text(item.get("topic_id")),
+        "type": "topic",
+    }
+    if _is_low_quality_tieba_item(topic, check_interaction=False):
+        return None
+    return topic
+
+
+async def _fetch_tieba_hot_topics(limit: int) -> list[dict[str, Any]]:
+    client = get_external_http_client()
+    response = await client.get(
+        _TIEBA_HOT_TOPIC_URL,
+        headers={
+            "User-Agent": get_random_user_agent(),
+            "Referer": "https://tieba.baidu.com/",
+            "Accept": "application/json,text/plain,*/*",
+        },
+        timeout=5.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    topic_list = (
+        ((data or {}).get("bang_topic") or {}).get("topic_list")
+        or ((data or {}).get("topic_list"))
+        or []
+    )
+    topics: list[dict[str, Any]] = []
+    for item in topic_list:
+        if not isinstance(item, dict):
+            continue
+        topic = _tieba_topic_from_item(item)
+        if topic:
+            topics.append(topic)
+        if len(topics) >= max(1, limit):
+            break
+    return topics
+
+
+def _extract_post_links_from_topic_html(html: str, topic: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    posts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for match in re.finditer(r'href=["\'](?P<href>(?:https?:)?//tieba\.baidu\.com/p/\d+|/p/\d+)[^"\']*["\'][^>]*>(?P<title>.*?)</a>', html or "", re.I | re.S):
+        href = match.group("href")
+        url = urljoin("https://tieba.baidu.com", href)
+        tid_match = re.search(r"/p/(\d+)", url)
+        tid = tid_match.group(1) if tid_match else ""
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        raw_title = re.sub(r"<[^>]+>", "", match.group("title") or "")
+        title = _clean_tieba_text(raw_title) or _clean_tieba_text(topic.get("title"))
+        post = {
+            "title": title,
+            "url": f"https://tieba.baidu.com/p/{tid}",
+            "abstract": _clean_tieba_text(topic.get("abstract")),
+            "source": "贴吧",
+            "bar_name": _clean_tieba_text(topic.get("bar_name")) or "热榜",
+            "reply_num": _safe_tieba_int(topic.get("reply_num")),
+            "view_num": _safe_tieba_int(topic.get("view_num")),
+            "is_top": False,
+            "tid": tid,
+            "type": "post",
+            "origin": "hot_topic",
+        }
+        if not _is_low_quality_tieba_item(post, check_interaction=False):
+            posts.append(post)
+        if len(posts) >= limit:
+            break
+    return posts
+
+
+async def _fetch_tieba_topic_posts(topics: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if not topics or limit <= 0:
+        return []
+    client = get_external_http_client()
+    posts: list[dict[str, Any]] = []
+    for topic in topics[:3]:
+        url = _clean_tieba_text(topic.get("url"))
+        if not url:
+            continue
+        try:
+            response = await client.get(
+                url,
+                headers={"User-Agent": get_random_user_agent(), "Referer": "https://tieba.baidu.com/"},
+                timeout=5.0,
+                follow_redirects=True,
+            )
+            if response.status_code >= 400:
+                continue
+            posts.extend(_extract_post_links_from_topic_html(response.text, topic, limit - len(posts)))
+        except Exception as exc:
+            logger.debug(f"Tieba hot topic page parse failed: {exc}")
+        if len(posts) >= limit:
+            break
+    return posts
+
+
+def _dedupe_tieba_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in items:
+        key = _clean_tieba_text(item.get("tid")) or _clean_tieba_text(item.get("url"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+async def fetch_tieba_content(
+    keyword: str = "",
+    limit: int = 5,
+    candidate_limit: int | None = None,
+) -> Dict[str, Any]:
+    """
+    Fetch public Tieba community material for proactive chat.
+
+    This is intentionally login-free and read-only: it reads hot topics and
+    public forum thread lists, never cookies, floor details, or account state.
+    """
+    normalized_limit = _tieba_limit(limit)
+    normalized_candidate_limit = _tieba_candidate_limit(candidate_limit, normalized_limit)
+    clean_keyword = _clean_tieba_text(keyword)
+    bars = []
+    if clean_keyword:
+        bars.append(clean_keyword)
+    for bar in _TIEBA_DEFAULT_BARS:
+        if bar not in bars:
+            bars.append(bar)
+    query = f"tieba bars: {', '.join(bars)}; hot_topics"
+    errors: list[str] = []
+
+    bar_tasks = [
+        _fetch_tieba_bar_posts(bar, rn=max(normalized_candidate_limit * 2, 20))
+        for bar in bars
+    ]
+    bar_results = await asyncio.gather(*bar_tasks, return_exceptions=True)
+    posts: list[dict[str, Any]] = []
+    for bar, result in zip(bars, bar_results):
+        if isinstance(result, Exception):
+            errors.append(f"{bar}: {result}")
+            logger.debug(f"Tieba bar fetch failed [{bar}]: {result}")
+            continue
+        posts.extend(result)
+
+    topics: list[dict[str, Any]] = []
+    try:
+        topics = await _fetch_tieba_hot_topics(limit=max(normalized_candidate_limit, 8))
+    except Exception as exc:
+        errors.append(f"hot_topics: {exc}")
+        logger.debug(f"Tieba hot topic fetch failed: {exc}")
+
+    if topics:
+        try:
+            posts.extend(await _fetch_tieba_topic_posts(topics, limit=normalized_candidate_limit))
+        except Exception as exc:
+            logger.debug(f"Tieba hot topic post extraction failed: {exc}")
+
+    posts = _dedupe_tieba_items(posts)
+    posts.sort(key=_tieba_rank_key, reverse=True)
+    posts = _diversify_tieba_posts(posts, normalized_candidate_limit)
+    topics = _dedupe_tieba_items(topics)
+    topics.sort(key=lambda item: (_tieba_conversation_score(item), _tieba_heat_score(item)), reverse=True)
+    topics = topics[:normalized_candidate_limit]
+
+    success = bool(posts or topics)
+    result: Dict[str, Any] = {
+        "success": success,
+        "query": query,
+        "tieba": {"success": success, "posts": posts, "topics": topics},
+        "posts": posts,
+        "topics": topics,
+        "display_limit": normalized_limit,
+        "candidate_limit": normalized_candidate_limit,
+    }
+    if not success:
+        result["error"] = "; ".join(errors) if errors else "未找到可用贴吧帖子或热榜话题"
+        result["formatted_content"] = ""
+        return result
+
+    result["formatted_content"] = format_tieba_content(result)
+    if errors:
+        result["warnings"] = errors
+    return result
+
+
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
     """Format the Bilibili video list"""
     output_lines = ["【B站首页推荐】"]
@@ -936,3 +1297,54 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
             output_lines = _format_twitter_trending(trending_list)
             return "\n".join(output_lines)
         return "Unable to fetch trending topics at the moment"
+
+
+def format_tieba_content(tieba_content: Dict[str, Any]) -> str:
+    """Format Tieba public post candidates into prompt-ready text."""
+    if not tieba_content.get("success"):
+        return "\u6682\u65f6\u65e0\u6cd5\u83b7\u53d6\u8d34\u5427\u70ed\u95e8\u5e16\u5b50"
+    posts = tieba_content.get("posts") or (tieba_content.get("tieba") or {}).get("posts") or []
+    topics = tieba_content.get("topics") or (tieba_content.get("tieba") or {}).get("topics") or []
+    if not posts and not topics:
+        return "\u6682\u65f6\u6ca1\u6709\u53ef\u7528\u7684\u8d34\u5427\u5e16\u5b50"
+    display_limit = _tieba_limit(tieba_content.get("display_limit") or len(posts) or len(topics) or 5)
+
+    output_lines = ["\u3010\u8d34\u5427\u70ed\u95e8\u5e16\u5b50\uff08\u793e\u533a\u8ba8\u8bba\uff0c\u975e\u6743\u5a01\u4fe1\u606f\uff09\u3011"]
+    for i, post in enumerate(posts[:display_limit], 1):
+        title = str(post.get("title") or "").strip()
+        if not title:
+            continue
+        bar_name = str(post.get("bar_name") or "").strip()
+        reply_num = _safe_tieba_int(post.get("reply_num"))
+        view_num = _safe_tieba_int(post.get("view_num"))
+        meta_parts = []
+        if bar_name:
+            meta_parts.append(f"{bar_name}吧")
+        if reply_num:
+            meta_parts.append(f"{reply_num}回复")
+        if view_num:
+            meta_parts.append(f"{view_num}浏览")
+        meta = f"（{'｜'.join(meta_parts)}）" if meta_parts else ""
+        output_lines.append(f"{i}. {title}{meta}")
+        abstract = str(post.get("abstract") or "").strip()
+        if abstract:
+            output_lines.append(f"   {abstract[:180]}")
+        url = str(post.get("url") or "").strip()
+        if url:
+            output_lines.append(f"   {url}")
+    if topics:
+        output_lines.append("【贴吧热榜话题补充】")
+        topic_limit = max(0, display_limit - min(len(posts), display_limit)) or min(2, display_limit)
+        for i, topic in enumerate(topics[:topic_limit], 1):
+            title = str(topic.get("title") or "").strip()
+            url = str(topic.get("url") or "").strip()
+            if not title or not url:
+                continue
+            discuss_num = _safe_tieba_int(topic.get("reply_num"))
+            suffix = f"（{discuss_num}讨论）" if discuss_num else ""
+            output_lines.append(f"{i}. {title}{suffix}")
+            abstract = str(topic.get("abstract") or "").strip()
+            if abstract:
+                output_lines.append(f"   {abstract[:180]}")
+            output_lines.append(f"   {url}")
+    return "\n".join(output_lines)

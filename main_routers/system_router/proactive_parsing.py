@@ -29,7 +29,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
     args:
-    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'music'
+    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'tieba', 'music'
     - raw_data: raw web data
     returns:
     - list[dict]: list of link info entries, each containing 'title', 'url' and 'source' fields
@@ -121,6 +121,15 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                     url = d.get('url', '')
                     if title and url:
                         links.append({'title': title, 'url': url, 'source': 'Twitter'})
+
+        elif mode == 'tieba':
+            posts = raw_data.get('posts', []) or (raw_data.get('tieba', {}) or {}).get('posts', [])
+            topics = raw_data.get('topics', []) or (raw_data.get('tieba', {}) or {}).get('topics', [])
+            for item in list(posts or []) + list(topics or []):
+                title = item.get('title', '')
+                url = item.get('url', '')
+                if title and url:
+                    links.append({'title': title, 'url': url, 'source': '\u8d34\u5427'})
 
         elif mode == 'music':
             items = raw_data.get('data', [])
