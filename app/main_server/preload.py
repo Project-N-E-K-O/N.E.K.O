@@ -23,14 +23,14 @@ logger = runtime.logger
 
 
 async def _background_preload():
-    """Preload audio processing modules in the background
+    """Preload translation libraries, dashscope, and httpx in the background.
 
     Note: no Event-based synchronization is needed, because Python's import lock
-    automatically waits for the first import to finish. If the user clicks voice
-    before preloading completes, the second import simply blocks until ready.
+    automatically waits for the first import to finish. A concurrent first use
+    simply blocks until the corresponding import is ready.
     """
     try:
-        logger.info("🔄 后台预加载音频处理模块...")
+        logger.info("🔄 后台预加载翻译与网络模块...")
         # 在线程池中执行同步导入（避免阻塞事件循环）
         import concurrent.futures
 
@@ -38,7 +38,7 @@ async def _background_preload():
         with concurrent.futures.ThreadPoolExecutor() as pool:
             await loop.run_in_executor(pool, _sync_preload_modules)
     except Exception as e:
-        logger.warning(f"⚠️ 音频处理模块预加载失败（不影响使用）: {e}")
+        logger.warning(f"⚠️ 翻译与网络模块预加载失败（不影响使用）: {e}")
 
 
 def _sync_preload_modules():

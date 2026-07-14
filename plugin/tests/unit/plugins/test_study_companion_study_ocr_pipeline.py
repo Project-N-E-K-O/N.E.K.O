@@ -83,10 +83,11 @@ def test_ocr_pipeline_normalizes_strings_dicts_objects_and_join_fallback(
 
 def test_ocr_pipeline_capture_target_uses_profile_and_resets_backends_on_config_update() -> None:
     capture = _Capture("frame")
+    backend = _Backend([{"text": "hello"}, {"text": "world"}])
     pipeline = StudyOcrPipeline(
         logger=_Logger(),
         config=StudyConfig(ocr_left_inset_ratio=0.2, ocr_capture_backend=CAPTURE_BACKEND_DXCAM),
-        ocr_backend=_Backend([{"text": "hello"}, {"text": "world"}]),
+        ocr_backend=backend,
         capture_backend=capture,
     )
 
@@ -96,7 +97,8 @@ def test_ocr_pipeline_capture_target_uses_profile_and_resets_backends_on_config_
     assert snapshot.status == "ok"
     assert "hello" in snapshot.text
     assert capture.calls[0][1].left_inset_ratio == 0.2
-    assert pipeline._ocr_backend is None
+    assert pipeline._ocr_backend is backend
+    assert pipeline._owns_ocr_backend is False
     assert pipeline._capture_backend is None
 
 

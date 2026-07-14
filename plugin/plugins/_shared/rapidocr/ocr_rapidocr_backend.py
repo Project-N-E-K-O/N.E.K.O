@@ -107,8 +107,8 @@ class RapidOcrBackend:
                         plugin_id=self._plugin_id,
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
+                _acquire_rapidocr_runtime_cache(key)
             self._runtime = runtime
-            _acquire_rapidocr_runtime_cache(key)
             self._runtime_cache_acquired = True
             self._runtime_last_used_at = now
             return runtime

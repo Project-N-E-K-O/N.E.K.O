@@ -20,6 +20,7 @@ Test goals:
 from __future__ import annotations
 
 import asyncio
+import threading
 import types
 
 import pytest
@@ -92,6 +93,10 @@ def service_with_fake_session(monkeypatch):
     svc._session = fake_sess
     svc._tokenizer = object()  # 占位,只要不是 None 就行(不会被调到)
     svc._dim = None  # 不做 Matryoshka 截断
+    svc._load_lock = asyncio.Lock()
+    svc._lifecycle_condition = asyncio.Condition()
+    svc._active_operations = 0
+    svc._closing = False
     return svc, fake_sess, embeddings
 
 
@@ -117,12 +122,74 @@ def test_embedding_service_close_releases_native_owners(service_with_fake_sessio
     svc, _session, embeddings_mod = service_with_fake_session
     svc._state = embeddings_mod.EmbeddingState.READY
 
-    svc.close()
+    asyncio.run(svc.close())
 
     assert svc._session is None
     assert svc._tokenizer is None
     assert svc._state is embeddings_mod.EmbeddingState.CLOSED
     assert asyncio.run(svc.request_load()) is False
+
+
+@pytest.mark.asyncio
+async def test_embedding_close_waits_for_inflight_inference(
+    service_with_fake_session,
+) -> None:
+    svc, _session, embeddings_mod = service_with_fake_session
+    inference_started = threading.Event()
+    release_inference = threading.Event()
+    svc._state = embeddings_mod.EmbeddingState.READY
+
+    def _blocking_inference(_texts):
+        inference_started.set()
+        assert release_inference.wait(timeout=2.0)
+        return [[1.0]]
+
+    svc._infer_blocking = _blocking_inference
+    embed_task = asyncio.create_task(svc.embed("hello"))
+    assert await asyncio.to_thread(inference_started.wait, 2.0)
+    close_task = asyncio.create_task(svc.close())
+    await asyncio.sleep(0)
+
+    assert svc._closing is True
+    assert not close_task.done()
+    release_inference.set()
+
+    assert await embed_task == [1.0]
+    assert await close_task is None
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_embedding_load_cannot_publish_after_close_starts(
+    service_with_fake_session,
+) -> None:
+    svc, _session, embeddings_mod = service_with_fake_session
+    load_started = threading.Event()
+    release_load = threading.Event()
+    svc._state = embeddings_mod.EmbeddingState.INIT
+
+    def _blocking_load() -> None:
+        load_started.set()
+        assert release_load.wait(timeout=2.0)
+        svc._session = object()
+        svc._tokenizer = object()
+
+    svc._load_session_blocking = _blocking_load
+    load_task = asyncio.create_task(svc.request_load())
+    assert await asyncio.to_thread(load_started.wait, 2.0)
+    close_task = asyncio.create_task(svc.close())
+    await asyncio.sleep(0)
+
+    assert svc._closing is True
+    release_load.set()
+
+    assert await load_task is False
+    assert await close_task is None
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
 
 
 def test_short_batch_runs_in_single_bucket(service_with_fake_session):

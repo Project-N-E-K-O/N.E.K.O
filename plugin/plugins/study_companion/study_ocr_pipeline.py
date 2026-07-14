@@ -138,11 +138,12 @@ class StudyOcrPipeline:
         self._executor = None
 
     def _release_owned_ocr_backend(self) -> None:
+        if not self._owns_ocr_backend:
+            return
         backend = self._ocr_backend
-        owns_backend = self._owns_ocr_backend
         self._ocr_backend = None
         self._owns_ocr_backend = True
-        if not owns_backend or backend is None:
+        if backend is None:
             return
         close = getattr(backend, "close", None)
         if callable(close):

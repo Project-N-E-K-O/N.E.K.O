@@ -929,9 +929,9 @@ class EmbeddingService:
          the safe "no embedding" answer for the rest of the process
 
     Thread/coroutine safety: ``request_load()`` is idempotent under
-    concurrent callers thanks to the asyncio.Lock; embedding calls are
-    naturally serialized through ``asyncio.to_thread`` and the
-    onnxruntime session itself releases the GIL during inference.
+    concurrent callers thanks to the asyncio.Lock. Embedding calls may run
+    concurrently; lifecycle leases let shutdown drain them before releasing
+    the ONNX session and tokenizer.
     """
 
     def __init__(
@@ -1016,6 +1016,9 @@ class EmbeddingService:
         self._session = None
         self._tokenizer = None
         self._load_lock = asyncio.Lock()
+        self._lifecycle_condition = asyncio.Condition()
+        self._active_operations = 0
+        self._closing = False
 
         # Decide initial disable conditions (all but model file presence,
         # which we check at load time so a deferred download path can
@@ -1100,41 +1103,54 @@ class EmbeddingService:
         On any failure, transitions to DISABLED and returns False — the
         service stays off for the lifetime of the process.
         """
-        if self._state is EmbeddingState.CLOSED:
+        if not await self._begin_operation():
             return False
-        if self._state in (EmbeddingState.READY, EmbeddingState.DISABLED):
-            return self.is_available()
-
-        async with self._load_lock:
-            if self._state is EmbeddingState.CLOSED:
-                return False
+        try:
             if self._state in (EmbeddingState.READY, EmbeddingState.DISABLED):
                 return self.is_available()
-            self._state = EmbeddingState.LOADING
-            try:
-                await asyncio.to_thread(self._load_session_blocking)
-            except _DisabledError as e:
-                self._mark_disabled(e.reason)
-                return False
-            except Exception as e:  # noqa: BLE001 — any load failure → off
-                logger.warning(
-                    "EmbeddingService: load failed (%s: %s); vectors disabled",
-                    type(e).__name__, e,
-                )
-                self._mark_disabled(_DisableReason.LOAD_ERROR)
-                return False
-            self._state = EmbeddingState.READY
-            logger.info(
-                "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s, avx2=%s)",
-                self.model_id(), self._ram_gb or 0.0, self._has_vnni, self._has_avx2,
-            )
-            return True
 
-    def close(self) -> None:
-        """Drop the native ONNX session/tokenizer references at process shutdown."""
-        self._session = None
-        self._tokenizer = None
-        self._state = EmbeddingState.CLOSED
+            async with self._load_lock:
+                if self._closing or self._state is EmbeddingState.CLOSED:
+                    return False
+                if self._state in (EmbeddingState.READY, EmbeddingState.DISABLED):
+                    return self.is_available()
+                self._state = EmbeddingState.LOADING
+                try:
+                    await asyncio.to_thread(self._load_session_blocking)
+                except _DisabledError as e:
+                    if not self._closing:
+                        self._mark_disabled(e.reason)
+                    return False
+                except Exception as e:  # noqa: BLE001 — any load failure → off
+                    if not self._closing:
+                        logger.warning(
+                            "EmbeddingService: load failed (%s: %s); vectors disabled",
+                            type(e).__name__, e,
+                        )
+                        self._mark_disabled(_DisableReason.LOAD_ERROR)
+                    return False
+                if self._closing or self._state is EmbeddingState.CLOSED:
+                    return False
+                self._state = EmbeddingState.READY
+                logger.info(
+                    "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s, avx2=%s)",
+                    self.model_id(), self._ram_gb or 0.0, self._has_vnni, self._has_avx2,
+                )
+                return True
+        finally:
+            await self._end_operation()
+
+    async def close(self) -> None:
+        """Quiesce requests, then drop the native session/tokenizer references."""
+        async with self._lifecycle_condition:
+            if self._state is EmbeddingState.CLOSED:
+                return
+            self._closing = True
+            while self._active_operations:
+                await self._lifecycle_condition.wait()
+            self._session = None
+            self._tokenizer = None
+            self._state = EmbeddingState.CLOSED
 
     async def embed(self, text: str) -> list[float] | None:
         """Single-text embedding. Returns None when not READY — caller
@@ -1142,18 +1158,24 @@ class EmbeddingService:
         this query."""
         if not text:
             return None
-        if not self.is_available():
+        if not await self._begin_operation():
             return None
         try:
-            vectors = await asyncio.to_thread(self._infer_blocking, [text])
-        except Exception as e:  # noqa: BLE001 — sticky inference failure
-            logger.warning(
-                "EmbeddingService: inference failed (%s: %s); vectors disabled",
-                type(e).__name__, e,
-            )
-            self._mark_disabled(_DisableReason.INFERENCE_ERROR)
-            return None
-        return vectors[0] if vectors else None
+            if not self.is_available():
+                return None
+            try:
+                vectors = await asyncio.to_thread(self._infer_blocking, [text])
+            except Exception as e:  # noqa: BLE001 — sticky inference failure
+                if not self._closing:
+                    logger.warning(
+                        "EmbeddingService: inference failed (%s: %s); vectors disabled",
+                        type(e).__name__, e,
+                    )
+                    self._mark_disabled(_DisableReason.INFERENCE_ERROR)
+                return None
+            return vectors[0] if vectors else None
+        finally:
+            await self._end_operation()
 
     async def embed_batch(self, texts: list[str]) -> list[list[float] | None]:
         """Batch embedding. Empty / None inputs and not-ready service
@@ -1162,30 +1184,51 @@ class EmbeddingService:
         if not texts:
             return []
         result: list[list[float] | None] = [None] * len(texts)
-        if not self.is_available():
-            return result
-        # Filter out empty entries before inference but preserve
-        # positional alignment in the output via index mapping.
-        active_idx: list[int] = []
-        active_texts: list[str] = []
-        for i, t in enumerate(texts):
-            if t:
-                active_idx.append(i)
-                active_texts.append(t)
-        if not active_texts:
+        if not await self._begin_operation():
             return result
         try:
-            vectors = await asyncio.to_thread(self._infer_blocking, active_texts)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "EmbeddingService: batch inference failed (%s: %s); vectors disabled",
-                type(e).__name__, e,
-            )
-            self._mark_disabled(_DisableReason.INFERENCE_ERROR)
+            if not self.is_available():
+                return result
+            # Filter out empty entries before inference but preserve
+            # positional alignment in the output via index mapping.
+            active_idx: list[int] = []
+            active_texts: list[str] = []
+            for i, t in enumerate(texts):
+                if t:
+                    active_idx.append(i)
+                    active_texts.append(t)
+            if not active_texts:
+                return result
+            try:
+                vectors = await asyncio.to_thread(self._infer_blocking, active_texts)
+            except Exception as e:  # noqa: BLE001
+                if not self._closing:
+                    logger.warning(
+                        "EmbeddingService: batch inference failed (%s: %s); vectors disabled",
+                        type(e).__name__, e,
+                    )
+                    self._mark_disabled(_DisableReason.INFERENCE_ERROR)
+                return result
+            for slot, vec in zip(active_idx, vectors):
+                result[slot] = vec
             return result
-        for slot, vec in zip(active_idx, vectors):
-            result[slot] = vec
-        return result
+        finally:
+            await self._end_operation()
+
+    async def _begin_operation(self) -> bool:
+        """Register a request unless shutdown has started."""
+        async with self._lifecycle_condition:
+            if self._closing or self._state is EmbeddingState.CLOSED:
+                return False
+            self._active_operations += 1
+            return True
+
+    async def _end_operation(self) -> None:
+        """Release a request lease and wake a waiting shutdown."""
+        async with self._lifecycle_condition:
+            self._active_operations -= 1
+            if self._active_operations == 0:
+                self._lifecycle_condition.notify_all()
 
     # ── internal: session load / inference ───────────────────────────
 
@@ -1447,13 +1490,14 @@ def reset_embedding_service_for_tests() -> None:
     _VNNI_DECISION_LOGGED = False
 
 
-def release_embedding_service() -> None:
+async def release_embedding_service() -> None:
     """Release the process singleton and its native session references."""
     global _SERVICE
     service = _SERVICE
-    _SERVICE = None
     if service is not None:
-        service.close()
+        await service.close()
+    if _SERVICE is service:
+        _SERVICE = None
 
 
 def _build_default_service() -> EmbeddingService:

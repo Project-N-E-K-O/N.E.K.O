@@ -113,7 +113,8 @@ async def test_browser_use_disable_schedules_close_outside_flag_request(
         assert close_calls == []
         assert len(scheduled) == 1
 
-        await scheduled[0]
+        task_result = await scheduled[0]
+        assert task_result is None
         assert close_calls == [True]
     finally:
         modules.agent_flags.clear()
@@ -134,6 +135,7 @@ async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
 
     class _FakeAdapter:
         def __init__(self) -> None:
+            self._ready_import = True
             self.close_calls = 0
             created.append(self)
 
@@ -163,6 +165,81 @@ async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
     finally:
         modules.browser_use = original_adapter
         modules.task_executor = original_executor
+        modules.browser_use_init_lock = original_lock
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
+async def test_browser_use_failed_import_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_lock = modules.browser_use_init_lock
+    original_capability = dict(modules.capability_cache["browser_use"])
+    created = []
+
+    class _FailedAdapter:
+        def __init__(self) -> None:
+            self._ready_import = False
+            self.last_error = "browser-use import failed"
+            created.append(self)
+
+    monkeypatch.setattr(capabilities, "BrowserUseAdapter", _FailedAdapter)
+    modules.browser_use = None
+    modules.browser_use_init_lock = None
+    try:
+        assert await capabilities._ensure_browser_use_adapter() is None
+        assert await capabilities._ensure_browser_use_adapter() is None
+        assert modules.browser_use is None
+        assert len(created) == 2
+        assert modules.capability_cache["browser_use"]["reason"] == "AGENT_BU_MODULE_NOT_LOADED"
+    finally:
+        modules.browser_use = original_adapter
+        modules.browser_use_init_lock = original_lock
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
+async def test_browser_use_ensure_waits_for_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_lock = modules.browser_use_init_lock
+    original_capability = dict(modules.capability_cache["browser_use"])
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    created = []
+
+    class _FakeAdapter:
+        def __init__(self) -> None:
+            self._ready_import = True
+            created.append(self)
+
+        async def close(self) -> None:
+            close_started.set()
+            await release_close.wait()
+
+    closing_adapter = _FakeAdapter()
+    monkeypatch.setattr(capabilities, "BrowserUseAdapter", _FakeAdapter)
+    modules.browser_use = closing_adapter
+    modules.browser_use_init_lock = None
+    try:
+        close_task = asyncio.create_task(capabilities._close_browser_use_adapter())
+        await close_started.wait()
+        ensure_task = asyncio.create_task(capabilities._ensure_browser_use_adapter())
+        await asyncio.sleep(0)
+
+        assert not ensure_task.done()
+        release_close.set()
+        assert await close_task is None
+        replacement = await ensure_task
+        assert replacement is created[1]
+        assert replacement is not closing_adapter
+    finally:
+        release_close.set()
+        modules.browser_use = original_adapter
         modules.browser_use_init_lock = original_lock
         modules.capability_cache["browser_use"] = original_capability
 

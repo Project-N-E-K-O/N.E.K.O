@@ -66,10 +66,6 @@ def _browser_use_dependency_status() -> tuple[bool, str]:
 
 async def _ensure_browser_use_adapter():
     """Build the heavy BrowserUse adapter only when the feature is requested."""
-    current = _shared.Modules.browser_use
-    if current is not None:
-        return current
-
     if _shared.Modules.browser_use_init_lock is None:
         _shared.Modules.browser_use_init_lock = asyncio.Lock()
 
@@ -81,6 +77,10 @@ async def _ensure_browser_use_adapter():
             current = await asyncio.to_thread(BrowserUseAdapter)
         except Exception as exc:
             logger.error("[Agent] BrowserUseAdapter on-demand init failed: %s", exc)
+            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            return None
+
+        if not getattr(current, "_ready_import", False):
             _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
             return None
 

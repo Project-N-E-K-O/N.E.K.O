@@ -749,7 +749,7 @@ async def shutdown_event_handler():
     try:
         from memory.embeddings import release_embedding_service
 
-        release_embedding_service()
+        await release_embedding_service()
     except Exception as e:
         logger.warning("[Memory] embedding service release 失败: %s", e)
     logger.info("Memory server已关闭")

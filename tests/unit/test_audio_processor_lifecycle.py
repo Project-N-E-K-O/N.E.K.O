@@ -116,6 +116,23 @@ async def test_audio_close_waits_for_executor_chunk_processing() -> None:
     release_processing.set()
 
     assert await process_task == b"chunk"
-    await close_task
+    assert await close_task is None
     assert processor.close_calls == 1
+    assert client._audio_processor is None
+
+
+@pytest.mark.asyncio
+async def test_audio_close_failure_does_not_escape_cleanup() -> None:
+    class _Processor:
+        def save_debug_audio(self) -> None:
+            return None
+
+        def close(self) -> None:
+            raise RuntimeError("native close failed")
+
+    client = object.__new__(OmniRealtimeClient)
+    client._audio_processor = _Processor()
+    client._audio_processing_lock = asyncio.Lock()
+
+    assert await client._close_audio_processor() is None
     assert client._audio_processor is None

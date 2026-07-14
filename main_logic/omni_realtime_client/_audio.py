@@ -87,6 +87,8 @@ class _AudioMixin:
                 logger.error(f"Error saving debug audio: {exc}")
             try:
                 processor.close()
+            except Exception as exc:
+                logger.error(f"Error closing audio processor: {exc}")
             finally:
                 self._audio_processor = None
 
