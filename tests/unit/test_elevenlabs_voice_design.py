@@ -334,7 +334,6 @@ async def test_minimax_design_payload_and_parse():
         voice_id, request_id = await cr._minimax_design_voice(
             api_key="mini-key",
             base_url="https://api.minimax.io",
-            voice_id="aria12345678",
             voice_prompt="a warm clear voice",
             preview_text="hello there",
             http_client=client,
@@ -513,6 +512,9 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     assert saved["storage_key"].startswith("__MINIMAX_INTL__")
     assert saved["voice_data"]["provider"] == "minimax_intl"
     assert saved["voice_data"]["source"] == "design"
+    assert saved["voice_data"]["prefix"] == "aria"
+    assert "original_prefix" not in saved["voice_data"]
+    assert "minimax_prefix" not in saved["voice_data"]
     assert saved["voice_data"]["minimax_base_url"] == "https://api.minimax.io"
 
 

@@ -294,15 +294,13 @@ async def _minimax_design_voice(
     *,
     api_key: str,
     base_url: str,
-    voice_id: str | None = None,
     voice_prompt: str,
     preview_text: str,
     http_client: httpx.AsyncClient | None = None,
 ) -> tuple[str, str | None]:
-    requested_voice_id = (voice_id or "").strip() if voice_id else ""
+    # MiniMax Voice Design assigns voice_id in its response. Unlike voice
+    # cloning, this endpoint does not accept a caller-selected voice ID.
     payload = {"prompt": voice_prompt, "preview_text": preview_text}
-    if requested_voice_id:
-        logger.debug("MiniMax voice design using requested voice_id hint: %s", requested_voice_id)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
