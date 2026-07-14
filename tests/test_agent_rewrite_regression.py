@@ -1961,6 +1961,16 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForTutorialModelHostReady()" in start_round_block
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
+    # round 预留会改变预测结果；direct-boot claim 必须覆盖胶囊 prepare 的异步等待窗口。
+    assert start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);") < start_round_block.index(
+        "await this.prepareYuiGuideCompactChatForTutorial()"
+    )
+    # prepare 期间取消时释放提前 claim，但保留已跳过用户模型的恢复标记。
+    cancellation_release_index = start_round_block.index(
+        "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {"
+    )
+    assert "keepUserModelBootSkipped: true" in start_round_block[cancellation_release_index:]
+    assert "suppressPrediction: true" in start_round_block[cancellation_release_index:]
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
     assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block

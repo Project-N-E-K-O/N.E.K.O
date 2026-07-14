@@ -3742,6 +3742,11 @@ class UniversalTutorialManager {
         this.lockBodyScroll();
 
         try {
+            if (directTutorialBoot) {
+                // 自动 round 已预留后，预测状态可能不再阻止用户模型初始化；必须在任何新的 await
+                // 之前建立 direct-boot claim，覆盖胶囊 prepare 等待窗口，避免用户模型盖住教程模型。
+                this.claimDirectAvatarFloatingTutorialBoot(round, source);
+            }
             // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
             // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
             // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
@@ -3758,6 +3763,14 @@ class UniversalTutorialManager {
                 // skip/远程结束可能发生在 prepare 等待期间；迟到回执刚写入的形态快照
                 // 仍需补恢复，但不能再走 catch 重复 teardown，更不能继续固定布局并启动 director。
                 this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare');
+                if (directTutorialBoot) {
+                    // teardown 已接管取消流程；这里只释放提前建立的 claim，并保留已跳过模型标记，
+                    // 让调用方既有的 result=false recovery 在拆除后恢复用户模型。
+                    this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {
+                        keepUserModelBootSkipped: true,
+                        suppressPrediction: true
+                    });
+                }
                 return false;
             }
             if (!compactChatReady) {
@@ -3769,9 +3782,6 @@ class UniversalTutorialManager {
             this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start');
             this._tutorialModelPrefix = 'live2d';
             this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true });
-            if (directTutorialBoot) {
-                this.claimDirectAvatarFloatingTutorialBoot(round, source);
-            }
 
             const director = this.ensureYuiGuideDirector();
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
