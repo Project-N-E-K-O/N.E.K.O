@@ -33,21 +33,31 @@ Fusion calls an LLM (tens of seconds). The persona per-character lock is **also*
 held while ``/new_dialog`` assembles a live prompt, so the LLM must never run
 inside the lock -- otherwise the character cannot reply during fusion. This
 follows the three-phase shape of ``promotion_merge``:
-  Phase 1 (locked)  : snapshot same-source entries + compute fingerprint; on a hit, idempotent skip
-  Phase 2 (unlocked): run the fusion LLM (tens of seconds)
-  Phase 3 (locked)  : CAS-evict old same-source entries + write the fused result, atomic save
+  Phase 1 (locked)  : snapshot the external-import bucket + folded-fingerprint idempotency check
+  Phase 2 (unlocked): fuse the existing bucket + the new candidates (LLM merges/dedupes across sources)
+  Phase 3 (locked)  : CAS on the folded set, then evict + rewrite the bucket, atomic save
 
-IDEMPOTENCY
------------
+IDEMPOTENCY & MULTI-SOURCE ACCUMULATION
+---------------------------------------
 LLM fusion is non-deterministic; re-importing the same workspace must not grow the
-pool with every import. A stable fingerprint over the entity's candidate set is
-stored on the produced entries; on re-import, same fingerprint -> skip the whole
-batch without calling the LLM (strict idempotent no-op), changed fingerprint ->
-evict the old same-source entries and re-fuse from the original candidates (the
-entry count is pinned by the source's upper bound, so only the wording changes, it
-does not accumulate). Eviction only touches ``source == 'external_import'``
-entries -- protected (character card) / conversational accumulation / reflection
-are all left untouched.
+pool with every import. Each import computes a stable fingerprint over its own
+candidate set, and every produced entry carries a ``folded_fingerprints`` set
+naming the source versions already folded into the bucket. On re-import:
+
+* fingerprint already in the folded set -> strict idempotent no-op (LLM not called);
+* new fingerprint -> **fold**: re-fuse (existing bucket entries + new candidates)
+  into a fresh digest, so a second source (e.g. OpenClaw then Hermes) accumulates
+  instead of clobbering, and cross-source duplicates are merged by the same fusion
+  LLM. The digest is trimmed back to the per-entity budget, so accumulation stays
+  bounded.
+
+A merged digest loses per-source attribution, so re-importing an *edited* version of
+an already-folded source cannot precisely retract its old contribution -- the fusion
+LLM reconciles overlaps, but a contradictory edit may leave residue (an accepted
+trade-off). Everything is keyed on ``source == 'external_import'`` only -- protected
+(character card) / conversational accumulation / reflection entries are never folded
+or evicted. Phase 3 re-checks the folded set (CAS) so a concurrent import cannot be
+silently clobbered.
 """
 from __future__ import annotations
 
@@ -90,8 +100,8 @@ class ExternalMemoryFusionError(RuntimeError):
 
     The caller **must not** fall back to per-entry appends (that would bypass the
     token budget and overflow the pool) -- the original import material is kept so
-    the user can retry; retries are idempotent (same fingerprint -> skip / changed
-    -> replace-then-fuse). Dual to ``FactExtractionFailed``: it distinguishes a
+    the user can retry; retries are idempotent (same fingerprint -> skip / new
+    fingerprint -> re-fold). Dual to ``FactExtractionFailed``: it distinguishes a
     "retriable terminal failure" from "succeeded but empty".
     """
 
@@ -106,10 +116,15 @@ class ExternalFusionMixin:
     async def afuse_external_facts(
         self, name: str, entity: str, candidates: list[dict], source_format: str,
     ) -> dict:
-        """Fuse one entity's external-import candidates into persona (3-phase).
+        """Fold one entity's external-import candidates into persona (3-phase).
 
-        Returns ``{'added': int, 'skipped': int, 'fused': bool}``.
-        Raises ``ExternalMemoryFusionError`` on terminal LLM / parse failure.
+        The existing external-import bucket and the new candidates are fused
+        together, so a second source accumulates (and cross-source duplicates
+        merge) instead of clobbering the first -- see the module IDEMPOTENCY note.
+
+        Returns ``{'added': int, 'skipped': int, 'fused': bool}`` (``added`` is the
+        size of the rewritten bucket). Raises ``ExternalMemoryFusionError`` on
+        terminal LLM / parse failure.
         """
         entity = str(entity or "master")
         budget = _ENTITY_BUDGET.get(entity)
@@ -122,22 +137,28 @@ class ExternalFusionMixin:
 
         fingerprint = self._fusion_fingerprint(cands)
 
-        # ── Phase 1 (locked): 快照同源条目 + 幂等指纹判定 ──
+        # ── Phase 1 (locked): 快照外部导入桶 + folded 指纹幂等判定 ──
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             existing_external = [
                 f for f in self._get_section_facts(persona, entity)
                 if isinstance(f, dict) and f.get("source") == "external_import"
             ]
-            if existing_external and all(
-                (f.get("external_import") or {}).get("fusion_fingerprint") == fingerprint
-                for f in existing_external
-            ):
-                # 同源未变 → 严格幂等 no-op，不进 LLM
+            base_folded = self._collect_folded_fingerprints(existing_external)
+            if fingerprint in base_folded:
+                # 该源此版本已折叠进桶 → 严格幂等 no-op，不进 LLM
                 return {"added": 0, "skipped": len(cands), "fused": False}
+            existing_texts = [
+                str(f.get("text") or "").strip()
+                for f in existing_external
+                if str(f.get("text") or "").strip()
+            ]
 
-        # ── Phase 2 (unlocked): 跑融合 LLM（几十秒，绝不持锁）──
-        fused = await self._allm_call_fusion(name, entity, cands, budget)
+        # ── Phase 2 (unlocked): 融合「已存桶 + 新候选」（几十秒，绝不持锁）──
+        # 新候选放前面：_allm_call_fusion 按 token 上限从尾部截断，优先保住本次
+        # 导入素材；已存桶是既有 digest，边界情形被截也只是少叠加一点旧内容。
+        fold_input = list(cands) + [{"text": t} for t in existing_texts]
+        fused = await self._allm_call_fusion(name, entity, fold_input, budget)
         if fused is None:
             raise ExternalMemoryFusionError(f"persona fusion LLM failed: {name}/{entity}")
         fused = self._trim_fused_to_budget(fused, budget)
@@ -147,8 +168,9 @@ class ExternalFusionMixin:
                 f"persona fusion produced no entries: {name}/{entity}"
             )
 
-        # ── Phase 3 (locked): CAS 剔旧同源 + 写融合结果，原子 save ──
+        # ── Phase 3 (locked): CAS folded 集合 + 剔旧桶 + 写新 digest，原子 save ──
         imported_at = datetime.now().astimezone().isoformat()
+        new_folded = sorted(base_folded | {fingerprint})
         source_files = sorted(
             {str(c.get("source_file") or "") for c in cands if c.get("source_file")}
         )
@@ -157,6 +179,7 @@ class ExternalFusionMixin:
             "files": source_files,
             "section": "fused",
             "fusion_fingerprint": fingerprint,
+            "folded_fingerprints": new_folded,
             "imported_at": imported_at,
             "fused": True,
         }
@@ -164,8 +187,19 @@ class ExternalFusionMixin:
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             section_facts = self._get_section_facts(persona, entity)
-            # 剔旧与写新在同一临界区原子完成——杜绝「剔除后崩溃」把同源条目清空却
-            # 没补回。只剔 external_import 同源，protected / 对话积累 / reflection 不动。
+            current_external = [
+                f for f in section_facts
+                if isinstance(f, dict) and f.get("source") == "external_import"
+            ]
+            # CAS：Phase 2 基于 base_folded 快照融合。若期间并发导入改了外部桶
+            # （folded 集合变了），本次结果陈旧（会丢对方叠加的源）→ 抛可重试错误，
+            # 绝不静默覆盖。同源重导仍走上面的幂等 skip。
+            if self._collect_folded_fingerprints(current_external) != base_folded:
+                raise ExternalMemoryFusionError(
+                    f"persona fusion base changed under concurrent import: {name}/{entity}"
+                )
+            # 剔旧与写新在同一临界区原子完成。只剔 external_import 桶，protected /
+            # 对话积累 / reflection 不动（旧桶内容已折叠进新 digest）。
             section_facts[:] = [
                 f for f in section_facts
                 if not (isinstance(f, dict) and f.get("source") == "external_import")
@@ -189,6 +223,27 @@ class ExternalFusionMixin:
             " ".join(str(c.get("text") or "").casefold().split()) for c in candidates
         )
         return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _collect_folded_fingerprints(entries: list[dict]) -> set[str]:
+        """Union of source fingerprints already folded into these external entries.
+
+        Reads each entry's ``external_import.folded_fingerprints`` list, falling
+        back to the legacy single ``fusion_fingerprint`` for entries written before
+        multi-source folding. Empty set for a fresh (never-imported) bucket.
+        """
+        folded: set[str] = set()
+        for f in entries:
+            if not isinstance(f, dict):
+                continue
+            meta = f.get("external_import") or {}
+            fps = meta.get("folded_fingerprints")
+            if isinstance(fps, list):
+                folded.update(str(x) for x in fps if x)
+            legacy = meta.get("fusion_fingerprint")
+            if legacy:
+                folded.add(str(legacy))
+        return folded
 
     async def _allm_call_fusion(
         self, name: str, entity: str, candidates: list[dict], budget: int,

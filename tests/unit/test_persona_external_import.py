@@ -24,6 +24,12 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
         self.save_count = 0
         self.llm_call_count = 0
         self._stub_fused = stub_fused
+        # Records the candidate list handed to each _allm_call_fusion call, so
+        # tests can assert what got folded (existing bucket + new candidates).
+        self.fusion_inputs: list[list[dict]] = []
+        # Optional hook fired inside _allm_call_fusion (Phase 2, unlocked) to
+        # simulate a concurrent import mutating the bucket before Phase 3's CAS.
+        self.fusion_side_effect = None
 
     def _get_alock(self, _name: str) -> asyncio.Lock:
         return self.lock
@@ -38,6 +44,9 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
         # Deterministic stub — no real LLM. Returns whatever the test configured
         # (a list of {text, importance}) or None to simulate terminal failure.
         self.llm_call_count += 1
+        self.fusion_inputs.append([dict(c) for c in _candidates])
+        if self.fusion_side_effect is not None:
+            self.fusion_side_effect()
         if self._stub_fused is None:
             return None
         # Return a fresh copy so callers can mutate freely.
@@ -184,3 +193,88 @@ async def test_llm_failure_raises_fusion_error():
     # Nothing persisted on terminal failure.
     assert harness.save_count == 0
     assert harness.persona["master"]["facts"] == []
+
+
+@pytest.mark.asyncio
+async def test_second_source_folds_existing_bucket_and_accumulates():
+    # A different source (different candidate set) must accumulate into the bucket
+    # by re-fusing the existing digest together with the new candidates, not
+    # clobber it. The fusion LLM sees both, so cross-source duplicates merge.
+    harness = _FusionHarness(
+        {"master": {"facts": []}},
+        stub_fused=[{"text": "Digest after fold.", "importance": 8}],
+    )
+    cands_a = _candidates("a1", "a2")
+    cands_b = _candidates("b1", "b2")
+    a_fp = ExternalFusionMixin._fusion_fingerprint(cands_a)
+    b_fp = ExternalFusionMixin._fusion_fingerprint(cands_b)
+
+    await harness.afuse_external_facts("Neko", "master", cands_a, "openclaw")
+    assert harness.llm_call_count == 1
+    assert harness.persona["master"]["facts"][0]["external_import"][
+        "folded_fingerprints"
+    ] == [a_fp]
+
+    await harness.afuse_external_facts("Neko", "master", cands_b, "hermes")
+    assert harness.llm_call_count == 2
+
+    # The 2nd fusion folded BOTH the existing digest text AND the new candidates.
+    second_input = {c["text"] for c in harness.fusion_inputs[1]}
+    assert "Digest after fold." in second_input   # existing bucket carried in
+    assert {"b1", "b2"} <= second_input           # new source's candidates
+
+    # Bucket rewritten to the merged digest; folded set names both sources now.
+    facts = harness.persona["master"]["facts"]
+    assert all(f["source"] == "external_import" for f in facts)
+    assert set(facts[0]["external_import"]["folded_fingerprints"]) == {a_fp, b_fp}
+
+
+@pytest.mark.asyncio
+async def test_reimport_any_folded_source_is_idempotent_skip():
+    # After two sources are folded in, re-importing EITHER one (unchanged) is a
+    # strict no-op — no LLM call, bucket untouched — even though the bucket also
+    # holds the other source's material.
+    harness = _FusionHarness(
+        {"master": {"facts": []}},
+        stub_fused=[{"text": "Digest.", "importance": 8}],
+    )
+    cands_a = _candidates("a1", "a2")
+    cands_b = _candidates("b1", "b2")
+    await harness.afuse_external_facts("Neko", "master", cands_a, "openclaw")
+    await harness.afuse_external_facts("Neko", "master", cands_b, "hermes")
+    assert harness.llm_call_count == 2
+
+    r_a = await harness.afuse_external_facts("Neko", "master", cands_a, "openclaw")
+    r_b = await harness.afuse_external_facts("Neko", "master", cands_b, "hermes")
+    assert r_a["fused"] is False and r_b["fused"] is False
+    assert harness.llm_call_count == 2  # no further LLM calls
+    assert len(harness.persona["master"]["facts"]) == 1  # bucket unchanged
+
+
+@pytest.mark.asyncio
+async def test_concurrent_import_change_triggers_cas_and_preserves_state():
+    # A concurrent import that lands while the (unlocked) fusion LLM runs changes
+    # the bucket's folded set. Phase 3's CAS must detect that its Phase-1 snapshot
+    # went stale and bail retriably instead of clobbering the other import.
+    persona = {"master": {"facts": []}}
+    harness = _FusionHarness(persona, stub_fused=[{"text": "my digest", "importance": 5}])
+
+    def inject_concurrent_import():
+        persona["master"]["facts"].append({
+            "text": "concurrently imported",
+            "source": "external_import",
+            "id": "concurrent",
+            "external_import": {"folded_fingerprints": ["CONCURRENT_FP"]},
+        })
+
+    harness.fusion_side_effect = inject_concurrent_import
+
+    with pytest.raises(ExternalMemoryFusionError):
+        await harness.afuse_external_facts(
+            "Neko", "master", _candidates("x"), "openclaw",
+        )
+    # The concurrently-added entry survives; our stale digest was never written.
+    texts = {f["text"] for f in persona["master"]["facts"]}
+    assert "concurrently imported" in texts
+    assert "my digest" not in texts
+    assert harness.save_count == 0
