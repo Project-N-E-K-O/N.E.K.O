@@ -96,7 +96,7 @@ function relationColor(relation?: string) {
 
 function edgeGroups(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
   const labels = new Map(nodes.map((node) => [String(node.id || ''), nodeLabel(node)]));
-  const groups = new Map<string, { from: string; fromId: string; items: Array<{ relation: string; rawRelation: string; to: string; reason: string; priority: string; context: string; confidence: string }> }>();
+  const groups = new Map<string, { from: string; fromId: string; items: Array<{ relation: string; rawRelation: string; to: string; toId: string; reason: string; priority: string; context: string; confidence: string }> }>();
   edges.slice(0, 80).forEach((edge) => {
     const fromId = String(edge.from || '').trim();
     const toId = String(edge.to || '').trim();
@@ -108,6 +108,7 @@ function edgeGroups(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: Kn
       relation: relationLabel(props, edge.relation),
       rawRelation,
       to: labels.get(toId) || toId || '-',
+      toId,
       reason: String(edge.reason || '').trim(),
       priority: String(edge.priority || '').trim(),
       context: String(edge.context || '').trim(),
@@ -119,11 +120,12 @@ function edgeGroups(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: Kn
 }
 
 function edgeGraph(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: KnowledgeEdge[]) {
+  const labels = new Map(nodes.map((node) => [String(node.id || ''), nodeLabel(node)]));
   const graphEdges = edgeGroups(props, nodes, edges)
     .slice(0, 12)
     .flatMap((group) => group.items.slice(0, 6).map((item) => ({
-      from: String(group.from || '').trim(),
-      to: String(item.to || '').trim(),
+      from: String(group.fromId || '').trim(),
+      to: String(item.toId || '').trim(),
       relation: String(item.rawRelation || 'related').trim().toLowerCase(),
       label: item.relation,
     })))
@@ -179,7 +181,7 @@ function edgeGraph(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: Kno
                 color={color}
                 markerEnd="url(#knowledge-edge-arrow-surface)"
               >
-                <title>{edge.from} -&gt; {edge.to}: {edge.label}</title>
+                <title>{labels.get(edge.from) || edge.from} -&gt; {labels.get(edge.to) || edge.to}: {edge.label}</title>
               </path>
             );
           })}
@@ -188,7 +190,7 @@ function edgeGraph(props: PluginSurfaceProps, nodes: KnowledgeNode[], edges: Kno
           {shownIds.map((id) => {
             const position = positions.get(id);
             if (!position) return null;
-            const label = id;
+            const label = labels.get(id) || id;
             return (
               <g key={id} className="knowledge-edge-graph__node" transform={`translate(${position.x - 88} ${position.y - 22})`}>
                 <title>{label}</title>
@@ -234,6 +236,18 @@ export default function KnowledgeMap(props: PluginSurfaceProps) {
       mounted = false;
     };
   }, [props.api]);
+
+  useEffect(() => {
+    if (!selectedNode) return undefined;
+    const closeNodeDialog = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSelectedNode(null);
+      }
+    };
+    document.addEventListener('keydown', closeNodeDialog);
+    return () => document.removeEventListener('keydown', closeNodeDialog);
+  }, [selectedNode]);
 
   const subjectCounts = new Map<string, number>();
   nodes.forEach((node) => {

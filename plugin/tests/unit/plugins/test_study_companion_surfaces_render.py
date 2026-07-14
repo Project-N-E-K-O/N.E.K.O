@@ -128,3 +128,22 @@ def test_study_companion_surfaces_share_ui8_interaction_styles_and_messages() ->
     assert "explainControllerRef.current?.abort()" in study_panel
     assert "panel.addEventListener('keydown', closeOrCancelOnEscape, true)" in study_panel
     assert "panel.removeEventListener('keydown', closeOrCancelOnEscape, true)" in study_panel
+
+
+def test_knowledge_map_graph_and_dialog_regressions_are_guarded() -> None:
+    hosted = _read("knowledge_map.tsx")
+    fallback = (PLUGIN_DIR / "static" / "knowledge-map.js").read_text(encoding="utf-8")
+
+    assert "toId: string" in hosted
+    assert "from: String(group.fromId || '').trim()" in hosted
+    assert "to: String(item.toId || '').trim()" in hosted
+    assert "event.key === 'Escape'" in hosted
+    assert "document.addEventListener('keydown', closeNodeDialog)" in hosted
+    assert "document.removeEventListener('keydown', closeNodeDialog)" in hosted
+
+    assert "fromId: groupKey" in fallback
+    assert "toId," in fallback
+    assert "from: String(group.fromId || '').trim()" in fallback
+    assert "to: String(item.toId || '').trim()" in fallback
+    assert "String(edge.from || '') === nodeId && ['application', 'procedure_step', 'extends'].includes" in fallback
+    assert "event.key === 'Escape'" in fallback

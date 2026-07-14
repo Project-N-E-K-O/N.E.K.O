@@ -4361,7 +4361,10 @@ def test_study_knowledge_guidance_groups_edges_into_user_facing_sections() -> No
 
 def test_study_knowledge_map_ui_groups_semantic_relation_layers() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    static_source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    static_source = "\n".join(
+        (plugin_dir / "static" / name).read_text(encoding="utf-8")
+        for name in ("main.js", "knowledge-map.js")
+    )
     static_css = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
     surface_source = (
         plugin_dir / "surfaces" / "knowledge_map.tsx"
@@ -6239,7 +6242,10 @@ def test_study_companion_explain_timeouts_cover_vision_solving() -> None:
 
 def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    source = (plugin_dir / "static" / "main.js").read_text(encoding="utf-8")
+    source = "\n".join(
+        (plugin_dir / "static" / name).read_text(encoding="utf-8")
+        for name in ("main.js", "knowledge-map.js")
+    )
 
     assert "knowledge-subject-group" in source
     assert "knowledgeMapSubject" in source
@@ -6248,9 +6254,9 @@ def test_study_companion_static_knowledge_map_groups_by_base_library_hierarchy()
     assert "'math'" in source
     assert "'computer_science'" in source
     assert "ui.knowledge.subject.${normalized}" in source
-    assert "study_knowledge_map', { limit: 1000, stage: normalizedStage }" in source
+    assert "study_knowledge_map', { limit: 1000 })" in source
     assert "study_knowledge_map', { limit: 1000, subject:" not in source
-    assert "stage: normalizedStage" in source
+    assert "stage: normalizedStage" not in source
     assert "const knownSubjects = KNOWLEDGE_SUBJECT_OPTIONS.filter((subject) => counts.has(subject));" in source
     assert "knowledgeMapSubject = ''" in source
     assert "ui.knowledge.subject_label" in source
