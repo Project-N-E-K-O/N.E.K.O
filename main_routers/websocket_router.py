@@ -249,7 +249,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 立即设置websocket到session manager，以支持主动搭话
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
+    game_mode_capable = websocket.query_params.get("game_mode_capable") == "1"
     mgr.websocket = websocket
+    mgr.game_mode_capable = game_mode_capable
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
     if mgr.pending_agent_callbacks:

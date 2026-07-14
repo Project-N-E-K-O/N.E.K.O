@@ -184,6 +184,39 @@ async def test_game_mode_broadcast_rejects_disconnected_sockets(monkeypatch, cli
 
 
 @pytest.mark.asyncio
+async def test_game_mode_broadcast_counts_only_capable_sessions(monkeypatch):
+    class RecordingWebSocket:
+        client_state = "CONNECTED"
+
+        def __init__(self):
+            self.payloads = []
+
+        async def send_json(self, payload):
+            self.payloads.append(payload)
+
+    class Session:
+        def __init__(self, *, game_mode_capable):
+            self.websocket = RecordingWebSocket()
+            self.game_mode_capable = game_mode_capable
+
+    pet_session = Session(game_mode_capable=True)
+    chat_session = Session(game_mode_capable=False)
+    monkeypatch.setattr(
+        game_mode_router_module,
+        "get_session_manager",
+        lambda: {"pet": pet_session, "chat": chat_session},
+    )
+
+    delivered = await game_mode_router_module.broadcast_game_mode_event({"type": "test"})
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert delivered == 1
+    assert pet_session.websocket.payloads == [{"type": "test"}]
+    assert chat_session.websocket.payloads == []
+
+
+@pytest.mark.asyncio
 async def test_game_mode_broadcast_schedules_slow_sockets_without_waiting(monkeypatch):
     release = asyncio.Event()
 

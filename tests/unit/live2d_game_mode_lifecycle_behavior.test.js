@@ -42,6 +42,7 @@ function createHarness(options = {}) {
   const doc = new EventTargetLike();
   const calls = [];
   const pauses = [];
+  const resumes = [];
   const tiers = [];
   const goodbyeEvents = [];
   let activityStarted = 0;
@@ -57,14 +58,27 @@ function createHarness(options = {}) {
   win.addEventListener = EventTargetLike.prototype.addEventListener.bind(win);
   win.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(win);
   win.lanlan_config = options.modelConfig || { model_type: 'vrm' };
-  win.live2dManager = { _goodbyeClicked: false, pauseRendering: () => pauses.push('live2d') };
+  win.live2dManager = {
+    _goodbyeClicked: false,
+    pauseRendering: () => pauses.push('live2d'),
+    resumeRendering: () => resumes.push('live2d'),
+  };
   let vrmPauseAttempts = 0;
-  win.vrmManager = { _goodbyeClicked: false, _modelLoadState: options.invalidateLoad ? 'loading' : 'idle', pauseRendering: () => {
-    vrmPauseAttempts += 1;
-    if (options.failFirstVrmPause && vrmPauseAttempts === 1) throw new Error('transient pause failure');
-    pauses.push('vrm');
-  } };
-  win.mmdManager = { _goodbyeClicked: false, pauseRendering: () => pauses.push('mmd') };
+  win.vrmManager = {
+    _goodbyeClicked: false,
+    _modelLoadState: options.invalidateLoad ? 'loading' : 'idle',
+    pauseRendering: () => {
+      vrmPauseAttempts += 1;
+      if (options.failFirstVrmPause && vrmPauseAttempts === 1) throw new Error('transient pause failure');
+      pauses.push('vrm');
+    },
+    resumeRendering: () => resumes.push('vrm'),
+  };
+  win.mmdManager = {
+    _goodbyeClicked: false,
+    pauseRendering: () => pauses.push('mmd'),
+    resumeRendering: () => resumes.push('mmd'),
+  };
   win.pngtuberManager = { _isInReturnState: false };
   win.isNekoGoodbyeResourceSuspended = () => cat;
   win.nekoAutoGoodbye = { setVisualTier: (tier, meta) => tiers.push({ tier, meta }) };
@@ -99,7 +113,11 @@ function createHarness(options = {}) {
       onSystemResume: () => () => {},
     };
   }
-  win.t = (_key, payload) => payload && payload.defaultValue ? payload.defaultValue : _key;
+  win.t = (key, payload) => {
+    const translations = options.translations || {};
+    if (Object.prototype.hasOwnProperty.call(translations, key)) return translations[key];
+    return payload && payload.defaultValue ? payload.defaultValue : key;
+  };
   win.showStatusToast = () => {};
   win.addEventListener('live2d-goodbye-click', (event) => {
     goodbyeEvents.push(event.detail || {});
@@ -152,6 +170,7 @@ function createHarness(options = {}) {
     doc,
     calls,
     pauses,
+    resumes,
     tiers,
     goodbyeEvents,
     get activityStarted() { return activityStarted; },
@@ -232,6 +251,68 @@ test('registered pet ACKs protection, enters deep sleep, and only click restores
   assert.ok(harness.calls.some((call) => call.url === '/api/game-mode-beta/manual-restore'));
   assert.equal(harness.doc.body.classList.contains('neko-game-mode-deep-sleep'), false);
   assert.equal(harness.activityStarted, 1);
+  assert.deepEqual(harness.resumes.sort(), ['live2d', 'mmd', 'vrm']);
+});
+
+test('restore messages from stale cycles do not release the active cycle', async () => {
+  const harness = createHarness();
+  await flush();
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-current',
+    trigger_source: 'game_semantic',
+    reason: 'exact_game',
+  });
+  await flush();
+
+  await harness.win.nekoGameModeBeta.handleLifecycleMessage({
+    type: 'game_mode_restore',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-stale',
+    pet_instance_ids: ['pet-test-1'],
+  });
+  await flush();
+
+  assert.equal(harness.win.live2dManager._goodbyeClicked, true);
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, true);
+  assert.equal(harness.win.nekoGameModeBeta.getState().currentCycleId, 'cycle-current');
+});
+
+test('Spanish and Russian single-brace status placeholders are interpolated by the module wrapper', async () => {
+  for (const locale of ['es', 'ru']) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.resolve(__dirname, '../../static/locales/' + locale + '.json'),
+      'utf8',
+    ));
+    const translations = {};
+    for (const [name, value] of Object.entries(messages.settings.gameModeBeta)) {
+      translations['settings.gameModeBeta.' + name] = value;
+    }
+    const harness = createHarness({
+      modelConfig: { model_type: 'live2d' },
+      translations,
+    });
+    await flush();
+    harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+      type: 'game_mode_auto_switch',
+      source: 'game_mode_auto',
+      cycle_id: 'cycle-i18n-' + locale,
+      trigger_source: 'game_semantic',
+      reason: 'cpu',
+      percent: 99,
+      duration_seconds: 30,
+    });
+    await flush();
+
+    const status = harness.win.nekoGameModeBeta.getStatusText();
+    assert.equal(status.includes('{status}'), false);
+    assert.equal(status.includes('{metric}'), false);
+    assert.equal(status.includes('{percent}'), false);
+    assert.equal(status.includes('{duration}'), false);
+    assert.equal(status.includes('99%'), true);
+    assert.equal(status.includes('30s'), true);
+  }
 });
 
 test('blocked return keeps manual restore ownership and skips backend ACK', async () => {

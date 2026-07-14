@@ -3,6 +3,7 @@ from pathlib import Path
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
 def test_response_discarded_visible_in_react_chat():
@@ -41,6 +42,15 @@ def test_game_mode_auto_switch_websocket_event_is_relayed_to_frontend():
     assert "new CustomEvent('neko:game-mode-beta-auto-switch'" in game_mode_block
     assert "detail: response" in game_mode_block
     assert "return;" in game_mode_block
+
+
+def test_websocket_marks_only_pages_with_game_mode_listener_as_capable():
+    frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
+
+    assert "window.nekoGameModeBeta ? '?game_mode_capable=1' : ''" in frontend_source
+    assert 'websocket.query_params.get("game_mode_capable") == "1"' in router_source
+    assert "mgr.game_mode_capable = game_mode_capable" in router_source
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
