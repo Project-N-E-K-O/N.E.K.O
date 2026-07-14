@@ -314,6 +314,17 @@ async def sync_workshop_character_cards(
                             )
                             if conflict_name is not None:
                                 _append_unique(existing_character_names, conflict_name)
+                                if (
+                                    restore_deleted
+                                    and chara_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        characters['猫娘'].get(conflict_name) or {},
+                                        item_id,
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names[conflict_name] = (
+                                        pending_restore_tombstone_names[chara_name]
+                                    )
                                 skipped_count += 1
                                 logger.warning(
                                     "sync_workshop_character_cards: 跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold，物品 %s）",
@@ -558,6 +569,17 @@ async def sync_workshop_character_cards(
                                     )
                             elif conflict_name is not None:
                                 _append_unique(existing_character_names, conflict_name)
+                                if (
+                                    restore_deleted
+                                    and pending_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        latest_catgirls.get(conflict_name) or {},
+                                        pending_item_ids.get(pending_name, ""),
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names[conflict_name] = (
+                                        pending_restore_tombstone_names[pending_name]
+                                    )
                                 logger.warning(
                                     "sync_workshop_character_cards: 保存前跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold）",
                                     pending_name,

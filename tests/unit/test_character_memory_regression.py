@@ -1537,9 +1537,10 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
 
             workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
-            restored_name = "已存在但有墓碑角色"
+            existing_name = "N.E.K.O"
+            restored_name = "n.e.k.o"
             characters = cm.load_characters()
-            characters.setdefault("猫娘", {})[restored_name] = {
+            characters.setdefault("猫娘", {})[existing_name] = {
                 "昵称": "已存在",
                 "_reserved": {
                     "character_origin": {
@@ -1588,8 +1589,11 @@ async def test_manual_workshop_character_sync_clears_tombstone_for_existing_char
                 )
 
             assert sync_result["added"] == 0
-            assert sync_result["existing_character_names"] == [restored_name]
-            assert sync_result["restored_deleted_names"] == [restored_name]
+            assert sync_result["existing_character_names"] == [existing_name]
+            assert sync_result["restored_deleted_names"] == [existing_name]
+            current_characters = cm.load_characters().get("猫娘", {})
+            assert existing_name in current_characters
+            assert restored_name not in current_characters
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
             assert not any(entry.get("character_name") == restored_name for entry in tombstones)
 
