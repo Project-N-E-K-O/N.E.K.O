@@ -18,6 +18,15 @@ def test_macos_pyobjc_build_uses_background_app_with_electron_wrapper():
         "chmod +x electron-app/bin/projectneko_server.app/Contents/MacOS/"
         "projectneko_server"
     ) in workflow
+    assert "Re-sign macOS backend after post-processing" in workflow
+    assert (
+        "codesign --force --deep --sign - "
+        "dist/Xiao8/projectneko_server.app"
+    ) in workflow
+    assert (
+        "codesign --verify --deep --strict "
+        "dist/Xiao8/projectneko_server.app"
+    ) in workflow
     assert 'NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR' in workflow
 
 

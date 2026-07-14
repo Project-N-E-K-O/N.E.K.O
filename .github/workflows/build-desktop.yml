@@ -632,6 +632,18 @@ jobs:
             .venv/bin/python scripts/check_nuitka_dist.py "$NEKO_NUITKA_RUNTIME_DIR" --plugin-stage build/nuitka-plugins
           fi
 
+      # Nuitka signs macOS app bundles when it creates them. The steps above
+      # then add Playwright and plugin payloads inside the bundle, invalidating
+      # that seal. Restore a valid ad-hoc signature for the backend artifact;
+      # electron-builder applies the configured distribution identity later.
+      - name: Re-sign macOS backend after post-processing
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
+          codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
+
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
         with:
