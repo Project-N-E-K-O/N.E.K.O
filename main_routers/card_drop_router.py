@@ -927,6 +927,57 @@ async def sync_session_options(request: Request):
     return JSONResponse({"ok": True}, headers=cors)
 
 
+@router.options("/bind-client/approve", summary="游客 client_id 绑定持有证明预检")
+async def bind_client_approve_options(request: Request):
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.post("/bind-client/approve", summary="由本机 NEKO 批准游客 client_id 绑定")
+async def bind_client_approve_endpoint(request: Request, payload: dict = Body(...)):
+    """Prove possession with the persisted local id, never the URL-provided hint."""
+    cors = _sync_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
+    if not _consume_sync_ticket(sync_ticket):
+        return JSONResponse(
+            {"detail": "invalid_sync_ticket"}, status_code=403, headers=cors
+        )
+    challenge = payload.get("binding_challenge") or payload.get("bindingChallenge")
+    challenge = challenge.strip() if isinstance(challenge, str) else ""
+    if not 32 <= len(challenge) <= 256:
+        return JSONResponse(
+            {"detail": "invalid_client_binding_challenge"}, status_code=400, headers=cors
+        )
+    client_id = _get_client_id()
+    if not client_id:
+        return JSONResponse(
+            {"detail": "client_not_registered"}, status_code=409, headers=cors
+        )
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            response = await client.post(
+                f"{_social_base_url()}/api/clients/bind-approval",
+                json={"client_id": client_id, "binding_challenge": challenge},
+            )
+    except (httpx.HTTPError, OSError):
+        return JSONResponse(
+            {"detail": "cloud_unreachable"}, status_code=502, headers=cors
+        )
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail") or f"http_{response.status_code}"
+        except (ValueError, TypeError, AttributeError):
+            detail = f"http_{response.status_code}"
+        return JSONResponse(
+            {"detail": detail}, status_code=response.status_code, headers=cors
+        )
+    return JSONResponse({"ok": True}, headers=cors)
+
+
 def _sync_status_response(
     synced: bool,
     *,

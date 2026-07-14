@@ -447,6 +447,77 @@ def test_sync_ticket_rejects_cross_site_browser_churn(client):
     assert len(C._native_sync_tickets) == len(before) + 1
 
 
+def test_bind_client_approval_uses_persisted_local_id_and_consumes_ticket(
+    client, monkeypatch,
+):
+    actual_client_id = "00112233445566778899aabbccddeeff"
+    challenge = "C" * 43
+    sent: list[tuple[str, dict]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            sent.append((url, kwargs["json"]))
+            return _CloudResponse(204, {})
+
+    monkeypatch.setattr(C, "_get_client_id", lambda: actual_client_id)
+    monkeypatch.setattr(C.httpx, "AsyncClient", FakeAsyncClient)
+    ticket = _issue_sync_ticket(client)
+
+    response = client.post(
+        "/api/card-drop/bind-client/approve",
+        headers={"Origin": "https://community.example"},
+        json={
+            "binding_challenge": challenge,
+            "sync_ticket": ticket,
+            "client_id": "attacker-controlled-id-is-ignored",
+        },
+    )
+    replay = client.post(
+        "/api/card-drop/bind-client/approve",
+        headers={"Origin": "https://community.example"},
+        json={"binding_challenge": challenge, "sync_ticket": ticket},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert response.headers["access-control-allow-origin"] == "https://community.example"
+    assert sent == [
+        (
+            "https://community.example/api/clients/bind-approval",
+            {"client_id": actual_client_id, "binding_challenge": challenge},
+        )
+    ]
+    assert replay.status_code == 403
+    assert replay.json() == {"detail": "invalid_sync_ticket"}
+
+
+def test_bind_client_approval_rejects_origin_before_consuming_ticket(client, monkeypatch):
+    ticket = _issue_sync_ticket(client)
+    monkeypatch.setattr(
+        C.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: pytest.fail("cloud must not be contacted"),
+    )
+
+    denied = client.post(
+        "/api/card-drop/bind-client/approve",
+        headers={"Origin": "https://evil.example"},
+        json={"binding_challenge": "C" * 43, "sync_ticket": ticket},
+    )
+
+    assert denied.status_code == 403
+    assert C._sync_ticket_is_valid(ticket)
+
+
 def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_path, monkeypatch):
     legacy_auth = tmp_path / "documents" / "N.E.K.O" / "community_auth.json"
     electron_root = tmp_path / "electron-user-data"
