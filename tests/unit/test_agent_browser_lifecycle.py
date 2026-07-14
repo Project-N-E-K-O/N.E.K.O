@@ -10,9 +10,72 @@ from brain.browser_use_adapter import BrowserUseAdapter
 
 
 capabilities = importlib.import_module("app.agent_server.capabilities")
+api_routes = importlib.import_module("app.agent_server.api_routes")
 
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_browser_use_availability_does_not_construct_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_computer_use = modules.computer_use
+    original_capability = dict(modules.capability_cache["browser_use"])
+
+    async def _unexpected_init():
+        raise AssertionError("availability polling must not construct BrowserUseAdapter")
+
+    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
+    monkeypatch.setattr(api_routes, "_browser_use_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _unexpected_init)
+    modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
+    try:
+        status = await api_routes.browser_use_availability()
+
+        assert status["ready"] is True
+        assert status["provider"] == "browser-use"
+    finally:
+        modules.computer_use = original_computer_use
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
+async def test_browser_use_enable_returns_without_constructing_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_computer_use = modules.computer_use
+    original_flags = dict(modules.agent_flags)
+    original_notification = modules.notification
+    original_capability = dict(modules.capability_cache["browser_use"])
+
+    async def _unexpected_init():
+        raise AssertionError("the short flag request must not construct BrowserUseAdapter")
+
+    async def _ignore_status_update(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
+    monkeypatch.setattr(api_routes, "_browser_use_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _unexpected_init)
+    monkeypatch.setattr(api_routes, "_emit_agent_status_update", _ignore_status_update)
+    modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
+    modules.agent_flags["browser_use_enabled"] = False
+    try:
+        result = await api_routes.set_agent_flags(
+            {"browser_use_enabled": True, "_persist_intent": False}
+        )
+
+        assert result["success"] is True
+        assert modules.agent_flags["browser_use_enabled"] is True
+    finally:
+        modules.computer_use = original_computer_use
+        modules.agent_flags.clear()
+        modules.agent_flags.update(original_flags)
+        modules.notification = original_notification
+        modules.capability_cache["browser_use"] = original_capability
 
 
 @pytest.mark.asyncio

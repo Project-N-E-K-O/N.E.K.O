@@ -60,6 +60,7 @@ from .api_shared import (  # noqa: F401
     _LEGACY_CORRECTION_PUBLIC_KEYS,
     _agent_flags_snapshot,
     _bind_deferred_task,
+    _browser_use_dependency_status,
     _build_analyze_event_fingerprint,
     _build_assistant_turn_fingerprint,
     _build_user_turn_fingerprint,
@@ -604,13 +605,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            bu = await _ensure_browser_use_adapter()
-            if not bu:
+            dependency_ready, dependency_error = _browser_use_dependency_status()
+            if not dependency_ready:
                 Modules.agent_flags["browser_use_enabled"] = False
-                Modules.notification = json.dumps({"code": "AGENT_BU_MODULE_NOT_LOADED"})
-            elif not getattr(bu, "_ready_import", False):
-                Modules.agent_flags["browser_use_enabled"] = False
-                Modules.notification = json.dumps({"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": str(bu.last_error)}})
+                Modules.notification = json.dumps({"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": dependency_error}})
             elif not getattr(Modules.computer_use, "init_ok", False):
                 Modules.agent_flags["browser_use_enabled"] = True
                 Modules.notification = json.dumps({"code": "AGENT_BU_ENABLED_CHECKING"})
@@ -1196,11 +1194,9 @@ async def browser_use_availability():
     gate = _check_agent_api_gate()
     if gate.get("ready") is not True:
         return {"ready": False, "reasons": gate.get("reasons", ["Agent API 未配置"])}
-    bu = await _ensure_browser_use_adapter()
-    if not bu:
-        raise HTTPException(503, "BrowserUse not ready")
-    if not getattr(bu, "_ready_import", False):
-        reason = f"browser-use not installed: {bu.last_error}"
+    dependency_ready, dependency_error = _browser_use_dependency_status()
+    if not dependency_ready:
+        reason = f"browser-use not installed: {dependency_error}"
         _set_capability("browser_use", False, reason)
         return {"enabled": True, "ready": False, "reasons": [reason], "provider": "browser-use"}
     # LLM connectivity — reuse the shared agent-LLM check
@@ -1211,7 +1207,7 @@ async def browser_use_availability():
     reasons = []
     if not llm_ok:
         reasons.append(cua.last_error if cua and cua.last_error else "Agent LLM not connected")
-    ready = llm_ok and getattr(bu, "_ready_import", False)
+    ready = llm_ok and dependency_ready
     _set_capability("browser_use", ready, reasons[0] if reasons else "")
     return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
 

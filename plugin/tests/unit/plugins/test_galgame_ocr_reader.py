@@ -5685,6 +5685,11 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
         rapidocr_lang_changed_callback=persisted.append,
     )
     manager._ocr_lang_detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+    backend_close_calls: list[bool] = []
+    manager._rapidocr_backend_cache_key = manager._rapidocr_cache_key()
+    manager._rapidocr_backend_cache = SimpleNamespace(
+        close=lambda: backend_close_calls.append(True)
+    )
     monkeypatch.setattr(
         galgame_ocr_reader,
         "inspect_rapidocr_installation",
@@ -5709,6 +5714,8 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
     assert manager._config.rapidocr_lang_type == "korean"
     assert manager._config.rapidocr_auto_detect_last_lang == "korean"
     assert persisted == ["korean"]
+    assert backend_close_calls == [True]
+    assert manager._rapidocr_backend_cache is None
 
 
 def test_rapidocr_auto_lang_does_not_override_manual_disable_during_inspection(

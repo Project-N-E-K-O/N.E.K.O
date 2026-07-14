@@ -77,6 +77,7 @@ from .api_shared import (  # noqa: F401
     _emit_agent_status_update,
     _emit_main_event,
     _emit_task_result,
+    _ensure_browser_use_adapter,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _extract_tool_intent_as_text,
@@ -382,6 +383,17 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
         if not Modules.analyzer_enabled:
             logger.info("[TaskExecutor] Skipping analysis: analyzer disabled (master switch off)")
             return
+        if Modules.agent_flags.get("browser_use_enabled", False):
+            browser_use = await _ensure_browser_use_adapter()
+            if browser_use is None or not getattr(browser_use, "_ready_import", False):
+                Modules.agent_flags["browser_use_enabled"] = False
+                reason = str(getattr(browser_use, "last_error", "") or "AGENT_BU_MODULE_NOT_LOADED")
+                _set_capability("browser_use", False, reason)
+                Modules.notification = json.dumps(
+                    {"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": reason}}
+                )
+                _bump_state_revision()
+                await _emit_agent_status_update(lanlan_name=lanlan_name)
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
         # 在 inject 之前先把已被用户 UI 取消的 user turn 整段 redact，让 analyzer

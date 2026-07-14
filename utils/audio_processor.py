@@ -29,6 +29,8 @@ Important: RNNoise's GRU state drifts while processing background noise,
 and must be reset once end of speech is detected.
 """
 
+from contextlib import suppress
+
 import numpy as np
 from typing import Optional
 from utils.logger_config import get_module_logger
@@ -192,10 +194,10 @@ class _LiteDenoiser:
             self._lib.destroy(state)
 
     def __del__(self):
-        try:
+        # Finalization may run during interpreter teardown; never let native
+        # cleanup errors escape or depend on the logging subsystem still existing.
+        with suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
 
 class AudioProcessor:

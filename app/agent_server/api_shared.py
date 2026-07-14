@@ -147,6 +147,7 @@ from .plugin_host import (  # noqa: F401
     _fire_user_plugin_capability_check,
 )
 from .capabilities import (  # noqa: F401
+    _browser_use_dependency_status,
     _close_browser_use_adapter,
     _ensure_browser_use_adapter,
     _rewire_browser_use_dependents,

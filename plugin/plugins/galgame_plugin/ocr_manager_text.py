@@ -406,8 +406,7 @@ class TextMixin:
         self._backend_plan_cache_key = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache = None
-        self._rapidocr_backend_cache_key = None
-        self._rapidocr_backend_cache = None
+        self._release_rapidocr_backend()
         self._ocr_lang_detector.reset()
         callback = self._rapidocr_lang_changed_callback
         if callable(callback):

@@ -25,6 +25,7 @@ through the facade at call time.
 
 import json
 import asyncio
+import importlib.util
 from typing import Dict, Any, Optional, Tuple
 
 from . import _shared
@@ -46,8 +47,21 @@ def _rewire_browser_use_dependents() -> None:
         executor = _shared.Modules.task_executor
         if executor is not None and hasattr(executor, "browser_use"):
             executor.browser_use = _shared.Modules.browser_use
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("[Agent] BrowserUse dependent rewire failed: %s", exc)
+
+
+def _browser_use_dependency_status() -> tuple[bool, str]:
+    """Check BrowserUse installation without importing its heavy module graph."""
+    current = _shared.Modules.browser_use
+    if current is not None:
+        ready = bool(getattr(current, "_ready_import", False))
+        return ready, "" if ready else str(getattr(current, "last_error", "") or "")
+    try:
+        installed = importlib.util.find_spec("browser_use") is not None
+    except Exception as exc:
+        return False, str(exc)
+    return installed, "" if installed else "browser-use package not found"
 
 
 async def _ensure_browser_use_adapter():
