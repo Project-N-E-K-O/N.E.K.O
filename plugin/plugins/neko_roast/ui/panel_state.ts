@@ -39,6 +39,7 @@ export type DashboardState = {
   modules?: Array<Record<string, any>>
   recent_profiles?: Array<Record<string, any>>
   recent_results?: Array<Record<string, any>>
+  live_session?: Record<string, any>
   recent_sandbox_results?: Array<Record<string, any>>
   recent_audit?: Array<Record<string, any>>
   speech_explanation?: Record<string, any>

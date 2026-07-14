@@ -194,9 +194,12 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
         assert 'className="neko-roast-console-layout"' in source
-        assert 'gridTemplateRows: "minmax(0, 1fr) auto"' in source
+        assert 'gridTemplateRows: "auto auto"' in source
         assert 'className="neko-roast-console-scroll"' in source
-        assert 'overflowY: "auto"' in source
+        assert 'overflow: "visible"' in source
+        assert 'height: "calc(100vh - 190px)"' not in source
+        assert 'position: "sticky"' in dock_source
+        assert 'bottom: 0' in dock_source
         assert 'position: "fixed"' not in dock_source
         assert 'gridTemplateColumns: "minmax(260px, 520px)"' in dock_source
         assert 'justifyContent: "center"' in dock_source
@@ -221,7 +224,43 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         assert 'dynamicLabel("liveState", "panel.liveState", liveStateName)' not in toolbar_source
         assert 'callSimple("clear_queue")' not in settings_source
         assert 'configForm.values.safety_auto_stop_enabled' in settings_source
-        assert 'configForm.values.queue_limit' in settings_source
+        assert 'queue_limit: preset.value' in settings_source
+        assert 'id="settings-sections"' in settings_source
+        assert 'id: "safety"' in settings_source
+        assert 'id: "privacy"' in settings_source
+        assert 'id: "help"' in settings_source
+        assert 'panel.settings.queueCautious' in source
+        assert 'panel.settings.queueStandard' in source
+        assert 'panel.settings.queueRelaxed' in source
+        assert 'open={safetyDisableConfirmOpen}' in settings_source
+        assert 'open={storageDetailsOpen}' in settings_source
+        assert 'panel.fields.rateLimit' not in settings_source
+        assert 'panel.storage.disabled' not in settings_source
+        assert 'saveConfig(advancedConfigPatch())' not in settings_source
+
+        developer_results = source.split('id: "results"', 1)[1].split('id="developer-tools"', 1)[0]
+        assert 'panel.advanced.title' in developer_results
+        assert '<ModuleOverviewCard modules={modules} t={t} />' in developer_results
+
+
+def test_nested_navigation_uses_compact_accessible_pills() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+
+        assert 'function CompactTabs(' in source
+        assert 'className="neko-roast-compact-tabs"' in source
+        assert 'role="tablist"' in source
+        assert 'role="tab"' in source
+        assert 'role="tabpanel"' in source
+        assert 'aria-selected={active}' in source
+        assert 'minHeight: "26px"' in source
+        assert 'fontSize: "12px"' in source
+        assert source.count("<CompactTabs") == 3
+        assert '<CompactTabs\n        id="settings-sections"' in source
+        assert '<CompactTabs\n      id="audience-data"' in source
+        assert '<CompactTabs\n        id="developer-tools"' in source
 
 
 def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
@@ -250,8 +289,9 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         assert 'const [interactionDialog, setInteractionDialog]' in source
         assert 'open={!!interactionDialog}' in interaction_source
         assert interaction_source.count('renderInteractionDetailsButton("') == 6
-        assert 'minHeight: "230px"' in source
-        assert 'minHeight: "52px"' in source
+        assert 'minHeight: "190px"' in source
+        assert 'minHeight: "22px"' in source
+        assert 'fontSize: "12px"' in source
         assert 'visibility: enabled ? "hidden" : "visible"' in source
         assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
             't("panel.interaction.group.audience")'
@@ -1101,6 +1141,29 @@ def test_developer_tools_use_three_internal_subpages_in_both_panels() -> None:
         assert developer_source.index('id: "event"') < developer_source.index('id: "results"')
         assert 'label: t("panel.dev.lookup.title")' in developer_source
         assert 'label: t("panel.dev.emitter.title")' in developer_source
-        assert 'label: t("panel.dev.recentSandbox")' in developer_source
-        assert "<Tabs" in developer_source
+        assert 'label: t("panel.dev.runtimeResults")' in developer_source
+        assert "<CompactTabs" in developer_source
         assert 'id="developer-tools"' in developer_source
+
+
+def test_audience_page_separates_session_data_from_viewer_profiles() -> None:
+    root = Path(__file__).resolve().parents[1]
+    authored_panel = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    data_sections = (root / "ui" / "panel_data_sections.tsx").read_text(encoding="utf-8")
+    compat_panel = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+
+    for source in (authored_panel, compat_panel):
+        audience_source = source[source.index("const dataSection") : source.index("const lookupIdentity")]
+        assert 'id="audience-data"' in audience_source
+        assert 'id: "session"' in audience_source
+        assert 'id: "profiles"' in audience_source
+        assert "LiveSessionSection" in audience_source
+        assert "ViewerProfilesTable" in audience_source
+        assert "LiveExplainSection" not in audience_source
+        assert "RecentResultsTable" not in audience_source
+
+    for source in (data_sections, compat_panel):
+        assert 'title={t("panel.audience.sessionDetailTitle")}' in source
+        assert 'title={t("panel.audience.profileDetailTitle")}' in source
+        assert 'maxRows={30}' in source
+        assert 'style={{ overflowX: "auto" }}' in source

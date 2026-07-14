@@ -34,6 +34,7 @@ async def reconcile_live_listener_after_config(
         return
     runtime._accepting_live_events = False
     await _stop_captured_provider(old_provider or runtime.live_provider)
+    runtime.live_audience_session.finish_session()
     if disabled or not room_ref:
         runtime.live_events.reset()
         runtime.config.live_enabled = False
@@ -71,6 +72,7 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime._accepting_live_events = False
     started = await runtime.live_provider.start_listening(room_ref)
     if started:
+        runtime.live_audience_session.start_session()
         runtime.pipeline.clear_dry_run_session_state()
         runtime._live_listener_started_at = float(runtime._live_state_now())
         runtime._idle_hosting_consecutive_failures = 0
@@ -84,6 +86,7 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
     runtime._accepting_live_events = False
     await runtime.live_provider.stop_listening()
+    runtime.live_audience_session.finish_session()
     runtime.live_events.reset()
     if mark_disabled:
         runtime.config.live_enabled = False

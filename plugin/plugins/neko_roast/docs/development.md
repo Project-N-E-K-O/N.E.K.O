@@ -463,6 +463,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 - `douyin_identity`：只把 `douyin_live_ingest` 已清洗的 UID、昵称、头像 URL 转成 `ViewerIdentity`，并在生成 `source_url` / `name` / `nickname` / `avatar_url` 前再次复用 UID、文本和头像 URL 安全过滤，保证 UID 带 `douyin:` 前缀且不把 cookie/token 形态文本写入 profile；头像 URL 也只保留同一套字符串级安全 URL；v1 不抓用户主页、不下载头像、不读取 cookie/raw payload。
 - `runtime_douyin_auth`：抖音手动 cookie action。cookie 只进 `douyin` namespace 的 `CredentialStore` 加密落盘；导入 cookie 参数必须是字符串，object / bytes / container 不得被字符串化后保存；导入时允许首行 `Cookie:` 和普通 name=value 续行，但混入 `X-...:` 等非 Cookie header 行必须拒绝，不能保存成凭据；非法 cookie action 必须返回结构化 `saved=False` 结果并记录脱敏 audit，不能把原始 cookie 或异常栈冒泡到 UI；public status / audit 只暴露 `has_cookie`、脱敏后的 `uid` / `nickname` / `saved_at`，其中 `uid` 还必须是可选 `douyin:` 前缀的短安全标识形态，并把误粘到公开字段里的 cookie/token/signature/sign/webcast_sign/跨平台凭据形态文本清空；cookie 有效性只在用户手动触发校验时读取当前房间元数据，结果只暴露 `valid`、脱敏 `room_ref`、`live_status` 和脱敏 `message`，不做后台轮询、网页登录、二维码/手机号登录或浏览器自动化。
 - `viewer_profile`：维护观众档案和首次触发判断。
+- `live_audience_session`：订阅 provider-neutral EventBus 事件，维护单次监听会话的有界内存统计，并向 dashboard 投影脱敏摘要；不写观众档案、不保存 raw UID/消息、不参与 route 或输出选择。完整契约见 `docs/modules/live_audience_session.md`。
 - `avatar_roast`：构造首次出场的头像 / ID / 第一句话锐评请求，并集中产出完整锐评指令（见“输出边界”的自适应焦点规则）。首评 prompt 也必须接入 recent used-material blocklist，避免长直播中不同观众反复听到同一套开头、奖励梗、主持节拍或头像模板。
 - `danmaku_response`：构造同一观众后续普通弹幕的接话请求。它不做头像 / ID 首评，不写首评计数，不绕过 pipeline / safety guard / dispatcher；用于让 Independent Mode 下的持续对话不被 `roast_once_per_uid` 整体挡掉。
 - `live_support_events`：构造 Gift / SC / Guard 被 `live_events` 选中后的短句致谢请求。它不走头像首评、不把礼物当普通弹幕、不主动索要更多支持，也不绕过 pipeline / safety guard / dispatcher；request metadata 暴露 `support_event_type` / `support_event_tier` / `support_event_label` 供 dry-run、monitor、dashboard 复盘。
@@ -1036,7 +1037,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-07-14：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1257 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-07-14：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1262 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

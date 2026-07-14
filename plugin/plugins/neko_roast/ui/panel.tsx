@@ -62,9 +62,61 @@ import {
   speechExplanationTone,
   statusTone,
 } from "./panel_helpers"
-import { LiveExplainSection, RecentResultsTable, ViewerProfilesTable } from "./panel_data_sections"
+import { LiveExplainSection, LiveSessionSection, RecentResultsTable, ViewerProfilesTable } from "./panel_data_sections"
 
 const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"
+
+function CompactTabs(props: { id: string; items: Array<{ id: string; label: any; content: any }> }) {
+  const { id, items } = props
+  const [activeId, setActiveId] = useState(items[0]?.id || "")
+  const activeItem = items.find((item) => item.id === activeId) || items[0]
+
+  return (
+    <div className="neko-roast-compact-tabs" style={{ display: "grid", gap: "10px" }}>
+      <div role="tablist" aria-label={id} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "5px" }}>
+        {items.map((item) => {
+          const active = item.id === activeItem?.id
+          const tabId = `${id}-${item.id}-tab`
+          const panelId = `${id}-${item.id}-panel`
+          return (
+            <button
+              key={item.id}
+              id={tabId}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls={panelId}
+              onClick={() => setActiveId(item.id)}
+              style={{
+                minHeight: "26px",
+                padding: "2px 9px",
+                border: `1px solid ${active ? "rgba(64, 158, 255, 0.38)" : "var(--border)"}`,
+                borderRadius: "999px",
+                background: active ? "rgba(64, 158, 255, 0.09)" : "transparent",
+                color: active ? "var(--primary)" : "var(--muted)",
+                font: "inherit",
+                fontSize: "12px",
+                fontWeight: active ? 650 : 500,
+                lineHeight: "18px",
+                cursor: "pointer",
+              }}
+            >
+              {item.label}
+            </button>
+          )
+        })}
+      </div>
+      <div
+        id={`${id}-${activeItem?.id || "empty"}-panel`}
+        role="tabpanel"
+        aria-labelledby={`${id}-${activeItem?.id || "empty"}-tab`}
+        style={{ minWidth: 0 }}
+      >
+        {activeItem?.content}
+      </div>
+    </div>
+  )
+}
 
 export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
@@ -80,6 +132,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const liveExplain = safeState.live_explain || {}
   const idleHostingStatus = safeState.idle_hosting_status || {}
   const activeEngagementStatus = safeState.active_engagement_status || {}
+  const liveSession = safeState.live_session || {}
   const profiles = Array.isArray(safeState.recent_profiles) ? safeState.recent_profiles : []
   const results = Array.isArray(safeState.recent_results) ? safeState.recent_results : []
   const sandboxResults = Array.isArray(safeState.recent_sandbox_results) ? safeState.recent_sandbox_results : []
@@ -97,6 +150,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
+  const [safetyDisableConfirmOpen, setSafetyDisableConfirmOpen] = useState(false)
+  const [storageDetailsOpen, setStorageDetailsOpen] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
@@ -202,7 +258,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
   }
 
-  async function saveConfig(patch: Record<string, any> = {}) {
+  async function saveConfig(patch: Record<string, any> = {}): Promise<boolean> {
     const livePlatform = String(patch.live_platform ?? config.live_platform ?? configForm.values.live_platform ?? "bilibili")
     const normalizedRoomRef = (value: unknown) => {
       const roomRef = String(value ?? "").trim()
@@ -252,8 +308,27 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       await props.api.call("update_config", payload)
       await props.api.refresh()
       toast.success(t("panel.messages.saved"))
+      return true
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }
+
+  async function applySettingsPatch(patch: Record<string, any>) {
+    if (settingsSaving) return
+    const previous = Object.fromEntries(
+      Object.keys(patch).map((key) => [key, (configForm.values as Record<string, any>)[key]]),
+    )
+    Object.entries(patch).forEach(([key, value]) => configForm.setField(key as any, value))
+    setSettingsSaving(true)
+    try {
+      const saved = await saveConfig(patch)
+      if (!saved) {
+        Object.entries(previous).forEach(([key, value]) => configForm.setField(key as any, value))
+      }
+    } finally {
+      setSettingsSaving(false)
     }
   }
 
@@ -588,16 +663,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     setOnboardingOpen(true)
   }
 
-  const resultCounts = results.reduce(
-    (acc, item) => {
-      const status = String(item.status || "")
-      if (status === "pushed") acc.pushed += 1
-      else if (status === "skipped") acc.skipped += 1
-      else if (status === "failed") acc.failed += 1
-      return acc
-    },
-    { pushed: 0, skipped: 0, failed: 0 },
-  )
   const liveStatusLabel = liveRoomResult?.live_status ? t(`panel.liveStatus.${liveRoomResult.live_status}`) : "-"
   const liveStatusSummary = String(liveStatus.summary || "cannot_stream")
   const liveStatusReason = String(liveStatus.reason || "room_not_configured")
@@ -796,9 +861,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const consoleSection = (
     <div
       className="neko-roast-console-layout"
-      style={{ display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", height: "calc(100vh - 190px)", minHeight: "360px", overflow: "hidden" }}
+      style={{ display: "grid", gridTemplateRows: "auto auto", minHeight: "360px", overflow: "visible" }}
     >
-      <div className="neko-roast-console-scroll" style={{ minHeight: 0, overflowX: "hidden", overflowY: "auto", paddingRight: "4px" }}>
+      <div className="neko-roast-console-scroll" style={{ minHeight: 0, overflow: "visible" }}>
         <Stack>
       <Grid cols={3}>
         <Card title={t("panel.platform.title")}>
@@ -1049,7 +1114,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <footer
         className="neko-roast-console-dock"
         aria-label={t("panel.console.runtimeTitle")}
-        style={{ display: "grid", gridTemplateColumns: "minmax(260px, 520px)", alignItems: "center", justifyContent: "center", minHeight: "68px", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--surface)" }}
+        style={{ position: "sticky", bottom: 0, zIndex: 2, display: "grid", gridTemplateColumns: "minmax(260px, 520px)", alignItems: "center", justifyContent: "center", minHeight: "68px", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--surface-strong)" }}
       >
         {started ? (
           <Button tone="danger" onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
@@ -1160,11 +1225,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     alignItems: "stretch",
   }
   const interactionCardBodyStyle: any = {
-    minHeight: "230px",
+    minHeight: "190px",
     height: "100%",
     display: "flex",
     flexDirection: "column" as const,
-    gap: "12px",
+    gap: "10px",
   }
   const interactionStatusRowStyle: any = {
     display: "flex",
@@ -1179,8 +1244,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     </div>
   )
   const renderInteractionDisabledHint = (enabled: boolean, key: string) => (
-    <div style={{ minHeight: "52px", visibility: enabled ? "hidden" : "visible" }} aria-hidden={enabled}>
-      <Alert tone="info">{t(key)}</Alert>
+    <div style={{ minHeight: "22px", visibility: enabled ? "hidden" : "visible" }} aria-hidden={enabled}>
+      <span style={{ color: "var(--muted)", fontSize: "12px", lineHeight: "18px" }}>{t(key)}</span>
     </div>
   )
   const renderInteractionDetailsButton = (dialog: "avatar_roast" | "danmaku_response" | "live_support_events" | "warmup_hosting" | "idle_hosting" | "active_engagement") => (
@@ -1457,89 +1522,155 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   )
 
   const viewerStore = safeState.viewer_store || {}
+  const queuePresets = [
+    { value: 3, labelKey: "panel.settings.queueCautious", hintKey: "panel.settings.queueCautiousHint" },
+    { value: 5, labelKey: "panel.settings.queueStandard", hintKey: "panel.settings.queueStandardHint" },
+    { value: 8, labelKey: "panel.settings.queueRelaxed", hintKey: "panel.settings.queueRelaxedHint" },
+  ]
+  const selectedQueueLimit = Number(configForm.values.queue_limit) || 5
+  const selectedQueuePreset = queuePresets.find((preset) => preset.value === selectedQueueLimit)
   const advancedSection = (
     <Stack>
-      <Card title={t("panel.control.title")}>
+      <CompactTabs
+        id="settings-sections"
+        items={[
+          {
+            id: "safety",
+            label: t("panel.settings.safetyTab"),
+            content: (
+              <Stack>
+                <Card title={t("panel.settings.safetyTitle")}>
+                  <Stack gap={10}>
+                    <Text>{t("panel.settings.safetyHint")}</Text>
+                    <ToggleSwitch
+                      checked={!!configForm.values.safety_auto_stop_enabled}
+                      label={t("panel.fields.autoStop")}
+                      onChange={(value) => {
+                        if (value) applySettingsPatch({ safety_auto_stop_enabled: true })
+                        else setSafetyDisableConfirmOpen(true)
+                      }}
+                    />
+                    <Alert tone={configForm.values.safety_auto_stop_enabled ? "success" : "warning"}>
+                      {t(configForm.values.safety_auto_stop_enabled ? "panel.settings.autoStopEnabled" : "panel.settings.autoStopDisabled")}
+                    </Alert>
+                  </Stack>
+                </Card>
+                <Card title={t("panel.settings.queueTitle")}>
+                  <Stack gap={10}>
+                    <Text>{t("panel.settings.queueHint")}</Text>
+                    <Grid cols={3}>
+                      {queuePresets.map((preset) => (
+                        <Button
+                          key={preset.value}
+                          tone={selectedQueueLimit === preset.value ? "primary" : "default"}
+                          disabled={settingsSaving}
+                          onClick={() => applySettingsPatch({ queue_limit: preset.value })}
+                        >
+                          {t(preset.labelKey)}
+                        </Button>
+                      ))}
+                    </Grid>
+                    <Text>{t(selectedQueuePreset?.hintKey || "panel.settings.queueCustomHint")}</Text>
+                    <Button
+                      tone="default"
+                      disabled={settingsSaving}
+                      onClick={() => applySettingsPatch({ safety_auto_stop_enabled: true, queue_limit: 5 })}
+                    >
+                      {t("panel.settings.restoreRecommended")}
+                    </Button>
+                  </Stack>
+                </Card>
+              </Stack>
+            ),
+          },
+          {
+            id: "privacy",
+            label: t("panel.settings.privacyTab"),
+            content: (
+              <Card title={t("panel.settings.privacyTitle")}>
+                <Stack gap={10}>
+                  <Text>{t("panel.settings.privacyHint")}</Text>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                    <Stack gap={4}>
+                      <Text>{t("panel.settings.localStorageLabel")}</Text>
+                      <Text>{t("panel.settings.localStorageHint")}</Text>
+                    </Stack>
+                    <StatusBadge
+                      tone={viewerStore.writable === false ? "warning" : "success"}
+                      label={t(viewerStore.writable === false ? "panel.settings.storageNeedsAttention" : "panel.settings.storageReady")}
+                    />
+                  </div>
+                  {viewerStore.writable === false ? <Alert tone="warning">{t("panel.storage.notWritable")}</Alert> : null}
+                  <Button tone="default" onClick={() => setStorageDetailsOpen(true)}>{t("panel.settings.viewStoragePath")}</Button>
+                </Stack>
+              </Card>
+            ),
+          },
+          {
+            id: "help",
+            label: t("panel.settings.helpTab"),
+            content: (
+              <Stack>
+                <Card title={t("panel.onboarding.settingsTitle")}>
+                  <Stack gap={8}>
+                    <Text>{t("panel.onboarding.resetHint")}</Text>
+                    <Button tone="default" onClick={resetOnboarding}>{t("panel.onboarding.reset")}</Button>
+                  </Stack>
+                </Card>
+                <Card title={t("panel.dev.switch.title")}>
+                  <Stack gap={8}>
+                    <Text>{t("panel.settings.developerHint")}</Text>
+                    <ToggleSwitch checked={!!configForm.values.developer_tools_enabled} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
+                  </Stack>
+                </Card>
+              </Stack>
+            ),
+          },
+        ]}
+      />
+      <Modal
+        open={storageDetailsOpen}
+        title={t("panel.settings.storagePathTitle")}
+        onClose={() => setStorageDetailsOpen(false)}
+        footer={<Button tone="default" onClick={() => setStorageDetailsOpen(false)}>{t("panel.actions.cancel")}</Button>}
+      >
         <Stack>
-          {/* live_enabled is owned by the console start/stop action; settings keep platform-level controls only. */}
-          <ToggleSwitch checked={!!configForm.values.safety_auto_stop_enabled} label={t("panel.fields.autoStop")} onChange={(value) => configForm.setField("safety_auto_stop_enabled", value)} />
-          <Grid cols={2}>
-            <Field label={t("panel.fields.rateLimit")}>
-              <Input value={configForm.values.rate_limit_seconds} onChange={(value) => configForm.setField("rate_limit_seconds", value)} />
-            </Field>
-            <Field label={t("panel.fields.queueLimit")}>
-              <Input value={configForm.values.queue_limit} onChange={(value) => configForm.setField("queue_limit", value)} />
-            </Field>
-          </Grid>
-          <Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button>
-        </Stack>
-      </Card>
-      <Card title={t("panel.storage.title")}>
-        <Stack>
-          {/* Show the effective profile directory as code text so long paths remain readable. */}
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ color: "var(--muted)", fontSize: "13px", fontWeight: 650 }}>{t("panel.storage.current")}</span>
-            <StatusBadge tone={viewerStore.using_custom ? "info" : "success"} label={viewerStore.using_custom ? t("panel.storage.isCustom") : t("panel.storage.isDefault")} />
-          </div>
+          <Text>{t("panel.settings.storagePathHint")}</Text>
           <CodeBlock>{String(viewerStore.dir || "-")}</CodeBlock>
-          {viewerStore.writable === false ? <Alert tone="warning">{t("panel.storage.notWritable")}</Alert> : null}
-          <Alert tone="warning">{t("panel.storage.disabled")}</Alert>
         </Stack>
-      </Card>
-      <Card title={t("panel.advanced.title")}>
-        <Stack>
-          <Grid cols={2}>
-            <StatCard label={t("panel.stats.queue")} value={`${safety.queue_size || 0}/${safety.queue_limit || config.queue_limit || 0}`} />
-            <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />} />
-          </Grid>
-          {audit.length ? (
-            <DataTable
-              data={audit.slice(0, 5).map((item, index) => ({ ...item, id: `${item.at || index}-${index}` }))}
-              rowKey="id"
-              columns={[
-                { key: "at", label: t("panel.columns.time") },
-                { key: "level", label: t("panel.columns.level") },
-                { key: "op", label: t("panel.columns.op") },
-                { key: "message", label: t("panel.columns.message") },
-              ]}
-            />
-          ) : null}
-        </Stack>
-      </Card>
-      <ModuleOverviewCard modules={modules} t={t} />
-      <Card title={t("panel.onboarding.settingsTitle")}>
-        <Stack gap={8}>
-          <Text>{t("panel.onboarding.resetHint")}</Text>
-          <Button tone="default" onClick={resetOnboarding}>{t("panel.onboarding.reset")}</Button>
-        </Stack>
-      </Card>
-      <Card title={t("panel.dev.switch.title")}>
-        <ToggleSwitch checked={!!configForm.values.developer_tools_enabled} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
-      </Card>
+      </Modal>
+      <ConfirmDialog
+        open={safetyDisableConfirmOpen}
+        title={t("panel.settings.disableSafetyTitle")}
+        message={t("panel.settings.disableSafetyMessage")}
+        tone="danger"
+        confirmLabel={t("panel.settings.disableSafetyConfirm")}
+        cancelLabel={t("panel.actions.cancel")}
+        onConfirm={() => {
+          setSafetyDisableConfirmOpen(false)
+          applySettingsPatch({ safety_auto_stop_enabled: false })
+        }}
+        onCancel={() => setSafetyDisableConfirmOpen(false)}
+      />
     </Stack>
   )
 
   const dataSection = (
-    <Stack>
-      <Grid cols={4}>
-        <StatCard label={t("panel.summary.total")} value={results.length} />
-        <StatCard label={t("panel.summary.pushed")} value={resultCounts.pushed} />
-        <StatCard label={t("panel.summary.skipped")} value={resultCounts.skipped} />
-        <StatCard label={t("panel.summary.failed")} value={resultCounts.failed} />
-      </Grid>
-      <LiveExplainSection
-        t={t}
-        dynamicLabel={dynamicLabel}
-        liveExplain={liveExplain}
-        speechSummary={speechSummary}
-        speechReason={speechReason}
-      />
-      <RecentResultsTable t={t} results={results} />
-      <ViewerProfilesTable
-        t={t}
-        profiles={profiles}
-      />
-    </Stack>
+    <CompactTabs
+      id="audience-data"
+      items={[
+        {
+          id: "session",
+          label: t("panel.audience.sessionTab"),
+          content: <LiveSessionSection t={t} session={liveSession} />,
+        },
+        {
+          id: "profiles",
+          label: t("panel.audience.profilesTab"),
+          content: <ViewerProfilesTable t={t} profiles={profiles} />,
+        },
+      ]}
+    />
   )
 
   const lookupIdentity = lookupResult?.identity || null
@@ -1566,7 +1697,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           {!developerToolsEnabled ? <Alert tone="info">{t("panel.dev.developerModeDisabled")}</Alert> : null}
         </Stack>
       </Card>
-      <Tabs
+      <CompactTabs
         id="developer-tools"
         items={[
           {
@@ -1648,24 +1779,55 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           },
           {
             id: "results",
-            label: t("panel.dev.recentSandbox"),
+            label: t("panel.dev.runtimeResults"),
             content: (
-              <Card title={t("panel.dev.recentSandbox")}>
-                {sandboxResults.length ? (
-                  <DataTable
-                    data={sandboxResults.map((item, index) => ({ ...item, id: `${item.created_at || index}-${index}` }))}
-                    rowKey="id"
-                    columns={[
-                      { key: "uid", label: "UID", render: (row: any) => row.uid || "-" },
-                      { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.nickname || "-" },
-                      { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
-                      { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
-                    ]}
-                  />
-                ) : (
-                  <Text>{t("panel.empty.sandboxResults")}</Text>
-                )}
-              </Card>
+              <Stack>
+                <LiveExplainSection
+                  t={t}
+                  dynamicLabel={dynamicLabel}
+                  liveExplain={liveExplain}
+                  speechSummary={speechSummary}
+                  speechReason={speechReason}
+                />
+                <RecentResultsTable t={t} results={results} />
+                <Card title={t("panel.advanced.title")}>
+                  <Stack>
+                    <Grid cols={2}>
+                      <StatCard label={t("panel.stats.queue")} value={`${safety.queue_size || 0}/${safety.queue_limit || config.queue_limit || 0}`} />
+                      <StatCard label={t("panel.stats.safety")} value={<StatusBadge tone={statusTone(String(safety.status || ""))} label={dynamicLabel("safety", "panel.safety", String(safety.status || "unknown"))} />} />
+                    </Grid>
+                    {audit.length ? (
+                      <DataTable
+                        data={audit.slice(0, 5).map((item, index) => ({ ...item, id: `${item.at || index}-${index}` }))}
+                        rowKey="id"
+                        columns={[
+                          { key: "at", label: t("panel.columns.time") },
+                          { key: "level", label: t("panel.columns.level") },
+                          { key: "op", label: t("panel.columns.op") },
+                          { key: "message", label: t("panel.columns.message") },
+                        ]}
+                      />
+                    ) : null}
+                  </Stack>
+                </Card>
+                <ModuleOverviewCard modules={modules} t={t} />
+                <Card title={t("panel.dev.recentSandbox")}>
+                  {sandboxResults.length ? (
+                    <DataTable
+                      data={sandboxResults.map((item, index) => ({ ...item, id: `${item.created_at || index}-${index}` }))}
+                      rowKey="id"
+                      columns={[
+                        { key: "uid", label: "UID", render: (row: any) => row.uid || "-" },
+                        { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.nickname || "-" },
+                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+                        { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
+                      ]}
+                    />
+                  ) : (
+                    <Text>{t("panel.empty.sandboxResults")}</Text>
+                  )}
+                </Card>
+              </Stack>
             ),
           },
         ]}

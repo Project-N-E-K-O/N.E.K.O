@@ -807,6 +807,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: Roast
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
+    runtime.live_audience_session.start_session()
 
     await runtime.update_config({"live_enabled": False})
 
@@ -815,6 +816,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: Roast
     assert runtime.config.live_enabled is False
     assert runtime.safety_guard.connected is False
     assert runtime.live_connection_snapshot()["connected"] is False
+    assert runtime.live_audience_session.snapshot()["active"] is False
 
 
 @pytest.mark.asyncio
@@ -965,12 +967,26 @@ async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntim
     runtime.config.live_enabled = True
     runtime.live_room_context = {"live_status": "live", "title": "room"}
     await runtime.bili_live_ingest.start_listening(100)
+    runtime.live_audience_session.start_session()
 
     await stop_live_listener(runtime)
 
     assert runtime.config.live_enabled is False
     assert runtime.live_connection_snapshot()["connected"] is False
     assert runtime.live_room_context == {"live_status": "unknown"}
+    assert runtime.live_audience_session.snapshot()["active"] is False
+    assert runtime.live_audience_session.snapshot()["has_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: RoastRuntime) -> None:
+    await runtime._start_live_listener(123)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_session"]["active"] is True
+    assert state["live_session"]["has_session"] is True
+    assert state["live_session"]["interaction_viewer_count"] == 0
 
 
 async def test_dashboard_state_uses_public_config_projection(runtime: RoastRuntime) -> None:
