@@ -953,6 +953,18 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
     native_relay_source = (APP_INTERPAGE_PARTS_PATH / "cross-window-broadcast-and-bridge.js").read_text(
         encoding="utf-8"
     )
+    prepare_surface_block = source.split(
+        "I.prepareYuiGuideCompactChatSurface = function prepareYuiGuideCompactChatSurface",
+        1,
+    )[1].split("I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface", 1)[0]
+    host_wait_block = prepare_surface_block.split("if (!hasNativePreparation && !hasReadyHost)", 1)[1].split(
+        "var hostMode",
+        1,
+    )[0]
+    host_expand_failure_block = prepare_surface_block.split(
+        "if (!hasNativePreparation && !hostExpanded)",
+        1,
+    )[1].split("Promise.resolve(nativePreparation)", 1)[0]
 
     # 两种跨窗口传输路径必须落到同一实现，重复 relay 也只能启动一次原生展开动画。
     assert "case 'yui_guide_prepare_compact_chat':" in source
@@ -960,6 +972,14 @@ def test_external_chat_prepares_native_capsule_and_restores_previous_ball_state(
     assert "I.yuiGuideCompactChatPrepareRequestId === requestId" in source
     assert "I.yuiGuideCompactChatPrepareRequestId !== requestId" in source
     assert "I.yuiGuideCompactChatPrepareWasCollapsed = wasCollapsed" in source
+    # /chat 的 relay 早于 React host 加载；无原生 prepare 时必须等待 host 方法，不能误报 ready。
+    assert "YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_LIMIT = 80" in source
+    assert "typeof host.openWindow === 'function'" in source
+    assert "typeof host.getChatSurfaceMode === 'function'" in source
+    assert "I.prepareYuiGuideCompactChatSurface(message, retryAttempt + 1)" in source
+    assert "I.yuiGuidePcOverlayLifecycleClosed" in source
+    assert "ready: false" in host_wait_block
+    assert "ready: false" in host_expand_failure_block
     assert "nativeBridge.prepareExpandedForTutorial()" in source
     assert "I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready'" in source
     # 新旧原生桥同步抛错时都必须回执失败，不能让 null 被当成准备成功。
