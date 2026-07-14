@@ -9,7 +9,7 @@ import types
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 
 
 _START = "0001-01-01 00:00:00.000000"
@@ -92,7 +92,7 @@ def timeindex_module():
                 sys.modules[name] = old_module
 
 
-def _create_manager(timeindex_module, tmp_path, rows):
+def _create_manager(timeindex_module, tmp_path, rows, *, indexed=True):
     engine = create_engine(f"sqlite:///{tmp_path / 'time-index.db'}")
     with engine.begin() as conn:
         conn.execute(
@@ -101,9 +101,10 @@ def _create_manager(timeindex_module, tmp_path, rows):
                 "session_id TEXT, message TEXT, timestamp DATETIME)"
             )
         )
-        conn.execute(
-            text(f"CREATE INDEX idx_{_TABLE}_timestamp ON {_TABLE}(timestamp)")
-        )
+        if indexed:
+            conn.execute(
+                text(f"CREATE INDEX idx_{_TABLE}_timestamp ON {_TABLE}(timestamp)")
+            )
         if rows:
             conn.execute(
                 text(
@@ -154,6 +155,7 @@ def test_batches_preserve_order_limit_and_legacy_list_api(timeindex_module, tmp_
     ]
     manager, engine = _create_manager(timeindex_module, tmp_path, rows)
     try:
+        assert manager._has_indexed_timeframe_order("cat", _START, _END) is True
         legacy_rows = manager.retrieve_original_by_timeframe(
             "cat", _START, _END, limit_rows=3
         )
@@ -171,6 +173,182 @@ def test_batches_preserve_order_limit_and_legacy_list_api(timeindex_module, tmp_
             "same-b",
             "late",
         ]
+    finally:
+        engine.dispose()
+
+
+def test_unindexed_readonly_database_uses_one_streaming_query_without_writes(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": "late",
+            "message": "3",
+            "timestamp": "2026-01-02 00:00:00.000000",
+        },
+        {
+            "session_id": "same-a",
+            "message": "1",
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "same-b",
+            "message": "2",
+            "timestamp": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "session_id": "excluded",
+            "message": "4",
+            "timestamp": "2026-01-03 00:00:00.000000",
+        },
+    ]
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=False,
+    )
+    tracker = {"active": 0, "checkouts": 0, "checkins": 0}
+    read_queries: list[tuple[str, int]] = []
+
+    def on_checkout(*_args):
+        tracker["active"] += 1
+        tracker["checkouts"] += 1
+
+    def on_checkin(*_args):
+        tracker["active"] -= 1
+        tracker["checkins"] += 1
+
+    def on_execute(_conn, _cursor, statement, *_args):
+        if statement.startswith("SELECT timestamp, session_id, message"):
+            read_queries.append((statement, threading.get_ident()))
+
+    event.listen(engine, "checkout", on_checkout)
+    event.listen(engine, "checkin", on_checkin)
+    event.listen(engine, "before_cursor_execute", on_execute)
+    try:
+        assert manager._has_indexed_timeframe_order("cat", _START, _END) is False
+        batches = list(
+            manager.iter_original_by_timeframe_batches(
+                "cat",
+                _START,
+                _END,
+                batch_size=1,
+                limit_rows=3,
+            )
+        )
+        assert [row[1] for row in _flatten(batches)] == [
+            "same-a",
+            "same-b",
+            "late",
+        ]
+        assert len(read_queries) == 1
+        assert "LIMIT" in read_queries[0][0]
+        assert tracker["active"] == 0
+        assert tracker["checkouts"] == tracker["checkins"]
+
+        with engine.connect() as conn:
+            indexes = list(conn.execute(text(f"PRAGMA index_list({_TABLE})")))
+        assert indexes == []
+    finally:
+        engine.dispose()
+
+
+def test_unindexed_stream_closes_worker_connection_when_consumer_stops_early(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": f"session-{idx}",
+            "message": str(idx),
+            "timestamp": f"2026-01-01 00:00:{idx:02d}.000000",
+        }
+        for idx in range(20)
+    ]
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=False,
+    )
+    tracker = {"active": 0, "checkouts": 0, "checkins": 0}
+
+    def on_checkout(*_args):
+        tracker["active"] += 1
+        tracker["checkouts"] += 1
+
+    def on_checkin(*_args):
+        tracker["active"] -= 1
+        tracker["checkins"] += 1
+
+    event.listen(engine, "checkout", on_checkout)
+    event.listen(engine, "checkin", on_checkin)
+    try:
+        iterator = manager.iter_original_by_timeframe_batches(
+            "cat", _START, _END, batch_size=1
+        )
+        assert len(next(iterator)) == 1
+        iterator.close()
+
+        assert tracker["active"] == 0
+        assert tracker["checkouts"] == tracker["checkins"]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_async_unindexed_stream_keeps_sqlite_in_worker_and_closes(
+    timeindex_module,
+    tmp_path,
+):
+    rows = [
+        {
+            "session_id": f"session-{idx}",
+            "message": str(idx),
+            "timestamp": f"2026-01-01 00:00:0{idx}.000000",
+        }
+        for idx in range(3)
+    ]
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=False,
+    )
+    tracker = {"active": 0, "checkouts": 0, "checkins": 0}
+    query_threads: list[int] = []
+
+    def on_checkout(*_args):
+        tracker["active"] += 1
+        tracker["checkouts"] += 1
+
+    def on_checkin(*_args):
+        tracker["active"] -= 1
+        tracker["checkins"] += 1
+
+    def on_execute(_conn, _cursor, statement, *_args):
+        if statement.startswith("SELECT timestamp, session_id, message"):
+            query_threads.append(threading.get_ident())
+
+    event.listen(engine, "checkout", on_checkout)
+    event.listen(engine, "checkin", on_checkin)
+    event.listen(engine, "before_cursor_execute", on_execute)
+    event_loop_thread = threading.get_ident()
+    try:
+        batches = [
+            batch
+            async for batch in manager.aiter_original_by_timeframe_batches(
+                "cat", _START, _END, batch_size=1, limit_rows=2
+            )
+        ]
+
+        assert [row[1] for row in _flatten(batches)] == ["session-0", "session-1"]
+        assert len(query_threads) == 1
+        assert query_threads[0] != event_loop_thread
+        assert tracker["active"] == 0
+        assert tracker["checkouts"] == tracker["checkins"]
     finally:
         engine.dispose()
 
@@ -200,6 +378,17 @@ class _FakeResult:
         return self.rows
 
 
+class _FailingStreamResult:
+    def __init__(self):
+        self.calls = 0
+
+    def fetchmany(self, _size):
+        self.calls += 1
+        if self.calls == 1:
+            return [("2026-01-01 00:00:00.000000", "session", "message")]
+        raise RuntimeError("stream failed")
+
+
 class _FakeConnection:
     def __init__(self, result, tracker):
         self.result = result
@@ -227,12 +416,13 @@ class _FakeEngine:
         return _FakeConnection(next(self.results), self.tracker)
 
 
-def _fake_manager(timeindex_module, results, tracker):
+def _fake_manager(timeindex_module, results, tracker, *, indexed=True):
     manager = timeindex_module.TimeIndexedMemory.__new__(
         timeindex_module.TimeIndexedMemory
     )
     manager.engines = {"cat": _FakeEngine(results, tracker)}
     manager._ensure_engine_exists = lambda _name, db_path=None, readonly=False: True
+    manager._has_indexed_timeframe_order = lambda *_args, **_kwargs: indexed
     return manager
 
 
@@ -291,6 +481,27 @@ def test_later_page_exception_marks_partial_iteration_failed(timeindex_module):
         next(iterator)
     assert tracker["active"] == 0
     assert tracker["exits"] == 2
+
+
+def test_unindexed_stream_exception_propagates_and_closes_connection(timeindex_module):
+    tracker = {"active": 0, "exits": 0, "threads": []}
+    manager = _fake_manager(
+        timeindex_module,
+        [_FailingStreamResult()],
+        tracker,
+        indexed=False,
+    )
+
+    iterator = manager.iter_original_by_timeframe_batches(
+        "cat", _START, _END, batch_size=1
+    )
+    assert next(iterator) == [
+        ("2026-01-01 00:00:00.000000", "session", "message")
+    ]
+    with pytest.raises(RuntimeError, match="stream failed"):
+        next(iterator)
+    assert tracker["active"] == 0
+    assert tracker["exits"] == 1
 
 
 @pytest.mark.asyncio
@@ -458,7 +669,12 @@ def test_schema_migration_adds_timestamp_indexes(timeindex_module, tmp_path):
         engine.dispose()
 
 
-def test_batched_read_reduces_python_peak_memory(timeindex_module, tmp_path):
+@pytest.mark.parametrize("indexed", [True, False], ids=["indexed", "readonly-legacy"])
+def test_batched_read_reduces_python_peak_memory(
+    timeindex_module,
+    tmp_path,
+    indexed,
+):
     payload = "x" * 4096
     row_count = 2500
     rows = [
@@ -469,7 +685,12 @@ def test_batched_read_reduces_python_peak_memory(timeindex_module, tmp_path):
         }
         for idx in range(row_count)
     ]
-    manager, engine = _create_manager(timeindex_module, tmp_path, rows)
+    manager, engine = _create_manager(
+        timeindex_module,
+        tmp_path,
+        rows,
+        indexed=indexed,
+    )
     try:
         gc.collect()
         tracemalloc.start()
