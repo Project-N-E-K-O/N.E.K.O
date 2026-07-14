@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-07-13 · 当前测试基线 1247 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
+> 更新日期：2026-07-14 · 当前测试基线 1268 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
 
 ---
 

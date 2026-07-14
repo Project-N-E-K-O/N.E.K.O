@@ -225,12 +225,13 @@ class DouyinLiveIngestModule(BaseModule):
         if self.ctx is None or not self._owns_active_target():
             return None
         event = to_provider_event(payload, room_ref=self._room_ref)
-        if not event.room_ref or (
-            self._room_ref
-            and safe_room_ref(event.room_ref) != safe_room_ref(self._room_ref)
-        ):
+        if not event.room_ref:
             self._state = "disconnected"
             self._last_error = "douyin room_ref is required before publishing events"
+            return None
+        if self._room_ref and safe_room_ref(event.room_ref) != safe_room_ref(self._room_ref):
+            self._state = "disconnected"
+            self._last_error = "douyin room_ref mismatch before publishing events"
             return None
         if is_status_only_event_type(event.event_type):
             self._mark_status_only_event(event.event_type, ts)

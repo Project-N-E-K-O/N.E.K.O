@@ -642,6 +642,8 @@ def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
         assert 'props.api.call("set_live_room", { room_id: roomRef })' in source
         assert 'callSimple("disconnect_live_room")' in source
         assert 'interactionPaused ? "resume_roast" : "pause_roast"' in source
+        assert 't("panel.room.lookupOk") + ": "' not in source
+        assert "const roastEnabled = configForm.values.avatar_roast_enabled !== false" in source
         assert '{ id: "console", label: t("panel.tabs.console"), content: consoleSection }' in source
         assert '{ id: "interaction", label: t("panel.tabs.interaction"), content: modulesSection }' in source
         assert '{ id: "viewers", label: t("panel.tabs.viewers"), content: dataSection }' in source

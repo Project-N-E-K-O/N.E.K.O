@@ -501,6 +501,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"[mass] summary={json.dumps(summary, ensure_ascii=False)}")
     finally:
         cleanup_error: PressureError | None = None
+        primary_exception_active = sys.exc_info()[0] is not None
         if args.restore and connected_by_script:
             try:
                 if disconnect_owned_connection(client, owned_room=room):
@@ -519,7 +520,18 @@ def run(args: argparse.Namespace) -> int:
             except PressureError as exc:
                 cleanup_error = cleanup_error or exc
         if cleanup_error is not None:
-            raise cleanup_error
+            if primary_exception_active:
+                write_jsonl(
+                    log_path,
+                    {
+                        "type": "cleanup_error_after_primary_failure",
+                        "time": now_iso(),
+                        "error": f"{type(cleanup_error).__name__}: {cleanup_error}",
+                    },
+                )
+                print(f"[mass] WARNING: cleanup also failed: {cleanup_error}", file=sys.stderr)
+            else:
+                raise cleanup_error
 
     return 0
 

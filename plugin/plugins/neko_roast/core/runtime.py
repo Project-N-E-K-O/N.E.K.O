@@ -100,6 +100,7 @@ class RoastRuntime(
             try:
                 await operation()
             except asyncio.CancelledError:
+                self._stopping = False
                 raise
             except Exception as exc:
                 failures.append(step)

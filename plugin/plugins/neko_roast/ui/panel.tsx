@@ -664,7 +664,6 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     setOnboardingOpen(true)
   }
 
-  const liveStatusLabel = liveRoomResult?.live_status ? t(`panel.liveStatus.${liveRoomResult.live_status}`) : "-"
   const liveStatusSummary = String(liveStatus.summary || "cannot_stream")
   const liveStatusReason = String(liveStatus.reason || "room_not_configured")
   const liveStatusCooldown = Number(liveStatus.cooldown_remaining || 0)
@@ -1037,9 +1036,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           {livePlatform === "bilibili" ? <Text>{t("panel.console.roomNumeric")}</Text> : null}
           {liveRoomResult ? (
             <Alert tone={roomLookupTone}>
-              {liveRoomResult.ok
-                ? t("panel.room.lookupOk") + ": " + (liveRoomResult.title || "-") + " / " + (liveRoomResult.anchor_name || "-") + " / " + liveStatusLabel
-                : (liveRoomResult.message || t("panel.room.lookupFailed"))}
+              {liveRoomResult.ok ? t("panel.room.lookupOk") : (liveRoomResult.message || t("panel.room.lookupFailed"))}
             </Alert>
           ) : null}
           {liveRoomResult?.ok ? (
@@ -1211,7 +1208,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     : ""
 
   // Live roast card header state.
-  const roastEnabled = config.avatar_roast_enabled !== false
+  const roastEnabled = configForm.values.avatar_roast_enabled !== false
   const roastConnected = !!connection.connected
   const roastBadge = roastEnabled
     ? (roastConnected

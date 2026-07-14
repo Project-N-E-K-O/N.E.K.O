@@ -2501,6 +2501,26 @@ async def test_stop_cancels_idle_hosting_loop(runtime: RoastRuntime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_stop_can_be_retried(runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def cancel_stop() -> None:
+        raise asyncio.CancelledError
+
+    async def complete_stop() -> None:
+        return None
+
+    monkeypatch.setattr(runtime, "_stop_idle_hosting_loop", cancel_stop)
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.stop()
+
+    assert runtime._stopping is False
+
+    monkeypatch.setattr(runtime, "_stop_idle_hosting_loop", complete_stop)
+    await runtime.stop()
+
+    assert runtime._stopping is True
+
+
+@pytest.mark.asyncio
 async def test_config_store_health_row_tracks_successful_persist(runtime: RoastRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
 

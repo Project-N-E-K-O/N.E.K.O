@@ -7,6 +7,7 @@ import pytest
 from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
     parse_args as parse_random_args,
 )
+from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import run as run_random
 from plugin.plugins.neko_roast.tools.live_silence_pressure import (
     parse_args as parse_silence_args,
 )
@@ -210,3 +211,73 @@ def test_trip_during_pressure_is_not_resumed_or_queue_cleared(
     assert safety_status == "tripped"
     assert "resume_roast" not in action_ids
     assert "clear_queue" not in action_ids
+
+
+@pytest.mark.parametrize(
+    ("runner", "parse_args", "client_target", "warning_prefix"),
+    [
+        (run_silence, parse_silence_args, "plugin.plugins.neko_roast.tools.live_silence_pressure.HostedClient", "[pressure]"),
+        (run_random, parse_random_args, "plugin.plugins.neko_roast.tools.live_random_danmaku_pressure.HostedClient", "[mass]"),
+    ],
+)
+def test_pressure_cleanup_failure_does_not_mask_primary_failure(
+    runner,
+    parse_args,
+    client_target: str,
+    warning_prefix: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config: dict[str, Any] = {
+        "live_enabled": False,
+        "live_mode": "solo_stream",
+        "dry_run": False,
+        "developer_tools_enabled": False,
+        "rate_limit_seconds": 5.0,
+        "queue_limit": 5,
+        "activity_level": "quiet",
+        "stream_theme": "original",
+    }
+    update_calls = 0
+
+    class Client:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def context(self) -> dict[str, Any]:
+            return {
+                "state": {
+                    "config": dict(config),
+                    "safety": {"status": "running"},
+                    "live_connection": {"connected": False},
+                }
+            }
+
+        def action(self, action_id: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+            nonlocal update_calls
+            if action_id == "update_config":
+                update_calls += 1
+                if update_calls == 1:
+                    config.update(args or {})
+                    return {"result": {"success": True}}
+                return {"result": {"success": False, "error": "cleanup failed"}}
+            if action_id == "connect_live_room":
+                return {"result": {"success": False, "error": "primary failed"}}
+            return {"result": {"success": True}}
+
+    monkeypatch.setattr(client_target, Client)
+    args = parse_args(
+        [
+            "--connect",
+            "--room",
+            "room-2",
+            "--log",
+            str(tmp_path / f"{warning_prefix.strip('[]')}.jsonl"),
+        ]
+    )
+
+    with pytest.raises(PressureError, match="connect_live_room failed: primary failed"):
+        runner(args)
+
+    assert f"{warning_prefix} WARNING: cleanup also failed: update_config failed: cleanup failed" in capsys.readouterr().err

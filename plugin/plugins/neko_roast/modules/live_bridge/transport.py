@@ -164,6 +164,7 @@ class LiveBridgeTransport:
                     self._notify_state(request, connected)
                     _resolve_ready(ready, connected)
                     connected_once = True
+                    attempt = 0
                     async for raw_message in ws:
                         for payload in request.adapter.map_message(_json_message(raw_message), room_ref=room_ref):
                             event = LiveBridgeEvent(payload=payload, ts=time.time())

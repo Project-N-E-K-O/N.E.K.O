@@ -183,10 +183,11 @@ async def test_live_bridge_transport_open_failure_is_sanitized():
 
 
 @pytest.mark.asyncio
-async def test_live_bridge_transport_reconnects_once_after_established_eof():
+async def test_live_bridge_transport_resets_retry_budget_after_successful_reconnect():
     sockets = [
         _FakeWebSocket([json.dumps({"text": "first"})]),
         _FakeWebSocket([json.dumps({"text": "second"})]),
+        _FakeWebSocket([json.dumps({"text": "third"})]),
     ]
 
     class _SequenceConnect(_FakeConnect):
@@ -213,7 +214,7 @@ async def test_live_bridge_transport_reconnects_once_after_established_eof():
     await asyncio.wait_for(transport._task, timeout=1.0)  # noqa: SLF001
 
     assert started.safe_state() == "connected"
-    assert [event.payload["text"] for event in events] == ["first", "second"]
+    assert [event.payload["text"] for event in events] == ["first", "second", "third"]
     assert any(state.safe_state() == "reconnecting" for state in states)
 
 

@@ -1715,7 +1715,6 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     setOnboardingOpen(true)
   }
 
-  const liveStatusLabel = liveRoomResult?.live_status ? t(`panel.liveStatus.${liveRoomResult.live_status}`) : "-"
   const liveStatusSummary = String(liveStatus.summary || "cannot_stream")
   const liveStatusReason = String(liveStatus.reason || "room_not_configured")
   const liveStatusCooldown = Number(liveStatus.cooldown_remaining || 0)
@@ -1964,7 +1963,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
             <Input value={configForm.values.live_room_ref} placeholder={roomPlaceholder} onChange={(value) => { configForm.setField("live_room_ref", value); configForm.setField("live_room_id", value); setLiveRoomResult(null); setQueriedRoomRef("") }} />
           </Field>
           {livePlatform === "bilibili" ? <Text>{t("panel.console.roomNumeric")}</Text> : null}
-          {liveRoomResult ? <Alert tone={roomLookupTone}>{liveRoomResult.ok ? t("panel.room.lookupOk") + ": " + (liveRoomResult.title || "-") + " / " + (liveRoomResult.anchor_name || "-") + " / " + liveStatusLabel : (liveRoomResult.message || t("panel.room.lookupFailed"))}</Alert> : null}
+          {liveRoomResult ? <Alert tone={roomLookupTone}>{liveRoomResult.ok ? t("panel.room.lookupOk") : (liveRoomResult.message || t("panel.room.lookupFailed"))}</Alert> : null}
           {liveRoomResult?.ok ? <Grid cols={3}><StatCard label={t("panel.stats.room")} value={lookupRoomRef || "-"} /><StatCard label={t("panel.room.titleLabel")} value={liveRoomResult.title || "-"} /><StatCard label={t("panel.room.anchor")} value={liveRoomResult.anchor_name || "-"} /></Grid> : null}
         </Stack>
       </Modal>
@@ -2079,7 +2078,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     : ""
 
   // Live roast card header state.
-  const roastEnabled = config.avatar_roast_enabled !== false
+  const roastEnabled = configForm.values.avatar_roast_enabled !== false
   const roastConnected = !!connection.connected
   const roastBadge = roastEnabled
     ? (roastConnected
