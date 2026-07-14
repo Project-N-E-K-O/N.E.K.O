@@ -76,6 +76,19 @@
         }
     }
 
+    function getActiveModelType() {
+        const config = window.lanlan_config || {};
+        const modelType = String(config.model_type || 'live2d').trim().toLowerCase();
+        if (modelType === 'live3d') {
+            const subType = String(config.live3d_sub_type || '').trim().toLowerCase();
+            if (subType === 'mmd' || subType === 'vrm') return subType;
+        }
+        if (modelType === 'vrm' || modelType === 'mmd' || modelType === 'pngtuber') {
+            return modelType;
+        }
+        return 'live2d';
+    }
+
     function dispatchState() {
         try {
             window.dispatchEvent(new CustomEvent('neko:game-mode-beta-state', {
@@ -298,13 +311,13 @@
                 clientState.promptedThisCycle = false;
                 showNotice(t(
                     'settings.gameModeBeta.enabledNotice',
-                    '游戏模式 Beta（测试版）已开启。资源占用持续较高时，NEKO 会自动切换到猫猫形态以降低占用；部分插件、视觉/OCR 功能首次使用可能加载较慢。'
+                    '侧边模式已开启。拖动 Live2D 到屏幕边缘即可进入探身状态；资源压力只记录状态，不会自动变猫。'
                 ));
             } else {
                 await handleDisabledRestore();
                 showNotice(t(
                     'settings.gameModeBeta.disabledNotice',
-                    '游戏模式 Beta（测试版）已关闭。NEKO 已恢复普通资源策略。'
+                    '侧边模式已关闭。Live2D 将恢复普通边缘吸附行为。'
                 ));
             }
             if (wasEnabled !== next) dispatchState();
@@ -413,6 +426,24 @@
         clientState.currentCycleId = payload.cycle_id || null;
         clientState.cycleTriggerSource = payload.trigger_source || null;
         clientState.returnBallMoved = false;
+
+        if (getActiveModelType() === 'live2d') {
+            clientState.alreadyCatWhenTriggered = isCatFormActive();
+            clientState.autoSwitched = false;
+            clientState.manualOverride = false;
+            clientState.restoreAnchor = null;
+            const host = clientState.hostContract;
+            if (host && clientState.currentCycleId) {
+                void sendSwitchAck('already_protected');
+            } else {
+                void postJson(API_MANUAL_RESTORE, {}).catch(function (error) {
+                    console.warn('[GameModeBeta] failed to release ignored Live2D cycle:', error);
+                });
+            }
+            dispatchState();
+            return;
+        }
+
         clientState.restoreAnchor = captureRestoreAnchor();
         invalidatePendingModelLoads();
 

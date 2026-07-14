@@ -73,6 +73,7 @@ def test_app_game_mode_beta_frontend_contracts():
           doc.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(doc);
 
           win.document = doc;
+          win.lanlan_config = options.modelConfig || {{ model_type: 'vrm' }};
           win.live2dManager = {{
             _goodbyeClicked: options.initialCat === true,
             _isLoadingModel: false,
@@ -189,6 +190,25 @@ def test_app_game_mode_beta_frontend_contracts():
           assert(gate.win.nekoGameModeBeta.getState().autoSwitched === true, 'autoSwitched should be tracked');
           assert(gate.win.nekoGameModeBeta.getState().lastReason.metric === 'gpu', 'last reason should be tracked');
           assert(gate.win.nekoGameModeBeta.getStatusText().includes('GPU 99% / 30s'), 'status should include latest reason');
+
+          const live2dNoAutoCat = createHarness({{
+            modelConfig: {{ model_type: 'live2d' }},
+            responses: [
+              {{ success: true, state: {{ enabled: true }} }},
+              {{ success: true, state: {{ enabled: true }} }},
+            ],
+          }});
+          await live2dNoAutoCat.flush();
+          live2dNoAutoCat.win.nekoGameModeBeta.handleAutoSwitchEvent(Object.assign({{
+            cycle_id: 'live2d-no-auto-cat',
+          }}, autoPayload));
+          await live2dNoAutoCat.flush();
+          assert(live2dNoAutoCat.goodbyeEvents.length === 0, 'Live2D must not auto-enter cat form');
+          assert(live2dNoAutoCat.win.nekoGameModeBeta.getState().autoSwitched === false, 'ignored Live2D cycles must not claim ownership');
+          assert(
+            live2dNoAutoCat.fetchCalls.some((call) => call.url === '/api/game-mode-beta/manual-restore'),
+            'hostless Live2D should release the ignored backend cycle'
+          );
 
           const restore = createHarness({{
             responses: [

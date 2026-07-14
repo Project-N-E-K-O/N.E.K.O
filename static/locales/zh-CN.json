@@ -2577,9 +2577,9 @@
             "visionInterval": "感知间隔"
         },
         "gameModeBeta": {
-            "enabledNotice": "游戏模式 Beta（测试版）已开启。资源占用持续较高时，NEKO 会自动切换到猫猫形态以降低占用；部分插件、视觉/OCR 功能首次使用可能加载较慢。",
+            "enabledNotice": "侧边模式已开启。拖动 Live2D 到屏幕边缘即可进入探身状态；资源压力只记录状态，不会自动变猫。",
             "autoSwitchNotice": "检测到 {metric} 占用持续较高，已切换到猫猫形态以降低资源占用。",
-            "disabledNotice": "游戏模式 Beta（测试版）已关闭。NEKO 已恢复普通资源策略。",
+            "disabledNotice": "侧边模式已关闭。Live2D 将恢复普通边缘吸附行为。",
             "toggleFailed": "游戏模式切换失败，请稍后重试。",
             "memoryMetric": "内存",
             "resourceMetric": "资源",
@@ -2587,7 +2587,7 @@
             "statusOff": "关闭",
             "statusOnly": "{status}",
             "statusWithReason": "{status} · 最近：{metric} {percent} / {duration}",
-            "autoCatOnGame": "检测到游戏时自动变猫",
+            "autoCatOnGame": "检测到游戏时让非 Live2D 模型自动变猫",
             "triggerMode": "触发模式",
             "smartMode": "智能判断",
             "instantMode": "检测到即触发",
@@ -2595,7 +2595,7 @@
             "details": "详情",
             "switchFailed": "切换到猫猫形态失败，稍后会重新完整确认。",
             "restoreFailed": "模型恢复失败，仍保持猫猫形态。请再次点击猫猫重试。",
-            "signalUnavailable": "暂时无法获得可靠的游戏识别信号；资源压力保护仍然有效。"
+            "signalUnavailable": "暂时无法获得可靠的游戏识别信号；资源采样仍然可用。"
         },
         "toggles": {
             "allowInterrupt": "允许打断",
@@ -2603,8 +2603,8 @@
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
-            "gameModeBeta": "游戏模式 Beta（测试版）",
-            "gameModeBetaTooltip": "开启后持续监测整机 CPU、内存和 GPU 压力；资源占用持续较高时自动切换到猫猫形态。",
+            "gameModeBeta": "侧边模式",
+            "gameModeBetaTooltip": "拖动 Live2D 到屏幕左右边缘即可探身。CPU、内存和 GPU 压力仅用于诊断，不会自动改变模型。",
             "autoCat": "自动变猫",
             "autoCatTooltip": "一段时间无互动后自动变成小猫",
             "catAudio": "猫猫音效",

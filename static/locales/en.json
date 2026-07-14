@@ -2577,9 +2577,9 @@
             "visionInterval": "Perception Interval"
         },
         "gameModeBeta": {
-            "enabledNotice": "Game Mode Beta is on. When resource usage stays high, NEKO will switch to cat form to reduce usage; some plugin and vision/OCR features may load more slowly the first time.",
+            "enabledNotice": "Side Mode is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
             "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
-            "disabledNotice": "Game Mode Beta is off. NEKO has returned to the normal resource policy.",
+            "disabledNotice": "Side Mode is off. Live2D now uses normal edge snapping.",
             "toggleFailed": "Failed to switch Game Mode. Please try again later.",
             "memoryMetric": "memory",
             "resourceMetric": "resource",
@@ -2587,7 +2587,7 @@
             "statusOff": "Off",
             "statusOnly": "{status}",
             "statusWithReason": "{status} · Last: {metric} {percent} / {duration}",
-            "autoCatOnGame": "Automatically become a cat when a game is detected",
+            "autoCatOnGame": "Automatically switch non-Live2D models to cat form when a game is detected",
             "triggerMode": "Trigger mode",
             "smartMode": "Smart",
             "instantMode": "Trigger on detection",
@@ -2595,7 +2595,7 @@
             "details": "Details",
             "switchFailed": "Could not enter cat form. Game detection will be confirmed again after a short delay.",
             "restoreFailed": "The model could not be restored, so cat form remains active. Click the cat again to retry.",
-            "signalUnavailable": "Reliable game detection is temporarily unavailable. Resource-pressure protection remains active."
+            "signalUnavailable": "Reliable game detection is temporarily unavailable. Resource sampling remains available."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
@@ -2603,8 +2603,8 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
-            "gameModeBeta": "Game Mode Beta",
-            "gameModeBetaTooltip": "Monitors system CPU, memory, and GPU pressure; when usage stays high, NEKO switches to cat form to reduce resource use.",
+            "gameModeBeta": "Side Mode",
+            "gameModeBetaTooltip": "Drag Live2D to the left or right screen edge to make it peek. CPU, memory, and GPU pressure is diagnostic only and never changes the model automatically.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",

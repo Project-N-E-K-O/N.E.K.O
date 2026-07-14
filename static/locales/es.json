@@ -2577,9 +2577,9 @@
             "visionInterval": "Intervalo de percepción"
         },
         "gameModeBeta": {
-            "enabledNotice": "El modo juego Beta está activado. Si el uso de recursos permanece alto, NEKO cambiará a forma de gato para reducirlo; algunos complementos y funciones de visión/OCR pueden tardar más la primera vez.",
+            "enabledNotice": "El modo lateral está activado. Arrastra Live2D a un borde de la pantalla para que se asome; la presión de recursos solo se registra y nunca cambia el modelo automáticamente.",
             "autoSwitchNotice": "El uso de {metric} permaneció alto, por lo que NEKO cambió a forma de gato para reducir recursos.",
-            "disabledNotice": "El modo juego Beta está desactivado. NEKO ha vuelto a la política normal de recursos.",
+            "disabledNotice": "El modo lateral está desactivado. Live2D vuelve al ajuste normal en los bordes.",
             "toggleFailed": "No se pudo cambiar el modo juego. Inténtalo de nuevo más tarde.",
             "memoryMetric": "memoria",
             "resourceMetric": "recursos",
@@ -2587,7 +2587,7 @@
             "statusOff": "Desactivado",
             "statusOnly": "{status}",
             "statusWithReason": "{status} · Último: {metric} {percent} / {duration}",
-            "autoCatOnGame": "Convertirse automáticamente en gato al detectar un juego",
+            "autoCatOnGame": "Cambiar automáticamente los modelos que no sean Live2D a forma de gato al detectar un juego",
             "triggerMode": "Modo de activación",
             "smartMode": "Inteligente",
             "instantMode": "Activar al detectar",
@@ -2595,7 +2595,7 @@
             "details": "Detalles",
             "switchFailed": "No se pudo entrar en forma de gato. La detección del juego se confirmará de nuevo tras una breve espera.",
             "restoreFailed": "No se pudo restaurar el modelo, así que la forma de gato sigue activa. Haz clic de nuevo en el gato para reintentar.",
-            "signalUnavailable": "La detección fiable de juegos no está disponible temporalmente. La protección por presión de recursos sigue activa."
+            "signalUnavailable": "La detección fiable de juegos no está disponible temporalmente. El muestreo de recursos sigue disponible."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
@@ -2603,8 +2603,8 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "gameModeBeta": "Modo juego Beta",
-            "gameModeBetaTooltip": "Supervisa la presión de CPU, memoria y GPU del sistema; si el uso se mantiene alto, NEKO cambia a forma de gato para reducir recursos.",
+            "gameModeBeta": "Modo lateral",
+            "gameModeBetaTooltip": "Arrastra Live2D al borde izquierdo o derecho para que se asome. La presión de CPU, memoria y GPU es solo diagnóstica y nunca cambia el modelo automáticamente.",
             "autoCat": "Modo gato automático",
             "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",

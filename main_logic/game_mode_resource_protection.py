@@ -617,7 +617,7 @@ class GameModeResourceProtector:
         samples.append(sample)
         self._state["last_samples"] = samples[-LAST_SAMPLE_LIMIT:]
 
-        high_reason, high_percent = self._high_pressure_reason(sample)
+        high_reason, _high_percent = self._high_pressure_reason(sample)
         now = self._time()
         suppressed_until = self._state.get("suppressed_until")
         if isinstance(suppressed_until, (int, float)) and suppressed_until <= now:
@@ -643,13 +643,9 @@ class GameModeResourceProtector:
             return
 
         self._state["pressure_state"] = "high"
-
-        if self._state["high_sample_count"] < SUSTAINED_SAMPLE_COUNT:
-            return
-        if isinstance(self._state.get("suppressed_until"), (int, float)) and self._state["suppressed_until"] > now:
-            return
-
-        await self._trigger_locked(high_reason, sample, high_percent)
+        # Resource pressure is diagnostic only. Sampling remains available to
+        # status/debug surfaces, but CPU, memory, or GPU load must never cause
+        # a model transition by itself.
 
     def _high_pressure_reason(self, sample: MetricSample) -> tuple[str | None, float | None]:
         candidates: list[tuple[str, float]] = []
@@ -770,17 +766,12 @@ class GameModeResourceProtector:
         if not candidates:
             self._state["game_smart_high_count"] = 0
             return
-        reason, percent = max(candidates, key=lambda item: item[1])
-        self._state["game_smart_high_count"] = int(self._state.get("game_smart_high_count") or 0) + 1
-        if self._state["game_smart_high_count"] >= GAME_SMART_SAMPLE_COUNT:
-            first_seen = float(self._state.get("game_first_seen_at") or now)
-            await self._trigger_locked(
-                reason,
-                sample,
-                percent,
-                trigger_source="game_semantic_smart",
-                duration_seconds=max(0.0, now - first_seen),
-            )
+        self._state["game_smart_high_count"] = min(
+            GAME_SMART_SAMPLE_COUNT,
+            int(self._state.get("game_smart_high_count") or 0) + 1,
+        )
+        # Smart-mode pressure thresholds are retained as diagnostics only.
+        # Exact-game instant mode is the sole semantic auto-transition path.
 
     def _clear_game_candidate_locked(self, *, keep_last_signal: bool = False) -> None:
         last_signal = self._state.get("game_last_signal_at") if keep_last_signal else None

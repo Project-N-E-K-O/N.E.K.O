@@ -56,6 +56,7 @@ function createHarness(options = {}) {
   win.document = doc;
   win.addEventListener = EventTargetLike.prototype.addEventListener.bind(win);
   win.dispatchEvent = EventTargetLike.prototype.dispatchEvent.bind(win);
+  win.lanlan_config = options.modelConfig || { model_type: 'vrm' };
   win.live2dManager = { _goodbyeClicked: false, pauseRendering: () => pauses.push('live2d') };
   let vrmPauseAttempts = 0;
   win.vrmManager = { _goodbyeClicked: false, _modelLoadState: options.invalidateLoad ? 'loading' : 'idle', pauseRendering: () => {
@@ -159,6 +160,26 @@ function createHarness(options = {}) {
     get modelRestoreAttempts() { return modelRestoreAttempts; },
   };
 }
+
+test('Live2D pressure and semantic triggers never auto-enter cat form', async () => {
+  const harness = createHarness({ modelConfig: { model_type: 'live2d' } });
+  await flush();
+
+  harness.win.nekoGameModeBeta.handleAutoSwitchEvent({
+    type: 'game_mode_auto_switch',
+    source: 'game_mode_auto',
+    cycle_id: 'cycle-live2d-no-auto-cat',
+    trigger_source: 'game_semantic',
+    reason: 'exact_game',
+  });
+  await flush();
+
+  assert.equal(harness.goodbyeEvents.length, 0);
+  assert.equal(harness.win.nekoGameModeBeta.getState().autoSwitched, false);
+  const ack = harness.calls.find((call) => call.url === '/api/game-mode-beta/ack');
+  assert.ok(ack, 'Live2D should release the backend cycle without claiming ownership');
+  assert.equal(JSON.parse(ack.init.body).status, 'already_protected');
+});
 
 test('registered pet ACKs protection, enters deep sleep, and only click restores', async () => {
   const harness = createHarness();
