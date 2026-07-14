@@ -76,10 +76,9 @@ def _isolate_galgame_runtime_root(
 def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
     """Redirect plugin runtime override persistence to an in-memory dict for tests.
 
-    Without this, tests that exercise `disable_extension` / `enable_extension`
-    (directly or via `delete_plugin`) would write to the real user's
-    ``plugin_runtime_overrides.json``, persistently disabling extensions on the
-    developer's machine.
+    Without this, lifecycle tests could write to the real user's
+    ``plugin_runtime_overrides.json`` and persist test state on the developer's
+    machine.
     """
     from plugin.server.infrastructure import runtime_overrides as _ro
 

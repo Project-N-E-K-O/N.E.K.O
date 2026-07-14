@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const source = fs.readFileSync(path.join(__dirname, 'app-proactive.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, 'app/app-proactive.js'), 'utf8');
 
 test('proactive scheduler re-arms after new-user icebreaker suppression', () => {
     assert.match(source, /function getNewUserIcebreakerRetryDelayMs\(\)/);

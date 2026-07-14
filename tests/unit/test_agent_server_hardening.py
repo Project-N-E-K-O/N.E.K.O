@@ -86,7 +86,7 @@ def test_patch_usage_keeps_existing_values():
 async def test_plugin_execute_direct_parse_failure_still_reaches_terminal_state(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from app import agent_server as srv
+    from app.agent_server import api_runtime as srv
 
     saved_registry = dict(srv.Modules.task_registry)
     saved_handles = dict(srv.Modules.task_async_handles)

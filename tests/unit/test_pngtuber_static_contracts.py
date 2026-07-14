@@ -1,11 +1,12 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
-APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app-audio-playback.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-playback.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -101,8 +102,8 @@ def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets(
 
 def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
     core_source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     css_container_block = css_source[

@@ -43,6 +43,18 @@ _TUTORIAL_RUNTIME_ASSET_PATHS = tuple(sorted(
     for pattern in ("**/*.js", "**/*.json")
     for path in (_PROJECT_ROOT / "static/tutorial").glob(pattern)
 ))
+_AVATAR_UI_BUTTON_ASSET_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/avatar/avatar-ui-buttons").glob("*.js")
+))
+_CHARACTER_CARD_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/character_card_manager").glob("*.js")
+))
+_MODEL_MANAGER_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/js/model_manager").glob("*.js")
+))
+_YUI_GUIDE_DIRECTOR_JS_PATHS = tuple(sorted(
+    (_PROJECT_ROOT / "static/tutorial/yui-guide/director").glob("*.js")
+))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/tutorial-styles.css",
@@ -60,6 +72,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/yui-standin.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/overlay.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/page-handoff.js",
+    *_YUI_GUIDE_DIRECTOR_JS_PATHS,
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
@@ -76,15 +89,15 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/mmd/mmd-ui-buttons.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
-    _PROJECT_ROOT / "static/app-auto-goodbye.js",
-    _PROJECT_ROOT / "static/app-interpage.js",
-    _PROJECT_ROOT / "static/app-ui.js",
+    _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
+    *_PROJECT_ROOT.glob("static/app/app-interpage/*.js"),
+    *_PROJECT_ROOT.glob("static/app/app-ui/*.js"),
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
-    _PROJECT_ROOT / "static/app-react-chat-window.js",
-    _PROJECT_ROOT / "static/app-chat-export.js",
-    _PROJECT_ROOT / "static/avatar/avatar-ui-buttons.js",
-    _PROJECT_ROOT / "static/subtitle.js",
+    *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
+    _PROJECT_ROOT / "static/app/app-chat-export.js",
+    *_AVATAR_UI_BUTTON_ASSET_PATHS,
+    _PROJECT_ROOT / "static/subtitle/subtitle.js",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-eat.gif",
@@ -121,13 +134,13 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep2.mp3",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
-    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
     _PROJECT_ROOT / "static/css/card_maker.css",
     _PROJECT_ROOT / "static/js/card_maker.js",
     _PROJECT_ROOT / "static/css/model_manager.css",
-    _PROJECT_ROOT / "static/js/model_manager.js",
+    *_MODEL_MANAGER_JS_PATHS,
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
@@ -135,9 +148,9 @@ _static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
-    _PROJECT_ROOT / "static/app-react-chat-window.js",
-    _PROJECT_ROOT / "static/app-chat-adapter.js",
-    _PROJECT_ROOT / "static/app-buttons.js",
+    *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
+    _PROJECT_ROOT / "static/app/app-chat-adapter.js",
+    _PROJECT_ROOT / "static/app/app-buttons.js",
     _PROJECT_ROOT / "static/icons/edit_tool_unified.png",
     _PROJECT_ROOT / "static/icons/chat_sugar1.png",
     _PROJECT_ROOT / "static/icons/chat_sugar2.png",

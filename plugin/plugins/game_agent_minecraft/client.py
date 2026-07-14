@@ -29,6 +29,7 @@ OnScreenshot = Callable[[str, str], Awaitable[None]]  # (base64_payload, encodin
 OnTaskFinished = Callable[[dict[str, Any]], Awaitable[None]]
 OnAlert = Callable[[dict[str, Any]], Awaitable[None]]
 OnInventory = Callable[[dict[str, Any]], Awaitable[None]]
+OnBotStatus = Callable[[dict[str, Any]], Awaitable[None]]  # bot_status_nl frame
 
 
 class GameAgentClient:
@@ -49,6 +50,7 @@ class GameAgentClient:
         on_task_finished: Optional[OnTaskFinished] = None,
         on_alert: Optional[OnAlert] = None,
         on_inventory: Optional[OnInventory] = None,
+        on_bot_status: Optional[OnBotStatus] = None,
         reconnect_interval: float = 5.0,
         logger: Any = None,
     ):
@@ -58,6 +60,7 @@ class GameAgentClient:
         self.on_task_finished = on_task_finished
         self.on_alert = on_alert
         self.on_inventory = on_inventory
+        self.on_bot_status = on_bot_status
         self.reconnect_interval = reconnect_interval
         # Plugin SDK injects a per-plugin loguru logger; fall back to a
         # noop when running outside that environment (unit tests).
@@ -248,6 +251,14 @@ class GameAgentClient:
                         # and wakes any pending ``query_inventory`` calls.
                         await self.on_inventory(data)
 
+                    elif msg_type == "bot_status_nl" and self.on_bot_status is not None:
+                        # Natural-language activity status (🎯[按指令]/🤖[自主] +
+                        # skill/kind). The service uses it to know whether the
+                        # mc-agent is actively executing, so the autonomous
+                        # nudge loop stops telling her to dispatch a new task
+                        # while the agent is already mid-action.
+                        await self.on_bot_status(data)
+
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
                         # logged this at debug. Keep parity.
@@ -312,4 +323,5 @@ __all__ = [
     "OnTaskFinished",
     "OnAlert",
     "OnInventory",
+    "OnBotStatus",
 ]

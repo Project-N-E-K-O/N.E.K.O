@@ -27,6 +27,7 @@ from websockets import exceptions as web_exceptions
 from fastapi import WebSocket
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
+from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
 from utils.config_manager import _as_bool
@@ -40,6 +41,7 @@ from ._shared import (
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
     _START_LLM_CONCURRENT_ABORTED,
+    _ORPHAN_SESSION_REAPER_TASKS,
 )
 from .callback_render import (
     _render_pending_extra_replies_by_origin,
@@ -291,7 +293,18 @@ class LifecycleMixin:
         # finish before we drop references, preventing races with newly created tasks.
         bg_task_ref = self.background_preparation_task
         swap_task_ref = self.final_swap_task if not from_final_swap else None
-        
+        # 自引用守卫：本清理常被 final_swap_task 自己调回（swap 的中止 handler、
+        # 入口守卫、prime 失败出口都没传 from_final_swap）。cancel 当前任务会在
+        # 下面 gather 悬挂点把 CancelledError 打回调用方 except 块，截断其后的
+        # 全部清理——生产拓扑实测 swap 各 fail-close / 恢复尾巴因此成死代码，
+        # 且 try 之前的入口守卫死在 reset 后会把 is_hot_swap_imminent 卡成 True。
+        # 当前任务一律不 cancel、不等待（等自己必死锁）。
+        _current_task = asyncio.current_task()
+        if bg_task_ref is _current_task:
+            bg_task_ref = None
+        if swap_task_ref is _current_task:
+            swap_task_ref = None
+
         tasks_to_await = []
         if bg_task_ref and not bg_task_ref.done():
             bg_task_ref.cancel()
@@ -1569,6 +1582,103 @@ class LifecycleMixin:
         except Exception as e:
             logger.error(f"💥 Extra Reply: preparation trigger error: {e}")
 
+    @staticmethod
+    def _swap_session_is_dead(session) -> bool:
+        """[Hot-swap related] Closed/unusable session detection for the swap
+        abort handlers: a dead session must be fail-closed instead of getting
+        a listener restarted on it. Realtime clients clear ``ws`` on close();
+        offline (text) clients clear ``llm`` on close().
+        """
+        if not session:
+            return False
+        if isinstance(session, OmniRealtimeClient):
+            return not session.ws
+        if isinstance(session, OmniOfflineClient):
+            return session.llm is None
+        return False
+
+    def _restore_undelivered_swap_extras(self, injected_extras: list, cb_backed_ids: set = None) -> None:
+        """[Hot-swap related] Return removed-but-undelivered extras to the queue head.
+
+        ``_perform_final_swap_sequence`` keeps ``pending_extra_replies``
+        untouched through the prime window and removes the budget-selected
+        entries only at promote success — so every pre-promote abort keeps the
+        queue intact and needs no restore. The exits where removal has already
+        happened but the promoted session dies before speaking (post-promote
+        ws-invalid fail-close, post-promote external cancellation) put the
+        removed entries back at the queue head so the next hot-swap delivers
+        them, mirroring the ``_deferred`` entries that stay queued across
+        aborts.
+
+        ``cb_backed_ids``: delivery ids whose paired callback was still in
+        ``pending_agent_callbacks`` at removal time. An id in this set whose
+        callback is GONE by restore time was consumed inside the window (a
+        successful voice delivery prunes both queues; the extras half no-ops
+        on checked-out entries) — restoring it would announce the callback a
+        second time on the next hot-swap, so it is dropped.
+        """
+        if not injected_extras:
+            return
+        try:
+            from config import AGENT_CALLBACK_QUEUE_MAX_ITEMS
+            # 窗口期内配对 callback 可能已被 retract：retraction 清扫只作用于
+            # 当时还在队列里的镜像条目，被摘走的 _selected 逃过了那一轮——
+            # 塞回前按 pending_agent_callbacks 里仍带 retracted 标记的 id 补删。
+            retracted_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                if isinstance(cb, dict)
+                and cb.get(DELIVERY_RETRACTED_KEY)
+                and cb.get("_callback_delivery_id")
+            }
+            queued_ids = {
+                extra.get("_callback_delivery_id")
+                for extra in self.pending_extra_replies
+                if isinstance(extra, dict) and extra.get("_callback_delivery_id")
+            }
+            # topic hook extras 一律不塞回：主线 retract 流（语音封锁清扫/ack 超时
+            # 撤回）是"打标记后同步 purge"，窗口期内发生时 marker 已消失、上面的
+            # retracted_ids 看不见，塞回会绕过 _drop_pending_topic_hooks_for_voice
+            # 的清扫在语音里复活被禁止的 hook；且 TopicHookPool 有自己的
+            # ack/retry 簿记，丢掉 extra 不会丢内容。
+            # ⚠️前提：retraction 目前是 topic-hook 专属机制——DELIVERY_RETRACTED_KEY
+            # 的全部设置点都 gate 在 channel=="topic_hook" 或只从 topic 投递流可达
+            # （proactive.py 三处 + proactive_delivery.retract 唯一调用链
+            # topic/delivery._remove_callback_from_manager），所以排除 topic 即
+            # 杜绝"窗口期内被撤回的条目经此复活"。若未来引入非 topic 的
+            # retraction，这里必须改为可查询的撤回 ledger 而非 marker 复查。
+            # 窗口期消费检测：移除时有配对 cb、现在 cb 没了 ⇒ 被语音投递等
+            # 消费掉了，不塞回。extras-only 条目（移除时就无 cb）唯一投递者是
+            # hot-swap 本身，窗口内不可能被投递，放行。
+            current_cb_ids = {
+                cb.get("_callback_delivery_id")
+                for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                if isinstance(cb, dict) and cb.get("_callback_delivery_id")
+            }
+            consumed_ids = (cb_backed_ids or set()) - current_cb_ids
+            restored = [
+                extra for extra in injected_extras
+                if not isinstance(extra, dict)
+                or (extra.get("source_kind") != "topic"
+                    and extra.get("_callback_delivery_id") not in retracted_ids
+                    and extra.get("_callback_delivery_id") not in queued_ids
+                    and extra.get("_callback_delivery_id") not in consumed_ids)
+            ]
+            if not restored:
+                return
+            # 塞回队首保持原始相对顺序（_selected 本来就排在 _deferred 之前）。
+            self.pending_extra_replies = restored + self.pending_extra_replies
+            # flood guard 与 enqueue_agent_callback 对齐：drop-oldest。
+            if len(self.pending_extra_replies) > AGENT_CALLBACK_QUEUE_MAX_ITEMS:
+                self.pending_extra_replies = self.pending_extra_replies[-AGENT_CALLBACK_QUEUE_MAX_ITEMS:]
+            logger.info(
+                "Final Swap Sequence: %d undelivered extra replies restored to queue head after aborted swap",
+                len(restored),
+            )
+        except Exception as e:
+            # 塞回是尽力而为：绝不能让队列簿记反过来打断中止清理流程。
+            logger.warning(f"Final Swap Sequence: failed to restore undelivered extras: {e}")
+
     async def _perform_final_swap_sequence(self):
         """[Hot-swap related] Perform the final swap sequence"""
         logger.info("Final Swap Sequence: Starting...")
@@ -1598,6 +1708,15 @@ class LifecycleMixin:
         try:
             new_session = None  # 提前初始化，确保 except 块安全访问（实际赋值在 PERFORM ACTUAL HOT SWAP 段）
             old_listener_cancel_timed_out = False  # 旧 listener 取消超时标志，供 except 块做 fail-close 决策
+            # 已注入 pending_session 的 _selected 条目引用（队列原地保留，promote
+            # 成功时才移除）；_removed_extras 是 promote 时真正移除掉的子集，仅
+            # 供"移除已发生且被注入会话已死"的出口（ws 失效 fail-close、promote
+            # 后外部取消）塞回。其余中止出口队列本来就没动，无需恢复。
+            # _removed_cb_backed_ids：移除时配对 callback 仍在 pending_agent_callbacks
+            # 的 delivery_id——restore 用它识别"窗口期内被语音投递消费"的条目。
+            _prime_selected_extras: list = []
+            _removed_extras: list = []
+            _removed_cb_backed_ids: set = set()
             next_session_context_messages = getattr(self, "next_session_context_messages", []) or []
             incremental_next_session_context = next_session_context_messages[
                 self.initial_next_session_context_snapshot_len:
@@ -1623,6 +1742,19 @@ class LifecycleMixin:
                 _selected, _deferred = _select_callbacks_within_token_budget(
                     list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
                 )
+                # Pull-model staleness guard (same contract as the voice/text
+                # delivery points): drop extras whose coalesce_key has a newer
+                # submission — the push-side eviction removes queue entries but
+                # cannot reach text already baked into final_prime_text, so the
+                # check must run here, synchronously between select and render
+                # (no await in between; a newer cue landing during the prime
+                # await below is an accepted residual window). Stale extras are
+                # NOT added to _deferred: their newer same-key mirror is (or will
+                # be) queued in their place.
+                _selected = [
+                    e for e in _selected
+                    if not self._coalesce_entry_is_stale(e)
+                ]
                 final_prime_text += _render_pending_extra_replies_by_origin(
                     _selected,
                     lang=_lang,
@@ -1638,9 +1770,15 @@ class LifecycleMixin:
                     await self._reset_preparation_state(clear_main_cache=True)
                     self.is_hot_swap_imminent = False
                     return
-                # 仅在成功注入后才移除已选条目；失败时保留整队列等下一轮 hot-swap
-                # （否则 _selected 既没进模型又丢了）。over-budget 的 _deferred 留到下一轮。
-                self.pending_extra_replies = _deferred
+                # 注入成功后队列**原地不动**，只记住已选条目的对象引用；真正的
+                # 移除延迟到 promote 成功那一刻（"被注入的 session 成为活跃会话"）。
+                # 这样 prime→promote 窗口期内的并发移除方——语音主动投递成功清除
+                # （trigger_agent_callbacks 按 delivery_id 清双队列）、retraction
+                # purge、topic 语音封锁清扫、flood cap——都能正常命中队列里的条目，
+                # 不存在"被摘走的条目逃过清除、中止后又被塞回复活"的 TOCTOU 盲区；
+                # 而任何 promote 前的中止出口天然保留整个队列（与 _deferred 对齐），
+                # 无需恢复代码。over-budget 的 _deferred 留到下一轮。
+                _prime_selected_extras = _selected
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
                 final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
@@ -1692,7 +1830,16 @@ class LifecycleMixin:
                         logger.debug(f"Final Swap Sequence: 超时中止时关闭 new_session 失败（可忽略）: {_e}")
                     raise RuntimeError("旧 listener 取消超时，热切换中止")
                 except asyncio.CancelledError:
-                    pass
+                    # 这里只允许吞"刚被 cancel 的旧 listener 抛回的取消回波"。
+                    # 外层对 final_swap_task 自身的取消（_reset_preparation_state /
+                    # end_session）在此 await 点抛的同样是 CancelledError：若一并吞掉，
+                    # swap 会活过取消（_wait_one 2s 超时后 final_swap_task 失去追踪），
+                    # 稍后无锁 promote self.session，毒化/覆盖新 start_session 的赢家。
+                    # cancelling() > 0 表示本任务有未确认的取消请求 —— re-raise 交给
+                    # 外层 CancelledError 处理器关闭 new_session 并重置状态。
+                    _swap_task = asyncio.current_task()
+                    if _swap_task is not None and _swap_task.cancelling() > 0:
+                        raise
                 except Exception as e:
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
@@ -1703,10 +1850,70 @@ class LifecycleMixin:
                 except Exception as e:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
+            # ── promote 前的协作取消检查点 ───────────────────────────────────────
+            # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()（步骤 2）
+            # 在外层取消恰好落在其内层 await 已完成之后时，会把该取消“正常返回”式吞掉
+            # —— except CancelledError 分支不触发，僵尸带着 cancelling()>0 继续走到 promote。
+            # 步骤 1 的 except 只能拦到 wait_for *抛出* 取消的路径，拦不到这条“被吞”的路径。
+            # 这里在真正改 self.session 之前补一次显式检查：只要本任务有未确认的取消请求，
+            # 就 re-raise 交给下面的 CancelledError 处理器关闭 new_session、重置状态。
+            # 对正常热切换零影响（无外层取消时 cancelling()==0）。
+            _swap_task = asyncio.current_task()
+            if _swap_task is not None and _swap_task.cancelling() > 0:
+                raise asyncio.CancelledError()
+
             # ── 步骤 3：promote 新 session ────────────────────────────────────────
             # 旧 listener 已停、旧 session 已关，现在切换 self.session；
             # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
-            self.session = new_session
+            # 镜像启动侧的强 CAS（_start_session_start_llm 的持锁提升）：整段 swap
+            # 期间本函数从不改 self.session，正常路径它必然仍是入口快照的
+            # old_main_session；任何偏离都意味着并发 start/end_session 已接管会话
+            # （典型：swap 被取消但存活成僵尸后，新 start_session 已清场或已就位），
+            # 此时覆盖 self.session 会孤儿化赢家 —— 中止 swap 并关闭 new_session。
+            # 不回滚共享准备状态：它已属于接管方的新纪元，由接管方管理。
+            async with self.lock:
+                _promote_allowed = self.session is old_main_session
+                if _promote_allowed:
+                    self.session = new_session
+            if not _promote_allowed:
+                logger.warning("⚠️ Final Swap Sequence: promote 时 self.session 已被并发接管，中止 swap 并关闭 new_session")
+                try:
+                    await new_session.close()
+                except Exception as _e:
+                    logger.debug(f"Final Swap Sequence: 中止 promote 时关闭 new_session 失败（可忽略）: {_e}")
+                # 队列没动过：已注入 new_session 的 _selected 仍在队列里，随
+                # 接管方纪元的下一次 hot-swap 照常投递（与 _deferred 一致）。
+                return
+            # promote 成功：被注入的 session 已成为活跃会话，注入内容必随其下一
+            # 轮回复送达——此刻才把 _selected 从队列移除。按对象身份移除：窗口期
+            # 内被并发路径（语音投递清除/retraction/清扫/cap）先行移除的条目在此
+            # 自然 no-op，不会误删同 id 重入队的新条目。_removed_extras 记录真正
+            # 移除的子集，供紧随其后的 ws 失效 fail-close 出口塞回。
+            if _prime_selected_extras:
+                _selected_obj_ids = {id(extra) for extra in _prime_selected_extras}
+                _removed_extras = [
+                    extra for extra in self.pending_extra_replies
+                    if id(extra) in _selected_obj_ids
+                ]
+                if _removed_extras:
+                    self.pending_extra_replies = [
+                        extra for extra in self.pending_extra_replies
+                        if id(extra) not in _selected_obj_ids
+                    ]
+                    # 快照"此刻仍有配对 cb"的 delivery_id：restore 时该 id 的 cb
+                    # 若已消失，说明窗口期内被消费（语音投递成功会 prune 双队列，
+                    # extras 半边对已摘走条目 no-op），塞回会重复播报。
+                    _removed_ids = {
+                        extra.get("_callback_delivery_id")
+                        for extra in _removed_extras
+                        if isinstance(extra, dict) and extra.get("_callback_delivery_id")
+                    }
+                    _removed_cb_backed_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in (getattr(self, "pending_agent_callbacks", None) or [])
+                        if isinstance(cb, dict)
+                        and cb.get("_callback_delivery_id") in _removed_ids
+                    }
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
@@ -1770,7 +1977,24 @@ class LifecycleMixin:
                     logger.debug(f"Final Swap Sequence: CancelledError 路径关闭 new_session 失败（可忽略）: {_e}")
             await self._cleanup_pending_session_resources()
             await self._reset_preparation_state(clear_main_cache=True)
-            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
+            # 镜像 except Exception 的死会话 fail-close：取消若落在旧会话已
+            # close() 之后（realtime 的 ws / 文本 offline 的 llm 已被 close()
+            # 清空）或 promote 后连接失效，下面的重启只会给死会话建 listener
+            # ——直接 fail-close 让前端重连。（pending 生命周期错误触发 reset
+            # 的场景里旧会话仍活着，重启行为保留。）
+            if self._swap_session_is_dead(self.session):
+                self.session = None
+                self.is_active = False
+            # promote 前取消→队列没动过、_removed_extras 为空，此调用 no-op。
+            # promote 后取消→只可能来自外部 reset/end_session/新 start_session
+            # prelude，它们随后都会关闭 promoted 会话，注入内容不会再投递——把
+            # promote 时移除的条目塞回队首等下一次 hot-swap。
+            self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
+            # post-promote 取消（_removed_extras 非空）不重启 listener：promoted
+            # 会话即将被 canceller 关闭，重启会让它在关闭前把已 prime 的内容
+            # 播出来，与刚塞回的队列形成双投；没有 listener，服务器响应不会被
+            # 消费播出。重启只服务 promote 前取消后"老会话失去 listener"的恢复。
+            if self.is_active and self.session and hasattr(self.session, 'handle_messages') and not _removed_extras and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
@@ -1789,15 +2013,44 @@ class LifecycleMixin:
                 # 旧 listener 取消超时：旧 task 可能在本函数返回后才真正退出，
                 # 此时无法安全判断 task.done() 并补建 listener，会留下"活跃但无监听"状态。
                 # 直接 fail-close：清除会话状态让前端重连，优于让后续输入陷入僵局。
+                # （promote 前出口，队列没动过，_selected 仍在队列无需恢复。）
+                # 旧 session 不能就地 close()（会与卡死的 recv() 并发冲突，见步骤1
+                # 注释），但裸清引用会泄漏 ws：挂分离收尸 task，等旧 listener 真正
+                # 退出后再 best-effort 关闭。listener 永不退出时与裸清引用等价
+                # （无回归），退出时 ws 得到回收。
+                _stuck_listener_task = old_main_message_handler_task
+                _orphan_old_session = old_main_session
+
+                async def _reap_old_session_after_listener_exit():
+                    if _stuck_listener_task is not None:
+                        try:
+                            await _stuck_listener_task
+                        except (asyncio.CancelledError, Exception):
+                            pass  # 收尸只关心"已退出"，退出方式无所谓
+                    if _orphan_old_session is not None:
+                        try:
+                            await _orphan_old_session.close()
+                        except Exception as _reap_err:
+                            logger.debug(f"Final Swap Sequence: 收尸关闭旧 session 失败（可忽略）: {_reap_err}")
+
+                _reaper = asyncio.create_task(_reap_old_session_after_listener_exit())
+                _ORPHAN_SESSION_REAPER_TASKS.add(_reaper)
+                _reaper.add_done_callback(_ORPHAN_SESSION_REAPER_TASKS.discard)
                 self.session = None
                 self.message_handler_task = None
                 self.is_active = False
                 return
-            # 若 self.session 的 ws 已失效（promote 后 ws invalid），清除会话状态，
-            # 防止 is_active=True + ws=None 让后续输入进入坏会话。
-            if self.session and isinstance(self.session, OmniRealtimeClient) and not self.session.ws:
+            # 若 self.session 已死（promote 后 realtime ws 失效 / 文本 offline
+            # llm 被清、或取消落在旧会话 close 之后），清除会话状态，防止
+            # is_active=True + 死连接让后续输入进入坏会话。
+            # 这也是"移除已发生（promote 时）且被注入的会话已死"的出口：把
+            # promote 时真正移除的 _removed_extras 塞回队首等下一次 hot-swap。
+            # promote 后会话存活的其他失败不塞回——注入内容仍在其上下文里会随
+            # 下一轮回复送达，塞回会造成双投。
+            if self._swap_session_is_dead(self.session):
                 self.session = None
                 self.is_active = False
+                self._restore_undelivered_swap_extras(_removed_extras, _removed_cb_backed_ids)
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:

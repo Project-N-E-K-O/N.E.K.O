@@ -1,20 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import nullcontext
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 from plugin.core.bus.bus_list import (
     BusListWatcherCore,
-    _apply_watcher_ops_local,
     _compute_watcher_delta,
     _dispatch_watcher_callbacks,
-    _extract_unary_plan_ops,
     _infer_bus_from_plan,
-    _record_from_raw_by_bus,
-    _resolve_watcher_refresh,
-    _schedule_watcher_tick_debounced,
     _snapshot_watcher_callbacks,
-    _try_incremental_local,
 )
 
 __all__ = [
@@ -29,9 +26,18 @@ DedupeKey = Tuple[str, Any]
 Payload = Dict[str, Any]
 ChangeRules = Tuple[str, ...]
 WatcherCallback = Callable[["BusListDelta[TRecord]"], None]
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from plugin.core.bus.types import BusList, BusRecord, BusReplayContext, TraceNode
+
+
+def _cancel_timer_best_effort(timer: Any) -> None:
+    try:
+        if timer is not None:
+            timer.cancel()
+    except Exception:
+        return
 
 
 @dataclass(frozen=True)
@@ -58,7 +64,7 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         self._debounce_ms = float(debounce_ms or 0.0)
 
         if self._list._plan is None:
-            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/where_*/sort(by=...)")
+            raise NonReplayableTraceError("watcher requires a replayable plan; build list via get()/filter()/sort(by=...)")
 
         inferred = self._infer_bus(self._list._plan)
         self._bus = str(bus).strip() if isinstance(bus, str) and bus.strip() else inferred
@@ -81,9 +87,181 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         self._debounce_timer: Any = None
         self._pending_op: Optional[str] = None
         self._pending_payload: Optional[Payload] = None
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._pending_async_refresh: tuple[str, Optional[Payload]] | None = None
+        self._refresh_generation = 0
+        self._stopped = True
+        try:
+            self._owner_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._owner_loop = None
+
+    def start(self) -> "BusListWatcher[TRecord]":
+        if self._unsub is not None or self._sub_id is not None:
+            return self
+        try:
+            self._owner_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        self._refresh_generation += 1
+        self._stopped = False
+        return cast("BusListWatcher[TRecord]", super().start())
+
+    def stop(self) -> None:
+        self._stopped = True
+        self._refresh_generation += 1
+        self._pending_async_refresh = None
+
+        refresh_task = self._refresh_task
+        self._refresh_task = None
+        if refresh_task is not None:
+            refresh_task.cancel()
+
+        if self._lock is not None:
+            with self._lock:
+                debounce_timer = self._debounce_timer
+                self._debounce_timer = None
+                self._pending_op = None
+                self._pending_payload = None
+        else:
+            debounce_timer = self._debounce_timer
+            self._debounce_timer = None
+            self._pending_op = None
+            self._pending_payload = None
+        _cancel_timer_best_effort(debounce_timer)
+
+        super().stop()
 
     def _schedule_tick(self, op: str, payload: Optional[Payload] = None) -> None:
-        _schedule_watcher_tick_debounced(self, op, payload)
+        if self._stopped:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        else:
+            self._owner_loop = loop
+
+        if self._debounce_ms <= 0 and loop is not None:
+            self._queue_async_refresh(op, payload, self._refresh_generation)
+            return
+        self._schedule_debounced_tick(op, payload)
+
+    def _queue_async_refresh(
+        self,
+        op: str,
+        payload: Optional[Payload],
+        generation: int,
+    ) -> None:
+        if self._stopped or generation != self._refresh_generation:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        normalized_payload = dict(payload) if isinstance(payload, dict) else None
+        self._pending_async_refresh = (str(op), normalized_payload)
+        current_task = self._refresh_task
+        if current_task is None or current_task.done():
+            self._start_refresh_worker(loop)
+
+    def _schedule_debounced_tick(self, op: str, payload: Optional[Payload] = None) -> None:
+        generation = self._refresh_generation
+        if self._stopped:
+            return
+        if self._debounce_ms <= 0:
+            self._tick(op, payload, generation=generation)
+            return
+
+        timer: Any = None
+        try:
+            import threading
+
+            delay = max(0.0, self._debounce_ms / 1000.0)
+            normalized_payload = dict(payload) if isinstance(payload, dict) else None
+
+            def _is_current_generation() -> bool:
+                return not self._stopped and self._refresh_generation == generation
+
+            def _fire() -> None:
+                with self._lock if self._lock is not None else nullcontext():
+                    if not _is_current_generation() or self._debounce_timer is not timer:
+                        return
+                    pending = self._pending_op
+                    pending_payload = self._pending_payload
+                    self._pending_op = None
+                    self._pending_payload = None
+                    self._debounce_timer = None
+
+                try:
+                    owner_loop = self._owner_loop
+                    if owner_loop is not None and not owner_loop.is_closed():
+                        owner_loop.call_soon_threadsafe(
+                            self._queue_async_refresh,
+                            str(pending or "change"),
+                            pending_payload,
+                            generation,
+                        )
+                    else:
+                        self._tick(
+                            str(pending or "change"),
+                            pending_payload,
+                            generation=generation,
+                        )
+                except Exception:
+                    _logger.debug("Failed to dispatch debounced watcher refresh", exc_info=True)
+
+            timer = threading.Timer(delay, _fire)
+            timer.daemon = True
+            previous_timer: Any = None
+            should_start = False
+            with self._lock if self._lock is not None else nullcontext():
+                if _is_current_generation():
+                    previous_timer = self._debounce_timer
+                    self._pending_op = str(op)
+                    self._pending_payload = normalized_payload
+                    self._debounce_timer = timer
+                    should_start = True
+
+            if not should_start:
+                _cancel_timer_best_effort(timer)
+                return
+            _cancel_timer_best_effort(previous_timer)
+            timer.start()
+        except Exception:
+            with self._lock if self._lock is not None else nullcontext():
+                if self._debounce_timer is timer:
+                    self._debounce_timer = None
+                    self._pending_op = None
+                    self._pending_payload = None
+            try:
+                self._tick(op, payload, generation=generation)
+            except Exception:
+                _logger.debug("Synchronous watcher refresh failed", exc_info=True)
+
+    def _start_refresh_worker(self, loop: asyncio.AbstractEventLoop) -> None:
+        task = loop.create_task(self._run_refresh_worker(self._refresh_generation))
+        self._refresh_task = task
+        task.add_done_callback(self._finish_refresh_task)
+
+    def _finish_refresh_task(self, task: asyncio.Task[None]) -> None:
+        is_current = self._refresh_task is task
+        if is_current:
+            self._refresh_task = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _logger.debug("Asynchronous watcher refresh failed", exc_info=True)
+
+        if (
+            is_current
+            and not self._stopped
+            and self._pending_async_refresh is not None
+            and not task.get_loop().is_closed()
+        ):
+            self._start_refresh_worker(task.get_loop())
 
     def _watcher_set(self, sub_id: str) -> None:
         from plugin.core.bus.rev import _watcher_set
@@ -99,54 +277,51 @@ class BusListWatcher(BusListWatcherCore, Generic[TRecord]):
         try:
             self._schedule_tick(op, delta)
         except Exception:
-            return
-
-    def _extract_plan_ops(self) -> Optional[List[Tuple[str, Payload]]]:
-        plan = getattr(self._list, "_plan", None)
-        return _extract_unary_plan_ops(plan)
+            _logger.debug(
+                "Failed to schedule watcher change bus=%s op=%s sub_id=%s",
+                bus,
+                op,
+                self._sub_id,
+                exc_info=True,
+            )
 
     def _infer_bus(self, plan: "TraceNode") -> str:
         from plugin.core.bus.types import NonReplayableTraceError
 
         return _infer_bus_from_plan(plan, conflict_error=NonReplayableTraceError)
 
-    def _apply_ops_local(
+    async def _run_refresh_worker(self, generation: int) -> None:
+        while not self._stopped and generation == self._refresh_generation:
+            pending = self._pending_async_refresh
+            self._pending_async_refresh = None
+            if pending is None:
+                return
+            op, _payload = pending
+            refreshed = await self._list.reload_with_async(self._ctx)
+            if self._stopped or generation != self._refresh_generation:
+                return
+            self._apply_refresh(op, refreshed)
+
+    def _tick(
         self,
-        base_items: List[TRecord],
-        ops: List[Tuple[str, Payload]],
-    ) -> Optional["BusList[TRecord]"]:
-        try:
-            base = self._list._construct(base_items, self._list._trace, self._list._plan)
-        except Exception:
-            from plugin.core.bus.types import BusList
+        op: str,
+        payload: Optional[Payload] = None,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        del payload
+        if generation is None:
+            generation = self._refresh_generation
+        if self._stopped or generation != self._refresh_generation:
+            return
+        refreshed = self._list.reload(self._ctx)
+        if self._stopped or generation != self._refresh_generation:
+            return
+        self._apply_refresh(op, refreshed)
 
-            base = BusList(cast(List["BusRecord"], base_items))
-        return cast(Optional["BusList[TRecord]"], _apply_watcher_ops_local(base, ops))
-
-    def _record_from_raw(self, raw: Payload) -> Optional[TRecord]:
-        return cast(Optional[TRecord], _record_from_raw_by_bus(self._bus, raw))
-
-    def _try_incremental(self, op: str, payload: Optional[Payload]) -> Optional["BusList[TRecord]"]:
-        ops = self._extract_plan_ops()
-        out = _try_incremental_local(
-            op=op,
-            payload=payload,
-            bus=self._bus,
-            ops=ops,
-            current_items=list(self._list.dump_records()),
-            record_from_raw=lambda raw: self._record_from_raw(raw),
-            apply_ops_local=lambda items, op_list: self._apply_ops_local(cast(List[TRecord], items), op_list),
-            dedupe_key=lambda x: self._list._dedupe_key(cast(TRecord, x)),
-        )
-        return cast(Optional["BusList[TRecord]"], out)
-
-    def _tick(self, op: str, payload: Optional[Payload] = None) -> None:
-        refreshed = _resolve_watcher_refresh(
-            op=op,
-            payload=payload,
-            try_incremental=lambda op0, payload0: self._try_incremental(op0, payload0),
-            reload_full=lambda: self._list.reload(self._ctx),
-        )
+    def _apply_refresh(self, op: str, refreshed: "BusList[TRecord]") -> None:
+        if self._stopped:
+            return
         new_items = refreshed.dump_records()
         added_items_raw, removed_keys_raw, new_keys_raw, fired_raw, kind_raw = _compute_watcher_delta(
             op=op,

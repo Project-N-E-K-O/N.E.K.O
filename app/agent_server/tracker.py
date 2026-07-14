@@ -362,6 +362,32 @@ def _build_user_turn_fingerprint(messages: Any) -> Optional[str]:
     return hashlib.sha256(payload_bytes).hexdigest()
 
 
+def _build_assistant_turn_fingerprint(messages: Any) -> Optional[str]:
+    """Build a stable fingerprint from the LATEST assistant utterance only.
+
+    Used by the proactive-analyze path to ensure each distinct proactive
+    utterance is analyzed at most once (a re-sent / duplicate proactive
+    ``turn end`` carries the same assistant text → same fingerprint → skip).
+    Keyed to the last assistant message with text — the exact utterance the
+    executor pulls the proactive intent from downstream (``_format_messages``
+    with ``proactive=True`` also walks the window in reverse to that same line).
+    Hashing the whole assistant history instead would make the key
+    history-dependent: the same line re-sent after the window gained another
+    assistant record would hash differently, slip past the dedupe, and burn a
+    second budget slot / repeat the agent action. Returns None when the window
+    has no assistant text (also the "no assistant utterance" skip signal).
+    """
+    if not isinstance(messages, list):
+        return None
+    for m in reversed(messages):
+        if not isinstance(m, dict) or str(m.get("role") or "").lower() != "assistant":
+            continue
+        text = str(m.get("text") or m.get("content") or "").strip()
+        if text:
+            return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+    return None
+
+
 def _build_analyze_event_fingerprint(event: Dict[str, Any]) -> Optional[str]:
     fp = _build_user_turn_fingerprint(event.get("messages", []))
     if fp is None:
@@ -403,8 +429,14 @@ REDACTED_USER_TURN_MARKER = (
 )
 
 
-def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> list:
+def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str], *, preserve_trailing_assistant: bool = False) -> list:
     """Return a messages copy with cancelled user turns removed.
+
+    ``preserve_trailing_assistant`` keeps the LAST assistant message out of the
+    redaction. On a proactive turn that message is lanlan's own utterance being
+    analyzed (no next-user boundary follows it), so it must survive even when it
+    trails a cancelled user — otherwise the proactive intent is stripped before
+    ``_format_messages`` and the turn spends a budget slot without dispatching.
 
     Rule: a user message matches the cancel set (its sig is in
     `cancelled_sigs`) → redact it **unless** it is a "first-time analyze"
@@ -440,6 +472,15 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
     if not cancelled_sigs:
         return messages
 
+    # Index of the last assistant message — preserved from redaction when
+    # ``preserve_trailing_assistant`` is set (the proactive utterance).
+    keep_assistant_idx = -1
+    if preserve_trailing_assistant:
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], dict) and messages[i].get("role") == "assistant":
+                keep_assistant_idx = i
+                break
+
     # Precompute trailing assistant counts so we can resolve "first-time"
     # in one O(n) sweep instead of nested scans.
     trailing_assistant_count = [0] * len(messages)
@@ -459,7 +500,16 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
             continue
         # Exactly one trailing assistant → first-time analyze pass for this
         # user msg → bypass cancel.
-        if trailing_assistant_count[idx] == 1:
+        #
+        # DISABLED entirely on a proactive turn (``preserve_trailing_assistant``):
+        # the first-time bypass exists for the case where the user *re-issued*
+        # input and that turn's own reply triggered this analyze pass. A proactive
+        # analyze pass is triggered by lanlan's own utterance, not by any user
+        # turn, so no cancelled user turn is "first-time" here — whether it has
+        # zero trailing replies ([U(cancelled), A]) or its own one reply
+        # ([U(cancelled), R, A]), it must be redacted. The proactive utterance is
+        # preserved separately via keep_assistant_idx below.
+        if not preserve_trailing_assistant and trailing_assistant_count[idx] == 1:
             continue
         redact_indices.add(idx)
 
@@ -481,6 +531,10 @@ def _redact_cancelled_user_turns(messages: list, lanlan_name: Optional[str]) -> 
             # 只吞掉被取消任务产出的 assistant/tool 段；夹在中间的 system
             # 消息（session callback、context 注入等）跟取消请求无关，保留。
             if isinstance(m, dict) and m.get("role") in {"assistant", "tool"}:
+                # 主动搭话轮：那条被分析的主动台词（最后一条 assistant）必须留下，
+                # 否则下游 _format_messages 取不到主动意图、白白消耗一个预算名额。
+                if idx == keep_assistant_idx:
+                    redacted.append(m)
                 continue
         redacted.append(m)
     return redacted

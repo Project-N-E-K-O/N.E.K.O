@@ -1,19 +1,21 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
+const { readJsParts } = require('./app-part-test-utils.cjs');
 
 const standIn = require('./tutorial/avatar/yui-standin.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const avatarStageSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/yui-stage.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/standin-controller.js'), 'utf8');
 const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/overlay.js'), 'utf8');
 const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-interaction.js'), 'utf8');
 const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-init.js'), 'utf8');
 const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-ui-buttons.js'), 'utf8');
-const appUiSource = fs.readFileSync(path.join(__dirname, 'app-ui.js'), 'utf8');
-const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
+const appUiSource = readJsParts(path.join(__dirname, 'app/app-ui'));
+const appInterpageSource = readJsParts(path.join(__dirname, 'app/app-interpage'));
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
 
 function loadAvatarStageContext(options) {

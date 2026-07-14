@@ -41,7 +41,11 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.registry_service import PluginRegistryService
 from plugin.server.infrastructure.config_resolver import resolve_plugin_config_from_path
 from plugin.server.infrastructure.runtime_overrides import (
+    RuntimeOverridePersistenceError,
     clear_runtime_override,
+    get_runtime_auto_start_override,
+    get_runtime_override,
+    migrate_runtime_override,
     set_runtime_override,
 )
 from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
@@ -53,6 +57,7 @@ from plugin.settings import (
     PLUGIN_CONFIG_ROOTS,
     PLUGIN_SHUTDOWN_TIMEOUT,
     PLUGIN_STARTUP_TIMEOUT,
+    PLUGIN_SYNC_AUTO_START_ON_TOGGLE,
 )
 from plugin.utils import parse_bool_config
 
@@ -60,6 +65,86 @@ logger = get_logger("server.application.plugins.lifecycle")
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _PLUGIN_STARTUP_TIMEOUT_MAX = 300.0
 plugin_registry_service = PluginRegistryService()
+
+
+def _persist_user_runtime_intent(
+    plugin_id: str,
+    enabled: bool,
+    *,
+    previous_plugin_ids: tuple[str, ...] = (),
+    runtime_state_changed: bool = False,
+) -> None:
+    try:
+        auto_start = enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
+        if previous_plugin_ids:
+            migrate_runtime_override(
+                previous_plugin_ids,
+                plugin_id,
+                enabled,
+                auto_start=auto_start,
+            )
+        else:
+            set_runtime_override(
+                plugin_id,
+                enabled,
+                auto_start=auto_start,
+            )
+    except RuntimeOverridePersistenceError as exc:
+        raise ServerDomainError(
+            code="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+            message="PLUGIN_RUNTIME_PREFERENCE_PERSIST_FAILED",
+            status_code=500,
+            details={
+                "plugin_id": plugin_id,
+                "enabled": enabled,
+                "auto_start": (
+                    enabled if PLUGIN_SYNC_AUTO_START_ON_TOGGLE else None
+                ),
+                "error_type": type(exc).__name__,
+                "runtime_state_changed": runtime_state_changed,
+            },
+            log_level="error",
+        ) from exc
+
+
+def _mark_preference_persistence_failure(
+    response: dict[str, object],
+    error: ServerDomainError,
+) -> None:
+    details = error.details if isinstance(error.details, dict) else {}
+    response["partial_success"] = True
+    response["preference_persisted"] = False
+    response["preference_error"] = {
+        "code": error.code,
+        "error_type": str(details.get("error_type", "RuntimeOverridePersistenceError")),
+    }
+    response["runtime_state_changed"] = bool(details.get("runtime_state_changed", False))
+
+
+async def _persist_changed_runtime_intent(
+    response: dict[str, object],
+    plugin_id: str,
+    enabled: bool,
+    *,
+    previous_plugin_ids: tuple[str, ...] = (),
+) -> None:
+    try:
+        await asyncio.to_thread(
+            _persist_user_runtime_intent,
+            plugin_id,
+            enabled,
+            previous_plugin_ids=previous_plugin_ids,
+            runtime_state_changed=True,
+        )
+        response["preference_persisted"] = True
+    except ServerDomainError as exc:
+        logger.error(
+            "plugin runtime state changed but user preference could not be persisted: plugin_id={}, enabled={}, err_type={}",
+            plugin_id,
+            enabled,
+            type(exc).__name__,
+        )
+        _mark_preference_persistence_failure(response, exc)
 
 
 @runtime_checkable
@@ -72,13 +157,6 @@ class PluginHostContract(Protocol):
     ) -> object: ...
 
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None: ...
-
-    async def send_extension_command(
-        self,
-        msg_type: str,
-        payload: dict[str, object],
-        timeout: float = 10.0,
-    ) -> object: ...
 
     def is_alive(self) -> bool: ...
 
@@ -270,28 +348,6 @@ def _path_within_plugin_roots_sync(path: Path) -> bool:
     return False
 
 
-def _list_bound_extensions_sync(host_plugin_id: str) -> list[str]:
-    bound_extensions: list[str] = []
-    with state.acquire_plugins_read_lock():
-        snapshot = {
-            plugin_id: dict(meta)
-            for plugin_id, meta in state.plugins.items()
-            if isinstance(plugin_id, str) and isinstance(meta, dict)
-        }
-
-    for plugin_id, meta in snapshot.items():
-        if meta.get("type") != "extension":
-            continue
-        if meta.get("host_plugin_id") != host_plugin_id:
-            continue
-        if meta.get("runtime_source_missing") is True:
-            continue
-        bound_extensions.append(plugin_id)
-
-    bound_extensions.sort()
-    return bound_extensions
-
-
 def _remove_plugin_metadata_sync(plugin_id: str) -> bool:
     removed = False
     with state.acquire_plugins_write_lock():
@@ -394,29 +450,10 @@ async def _cleanup_started_host(plugin_id: str, host: PluginHostContract) -> Non
         )
 
 
-def _read_extension_prefix_sync(config_path: Path) -> str:
-    with config_path.open("rb") as file_obj:
-        raw_conf = tomllib.load(file_obj)
-
-    plugin_conf_obj = raw_conf.get("plugin")
-    if not isinstance(plugin_conf_obj, Mapping):
-        return ""
-
-    host_conf_obj = plugin_conf_obj.get("host")
-    if not isinstance(host_conf_obj, Mapping):
-        return ""
-
-    prefix_obj = host_conf_obj.get("prefix")
-    if isinstance(prefix_obj, str):
-        return prefix_obj
-    return ""
-
-
 def _emit_lifecycle_event(
     *,
     event_type: str,
     plugin_id: str | None = None,
-    host_plugin_id: str | None = None,
     data: Mapping[str, object] | None = None,
 ) -> None:
     event: dict[str, object] = {
@@ -424,8 +461,6 @@ def _emit_lifecycle_event(
     }
     if plugin_id is not None:
         event["plugin_id"] = plugin_id
-    if host_plugin_id is not None:
-        event["host_plugin_id"] = host_plugin_id
     if data is not None:
         event["data"] = dict(data)
     emit_lifecycle_event(event)
@@ -578,12 +613,18 @@ class PluginLifecycleService:
         start_time = time_module.perf_counter()
         original_plugin_id = plugin_id
         current_plugin_id = plugin_id
+        resolved_plugin_ids = [plugin_id]
 
         existing_host_obj = await asyncio.to_thread(_get_plugin_host_sync, current_plugin_id)
         if isinstance(existing_host_obj, PluginHostContract):
             if existing_host_obj.is_alive():
                 if persist_user_intent:
-                    await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
+                    await asyncio.to_thread(
+                        _persist_user_runtime_intent,
+                        current_plugin_id,
+                        True,
+                        runtime_state_changed=False,
+                    )
                 _emit_lifecycle_event(event_type="plugin_start_skipped", plugin_id=current_plugin_id)
                 return {
                     "success": True,
@@ -603,14 +644,13 @@ class PluginLifecycleService:
                 error_type="PluginFrozen",
             )
 
-        if persist_user_intent:
-            await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
-
         if refresh_registry:
             try:
                 refresh_payload = await plugin_registry_service.refresh_plugin(current_plugin_id)
                 refreshed_plugin_id = refresh_payload.get("plugin_id")
                 if isinstance(refreshed_plugin_id, str) and refreshed_plugin_id:
+                    if refreshed_plugin_id != current_plugin_id:
+                        resolved_plugin_ids.append(refreshed_plugin_id)
                     current_plugin_id = refreshed_plugin_id
             except ServerDomainError as exc:
                 if exc.code == "PLUGIN_CONFIG_NOT_FOUND":
@@ -733,6 +773,26 @@ class PluginLifecycleService:
                         runtime_cfg.get("startup_failure"),
                         plugin_id=current_plugin_id,
                     )
+            enabled_override = await asyncio.to_thread(
+                get_runtime_override,
+                current_plugin_id,
+            )
+            if enabled_override is not None:
+                enabled_value = enabled_override
+            auto_start_override = await asyncio.to_thread(
+                get_runtime_auto_start_override,
+                current_plugin_id,
+            )
+            if auto_start_override is not None:
+                auto_start_value = auto_start_override
+            if persist_user_intent:
+                # An explicit start request is the new enabled intent. Apply it
+                # in-memory for this attempt, but do not persist until startup
+                # succeeds; otherwise validation/start failures become durable
+                # auto-start preferences.
+                enabled_value = True
+                if PLUGIN_SYNC_AUTO_START_ON_TOGGLE:
+                    auto_start_value = True
             if not enabled_value:
                 raise _to_domain_error(
                     code="PLUGIN_DISABLED",
@@ -740,27 +800,6 @@ class PluginLifecycleService:
                     status_code=400,
                     plugin_id=current_plugin_id,
                     error_type="PluginDisabled",
-                )
-
-            plugin_type_obj = pdata.get("type")
-            if plugin_type_obj == "extension":
-                host_pid = "unknown"
-                host_obj_cfg = pdata.get("host")
-                if isinstance(host_obj_cfg, Mapping):
-                    host_cfg = _normalize_mapping(host_obj_cfg, context=f"plugin_config[{current_plugin_id}].plugin.host")
-                    host_pid_obj = host_cfg.get("plugin_id")
-                    if isinstance(host_pid_obj, str) and host_pid_obj:
-                        host_pid = host_pid_obj
-                raise _to_domain_error(
-                    code="EXTENSION_CANNOT_START_INDEPENDENT",
-                    message=(
-                        f"Plugin '{current_plugin_id}' is an extension (type='extension') and cannot be started "
-                        f"as an independent process. It will be automatically injected into its host plugin "
-                        f"'{host_pid}' when the host starts."
-                    ),
-                    status_code=400,
-                    plugin_id=current_plugin_id,
-                    error_type="ExtensionCannotStart",
                 )
 
             entry_obj = pdata.get("entry")
@@ -828,13 +867,11 @@ class PluginLifecycleService:
                 )
 
             _emit_lifecycle_event(event_type="plugin_start_requested", plugin_id=current_plugin_id)
-            extension_configs = await plugin_registry_service.list_extension_configs_for_host(current_plugin_id)
             created_host = await asyncio.to_thread(
                 PluginProcessHost,
                 plugin_id=current_plugin_id,
                 entry_point=entry,
                 config_path=config_path,
-                extension_configs=extension_configs or None,
             )
             if not isinstance(created_host, PluginHostContract):
                 raise _to_domain_error(
@@ -927,8 +964,6 @@ class PluginLifecycleService:
             await asyncio.to_thread(_register_or_replace_host_sync, current_plugin_id, host_obj)
             registered_plugin_id = current_plugin_id
 
-            if persist_user_intent:
-                await asyncio.to_thread(set_runtime_override, current_plugin_id, True)
             _emit_lifecycle_event(event_type="plugin_started", plugin_id=current_plugin_id)
             response: dict[str, object] = {
                 "success": True,
@@ -951,6 +986,18 @@ class PluginLifecycleService:
                         f"Plugin started successfully (renamed from '{original_plugin_id}' to "
                         f"'{current_plugin_id}' due to ID conflict)"
                     )
+            if persist_user_intent:
+                stale_plugin_ids = tuple(
+                    plugin_id
+                    for plugin_id in resolved_plugin_ids
+                    if plugin_id != current_plugin_id
+                )
+                await _persist_changed_runtime_intent(
+                    response,
+                    current_plugin_id,
+                    True,
+                    previous_plugin_ids=stale_plugin_ids,
+                )
             return response
         except ServerDomainError:
             if host_obj is not None:
@@ -1049,14 +1096,19 @@ class PluginLifecycleService:
                     type(exc).__name__,
                     str(exc),
                 )
-            if persist_user_intent:
-                await asyncio.to_thread(set_runtime_override, plugin_id, False)
             _emit_lifecycle_event(event_type="plugin_stopped", plugin_id=plugin_id)
-            return {
+            response: dict[str, object] = {
                 "success": True,
                 "plugin_id": plugin_id,
                 "message": "Plugin stopped successfully",
             }
+            if persist_user_intent:
+                await _persist_changed_runtime_intent(
+                    response,
+                    plugin_id,
+                    False,
+                )
+            return response
         except PluginError as exc:
             logger.error(
                 "stop_plugin failed with PluginError: plugin_id={}, err_type={}, err={}",
@@ -1202,29 +1254,9 @@ class PluginLifecycleService:
                 error_type="ForbiddenDeletePath",
             )
 
-        plugin_type = plugin_meta.get("type")
-        if plugin_type == "extension":
-            ext_meta, host_plugin_id, host_obj = await self._validate_extension(plugin_id)
-            runtime_enabled = parse_bool_config(ext_meta.get("runtime_enabled"), default=True)
-            if runtime_enabled and host_obj is not None and host_obj.is_alive():
-                await self.disable_extension(plugin_id)
-        else:
-            bound_extensions = await asyncio.to_thread(_list_bound_extensions_sync, plugin_id)
-            if bound_extensions:
-                raise _to_domain_error(
-                    code="PLUGIN_DELETE_BLOCKED_BY_EXTENSIONS",
-                    message=(
-                        f"Plugin '{plugin_id}' has bound extensions and cannot be deleted yet: "
-                        f"{', '.join(bound_extensions)}"
-                    ),
-                    status_code=409,
-                    plugin_id=plugin_id,
-                    error_type="BoundExtensionsExist",
-                )
-
-            is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
-            if is_running:
-                await self.stop_plugin(plugin_id)
+        is_running = await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
+        if is_running:
+            await self.stop_plugin(plugin_id)
 
         try:
             deleted_from_disk = await asyncio.to_thread(_delete_plugin_directory_sync, plugin_dir)
@@ -1266,162 +1298,7 @@ class PluginLifecycleService:
             "deleted_from_disk": deleted_from_disk,
             "message": "Plugin deleted successfully",
         }
-        if plugin_type == "extension" and isinstance(host_plugin_id, str) and host_plugin_id:
-            response["host_plugin_id"] = host_plugin_id
         return response
-
-    async def disable_extension(self, ext_id: str) -> dict[str, object]:
-        _ext_meta, host_plugin_id, host_obj = await self._validate_extension(ext_id)
-
-        result: dict[str, object] = {
-            "success": False,
-            "ext_id": ext_id,
-            "host_plugin_id": host_plugin_id,
-        }
-
-        if host_obj is not None and host_obj.is_alive():
-            try:
-                response_data = await host_obj.send_extension_command(
-                    "DISABLE_EXTENSION",
-                    {"ext_name": ext_id},
-                    timeout=10.0,
-                )
-            except PluginError as exc:
-                logger.error(
-                    "disable_extension host command failed with PluginError: ext_id={}, host_plugin_id={}, err_type={}, err={}",
-                    ext_id,
-                    host_plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise _to_domain_error(
-                    code="EXTENSION_DISABLE_FAILED",
-                    message=str(exc),
-                    status_code=500,
-                    plugin_id=ext_id,
-                    error_type=type(exc).__name__,
-                ) from exc
-            except RUNTIME_ERRORS as exc:
-                logger.error(
-                    "disable_extension host command failed: ext_id={}, host_plugin_id={}, err_type={}, err={}",
-                    ext_id,
-                    host_plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise _to_domain_error(
-                    code="EXTENSION_DISABLE_FAILED",
-                    message="disable_extension failed",
-                    status_code=500,
-                    plugin_id=ext_id,
-                    error_type=type(exc).__name__,
-                ) from exc
-
-            result["success"] = True
-            result["data"] = response_data
-        else:
-            result["success"] = True
-            result["message"] = "Host not running; extension metadata updated"
-
-        await asyncio.to_thread(_set_plugin_runtime_enabled_sync, ext_id, False)
-        await asyncio.to_thread(set_runtime_override, ext_id, False)
-        _emit_lifecycle_event(
-            event_type="extension_disabled",
-            plugin_id=ext_id,
-            host_plugin_id=host_plugin_id,
-        )
-        return result
-
-    async def enable_extension(self, ext_id: str) -> dict[str, object]:
-        ext_meta, host_plugin_id, host_obj = await self._validate_extension(ext_id)
-
-        ext_entry_obj = ext_meta.get("entry_point")
-        if not isinstance(ext_entry_obj, str) or not ext_entry_obj:
-            raise _to_domain_error(
-                code="INVALID_EXTENSION_METADATA",
-                message=f"Extension '{ext_id}' has invalid entry_point",
-                status_code=500,
-                plugin_id=ext_id,
-                error_type="InvalidEntryPoint",
-            )
-
-        prefix = ""
-        resolved_config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, ext_meta)
-        if resolved_config_path is not None:
-            try:
-                prefix = await asyncio.to_thread(_read_extension_prefix_sync, resolved_config_path)
-            except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
-                logger.warning(
-                    "failed to read extension prefix: ext_id={}, config_path={}, err_type={}, err={}",
-                    ext_id,
-                    str(resolved_config_path),
-                    type(exc).__name__,
-                    str(exc),
-                )
-
-        result: dict[str, object] = {
-            "success": False,
-            "ext_id": ext_id,
-            "host_plugin_id": host_plugin_id,
-        }
-
-        if host_obj is not None and host_obj.is_alive():
-            try:
-                response_data = await host_obj.send_extension_command(
-                    "ENABLE_EXTENSION",
-                    {
-                        "ext_id": ext_id,
-                        "ext_entry": ext_entry_obj,
-                        "prefix": prefix,
-                        "config_path": str(resolved_config_path) if resolved_config_path is not None else "",
-                    },
-                    timeout=10.0,
-                )
-            except PluginError as exc:
-                logger.error(
-                    "enable_extension host command failed with PluginError: ext_id={}, host_plugin_id={}, err_type={}, err={}",
-                    ext_id,
-                    host_plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise _to_domain_error(
-                    code="EXTENSION_ENABLE_FAILED",
-                    message=str(exc),
-                    status_code=500,
-                    plugin_id=ext_id,
-                    error_type=type(exc).__name__,
-                ) from exc
-            except RUNTIME_ERRORS as exc:
-                logger.error(
-                    "enable_extension host command failed: ext_id={}, host_plugin_id={}, err_type={}, err={}",
-                    ext_id,
-                    host_plugin_id,
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise _to_domain_error(
-                    code="EXTENSION_ENABLE_FAILED",
-                    message="enable_extension failed",
-                    status_code=500,
-                    plugin_id=ext_id,
-                    error_type=type(exc).__name__,
-                ) from exc
-
-            result["success"] = True
-            result["data"] = response_data
-        else:
-            result["success"] = True
-            result["message"] = "Host not running; extension will be injected when host starts"
-
-        await asyncio.to_thread(_set_plugin_runtime_enabled_sync, ext_id, True)
-        await asyncio.to_thread(set_runtime_override, ext_id, True)
-        _emit_lifecycle_event(
-            event_type="extension_enabled",
-            plugin_id=ext_id,
-            host_plugin_id=host_plugin_id,
-        )
-        return result
 
     async def _safe_stop_for_reload(self, plugin_id: str) -> _ReloadOutcome:
         try:
@@ -1438,49 +1315,3 @@ class PluginLifecycleService:
             return _ReloadOutcome(plugin_id=plugin_id, success=True)
         except ServerDomainError as error:
             return _ReloadOutcome(plugin_id=plugin_id, success=False, error=error.message)
-
-    async def _validate_extension(self, ext_id: str) -> tuple[dict[str, object], str, PluginHostContract | None]:
-        ext_meta = await asyncio.to_thread(_get_plugin_meta_sync, ext_id)
-        if ext_meta is None:
-            raise _to_domain_error(
-                code="EXTENSION_NOT_FOUND",
-                message=f"Extension '{ext_id}' not found",
-                status_code=404,
-                plugin_id=ext_id,
-                error_type="ExtensionNotFound",
-            )
-
-        plugin_type_obj = ext_meta.get("type")
-        if plugin_type_obj != "extension":
-            raise _to_domain_error(
-                code="INVALID_EXTENSION_TYPE",
-                message=f"'{ext_id}' is not an extension plugin",
-                status_code=400,
-                plugin_id=ext_id,
-                error_type="InvalidExtensionType",
-            )
-
-        host_plugin_id_obj = ext_meta.get("host_plugin_id")
-        if not isinstance(host_plugin_id_obj, str) or not host_plugin_id_obj:
-            raise _to_domain_error(
-                code="INVALID_EXTENSION_METADATA",
-                message=f"Extension '{ext_id}' has no host_plugin_id",
-                status_code=400,
-                plugin_id=ext_id,
-                error_type="MissingHostPluginId",
-            )
-
-        host_obj_raw = await asyncio.to_thread(_get_plugin_host_sync, host_plugin_id_obj)
-        if host_obj_raw is None:
-            return ext_meta, host_plugin_id_obj, None
-
-        if not isinstance(host_obj_raw, PluginHostContract):
-            raise _to_domain_error(
-                code="INVALID_HOST_OBJECT",
-                message=f"Host plugin '{host_plugin_id_obj}' object is invalid",
-                status_code=500,
-                plugin_id=host_plugin_id_obj,
-                error_type=type(host_obj_raw).__name__,
-            )
-
-        return ext_meta, host_plugin_id_obj, host_obj_raw

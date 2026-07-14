@@ -1,6 +1,8 @@
 import os
 import sys
 
+import pytest
+
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -21,6 +23,7 @@ from utils.stepfun_tts_voices import (
     get_stepfun_tts_default_voice,
     normalize_stepfun_tts_voice,
 )
+from utils.tts.providers import stepfun as stepfun_provider
 
 
 def test_stepfun_and_free_catalogs_are_registered():
@@ -108,3 +111,73 @@ def test_stepfun_catalog_is_loaded_from_api_providers_config():
     assert free_cfg["voices"] == step_cfg["voices"]
     assert free_cfg["catalog_prefix"] == "免费 API"
     assert free_cfg["catalog_value_is_display_name"] is True
+
+
+def test_missing_configs_use_symmetric_routable_fallbacks(monkeypatch):
+    monkeypatch.setattr(
+        stepfun_provider,
+        "_load_stepfun_provider_config",
+        lambda _provider_key: {},
+    )
+
+    step_provider = stepfun_provider._create_provider("step")
+    free_provider = stepfun_provider._create_provider("free")
+
+    for provider in (step_provider, free_provider):
+        assert provider.default_voice == FALLBACK_STEPFUN_TTS_DEFAULT_VOICE
+        assert provider.default_voice in provider.catalog
+        assert provider.default_male_voice in provider.catalog
+        assert provider.normalize("default") == (
+            FALLBACK_STEPFUN_TTS_DEFAULT_VOICE,
+            True,
+        )
+    assert step_provider.catalog == free_provider.catalog
+    assert step_provider.catalog_prefix == "StepFun"
+    assert free_provider.catalog_prefix == "免费 API"
+
+
+@pytest.mark.parametrize(
+    "broken_cfg",
+    [
+        {"voices": {"configured": "Configured Voice"}},
+        {
+            "voices": {"configured": "Configured Voice"},
+            "default_voice": "missing-from-catalog",
+        },
+    ],
+)
+def test_invalid_configs_use_routable_fallbacks(monkeypatch, broken_cfg):
+    monkeypatch.setattr(
+        stepfun_provider,
+        "_load_stepfun_provider_config",
+        lambda _provider_key: broken_cfg,
+    )
+
+    provider = stepfun_provider._create_provider("step")
+
+    assert provider.default_voice == FALLBACK_STEPFUN_TTS_DEFAULT_VOICE
+    assert provider.default_voice in provider.catalog
+    assert provider.default_male_voice in provider.catalog
+
+
+def test_valid_stepfun_config_still_has_priority(monkeypatch):
+    cfg = {
+        "voices": {"configured": "Configured Voice"},
+        "aliases": {"default": "configured"},
+        "default_voice": "configured",
+        "default_male_voice": "configured",
+        "catalog_prefix": "Configured StepFun",
+        "catalog_value_is_display_name": True,
+    }
+    monkeypatch.setattr(
+        stepfun_provider,
+        "_load_stepfun_provider_config",
+        lambda _provider_key: cfg,
+    )
+
+    provider = stepfun_provider._create_provider("step")
+
+    assert provider.catalog == cfg["voices"]
+    assert provider.default_voice == "configured"
+    assert provider.normalize("default") == ("configured", True)
+    assert provider.catalog_prefix == "Configured StepFun"

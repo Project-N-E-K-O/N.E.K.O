@@ -8,15 +8,15 @@ same substitution helper:
    the LLM prompt.
 2. ``_format_voice_swap_item`` — voice-mode ``pending_extra_replies``
    hot-swap rendering into ``prime_context``.
-3. ``app/main_server.py`` direct_reply — plugin text bypassing the LLM and
+3. ``app/main_server/character_runtime.py`` direct_reply — plugin text bypassing the LLM and
    going verbatim to TTS via ``send_lanlan_response``.
-4. ``app/main_server.py`` ``passthrough_to_chat_bubble`` — ``visibility=["chat"]``
+4. ``app/main_server/character_runtime.py`` ``passthrough_to_chat_bubble`` — ``visibility=["chat"]``
    + ``ai_behavior="blind"`` blind chat-bubble passthrough.
-5. ``app/main_server.py`` HUD ``agent_notification`` — ``visibility=["hud"]``
+5. ``app/main_server/character_runtime.py`` HUD ``agent_notification`` — ``visibility=["hud"]``
    toast text.
 
 If any of these grow a new code path that bypasses ``apply_role_placeholders``,
-plugins emitting ``"向 {MASTER_NAME} 汇报…"`` style text will end up speaking /
+plugins emitting ``"向 {MASTER_NAME} 汇报…"`` style text will end up speaking /  # noqa: DOCSTRING_CJK
 displaying the literal token to the user. This file is the canary.
 
 The substitution uses ``str.replace``, not ``str.format`` — JSON fragments
@@ -211,8 +211,8 @@ def _mgr_for_main_server(send_lanlan_return=True):
 
 
 def _patch_main_server(monkeypatch, fake_mgr):
-    monkeypatch.setattr("app.main_server._get_session_manager", lambda name: fake_mgr)
-    monkeypatch.setattr("app.main_server._is_websocket_connected", lambda ws: True)
+    monkeypatch.setattr("app.main_server.character_runtime._get_session_manager", lambda name: fake_mgr)
+    monkeypatch.setattr("app.main_server.character_runtime._is_websocket_connected", lambda ws: True)
 
 
 @pytest.mark.unit

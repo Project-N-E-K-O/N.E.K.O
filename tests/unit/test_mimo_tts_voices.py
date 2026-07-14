@@ -8,6 +8,7 @@ from main_logic import tts_client  # noqa: F401
 from utils import tts_provider_registry
 from utils.mimo_tts_voices import MIMO_PRESET_CATALOG, normalize_mimo_tts_voice
 from utils.native_voice_registry import get_provider, is_native_voice, list_providers
+from utils.tts.providers import mimo as mimo_provider
 from utils.voice_config import read_legacy_voice_id
 
 
@@ -72,6 +73,22 @@ def test_mimo_voice_aliases_normalize_to_catalog_ids():
     assert normalize_mimo_tts_voice("english male") == ("Milo", True)
     assert tts_provider_registry.is_preset_voice("mimo", "冰糖") is True
     assert tts_provider_registry.is_preset_voice("mimo", "not-a-mimo-voice") is False
+
+
+@pytest.mark.unit
+def test_partial_config_default_drives_mimo_fallback_aliases(monkeypatch):
+    catalog = {"configured-default": "Configured"}
+    monkeypatch.setattr(
+        mimo_provider,
+        "_CFG",
+        {"voices": catalog, "default_voice": "configured-default"},
+    )
+    monkeypatch.setattr(mimo_provider, "MIMO_TTS_VOICE_GENDERS", catalog)
+
+    preset_catalog = mimo_provider._create_preset_catalog()
+
+    assert preset_catalog.normalize("default") == ("configured-default", True)
+    assert preset_catalog.normalize("默认") == ("configured-default", True)
 
 
 @pytest.mark.unit

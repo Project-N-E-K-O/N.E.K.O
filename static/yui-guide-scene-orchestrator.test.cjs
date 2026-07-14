@@ -1,11 +1,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
 const orchestratorPath = path.join(__dirname, 'tutorial/core/scene-orchestrator.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 
 test('scene orchestrator exports reusable round facade', () => {
     assert.ok(fs.existsSync(orchestratorPath), 'tutorial/core/scene-orchestrator.js should exist');
@@ -1582,11 +1583,11 @@ test('full tutorial pages load scene orchestrator before director', () => {
         const source = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
         const settingsTourFlowIndex = source.indexOf('/static/tutorial/core/settings-tour-flow.js');
         const orchestratorIndex = source.indexOf('/static/tutorial/core/scene-orchestrator.js');
-        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(settingsTourFlowIndex, -1, templatePath + ' should load tutorial/core/settings-tour-flow.js');
         assert.notEqual(orchestratorIndex, -1, templatePath + ' should load tutorial/core/scene-orchestrator.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(settingsTourFlowIndex < orchestratorIndex, templatePath + ' should load settings tour flow before scene orchestrator');
         assert.ok(orchestratorIndex < directorIndex, templatePath + ' should load scene orchestrator before director');
     }

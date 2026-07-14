@@ -1108,6 +1108,46 @@ def test_study_store_seed_topic_upsert_preserves_seed_metadata(tmp_path: Path) -
         store.close()
 
 
+def test_study_store_seed_topic_upsert_refreshes_seed_metadata(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "Old Seed Topic",
+                "subject": "math",
+                "chapter": "Old Chapter",
+                "prerequisites": [{"id": "old_pre"}],
+                "related": [{"id": "old_related", "relation": "next"}],
+                "source": "seed",
+            }
+        )
+        store.upsert_topic(
+            {
+                "id": "seed_topic",
+                "name": "New Seed Topic",
+                "subject": "math",
+                "chapter": "New Chapter",
+                "prerequisites": [{"id": "new_pre"}],
+                "related": [{"id": "new_related", "relation": "application"}],
+                "source": "seed",
+            }
+        )
+
+        topic = store.get_topic("seed_topic")
+        assert topic is not None
+        assert topic["name"] == "New Seed Topic"
+        assert topic["chapter"] == "New Chapter"
+        assert topic["prerequisites"] == [{"id": "new_pre"}]
+        assert topic["related"] == [
+            {"id": "new_related", "relation": "application"}
+        ]
+        assert topic["source"] == "seed"
+    finally:
+        store.close()
+
+
 def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -1520,6 +1560,33 @@ def test_knowledge_map_related_object_edges_use_topic_ids() -> None:
         }
     ]
     assert not any(str(edge["to"]).startswith("{") for edge in payload["edges"])
+
+
+def test_knowledge_map_keeps_subject_units_and_empty_misconceptions_distinct() -> None:
+    payload = build_knowledge_map_payload(
+        topics=[
+            {
+                "id": "math_unit",
+                "name": "Math Unit",
+                "subject": "math",
+                "unit": "综合应用",
+                "typical_misconceptions": [],
+                "misconceptions": ["legacy value"],
+            },
+            {
+                "id": "physics_unit",
+                "name": "Physics Unit",
+                "subject": "physics",
+                "unit": "综合应用",
+            },
+        ]
+    )
+
+    assert payload["summary"]["unit_counts"] == {
+        "math:综合应用": 1,
+        "physics:综合应用": 1,
+    }
+    assert payload["nodes"][0]["typical_misconceptions"] == []
 
 
 def test_build_tutor_payload_preserves_structured_summary() -> None:

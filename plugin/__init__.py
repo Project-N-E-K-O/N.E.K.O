@@ -49,7 +49,6 @@ from plugin.sdk.plugin import (
     message,
     timer_interval,
     SystemInfo,
-    MemoryClient,
 )
 from plugin._types.events import (
     EventMeta,
@@ -115,7 +114,6 @@ __all__ = [
     'message',
     'timer_interval',
     'SystemInfo',
-    'MemoryClient',
     # Logger
     'PluginFileLogger',
     'enable_plugin_file_logging',

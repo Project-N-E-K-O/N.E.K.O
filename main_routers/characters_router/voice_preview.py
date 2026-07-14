@@ -37,7 +37,7 @@ from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
 from ..shared_state import (
     get_config_manager,
 )
-from utils.elevenlabs_tts_voices import (
+from utils.tts.providers.elevenlabs import (
     ELEVENLABS_TTS_VOICE_PREFIX,
 )
 from utils.config_manager import (
@@ -55,13 +55,13 @@ from utils.doubao_tts import (
     extract_doubao_audio_bytes,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.native_voice_registry import (
+from utils.tts.native_voice_registry import (
     get_active_realtime_native_provider_for_ui,
     get_native_voice_catalog_for_ui,
     normalize_native_voice,
     resolve_native_voice_for_routing,
 )
-from utils import tts_provider_registry
+from utils.tts import provider_registry as tts_provider_registry
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
@@ -267,7 +267,7 @@ async def _synthesize_free_voice_preview(voice_id: str, preview_line: str, previ
 
 async def _synthesize_gemini_native_voice_preview(voice_id: str, preview_line: str, audio_api_key: str) -> bytes:
     """Generate a preview WAV using Gemini native TTS."""
-    from utils.gemini_tts_voices import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
+    from utils.tts.providers.gemini import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
 
     normalized_voice_id, recognized = normalize_gemini_tts_voice(voice_id)
     if not recognized:

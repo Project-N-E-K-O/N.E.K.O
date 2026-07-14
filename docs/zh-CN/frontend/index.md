@@ -43,7 +43,7 @@ static/
 - **全局变量**: `window.NekoChatWindow`
 - **开发服务器**: `npm run dev`（端口 5174）
 
-胶水层 `static/app-react-chat-window.js` 负责加载 React 组件并挂载到 DOM。
+胶水层 `static/app/app-react-chat-window` 负责加载 React 组件并挂载到 DOM。
 
 ## 插件管理面板（Vue）
 

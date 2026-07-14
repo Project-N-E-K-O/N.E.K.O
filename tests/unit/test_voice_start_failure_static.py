@@ -3,17 +3,18 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from tests.static_app_parts import read_path_or_parts
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app-audio-capture.js"
-APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app-buttons.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-capture.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return read_path_or_parts(path)
 
 
 def _js_function_block(source: str, function_name: str) -> str:

@@ -62,7 +62,6 @@ PluginConfig = _runtime.PluginConfig
 Plugins = _runtime.Plugins
 PluginRouter = _runtime.PluginRouter
 SystemInfo = _runtime.SystemInfo
-MemoryClient = _runtime.MemoryClient
 PluginStore = _runtime.PluginStore
 
 # --- Errors ---
@@ -118,7 +117,6 @@ __all__ = [
     "Plugins",
     "PluginRouter",
     "SystemInfo",
-    "MemoryClient",
     "PluginStore",
     # Errors
     "SdkError",

@@ -340,7 +340,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -436,7 +436,6 @@ const {
   groupCounts,
   filteredPurePlugins,
   filteredAdapters,
-  filteredExtensions,
   selectedPluginIds,
   togglePlugin: togglePluginSelection,
   selectAllVisible,
@@ -481,19 +480,11 @@ const pluginSections = computed(() => [
     items: filteredAdapters.value,
     variant: 'adapter' as const,
   },
-  {
-    key: 'extension',
-    title: t('plugins.extensionsSection'),
-    icon: Expand,
-    items: filteredExtensions.value,
-    variant: 'extension' as const,
-  },
 ])
 
 const typeFilterChoices = computed<GroupChoiceDescriptor[]>(() => [
   { id: 'plugin', label: t('plugins.typePlugin'), icon: Box },
   { id: 'adapter', label: t('plugins.typeAdapter'), icon: Connection },
-  { id: 'extension', label: t('plugins.typeExtension'), icon: Expand },
 ])
 
 const layoutChoices = computed<LayoutChoiceDescriptor[]>(() => [
@@ -522,10 +513,8 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'type:plugin', label: t('plugins.filterRuleLabels.plugin') },
       { token: 'type:adapter', label: t('plugins.filterRuleLabels.adapter') },
-      { token: 'type:extension', label: t('plugins.filterRuleLabels.extension') },
       { token: 'is:ui', label: t('plugins.filterRuleLabels.ui') },
       { token: 'has:entries', label: t('plugins.filterRuleLabels.entries') },
-      { token: 'has:host', label: t('plugins.filterRuleLabels.host') },
     ],
   },
   {
@@ -534,7 +523,6 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'name:', label: t('plugins.filterRuleLabels.name') },
       { token: 'id:', label: t('plugins.filterRuleLabels.id') },
-      { token: 'host:', label: t('plugins.filterRuleLabels.hostTarget') },
       { token: 'version:', label: t('plugins.filterRuleLabels.version') },
       { token: 'entry:', label: t('plugins.filterRuleLabels.entry') },
       { token: 'author:', label: t('plugins.filterRuleLabels.author') },
@@ -736,7 +724,7 @@ function handlePluginContextMenu(
 }
 
 function getTutorialPlugin() {
-  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || filteredExtensions.value[0] || rawPlugins.value[0] || null
+  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || rawPlugins.value[0] || null
 }
 
 async function showTutorialContextMenu() {

@@ -1023,7 +1023,7 @@ def get_music_crawlers() -> Dict[str, BaseMusicCrawler]:
 async def close_all_crawlers():
     """
     Close all global crawler instances together, releasing connection-pool resources.
-    Recommended at service shutdown (e.g. main_server.py on_shutdown).
+    Recommended at service shutdown (e.g. main_server.on_shutdown).
     """
     global _crawlers_cache
     if _crawlers_cache is None:

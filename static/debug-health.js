@@ -35,7 +35,7 @@
     // 我们记录的是「当前还活着的 timer id 集合」大小，不是历史总数。
     //
     // 双清：浏览器 timer id 池在多数实现里 setInterval / setTimeout 共享，
-    // 且本仓库已有 cross-clear 用法（static/app-ui.js: setTimeout 拿 id →
+    // 且本仓库已有 cross-clear 用法（static/app/app-ui: setTimeout 拿 id →
     // clearInterval(id) 清掉）。所以两个 clear wrapper 都必须同时从两个 set
     // 删——否则 cross-clear 会让对应 set 里残留死 id，counter 假性单调涨，
     // 反过来污染本来要诊断的 leak 信号。

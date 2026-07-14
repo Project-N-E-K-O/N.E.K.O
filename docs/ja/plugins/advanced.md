@@ -1,44 +1,20 @@
 # 応用トピック
 
-## Extension
+## Router の構成
 
-Extension は、既存のプラグインを変更せずにルートやフックを追加します。ホストプラグインのプロセス内で実行されます（別プロセスではありません）。
-
-### Extension を使うべき場合
-
-- 既存プラグインに新しいコマンドを追加したい
-- 他のプラグインのエントリーポイントにフックしたい
-- プラグイン内でモジュール化されたコード構成にしたい
-
-### Extension の作成
+Extension package type と `plugin.sdk.extension` facade は削除されました。`PluginRouter` は通常 Plugin 内部の構成要素として引き続き利用できます。Router は所有する Plugin と同じ source tree に置き、明示的に mount します。
 
 ```python
-from plugin.sdk.extension import (
-    NekoExtensionBase, extension, extension_entry, extension_hook,
-    Ok, Err,
-)
+from plugin.sdk.plugin import PluginRouter, plugin_entry, Ok
 
-@extension
-class MyExtension(NekoExtensionBase):
-    """ホストプラグインに追加コマンドを提供します。"""
 
-    @extension_entry(id="extra_command", description="An extra command added by extension")
-    def extra_command(self, param: str = "", **_):
-        return Ok({"extended": True, "param": param})
-
-    @extension_hook(target="original_entry", timing="before")
-    def validate(self, *, args, **_):
-        # ホストプラグインの "original_entry" の前に実行
-        if not args.get("required_field"):
-            return Err("Missing required_field")
+class ExtraRouter(PluginRouter):
+    @plugin_entry(id="extra_command", description="追加コマンド")
+    async def extra_command(self, param: str = "", **_):
+        return Ok({"param": param})
 ```
 
-### Extension の仕組み
-
-1. ホストが設定で Extension を登録する
-2. 起動時に、ホストが Extension を `PluginRouter` インスタンスとしてインジェクトする
-3. Extension のエントリーはホストプラグインの名前空間でアクセス可能になる
-4. Extension のフックがホストのエントリーポイントをインターセプトする
+所有する `NekoPluginBase` の constructor で `self.include_router(ExtraRouter(name="extra"))` を呼びます。旧 Extension はその Plugin の source tree に統合するか、独立した通常 Plugin に変換してください。`type = "extension"`、`[plugin.host]`、`plugin.sdk.extension` import は拒否されます。[v0.9 移行ガイド](./migration-v0.9)を参照してください。
 
 ---
 
@@ -147,23 +123,29 @@ exists = await self.plugins.exists("required_plugin")
 dep = await self.plugins.require_enabled("required_plugin")
 ```
 
-### イベントバス
+### Bus read と watcher
 
-`self.bus` は読み取り専用のビュー（`SdkBusContext`）で、5 つの名前空間スナップショット `messages`、`events`、`lifecycle`、`conversations`、`memory` を公開し、それぞれに `.get(...)` があります。`emit()` や `on()` メソッドは**ありません**。バスは名前空間スナップショットの読み取り専用であり、イベントを直接発行することはできません。
+`self.bus` は 5 つの readable namespace snapshot `messages`、`events`、`lifecycle`、`conversations`、`memory` を公開し、`emit()` や `on()` はありません。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。
 
 ```python
-# 名前空間の最新スナップショットを読み取る
-events = self.bus.events.get()
+# async entry では get() を await する
+events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
+recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
-# 変更をサブスクライブする：まず get() でリストを取得し、watch() で watcher を得る。
-# watcher.subscribe(on=...) はデコレーターで、ハンドラーは SdkBusDelta を受け取る。
-watcher = self.bus.events.get().watch(self.ctx)
+# subscribe() は "add"、"del"、"change" のみ受け付ける
+watcher = recent.watch(self.ctx)
 
-@watcher.subscribe(on="some_event")
+@watcher.subscribe(on="add")
 def _handle_event(delta):
-    # delta.added / delta.removed / delta.current
-    ...
+    for event in delta.added:
+        self.logger.info(f"new event: {event.type}")
+
+watcher.start()
 ```
+
+callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は materialize 済み snapshot に対する local-only 変換で、`watch()` では replay できません。watcher chain では上例のように structured `filter(field=value, ...)` と `sort(by=...)` を使います。
+
+最近の memory record は `await self.bus.memory.get(bucket_id="default", limit=...)`、semantic lookup は `await self.ctx.query_memory("default", query)` を使います。旧高レベル `self.memory` / `MemoryClient` API は削除済みです。
 
 ---
 

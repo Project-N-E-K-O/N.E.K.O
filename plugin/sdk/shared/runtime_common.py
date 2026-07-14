@@ -1,7 +1,7 @@
 """Common runtime exports shared by all sdk facades.
 
 This module centralizes the SDK-wide runtime vocabulary used by
-`plugin.runtime`, `extension.runtime`, and `adapter.runtime`:
+`plugin.runtime` and `adapter.runtime`:
 - version and error code
 - `Result`/`Ok`/`Err` and helpers
 - logger helpers

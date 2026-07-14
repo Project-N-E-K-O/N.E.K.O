@@ -6,15 +6,15 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APP_BUTTONS_PATH = REPO_ROOT / "static" / "app-buttons.js"
-APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app-audio-capture.js"
-APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app-websocket.js"
+APP_BUTTONS_PATH = REPO_ROOT / "static" / "app" / "app-buttons.js"
+APP_AUDIO_CAPTURE_PATH = REPO_ROOT / "static" / "app" / "app-audio-capture.js"
+APP_WEBSOCKET_PATH = REPO_ROOT / "static" / "app" / "app-websocket.js"
 CORE_PACKAGE_PATH = REPO_ROOT / "main_logic" / "core"
 CROSS_SERVER_PATH = REPO_ROOT / "main_logic" / "cross_server.py"
 INDEX_TEMPLATE_PATH = REPO_ROOT / "templates" / "index.html"
 INTAKE_PATH = REPO_ROOT / "static" / "avatar" / "avatar-drop-intake.js"
-MAIN_SERVER_PATH = REPO_ROOT / "app" / "main_server.py"
-OMNI_OFFLINE_PATH = REPO_ROOT / "main_logic" / "omni_offline_client.py"
+MAIN_SERVER_PATH = REPO_ROOT / "app" / "main_server" / "web_app.py"
+OMNI_OFFLINE_PATH = REPO_ROOT / "main_logic" / "omni_offline_client"
 PARSER_PATH = REPO_ROOT / "static" / "avatar" / "avatar-drop-parser.js"
 WEBSOCKET_ROUTER_PATH = REPO_ROOT / "main_routers" / "websocket_router.py"
 
@@ -214,7 +214,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
     index_source = _read(INDEX_TEMPLATE_PATH)
     main_server_source = _read(MAIN_SERVER_PATH)
 
-    assert index_source.index("/static/app-buttons.js") < index_source.index("/static/avatar/avatar-drop-parser.js")
+    assert index_source.index("/static/app/app-buttons.js") < index_source.index("/static/avatar/avatar-drop-parser.js")
     assert index_source.index("/static/avatar/avatar-drop-parser.js") < index_source.index("/static/avatar/avatar-drop-intake.js")
     assert "from main_routers.avatar_drop_router import router as avatar_drop_router" in main_server_source
     assert "app.include_router(avatar_drop_router)" in main_server_source
@@ -224,7 +224,7 @@ def test_avatar_drop_scripts_and_backend_routes_are_wired():
 def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs():
     core_source = _read_package(CORE_PACKAGE_PATH)
     cross_server_source = _read(CROSS_SERVER_PATH)
-    offline_source = _read(OMNI_OFFLINE_PATH)
+    offline_source = _read_package(OMNI_OFFLINE_PATH)
     websocket_source = _read(WEBSOCKET_ROUTER_PATH)
 
     assert '_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})' in core_source

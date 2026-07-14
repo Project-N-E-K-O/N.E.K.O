@@ -3,7 +3,7 @@
 Bug 1.1 — Proxy double Content-Encoding
 =======================================
 
-``proxy_user_plugin_market_bridge`` in ``app/main_server.py`` (around
+``proxy_user_plugin_market_bridge`` in ``app/main_server/__init__.py`` (around
 line 1604) forwards the client's ``Accept-Encoding`` upstream, lets
 httpx auto-decompress the upstream response body, and then forwards the
 upstream ``Content-Encoding: gzip`` header back to the browser. The

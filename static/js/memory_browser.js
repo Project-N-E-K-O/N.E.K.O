@@ -1040,7 +1040,7 @@
     async function showStandaloneStorageMaintenanceOverlay(payload) {
         try {
             ensureStylesheet('/static/css/storage-location.css');
-            await loadScriptOnce('/static/app-storage-location.js', function (script) {
+            await loadScriptOnce('/static/app/app-storage-location.js', function (script) {
                 script.setAttribute('data-storage-location-auto-start', 'false');
             });
             if (

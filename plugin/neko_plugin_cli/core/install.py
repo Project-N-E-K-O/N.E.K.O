@@ -12,6 +12,7 @@ from .archive_utils import (
     read_metadata,
     safe_archive_path,
     validate_dependency_layout,
+    validate_plugin_manifest_types,
     validate_package_type,
     validate_plugin_layout,
     verify_payload_hash,
@@ -46,6 +47,7 @@ class PackageInstaller:
             plugin_folders = collect_plugin_folders(archive)
             validate_package_type(package_type, plugin_folders)
             validate_plugin_layout(archive, plugin_folders)
+            validate_plugin_manifest_types(archive, plugin_folders)
             validate_dependency_layout(archive, plugin_folders)
             payload_hash = compute_archive_payload_hash(archive)
             payload_hash_verified = verify_payload_hash(metadata, payload_hash)
