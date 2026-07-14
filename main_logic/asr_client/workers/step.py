@@ -44,11 +44,38 @@ class _StepConnectionState:
     emit_ready: bool
     item_keys: dict[str, _ItemKey] = field(default_factory=dict)
     pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
+    unbound_manual_item_ids: deque[str] = field(default_factory=deque)
+    unbound_manual_item_id_set: set[str] = field(default_factory=set)
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
     closed_sent: asyncio.Event = field(default_factory=asyncio.Event)
     last_utterance_id: int | None = None
+
+
+def _step_bind_pending_manual_items(state: _StepConnectionState) -> None:
+    while state.pending_manual_commits and state.unbound_manual_item_ids:
+        item_id = state.unbound_manual_item_ids.popleft()
+        if item_id not in state.unbound_manual_item_id_set:
+            continue
+        state.unbound_manual_item_id_set.remove(item_id)
+        if item_id in state.item_keys:
+            continue
+        state.item_keys[item_id] = state.pending_manual_commits.popleft()
+
+
+def _step_manual_item_key(
+    state: _StepConnectionState,
+    item_id: str,
+) -> _ItemKey | None:
+    key = state.item_keys.get(item_id)
+    if key is not None:
+        return key
+    if item_id not in state.unbound_manual_item_id_set:
+        state.unbound_manual_item_ids.append(item_id)
+        state.unbound_manual_item_id_set.add(item_id)
+    _step_bind_pending_manual_items(state)
+    return state.item_keys.get(item_id)
 
 
 def _step_event_id() -> str:
@@ -186,6 +213,7 @@ async def _step_sender(
                         request.utterance_id,
                     )
                     state.pending_manual_commits.append(key)
+                    _step_bind_pending_manual_items(state)
                     await ws.send(
                         json.dumps(
                             {
@@ -323,19 +351,16 @@ async def _step_receiver(
                 continue
 
             if event_type == "input_audio_buffer.committed":
-                item_id = str(event.get("item_id") or "")
-                if (
-                    config.endpointing_mode == "manual"
-                    and item_id
-                    and item_id not in state.item_keys
-                    and state.pending_manual_commits
-                ):
-                    state.item_keys[item_id] = state.pending_manual_commits.popleft()
+                # Step assigns this event to the committed audio item. Its
+                # transcription events use a different item_id, so manual
+                # utterances are bound when a transcription event arrives.
                 continue
 
             if event_type == "conversation.item.input_audio_transcription.delta":
                 item_id = str(event.get("item_id") or "")
                 key = state.item_keys.get(item_id)
+                if key is None and item_id and config.endpointing_mode == "manual":
+                    key = _step_manual_item_key(state, item_id)
                 if key is not None:
                     await response_queue.put(
                         _AsrWorkerEvent(
@@ -350,8 +375,11 @@ async def _step_receiver(
 
             if event_type == "conversation.item.input_audio_transcription.completed":
                 item_id = str(event.get("item_id") or "")
-                key = state.item_keys.pop(item_id, None)
+                key = state.item_keys.get(item_id)
+                if key is None and item_id and config.endpointing_mode == "manual":
+                    key = _step_manual_item_key(state, item_id)
                 if key is not None:
+                    state.item_keys.pop(item_id, None)
                     await response_queue.put(
                         _AsrWorkerEvent(
                             kind="final",
