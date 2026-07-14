@@ -295,7 +295,7 @@ async def sync_workshop_character_cards(
                                     )
                                     continue
                             conflict_name = _find_casefold_conflict_name(
-                                characters.get('猫娘', {}).keys(),
+                                characters['猫娘'].keys(),
                                 chara_name,
                             )
                             if conflict_name is not None:

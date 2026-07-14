@@ -1302,7 +1302,7 @@ async def test_workshop_sync_skips_casefold_conflicting_dotted_names():
             assert sync_result["added"] == 1
             assert sync_result["skipped"] >= 1
             current_catgirls = cm.load_characters().get("猫娘", {})
-            assert sorted(name.casefold() for name in current_catgirls) == sorted(
+            assert len(current_catgirls) == len(
                 {name.casefold() for name in current_catgirls}
             )
             assert {"N.E.K.O", "n.e.k.o"} & set(current_catgirls)
