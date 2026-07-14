@@ -1823,10 +1823,10 @@ def test_onboarding_uses_i18n_copy_for_user_visible_text(mock_page: Page):
                     'memory.characterSelection.previewLead': 'If you pick {{name}} for me, this is how I will sound.',
                     'memory.characterSelection.classic_genki.profileSummary': 'A bright little sun who notices your mood fast and cheers you on.',
                     'memory.characterSelection.classic_genki.hiddenRule': 'Emotional reassurance comes first in every interaction.',
-                    'memory.characterSelection.detailSpeechHabits': 'Signature phrases',
+                    'memory.characterSelection.detailSpeechHabits': 'Speaking habits',
                     'memory.characterSelection.detailHobbies': 'Favorite moods',
                     'memory.characterSelection.detailBoundaries': 'Hard boundaries',
-                    'memory.characterSelection.classic_genki.speechHabits': 'yay / nyan / you are amazing',
+                    'memory.characterSelection.classic_genki.speechHabits': 'celebrate when it fits / praise for a real reason / empathize without repeating',
                     'memory.characterSelection.classic_genki.hobbies': 'company / snacks / cheering you on',
                     'memory.characterSelection.classic_genki.boundaries': 'cold replies / dismissing the user',
                 };
@@ -1874,10 +1874,10 @@ def test_onboarding_uses_i18n_copy_for_user_visible_text(mock_page: Page):
         "If you pick Sunny Spark for me",
         timeout=5000,
     )
-    expect(mock_page.locator(".detail-group-title").first).to_have_text("Signature phrases")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(0)).to_have_text("yay")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(1)).to_have_text("nyan")
-    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(2)).to_have_text("you are amazing")
+    expect(mock_page.locator(".detail-group-title").first).to_have_text("Speaking habits")
+    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(0)).to_have_text("celebrate when it fits")
+    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(1)).to_have_text("praise for a real reason")
+    expect(mock_page.locator("#detailCatchphrases .detail-pill").nth(2)).to_have_text("empathize without repeating")
 
 
 @pytest.mark.frontend
@@ -1902,10 +1902,10 @@ def test_settings_uses_i18n_copy_for_warning_and_user_visible_text(mock_page: Pa
                     'memory.characterSelection.previewLead': 'If you pick {{name}} for me, this is how I will sound.',
                     'memory.characterSelection.classic_genki.profileSummary': 'A bright little sun who notices your mood fast and cheers you on.',
                     'memory.characterSelection.classic_genki.hiddenRule': 'Emotional reassurance comes first in every interaction.',
-                    'memory.characterSelection.detailSpeechHabits': 'Signature phrases',
+                    'memory.characterSelection.detailSpeechHabits': 'Speaking habits',
                     'memory.characterSelection.detailHobbies': 'Favorite moods',
                     'memory.characterSelection.detailBoundaries': 'Hard boundaries',
-                    'memory.characterSelection.classic_genki.speechHabits': 'yay / nyan / you are amazing',
+                    'memory.characterSelection.classic_genki.speechHabits': 'celebrate when it fits / praise for a real reason / empathize without repeating',
                     'memory.characterSelection.classic_genki.hobbies': 'company / snacks / cheering you on',
                     'memory.characterSelection.classic_genki.boundaries': 'cold replies / dismissing the user',
                     'memory.characterSelection.back': 'Pick again',

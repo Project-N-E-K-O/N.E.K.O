@@ -1107,7 +1107,7 @@
                 {
                     containerId: 'detailCatchphrases',
                     groupClassName: 'detail-group',
-                    label: translate('memory.characterSelection.detailSpeechHabits', '常挂嘴边的话喵'),
+                    label: translate('memory.characterSelection.detailSpeechHabits', '说话习惯喵'),
                     items: this.getPresetDetailItems(
                         preset,
                         'speechHabits',

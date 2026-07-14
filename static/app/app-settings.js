@@ -626,7 +626,7 @@
         // 关、reload 时若没触发 merge，window 会是 undefined 让弹窗误显示为开。这里在
         // 每次 loadSettings 末尾从 S 权威镜像一次兜住该时序漏洞。
         window.focusCognitionEnabled = S.focusCognitionEnabled;
-        // 同理：降低 AI 味开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
+        // 同理：自然表达开关也镜像到 window，避免设置弹窗在 reload 后误显示为开。
         window.slopFilterEnabled = S.slopFilterEnabled;
 
         // 加载字幕设置（统一从 subtitle-shared store 读取）
