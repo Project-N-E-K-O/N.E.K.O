@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -280,6 +281,9 @@ async def test_game_mode_broadcast_serializes_sends_with_session_lock(monkeypatc
         ("/api/game-mode-beta/windows/unregister", {"pet_instance_id": "pet-a"}),
         ("/api/game-mode-beta/ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
         ("/api/game-mode-beta/deep-sleep-ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
+        ("/api/game-mode-beta/resource/ack", {"resource_session_id": "session", "pet_instance_id": "pet-a", "phase": "soft_protected"}),
+        ("/api/game-mode-beta/resource/interaction", {"resource_session_id": "session", "pet_instance_id": "pet-a", "interaction": "click"}),
+        ("/api/game-mode-beta/resource/exit", {"resource_session_id": "session"}),
         ("/api/game-mode-beta/reset-candidate", {}),
         ("/api/game-mode-beta/debug/trigger", {}),
     ],
@@ -296,16 +300,28 @@ def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():
     with _client() as client:
         original = client.get("/api/game-mode-beta/settings").json()
         try:
-            assert set(original) == {"auto_cat_on_game", "game_trigger_mode"}
+            assert set(original) == {
+                "auto_cat_on_game",
+                "game_trigger_mode",
+                "resource_protection_on_game",
+                "compact_pet_window_enabled",
+            }
 
             response = client.post(
                 "/api/game-mode-beta/settings",
-                json={"auto_cat_on_game": True, "game_trigger_mode": "instant"},
+                json={
+                    "auto_cat_on_game": True,
+                    "game_trigger_mode": "instant",
+                    "resource_protection_on_game": False,
+                    "compact_pet_window_enabled": False,
+                },
             )
             assert response.status_code == 200
             assert response.json() == {
                 "auto_cat_on_game": True,
                 "game_trigger_mode": "instant",
+                "resource_protection_on_game": False,
+                "compact_pet_window_enabled": False,
             }
             assert client.get("/api/game-mode-beta/settings").json() == response.json()
         finally:
@@ -331,10 +347,12 @@ def test_game_mode_beta_window_registration_and_ack_contract():
                     "pet_instance_id": "pet-contract",
                     "window_type": "pet",
                     "signal_capabilities": {"exact_game": True},
+                    "host_capabilities": {"compactPetWindowLeaseV1": True},
                 },
             )
             assert registration.status_code == 200
             assert registration.json()["join_as_cat"] is False
+            assert registration.json()["resource_session_active"] is False
 
             stale_ack = client.post(
                 "/api/game-mode-beta/ack",
@@ -352,3 +370,70 @@ def test_game_mode_beta_window_registration_and_ack_contract():
                 json={"pet_instance_id": "pet-contract"},
             )
             client.post("/api/game-mode-beta/enabled", json={"enabled": False})
+
+
+def test_game_mode_beta_resource_session_endpoints_validate_and_forward(monkeypatch):
+    ack = AsyncMock(return_value={"resource_session_phase": "soft_protected"})
+    interaction = AsyncMock(return_value={"resource_session_phase": "soft_protected"})
+    exit_session = AsyncMock(return_value={"resource_session_phase": "idle"})
+    monkeypatch.setattr(game_mode_router_module.protector, "acknowledge_resource_phase", ack)
+    monkeypatch.setattr(game_mode_router_module.protector, "record_resource_interaction", interaction)
+    monkeypatch.setattr(game_mode_router_module.protector, "exit_resource_session", exit_session)
+
+    with _client() as client:
+        ack_response = client.post(
+            "/api/game-mode-beta/resource/ack",
+            json={
+                "resource_session_id": "session-1",
+                "pet_instance_id": "pet-1",
+                "phase": "deep_sleep",
+                "compact_lease": "acquired",
+            },
+        )
+        interaction_response = client.post(
+            "/api/game-mode-beta/resource/interaction",
+            json={
+                "resource_session_id": "session-1",
+                "pet_instance_id": "pet-1",
+                "interaction": "click",
+            },
+        )
+        exit_response = client.post(
+            "/api/game-mode-beta/resource/exit",
+            json={"resource_session_id": "session-1", "reason": "user-exit"},
+        )
+
+    assert ack_response.status_code == 200
+    assert interaction_response.status_code == 200
+    assert exit_response.status_code == 200
+    ack.assert_awaited_once_with(
+        resource_session_id="session-1",
+        pet_instance_id="pet-1",
+        phase="deep_sleep",
+        compact_lease="acquired",
+        error=None,
+    )
+    interaction.assert_awaited_once_with(
+        resource_session_id="session-1",
+        pet_instance_id="pet-1",
+        interaction="click",
+    )
+    exit_session.assert_awaited_once_with(
+        resource_session_id="session-1",
+        reason="user-exit",
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/game-mode-beta/resource/ack", {"resource_session_id": "bad space", "pet_instance_id": "pet", "phase": "deep_sleep"}),
+        ("/api/game-mode-beta/resource/ack", {"resource_session_id": "session", "pet_instance_id": "pet", "phase": "unknown"}),
+        ("/api/game-mode-beta/resource/interaction", {"resource_session_id": "session", "pet_instance_id": "pet", "interaction": "mousemove"}),
+        ("/api/game-mode-beta/resource/exit", {"resource_session_id": "x" * 129}),
+    ],
+)
+def test_game_mode_beta_resource_session_endpoints_reject_invalid_payloads(path, payload):
+    with _client() as client:
+        response = client.post(path, json=payload)
+    assert response.status_code == 400

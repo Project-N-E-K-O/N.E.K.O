@@ -544,6 +544,46 @@ class Live2DManager {
         }
     }
 
+    setGameModeResourceProtection(phase) {
+        const next = phase === 'deep_sleep' ? 'deep_sleep'
+            : (phase === 'soft_protected' ? 'soft_protected' : 'idle');
+        const current = this._gameModeResourcePhase || 'idle';
+        const ticker = this.pixi_app && this.pixi_app.ticker;
+        if (next !== 'idle' && this._idleFpsGovernorTimer) {
+            this._gameModeResourceIdleGovernorWasRunning = true;
+            this._stopIdleFpsGovernor();
+        }
+        if (next === 'deep_sleep' && ticker && ticker.started !== false) {
+            this._gameModeResourcePausedRendering = true;
+            this.pauseRendering();
+        } else if (next !== 'deep_sleep' && this._gameModeResourcePausedRendering) {
+            this._gameModeResourcePausedRendering = false;
+            this.resumeRendering();
+        }
+        this._gameModeResourcePhase = next;
+        if (ticker && next !== 'deep_sleep') {
+            ticker.maxFPS = this._resolveConfiguredTargetFps();
+        }
+        if (next === 'idle' && current !== 'idle') {
+            const shouldRestoreGovernor = this._gameModeResourceIdleGovernorWasRunning === true;
+            this._gameModeResourceIdleGovernorWasRunning = false;
+            if (shouldRestoreGovernor && this.pixi_app && this.pixi_app.ticker) {
+                this._startIdleFpsGovernor();
+            }
+        }
+    }
+
+    translateModelByScreenPixels(deltaX, deltaY) {
+        const model = this.currentModel;
+        if (!model) return false;
+        const dx = Number(deltaX);
+        const dy = Number(deltaY);
+        if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+        model.x = Number(model.x || 0) + dx;
+        model.y = Number(model.y || 0) + dy;
+        return true;
+    }
+
     /**
      * 设置目标帧率
      * @param {number} fps - 目标帧率，0 表示不限帧（跟随 VSync）
@@ -580,7 +620,11 @@ class Live2DManager {
     // 用户配置的目标帧率（活动时的上限），默认 60；0 表示不限帧（跟随 VSync）。
     _resolveConfiguredTargetFps() {
         const configured = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : 60;
-        return Number.isFinite(configured) ? configured : 60;
+        const resolved = Number.isFinite(configured) ? configured : 60;
+        if (this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle') {
+            return resolved === 0 ? 15 : Math.min(15, resolved);
+        }
+        return resolved;
     }
 
     // 静止地板帧率：不超过用户配置；配置为 0（不限帧）时仍压到地板省 CPU。
@@ -5009,6 +5053,9 @@ class Live2DManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
+        if (this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle') {
+            return false;
+        }
         if (
             window.nekoYuiGuideFaceForwardLock === true
             && window.nekoYuiGuideIntroVoiceLookAtActive !== true

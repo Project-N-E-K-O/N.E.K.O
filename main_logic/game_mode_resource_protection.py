@@ -35,6 +35,9 @@ LAST_SAMPLE_LIMIT = SUSTAINED_SAMPLE_COUNT
 GAME_CONFIRM_SNAPSHOT_COUNT = 3
 GAME_CONFIRM_MIN_SECONDS = 10.0
 GAME_SIGNAL_TTL_SECONDS = 15.0
+RESOURCE_SIGNAL_TTL_SECONDS = 30.0
+RESOURCE_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS = 30.0
+RESOURCE_TARGET_FPS = 15
 GAME_SMART_SAMPLE_COUNT = 2
 GAME_SMART_THRESHOLDS = {
     "cpu_percent": ("cpu", 70.0),
@@ -49,6 +52,8 @@ WINDOW_REGISTRATION_TTL_SECONDS = 20.0
 DEFAULT_GAME_MODE_SETTINGS = {
     "auto_cat_on_game": False,
     "game_trigger_mode": "smart",
+    "resource_protection_on_game": True,
+    "compact_pet_window_enabled": True,
 }
 VALID_GAME_TRIGGER_MODES = {"smart", "instant"}
 
@@ -267,6 +272,8 @@ class GameModeResourceProtector:
         return {
             "auto_cat_on_game": source.get("auto_cat_on_game") is True,
             "game_trigger_mode": mode,
+            "resource_protection_on_game": source.get("resource_protection_on_game") is not False,
+            "compact_pet_window_enabled": source.get("compact_pet_window_enabled") is not False,
         }
 
     def _new_state(self) -> dict[str, Any]:
@@ -302,6 +309,15 @@ class GameModeResourceProtector:
             "semantic_fuse_enabled": os.environ.get("NEKO_GAME_MODE_SEMANTIC_ENABLED", "1") != "0",
             "semantic_error_count": 0,
             "retry_not_before": None,
+            "resource_session_id": None,
+            "resource_session_phase": "idle",
+            "resource_enter_snapshot_count": 0,
+            "resource_enter_first_seen_at": None,
+            "resource_exit_snapshot_count": 0,
+            "resource_exit_first_seen_at": None,
+            "resource_last_signal_at": None,
+            "resource_manual_exit_latched": False,
+            "resource_windows": {},
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -348,6 +364,8 @@ class GameModeResourceProtector:
                 self._ensure_task_locked()
                 logger.info("[GameModeBeta] enabled")
             else:
+                if self._state.get("resource_session_phase") != "idle":
+                    await self._restore_resource_session_locked("game-mode-disabled")
                 if self._state.get("auto_switch_active"):
                     await self._broadcast_restore_locked("game-mode-disabled")
                 if self._store is None:
@@ -364,17 +382,33 @@ class GameModeResourceProtector:
         *,
         auto_cat_on_game: bool,
         game_trigger_mode: str,
+        resource_protection_on_game: bool | None = None,
+        compact_pet_window_enabled: bool | None = None,
     ) -> dict[str, Any]:
         if game_trigger_mode not in VALID_GAME_TRIGGER_MODES:
             raise ValueError("game_trigger_mode must be 'smart' or 'instant'")
         async with self._lock:
             previous_auto_cat = self._settings["auto_cat_on_game"]
+            previous_resource_protection = self._settings["resource_protection_on_game"]
             self._settings = {
                 "auto_cat_on_game": auto_cat_on_game is True,
                 "game_trigger_mode": game_trigger_mode,
+                "resource_protection_on_game": (
+                    previous_resource_protection
+                    if resource_protection_on_game is None
+                    else resource_protection_on_game is True
+                ),
+                "compact_pet_window_enabled": (
+                    self._settings["compact_pet_window_enabled"]
+                    if compact_pet_window_enabled is None
+                    else compact_pet_window_enabled is True
+                ),
             }
             if previous_auto_cat and not self._settings["auto_cat_on_game"]:
                 self._clear_game_candidate_locked()
+            if previous_resource_protection and not self._settings["resource_protection_on_game"]:
+                await self._restore_resource_session_locked("resource-protection-disabled")
+                self._clear_resource_candidates_locked()
             self._persist_locked()
             return self.settings_snapshot()
 
@@ -384,6 +418,7 @@ class GameModeResourceProtector:
         pet_instance_id: str,
         window_type: str = "pet",
         signal_capabilities: dict[str, Any] | None = None,
+        host_capabilities: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         window_id = str(pet_instance_id or "").strip()
         if not window_id:
@@ -393,21 +428,40 @@ class GameModeResourceProtector:
             self._windows[window_id] = {
                 "window_type": "pet" if window_type == "pet" else str(window_type or "unknown"),
                 "signal_capabilities": dict(signal_capabilities or {}),
+                "host_capabilities": dict(host_capabilities or {}),
                 "last_seen": now,
             }
+            if (
+                window_type == "pet"
+                and self._state.get("resource_session_phase") != "idle"
+            ):
+                resource_windows = dict(self._state.get("resource_windows") or {})
+                resource_windows[window_id] = self._new_resource_window_state(now)
+                self._state["resource_windows"] = resource_windows
             cycle_active = self._state.get("cycle_phase") in {"switching", "protected", "deep_sleep"}
+            resource_active = self._state.get("resource_session_phase") != "idle"
             return {
                 "cycle_active": cycle_active,
                 "cycle_id": self._state.get("cycle_id") if cycle_active else None,
                 "cycle_phase": self._state.get("cycle_phase"),
                 "join_as_cat": cycle_active and window_type == "pet",
                 "deep_sleep_due_at": self._state.get("deep_sleep_due_at"),
+                "resource_session_active": resource_active,
+                "resource_session_id": self._state.get("resource_session_id") if resource_active else None,
+                "resource_session_phase": self._state.get("resource_session_phase"),
+                "join_resource_protection": resource_active and window_type == "pet",
+                "resource_target_fps": RESOURCE_TARGET_FPS,
+                "resource_deep_sleep_after_seconds": DEEP_SLEEP_DELAY_SECONDS,
+                "compact_pet_window_enabled": self._settings["compact_pet_window_enabled"],
             }
 
     async def unregister_window(self, pet_instance_id: str) -> dict[str, Any]:
         async with self._lock:
             window_id = str(pet_instance_id or "").strip()
             self._windows.pop(window_id, None)
+            resource_windows = dict(self._state.get("resource_windows") or {})
+            resource_windows.pop(window_id, None)
+            self._state["resource_windows"] = resource_windows
             removed_ack = self._window_acks.pop(window_id, None)
             self._deep_sleep_acks.pop(window_id, None)
             if self._state.get("cycle_phase") == "switching":
@@ -438,6 +492,88 @@ class GameModeResourceProtector:
                     self._state["trigger_reason"] = None
                     self._end_cycle_locked()
             return self.snapshot()
+
+    async def acknowledge_resource_phase(
+        self,
+        *,
+        resource_session_id: str,
+        pet_instance_id: str,
+        phase: str,
+        compact_lease: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            if (
+                resource_session_id != self._state.get("resource_session_id")
+                or self._state.get("resource_session_phase") == "idle"
+            ):
+                return self.snapshot()
+            window_id = str(pet_instance_id or "").strip()
+            resource_windows = dict(self._state.get("resource_windows") or {})
+            current = resource_windows.get(window_id)
+            if current is None:
+                return self.snapshot()
+            updated = dict(current)
+            updated["phase"] = phase
+            updated["acknowledged_at"] = self._time()
+            if compact_lease is not None:
+                updated["compact_lease"] = compact_lease
+            updated["error"] = str(error)[:160] if error else None
+            resource_windows[window_id] = updated
+            self._state["resource_windows"] = resource_windows
+            return self.snapshot()
+
+    async def record_resource_interaction(
+        self,
+        *,
+        resource_session_id: str,
+        pet_instance_id: str,
+        interaction: str,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            if (
+                resource_session_id != self._state.get("resource_session_id")
+                or self._state.get("resource_session_phase") == "idle"
+            ):
+                return self.snapshot()
+            window_id = str(pet_instance_id or "").strip()
+            resource_windows = dict(self._state.get("resource_windows") or {})
+            current = resource_windows.get(window_id)
+            if current is None:
+                return self.snapshot()
+            now = self._time()
+            updated = dict(current)
+            updated.update({
+                "phase": "soft_protected",
+                "last_interaction_at": now,
+                "deep_sleep_due_at": now + DEEP_SLEEP_DELAY_SECONDS,
+                "last_interaction": interaction,
+                "error": None,
+            })
+            resource_windows[window_id] = updated
+            self._state["resource_windows"] = resource_windows
+            return self.snapshot()
+
+    async def exit_resource_session(
+        self,
+        *,
+        resource_session_id: str,
+        reason: str = "user-exit",
+    ) -> dict[str, Any]:
+        async with self._lock:
+            if resource_session_id != self._state.get("resource_session_id"):
+                return self.snapshot()
+            self._state["resource_manual_exit_latched"] = True
+            await self._restore_resource_session_locked(reason)
+            return self.snapshot()
+
+    def sampling_interval_seconds(self) -> float:
+        if (
+            self._state.get("resource_session_phase") != "idle"
+            and self._settings.get("resource_protection_on_game")
+        ):
+            return RESOURCE_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS
+        return SAMPLE_INTERVAL_SECONDS
 
     async def acknowledge_switch(
         self,
@@ -531,6 +667,11 @@ class GameModeResourceProtector:
         async with self._lock:
             now = self._time() if observed_at is None else float(observed_at)
             self._state["semantic_error_count"] = 0
+            await self._ingest_resource_game_snapshot_locked(
+                exact_game=exact_game,
+                valid=valid,
+                now=now,
+            )
             if not self._semantic_entry_available_locked(now):
                 return self.snapshot()
             if not valid:
@@ -610,7 +751,7 @@ class GameModeResourceProtector:
     async def _run(self) -> None:
         try:
             while True:
-                await asyncio.sleep(SAMPLE_INTERVAL_SECONDS)
+                await asyncio.sleep(self.sampling_interval_seconds())
                 await self.tick_once()
         except asyncio.CancelledError:
             return
@@ -662,6 +803,135 @@ class GameModeResourceProtector:
         # Resource pressure is diagnostic only. Sampling remains available to
         # status/debug surfaces, but CPU, memory, or GPU load must never cause
         # a model transition by itself.
+
+    def _new_resource_window_state(self, now: float) -> dict[str, Any]:
+        return {
+            "phase": "soft_protected",
+            "acknowledged_at": None,
+            "last_interaction_at": now,
+            "deep_sleep_due_at": now + DEEP_SLEEP_DELAY_SECONDS,
+            "compact_lease": (
+                "pending" if self._settings.get("compact_pet_window_enabled") else "disabled"
+            ),
+            "error": None,
+        }
+
+    def _clear_resource_candidates_locked(self) -> None:
+        self._state["resource_enter_snapshot_count"] = 0
+        self._state["resource_enter_first_seen_at"] = None
+        self._state["resource_exit_snapshot_count"] = 0
+        self._state["resource_exit_first_seen_at"] = None
+
+    async def _ingest_resource_game_snapshot_locked(
+        self,
+        *,
+        exact_game: bool,
+        valid: bool,
+        now: float,
+    ) -> None:
+        if not self._state.get("enabled") or not self._settings.get("resource_protection_on_game"):
+            return
+
+        if not valid:
+            last_signal = self._state.get("resource_last_signal_at")
+            if (
+                self._state.get("resource_session_phase") != "idle"
+                and isinstance(last_signal, (int, float))
+                and now - last_signal > RESOURCE_SIGNAL_TTL_SECONDS
+            ):
+                await self._restore_resource_session_locked("activity-signal-unavailable")
+            return
+
+        self._state["resource_last_signal_at"] = now
+        if exact_game:
+            self._state["resource_exit_snapshot_count"] = 0
+            self._state["resource_exit_first_seen_at"] = None
+            if (
+                self._state.get("resource_session_phase") != "idle"
+                or self._state.get("resource_manual_exit_latched")
+            ):
+                self._state["resource_enter_snapshot_count"] = 0
+                self._state["resource_enter_first_seen_at"] = None
+                return
+            if int(self._state.get("resource_enter_snapshot_count") or 0) == 0:
+                self._state["resource_enter_first_seen_at"] = now
+            self._state["resource_enter_snapshot_count"] = (
+                int(self._state.get("resource_enter_snapshot_count") or 0) + 1
+            )
+            first_seen = float(self._state.get("resource_enter_first_seen_at") or now)
+            if (
+                self._state["resource_enter_snapshot_count"] >= GAME_CONFIRM_SNAPSHOT_COUNT
+                and now - first_seen >= GAME_CONFIRM_MIN_SECONDS
+            ):
+                await self._start_resource_session_locked(now)
+            return
+
+        self._state["resource_enter_snapshot_count"] = 0
+        self._state["resource_enter_first_seen_at"] = None
+        if (
+            self._state.get("resource_session_phase") == "idle"
+            and not self._state.get("resource_manual_exit_latched")
+        ):
+            return
+        if int(self._state.get("resource_exit_snapshot_count") or 0) == 0:
+            self._state["resource_exit_first_seen_at"] = now
+        self._state["resource_exit_snapshot_count"] = (
+            int(self._state.get("resource_exit_snapshot_count") or 0) + 1
+        )
+        first_seen = float(self._state.get("resource_exit_first_seen_at") or now)
+        if (
+            self._state["resource_exit_snapshot_count"] >= GAME_CONFIRM_SNAPSHOT_COUNT
+            and now - first_seen >= GAME_CONFIRM_MIN_SECONDS
+        ):
+            if self._state.get("resource_session_phase") != "idle":
+                await self._restore_resource_session_locked("game-exited")
+            self._state["resource_manual_exit_latched"] = False
+            self._clear_resource_candidates_locked()
+
+    async def _start_resource_session_locked(self, now: float) -> None:
+        resource_session_id = uuid.uuid4().hex
+        window_ids = sorted(self._active_window_ids(now))
+        self._state["resource_session_id"] = resource_session_id
+        self._state["resource_session_phase"] = "soft_protected"
+        self._state["resource_windows"] = {
+            window_id: self._new_resource_window_state(now)
+            for window_id in window_ids
+        }
+        self._state["resource_manual_exit_latched"] = False
+        self._state["resource_enter_snapshot_count"] = 0
+        self._state["resource_enter_first_seen_at"] = None
+        delivered = await self._broadcaster({
+            "type": "game_mode_resource_protection_enter",
+            "source": "game_mode_resource_protection",
+            "resource_session_id": resource_session_id,
+            "pet_instance_ids": window_ids,
+            "target_fps": RESOURCE_TARGET_FPS,
+            "deep_sleep_after_seconds": DEEP_SLEEP_DELAY_SECONDS,
+            "compact_pet_window_enabled": self._settings["compact_pet_window_enabled"],
+            "timestamp": now,
+        })
+        if delivered <= 0:
+            self._state["resource_session_id"] = None
+            self._state["resource_session_phase"] = "idle"
+            self._state["resource_windows"] = {}
+
+    async def _restore_resource_session_locked(self, reason: str) -> None:
+        resource_session_id = self._state.get("resource_session_id")
+        if not resource_session_id:
+            return
+        await self._broadcaster({
+            "type": "game_mode_resource_protection_restore",
+            "source": "game_mode_resource_protection",
+            "resource_session_id": resource_session_id,
+            "pet_instance_ids": sorted((self._state.get("resource_windows") or {}).keys()),
+            "reason": reason,
+            "timestamp": self._time(),
+        })
+        self._state["resource_session_id"] = None
+        self._state["resource_session_phase"] = "idle"
+        self._state["resource_windows"] = {}
+        self._state["resource_enter_snapshot_count"] = 0
+        self._state["resource_enter_first_seen_at"] = None
 
     def _high_pressure_reason(self, sample: MetricSample) -> tuple[str | None, float | None]:
         candidates: list[tuple[str, float]] = []
@@ -883,6 +1153,13 @@ class GameModeResourceProtector:
             self._state["last_event"] = last_event
 
     async def _maintain_lifecycle_locked(self, now: float) -> None:
+        last_resource_signal = self._state.get("resource_last_signal_at")
+        if (
+            self._state.get("resource_session_phase") != "idle"
+            and isinstance(last_resource_signal, (int, float))
+            and now - last_resource_signal > RESOURCE_SIGNAL_TTL_SECONDS
+        ):
+            await self._restore_resource_session_locked("activity-signal-unavailable")
         await self._expire_game_signal_locked(now)
         if self._state.get("cycle_phase") == "switching":
             deadline = self._state.get("ack_deadline")

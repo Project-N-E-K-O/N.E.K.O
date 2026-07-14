@@ -616,7 +616,11 @@ async def test_exact_game_requires_three_snapshots_and_ten_seconds_before_instan
         broadcaster=broadcaster,
         time_fn=lambda: now["value"],
     )
-    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="instant")
+    await protector.set_settings(
+        auto_cat_on_game=True,
+        game_trigger_mode="instant",
+        resource_protection_on_game=False,
+    )
     await protector.set_enabled(True)
     try:
         for timestamp in (1000.0, 1005.0):
@@ -684,7 +688,11 @@ async def test_smart_game_mode_uses_70_80_90_thresholds_for_two_consecutive_samp
         broadcaster=broadcaster,
         time_fn=lambda: now["value"],
     )
-    await protector.set_settings(auto_cat_on_game=True, game_trigger_mode="smart")
+    await protector.set_settings(
+        auto_cat_on_game=True,
+        game_trigger_mode="smart",
+        resource_protection_on_game=False,
+    )
     await protector.set_enabled(True)
     try:
         for timestamp in (1000.0, 1005.0, 1010.0):
@@ -966,6 +974,8 @@ async def test_settings_and_manual_restore_cooldown_persist_but_runtime_cycle_do
     assert second.settings_snapshot() == {
         "auto_cat_on_game": True,
         "game_trigger_mode": "instant",
+        "resource_protection_on_game": True,
+        "compact_pet_window_enabled": True,
     }
     assert second.snapshot()["cycle_phase"] == "idle"
     assert second.snapshot()["auto_switch_active"] is False
@@ -1262,5 +1272,238 @@ async def test_disabling_auto_cat_subfeature_does_not_restore_active_protection_
         assert state["auto_switch_active"] is True
         assert state["cycle_phase"] == "protected"
         assert not any(event["type"] == "game_mode_restore" for event in events)
+    finally:
+        await protector.set_enabled(False)
+
+
+def test_resource_protection_settings_default_on_without_enabling_auto_cat():
+    protector = GameModeResourceProtector(sampler=normal_sample)
+
+    assert protector.settings_snapshot() == {
+        "auto_cat_on_game": False,
+        "game_trigger_mode": "smart",
+        "resource_protection_on_game": True,
+        "compact_pet_window_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_exact_game_starts_independent_resource_session_without_auto_cat():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 2
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1010.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        await protector.register_window(pet_instance_id="pet-b")
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1000.0)
+        await protector.ingest_game_snapshot(exact_game=True, observed_at=1005.0)
+        state = await protector.ingest_game_snapshot(exact_game=True, observed_at=1010.0)
+
+        assert [event["type"] for event in events] == ["game_mode_resource_protection_enter"]
+        assert events[0]["pet_instance_ids"] == ["pet-a", "pet-b"]
+        assert events[0]["target_fps"] == 15
+        assert events[0]["deep_sleep_after_seconds"] == 90.0
+        assert state["resource_session_phase"] == "soft_protected"
+        assert state["resource_session_id"] == events[0]["resource_session_id"]
+        assert state["auto_switch_active"] is False
+        assert state["cycle_phase"] == "idle"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_resource_session_exit_requires_three_non_game_snapshots_over_ten_seconds():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1030.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+
+        await protector.ingest_game_snapshot(exact_game=False, observed_at=1015.0)
+        short_alt_tab = await protector.ingest_game_snapshot(exact_game=True, observed_at=1020.0)
+        assert short_alt_tab["resource_session_phase"] == "soft_protected"
+        assert [event["type"] for event in events] == ["game_mode_resource_protection_enter"]
+
+        await protector.ingest_game_snapshot(exact_game=False, observed_at=1021.0)
+        await protector.ingest_game_snapshot(exact_game=False, observed_at=1026.0)
+        exited = await protector.ingest_game_snapshot(exact_game=False, observed_at=1031.0)
+
+        assert [event["type"] for event in events] == [
+            "game_mode_resource_protection_enter",
+            "game_mode_resource_protection_restore",
+        ]
+        assert events[-1]["reason"] == "game-exited"
+        assert exited["resource_session_phase"] == "idle"
+        assert exited["resource_session_id"] is None
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_resource_session_exits_after_thirty_seconds_without_valid_activity_signal():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1041.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+
+        still_active = await protector.ingest_game_snapshot(
+            exact_game=False,
+            valid=False,
+            observed_at=1040.0,
+        )
+        assert still_active["resource_session_phase"] == "soft_protected"
+
+        exited = await protector.ingest_game_snapshot(
+            exact_game=False,
+            valid=False,
+            observed_at=1040.1,
+        )
+        assert exited["resource_session_phase"] == "idle"
+        assert events[-1]["type"] == "game_mode_resource_protection_restore"
+        assert events[-1]["reason"] == "activity-signal-unavailable"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_resource_window_phase_ack_and_explicit_interaction_are_per_window():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 2
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1020.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        await protector.register_window(pet_instance_id="pet-b")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            state = await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+        session_id = state["resource_session_id"]
+
+        await protector.acknowledge_resource_phase(
+            resource_session_id=session_id,
+            pet_instance_id="pet-a",
+            phase="deep_sleep",
+            compact_lease="acquired",
+        )
+        state = await protector.record_resource_interaction(
+            resource_session_id=session_id,
+            pet_instance_id="pet-a",
+            interaction="click",
+        )
+
+        assert state["resource_windows"]["pet-a"]["phase"] == "soft_protected"
+        assert state["resource_windows"]["pet-a"]["last_interaction_at"] == 1020.0
+        assert state["resource_windows"]["pet-a"]["deep_sleep_due_at"] == 1110.0
+        assert state["resource_windows"]["pet-b"]["phase"] == "soft_protected"
+        assert state["resource_windows"]["pet-a"]["compact_lease"] == "acquired"
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_explicit_resource_exit_restores_and_latches_until_confirmed_game_exit():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1020.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            state = await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+        session_id = state["resource_session_id"]
+
+        exited = await protector.exit_resource_session(
+            resource_session_id=session_id,
+            reason="user-exit",
+        )
+        assert exited["resource_manual_exit_latched"] is True
+        for timestamp in (1011.0, 1016.0, 1021.0):
+            state = await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+        assert state["resource_session_id"] is None
+
+        for timestamp in (1022.0, 1027.0, 1032.0):
+            state = await protector.ingest_game_snapshot(exact_game=False, observed_at=timestamp)
+        assert state["resource_manual_exit_latched"] is False
+    finally:
+        await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_resource_protection_uses_dynamic_diagnostic_sampling_interval_and_setting_kill_switch():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1010.0,
+    )
+    assert protector.sampling_interval_seconds() == 5.0
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+        assert protector.sampling_interval_seconds() == 30.0
+
+        await protector.set_settings(
+            auto_cat_on_game=False,
+            game_trigger_mode="smart",
+            resource_protection_on_game=False,
+            compact_pet_window_enabled=True,
+        )
+        assert protector.snapshot()["resource_session_phase"] == "idle"
+        assert protector.sampling_interval_seconds() == 5.0
+        assert events[-1]["reason"] == "resource-protection-disabled"
     finally:
         await protector.set_enabled(False)

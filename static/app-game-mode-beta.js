@@ -26,6 +26,8 @@
         settings: {
             auto_cat_on_game: false,
             game_trigger_mode: 'smart',
+            resource_protection_on_game: true,
+            compact_pet_window_enabled: true,
         },
         hostContract: null,
         currentCycleId: null,
@@ -132,6 +134,8 @@
         return {
             auto_cat_on_game: source.auto_cat_on_game === true,
             game_trigger_mode: source.game_trigger_mode === 'instant' ? 'instant' : 'smart',
+            resource_protection_on_game: source.resource_protection_on_game !== false,
+            compact_pet_window_enabled: source.compact_pet_window_enabled !== false,
         };
     }
 
@@ -777,8 +781,14 @@
                 pet_instance_id: contract.petInstanceId,
                 window_type: contract.windowType,
                 signal_capabilities: contract.signalCapabilities || {},
+                host_capabilities: contract.hostCapabilities || {},
             });
             joinActiveCycle(registration, contract.petInstanceId);
+            try {
+                window.dispatchEvent(new CustomEvent('neko:game-mode-resource-registration', {
+                    detail: Object.assign({ pet_instance_id: contract.petInstanceId }, registration || {}),
+                }));
+            } catch (_) {}
             return contract;
         } catch (error) {
             console.warn('[GameModeBeta] host registration failed:', error);

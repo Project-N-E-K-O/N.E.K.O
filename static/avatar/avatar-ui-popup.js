@@ -442,6 +442,35 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
     autoRow.appendChild(autoLabel);
     panel.appendChild(autoRow);
 
+    const createProtectionToggle = function (idSuffix, i18nKey, fallback) {
+        const row = document.createElement('label');
+        Object.assign(row.style, {
+            display: 'flex', alignItems: 'center', gap: '8px', minHeight: '28px',
+            fontSize: '12px', color: 'var(--neko-popup-text, #333)', cursor: 'pointer'
+        });
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.id = `${prefix}-${idSuffix}`;
+        checkbox.style.flexShrink = '0';
+        const label = document.createElement('span');
+        label.textContent = window.t ? window.t(i18nKey) : fallback;
+        label.setAttribute('data-i18n', i18nKey);
+        row.appendChild(checkbox);
+        row.appendChild(label);
+        panel.appendChild(row);
+        return { row: row, checkbox: checkbox };
+    };
+    const resourceProtectionToggle = createProtectionToggle(
+        'game-mode-resource-protection-on-game',
+        'settings.gameModeBeta.resourceProtectionOnGame',
+        '检测到游戏时降低模型运行资源'
+    );
+    const compactWindowToggle = createProtectionToggle(
+        'game-mode-compact-pet-window',
+        'settings.gameModeBeta.compactPetWindow',
+        'Windows 桌宠临时缩小透明窗口'
+    );
+
     const modeLabel = document.createElement('div');
     modeLabel.textContent = window.t ? window.t('settings.gameModeBeta.triggerMode') : '触发模式';
     modeLabel.setAttribute('data-i18n', 'settings.gameModeBeta.triggerMode');
@@ -486,18 +515,53 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
     });
     panel.appendChild(privacy);
 
+    const exitProtectionButton = document.createElement('button');
+    exitProtectionButton.type = 'button';
+    exitProtectionButton.textContent = window.t
+        ? window.t('settings.gameModeBeta.exitResourceProtection')
+        : '退出本次资源保护';
+    exitProtectionButton.setAttribute('data-i18n', 'settings.gameModeBeta.exitResourceProtection');
+    Object.assign(exitProtectionButton.style, {
+        minHeight: '30px', padding: '5px 8px', borderRadius: '6px',
+        border: '1px solid var(--neko-popup-indicator-border, #ccc)',
+        background: 'transparent', color: 'var(--neko-popup-text, #333)',
+        fontSize: '11px', cursor: 'pointer', display: 'none'
+    });
+    panel.appendChild(exitProtectionButton);
+
     let syncing = false;
     const render = function () {
         const api = window.nekoGameModeBeta;
         const mainEnabled = !!(api && typeof api.isEnabled === 'function' && api.isEnabled());
         const settings = api && typeof api.getSettings === 'function'
             ? api.getSettings()
-            : { auto_cat_on_game: false, game_trigger_mode: 'smart' };
+            : {
+                auto_cat_on_game: false,
+                game_trigger_mode: 'smart',
+                resource_protection_on_game: true,
+                compact_pet_window_enabled: true
+            };
+        const gameModeState = api && typeof api.getState === 'function' ? api.getState() : null;
+        const resourceActive = !!(
+            gameModeState
+            && gameModeState.backendState
+            && gameModeState.backendState.resource_session_phase
+            && gameModeState.backendState.resource_session_phase !== 'idle'
+        );
         syncing = true;
         autoCheckbox.checked = settings.auto_cat_on_game === true;
         autoCheckbox.disabled = !mainEnabled;
         autoRow.style.opacity = mainEnabled ? '1' : '0.5';
         autoRow.style.cursor = mainEnabled ? 'pointer' : 'default';
+        resourceProtectionToggle.checkbox.checked = settings.resource_protection_on_game !== false;
+        compactWindowToggle.checkbox.checked = settings.compact_pet_window_enabled !== false;
+        [resourceProtectionToggle, compactWindowToggle].forEach(function (toggle) {
+            toggle.checkbox.disabled = !mainEnabled;
+            toggle.row.style.opacity = mainEnabled ? '1' : '0.5';
+            toggle.row.style.cursor = mainEnabled ? 'pointer' : 'default';
+        });
+        exitProtectionButton.style.display = resourceActive ? 'block' : 'none';
+        exitProtectionButton.disabled = !resourceActive;
         Object.keys(modeButtons).forEach(function (mode) {
             const button = modeButtons[mode];
             const selected = settings.game_trigger_mode === mode;
@@ -532,6 +596,22 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
     autoCheckbox.addEventListener('change', function () {
         if (syncing || autoCheckbox.disabled || !window.nekoGameModeBeta) return;
         persistSettings({ auto_cat_on_game: autoCheckbox.checked });
+    });
+    resourceProtectionToggle.checkbox.addEventListener('change', function () {
+        if (syncing || resourceProtectionToggle.checkbox.disabled || !window.nekoGameModeBeta) return;
+        persistSettings({ resource_protection_on_game: resourceProtectionToggle.checkbox.checked });
+    });
+    compactWindowToggle.checkbox.addEventListener('change', function () {
+        if (syncing || compactWindowToggle.checkbox.disabled || !window.nekoGameModeBeta) return;
+        persistSettings({ compact_pet_window_enabled: compactWindowToggle.checkbox.checked });
+    });
+    exitProtectionButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const runtime = window.nekoGameModeResourceRuntime;
+        if (!runtime || typeof runtime.exitCurrentSession !== 'function') return;
+        exitProtectionButton.disabled = true;
+        void Promise.resolve(runtime.exitCurrentSession()).finally(render);
     });
     Object.keys(modeButtons).forEach(function (mode) {
         modeButtons[mode].addEventListener('click', function (event) {

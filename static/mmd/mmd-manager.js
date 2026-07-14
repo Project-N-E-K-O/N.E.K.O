@@ -495,6 +495,52 @@ class MMDManager {
         }
     }
 
+    setGameModeResourceProtection(phase) {
+        const next = phase === 'deep_sleep' ? 'deep_sleep'
+            : (phase === 'soft_protected' ? 'soft_protected' : 'idle');
+        const wasProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+        if (!wasProtected && next !== 'idle') {
+            this._gameModeResourceCursorFollowEnabled = this.cursorFollow
+                ? this.cursorFollow.enabled !== false
+                : null;
+        }
+        this._gameModeResourcePhase = next;
+        if (this.cursorFollow && typeof this.cursorFollow.setEnabled === 'function') {
+            if (next !== 'idle') {
+                this.cursorFollow.setEnabled(false);
+            } else if (this._gameModeResourceCursorFollowEnabled !== null) {
+                this.cursorFollow.setEnabled(this._gameModeResourceCursorFollowEnabled === true);
+                this._gameModeResourceCursorFollowEnabled = null;
+            }
+        }
+        if (next === 'deep_sleep' && this._shouldRender) {
+            this._gameModeResourcePausedRendering = true;
+            this.pauseRendering();
+        } else if (next !== 'deep_sleep' && this._gameModeResourcePausedRendering) {
+            this._gameModeResourcePausedRendering = false;
+            this.resumeRendering();
+        }
+    }
+
+    translateModelByScreenPixels(deltaX, deltaY) {
+        const mesh = this.currentModel && this.currentModel.mesh;
+        const camera = this.camera;
+        const canvas = this.renderer && this.renderer.domElement;
+        if (!mesh || !camera || !canvas || !window.THREE) return false;
+        const rect = canvas.getBoundingClientRect();
+        const dx = Number(deltaX);
+        const dy = Number(deltaY);
+        if (!rect.width || !rect.height || !Number.isFinite(dx) || !Number.isFinite(dy)) return false;
+        const distance = Math.max(0.001, camera.position.distanceTo(mesh.position));
+        const worldHeight = 2 * Math.tan((camera.fov * Math.PI / 180) / 2) * distance;
+        const worldWidth = worldHeight * (camera.aspect || (rect.width / rect.height));
+        const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+        const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+        mesh.position.add(right.multiplyScalar(dx * worldWidth / rect.width));
+        mesh.position.add(up.multiplyScalar(-dy * worldHeight / rect.height));
+        return true;
+    }
+
     // ═══════════════════ 清理 ═══════════════════
 
     cleanupUI() {

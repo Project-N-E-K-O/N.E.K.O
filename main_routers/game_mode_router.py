@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -22,6 +23,13 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 GAME_MODE_BROADCAST_SEND_TIMEOUT_SECONDS = 2.0
 _game_mode_broadcast_tasks: set[asyncio.Task[None]] = set()
+_RESOURCE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_RESOURCE_PHASES = {"soft_protected", "deep_sleep", "restored", "failed"}
+_RESOURCE_COMPACT_LEASE_STATES = {
+    "unsupported", "pending", "acquired", "suspended", "rejected",
+    "released", "failed", "disabled",
+}
+_RESOURCE_INTERACTIONS = {"click", "drag-start", "drag-end", "explicit-wake"}
 
 
 async def _send_game_mode_event(
@@ -103,6 +111,13 @@ def _coerce_enabled_flag(value: Any) -> bool:
     return False
 
 
+def _validated_resource_identifier(payload: dict[str, Any], field: str) -> str:
+    value = payload.get(field)
+    if not isinstance(value, str) or _RESOURCE_IDENTIFIER_PATTERN.fullmatch(value) is None:
+        raise HTTPException(status_code=400, detail=f"{field} is invalid")
+    return value
+
+
 @router.get("/api/game-mode-beta/state")
 async def get_game_mode_beta_state() -> dict[str, Any]:
     return {"success": True, "state": protector.snapshot()}
@@ -144,13 +159,27 @@ async def set_game_mode_beta_settings(request: Request, payload: dict[str, Any])
     current = protector.settings_snapshot()
     auto_cat = payload.get("auto_cat_on_game", current["auto_cat_on_game"])
     mode = payload.get("game_trigger_mode", current["game_trigger_mode"])
+    resource_protection = payload.get(
+        "resource_protection_on_game",
+        current["resource_protection_on_game"],
+    )
+    compact_pet_window = payload.get(
+        "compact_pet_window_enabled",
+        current["compact_pet_window_enabled"],
+    )
     if not isinstance(auto_cat, bool):
         raise HTTPException(status_code=400, detail="auto_cat_on_game must be boolean")
     if not isinstance(mode, str) or mode not in {"smart", "instant"}:
         raise HTTPException(status_code=400, detail="game_trigger_mode must be 'smart' or 'instant'")
+    if not isinstance(resource_protection, bool):
+        raise HTTPException(status_code=400, detail="resource_protection_on_game must be boolean")
+    if not isinstance(compact_pet_window, bool):
+        raise HTTPException(status_code=400, detail="compact_pet_window_enabled must be boolean")
     return await protector.set_settings(
         auto_cat_on_game=auto_cat,
         game_trigger_mode=mode,
+        resource_protection_on_game=resource_protection,
+        compact_pet_window_enabled=compact_pet_window,
     )
 
 
@@ -165,10 +194,14 @@ async def register_game_mode_beta_window(request: Request, payload: dict[str, An
     capabilities = payload.get("signal_capabilities")
     if capabilities is not None and not isinstance(capabilities, dict):
         raise HTTPException(status_code=400, detail="signal_capabilities must be an object")
+    host_capabilities = payload.get("host_capabilities")
+    if host_capabilities is not None and not isinstance(host_capabilities, dict):
+        raise HTTPException(status_code=400, detail="host_capabilities must be an object")
     return await protector.register_window(
         pet_instance_id=pet_instance_id,
         window_type=str(payload.get("window_type") or "pet"),
         signal_capabilities=capabilities,
+        host_capabilities=host_capabilities,
     )
 
 
@@ -205,6 +238,66 @@ async def acknowledge_game_mode_beta_deep_sleep(request: Request, payload: dict[
         cycle_id=str(payload.get("cycle_id") or ""),
         pet_instance_id=str(payload.get("pet_instance_id") or ""),
         success=payload.get("success") is True,
+    )
+    return {"success": True, "state": state}
+
+
+@router.post("/api/game-mode-beta/resource/ack")
+async def acknowledge_game_mode_resource_phase(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
+    resource_session_id = _validated_resource_identifier(payload, "resource_session_id")
+    pet_instance_id = _validated_resource_identifier(payload, "pet_instance_id")
+    phase = payload.get("phase")
+    if phase not in _RESOURCE_PHASES:
+        raise HTTPException(status_code=400, detail="phase is invalid")
+    compact_lease = payload.get("compact_lease")
+    if compact_lease is not None and compact_lease not in _RESOURCE_COMPACT_LEASE_STATES:
+        raise HTTPException(status_code=400, detail="compact_lease is invalid")
+    error = payload.get("error")
+    if error is not None and (not isinstance(error, str) or len(error) > 160):
+        raise HTTPException(status_code=400, detail="error is invalid")
+    state = await protector.acknowledge_resource_phase(
+        resource_session_id=resource_session_id,
+        pet_instance_id=pet_instance_id,
+        phase=phase,
+        compact_lease=compact_lease,
+        error=error,
+    )
+    return {"success": True, "state": state}
+
+
+@router.post("/api/game-mode-beta/resource/interaction")
+async def record_game_mode_resource_interaction(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
+    resource_session_id = _validated_resource_identifier(payload, "resource_session_id")
+    pet_instance_id = _validated_resource_identifier(payload, "pet_instance_id")
+    interaction = payload.get("interaction")
+    if interaction not in _RESOURCE_INTERACTIONS:
+        raise HTTPException(status_code=400, detail="interaction is invalid")
+    state = await protector.record_resource_interaction(
+        resource_session_id=resource_session_id,
+        pet_instance_id=pet_instance_id,
+        interaction=interaction,
+    )
+    return {"success": True, "state": state}
+
+
+@router.post("/api/game-mode-beta/resource/exit")
+async def exit_game_mode_resource_session(request: Request, payload: dict[str, Any]) -> Any:
+    validation_error = _validate_game_mode_mutation(request, payload)
+    if validation_error is not None:
+        return validation_error
+    resource_session_id = _validated_resource_identifier(payload, "resource_session_id")
+    reason = payload.get("reason", "user-exit")
+    if reason != "user-exit":
+        raise HTTPException(status_code=400, detail="reason is invalid")
+    state = await protector.exit_resource_session(
+        resource_session_id=resource_session_id,
+        reason=reason,
     )
     return {"success": True, "state": state}
 
