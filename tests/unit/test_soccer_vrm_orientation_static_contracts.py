@@ -26,19 +26,28 @@ def test_soccer_vrm0_fixed_camera_facing_fix_uses_bone_and_head_evidence():
 def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
     source = (PROJECT_ROOT / "templates/soccer_demo.html").read_text(encoding="utf-8")
 
+    assert "function syncSoccerVrmCameraTarget(manager, lookY, dist)" in source
+    assert "manager.controls.target.copy(cameraTarget);" in source
+
+    fit_section = source.split("function fitVrmManagerCamera", 1)[1].split(
+        "function isSoccerVrm0",
+        1,
+    )[0]
+    assert "syncSoccerVrmCameraTarget(manager, lookY, dist);" in fit_section
+
     helper_section = source.split(
         "window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager",
         1,
-    )[1].split("if (manager.currentModel?.vrm?.scene)", 1)[0]
+    )[1].split("return vrm;", 1)[0]
     assert "applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager);" in helper_section
+    assert "fitVrmManagerCamera(manager, containerId, label);" in helper_section
 
     player_section = source.split(
         "async function setPlayerAvatar({ type, path } = {})",
         1,
     )[1].split("emitEvent('player-avatar-changed'", 1)[0]
     assert "applySoccerVrm0FixedCameraFacingFix(gltf, vrm, window.vrmManager);" in player_section
-    assert "manager.controls.target.copy(cameraTarget);" in source
-    assert "window.vrmManager.controls.target.copy(cameraTarget);" in player_section
+    assert "syncSoccerVrmCameraTarget(window.vrmManager, lookY, dist);" in player_section
 
 
 def test_soccer_vrm0_fixed_camera_facing_fix_keeps_yaw_offset_alive():

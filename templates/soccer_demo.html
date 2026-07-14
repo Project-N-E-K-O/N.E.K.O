@@ -648,6 +648,22 @@
     );
   }
 
+  function syncSoccerVrmCameraTarget(manager, lookY, dist) {
+    const THREE = window.THREE;
+    const cam = manager?.camera;
+    if (!THREE || !cam || !manager) return null;
+    const cameraTarget = new THREE.Vector3(0, lookY, 0);
+    cam.position.set(0, lookY, dist);
+    cam.lookAt(cameraTarget);
+    cam.updateProjectionMatrix();
+    manager._cameraTarget = cameraTarget;
+    if (manager.controls) {
+      manager.controls.target.copy(cameraTarget);
+      manager.controls.update();
+    }
+    return cameraTarget;
+  }
+
   function fitVrmManagerCamera(manager, containerId, label = 'VRM') {
     const THREE = window.THREE;
     const vrm = manager?.currentModel?.vrm;
@@ -675,15 +691,7 @@
     const visibleH = h * 1.15;
     const dist = visibleH / (2 * Math.tan(fovRad / 2));
     const lookY = visibleH / 2;
-    const cameraTarget = new THREE.Vector3(0, lookY, 0);
-    cam.position.set(0, lookY, dist);
-    cam.lookAt(cameraTarget);
-    cam.updateProjectionMatrix();
-    manager._cameraTarget = cameraTarget;
-    if (manager.controls) {
-      manager.controls.target.copy(cameraTarget);
-      manager.controls.update();
-    }
+    syncSoccerVrmCameraTarget(manager, lookY, dist);
     console.log(`[soccer_demo] fit ${label}: h=`, h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
   }
 
@@ -2957,15 +2965,7 @@
     const visibleH = h * 1.15;
     const dist = visibleH / (2 * Math.tan(fovRad / 2));
     const lookY = visibleH / 2;
-    const cameraTarget = new THREE.Vector3(0, lookY, 0);
-    cam.position.set(0, lookY, dist);
-    cam.lookAt(cameraTarget);
-    cam.updateProjectionMatrix();
-    window.vrmManager._cameraTarget = cameraTarget;
-    if (window.vrmManager.controls) {
-      window.vrmManager.controls.target.copy(cameraTarget);
-      window.vrmManager.controls.update();
-    }
+    syncSoccerVrmCameraTarget(window.vrmManager, lookY, dist);
     emitEvent('player-avatar-changed', { type, path });
   }
 
