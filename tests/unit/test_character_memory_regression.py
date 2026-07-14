@@ -1440,7 +1440,8 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
             workshop_router_module = reload_module("main_routers.workshop_router.sync_cards")
 
             deleted_name = "N.E.K.O"
-            restored_name = "n.e.k.o"
+            deleted_alias = "n.e.k.o"
+            restored_name = "N.e.k.o"
             cm.save_character_tombstones_state({
                 "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
                 "tombstones": [
@@ -1448,7 +1449,12 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
                         "character_name": deleted_name,
                         "deleted_at": "2026-05-25T00:00:00Z",
                         "sequence_number": 1,
-                    }
+                    },
+                    {
+                        "character_name": deleted_alias,
+                        "deleted_at": "2026-05-25T00:00:01Z",
+                        "sequence_number": 2,
+                    },
                 ],
             })
 
@@ -1486,11 +1492,18 @@ async def test_manual_workshop_character_sync_restores_deleted_character_and_cle
 
             assert sync_result["added"] == 1
             assert sync_result["added_character_names"] == [restored_name]
-            assert sync_result["restored_deleted_names"] == [deleted_name]
+            assert set(sync_result["restored_deleted_names"]) == {
+                deleted_name,
+                deleted_alias,
+            }
             current_characters = cm.load_characters()
             assert restored_name in current_characters.get("猫娘", {})
             tombstones = cm.load_character_tombstones_state().get("tombstones") or []
-            assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
+            assert not any(
+                str(entry.get("character_name") or "").casefold()
+                == restored_name.casefold()
+                for entry in tombstones
+            )
 
             assert second_result["added"] == 0
             assert second_result["existing_character_names"] == [restored_name]
