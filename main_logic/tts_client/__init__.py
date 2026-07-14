@@ -441,7 +441,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
 # 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities
-# 暂记 {clone}（当前仅克隆路由经注册表；preset/design 待 wiring 后按实际能力追加）。
+# 同时声明实际支持的 clone/design 来源；两种来源保存后都按 voice_meta 路由到同一 worker。
 # tts_dropdown_only=False：这几家不靠下拉选中（靠 voice_meta），且 minimax 本身还是
 # LLM provider，绝不能被前端从对话/总结等 LLM 下拉里隐藏。它们在 ui_metadata 里的存在
 # 是给前端 source-first 选声器读 capabilities 用的，不参与下拉过滤。
@@ -451,6 +451,10 @@ _tts_providers.register(_tts_providers.TTSProvider(
     priority=30,
     capabilities=frozenset({'clone', 'design'}),
     aliases=frozenset({'minimax_intl'}),
+    # MiniMax documents a 500-character maximum for preview_text, not prompt.
+    # NEKO supplies a short fixed preview template, so the user description has
+    # no documented hard limit to enforce here.
+    voice_design=_tts_providers.VoiceDesignMetadata(),
     is_selected=_minimax_clone_is_selected,
     resolve=_minimax_clone_resolve,
     tts_dropdown_only=False,
@@ -464,6 +468,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     # 普通的 ElevenLabs voice_id（voice_meta.source='design'），dispatch 与 clone 同路
     # （_elevenlabs_clone_is_selected 按 provider=='elevenlabs' 选中），无需独立 worker。
     capabilities=frozenset({'clone', 'design'}),
+    # Both ElevenLabs design and create-from-preview reject descriptions outside
+    # this documented 20-1000 character window.
+    voice_design=_tts_providers.VoiceDesignMetadata(prompt_min=20, prompt_max=1000),
     is_selected=_elevenlabs_clone_is_selected,
     resolve=_elevenlabs_clone_resolve,
     tts_dropdown_only=False,
@@ -474,13 +481,21 @@ _tts_providers.register(_tts_providers.TTSProvider(
     kind='hosted',
     priority=50,
     capabilities=frozenset({'clone', 'design'}),
+    # DashScope voice-enrollment enforces all four constraints upstream: prompt
+    # <=500 characters, alphanumeric prefix <=10, and zh/en language hints only.
+    voice_design=_tts_providers.VoiceDesignMetadata(
+        prompt_max=500,
+        prefix_max=10,
+        prefix_pattern=r'^[A-Za-z0-9]+$',
+        language_hints=('ch', 'en'),
+    ),
     is_selected=_cosyvoice_clone_is_selected,
     resolve=_cosyvoice_clone_resolve,
     tts_dropdown_only=False,
 ))
 
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
-# capabilities {preset, clone}：
+# capabilities {preset, clone, design}：
 #   - preset：固定音色目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，数据复用
 #     utils.tts.providers.mimo 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
 #     validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是 hosted SaaS，
@@ -488,6 +503,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
 #   - clone：voiceclone enrollment（characters_router /voice_clone 的 mimo 分支，对偶
 #     cosyvoice/minimax）。MiMo 克隆没有远端 voice_id——参考音频本地保存、每次合成内联，
 #     dispatch 由 _mimo_resolve 按 voice_meta.provider=='mimo' 选中并读出样本（见 §4/§7）。
+#   - design：保存文字描述并由 voicedesign 模型在合成时复用，同样通过 voice_meta 选中。
 # 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected clone），
 # 见 workers/mimo.py 的 _mimo_is_selected/_mimo_resolve。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
@@ -496,6 +512,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     kind='hosted',
     priority=60,
     capabilities=frozenset({'preset', 'clone', 'design'}),
+    # MiMo recommends a concise 1-4 sentence description but does not document a
+    # request limit. A quality recommendation must not become a hard validator.
+    voice_design=_tts_providers.VoiceDesignMetadata(),
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,

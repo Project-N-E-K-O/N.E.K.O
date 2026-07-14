@@ -65,6 +65,8 @@ def test_registry_declares_design_for_elevenlabs():
     # design is advertised in the UI metadata the source-first picker reads
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["elevenlabs"]["capabilities"]
+    assert meta["elevenlabs"]["voice_design"]["prompt_min"] == 20
+    assert meta["elevenlabs"]["voice_design"]["prompt_max"] == 1000
 
 
 @pytest.mark.unit
@@ -76,6 +78,13 @@ def test_registry_declares_design_for_cosyvoice():
     assert cosy is not None and "design" in cosy.capabilities and "clone" in cosy.capabilities
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["cosyvoice"]["capabilities"]
+    assert meta["cosyvoice"]["voice_design"] == {
+        "prompt_min": None,
+        "prompt_max": 500,
+        "prefix_max": 10,
+        "prefix_pattern": "^[A-Za-z0-9]+$",
+        "language_hints": ["ch", "en"],
+    }
     assert "cosyvoice_intl" not in meta["cosyvoice"]["aliases"]
     assert reg.get("cosyvoice_intl") is None
 
@@ -100,9 +109,11 @@ def test_registry_declares_design_for_minimax_and_mimo():
     assert mimo is not None and "design" in mimo.capabilities and "clone" in mimo.capabilities
     meta = {m["key"]: m for m in reg.ui_metadata()}
     assert "design" in meta["minimax"]["capabilities"]
+    assert meta["minimax"]["voice_design"]["prompt_max"] is None
     assert "minimax_intl" in meta["minimax"]["aliases"]
     assert reg.get("minimax_intl") is minimax
     assert "design" in meta["mimo"]["capabilities"]
+    assert meta["mimo"]["voice_design"]["prompt_max"] is None
 
 
 @pytest.mark.unit
@@ -465,6 +476,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     from main_routers.characters_router import voice_cloning as cr
 
     saved = {}
+    long_prompt = "m" * 501
 
     class _CM:
         def get_tts_api_key(self, provider):
@@ -479,7 +491,8 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     async def fake_design(**kwargs):
         assert kwargs["api_key"] == "minimax-intl-key"
         assert kwargs["base_url"] == "https://api.minimax.io"
-        assert kwargs["voice_prompt"] == "a warm clear voice"
+        # MiniMax's documented 500-character cap applies to preview_text, not prompt.
+        assert kwargs["voice_prompt"] == long_prompt
         assert kwargs["preview_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
         return "mini-design-1", "req-mini"
 
@@ -489,7 +502,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     response = await cr.voice_design(_JsonRequest({
         "provider": "minimax_intl",
         "prefix": "aria",
-        "voice_prompt": "a warm clear voice",
+        "voice_prompt": long_prompt,
         "ref_language": "en",
     }))
     body = json.loads(response.body)
@@ -564,6 +577,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
 
     saved = {}
     validated = {}
+    long_prompt = "m" * 501
 
     class _CM:
         def get_tts_api_key(self, provider):
@@ -590,7 +604,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
     response = await cr.voice_design(_JsonRequest({
         "provider": "mimo",
         "prefix": "aria",
-        "voice_prompt": "a bright, energetic young adult voice",
+        "voice_prompt": long_prompt,
         "ref_language": "en",
     }))
     body = json.loads(response.body)
@@ -600,7 +614,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
     assert body["source"] == "design"
     assert body["voice_id"].startswith("mimo-design-aria-")
     assert validated["sample_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
-    assert saved["voice_data"]["design_prompt"] == "a bright, energetic young adult voice"
+    assert saved["voice_data"]["design_prompt"] == long_prompt
 
 
 @pytest.mark.unit
@@ -615,6 +629,22 @@ async def test_voice_design_endpoint_requires_prompt():
 
     assert response.status_code == 400
     assert body["code"] == "VOICE_DESIGN_PROMPT_REQUIRED"
+
+
+@pytest.mark.unit
+async def test_cosyvoice_design_endpoint_enforces_documented_prompt_max():
+    from main_routers.characters_router import voice_cloning as cr
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "cosyvoice",
+        "prefix": "aria",
+        "voice_prompt": "c" * 501,
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "VOICE_DESIGN_PROMPT_TOO_LONG"
+    assert body["max"] == 500
 
 
 @pytest.mark.unit

@@ -27,11 +27,6 @@ from .direct_link import (
     _validate_direct_link_target,
 )
 from .voice_providers import (
-    COSYVOICE_VOICE_DESIGN_PREFIX_MAX,
-    COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN,
-    COSYVOICE_VOICE_DESIGN_PROMPT_MAX,
-    ELEVENLABS_VOICE_DESIGN_DESC_MAX,
-    ELEVENLABS_VOICE_DESIGN_DESC_MIN,
     ElevenLabsUpstreamError,
     _build_minimax_request_prefix,
     _cosyvoice_design_language_hints,
@@ -858,14 +853,21 @@ def _voice_design_preview_text(raw_language: object = None, ref_language: object
     return _loc(VOICE_PREVIEW_TEXTS, _voice_design_preview_language(raw_language, ref_language))
 
 
-def _provider_supports_voice_design(provider: str) -> bool:
-    """Read Voice Design support from the TTS provider registry."""
+def _voice_design_provider(provider: str):
+    """Return a design-capable provider and its declarative constraints."""
     from utils import tts_provider_registry
 
     from main_logic import tts_client  # noqa: F401 - ensures provider registration
 
     provider_meta = tts_provider_registry.get(provider)
-    return bool(provider_meta and "design" in provider_meta.capabilities)
+    if provider_meta is None or "design" not in provider_meta.capabilities:
+        return None
+    return provider_meta
+
+
+def _provider_supports_voice_design(provider: str) -> bool:
+    """Compatibility query backed by the same provider registry entry."""
+    return _voice_design_provider(provider) is not None
 
 
 @router.post('/voice_design')
@@ -884,49 +886,60 @@ async def voice_design(request: Request):
     ref_language = str(data.get('ref_language') or 'ch').strip().lower()
     request_language = data.get('i18n_language') or data.get('language')
 
-    if not _provider_supports_voice_design(provider):
+    provider_meta = _voice_design_provider(provider)
+    if provider_meta is None:
         return JSONResponse({
             'error': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
             'code': 'VOICE_DESIGN_PROVIDER_UNSUPPORTED',
             'details': {'provider': provider},
         }, status_code=400)
+    constraints = provider_meta.voice_design
     if not prefix:
         return JSONResponse({
             'error': 'VOICE_DESIGN_PREFIX_REQUIRED',
             'code': 'VOICE_DESIGN_PREFIX_REQUIRED',
         }, status_code=400)
-    if provider in ('cosyvoice', 'cosyvoice_intl') and (
-        len(prefix) > COSYVOICE_VOICE_DESIGN_PREFIX_MAX
-        or not COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN.fullmatch(prefix)
+    prefix_max = constraints.prefix_max if constraints is not None else None
+    prefix_pattern = constraints.prefix_pattern if constraints is not None else ''
+    if (
+        (prefix_max is not None and len(prefix) > prefix_max)
+        or (prefix_pattern and re.fullmatch(prefix_pattern, prefix) is None)
     ):
         return JSONResponse({
             'error': 'VOICE_DESIGN_PREFIX_INVALID',
             'code': 'VOICE_DESIGN_PREFIX_INVALID',
-            'details': {'max': COSYVOICE_VOICE_DESIGN_PREFIX_MAX},
-            'message': 'Prefix must be 1-10 characters and contain only A-Z, a-z, and 0-9. Underscores are not allowed.',
+            'details': {'max': prefix_max, 'pattern': prefix_pattern},
+            'message': (
+                f'Prefix must be 1-{prefix_max} characters and match {prefix_pattern}. '
+                'Underscores and spaces are not allowed.'
+            ),
         }, status_code=400)
     if not voice_prompt:
         return JSONResponse({
             'error': 'VOICE_DESIGN_PROMPT_REQUIRED',
             'code': 'VOICE_DESIGN_PROMPT_REQUIRED',
         }, status_code=400)
-    if provider == 'elevenlabs':
-        description, err = _validate_voice_design_description(voice_prompt)
-        if err is not None:
-            return err
-        voice_prompt = description
-    elif len(voice_prompt) > COSYVOICE_VOICE_DESIGN_PROMPT_MAX:
+    prompt_min = constraints.prompt_min if constraints is not None else None
+    prompt_max = constraints.prompt_max if constraints is not None else None
+    if prompt_min is not None and len(voice_prompt) < prompt_min:
+        return JSONResponse({
+            'error': 'VOICE_DESIGN_PROMPT_TOO_SHORT',
+            'code': 'VOICE_DESIGN_PROMPT_TOO_SHORT',
+            'min': prompt_min,
+        }, status_code=400)
+    if prompt_max is not None and len(voice_prompt) > prompt_max:
         return JSONResponse({
             'error': 'VOICE_DESIGN_PROMPT_TOO_LONG',
             'code': 'VOICE_DESIGN_PROMPT_TOO_LONG',
-            'max': COSYVOICE_VOICE_DESIGN_PROMPT_MAX,
+            'max': prompt_max,
         }, status_code=400)
 
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     if ref_language not in valid_languages:
         ref_language = 'ch'
-    if provider in ('cosyvoice', 'cosyvoice_intl') and ref_language not in ('ch', 'en'):
-        ref_language = 'ch'
+    language_hints = constraints.language_hints if constraints is not None else ()
+    if language_hints and ref_language not in language_hints:
+        ref_language = language_hints[0]
     preview_text = _voice_design_preview_text(request_language, ref_language)
 
     config_manager = get_config_manager()
@@ -1128,19 +1141,23 @@ async def voice_design(request: Request):
 
 
 def _validate_voice_design_description(raw: object) -> tuple[str, JSONResponse | None]:
-    """Validate a voice-design description against ElevenLabs' 20–1000 char window."""
+    """Validate a description for the reserved ElevenLabs two-stage routes."""
     description = str(raw or '').strip()
-    if len(description) < ELEVENLABS_VOICE_DESIGN_DESC_MIN:
+    provider_meta = _voice_design_provider('elevenlabs')
+    constraints = provider_meta.voice_design if provider_meta is not None else None
+    prompt_min = constraints.prompt_min if constraints is not None else None
+    prompt_max = constraints.prompt_max if constraints is not None else None
+    if prompt_min is not None and len(description) < prompt_min:
         return description, JSONResponse({
             'error': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
             'code': 'VOICE_DESIGN_DESCRIPTION_TOO_SHORT',
-            'min': ELEVENLABS_VOICE_DESIGN_DESC_MIN,
+            'min': prompt_min,
         }, status_code=400)
-    if len(description) > ELEVENLABS_VOICE_DESIGN_DESC_MAX:
+    if prompt_max is not None and len(description) > prompt_max:
         return description, JSONResponse({
             'error': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
             'code': 'VOICE_DESIGN_DESCRIPTION_TOO_LONG',
-            'max': ELEVENLABS_VOICE_DESIGN_DESC_MAX,
+            'max': prompt_max,
         }, status_code=400)
     return description, None
 

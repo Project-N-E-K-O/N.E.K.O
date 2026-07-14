@@ -83,9 +83,6 @@ from .direct_link import (  # noqa: F401
 )
 from .voice_providers import (  # noqa: F401
     COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE,
-    COSYVOICE_VOICE_DESIGN_PREFIX_MAX,
-    COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN,
-    COSYVOICE_VOICE_DESIGN_PROMPT_MAX,
     ElevenLabsUpstreamError,
     _build_minimax_request_prefix,
     _get_elevenlabs_base_url,
@@ -94,8 +91,6 @@ from .voice_providers import (  # noqa: F401
     _raw_elevenlabs_voice_id,
     _raise_for_elevenlabs_response,
     _elevenlabs_clone_voice,
-    ELEVENLABS_VOICE_DESIGN_DESC_MIN,
-    ELEVENLABS_VOICE_DESIGN_DESC_MAX,
     ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
     _cosyvoice_customization_url,
     _cosyvoice_design_language_hints,

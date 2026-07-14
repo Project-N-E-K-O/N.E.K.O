@@ -23,7 +23,6 @@ from ._shared import logger
 
 import json
 import io
-import re
 from urllib.parse import urlparse
 
 import httpx
@@ -143,13 +142,6 @@ async def _elevenlabs_clone_voice(
 # as a normal ElevenLabs voice_id (stored with source='design'). Dispatch then
 # reuses the existing ElevenLabs clone path (voice_meta.provider=='elevenlabs'),
 # so no separate worker is needed (design doc §7).
-ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
-
-
-ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
-COSYVOICE_VOICE_DESIGN_PROMPT_MAX = 500
-COSYVOICE_VOICE_DESIGN_PREFIX_MAX = 10
-COSYVOICE_VOICE_DESIGN_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9]+$")
 COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE = "audio/wav"
 
 

@@ -1,10 +1,6 @@
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
 const MINIMAX_PREFIX_MAX_LENGTH = 10;
-const VOICE_DESIGN_PREFIX_MAX_LENGTH = 10;
-const ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH = 20;
-const ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH = 1000;
-const VOICE_DESIGN_PREFIX_PATTERN = /^[A-Za-z0-9]+$/;
 let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
@@ -1386,22 +1382,29 @@ function isVoiceDesignSupportedProvider(provider) {
     return !!(meta && Array.isArray(meta.capabilities) && meta.capabilities.includes('design'));
 }
 
-function isVoiceDesignLanguageSupportedProvider(provider) {
-    return provider === 'cosyvoice';
+function getVoiceDesignMetadata(provider) {
+    const meta = voiceCloneProviderRestrictionState.ttsProviders[provider];
+    return meta && meta.voice_design ? meta.voice_design : {};
 }
 
-function usesCosyVoiceDesignPrefixRules(provider) {
-    return provider === 'cosyvoice' || provider === 'cosyvoice_intl';
+function isVoiceDesignLanguageSupportedProvider(provider) {
+    const languageHints = getVoiceDesignMetadata(provider).language_hints;
+    return Array.isArray(languageHints) && languageHints.length > 0;
 }
 
 function isElevenLabsProvider(provider) {
     return provider === 'elevenlabs';
 }
 
-function setVoiceCloneI18nText(element, key, fallback) {
+function setVoiceCloneI18nText(element, key, fallback, options = null) {
     if (!element) return;
     element.setAttribute('data-i18n', key);
-    const text = window.t ? window.t(key) : fallback;
+    if (options) {
+        element.setAttribute('data-i18n-options', JSON.stringify(options));
+    } else {
+        element.removeAttribute('data-i18n-options');
+    }
+    const text = window.t ? window.t(key, options || undefined) : fallback;
     element.textContent = text && text !== key ? text : fallback;
 }
 
@@ -1420,15 +1423,16 @@ function updateRefLanguageForVoiceSource(provider) {
 
     row.style.display = '';
     if (designLanguageMode) {
+        const languageHints = getVoiceDesignMetadata(provider).language_hints;
         setVoiceCloneI18nText(label, 'voice.designLanguage', 'Voice language hint');
         setVoiceCloneI18nText(hint, 'voice.designLanguageNote', 'Only Chinese and English hints are supported for CosyVoice Voice Design.');
         Array.from(select.options).forEach(option => {
-            const allowed = option.value === 'ch' || option.value === 'en';
+            const allowed = languageHints.includes(option.value);
             option.hidden = !allowed;
             option.disabled = !allowed;
         });
-        if (select.value !== 'ch' && select.value !== 'en') {
-            select.value = 'ch';
+        if (!languageHints.includes(select.value)) {
+            select.value = languageHints[0];
             select.dispatchEvent(new Event('change', { bubbles: true }));
         }
         if (typeof syncVoiceCloneSelectDropdowns === 'function') {
@@ -1452,10 +1456,14 @@ function updateVoiceDesignHint(provider) {
     if (!hint) return;
 
     if (isElevenLabsProvider(provider)) {
+        const constraints = getVoiceDesignMetadata(provider);
+        const promptMin = Number(constraints.prompt_min);
+        const promptMax = Number(constraints.prompt_max);
         setVoiceCloneI18nText(
             hint,
             'voice.designHintElevenlabs',
-            'Describe only the voice, not the character personality. ElevenLabs requires 20-1000 characters.'
+            `Describe only the voice, not the character personality. ElevenLabs requires ${promptMin}-${promptMax} characters.`,
+            { min: promptMin, max: promptMax }
         );
     } else {
         setVoiceCloneI18nText(
@@ -1767,11 +1775,21 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
-        if (
-            usesCosyVoiceDesignPrefixRules(provider)
-            && (prefix.length > VOICE_DESIGN_PREFIX_MAX_LENGTH || !VOICE_DESIGN_PREFIX_PATTERN.test(prefix))
-        ) {
-            resultDiv.textContent = window.t ? window.t('voice.designPrefixInvalid') : '前缀必须是 1-10 个字符，只能包含英文字母和数字，不能包含下划线或空格';
+        const designConstraints = getVoiceDesignMetadata(provider);
+        const prefixMax = Number(designConstraints.prefix_max);
+        const prefixPattern = String(designConstraints.prefix_pattern || '');
+        let prefixMatches = true;
+        if (prefixPattern) {
+            try {
+                prefixMatches = new RegExp(prefixPattern).test(prefix);
+            } catch (error) {
+                console.warn('Invalid Voice Design prefix pattern in provider metadata:', error);
+            }
+        }
+        if ((prefixMax > 0 && prefix.length > prefixMax) || !prefixMatches) {
+            resultDiv.textContent = window.t
+                ? window.t('voice.designPrefixInvalid', { max: prefixMax })
+                : `The prefix must be 1-${prefixMax} characters using only English letters and numbers, with no underscores or spaces.`;
             resultDiv.className = 'result error';
             return;
         }
@@ -1780,17 +1798,25 @@ async function registerVoice() {
             resultDiv.className = 'result error';
             return;
         }
-        if (isElevenLabsProvider(provider) && designPrompt.length < ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH) {
+        const promptMin = Number(designConstraints.prompt_min);
+        const promptMax = Number(designConstraints.prompt_max);
+        if (promptMin > 0 && designPrompt.length < promptMin) {
+            const key = isElevenLabsProvider(provider)
+                ? 'voice.designPromptTooShortElevenlabs'
+                : 'voice.designPromptTooShort';
             resultDiv.textContent = window.t
-                ? window.t('voice.designPromptTooShortElevenlabs', { min: ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH })
-                : `ElevenLabs voice description must be at least ${ELEVENLABS_VOICE_DESIGN_DESC_MIN_LENGTH} characters.`;
+                ? window.t(key, { min: promptMin })
+                : `Voice description must be at least ${promptMin} characters.`;
             resultDiv.className = 'result error';
             return;
         }
-        if (isElevenLabsProvider(provider) && designPrompt.length > ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH) {
+        if (promptMax > 0 && designPrompt.length > promptMax) {
+            const key = isElevenLabsProvider(provider)
+                ? 'voice.designPromptTooLongElevenlabs'
+                : 'voice.designPromptTooLong';
             resultDiv.textContent = window.t
-                ? window.t('voice.designPromptTooLongElevenlabs', { max: ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH })
-                : `ElevenLabs voice description must be at most ${ELEVENLABS_VOICE_DESIGN_DESC_MAX_LENGTH} characters.`;
+                ? window.t(key, { max: promptMax })
+                : `Voice description must be at most ${promptMax} characters.`;
             resultDiv.className = 'result error';
             return;
         }
