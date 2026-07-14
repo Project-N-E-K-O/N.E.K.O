@@ -537,25 +537,40 @@
     /**
      * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
      * 安全限制：仅当页面来自 localhost / 127.0.0.1 / 0.0.0.0 时才调用。
-     * @returns {Promise<{dataUrl: string|null, status: number|null}>}
+     * @returns {Promise<{dataUrl: string|null, status: number|null, error: string|null}>}
      */
     async function fetchBackendScreenshot() {
         var h = window.location.hostname;
         if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
-            return { dataUrl: null, status: null };
+            return { dataUrl: null, status: null, error: null };
         }
         try {
             var resp = await secureLocalScreenshotFetch('/api/screenshot', { method: 'POST' });
-            if (!resp.ok) return { dataUrl: null, status: resp.status };
-            var json = await resp.json();
+            var json = null;
+            try {
+                json = await resp.json();
+            } catch (_) {
+                json = null;
+            }
+            if (!resp.ok) {
+                return {
+                    dataUrl: null,
+                    status: resp.status,
+                    error: (json && json.error) ? json.error : null
+                };
+            }
             if (json.success && json.data) {
                 console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
-                return { dataUrl: json.data, status: 200 };
+                return { dataUrl: json.data, status: 200, error: null };
             }
-            return { dataUrl: null, status: resp.status };
+            return {
+                dataUrl: null,
+                status: resp.status,
+                error: (json && json.error) ? json.error : null
+            };
         } catch (e) {
             console.warn('[截图] 后端截图请求失败:', e);
-            return { dataUrl: null, status: null };
+            return { dataUrl: null, status: null, error: e && e.message ? e.message : null };
         }
     }
     mod.fetchBackendScreenshot = fetchBackendScreenshot;
@@ -980,7 +995,7 @@
                 var result = await fetchBackendScreenshot();
                 var backendTest = result.dataUrl;
                 if (!backendTest) {
-                    throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
+                    throw new Error(result.error || '所有屏幕捕获方式均失败（含后端兜底）');
                 }
                 if (await stopLiveVisionStreamIfBlocked('screen')) {
                     return;

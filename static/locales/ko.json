@@ -2716,6 +2716,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API가 구성되지 않았습니다",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui가 설치되지 않았습니다",
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "데스크톱 표시 세션에 접근할 수 없습니다",
+            "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "macOS PyAutoGUI 브리지 사용 불가 (PyObjC/Quartz/AppKit 누락)",
+            "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui 가져오기에 실패했습니다",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use가 설치되지 않았습니다",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 모듈이 로드되지 않았습니다",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 모듈이 로드되지 않았습니다",

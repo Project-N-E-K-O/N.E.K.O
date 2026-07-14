@@ -36,6 +36,10 @@ from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_T
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
+from utils.pyautogui_diagnostics import (
+    classify_pyautogui_import_error,
+    format_pyautogui_import_error,
+)
 from utils.token_tracker import set_call_type
 from utils.screenshot_utils import compress_screenshot
 
@@ -75,18 +79,10 @@ def _load_pyautogui():
 
 
 def _pyautogui_unavailable_reason() -> str:
-    text = str(_PYAUTOGUI_IMPORT_ERROR or "").lower()
-    if any(token in text for token in (
-        "displayconnectionerror",
-        "can't connect to display",
-        "cannot connect to display",
-        "authorization required",
-        "no authorization protocol",
-        "display",
-        "xlib",
-    )):
-        return "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
-    return "AGENT_PYAUTOGUI_NOT_INSTALLED"
+    return classify_pyautogui_import_error(
+        _PYAUTOGUI_IMPORT_ERROR,
+        platform_name=platform.system(),
+    )
 
 
 _load_pyautogui()
@@ -691,7 +687,10 @@ class ComputerUseAdapter:
         try:
             pyautogui_module = _load_pyautogui()
             if pyautogui_module is None:
-                self.last_error = f"pyautogui unavailable: {_pyautogui_unavailable_reason()}"
+                self.last_error = format_pyautogui_import_error(
+                    _PYAUTOGUI_IMPORT_ERROR,
+                    platform_name=platform.system(),
+                )
                 return
 
             self.screen_width, self.screen_height = pyautogui_module.size()

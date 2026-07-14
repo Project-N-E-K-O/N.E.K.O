@@ -395,15 +395,11 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
 
-          # macOS: exclude pyobjc frameworks (Foundation requires --mode=app)
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=AppKit"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=objc"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=PyObjCTools"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=CoreFoundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
-          fi
+          # macOS: keep PyObjC bridge modules in the frozen app. Both
+          # brain/computer_use.py and /api/screenshot import pyautogui, and on
+          # macOS pyautogui imports Quartz/AppKit during module import. Excluding
+          # those bridge modules makes the packaged app fail at import time and
+          # surface a false "pyautogui not installed" error.
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"

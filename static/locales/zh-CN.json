@@ -2716,6 +2716,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API 未配置",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui 未安装",
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "桌面显示会话不可访问",
+            "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "macOS 的 PyAutoGUI 桥接模块不可用（缺少 PyObjC/Quartz/AppKit）",
+            "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui 导入失败",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use 未安装",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use 模块未加载",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use 模块未加载",

@@ -2716,6 +2716,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API not configured",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui not installed",
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Desktop display session unavailable",
+            "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "macOS PyAutoGUI bridge unavailable (PyObjC/Quartz/AppKit missing)",
+            "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui import failed",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use module not loaded",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",

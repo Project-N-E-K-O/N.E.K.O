@@ -2716,6 +2716,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "API do agente não configurada",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui não instalado",
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Sessão de exibição da área de trabalho indisponível",
+            "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "Ponte do PyAutoGUI no macOS indisponível (faltando PyObjC/Quartz/AppKit)",
+            "AGENT_PYAUTOGUI_IMPORT_FAILED": "Falha ao importar pyautogui",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "uso do navegador não instalado",
             "AGENT_CU_MODULE_NOT_LOADED": "módulo Computer Use não carregado",
             "AGENT_BU_MODULE_NOT_LOADED": "módulo Browser Use não carregado",

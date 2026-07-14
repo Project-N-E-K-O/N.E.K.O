@@ -176,6 +176,10 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_KEY_NOT_CONFIGURED"
         if "endpoint not configured" in lower or "api 未配置" in lower:
             return "AGENT_ENDPOINT_NOT_CONFIGURED"
+        if "pyautogui" in lower and ("pyobjc" in lower or "quartz" in lower or "appkit" in lower or "corefoundation" in lower or "pyobjctools" in lower):
+            return "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
+        if "pyautogui" in lower and ("import failed" in lower or "导入失败" in text):
+            return "AGENT_PYAUTOGUI_IMPORT_FAILED"
         if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
             return "AGENT_PYAUTOGUI_NOT_INSTALLED"
         if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
