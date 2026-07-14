@@ -35,12 +35,38 @@ RUN npm ci && npm run build-only
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
-# --- Stage 2: Runtime ---
+# --- Stage 2: Build OpenFang (Rust A2A agent daemon) ---
+FROM rust:1-slim-bookworm AS openfang-builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+WORKDIR /build
+
+# 安装编译 OpenFang 所需的系统依赖
+RUN apt-get update && apt-get install -y pkg-config libssl-dev perl make git && rm -rf /var/lib/apt/lists/*
+
+# 配置 Rust crates.io 镜像（国内构建加速）
+RUN mkdir -p /root/.cargo && \
+    printf '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/crates.io/"\n' > /root/.cargo/config.toml
+
+# 可覆盖 OpenFang 版本标签（默认 v0.6.9）
+ARG OPENFANG_TAG=v0.6.9
+
+# 编译优化
+ENV CARGO_PROFILE_RELEASE_LTO=true \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    git clone --depth 1 --branch ${OPENFANG_TAG} https://github.com/RightNow-AI/openfang.git . && \
+    cargo build --release --bin openfang && \
+    cp /build/target/release/openfang /usr/local/bin/openfang
+
+# --- Stage 3: Runtime ---
 FROM debian:bookworm
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 
-# 设置环境变量
+# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 # Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
@@ -227,7 +253,10 @@ RUN cd /app && \
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
-# 7b. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
+# 7b. 复制 OpenFang 二进制（Rust A2A agent daemon）
+COPY --from=openfang-builder /usr/local/bin/openfang /usr/local/bin/openfang
+
+# 7c. 解压 yui-origin Live2D 模型（assets/yui-origin.tar.gz → static/yui-origin/）
 #     dev 用 build_frontend.{sh,bat} 解压；docker 路径绕过那两个脚本，单独解压一次
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
     test -f static/yui-origin/yui-origin.moc3

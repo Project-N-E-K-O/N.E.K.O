@@ -32,7 +32,7 @@ services:
       - "48911:80"    # HTTP
       - "48912:443"   # HTTPS
     volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      - ./N.E.K.O:/app/.local/share/N.E.K.O
       - ./logs:/app/logs
       - ./ssl:/root/ssl
     networks:
@@ -74,7 +74,7 @@ The Docker container includes Nginx as a reverse proxy:
 
 | Mount | Container path | Purpose |
 |-------|----------------|---------|
-| `./N.E.K.O` | `/root/Documents/N.E.K.O` | Config, characters, memories |
+| `./N.E.K.O` | `/app/.local/share/N.E.K.O` | Config, characters, memories |
 | `./logs` | `/app/logs` | Application logs |
 | `./ssl` | `/root/ssl` | SSL certificates |
 
@@ -108,7 +108,7 @@ docker logs neko
 docker exec -it neko bash
 
 # Check config
-docker exec neko cat /root/Documents/N.E.K.O/core_config.json
+docker exec neko cat /app/.local/share/N.E.K.O/core_config.json
 
 # Check environment
 docker exec neko env | grep NEKO_

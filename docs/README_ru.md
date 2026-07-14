@@ -119,7 +119,7 @@ services:
       - "48911:80"   # HTTP порт
       - "48912:443"  # HTTPS порт
     volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      - ./N.E.K.O:/app/.local/share/N.E.K.O
       - ./logs:/app/logs
       - ./ssl:/root/ssl
     networks:
@@ -154,7 +154,7 @@ docker run -d \
   --restart unless-stopped \
   -p 48911:80 \
   -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/N.E.K.O:/app/.local/share/N.E.K.O" \
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
   -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
   --network neko-network \

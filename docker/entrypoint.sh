@@ -549,6 +549,23 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+    
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
@@ -634,6 +651,23 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+    location ~ ^/(ws/|ui|plugins|plugin/|available|server/|logs/|metrics|runs|packages) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+    
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
@@ -873,6 +907,12 @@ setup_dependencies() {
         fi
     fi
     
+    # uv sync 以 root 运行，生成的文件归 root；服务以 neko 用户运行，须修正权限
+    echo "🔧 Fixing .venv permissions for neko user..."
+    chown -R neko:neko /app/.venv 2>/dev/null || echo "⚠️ Could not chown .venv (non-fatal)"
+    # 同时确保文档和模板目录可被 neko 读取（用于 OpenClaw 指南等静态内容）
+    chown -R neko:neko /app/docs /app/templates /app/static 2>/dev/null || echo "⚠️ Could not chown doc/template/static dirs (non-fatal)"
+    
     echo "✅ Dependencies installed successfully"
     
     # 安装 Playwright 浏览器（用于 browser_use 自动化）
@@ -888,6 +928,8 @@ setup_dependencies() {
         # 尝试安装 Chromium，失败时不中断启动
         if uv run --no-sync python -m playwright install chromium --with-deps 2>&1; then
             echo "✅ Playwright Chromium installed successfully"
+            echo "🔧 Fixing Playwright browser permissions for neko user..."
+            chown -R neko:neko "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}" 2>/dev/null || echo "⚠️ Could not chown Playwright browsers (non-fatal)"
         else
             echo "⚠️ Playwright Chromium installation failed (will retry on next start)"
             echo "   Browser automation features may not work until Playwright is installed"
@@ -896,6 +938,54 @@ setup_dependencies() {
 }
 
 # 7. 服务启动优化
+# ── OpenFang (Rust A2A agent daemon) ──────────────────────────
+start_openfang_daemon() {
+    if ! command -v openfang &>/dev/null; then
+        echo "⚠️ OpenFang binary not found, skipping OpenFang daemon"
+        return 0
+    fi
+    echo "🚀 Starting OpenFang A2A daemon..."
+    cd /app
+
+    # OpenFang 工作目录（neko 用户的 home = /app → ~/.openfang = /app/.openfang）
+    local OF_HOME="/app/.openfang"
+    local OF_CONFIG="$OF_HOME/config.toml"
+
+    if [ ! -f "$OF_CONFIG" ]; then
+        echo "   Initializing OpenFang workspace..."
+        runuser -u neko -- openfang init 2>&1 || {
+            echo "⚠️ OpenFang init failed (non-critical)"
+        }
+    fi
+
+    # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
+    if [ -f "$OF_CONFIG" ]; then
+        if ! grep -q '^\s*\[a2a\]' "$OF_CONFIG" 2>/dev/null; then
+            echo "   Enabling A2A protocol in OpenFang config..."
+            printf '\n[a2a]\nenabled = true\n' >> "$OF_CONFIG"
+        fi
+    fi
+
+    echo "   Starting openfang daemon (API listen: 127.0.0.1:50051)..."
+    OPENFANG_LISTEN=127.0.0.1:50051 runuser -u neko -- openfang start &
+    local of_pid=$!
+    PIDS+=("$of_pid")
+    echo "     OpenFang daemon PID: $of_pid"
+
+    # 等待健康检查
+    local of_retries=15
+    while [ $of_retries -gt 0 ]; do
+        if curl -sf http://127.0.0.1:50051/api/health >/dev/null 2>&1; then
+            echo "✅ OpenFang daemon is healthy"
+            return 0
+        fi
+        sleep 2
+        of_retries=$((of_retries - 1))
+    done
+    echo "⚠️ OpenFang health check timed out (continuing anyway)"
+    return 0
+}
+
 start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
@@ -1044,6 +1134,9 @@ main() {
     setup_configuration
     setup_dependencies
     setup_nginx_proxy
+    
+    # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
+    start_openfang_daemon
     
     # 启动N.E.K.O服务
     if ! start_services; then

@@ -34,7 +34,33 @@ RUN npm ci && npm run build-only
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
-# --- Stage 2: Runtime ---
+# --- Stage 2: Build OpenFang (Rust A2A agent daemon) ---
+FROM rust:1-slim-bookworm AS openfang-builder
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+WORKDIR /build
+
+# 安装编译 OpenFang 所需的系统依赖
+RUN apt-get update && apt-get install -y pkg-config libssl-dev perl make git && rm -rf /var/lib/apt/lists/*
+
+# 配置 Rust crates.io 镜像（国内构建加速）
+RUN mkdir -p /root/.cargo && \
+    printf '[source.crates-io]\nreplace-with = "rsproxy-sparse"\n[source.rsproxy-sparse]\nregistry = "sparse+https://rsproxy.cn/crates.io/"\n' > /root/.cargo/config.toml
+
+# 可覆盖 OpenFang 版本标签（默认 v0.6.9）
+ARG OPENFANG_TAG=v0.6.9
+
+# 编译优化
+ENV CARGO_PROFILE_RELEASE_LTO=true \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    git clone --depth 1 --branch ${OPENFANG_TAG} https://github.com/RightNow-AI/openfang.git . && \
+    cargo build --release --bin openfang && \
+    cp /build/target/release/openfang /usr/local/bin/openfang
+
+# --- Stage 3: Runtime ---
 FROM debian:bookworm
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -158,7 +184,10 @@ RUN cd /app && \
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
-# 7b. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
+# 7b. Copy OpenFang binary (Rust A2A agent daemon)
+COPY --from=openfang-builder /usr/local/bin/openfang /usr/local/bin/openfang
+
+# 7c. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
     test -f static/yui-origin/yui-origin.moc3
 
