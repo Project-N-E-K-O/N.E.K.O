@@ -1116,7 +1116,7 @@ class EmbeddingService:
                     return self.is_available()
                 self._state = EmbeddingState.LOADING
                 try:
-                    await asyncio.to_thread(self._load_session_blocking)
+                    await self._run_blocking(self._load_session_blocking)
                 except _DisabledError as e:
                     if not self._closing:
                         self._mark_disabled(e.reason)
@@ -1164,7 +1164,7 @@ class EmbeddingService:
             if not self.is_available():
                 return None
             try:
-                vectors = await asyncio.to_thread(self._infer_blocking, [text])
+                vectors = await self._run_blocking(self._infer_blocking, [text])
             except Exception as e:  # noqa: BLE001 — sticky inference failure
                 if not self._closing:
                     logger.warning(
@@ -1200,7 +1200,7 @@ class EmbeddingService:
             if not active_texts:
                 return result
             try:
-                vectors = await asyncio.to_thread(self._infer_blocking, active_texts)
+                vectors = await self._run_blocking(self._infer_blocking, active_texts)
             except Exception as e:  # noqa: BLE001
                 if not self._closing:
                     logger.warning(
@@ -1229,6 +1229,31 @@ class EmbeddingService:
             self._active_operations -= 1
             if self._active_operations == 0:
                 self._lifecycle_condition.notify_all()
+
+    @staticmethod
+    async def _run_blocking(func, *args):
+        """Keep cancellation from outliving a native worker-thread call."""
+        worker = asyncio.create_task(asyncio.to_thread(func, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # ``to_thread`` cannot stop a running native call.  Do not let the
+            # caller's lifecycle lease unwind until that call has actually
+            # exited, otherwise close() could clear or recreate its owners
+            # while ONNX Runtime is still using them.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if worker.done() and not worker.cancelled():
+                try:
+                    worker.result()
+                except Exception:
+                    pass
+            raise
 
     # ── internal: session load / inference ───────────────────────────
 

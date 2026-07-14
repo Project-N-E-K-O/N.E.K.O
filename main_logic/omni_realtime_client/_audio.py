@@ -78,6 +78,7 @@ class _AudioMixin:
     async def set_audio_noise_reduction_enabled(self, enabled: bool) -> None:
         """Apply a live denoiser toggle after active processing quiesces."""
         async with self._audio_processing_lock:
+            self._noise_reduction_enabled = enabled
             processor = self._audio_processor
             if processor is not None:
                 processor.set_enabled(enabled)

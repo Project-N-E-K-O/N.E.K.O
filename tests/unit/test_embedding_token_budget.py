@@ -147,14 +147,18 @@ async def test_embedding_close_waits_for_inflight_inference(
     svc._infer_blocking = _blocking_inference
     embed_task = asyncio.create_task(svc.embed("hello"))
     assert await asyncio.to_thread(inference_started.wait, 2.0)
+    embed_task.cancel()
+    await asyncio.sleep(0)
     close_task = asyncio.create_task(svc.close())
     await asyncio.sleep(0)
 
     assert svc._closing is True
+    assert svc._active_operations == 1
     assert not close_task.done()
     release_inference.set()
 
-    assert await embed_task == [1.0]
+    cancelled_result = await asyncio.gather(embed_task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
     assert await close_task is None
     assert svc._session is None
     assert svc._tokenizer is None
@@ -179,13 +183,18 @@ async def test_embedding_load_cannot_publish_after_close_starts(
     svc._load_session_blocking = _blocking_load
     load_task = asyncio.create_task(svc.request_load())
     assert await asyncio.to_thread(load_started.wait, 2.0)
+    load_task.cancel()
+    await asyncio.sleep(0)
     close_task = asyncio.create_task(svc.close())
     await asyncio.sleep(0)
 
     assert svc._closing is True
+    assert svc._active_operations == 1
+    assert not close_task.done()
     release_load.set()
 
-    assert await load_task is False
+    cancelled_result = await asyncio.gather(load_task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
     assert await close_task is None
     assert svc._session is None
     assert svc._tokenizer is None

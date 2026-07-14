@@ -224,15 +224,19 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             reason = "" if ok else (probe_reason or "AGENT_LLM_UNREACHABLE")
             _set_capability("computer_use", ok, reason)
             bu = _shared.Modules.browser_use
-            if bu is None:
-                _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            if not ok:
+                _set_capability("browser_use", False, reason)
+            elif bu is None:
+                dependency_ready, dependency_error = _browser_use_dependency_status()
+                _set_capability(
+                    "browser_use",
+                    dependency_ready,
+                    "" if dependency_ready else dependency_error,
+                )
+            elif not getattr(bu, "_ready_import", False):
+                _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
             else:
-                if not ok:
-                    _set_capability("browser_use", False, reason)
-                elif not getattr(bu, "_ready_import", False):
-                    _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
-                else:
-                    _set_capability("browser_use", True, "")
+                _set_capability("browser_use", True, "")
 
             if ok:
                 logger.info("[Agent] Agent-LLM connectivity check passed")

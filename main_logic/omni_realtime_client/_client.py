@@ -186,6 +186,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Auto-resets after 2 seconds of no speech to prevent state drift
         # Input: 48kHz from PC, 16kHz from mobile
         # Output: 16kHz for API
+        self._noise_reduction_enabled = True
         self._audio_processor = self._create_audio_processor()
 
         # ── Uplink (client→provider) sample rate ──────────────────────
@@ -368,7 +369,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         return AudioProcessor(
             input_sample_rate=48000,
             output_sample_rate=16000,
-            noise_reduce_enabled=True,
+            noise_reduce_enabled=self._noise_reduction_enabled,
             on_silence_reset=self._on_silence_reset,
         )
 

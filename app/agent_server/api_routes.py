@@ -1241,7 +1241,8 @@ async def computer_use_run(payload: Dict[str, Any]):
 
 @app.post("/browser_use/run")
 async def browser_use_run(payload: Dict[str, Any]):
-    if not await _ensure_browser_use_adapter():
+    adapter = await _ensure_browser_use_adapter()
+    if adapter is None:
         raise HTTPException(503, "BrowserUse not ready")
     instruction = (payload or {}).get("instruction", "").strip()
     if not instruction:
@@ -1254,7 +1255,7 @@ async def browser_use_run(payload: Dict[str, Any]):
 
     async def _locked_run():
         async with Modules.browser_use_dispatch_lock:
-            return await Modules.browser_use.run_instruction(instruction)
+            return await adapter.run_instruction(instruction)
 
     # Run as a tracked background task so end_all can cancel a wedged direct
     # run (otherwise it would survive end_all still holding the mutex).

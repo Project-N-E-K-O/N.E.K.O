@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import threading
 
 import numpy as np
@@ -8,6 +9,9 @@ import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from utils.audio_processor import AudioProcessor, _LiteDenoiser
+
+
+client_module = importlib.import_module("main_logic.omni_realtime_client._client")
 
 
 class _FakeRnnoise:
@@ -104,6 +108,7 @@ async def test_audio_close_waits_for_executor_chunk_processing() -> None:
 
     client = object.__new__(OmniRealtimeClient)
     processor = _Processor()
+    client._noise_reduction_enabled = True
     client._audio_processor = processor
     client._audio_processing_lock = asyncio.Lock()
 
@@ -154,6 +159,27 @@ async def test_live_noise_reduction_toggle_waits_for_chunk_processing() -> None:
     assert await process_task == b"chunk"
     assert await toggle_task is None
     assert processor.enabled_calls == [False]
+    assert client._noise_reduction_enabled is False
+
+
+def test_recreated_audio_processor_preserves_noise_reduction_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[dict[str, object]] = []
+
+    def _create_processor(**kwargs):
+        created.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(client_module, "AudioProcessor", _create_processor)
+    client = object.__new__(OmniRealtimeClient)
+    client._noise_reduction_enabled = False
+    client._on_silence_reset = lambda: None
+
+    processor = client._create_audio_processor()
+
+    assert processor is not None
+    assert created[0]["noise_reduce_enabled"] is False
 
 
 @pytest.mark.asyncio

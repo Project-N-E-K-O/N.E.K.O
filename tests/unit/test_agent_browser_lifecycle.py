@@ -79,6 +79,72 @@ async def test_browser_use_enable_returns_without_constructing_adapter(
 
 
 @pytest.mark.asyncio
+async def test_llm_probe_keeps_unloaded_browser_use_ready_when_dependencies_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_computer_use = modules.computer_use
+    original_browser_use = modules.browser_use
+    original_capability = dict(modules.capability_cache["browser_use"])
+
+    class _ComputerUse:
+        @staticmethod
+        def check_connectivity():
+            return True, ""
+
+    async def _ignore_status_update(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(capabilities, "_browser_use_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(capabilities, "_emit_agent_status_update", _ignore_status_update)
+    modules.computer_use = _ComputerUse()
+    modules.browser_use = None
+    try:
+        await capabilities._fire_agent_llm_connectivity_check()
+
+        assert modules.capability_cache["browser_use"]["ready"] is True
+        assert modules.capability_cache["browser_use"]["reason"] == ""
+    finally:
+        modules.computer_use = original_computer_use
+        modules.browser_use = original_browser_use
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
+async def test_direct_browser_run_keeps_adapter_returned_by_initializer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_lock = modules.browser_use_dispatch_lock
+    calls: list[str] = []
+
+    class _Adapter:
+        async def run_instruction(self, instruction: str):
+            calls.append(instruction)
+            return {"success": True}
+
+    adapter = _Adapter()
+
+    async def _ensure_adapter():
+        # Simulate an asynchronous disable clearing the process singleton
+        # after initialization but before the dispatch coroutine runs.
+        modules.browser_use = None
+        return adapter
+
+    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _ensure_adapter)
+    modules.browser_use_dispatch_lock = None
+    try:
+        result = await api_routes.browser_use_run({"instruction": "open example"})
+
+        assert result["success"] is True
+        assert calls == ["open example"]
+    finally:
+        modules.browser_use = original_adapter
+        modules.browser_use_dispatch_lock = original_lock
+
+
+@pytest.mark.asyncio
 async def test_browser_use_disable_schedules_close_outside_flag_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
