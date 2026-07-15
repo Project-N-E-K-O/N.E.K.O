@@ -80,6 +80,7 @@ from tests.testbench.pipeline.memory_overview import (
     build_overview,
     judge_contradictions,
 )
+from tests.testbench.pipeline.memory_code_leads import build_code_leads
 from tests.testbench.pipeline.memory_export import (
     MEMORY_EXPORT_DEFAULT_TIER,
     MEMORY_EXPORT_TIERS,
@@ -530,6 +531,20 @@ async def get_memory_overview() -> dict[str, Any]:
     session = _require_session()
     character = _require_character(session)
     return await asyncio.to_thread(build_overview, character)
+
+
+@router.get("/code_leads")
+async def get_memory_code_leads() -> dict[str, Any]:
+    """P32 — read-only 代码线索 (开发者): 把机械不变量类发现反推成主程序记忆代码排查线索.
+
+    Mirrors ``/overview``: reuses ``build_overview`` once + two deterministic
+    file scans (ID-DUP / EVT-DUP). Read-only, no LLM, takes NO session lock
+    (avoids the autosave side effect — LESSONS L63). CPU-bound → off the event
+    loop. Every lead is a navigational hint, never a bug verdict (blueprint P32).
+    """  # noqa: DOCSTRING_CJK
+    session = _require_session()
+    character = _require_character(session)
+    return await asyncio.to_thread(build_code_leads, character)
 
 
 @router.post("/overview/ai_report")

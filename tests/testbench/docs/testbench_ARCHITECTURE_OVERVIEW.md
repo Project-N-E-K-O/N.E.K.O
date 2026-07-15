@@ -396,7 +396,7 @@ HTTP 端点按**业务域**分, 13 个 router:
 | `session_router` | `/api/session/*` | New / Switch / Load / Save / Export / List |
 | `config_router` | `/api/config/*` | 模型配置 / provider / api_key |
 | `persona_router` | `/api/persona/*` | Persona CRUD + 导入 (真实角色 / 内置 preset / zip 档案) + `/export_real/{name}` (P31 角色忠实全量导出为 `<角色名>.zip`, 纯读) |
-| `memory_router` | `/api/memory/*` | 三层 memory 的 CRUD + 5 op preview/commit + `/api/memory/recent/import_from_session` (P25 polish r6) + `/api/memory/prompt_preview/{op}` (P25 polish r7 pure preview) |
+| `memory_router` | `/api/memory/*` | 三层 memory 的 CRUD + 5 op preview/commit + `/api/memory/recent/import_from_session` (P25 polish r6) + `/api/memory/prompt_preview/{op}` (P25 polish r7 pure preview) + **记忆系统分析只读聚合**: `/lineage` (P27) · `/embedding/*` (P28) · `/overview` (P29) · `/export` (P30) · **`/code_leads` (P32 代码线索, 纯读 to_thread, 由 `pipeline/memory_code_leads.py::build_code_leads` 反推机械不变量类线索)** |
 | `chat_router` | `/api/chat/*` | 四模式 chat (send / auto_dialog / script playback / dual_ai) + SSE |
 | `judge_router` | `/api/judge/*` | Evaluation Run + SSE + 结果查询 + Aggregate + `/api/judge/run_prompt_preview` (P25 polish r7 pure preview) |
 | `stage_router` | `/api/stage/*` | Stage Coach suggest / advance |
@@ -914,6 +914,8 @@ p26_docs_endpoint_smoke.py            # /docs/{name} 公开白名单 + heading i
 | **本文 `ARCHITECTURE_OVERVIEW.md`** | 长期 | 二次开发者 / 接手 agent | 架构 / 模块拓扑 / 上手 |
 | `testbench_USER_MANUAL.md` | 版本 | 测试员 | 操作流程 |
 | `external_events_guide.md` | P25+ | 测试员 | 外部事件具体用法 |
+| `memory_export_guide.md` | P30+ | 测试员 | 记忆分析一键脱敏导出用法 |
+| `code_leads_guide.md` | P32+ | 代码相关人员 | 代码线索子页怎么读 / 局限 (面向使用者的干净说明; 内部裁决文档 `MEMORY_CODE_INFERENCE_FEASIBILITY.md` 不公开) |
 | `CHANGELOG.md` | 版本 | 用户 | 版本更新 |
 | `P24_BLUEPRINT.md` / `P25_BLUEPRINT.md` | 历史档 | 项目开发 | 阶段蓝图 |
 | `PROGRESS.md` | 历史档 | 项目开发 | 阶段交付日志 |
