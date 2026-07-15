@@ -7,6 +7,55 @@ import pytest
 from scripts import asr_realtime_smoke as smoke
 
 
+def test_openai_defaults_to_standard_environment_key(monkeypatch) -> None:
+    import utils.config_manager as config_manager
+
+    monkeypatch.setenv("OPENAI_API_KEY", "standard-openai-key")
+    monkeypatch.delenv("ASSIST_API_KEY_OPENAI", raising=False)
+    monkeypatch.setattr(
+        config_manager,
+        "get_config_manager",
+        lambda: pytest.fail("keybook fallback should not be needed"),
+    )
+
+    assert smoke._resolve_api_key("openai", "") == "standard-openai-key"
+
+    monkeypatch.setenv("CUSTOM_OPENAI_API_KEY", "override-openai-key")
+    assert (
+        smoke._resolve_api_key("openai", "CUSTOM_OPENAI_API_KEY")
+        == "override-openai-key"
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY")
+    monkeypatch.setenv("ASSIST_API_KEY_OPENAI", "legacy-openai-key")
+    assert smoke._resolve_api_key("openai", "") == "legacy-openai-key"
+
+
+def test_openai_environment_resolution_falls_back_to_keybook(monkeypatch) -> None:
+    import utils.config_manager as config_manager
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ASSIST_API_KEY_OPENAI", raising=False)
+
+    class FakeConfigManager:
+        value = "keybook-openai-key"
+
+        def get_core_config(self):
+            return {"ASSIST_API_KEY_OPENAI": self.value}
+
+    manager = FakeConfigManager()
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: manager)
+
+    assert smoke._resolve_api_key("openai", "") == "keybook-openai-key"
+
+    manager.value = ""
+    with pytest.raises(
+        RuntimeError,
+        match="ASR_CREDENTIALS_MISSING: ASSIST_API_KEY_OPENAI",
+    ):
+        smoke._resolve_api_key("openai", "")
+
+
 @pytest.mark.parametrize(
     ("provider", "credential_field", "worker_name"),
     [

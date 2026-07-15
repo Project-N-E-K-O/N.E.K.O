@@ -41,6 +41,10 @@ _CREDENTIAL_FIELDS = {
     "gemini": "ASSIST_API_KEY_GEMINI",
 }
 
+_DEFAULT_CREDENTIAL_ENVS = {
+    "openai": ("OPENAI_API_KEY", "ASSIST_API_KEY_OPENAI"),
+}
+
 _AUTH_FAILURE_CODES = {
     "ASR_CREDENTIALS_MISSING",
     "ASR_CREDENTIALS_REJECTED",
@@ -164,10 +168,16 @@ def _resolve_provider(provider: str) -> AsrWorkerFn:
 
 def _resolve_api_key(provider: str, override_env: str) -> str:
     field_name = _CREDENTIAL_FIELDS[provider]
-    env_name = override_env.strip() or field_name
-    api_key = os.getenv(env_name, "").strip()
-    if api_key:
-        return api_key
+    override = override_env.strip()
+    env_names = (
+        (override,)
+        if override
+        else _DEFAULT_CREDENTIAL_ENVS.get(provider, (field_name,))
+    )
+    for env_name in env_names:
+        api_key = os.getenv(env_name, "").strip()
+        if api_key:
+            return api_key
 
     from utils.config_manager import get_config_manager
 
