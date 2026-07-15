@@ -5,7 +5,7 @@ import {
   buildDesktopAvatarToolContract,
   projectDesktopAvatarToolContract,
 } from './desktopContract';
-import { desktopAvatarToolContractSchema } from './desktopContractSchema';
+import { desktopAvatarToolContractSchema } from './desktopContract';
 import { AVATAR_TOOL_DEFINITIONS } from './catalog';
 
 function cloneJson<T>(value: T): T {

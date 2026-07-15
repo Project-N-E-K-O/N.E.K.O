@@ -3,17 +3,16 @@ import type {
   AvatarToolDefinitionId,
   AvatarToolDefinition,
 } from './avatar-tools/catalog';
-import { AVATAR_TOOL_DEFINITIONS } from './avatar-tools/catalog';
+import {
+  AVATAR_TOOL_DEFINITIONS,
+  withAvatarToolAssetVersion,
+} from './avatar-tools/catalog';
+
+export { withAvatarToolAssetVersion };
 
 export type AvatarToolId = AvatarToolDefinitionId;
 
 export type AvatarToolVariantId = CatalogAvatarToolVariantId;
-
-declare global {
-  interface Window {
-    __NEKO_REACT_CHAT_ASSET_VERSION__?: string;
-  }
-}
 
 export type AvatarToolItem = {
   id: AvatarToolId;
@@ -101,33 +100,6 @@ export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] =
   AVATAR_TOOL_DEFINITIONS.map(projectAvatarToolDefinitionToItem);
 
 const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(AVAILABLE_AVATAR_TOOLS.map(item => item.id));
-
-function getReactChatAssetVersion(): string {
-  if (typeof window === 'undefined') return '';
-  const version = window.__NEKO_REACT_CHAT_ASSET_VERSION__;
-  return typeof version === 'string' ? version.trim() : '';
-}
-
-export function withAvatarToolAssetVersion(path: string, fallbackVersion = ''): string {
-  const version = getReactChatAssetVersion() || fallbackVersion.trim();
-  if (!version || !path) return path;
-  const hashIndex = path.indexOf('#');
-  const pathAndQuery = hashIndex >= 0 ? path.slice(0, hashIndex) : path;
-  const hash = hashIndex >= 0 ? path.slice(hashIndex) : '';
-  const queryIndex = pathAndQuery.indexOf('?');
-  const pathname = queryIndex >= 0 ? pathAndQuery.slice(0, queryIndex) : pathAndQuery;
-  const search = queryIndex >= 0 ? pathAndQuery.slice(queryIndex + 1) : '';
-  const params = search.split('&').filter(Boolean).filter((entry) => {
-    const encodedName = entry.split('=', 1)[0];
-    try {
-      return decodeURIComponent(encodedName.replace(/\+/g, ' ')) !== 'v';
-    } catch {
-      return true;
-    }
-  });
-  params.push(`v=${encodeURIComponent(version)}`);
-  return `${pathname}?${params.join('&')}${hash}`;
-}
 
 export function isAvatarToolId(value: unknown): value is AvatarToolId {
   return typeof value === 'string' && AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId);

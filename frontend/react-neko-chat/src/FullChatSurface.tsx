@@ -24,8 +24,8 @@ import CompactExportHistoryPanel, {
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
 import { i18n } from './i18n';
 import { useFocusGlow } from './useFocusGlow';
-import AvatarToolVisuals from './avatar-tools/AvatarToolVisuals';
-import { useAvatarToolRuntime } from './avatar-tools/useAvatarToolRuntime';
+import AvatarToolVisuals from './avatar-tools/presentation';
+import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
   AVAILABLE_AVATAR_TOOLS,
   resolveAvatarToolMenuIconVisual,

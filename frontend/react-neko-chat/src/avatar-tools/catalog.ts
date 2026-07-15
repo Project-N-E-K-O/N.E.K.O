@@ -1,21 +1,45 @@
-import type { AvatarToolRuleHandlers } from './interactionEngine';
-import {
-  FIST_AVATAR_TOOL_DEFINITION,
-  FIST_AVATAR_TOOL_HANDLERS,
-} from './tools/fist';
-import {
-  HAMMER_AVATAR_TOOL_DEFINITION,
-  HAMMER_AVATAR_TOOL_HANDLERS,
-} from './tools/hammer';
-import {
-  LOLLIPOP_AVATAR_TOOL_DEFINITION,
-  LOLLIPOP_AVATAR_TOOL_HANDLERS,
-} from './tools/lollipop';
+import type {
+  AvatarToolCommand,
+  AvatarToolRuleContext,
+  AvatarToolRuleHandlers,
+} from './interaction';
 
 export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer'] as const;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
+
+declare global {
+  interface Window {
+    __NEKO_REACT_CHAT_ASSET_VERSION__?: string;
+  }
+}
+function getReactChatAssetVersion(): string {
+  if (typeof window === 'undefined') return '';
+  const version = window.__NEKO_REACT_CHAT_ASSET_VERSION__;
+  return typeof version === 'string' ? version.trim() : '';
+}
+
+export function withAvatarToolAssetVersion(path: string, fallbackVersion = ''): string {
+  const version = getReactChatAssetVersion() || fallbackVersion.trim();
+  if (!version || !path) return path;
+  const hashIndex = path.indexOf('#');
+  const pathAndQuery = hashIndex >= 0 ? path.slice(0, hashIndex) : path;
+  const hash = hashIndex >= 0 ? path.slice(hashIndex) : '';
+  const queryIndex = pathAndQuery.indexOf('?');
+  const pathname = queryIndex >= 0 ? pathAndQuery.slice(0, queryIndex) : pathAndQuery;
+  const search = queryIndex >= 0 ? pathAndQuery.slice(queryIndex + 1) : '';
+  const params = search.split('&').filter(Boolean).filter((entry) => {
+    const encodedName = entry.split('=', 1)[0];
+    try {
+      return decodeURIComponent(encodedName.replace(/\+/g, ' ')) !== 'v';
+    } catch {
+      return true;
+    }
+  });
+  params.push(`v=${encodeURIComponent(version)}`);
+  return `${pathname}?${params.join('&')}${hash}`;
+}
 
 export type AvatarToolDefinitionId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
 export type AvatarToolVariantId = typeof AVATAR_TOOL_VARIANT_IDS[number];
@@ -609,6 +633,587 @@ export function validateAvatarToolDefinition(definition: AvatarToolDefinition): 
   validateEffects(definition);
   validateInteractionReferences(definition);
 }
+
+// Lollipop -------------------------------------------------------------------
+
+export const LOLLIPOP_HEART_EFFECT_RECIPE = {
+  id: 'hearts',
+  kind: 'fixed-particles-v1',
+  interactionLock: 'none',
+  lifetimeMs: 2100,
+  glyph: '*',
+  particles: [
+    { offsetX: -12, offsetY: -26, driftX: -26, driftY: -124, scale: 0.92, delayMs: 0 },
+    { offsetX: 10, offsetY: -20, driftX: 24, driftY: -138, scale: 1.06, delayMs: 110 },
+    { offsetX: -4, offsetY: -40, driftX: -18, driftY: -154, scale: 0.84, delayMs: 190 },
+  ],
+} as const satisfies FixedParticleEffectRecipe;
+
+export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
+  definitionVersion: 1,
+  id: 'lollipop',
+  label: {
+    key: 'chat.toolLollipop',
+    fallback: '棒棒糖',
+  },
+  capability: {
+    desktopVisual: true,
+    desktopInteraction: true,
+  },
+  visual: {
+    initialVariant: 'primary',
+    variants: {
+      primary: {
+        iconImagePath: '/static/icons/chat_sugar1.png',
+        pointerImagePath: '/static/icons/chat_sugar1_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      secondary: {
+        iconImagePath: '/static/icons/chat_sugar2.png',
+        pointerImagePath: '/static/icons/chat_sugar2_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      tertiary: {
+        iconImagePath: '/static/icons/chat_sugar3.png',
+        pointerImagePath: '/static/icons/chat_sugar2_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+    },
+    presentation: {
+      inRangeVariantSource: 'range',
+      outsideVariantSource: 'range',
+      effectActiveImageKind: 'icon',
+    },
+    menuScale: 1.18,
+    hotspotX: 27,
+    hotspotY: 46,
+    naturalWidth: 55,
+    naturalHeight: 80,
+    pointer: {
+      displayWidth: 74,
+      displayHeight: 108,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 0.56,
+      renderedAnchor: {
+        x: 20.34327272727273,
+        y: 34.776,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+    inRange: {
+      displayWidth: 74,
+      displayHeight: 108,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 1,
+      renderedAnchor: {
+        x: 36.32727272727273,
+        y: 62.1,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+  },
+  sounds: [
+    {
+      id: 'lollipop-bite',
+      src: '/static/sounds/avatar-tools/lollipop-bite.mp3',
+      volume: 0.9,
+    },
+  ],
+  effects: [LOLLIPOP_HEART_EFFECT_RECIPE],
+  interaction: {
+    kind: 'progressive-release-v1',
+    stages: [
+      { variant: 'primary', actionId: 'offer', intensity: 'normal', nextVariant: 'secondary' },
+      { variant: 'secondary', actionId: 'tease', intensity: 'normal', nextVariant: 'tertiary' },
+      { variant: 'tertiary', actionId: 'tap_soft', intensity: 'rapid', nextVariant: null },
+    ],
+    burst: {
+      key: 'lollipop',
+      variant: 'tertiary',
+      windowMs: 1800,
+      threshold: 4,
+      belowThresholdIntensity: 'rapid',
+      thresholdIntensity: 'burst',
+    },
+    feedback: {
+      sound: 'lollipop-bite',
+      effect: 'hearts',
+      effectVariant: 'tertiary',
+    },
+  },
+} as const satisfies AvatarToolDefinition;
+
+const LOLLIPOP_INTERACTION = LOLLIPOP_AVATAR_TOOL_DEFINITION.interaction;
+
+export const LOLLIPOP_BURST_WINDOW_MS = LOLLIPOP_INTERACTION.burst.windowMs;
+
+function isLollipopFeedbackVariant(variant: AvatarToolVariantId): boolean {
+  return variant === LOLLIPOP_INTERACTION.feedback.effectVariant;
+}
+
+export function resolveLollipopInteraction(currentVariant: AvatarToolVariantId, tapCount: number) {
+  const stage = LOLLIPOP_INTERACTION.stages.find(candidate => candidate.variant === currentVariant);
+  if (!stage) return null;
+  switch (stage.variant) {
+    case 'primary':
+      return {
+        actionId: stage.actionId,
+        intensity: stage.intensity,
+        nextVariant: stage.nextVariant,
+        hearts: isLollipopFeedbackVariant(stage.variant),
+      };
+    case 'secondary':
+      return {
+        actionId: stage.actionId,
+        intensity: stage.intensity,
+        nextVariant: stage.nextVariant,
+        hearts: isLollipopFeedbackVariant(stage.variant),
+      };
+    case 'tertiary':
+      return {
+        actionId: stage.actionId,
+        intensity: tapCount >= LOLLIPOP_INTERACTION.burst.threshold
+          ? LOLLIPOP_INTERACTION.burst.thresholdIntensity
+          : LOLLIPOP_INTERACTION.burst.belowThresholdIntensity,
+        nextVariant: stage.nextVariant,
+        hearts: isLollipopFeedbackVariant(stage.variant),
+      };
+  }
+}
+
+export function resolveLollipopCommit(context: AvatarToolRuleContext): AvatarToolCommand {
+  if (!context.hit) return {};
+  const tapCount = context.rangeVariant === LOLLIPOP_INTERACTION.burst.variant
+    ? context.recordBurst(LOLLIPOP_INTERACTION.burst.key, LOLLIPOP_BURST_WINDOW_MS)
+    : 0;
+  const decision = resolveLollipopInteraction(context.rangeVariant, tapCount);
+  if (!decision) return {};
+  const feedback: Omit<AvatarToolCommand, 'commit'> = {
+    ...(decision.nextVariant ? { rangeVariant: decision.nextVariant } : {}),
+    sound: LOLLIPOP_INTERACTION.feedback.sound,
+    ...(decision.hearts ? { effect: LOLLIPOP_INTERACTION.feedback.effect } : {}),
+  };
+  switch (decision.actionId) {
+    case LOLLIPOP_INTERACTION.stages[0].actionId:
+      return {
+        ...feedback,
+        commit: {
+          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
+          actionId: decision.actionId,
+          intensity: decision.intensity,
+          clientX: context.clientX,
+          clientY: context.clientY,
+        },
+      };
+    case LOLLIPOP_INTERACTION.stages[1].actionId:
+      return {
+        ...feedback,
+        commit: {
+          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
+          actionId: decision.actionId,
+          intensity: decision.intensity,
+          clientX: context.clientX,
+          clientY: context.clientY,
+        },
+      };
+    case LOLLIPOP_INTERACTION.stages[2].actionId:
+      return {
+        ...feedback,
+        commit: {
+          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
+          actionId: decision.actionId,
+          intensity: decision.intensity,
+          clientX: context.clientX,
+          clientY: context.clientY,
+        },
+      };
+  }
+}
+
+export const LOLLIPOP_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
+  pointerDown: () => ({}),
+  commit: resolveLollipopCommit,
+  pointerRelease: () => ({}),
+};
+
+// Fist -----------------------------------------------------------------------
+
+export const FIST_REWARD_DROP_EFFECT_RECIPE = {
+  id: 'reward-drops',
+  kind: 'random-scatter-v1',
+  interactionLock: 'none',
+  assetPath: '/static/icons/cat_moneny.png',
+  count: 3,
+  lifetimeMs: 920,
+  angleDeg: { min: -140, range: 100 },
+  distance: { min: 76, range: 42 },
+  offsetX: { min: -22, range: 28 },
+  offsetY: { min: -33, range: 18 },
+  rotation: { min: -120, range: 240 },
+  scale: { min: 0.82, range: 0.38 },
+  delayMs: { min: 0, range: 140 },
+} as const satisfies RandomScatterEffectRecipe;
+
+export const FIST_AVATAR_TOOL_DEFINITION = {
+  definitionVersion: 1,
+  id: 'fist',
+  label: {
+    key: 'chat.toolFist',
+    fallback: '猫爪',
+  },
+  capability: {
+    desktopVisual: true,
+    desktopInteraction: true,
+  },
+  visual: {
+    initialVariant: 'primary',
+    variants: {
+      primary: {
+        iconImagePath: '/static/icons/cat_claw1.png',
+        pointerImagePath: '/static/icons/cat_claw1_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      secondary: {
+        iconImagePath: '/static/icons/cat_claw2.png',
+        pointerImagePath: '/static/icons/cat_claw2_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      tertiary: {
+        iconImagePath: '/static/icons/cat_claw1.png',
+        pointerImagePath: '/static/icons/cat_claw2_cursor.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+    },
+    presentation: {
+      inRangeVariantSource: 'range',
+      outsideVariantSource: 'outside',
+      effectActiveImageKind: 'icon',
+    },
+    menuScale: 1,
+    hotspotX: 39,
+    hotspotY: 46,
+    naturalWidth: 78,
+    naturalHeight: 80,
+    pointer: {
+      displayWidth: 78,
+      displayHeight: 80,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 0.56,
+      renderedAnchor: {
+        x: 21.84,
+        y: 25.76,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+    inRange: {
+      displayWidth: 78,
+      displayHeight: 80,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 1,
+      renderedAnchor: {
+        x: 39,
+        y: 46,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+  },
+  sounds: [
+    {
+      id: 'coin-drop',
+      src: '/static/sounds/avatar-tools/coin-drop.mp3',
+      volume: 0.9,
+    },
+  ],
+  effects: [FIST_REWARD_DROP_EFFECT_RECIPE],
+  interaction: {
+    kind: 'press-release-v1',
+    actionId: 'poke',
+    pointerDown: {
+      rangeVariant: 'secondary',
+      outsideVariant: 'secondary',
+    },
+    pointerRelease: {
+      rangeVariant: 'primary',
+      outsideVariant: 'primary',
+    },
+    burst: {
+      key: 'fist',
+      windowMs: 1400,
+      rapidThreshold: 4,
+      normalIntensity: 'normal',
+      rapidIntensity: 'rapid',
+    },
+    touchZone: 'release',
+    touchZones: ['ear', 'head', 'face', 'body'],
+    chance: {
+      field: 'rewardDrop',
+      probability: 0.25,
+      sound: 'coin-drop',
+      effect: 'reward-drops',
+    },
+  },
+} as const satisfies AvatarToolDefinition;
+
+const FIST_INTERACTION = FIST_AVATAR_TOOL_DEFINITION.interaction;
+
+export const FIST_BURST_WINDOW_MS = FIST_INTERACTION.burst.windowMs;
+
+export function resolveFistInteraction(tapCount: number, rewardRoll: number) {
+  return {
+    actionId: FIST_INTERACTION.actionId,
+    intensity: tapCount >= FIST_INTERACTION.burst.rapidThreshold
+      ? FIST_INTERACTION.burst.rapidIntensity
+      : FIST_INTERACTION.burst.normalIntensity,
+    rewardDrop: rewardRoll < FIST_INTERACTION.chance.probability,
+  };
+}
+
+export function resolveFistPointerDown(): AvatarToolCommand {
+  return { ...FIST_INTERACTION.pointerDown, pressFeedback: 'until-pointer-release' };
+}
+
+export function resolveFistCommit(context: AvatarToolRuleContext): AvatarToolCommand {
+  if (!context.hit) return {};
+  const decision = resolveFistInteraction(
+    context.recordBurst(FIST_INTERACTION.burst.key, FIST_BURST_WINDOW_MS),
+    context.random(),
+  );
+  return {
+    commit: {
+      toolId: FIST_AVATAR_TOOL_DEFINITION.id,
+      actionId: FIST_INTERACTION.actionId,
+      intensity: decision.intensity,
+      touchZone: context.hit.touchZone,
+      rewardDrop: decision.rewardDrop,
+      clientX: context.clientX,
+      clientY: context.clientY,
+    },
+    ...(decision.rewardDrop ? {
+      sound: FIST_INTERACTION.chance.sound,
+      effect: FIST_INTERACTION.chance.effect,
+    } : {}),
+  };
+}
+
+export function resolveFistPointerRelease(): AvatarToolCommand {
+  return { ...FIST_INTERACTION.pointerRelease };
+}
+
+export const FIST_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
+  pointerDown: resolveFistPointerDown,
+  commit: resolveFistCommit,
+  pointerRelease: resolveFistPointerRelease,
+};
+
+// Hammer ---------------------------------------------------------------------
+
+export const HAMMER_SWING_EFFECT_RECIPE = {
+  id: 'hammer-swing',
+  kind: 'hammer-swing-v1',
+  interactionLock: 'effect-lifetime',
+  anchor: {
+    source: 'live-pointer',
+    visualMode: 'inRange',
+  },
+  transformOrigin: { x: 60, y: 118 },
+  impactRegistration: {
+    transformOrigin: { x: 80.19, y: 68 },
+    translate: { x: 19.62, y: -9.01 },
+    rotationDeg: 34.258,
+    scale: 0.999333,
+  },
+  variants: {
+    idle: 'primary',
+    impact: 'secondary',
+  },
+  timeline: [
+    { phase: 'windup', delayMs: 0 },
+    { phase: 'swing', delayMs: 240 },
+    { phase: 'impact', delayMs: 420 },
+    { phase: 'recover', delayMs: 520 },
+    { phase: 'idle', delayMs: 620 },
+  ],
+  easterEgg: {
+    mode: 'easter-egg',
+    scale: 5,
+    anchorOffset: { x: 322.11, y: 259.27 },
+  },
+} as const satisfies HammerSwingEffectRecipe;
+
+export const HAMMER_AVATAR_TOOL_DEFINITION = {
+  definitionVersion: 1,
+  id: 'hammer',
+  label: {
+    key: 'chat.toolHammer',
+    fallback: '锤子',
+  },
+  capability: {
+    desktopVisual: true,
+    desktopInteraction: true,
+  },
+  visual: {
+    initialVariant: 'primary',
+    variants: {
+      primary: {
+        iconImagePath: '/static/icons/chat_hammer1.png',
+        pointerImagePath: '/static/icons/chat_hammer1_cursor.png',
+        menuOffsetX: -8,
+        menuOffsetY: 4,
+      },
+      secondary: {
+        iconImagePath: '/static/icons/chat_hammer2.png',
+        pointerImagePath: '/static/icons/chat_hammer2_cursor.png',
+        menuOffsetX: 1,
+        menuOffsetY: -1,
+      },
+      tertiary: {
+        iconImagePath: '/static/icons/chat_hammer1.png',
+        pointerImagePath: '/static/icons/chat_hammer2_cursor.png',
+        menuOffsetX: 1,
+        menuOffsetY: -1,
+      },
+    },
+    presentation: {
+      inRangeVariantSource: 'primary',
+      outsideVariantSource: 'outside',
+      effectActiveImageKind: 'icon',
+    },
+    menuScale: 1.52,
+    hotspotX: 50,
+    hotspotY: 54,
+    naturalWidth: 100,
+    naturalHeight: 96,
+    pointer: {
+      displayWidth: 100,
+      displayHeight: 96,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 0.52,
+      renderedAnchor: {
+        x: 26,
+        y: 28.08,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+    inRange: {
+      displayWidth: 136,
+      displayHeight: 130,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 1,
+      renderedAnchor: {
+        x: 50,
+        y: 54,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+  },
+  sounds: [
+    {
+      id: 'hammer-small',
+      src: '/static/sounds/avatar-tools/hammer-small.mp3',
+      volume: 0.9,
+    },
+    {
+      id: 'hammer-big',
+      src: '/static/sounds/avatar-tools/hammer-big.mp3',
+      volume: 0.9,
+    },
+  ],
+  effects: [HAMMER_SWING_EFFECT_RECIPE],
+  interaction: {
+    kind: 'locked-impact-v1',
+    actionId: 'bonk',
+    touchZone: 'release',
+    outsideFeedback: {
+      variant: 'secondary',
+      resetAfterMs: 220,
+    },
+    burst: {
+      key: 'hammer',
+      windowMs: 3200,
+      rapidThreshold: 2,
+      burstThreshold: 3,
+      normalIntensity: 'normal',
+      rapidIntensity: 'rapid',
+      burstIntensity: 'burst',
+    },
+    touchZones: ['ear', 'head', 'face', 'body'],
+    chance: {
+      field: 'easterEgg',
+      probability: 0.05,
+      intensity: 'easter_egg',
+      sound: 'hammer-big',
+    },
+    feedback: {
+      sound: 'hammer-small',
+      effect: 'hammer-swing',
+    },
+  },
+} as const satisfies AvatarToolDefinition;
+
+const HAMMER_INTERACTION = HAMMER_AVATAR_TOOL_DEFINITION.interaction;
+
+export const HAMMER_BURST_WINDOW_MS = HAMMER_INTERACTION.burst.windowMs;
+
+export function resolveHammerInteraction(tapCount: number, easterEggRoll: number) {
+  const easterEgg = easterEggRoll < HAMMER_INTERACTION.chance.probability;
+  return {
+    actionId: HAMMER_INTERACTION.actionId,
+    intensity: easterEgg
+      ? HAMMER_INTERACTION.chance.intensity
+      : tapCount >= HAMMER_INTERACTION.burst.burstThreshold
+        ? HAMMER_INTERACTION.burst.burstIntensity
+        : tapCount >= HAMMER_INTERACTION.burst.rapidThreshold
+          ? HAMMER_INTERACTION.burst.rapidIntensity
+          : HAMMER_INTERACTION.burst.normalIntensity,
+    easterEgg,
+  };
+}
+
+export function resolveHammerPointerDown(context: AvatarToolRuleContext): AvatarToolCommand {
+  if (!context.hit) {
+    return {
+      outsideVariant: HAMMER_INTERACTION.outsideFeedback.variant,
+      resetOutsideVariantAfterMs: HAMMER_INTERACTION.outsideFeedback.resetAfterMs,
+    };
+  }
+  return {};
+}
+
+export function resolveHammerCommit(context: AvatarToolRuleContext): AvatarToolCommand {
+  if (!context.hit) return {};
+  const decision = resolveHammerInteraction(
+    context.recordBurst(HAMMER_INTERACTION.burst.key, HAMMER_BURST_WINDOW_MS),
+    context.random(),
+  );
+  return {
+    commit: {
+      toolId: HAMMER_AVATAR_TOOL_DEFINITION.id,
+      actionId: HAMMER_INTERACTION.actionId,
+      intensity: decision.intensity,
+      touchZone: context.hit.touchZone,
+      easterEgg: decision.easterEgg,
+      clientX: context.clientX,
+      clientY: context.clientY,
+    },
+    sound: decision.easterEgg ? HAMMER_INTERACTION.chance.sound : HAMMER_INTERACTION.feedback.sound,
+    effect: HAMMER_INTERACTION.feedback.effect,
+    ...(decision.easterEgg ? { effectMode: HAMMER_SWING_EFFECT_RECIPE.easterEgg.mode } : {}),
+  };
+}
+
+export const HAMMER_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
+  pointerDown: resolveHammerPointerDown,
+  commit: resolveHammerCommit,
+  pointerRelease: () => ({}),
+};
+
+// Registry -------------------------------------------------------------------
 
 export const AVATAR_TOOL_REGISTRY = [
   { definition: LOLLIPOP_AVATAR_TOOL_DEFINITION, handlers: LOLLIPOP_AVATAR_TOOL_HANDLERS },

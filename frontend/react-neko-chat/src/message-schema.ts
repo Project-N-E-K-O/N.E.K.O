@@ -1,16 +1,19 @@
 import { z } from 'zod';
 import {
-  AVATAR_TOOL_DEFINITION_IDS,
-  AVATAR_TOOL_VARIANT_IDS,
-} from './avatar-tools/catalog';
-import { desktopAvatarToolContractSchema } from './avatar-tools/desktopContractSchema';
-import {
   avatarInteractionPayloadSchema,
+  avatarToolStatePayloadSchema,
   type AvatarInteractionPayload,
-} from './avatar-tools/interactionContract';
+  type AvatarToolStatePayload,
+} from './avatar-tools/protocol';
 
-export { avatarInteractionPayloadSchema };
-export type { AvatarInteractionPayload };
+export {
+  avatarInteractionPayloadSchema,
+  avatarToolStatePayloadSchema,
+};
+export type {
+  AvatarInteractionPayload,
+  AvatarToolStatePayload,
+};
 
 const messageActionSchema = z.object({
   id: z.string().min(1),
@@ -145,90 +148,6 @@ const compactToolWheelIndexRequestSchema = z.object({
   index: z.number().int().min(0).max(COMPACT_TOOL_WHEEL_POSITIONS - 1),
   reason: z.string().optional(),
 }).nullable();
-
-const avatarToolIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
-const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
-const avatarToolImageKindSchema = z.enum(['pointer', 'icon']);
-
-const avatarToolDescriptorSchema = z.object({
-  id: avatarToolIdSchema,
-  label: z.string().optional(),
-  iconImagePath: z.string().min(1),
-  iconImagePathAlt: z.string().optional(),
-  iconImagePathAlt2: z.string().optional(),
-  pointerImagePath: z.string().min(1),
-  pointerImagePathAlt: z.string().optional(),
-  pointerImagePathAlt2: z.string().optional(),
-  pointerHotspotX: z.number().finite().optional(),
-  pointerHotspotY: z.number().finite().optional(),
-  pointerNaturalWidth: z.number().finite().positive().optional(),
-  pointerNaturalHeight: z.number().finite().positive().optional(),
-  pointerDisplayWidth: z.number().finite().positive().optional(),
-  pointerDisplayHeight: z.number().finite().positive().optional(),
-  menuIconScale: z.number().finite().positive().optional(),
-}).strict();
-
-export const avatarToolStatePayloadSchema = z.object({
-  active: z.boolean(),
-  toolId: avatarToolIdSchema.nullable().optional(),
-  desktopContract: desktopAvatarToolContractSchema.optional(),
-  variant: avatarToolVariantIdSchema.optional(),
-  avatarRangeVariant: avatarToolVariantIdSchema.optional(),
-  outsideRangeVariant: avatarToolVariantIdSchema.optional(),
-  imageKind: avatarToolImageKindSchema.optional(),
-  withinAvatarRange: z.boolean().optional(),
-  overCompactZone: z.boolean().optional(),
-  insideHostWindow: z.boolean().optional(),
-  cursorClientX: z.number().finite().optional(),
-  cursorClientY: z.number().finite().optional(),
-  cursorScreenX: z.number().finite().optional(),
-  cursorScreenY: z.number().finite().optional(),
-  tool: avatarToolDescriptorSchema.nullable().optional(),
-  textContext: z.string().optional(),
-  timestamp: z.number().finite(),
-}).strict().superRefine((state, context) => {
-  const contract = state.desktopContract;
-  if (!contract) return;
-  if (state.tool !== null && state.tool !== undefined) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['tool'],
-      message: 'desktop contract state must not carry the page visual descriptor',
-    });
-  }
-  if (!state.active) {
-    if (contract.definition !== null) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['desktopContract', 'definition'],
-        message: 'inactive state must carry an inactive desktop contract',
-      });
-    }
-    if (state.toolId !== null && state.toolId !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['toolId'],
-        message: 'inactive state must not carry a tool ID',
-      });
-    }
-    return;
-  }
-  if (contract.definition === null) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['desktopContract', 'definition'],
-      message: 'active state requires a desktop definition',
-    });
-    return;
-  }
-  if (state.toolId !== contract.definition.id) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['toolId'],
-      message: 'state and desktop contract tool IDs must match',
-    });
-  }
-});
 
 export const messageBlockSchema = z.discriminatedUnion('type', [
   textBlockSchema,
@@ -403,7 +322,6 @@ export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;
 export type ChoicePromptSource = ChoicePrompt['source'];
-export type AvatarToolStatePayload = z.infer<typeof avatarToolStatePayloadSchema>;
 export type MessageBlock = z.infer<typeof messageBlockSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type ComposerSubmitPayload = z.infer<typeof composerSubmitSchema>;
@@ -412,7 +330,6 @@ export type ChatWindowSchemaProps = z.infer<typeof chatWindowPropsSchema>;
 export function parseChatMessage(input: unknown): ChatMessage {
   return chatMessageSchema.parse(input);
 }
-
 const parsedCallbackCaches = new Map<string, WeakMap<object, unknown>>();
 
 function stabilizeParsedCallbackIdentities(

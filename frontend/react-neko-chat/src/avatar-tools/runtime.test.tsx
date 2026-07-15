@@ -5,7 +5,7 @@ import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../messag
 import {
   useAvatarToolRuntime,
   type AvatarToolRuntimeProviders,
-} from './useAvatarToolRuntime';
+} from './runtime';
 
 const INITIAL_BOUNDS = {
   left: 100,

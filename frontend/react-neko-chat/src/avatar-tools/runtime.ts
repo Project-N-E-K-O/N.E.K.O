@@ -20,20 +20,20 @@ import {
   type ActiveHammerSwingEffectExecution,
   type AvatarToolDisposer,
   type AvatarToolTransientVisualEffect,
-} from './feedback';
+} from './presentation';
 import {
   collectAvatarToolBounds,
   getAvatarRangeHit,
   type AvatarRangeHit,
   type AvatarToolBounds,
-} from './hitTesting';
+} from './interaction';
 import {
   buildAvatarInteractionPayload,
   buildAvatarToolDescriptorStatePayload,
   buildAvatarToolStatePayload,
   getAvatarToolStatePayloadKey,
   type AvatarToolPointer,
-} from './payload';
+} from './protocol';
 import {
   buildAvatarToolVisualModel,
   createAvatarToolVariantState,
@@ -45,13 +45,13 @@ import {
   isAvatarToolUiExcluded,
   isElectronMultiWindow,
   supportsFinePointer,
-} from './visualState';
+} from './presentation';
 import {
   resolveAvatarToolCommit,
   resolveAvatarToolPointerDown,
   resolveAvatarToolPointerRelease,
   type AvatarToolCommand,
-} from './interactionEngine';
+} from './interaction';
 import {
   getAvatarToolEffectRecipe,
   getAvatarToolRegistration,
@@ -60,7 +60,7 @@ import {
   AVATAR_TOOL_RANGE_EXIT_PADDING,
   AVATAR_TOOL_RANGE_PADDING,
   AVATAR_TOOL_RUNTIME_POLICY,
-} from './interactionPolicy';
+} from './interaction';
 
 const VISUAL_HOLD_IS_PRESENTATION_ONLY: boolean =
   AVATAR_TOOL_RUNTIME_POLICY.range.visualHold.semantics === 'presentation-only';
