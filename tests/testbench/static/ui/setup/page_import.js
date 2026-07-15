@@ -19,6 +19,7 @@
 import { i18n } from '../../core/i18n.js';
 import { api } from '../../core/api.js';
 import { toast } from '../../core/toast.js';
+import { deliverZip } from '../../core/download.js';
 import { el } from '../_dom.js';
 
 export async function renderImportPage(host) {
@@ -125,41 +126,7 @@ function renderArchiveImport(host) {
 // `<角色名>.zip` (不脱敏, 备份/迁移用). 走 GET /api/persona/export_real/{name},
 // 用 File System Access 的"另存为"picker 让用户选保存位置; 回退 anchor 下载.
 // 不用 core/api.js (它会 JSON parse; 这里要原始 zip 字节).
-
-/** Parse the download name, preferring the RFC 5987 (UTF-8) form so a Chinese
- *  角色名 survives; fall back to the plain `filename="..."`. */
-function _parseExportName(cd, fallbackName) {
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
-  if (star && star[1]) {
-    try { return decodeURIComponent(star[1].trim()); } catch { /* fall through */ }
-  }
-  const plain = /filename="?([^";]+)"?/i.exec(cd);
-  if (plain && plain[1]) return plain[1].trim().replace(/"$/, '');
-  return fallbackName;
-}
-
-/** Write the fetched ZIP: to the pre-acquired 另存为 handle if we have one, else
- *  a plain anchor download. The picker MUST be acquired before any await (fresh
- *  user activation), so it is passed in from the click handler. */
-async function _deliverExportZip(resp, saveHandle, fallbackName) {
-  const cd = resp.headers.get('Content-Disposition') || '';
-  const blob = await resp.blob();
-  if (saveHandle) {
-    const writable = await saveHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return saveHandle.name || _parseExportName(cd, fallbackName);
-  }
-  const filename = _parseExportName(cd, fallbackName);
-  const objUrl = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objUrl;
-  a.download = filename;
-  document.body.append(a);
-  a.click();
-  setTimeout(() => { a.remove(); URL.revokeObjectURL(objUrl); }, 100);
-  return filename;
-}
+// 文件名解析 + 另存为/anchor 兜底走共享 core/download.js, 与 P30 记忆导出同一实现.
 
 async function onExportReal(name, button) {
   const suggested = `${name}.zip`;
@@ -206,7 +173,7 @@ async function onExportReal(name, button) {
       return;
     }
     try {
-      const filename = await _deliverExportZip(resp, saveHandle, suggested);
+      const { filename } = await deliverZip(resp, saveHandle, suggested);
       toast.ok(i18n('setup.import.export_ok', filename));
     } catch (downloadErr) {
       toast.err(i18n('setup.import.export_failed'), { message: String(downloadErr) });

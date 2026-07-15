@@ -583,6 +583,9 @@ def _content_disposition(filename: str) -> str:
     ``filename*=UTF-8''<percent-encoded>`` that every modern browser prefers.
     """  # noqa: DOCSTRING_CJK
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
+    # A stray double quote in the fallback would prematurely close filename="…"
+    # and corrupt the whole header, so neutralise it before interpolation.
+    ascii_fallback = ascii_fallback.replace('"', "_")
     if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
         ascii_fallback = "NEKO_testbench_memory_export.zip"
     quoted = quote(filename, safe="")

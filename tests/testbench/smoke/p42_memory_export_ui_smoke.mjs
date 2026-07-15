@@ -15,7 +15,9 @@
  *   U3 — choosing strict + toggling corpus off, then [导出], fetches
  *        /api/memory/export with redaction=strict&include_corpus=false and
  *        saves via the 另存为 picker with the friendly CJK filename decoded
- *        from Content-Disposition filename*=UTF-8'' (closes the modal).
+ *        from Content-Disposition filename*=UTF-8'' (closes the modal). The
+ *        export fetch is held pending to prove the picker opens BEFORE the
+ *        first await (transient-activation ordering, L66).
  *   U4 — a backend error (409) keeps the modal open and surfaces a message.
  *   U5 — cancelling the 另存为 picker keeps the modal open with no error.
  */
@@ -63,7 +65,8 @@ const OVERVIEW_OK = {
   },
 };
 
-let exportMode = 'ok'; // 'ok' | 'busy'
+let exportMode = 'ok'; // 'ok' | 'busy' | 'gated'
+let releaseExport = null; // when 'gated', call to resolve the pending fetch
 const fetchCalls = [];
 function fakeFetch(url, init = {}) {
   const method = (init.method || 'GET').toUpperCase();
@@ -82,12 +85,18 @@ function fakeFetch(url, init = {}) {
     const friendly = 'NEKO testbench_记忆导出_角色_2026-07-15.zip';
     const cd = `attachment; filename="NEKO_testbench_memory_export.zip"; `
       + `filename*=UTF-8''${encodeURIComponent(friendly)}`;
-    return Promise.resolve({
+    const okResp = {
       ok: true, status: 200,
       headers: { get: (n) => (n.toLowerCase() === 'content-disposition'
         ? cd : 'application/zip') },
       blob: async () => ({ size: 1234 }),
-    });
+    };
+    // 'gated' keeps the fetch pending so a test can assert the save picker was
+    // opened BEFORE the first await (transient-activation ordering, L66).
+    if (exportMode === 'gated') {
+      return new Promise((res) => { releaseExport = () => res(okResp); });
+    }
+    return Promise.resolve(okResp);
   }
   if (url.startsWith('/api/memory/overview')) {
     return Promise.resolve({ ok: true, status: 200, headers: jsonHeaders,
@@ -200,7 +209,25 @@ corpusCb.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
 
 const before = fetchCalls.length;
 const okBtn = m.querySelector('.modal-actions .primary');
+// Gate the export fetch so it stays pending: this lets us prove the save
+// picker is opened BEFORE the first await (otherwise the picker would lose
+// transient activation and silently fall back — the exact L66 bug). A test
+// that only checks "both eventually happen" would pass even if the order were
+// wrong, so assert the ordering explicitly here.
+exportMode = 'gated';
+releaseExport = null;
+const picksBeforeU3 = pickerCalls.length;
 click(okBtn);
+await tick(10);
+if (pickerCalls.length !== picksBeforeU3 + 1) {
+  fail('U3: showSaveFilePicker must be called BEFORE awaiting fetch (got it after / not at all)');
+}
+const gatedCall = fetchCalls.slice(before).find((c) => c.url.startsWith('/api/memory/export'));
+if (!gatedCall) fail('U3: export fetch not issued while picker pending');
+if (writtenBytes) fail('U3: bytes written before fetch resolved');
+if (typeof releaseExport !== 'function') fail('U3: export fetch was not gated as expected');
+releaseExport();
+exportMode = 'ok';
 await tick(10);
 const exportCall = fetchCalls.slice(before).find((c) => c.url.startsWith('/api/memory/export'));
 if (!exportCall) fail('U3: no /api/memory/export fetch after clicking 导出');

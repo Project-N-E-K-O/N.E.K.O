@@ -26,6 +26,7 @@
 import { i18n } from '../../core/i18n.js';
 import { toast } from '../../core/toast.js';
 import { store } from '../../core/state.js';
+import { deliverZip } from '../../core/download.js';
 import { el } from '../_dom.js';
 
 const T = (k, ...a) => i18n(`memory_trace.overview.export.${k}`, ...a);
@@ -34,18 +35,6 @@ const TIERS = ['minimal', 'standard', 'strict'];
 const DEFAULT_TIER = 'standard';
 
 const FALLBACK_ZIP_NAME = 'NEKO testbench_记忆导出.zip';
-
-/** Parse the download name, preferring the RFC 5987 (UTF-8) form so a
- *  Chinese 角色名 survives; fall back to the plain `filename="..."`. */
-function parseFilename(cd, fallbackName) {
-  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
-  if (star && star[1]) {
-    try { return decodeURIComponent(star[1].trim()); } catch { /* fall through */ }
-  }
-  const plain = /filename="?([^";]+)"?/i.exec(cd);
-  if (plain && plain[1]) return plain[1].trim().replace(/"$/, '');
-  return fallbackName;
-}
 
 function cleanSegment(text) {
   const cleaned = String(text || '').replace(/[\\/:*?"<>|\x00-\x1f]+/g, '').replace(/\s+/g, ' ').trim();
@@ -63,30 +52,6 @@ function todayLocal() {
 function suggestedName(tier, characterName) {
   const label = tier === 'minimal' ? cleanSegment(characterName) : '角色';
   return `NEKO testbench_记忆导出_${label}_${todayLocal()}.zip`;
-}
-
-/** Write the fetched ZIP: to the pre-acquired save handle (另存为 picker) if we
- *  have one, else via a plain anchor download. Returns the delivered filename.
- *  NOTE: the picker itself is acquired earlier (see submit) — it needs fresh
- *  user activation, which an `await fetch(...)` would consume. */
-async function deliverZip(resp, saveHandle, fallbackName) {
-  const cd = resp.headers.get('Content-Disposition') || '';
-  const blob = await resp.blob();
-  if (saveHandle) {
-    const writable = await saveHandle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-    return { filename: saveHandle.name || parseFilename(cd, fallbackName), bytes: blob.size };
-  }
-  const filename = parseFilename(cd, fallbackName);
-  const objUrl = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = objUrl;
-  a.download = filename;
-  document.body.append(a);
-  a.click();
-  setTimeout(() => { a.remove(); URL.revokeObjectURL(objUrl); }, 100);
-  return { filename, bytes: blob.size };
 }
 
 async function extractError(resp) {

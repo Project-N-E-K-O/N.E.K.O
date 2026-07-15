@@ -56,6 +56,7 @@ See also
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any
 
 #: Tiers accepted by :func:`redact_export_bundle` (P30 memory export).
@@ -232,18 +233,23 @@ def build_identity_map(
 def apply_identity_map(obj: Any, mapping: dict[str, str]) -> Any:
     """Deep-copy ``obj`` replacing every ``name`` substring in string leaves.
 
-    Longer names are replaced first so a name that is a substring of another
-    (``"NEKO"`` vs ``"NEKO酱"``) does not get partially clobbered.
+    Uses a SINGLE-PASS alternation (longest name first) so that (a) a name that
+    is a substring of another (``"NEKO"`` vs ``"NEKO酱"``) is not partially
+    clobbered, and (b) an already-inserted placeholder can never be re-matched
+    and rewritten by a later, shorter name (the classic sequential-``replace``
+    corruption when a real name happens to equal a placeholder token).
     """  # noqa: DOCSTRING_CJK
     if not mapping:
         return copy.deepcopy(obj)
+    # Longest first ⇒ leftmost-longest match preference at each position.
     ordered = sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True)
+    pattern = re.compile("|".join(re.escape(name) for name, _ in ordered))
+    lookup = dict(ordered)
 
     def _sub(text: str) -> str:
-        for name, placeholder in ordered:
-            if name in text:
-                text = text.replace(name, placeholder)
-        return text
+        if not text:
+            return text
+        return pattern.sub(lambda m: lookup[m.group(0)], text)
 
     def _walk(node: Any) -> Any:
         if isinstance(node, str):
@@ -298,6 +304,46 @@ def _omit_transcript_content(raw_data: dict[str, Any]) -> bool:
     return omitted
 
 
+#: Lineage node types whose text IS raw transcript (verbatim conversation),
+#: as opposed to derived memory (fact / reflection / persona / correction).
+_LINEAGE_TRANSCRIPT_NODE_TYPES = frozenset({"message", "recent_memo"})
+
+
+def _omit_lineage_transcript(analysis: dict[str, Any]) -> bool:
+    """Strip verbatim conversation text from ``analysis/lineage.json`` nodes.
+
+    The lineage snapshot carries conversation nodes whose ``label`` and
+    ``meta.content`` are the *raw dialogue*. That text must be omitted whenever
+    the raw transcript itself is (strict tier, or corpus excluded) — otherwise a
+    "shareable" bundle leaks, through the analysis layer, the very conversation
+    the raw layer claims to omit. Derived nodes (fact / reflection / persona /
+    correction) are intentionally left in place. Mutates ``analysis`` in place;
+    returns True if anything was omitted.
+    """
+    lineage = analysis.get("lineage.json")
+    if not isinstance(lineage, dict):
+        return False
+    nodes = lineage.get("nodes")
+    if not isinstance(nodes, list):
+        return False
+    omitted = False
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if node.get("type") not in _LINEAGE_TRANSCRIPT_NODE_TYPES:
+            continue
+        role = node.get("status") or "?"
+        label = node.get("label")
+        if isinstance(label, str):
+            node["label"] = f"<omitted len={len(label)} role={role}>"
+            omitted = True
+        meta = node.get("meta")
+        if isinstance(meta, dict) and isinstance(meta.get("content"), str):
+            meta["content"] = f"<omitted len={len(meta['content'])} role={role}>"
+            omitted = True
+    return omitted
+
+
 def redact_export_bundle(
     bundle: dict[str, Any],
     *,
@@ -323,10 +369,14 @@ def redact_export_bundle(
         ``{"character_name": ..., "master_name": ...}`` real values used to
         build the pseudonym map (``standard`` / ``strict`` only).
 
+    At the ``strict`` tier the verbatim dialogue that also lives inside
+    ``analysis/lineage.json`` message nodes is scrubbed too, matching the raw
+    layer so the analysis layer can not leak a transcript strict withheld.
+
     Returns
     -------
-    (redacted_bundle, info) where ``info`` =
-    ``{"tier", "identity_map_size", "strict_transcript_omitted", "warnings"}``.
+    (redacted_bundle, info) where ``info`` = ``{"tier", "identity_map_size",
+    "strict_transcript_omitted", "lineage_transcript_omitted", "warnings"}``.
     ``info`` deliberately does NOT contain the pseudonym → real-name reverse
     map (§5.3 铁律) — only the count.
     """  # noqa: DOCSTRING_CJK
@@ -355,10 +405,25 @@ def redact_export_bundle(
         if isinstance(raw_data, dict):
             strict_omitted = _omit_transcript_content(raw_data)
 
+    # Conversation text also rides inside ``analysis/lineage.json`` message
+    # nodes. At the strict tier the raw transcript (recent.json + corpus) is
+    # omitted, so the lineage copy MUST be omitted too — otherwise a "strict"
+    # shareable bundle leaks, through the analysis layer, the very dialogue the
+    # raw layer withheld (and it would be cross-layer INCONSISTENT: raw omitted
+    # vs analysis verbatim). Only strict scrubs here: at minimal/standard the
+    # raw dialogue is retained, so scrubbing lineage would itself break §5.1
+    # consistency (raw shows A, analysis shows <omitted>).
+    lineage_omitted = False
+    if tier == "strict":
+        analysis = redacted.get("analysis")
+        if isinstance(analysis, dict):
+            lineage_omitted = _omit_lineage_transcript(analysis)
+
     info = {
         "tier": tier,
         "identity_map_size": identity_map_size,
         "strict_transcript_omitted": strict_omitted,
+        "lineage_transcript_omitted": lineage_omitted,
         "warnings": warnings,
     }
     return redacted, info

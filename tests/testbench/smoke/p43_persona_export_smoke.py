@@ -11,6 +11,11 @@ Pure packer:
   X3 — missing characters.json: still packs the memory files, no crash.
   X4 — size cap: a shrunk ``_MAX_ARCHIVE_UNCOMPRESSED_BYTES`` raises 413
        ``ArchiveTooLarge``.
+  X9 — symlink escape: a symlinked file pointing OUTSIDE the memory root is
+       skipped, never packed (defence in depth; skipped if the OS/account
+       cannot create symlinks).
+  X10 — unreadable in-tree file is FATAL: an OSError on a regular member aborts
+        with 500 ``ExportReadFailed`` instead of a silent partial backup.
 
 Endpoint (TestClient + monkeypatched ``session.sandbox.real_paths``):
   X5 — happy: 200 / application/zip / Content-Disposition carries the CJK
@@ -181,6 +186,52 @@ def check_packer() -> list[str]:
                    "X4.type", f"{exc.detail}")
         finally:
             pr._MAX_ARCHIVE_UNCOMPRESSED_BYTES = orig
+
+        # X9 symlink escape is skipped (defence in depth): a symlinked file
+        # inside the char dir pointing OUTSIDE the memory root must not be
+        # packed. Skip on platforms/accounts that cannot create symlinks.
+        cfg_s, mem_s = _build_real_dir()
+        outside = Path(tempfile.mkdtemp(prefix="p43_outside_"))
+        secret = outside / "host_secret.txt"
+        secret.write_text("SYMLINK-ESCAPE-CANARY", encoding="utf-8")
+        link = mem_s / CHAR / "escape_link.txt"
+        symlink_ok = True
+        try:
+            os.symlink(secret, link)
+        except (OSError, NotImplementedError, AttributeError):
+            symlink_ok = False
+        if symlink_ok:
+            zbs = pr._zip_character_memory(cfg_s, mem_s, CHAR)
+            zfs = zipfile.ZipFile(io.BytesIO(zbs))
+            joined = "\n".join(
+                zfs.read(n).decode("utf-8", "replace") for n in zfs.namelist())
+            _check("SYMLINK-ESCAPE-CANARY" not in joined, "X9.symlink_escape",
+                   "symlinked out-of-tree file leaked into export")
+            _check(f"{CHAR}/escape_link.txt" not in set(zfs.namelist()),
+                   "X9.symlink_member", "symlink packed as a member")
+
+        # X10 unreadable in-tree file is FATAL (no silent partial backup): a
+        # regular file whose read raises OSError aborts with HTTP 500
+        # ExportReadFailed rather than shipping an incomplete zip with 200.
+        cfg_u, mem_u = _build_real_dir()
+        real_read_bytes = Path.read_bytes
+        target = (mem_u / CHAR / "facts.json").resolve()
+
+        def _boom(self, *a, _t=target, _orig=real_read_bytes, **k):
+            if Path(self).resolve() == _t:
+                raise OSError("simulated unreadable file")
+            return _orig(self, *a, **k)
+
+        Path.read_bytes = _boom  # type: ignore[assignment]
+        try:
+            pr._zip_character_memory(cfg_u, mem_u, CHAR)
+            _check(False, "X10.raise", "expected ExportReadFailed, none raised")
+        except HTTPException as exc:
+            _check(exc.status_code == 500, "X10.status", f"{exc.status_code}")
+            _check((exc.detail or {}).get("error_type") == "ExportReadFailed",
+                   "X10.type", f"{exc.detail}")
+        finally:
+            Path.read_bytes = real_read_bytes  # type: ignore[assignment]
     except _AssertFail as exc:
         errors.append(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -296,7 +347,8 @@ def main() -> int:
     client = TestClient(create_app())
 
     total = 0
-    total += _report("X1-X4 — pure packer (structure / faithful / missing / cap)",
+    total += _report("X1-X4/X9/X10 — pure packer (structure / faithful / missing / "
+                     "cap / symlink-escape / unreadable-fatal)",
                      check_packer())
     total += _report("X5-X8 — endpoint (happy / no-session / unknown / round-trip)",
                      check_endpoint(client))

@@ -326,9 +326,14 @@ def pack_export_zip(
         "不含 AI 体检报告 / 矛盾 NLI 裁决 (导出离线零成本, 不调用 LLM)。",
         "0 向量角色的向量类分析为空结构 (见告警), 结构/流水线类结论仍有效。",
     ]
-    if tier != "strict":
+    if tier == "minimal":
         limitations.append(
-            f"当前档位 '{tier}' 仍包含对话与记忆正文 (仅假名化身份); 对外分享建议用 strict 并自行复核。")
+            "当前档位 'minimal' 仅去除密钥, 保留真实身份名与对话/记忆正文; "
+            "对外分享建议改用 standard/strict 并自行复核。")
+    elif tier == "standard":
+        limitations.append(
+            "当前档位 'standard' 已假名化身份, 但仍包含对话与记忆正文; "
+            "对外分享建议改用 strict 并自行复核。")
 
     # File list for manifest (only files actually present in this bundle).
     file_entries: list[dict[str, str]] = []
@@ -446,7 +451,8 @@ def export_memory_analysis(
 ) -> tuple[bytes, str]:
     """Build + pack the memory analysis export. Returns ``(zip_bytes, filename)``.
 
-    Single entry point the router calls (inside ``to_thread`` + short lock).
+    Single entry point the router calls (inside ``to_thread``); the endpoint is
+    a pure read — it takes no session lock and never triggers autosave.
     Raises ``ValueError`` for an unknown ``tier``. The download filename uses
     the persona display name (``identity_names["character_name"]``) only at
     the ``minimal`` tier; higher tiers get a neutral placeholder (see

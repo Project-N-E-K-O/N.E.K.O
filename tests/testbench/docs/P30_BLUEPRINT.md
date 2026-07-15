@@ -110,7 +110,7 @@
 
 ### 3.2 端点 (追加到 `routers/memory_router.py`)
 
-```
+```http
 GET /api/memory/export?redaction=<tier>&include_corpus=<bool>
 ```
 
@@ -135,7 +135,7 @@ GET /api/memory/export?redaction=<tier>&include_corpus=<bool>
 
 ## 4. ZIP 结构 (最终形态)
 
-```
+```text
 NEKO testbench_记忆导出_<角色标识>_<YYYY-MM-DD>.zip   # minimal→真实名; standard/strict→占位「角色」
 ├── README.md                         # 中文说明 + 文件夹映射 + 脱敏说明 + 局限
 ├── manifest.json                     # 自描述元信息 (无假名反查表)

@@ -525,6 +525,9 @@ def _content_disposition(filename: str) -> str:
     form modern browsers prefer (mirrors ``memory_router._content_disposition``).
     """  # noqa: DOCSTRING_CJK
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
+    # A stray double quote in the fallback would prematurely close filename="…"
+    # and corrupt the whole header, so neutralise it before interpolation.
+    ascii_fallback = ascii_fallback.replace('"', "_")
     if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
         ascii_fallback = "NEKO_character_export.zip"
     quoted = quote(filename, safe="")
@@ -534,16 +537,23 @@ def _content_disposition(filename: str) -> str:
 def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> bytes:
     """Pack one real character's config + memory dir into ``<name>/...`` zip bytes.
 
-    Faithful full dump (no redaction, no rename, no skip):
+    Faithful full dump (no redaction, no rename) of real files:
       * ``<name>/characters.json`` — the real, whole ``characters.json`` (if any).
-      * ``<name>/<relpath>`` — every file under ``memory_dir/<name>/`` (recursive;
-        preserves ``reflection_archive/`` sub-dirs; binary ``time_indexed.db`` is
-        written verbatim).
+      * ``<name>/<relpath>`` — every regular file under ``memory_dir/<name>/``
+        (recursive; preserves ``reflection_archive/`` sub-dirs; binary
+        ``time_indexed.db`` is written verbatim).
 
-    Counts actual bytes read while streaming and aborts with HTTP 413 the moment
-    the running total crosses :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES` (guards a
-    pathological memory dir from OOM-ing the export). Never reads outside
-    ``memory_dir/<name>`` / ``config_dir``.
+    Guards, in order, before OOM/leak can happen:
+      * **Size cap** — each entry's on-disk size is added to a running total and
+        the export aborts with HTTP 413 the moment it crosses
+        :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES`, *before* the file is read into
+        memory.
+      * **Stay in tree** — symlinks are skipped and any entry whose resolved
+        path escapes the resolved ``memory_dir/<name>`` root is skipped, so
+        ``rglob`` can never follow a link out to unrelated host files.
+      * **No partial backup** — an in-tree file we cannot stat/read aborts the
+        whole export with HTTP 500 instead of silently shipping an incomplete
+        "faithful" archive.
     """
     prefix = f"{name}/"
     total = 0
@@ -571,20 +581,57 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
                 },
             )
 
+    def _read_guarded(item: Path) -> bytes:
+        # Guard on the on-disk size *before* loading, so a single pathological
+        # file (e.g. a huge time_indexed.db) trips 413 instead of being read
+        # fully into memory first. An in-tree file we cannot stat/read is a
+        # FATAL export error — silently skipping it would hand the user a
+        # partial "faithful backup" with a 200 (LESSONS §7.14 no silent
+        # fallback). Symlinks / out-of-tree paths are filtered out before here.
+        try:
+            _guard(item.stat().st_size)
+            return item.read_bytes()
+        except HTTPException:
+            raise
+        except OSError as exc:
+            python_logger().warning(
+                "persona_router: export read failed %s (%s)", item, exc)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_type": "ExportReadFailed",
+                    "message": (
+                        f"角色 {name!r} 的记忆文件读取失败, 已中止导出以免产出残缺备份 "
+                        f"({type(exc).__name__})。"
+                    ),
+                },
+            ) from exc
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         chars_path = config_dir / "characters.json"
-        if chars_path.is_file():
-            data = chars_path.read_bytes()
-            _guard(len(data))
+        if chars_path.is_file() and not chars_path.is_symlink():
             arc = prefix + "characters.json"
-            zf.writestr(arc, data)
+            zf.writestr(arc, _read_guarded(chars_path))
             written.add(arc)
 
         char_mem = memory_dir / name
         if char_mem.is_dir():
+            # A faithful dump must stay inside ``memory_dir/<name>``. ``rglob``
+            # would happily follow a symlinked character dir (or a symlinked
+            # file inside it) into unrelated readable host directories and pack
+            # them into this UN-redacted export. Resolve the root once and, for
+            # every entry, skip symlinks and anything whose real path escapes
+            # the resolved root (defence in depth; keeps the docstring promise).
+            mem_root = char_mem.resolve()
             for item in sorted(char_mem.rglob("*")):
-                if not item.is_file():
+                if item.is_symlink() or not item.is_file():
+                    continue
+                try:
+                    item.resolve().relative_to(mem_root)
+                except (OSError, ValueError):
+                    python_logger().warning(
+                        "persona_router: export skip out-of-tree entry %s", item)
                     continue
                 rel = item.relative_to(char_mem).as_posix()
                 arc = prefix + rel
@@ -592,15 +639,7 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
                     # Duplicate (e.g. memory dir also holds characters.json);
                     # the config-dir copy already written wins.
                     continue
-                try:
-                    data = item.read_bytes()
-                except OSError as exc:
-                    python_logger().warning(
-                        "persona_router: export skip unreadable %s (%s)", item, exc,
-                    )
-                    continue
-                _guard(len(data))
-                zf.writestr(arc, data)
+                zf.writestr(arc, _read_guarded(item))
                 written.add(arc)
     return buf.getvalue()
 
@@ -616,7 +655,9 @@ async def export_real_character(name: str) -> Response:
     :func:`import_from_archive`.
 
     Errors: 404 ``NoActiveSession`` / ``NoSuchRealCharacter``; 422
-    ``UnsafeCharacterName``; 413 ``ArchiveTooLarge``; 500 ``SandboxNotApplied``.
+    ``UnsafeCharacterName``; 413 ``ArchiveTooLarge``; 500 ``SandboxNotApplied`` /
+    ``ExportReadFailed`` (an in-tree memory file could not be read — abort rather
+    than ship a partial backup).
 
     Pure read — takes NO session lock (mirrors ``/real_characters``); triggers no
     autosave / snapshot / write. I/O + compression run off the event loop via

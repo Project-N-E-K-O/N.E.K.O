@@ -22,15 +22,20 @@ testbench 的记忆分析 (P27 溯源 / P28 向量空间 / P29 概况) 消费的
 
 ### 2.1 可反推 (机械不变量类 —— 违反几乎必是代码/迁移 bug)
 
-| finding | 现象 | 反推指向 (主程序) | 置信 |
+> 下表即 P32 **实际落地**的映射 (finding 码对齐 P29 概况实发码集; 权威规格与完整强度表见 [P32_BLUEPRINT.md](./P32_BLUEPRINT.md))。
+
+| finding | 现象 | 反推指向 (主程序) | 强度 |
 |---|---|---|---|
-| D2 悬空引用 | `source_fact_ids` / persona `source_id` / `merged_from_ids` 指向不存在 id | 写入/删除路径未维护引用完整性: `memory/reflection/*` 晋升写入、`memory/facts.py` 删除、迁移脚本 | 高 |
-| D5 断裂晋升 | persona `source==reflection` 但 `source_id` 缺失/悬空 | 晋升代码 (`reflection`→`persona`) 落 `source_id` 的分支漏写 | 高 |
-| E3 多向量空间 | 同角色混入不同维度/模型的向量 | `memory/embeddings.py` 换模型未重嵌/未打 `embedding_model_id`; 迁移未清旧向量 | 高 |
-| E4 向量损坏 | 向量维度/数值非法 | embedding 写入未校验; 序列化/反序列化 bug | 高 |
-| E2 向量过期 | 改文后 `embedding_text_sha256` 与当前 text 不符 | 编辑记忆的写路径未触发/未标记重嵌 | 中高 |
-| (事件流) 游标非单调 | event log / cursor 回退或跳变 | `memory/event_log.py` / `outbox.py` 游标推进逻辑 | 高 (需事件数据, 见 §3) |
-| D1 游离事实 (部分) | fact 从未被任何反思引用 | *可能*是抽取/反思管道断链, 但**也可能只是还没跑反思** → 需结合时间/产出率, 非纯代码信号 | 中 |
+| D4 悬空来源引用 | 反思声明的源事实已被硬删除 | 删除事实时未级联清理引用: `memory/facts.py` 删除路径 / `memory/reflection/persistence.py` | 高 |
+| E3 向量损坏 | 向量维度/数值非法 | 向量写入前缺维度/数值校验: `memory/embeddings.py` / `memory/_embeddings/schema.py` | 高 |
+| E4 多向量空间 | 同角色混入不同维度/模型的向量 | 换模型未重嵌/未标注模型: `memory/embeddings.py` / `memory/_embeddings/profiles.py` | 高 |
+| ID-DUP 主键重复 | 同一记忆文件内出现重复 `id` | 主键分配 / 写入去重逻辑 (对应写入模块) | 高 |
+| EVT-DUP 重复事件 | `events.ndjson` 出现重复 `event_id` (uuid4 不会自然碰撞) | append/reconcile 重复写入: `memory/event_log.py` | 高 |
+| D2 无溯源边的晋升人设 | persona 标记来自反思, 却无晋升/合并溯源边 | 晋升/合并写入时 `source`/`merged_from` 赋值遗漏: `memory/reflection/promotion.py` / `promotion_merge.py` | 中 |
+| E2 向量过期 | 改文后 `embedding_text_sha256` 与当前 text 不符 | 编辑记忆的写路径未触发重嵌: `memory/embeddings.py` / `memory/embedding_worker.py` | 中 |
+| D1 游离反思 | 反思没有任何有效来源事实 | *可能*是合成来源绑定断链, 但**也可能本就无源** (非代码原因) → 弱信号 | 低 |
+
+> **历史 (P32 落地时对真实代码的订正, 保留审计痕迹)**: 早期草案里的 **"D5 断裂晋升"** 因与 D2 冗余、且会重现"合并晋升人设"的假阳性 (P39 O5 已守) 而**删除**, 直接复用概况 D2 (LESSONS §7.25「别重算 chokepoint 已定关系」); 早期的 **"游标非单调"** 检查因 `events.ndjson` 只含 `{event_id, type, ts, payload}`、**无单调游标** (游标真身在 `cursors.json`) 而**改做 EVT-DUP**。游标单调性留待未来受控 phase (§4)。
 
 ### 2.2 不可靠反推 (内容质量类 —— 多因, 主因常非代码)
 
@@ -44,12 +49,6 @@ testbench 的记忆分析 (P27 溯源 / P28 向量空间 / P29 概况) 消费的
 | H1/H2/H3 留存质量 | 重要性错配/低质事实/僵尸事实 | 数据与模型抽取质量问题, 非代码不变量 |
 
 > **铁律**: §2.2 类发现**永不**输出"主程序代码 X 有 bug"的断言; 至多作为"记忆运营/配置调参"建议, 与代码排查严格分离。
-
-> **P32 订正 (2026-07-15, 落地时核对真实代码后修正本表)**:
-> - **"D5 断裂晋升"行删除**: 直查 persona `source_id` 与 P29 概况 **D2** 冗余, 且会重现"合并晋升人设 (`source_id` 已在合并中消解、真实来源在 `merged_from_ids`)"的**假阳性** (P39 O5 已守)。P32 直接复用概况 D2 (它用溯源图自己的边定案, LESSONS §7.25「别重算 chokepoint 已定关系」), 不再单独查 `source_id`。
-> - **"游标非单调"行修正**: 主程序 `events.ndjson` 记录形状为 `{event_id: uuid4, type, ts, payload}`, **没有单调序号/游标字段** —— 真正的游标持久化在 `cursors.json` (`memory/cursors.py`)。故 P32 **不做**游标单调性检查, 改做 **EVT-DUP (重复 `event_id`)**: uuid4 不可能自然碰撞, 重复即 `memory/event_log.py` 的 append/reconcile 写入 bug。游标单调性留待"主程序补结构化钩子"的未来受控 phase。
-> - **新增 ID-DUP**: 同一记忆文件内主键 id 重复 (facts/reflections 数组元素 `id`、`persona[entity].facts[].id`), 高置信机械信号, 指向对应写入模块的去重逻辑。
-> - 表内"D2 悬空引用 / E3 多向量空间 / E4 向量损坏"的**指向模块方向仍成立**; P32 落地时 finding 码按 P29 实际发出的码集对齐 (概况 **D4**=悬空来源引用、**E3**=向量损坏、**E4**=多向量空间)。
 
 ---
 

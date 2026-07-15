@@ -25,7 +25,7 @@
 
 ## 2. 导出包 (ZIP) 里有什么
 
-```
+```text
 NEKO testbench_记忆导出_<角色标识>_<日期>.zip
 ├── README.md                  人读说明 + 本次用的脱敏挡位解释
 ├── manifest.json              清单: 挡位 / schema 版本 / 文件描述 (不含反查表)

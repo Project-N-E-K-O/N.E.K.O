@@ -13,13 +13,16 @@ X1 — **ZIP structure**: README.md + manifest.json + raw_data/{recent,facts,
 X2 — **zero credential leak (all tiers)**: a canary api_key AND a canary cookie
      seeded into the memory never appear in ANY tier's ZIP bytes.
 X3 — **identity pseudonymisation (standard/strict)**: the real character /
-     master names never appear in the ZIP; minimal keeps them.
+     master names never appear in the ZIP; minimal keeps BOTH real names.
 X4 — **cross-layer consistency (blueprint §5.1)**: in standard, the SAME
-     placeholder shows up in both the raw dialogue (conversation_corpus) and
-     the derived facts — never "dialogue says A but the fact says B".
+     placeholder shows up for BOTH identities in both the raw dialogue
+     (conversation_corpus) and the derived facts — never "dialogue says A but
+     the fact says B"; standard keeps the dialogue canary in lineage too.
 X5 — **strict omits raw transcript, keeps derived**: strict replaces
      conversation_corpus / recent message content with ``<omitted ...>`` while
-     facts/reflections derived text survives (pseudonymised).
+     facts/reflections derived text survives (pseudonymised). Also (C1) the
+     verbatim dialogue canary must NOT leak through analysis/lineage.json —
+     message-node label/meta.content are scrubbed there too.
 X6 — **corpus gating**: include_corpus=false drops raw_data/conversation_corpus.
 X7 — **manifest**: has tier/character/files/warnings; identity_map_size is a
      count only — NO pseudonym→real reverse map (no real name in manifest).
@@ -92,6 +95,10 @@ _CHARACTER = "Nekozilla"
 _MASTER = "Zephyrus"
 _CANARY_APIKEY = "sk-CANARY-APIKEY-9182"
 _CANARY_COOKIE = "COOKIEVAL-SECRET-7766"
+#: A verbatim dialogue phrase that lives ONLY in raw conversation (recent.json),
+#: never in derived facts/reflections. Used to prove strict / corpus-off exports
+#: do not leak the transcript through the analysis layer (lineage nodes).
+_CANARY_DIALOGUE = "晚上好呀"
 _RECENT = "2026-06-29T12:00:00"
 
 
@@ -231,7 +238,9 @@ def check_x2_x3_redaction(client) -> list[str]:
             _check(_CANARY_COOKIE not in full, f"X2.{tier}.cookie", "cookie leaked")
             # X3 — identity handling per tier.
             if tier == "minimal":
-                _check(_MASTER in full, "X3.minimal.keeps_name", "master name gone")
+                _check(_MASTER in full, "X3.minimal.keeps_master", "master name gone")
+                _check(_CHARACTER in full, "X3.minimal.keeps_char",
+                       "character name gone (minimal must keep BOTH real names)")
             else:
                 _check(_CHARACTER not in full, f"X3.{tier}.char",
                        "character name leaked")
@@ -259,10 +268,22 @@ def check_x4_x5_consistency_strict(client) -> list[str]:
         corpus_txt = zf.read("raw_data/conversation_corpus.json").decode("utf-8")
         from tests.testbench.pipeline.redact import IDENTITY_PLACEHOLDERS
         ph_master = IDENTITY_PLACEHOLDERS["master_name"]
-        _check(ph_master in facts_txt, "X4.facts_placeholder",
+        ph_char = IDENTITY_PLACEHOLDERS["character_name"]
+        _check(ph_master in facts_txt, "X4.facts_master_placeholder",
                f"{ph_master!r} not in facts")
-        _check(ph_master in corpus_txt, "X4.corpus_placeholder",
+        _check(ph_master in corpus_txt, "X4.corpus_master_placeholder",
                f"{ph_master!r} not in corpus (standard keeps content)")
+        # Symmetry: the OTHER identity (character) must be consistent across
+        # layers too, not just the master name.
+        _check(ph_char in facts_txt, "X4.facts_char_placeholder",
+               f"{ph_char!r} not in facts")
+        _check(ph_char in corpus_txt, "X4.corpus_char_placeholder",
+               f"{ph_char!r} not in corpus (standard keeps content)")
+        # standard keeps conversation text ⇒ the dialogue canary survives in
+        # the analysis lineage layer (proves the scrub below is conditional).
+        lineage_std = zf.read("analysis/lineage.json").decode("utf-8")
+        _check(_CANARY_DIALOGUE in lineage_std, "X4.lineage_keeps_dialogue",
+               "standard export should keep dialogue text in lineage")
 
         # X5 — strict: corpus/recent content omitted; derived facts survive.
         r = client.get("/api/memory/export", params={"redaction": "strict"})
@@ -280,6 +301,20 @@ def check_x4_x5_consistency_strict(client) -> list[str]:
         # Derived fact text kept (pseudonymised) — coffee word survives.
         _check(any("咖啡" in str(f.get("text", "")) for f in facts),
                "X5.facts_kept", f"{facts}")
+        # X5b (C1 regression) — the raw transcript must NOT survive through the
+        # analysis layer either. The verbatim dialogue canary must be gone from
+        # the ENTIRE strict zip, and lineage message nodes must be scrubbed.
+        _check(_CANARY_DIALOGUE not in _zip_text(zf), "X5.no_dialogue_leak",
+               "strict export leaked raw dialogue (analysis/lineage.json?)")
+        lineage = json.loads(zf.read("analysis/lineage.json").decode("utf-8"))
+        msg_nodes = [n for n in lineage.get("nodes", [])
+                     if n.get("type") in ("message", "recent_memo")]
+        _check(all(str(n.get("label", "")).startswith("<omitted")
+                   for n in msg_nodes),
+               "X5.lineage_label_omitted", f"{[n.get('label') for n in msg_nodes]}")
+        _check(all(str((n.get("meta") or {}).get("content", "")).startswith("<omitted")
+                   for n in msg_nodes if isinstance(n.get("meta"), dict)),
+               "X5.lineage_content_omitted", "lineage meta.content not omitted")
     except _AssertFail as exc:
         errors.append(str(exc))
     except Exception as exc:  # noqa: BLE001
