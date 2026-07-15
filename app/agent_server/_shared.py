@@ -94,6 +94,9 @@ class Modules:
     # subprocess.  Keep construction/teardown serialized so on-demand callers
     # cannot create duplicate adapters or race a disable/shutdown close.
     browser_use_init_lock: Optional[asyncio.Lock] = None
+    # Explicit disables close BrowserUse in the background so the flag request
+    # stays responsive. Re-enables await this task before reporting ready.
+    browser_use_close_task: Optional[asyncio.Task] = None
     # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
     # while a bounded background probe waits for the external health endpoint.
     openclaw_enable_task: Optional[asyncio.Task] = None

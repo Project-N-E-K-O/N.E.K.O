@@ -81,6 +81,7 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _ensure_browser_use_adapter,
+    _wait_for_browser_use_adapter_close,
     _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
@@ -541,6 +542,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     changed = False
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
+    browser_use_close_reason: Optional[str] = None
     of = (payload or {}).get("openfang_enabled")
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
     # four LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
@@ -558,6 +560,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
         Modules.agent_flags["openclaw_enabled"] = False
         Modules.agent_flags["openfang_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
+        browser_use_close_reason = first_reason
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
         _set_capability("openclaw", False, first_reason)
@@ -605,6 +608,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
+            await _wait_for_browser_use_adapter_close()
             dependency_ready, dependency_error = _browser_use_dependency_status()
             if not dependency_ready:
                 Modules.agent_flags["browser_use_enabled"] = False
@@ -625,7 +629,17 @@ async def set_agent_flags(payload: Dict[str, Any]):
         old_flags.get("browser_use_enabled", False)
         and not Modules.agent_flags.get("browser_use_enabled", False)
     ):
-        _create_tracked_task(_close_browser_use_adapter())
+        close_task = _create_tracked_task(
+            _close_browser_use_adapter(capability_reason=browser_use_close_reason)
+        )
+        if close_task is not None:
+            Modules.browser_use_close_task = close_task
+
+            def _clear_browser_use_close_task(done_task):
+                if Modules.browser_use_close_task is done_task:
+                    Modules.browser_use_close_task = None
+
+            close_task.add_done_callback(_clear_browser_use_close_task)
 
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)

@@ -154,7 +154,7 @@ async def test_browser_use_disable_schedules_close_outside_flag_request(
     scheduled = []
     close_calls = []
 
-    async def _close_adapter():
+    async def _close_adapter(**_kwargs):
         close_calls.append(True)
 
     async def _ignore_status_update(*_args, **_kwargs):
@@ -186,6 +186,108 @@ async def test_browser_use_disable_schedules_close_outside_flag_request(
         modules.agent_flags.clear()
         modules.agent_flags.update(original_flags)
         modules.notification = original_notification
+
+
+@pytest.mark.asyncio
+async def test_browser_use_normal_close_preserves_dependency_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_lock = modules.browser_use_init_lock
+    original_capability = dict(modules.capability_cache["browser_use"])
+
+    class _Adapter:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(capabilities, "_browser_use_dependency_status", lambda: (True, ""))
+    modules.browser_use = _Adapter()
+    modules.browser_use_init_lock = None
+    try:
+        await capabilities._close_browser_use_adapter()
+
+        assert modules.browser_use is None
+        assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+    finally:
+        modules.browser_use = original_adapter
+        modules.browser_use_init_lock = original_lock
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
+async def test_browser_use_reenable_stays_ready_after_pending_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_computer_use = modules.computer_use
+    original_lock = modules.browser_use_init_lock
+    original_close_task = modules.browser_use_close_task
+    original_flags = dict(modules.agent_flags)
+    original_notification = modules.notification
+    original_capability = dict(modules.capability_cache["browser_use"])
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    tasks: list[asyncio.Task] = []
+
+    class _Adapter:
+        _ready_import = True
+
+        async def close(self) -> None:
+            close_started.set()
+            await release_close.wait()
+
+    async def _ignore_status_update(*_args, **_kwargs):
+        return None
+
+    def _capture_task(coro):
+        task = asyncio.create_task(coro)
+        tasks.append(task)
+        return task
+
+    monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
+    monkeypatch.setattr(api_routes, "_browser_use_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(capabilities, "_browser_use_dependency_status", lambda: (True, ""))
+    monkeypatch.setattr(api_routes, "_create_tracked_task", _capture_task)
+    monkeypatch.setattr(api_routes, "_emit_agent_status_update", _ignore_status_update)
+    modules.browser_use = _Adapter()
+    modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
+    modules.browser_use_init_lock = None
+    modules.agent_flags["browser_use_enabled"] = True
+    try:
+        await api_routes.set_agent_flags(
+            {"browser_use_enabled": False, "_persist_intent": False}
+        )
+        await close_started.wait()
+
+        enable_task = asyncio.create_task(
+            api_routes.set_agent_flags(
+                {"browser_use_enabled": True, "_persist_intent": False}
+            )
+        )
+        await asyncio.sleep(0)
+        assert not enable_task.done()
+
+        release_close.set()
+        await enable_task
+        await asyncio.gather(*tasks)
+
+        assert modules.browser_use is None
+        assert modules.agent_flags["browser_use_enabled"] is True
+        assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+    finally:
+        release_close.set()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        modules.browser_use = original_adapter
+        modules.computer_use = original_computer_use
+        modules.browser_use_init_lock = original_lock
+        modules.browser_use_close_task = original_close_task
+        modules.agent_flags.clear()
+        modules.agent_flags.update(original_flags)
+        modules.notification = original_notification
+        modules.capability_cache["browser_use"] = original_capability
 
 
 @pytest.mark.asyncio

@@ -90,9 +90,29 @@ async def _ensure_browser_use_adapter():
         return current
 
 
+async def _wait_for_browser_use_adapter_close() -> None:
+    """Wait for a disable-triggered close without cancelling it with the caller."""
+    task = _shared.Modules.browser_use_close_task
+    if task is None:
+        return
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if not task.cancelled():
+            raise
+
+
+def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> None:
+    if capability_reason is not None:
+        _set_capability("browser_use", False, capability_reason)
+        return
+    dependency_ready, dependency_error = _browser_use_dependency_status()
+    _set_capability("browser_use", dependency_ready, dependency_error)
+
+
 async def _close_browser_use_adapter(
     *,
-    capability_reason: str = "AGENT_BU_MODULE_NOT_LOADED",
+    capability_reason: Optional[str] = None,
 ) -> None:
     """Close Chromium/browser-use resources and detach the singleton adapter."""
     if _shared.Modules.browser_use_init_lock is None:
@@ -102,7 +122,7 @@ async def _close_browser_use_adapter(
         current = _shared.Modules.browser_use
         if current is None:
             _rewire_browser_use_dependents()
-            _set_capability("browser_use", False, capability_reason)
+            _set_unloaded_browser_use_capability(capability_reason)
             return
         cancelled = False
         try:
@@ -116,7 +136,7 @@ async def _close_browser_use_adapter(
             if not cancelled:
                 _shared.Modules.browser_use = None
                 _rewire_browser_use_dependents()
-                _set_capability("browser_use", False, capability_reason)
+                _set_unloaded_browser_use_capability(capability_reason)
 
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
