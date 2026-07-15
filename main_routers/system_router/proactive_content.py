@@ -25,6 +25,16 @@ from config.prompts.prompts_proactive import (
 )
 
 
+def _tieba_log_title(item: dict) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("title", "topic_name", "word"):
+        title = str(item.get(key, "") or "").strip()
+        if title:
+            return title
+    return ""
+
+
 def _log_news_content(lanlan_name: str, news_content: dict):
     """
     Log news content fetch details.
@@ -44,7 +54,7 @@ def _log_news_content(lanlan_name: str, news_content: dict):
         posts = tieba_data.get('posts', []) or (tieba_data.get('tieba', {}) or {}).get('posts', [])
         topics = tieba_data.get('topics', []) or (tieba_data.get('tieba', {}) or {}).get('topics', [])
         tieba_items = list(posts or []) + list(topics or [])
-        titles = [str(item.get('title', '')).strip() for item in tieba_items[:5] if item.get('title')]
+        titles = [title for item in tieba_items if (title := _tieba_log_title(item))][:5]
         if titles:
             print(f"[{lanlan_name}] 成功获取贴吧资源池: {len(tieba_items)} 条")
             for title in titles:
