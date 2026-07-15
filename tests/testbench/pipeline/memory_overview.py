@@ -504,7 +504,12 @@ def build_overview(character: str) -> dict[str, Any]:
         ))
     # F5 extract yield uses the TRUE conversation turn count (lineage messages
     # are node-budget-truncated — blueprint §3.1.1). Derive it from meta.
-    structural = len(facts) + total_refl + len(personas) + len(corrections)
+    # ``node_budget.total`` counts archived facts too (they are structural nodes
+    # materialised for referenced sources), so they MUST be subtracted here as
+    # well — otherwise each leaks into convo_total, inflating convo_turns and
+    # deflating extract_yield.
+    structural = (len(facts) + len(archived_fact_ids) + total_refl
+                  + len(personas) + len(corrections))
     convo_total = max(0, int((lmeta.get("node_budget", {}) or {}).get("total", 0)) - structural)
     extract_yield = _ratio(len(facts), convo_total)
 

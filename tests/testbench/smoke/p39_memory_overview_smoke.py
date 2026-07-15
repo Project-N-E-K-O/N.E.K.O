@@ -477,6 +477,10 @@ def check_o10_archived_facts(client) -> list[str]:
         comp = body["cards"]["composition"]
         _check(comp.get("facts") == 1, "O10.comp_facts", f"{comp}")
         _check(comp.get("facts_archived") == 1, "O10.comp_archived", f"{comp}")
+        # Archived facts are structural nodes, not conversation turns: they must
+        # NOT leak into convo_turns (no conversation seeded here → must be 0).
+        _check(comp.get("convo_turns") == 0, "O10.convo_unpolluted",
+               f"archived facts inflated convo_turns: {comp}")
         c = _codes(body["findings"])
         _check("D4" in c, "O10.D4_present", f"expected D4 for the真删 ref; codes={list(c)}")
         _check(c["D4"]["data"]["dangling_refs"] == 1, "O10.D4_only_real",
