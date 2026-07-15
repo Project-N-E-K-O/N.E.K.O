@@ -115,7 +115,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=24_000,
         supported_endpointing_modes=frozenset({"manual"}),
-        implementation_status="blocked_credentials",
+        implementation_status="implemented",
     ),
     "step": AsrProviderMeta(
         provider_key="step",

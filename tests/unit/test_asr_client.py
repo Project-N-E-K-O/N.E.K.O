@@ -224,11 +224,13 @@ def test_phase2_registry_routes_and_capabilities():
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
-    for provider_key in ("qwen", "openai", "step", "grok"):
+    for provider_key in ("qwen", "step", "grok"):
         assert (
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
+    assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
     for provider_key in ("glm", "gemini"):
         meta = ASR_PROVIDER_REGISTRY[provider_key]
         assert meta.implementation_status == "implemented"
@@ -272,6 +274,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
             return {
                 "ASSIST_API_KEY_QWEN": "qwen-cn-key",
                 "ASSIST_API_KEY_QWEN_INTL": "qwen-intl-key",
+                "ASSIST_API_KEY_OPENAI": "openai-key",
                 "AUDIO_API_KEY": "must-not-be-used",
             }
 
@@ -297,8 +300,30 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert cn_worker.keywords == {"region": "cn"}
     assert intl_worker.keywords == {"region": "intl"}
 
+    openai_worker, openai_key, openai_provider = asr_client._get_asr_worker("openai")
+    assert openai_worker is asr_client._openai_asr_worker
+    assert (openai_key, openai_provider) == ("openai-key", "openai")
+    openai_session = create_asr_session(
+        "openai",
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    assert openai_session._voice_turn_factory is None
+
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         asr_client._get_asr_worker("openai", "provider")
+
+    class MissingOpenAIConfigManager:
+        def get_core_config(self):
+            return {"ASSIST_API_KEY_QWEN": "another-provider-key"}
+
+    monkeypatch.setattr(
+        config_manager,
+        "get_config_manager",
+        lambda: MissingOpenAIConfigManager(),
+    )
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: openai"):
+        asr_client._get_asr_worker("openai")
 
     class AudioOnlyConfigManager:
         def get_core_config(self):
