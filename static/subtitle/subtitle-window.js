@@ -836,8 +836,12 @@
             // New preload contract: the main process resolves only after its native
             // retry loop has verified the actual (possibly work-area-clamped) frame.
             restoreResult = Promise.resolve(setBoundsResult).then(function(result) {
-                if (!result || result.ok !== true) return false;
-                return true;
+                if (!result) return false;
+                if (result.ok === true) return true;
+                return result.ok === false &&
+                    result.cancelled !== true &&
+                    result.reason === 'verification-failed' &&
+                    result.safeToReveal === true;
             }).catch(function() {
                 return false;
             });
@@ -988,7 +992,7 @@
         };
     }
 
-    function finishDanmakuModeBoundsApply(session) {
+    function finishDanmakuModeBoundsApply(session, committed) {
         if (!session) return;
         session.boundsApplyPromise = null;
         if (session.active && danmakuModeSession === session) {
@@ -996,6 +1000,11 @@
             session.pendingAvatarBoundsPayload = null;
             if (pendingPayload) {
                 applyDanmakuModeAvatarBounds(session, pendingPayload);
+                return;
+            }
+            if (committed !== true) {
+                clearDanmakuModePanelPosition();
+                releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
             }
             return;
         }
@@ -1042,6 +1051,7 @@
         );
         if (!layout) {
             clearDanmakuModePanelPosition();
+            releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
             return;
         }
         var setBoundsResult;
@@ -1085,13 +1095,16 @@
             }).catch(function() {
                 return false;
             }).then(function(result) {
-                finishDanmakuModeBoundsApply(session);
+                finishDanmakuModeBoundsApply(session, result);
                 return result;
             });
             return;
         }
         // Compatibility with older preload bridges whose setBounds is fire-and-forget.
-        commitDanmakuModeLayout(session, layout, layout.nativeBounds);
+        if (!commitDanmakuModeLayout(session, layout, layout.nativeBounds)) {
+            clearDanmakuModePanelPosition();
+            releaseDanmakuModeSwitchMask(session, DANMAKU_MODE_SWITCH_MASK_SETTLE_MS);
+        }
     }
 
     function restoreDanmakuModeSettings(session) {
