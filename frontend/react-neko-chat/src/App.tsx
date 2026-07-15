@@ -4704,7 +4704,6 @@ function CompactChatApp({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
-      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       if (!opened) return;
       if (activeAvatarToolIds.length === 0) {
