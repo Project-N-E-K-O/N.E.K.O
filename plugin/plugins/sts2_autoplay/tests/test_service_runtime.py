@@ -23,6 +23,39 @@ class DummyClient:
 
 
 @pytest.mark.unit
+def test_resolve_base_url_prefers_env_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = STS2AutoplayService(DummyLogger(), lambda payload: None)
+    service._cfg = {"base_url": "http://127.0.0.1:8080"}
+
+    monkeypatch.setenv("STS2_API_BASE_URL", "http://127.0.0.1:18080/")
+    monkeypatch.setenv("STS2_API_PORT", "28080")
+
+    assert service._resolve_base_url() == "http://127.0.0.1:18080"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_uses_env_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = STS2AutoplayService(DummyLogger(), lambda payload: None)
+    service._cfg = {"base_url": "http://127.0.0.1:8080"}
+
+    monkeypatch.delenv("STS2_API_BASE_URL", raising=False)
+    monkeypatch.setenv("STS2_API_PORT", "18080")
+
+    assert service._resolve_base_url() == "http://127.0.0.1:18080"
+
+
+@pytest.mark.unit
+def test_resolve_base_url_falls_back_to_plugin_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = STS2AutoplayService(DummyLogger(), lambda payload: None)
+    service._cfg = {"base_url": "http://127.0.0.1:8080/"}
+
+    monkeypatch.delenv("STS2_API_BASE_URL", raising=False)
+    monkeypatch.delenv("STS2_API_PORT", raising=False)
+
+    assert service._resolve_base_url() == "http://127.0.0.1:8080"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_execute_planned_operation_uses_autoplay_step(monkeypatch: pytest.MonkeyPatch) -> None:
     service = STS2AutoplayService(DummyLogger(), lambda payload: None)
