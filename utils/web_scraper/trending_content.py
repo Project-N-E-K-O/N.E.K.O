@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import httpx
+from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 import random
 import re
@@ -32,6 +33,7 @@ from ._shared import get_random_user_agent, is_china_region, logger
 from .platform_helpers import (
     _get_bilibili_credential,
     _get_platform_cookies,
+    build_xhh_cookie_header,
     build_xhh_request_params,
 )
 
@@ -770,8 +772,8 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
     
-    Chinese region: trending Weibo topics
-    non-Chinese region: Twitter trends
+    Chinese region: trending Weibo topics and Xiaoheihe feed
+    non-Chinese region: Twitter trends and Xiaoheihe feed
     
     Args:
         limit: maximum amount of content
@@ -779,14 +781,33 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with success status and news content
     """
-    return await _fetch_content_by_region(
-        china_fetch_func=fetch_weibo_trending,
-        non_china_fetch_func=fetch_twitter_trending,
-        limit=limit,
-        content_key='news',
-        china_log_msg="检测到中文区域，获取微博热议话题",
-        non_china_log_msg="检测到非中文区域，获取Twitter热门话题"
+    china_region = is_china_region()
+    region = 'china' if china_region else 'non-china'
+    regional_name = '微博' if china_region else 'Twitter'
+    logger.info(f"并行获取{regional_name}热议和小黑盒首页内容")
+    regional_result, xhh_result = await asyncio.gather(
+        fetch_weibo_trending(limit) if china_region else fetch_twitter_trending(limit),
+        fetch_xhh_feed_content(limit),
+        return_exceptions=True,
     )
+    if isinstance(regional_result, Exception):
+        regional_result = {'success': False, 'error': str(regional_result)}
+    if isinstance(xhh_result, Exception):
+        xhh_result = {'success': False, 'error': str(xhh_result), 'posts': []}
+
+    success = bool(regional_result.get('success') or xhh_result.get('success'))
+    result = {
+        'success': success,
+        'region': region,
+        'news': regional_result,
+        'xhh': xhh_result,
+    }
+    if not success:
+        result['error'] = (
+            f"{regional_name}: {regional_result.get('error', '获取失败')} | "
+            f"小黑盒: {xhh_result.get('error', '获取失败')}"
+        )
+    return result
 
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
     """Format the Bilibili video list"""
@@ -926,8 +947,8 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     Format news content into a readable string
     
     Formats automatically by region:
-    - Chinese region: trending Weibo topics
-    - non-Chinese region: Twitter trends
+    - Chinese region: trending Weibo topics and Xiaoheihe feed
+    - non-Chinese region: Twitter trends and Xiaoheihe feed
     
     Args:
         news_content: result returned by fetch_news_content
@@ -938,18 +959,26 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     region = news_content.get('region', 'china')
     news_data = news_content.get('news', {})
     
+    output_lines: list[str] = []
     if region == 'china':
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
-            output_lines = _format_weibo_trending(trending_list)
-            return "\n".join(output_lines)
-        return "暂时无法获取热议话题"
+            output_lines.extend(_format_weibo_trending(trending_list))
     else:
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
-            output_lines = _format_twitter_trending(trending_list)
-            return "\n".join(output_lines)
-        return "Unable to fetch trending topics at the moment"
+            output_lines.extend(_format_twitter_trending(trending_list))
+
+    xhh_data = news_content.get('xhh', {})
+    if xhh_data.get('success'):
+        formatted_xhh = format_xhh_feed(xhh_data.get('posts', []))
+        if formatted_xhh:
+            output_lines.append("【小黑盒首页内容】" if region == 'china' else "【Xiaoheihe Home】")
+            output_lines.append(formatted_xhh)
+
+    if output_lines:
+        return "\n".join(output_lines)
+    return "暂时无法获取热议话题" if region == 'china' else "Unable to fetch trending topics at the moment"
 
 
 def _plain_xhh_text(value: Any) -> str:
@@ -1022,36 +1051,56 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
 
 
 async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
-    """Fetch the public Xiaoheihe feed without account credentials."""
+    """Fetch Xiaoheihe feed, preferring credentials and falling back to public data."""
     try:
-        headers = {
-            "Referer": "https://www.xiaoheihe.cn/",
-            "User-Agent": XHH_USER_AGENT,
-        }
-        response = await get_external_http_client().get(
-            f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
-            params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
-            headers=headers,
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("响应不是 JSON 对象")
-        status = str(payload.get("status") or payload.get("stat") or "ok").lower()
-        if status not in {"ok", "success"}:
-            raise ValueError(str(payload.get("msg") or payload.get("message") or status))
-        posts = normalize_xhh_feed(payload, limit=limit)
-        if not posts:
-            return {"success": False, "error": "小黑盒 feeds 未返回可用帖子", "posts": []}
-        return {
-            "success": True,
-            "posts": posts,
-            "formatted_content": format_xhh_feed(posts),
-        }
+        cookies = await asyncio.to_thread(load_cookies_from_file, "xhh")
     except Exception as exc:
-        return {
-            "success": False,
-            "error": f"{type(exc).__name__}: {exc}",
-            "posts": [],
-        }
+        logger.warning(f"读取小黑盒凭证失败，按未登录模式继续: {exc}")
+        cookies = {}
+
+    base_headers = {
+        "Referer": "https://www.xiaoheihe.cn/",
+        "User-Agent": XHH_USER_AGENT,
+    }
+    attempts: list[tuple[str, dict[str, str]]] = []
+    if cookies:
+        attempts.append(("登录态", {**base_headers, "Cookie": build_xhh_cookie_header(cookies)}))
+    attempts.append(("未登录", base_headers))
+
+    last_error = "小黑盒 feeds 未返回可用帖子"
+    for attempt_name, headers in attempts:
+        try:
+            response = await get_external_http_client().get(
+                f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
+                params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
+                headers=headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("响应不是 JSON 对象")
+            status = str(payload.get("status") or payload.get("stat") or "ok").lower()
+            if status not in {"ok", "success"}:
+                raise ValueError(str(payload.get("msg") or payload.get("message") or status))
+            posts = normalize_xhh_feed(payload, limit=limit)
+            if not posts:
+                raise ValueError("小黑盒 feeds 未返回可用帖子")
+            return {
+                "success": True,
+                "posts": posts,
+                "formatted_content": format_xhh_feed(posts),
+                "authenticated": attempt_name == "登录态",
+            }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt_name == "登录态":
+                logger.warning(f"小黑盒登录态首页获取失败，回退未登录 feed: {last_error}")
+                continue
+            break
+
+    return {
+        "success": False,
+        "error": last_error,
+        "posts": [],
+    }

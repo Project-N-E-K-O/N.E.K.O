@@ -29,7 +29,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
     args:
-    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'xhh', 'music'
+    - mode: data mode; supports 'news', 'video', 'home', 'personal', 'music'
     - raw_data: raw web data
     returns:
     - list[dict]: list of link info entries, each containing 'title', 'url' and 'source' fields
@@ -38,12 +38,32 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     try:
         if mode == 'news':
             news = raw_data.get('news', {})
-            items = news.get('trending', [])
-            for item in items:
+            weibo_or_twitter: list[dict] = []
+            for item in (news.get('trending', []) or []):
                 title = item.get('word', '') or item.get('name', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
+                    weibo_or_twitter.append({
+                        'title': title,
+                        'url': url,
+                        'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter',
+                    })
+            xhh_links: list[dict] = []
+            for post in (raw_data.get('xhh', {}).get('posts', []) or []):
+                title = post.get('title', '')
+                url = post.get('url', '')
+                if title and url:
+                    xhh_links.append({'title': title, 'url': url, 'source': '小黑盒'})
+
+            # news 共用一个 Phase 1 候选额度；交错合并避免微博先占满 10 条后
+            # 小黑盒只能拿到尾部少量名额。
+            row = 0
+            groups = [group for group in (weibo_or_twitter, xhh_links) if group]
+            while any(row < len(group) for group in groups):
+                for group in groups:
+                    if row < len(group):
+                        links.append(group[row])
+                row += 1
         
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -54,15 +74,6 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 if title and url:
                     links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
 
-        elif mode == 'xhh':
-            for post in raw_data.get('posts', []) or []:
-                if not isinstance(post, dict):
-                    continue
-                title = post.get('title', '')
-                url = post.get('url', '')
-                if title and url:
-                    links.append({'title': title, 'url': url, 'source': '小黑盒'})
-        
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})
             for v in (bilibili.get('videos', []) or []):
@@ -95,13 +106,11 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                     ('weibo_dynamic', 'statuses', ('content',), '微博'),
                     ('douyin_dynamic', 'dynamics', ('content',), '抖音'),
                     ('kuaishou_dynamic', 'dynamics', ('content',), '快手'),
-                    ('xhh_dynamic', 'posts', ('title',), '小黑盒'),
                 ]
                 if region == 'china'
                 else [
                     ('reddit_dynamic', 'posts', ('title', 'content'), 'Reddit'),
                     ('twitter_dynamic', 'tweets', ('content',), 'Twitter'),
-                    ('xhh_dynamic', 'posts', ('title',), '小黑盒'),
                 ]
             )
             platform_links: list[list[dict]] = []

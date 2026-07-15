@@ -103,7 +103,6 @@ from .personal_dynamics import (
     fetch_reddit_personal_dynamic,
     fetch_twitter_personal_dynamic,
     fetch_weibo_personal_dynamic,
-    fetch_xhh_personal_dynamic,
     format_personal_dynamics,
 )
 from .__main__ import main

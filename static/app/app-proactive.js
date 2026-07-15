@@ -1068,7 +1068,7 @@
                 availableModes.push('window');
             }
 
-            // 新闻搭话：使用微博热议话题
+            // 新闻搭话：使用微博热议与小黑盒首页内容
             if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('news');
             }
@@ -1078,7 +1078,7 @@
                 availableModes.push('video');
             }
 
-            // 个人动态搭话：聚合已登录平台的账号信息流（含小黑盒首页）。
+            // 个人动态搭话：聚合已登录社交平台的账号信息流。
             if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                 // 检查是否有可用的 Cookie 凭证
                 var platforms = await getAvailablePersonalPlatforms();

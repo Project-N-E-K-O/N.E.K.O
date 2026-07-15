@@ -39,6 +39,13 @@ def _log_news_content(lanlan_name: str, news_content: dict):
             print(f"[{lanlan_name}] 成功获取{source}:")
             for word in words:
                 print(f"  - {word}")
+    xhh_data = news_content.get('xhh', {})
+    if xhh_data.get('success'):
+        titles = [post.get('title', '') for post in xhh_data.get('posts', [])[:5]]
+        if titles:
+            print(f"[{lanlan_name}] 成功获取小黑盒首页内容:")
+            for title in titles:
+                print(f"  - {title}")
 
 
 def _log_video_content(lanlan_name: str, video_content: dict):

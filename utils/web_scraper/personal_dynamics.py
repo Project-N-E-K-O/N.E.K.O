@@ -21,8 +21,6 @@ import random
 import re
 from typing import TYPE_CHECKING, Dict, Any, Optional
 import os
-from utils.cookies_login import load_cookies_from_file
-from utils.external_http_client import get_external_http_client
 
 # bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
 # system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
@@ -31,63 +29,8 @@ if TYPE_CHECKING:
 import json
 
 from ._shared import get_random_user_agent, is_china_region, logger
-from .platform_helpers import (
-    _get_bilibili_credential,
-    _get_platform_cookies,
-    build_xhh_cookie_header,
-    build_xhh_request_params,
-)
-from .trending_content import (
-    XHH_API_BASE,
-    XHH_FEEDS_PATH,
-    XHH_USER_AGENT,
-    _format_score,
-    format_xhh_feed,
-    normalize_xhh_feed,
-)
-
-
-async def fetch_xhh_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
-    """Fetch the signed-in Xiaoheihe account homepage feed."""
-    try:
-        cookies = await asyncio.to_thread(load_cookies_from_file, "xhh")
-        if not cookies:
-            return {
-                "success": False,
-                "error": "未提供小黑盒认证信息",
-                "posts": [],
-            }
-        response = await get_external_http_client().get(
-            f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
-            params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
-            headers={
-                "Referer": "https://www.xiaoheihe.cn/",
-                "User-Agent": XHH_USER_AGENT,
-                "Cookie": build_xhh_cookie_header(cookies),
-            },
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ValueError("响应不是 JSON 对象")
-        status = str(payload.get("status") or payload.get("stat") or "ok").lower()
-        if status not in {"ok", "success"}:
-            raise ValueError(str(payload.get("msg") or payload.get("message") or status))
-        posts = normalize_xhh_feed(payload, limit=limit)
-        if not posts:
-            return {"success": False, "error": "小黑盒账号首页未返回可用帖子", "posts": []}
-        return {
-            "success": True,
-            "posts": posts,
-            "formatted_content": format_xhh_feed(posts),
-        }
-    except Exception as exc:
-        return {
-            "success": False,
-            "error": f"{type(exc).__name__}: {exc}",
-            "posts": [],
-        }
+from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .trending_content import _format_score
 
 async def fetch_bilibili_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
     """
@@ -718,15 +661,14 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
     try:
         china_region = is_china_region()
         if china_region:
-            logger.info("检测到中文区域，获取B站、微博、抖音、快手和小黑盒个人动态")
+            logger.info("检测到中文区域，获取B站、微博、抖音和快手个人动态")
             
             # 1. 将抖音和快手加入并发任务列表
-            b_dyn, w_dyn, d_dyn, k_dyn, xhh_dyn = await asyncio.gather(
+            b_dyn, w_dyn, d_dyn, k_dyn = await asyncio.gather(
                 fetch_bilibili_personal_dynamic(limit),
                 fetch_weibo_personal_dynamic(limit),
                 fetch_douyin_personal_dynamic(limit),
                 fetch_kuaishou_personal_dynamic(limit),
-                fetch_xhh_personal_dynamic(limit=limit),
                 return_exceptions=True
             )
             
@@ -739,16 +681,13 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 d_dyn = {'success': False, 'error': str(d_dyn)}
             if isinstance(k_dyn, Exception):
                 k_dyn = {'success': False, 'error': str(k_dyn)}
-            if isinstance(xhh_dyn, Exception):
-                xhh_dyn = {'success': False, 'error': str(xhh_dyn)}
 
             # 3. 只要有一个平台成功，就判定为总体成功
             top_success = any([
                 b_dyn.get('success', False), 
                 w_dyn.get('success', False),
                 d_dyn.get('success', False),
-                k_dyn.get('success', False),
-                xhh_dyn.get('success', False)
+                k_dyn.get('success', False)
             ])
             
             # 4. 封装返回字典
@@ -758,8 +697,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 'bilibili_dynamic': b_dyn, 
                 'weibo_dynamic': w_dyn,
                 'douyin_dynamic': d_dyn,
-                'kuaishou_dynamic': k_dyn,
-                'xhh_dynamic': xhh_dyn,
+                'kuaishou_dynamic': k_dyn
             }
             
             # 【新增】汇总全平台失败的错误信息给顶层
@@ -773,8 +711,6 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                     errors.append(f"抖音: {d_dyn.get('error')}")
                 if k_dyn.get('error'):
                     errors.append(f"快手: {k_dyn.get('error')}")
-                if xhh_dyn.get('error'):
-                    errors.append(f"小黑盒: {xhh_dyn.get('error')}")
                 
                 if errors:
                     result['error'] = " | ".join(errors)
@@ -784,32 +720,24 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             return result
             
         else:
-            logger.info("检测到非中文区域，获取Reddit、Twitter和小黑盒个人动态")
-            r_dyn, t_dyn, xhh_dyn = await asyncio.gather(
+            logger.info("检测到非中文区域，获取Reddit和Twitter个人动态")
+            r_dyn, t_dyn = await asyncio.gather(
                 fetch_reddit_personal_dynamic(limit),
                 fetch_twitter_personal_dynamic(limit),
-                fetch_xhh_personal_dynamic(limit=limit),
                 return_exceptions=True
             )
             if isinstance(r_dyn, Exception):
                 r_dyn = {'success': False, 'error': str(r_dyn)}
             if isinstance(t_dyn, Exception):
                 t_dyn = {'success': False, 'error': str(t_dyn)}
-            if isinstance(xhh_dyn, Exception):
-                xhh_dyn = {'success': False, 'error': str(xhh_dyn)}
             
-            top_success = any([
-                r_dyn.get('success', False),
-                t_dyn.get('success', False),
-                xhh_dyn.get('success', False),
-            ])
+            top_success = r_dyn.get('success', False) or t_dyn.get('success', False)
             
             result = {
                 'success': top_success, 
                 'region': 'non-china', 
                 'reddit_dynamic': r_dyn, 
-                'twitter_dynamic': t_dyn,
-                'xhh_dynamic': xhh_dyn,
+                'twitter_dynamic': t_dyn
             }
             
             # 【新增】汇总海外平台失败的错误信息给顶层
@@ -820,8 +748,6 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                     errors.append(f"Reddit: {r_dyn.get('error')}")
                 if t_dyn.get('error'):
                     errors.append(f"Twitter: {t_dyn.get('error')}")
-                if xhh_dyn.get('error'):
-                    errors.append(f"小黑盒: {xhh_dyn.get('error')}")
                 if errors:
                     result['error'] = " | ".join(errors)
                 else:
@@ -846,8 +772,7 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
             ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
             ('weibo_dynamic', '微博个人关注动态', 'statuses'),
             ('douyin_dynamic', '抖音关注动态', 'dynamics'),
-            ('kuaishou_dynamic', '快手关注动态', 'dynamics'),
-            ('xhh_dynamic', '小黑盒账号首页', 'posts'),
+            ('kuaishou_dynamic', '快手关注动态', 'dynamics')
         ]
         
         for key, title, list_key in platforms:
@@ -857,11 +782,6 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
                 output_lines.append(f"【{title}】")
                 
                 for i, item in enumerate(items[:5], 1):
-                    if key == 'xhh_dynamic':
-                        output_lines.append(f"{i}. {item.get('title', '')}")
-                        if item.get('author'):
-                            output_lines.append(f"   作者: {item.get('author')}")
-                        continue
                     # 统一了排版结构，保证所有平台的缩进严格对齐 (3个空格)
                     author = item.get('author', '未知')
                     timestamp = item.get('timestamp', '')
@@ -878,8 +798,7 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         # 海外平台配置表
         platforms = [
             ('reddit_dynamic', 'Reddit Subscribed Posts', 'posts'),
-            ('twitter_dynamic', 'Twitter Timeline', 'tweets'),
-            ('xhh_dynamic', 'Xiaoheihe Account Homepage', 'posts'),
+            ('twitter_dynamic', 'Twitter Timeline', 'tweets')
         ]
         
         for key, title, list_key in platforms:
@@ -888,12 +807,9 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
                 output_lines.append(f"【{title}】")
                 
                 for i, item in enumerate(items[:5], 1):
-                    if key in {'reddit_dynamic', 'xhh_dynamic'}:
+                    if key == 'reddit_dynamic':
                         output_lines.append(f"{i}. {item.get('title')}")
-                        if key == 'reddit_dynamic':
-                            output_lines.append(f"   Subreddit: {item.get('subreddit')} | Score: {item.get('score')} upvotes")
-                        elif item.get('author'):
-                            output_lines.append(f"   Author: {item.get('author')}")
+                        output_lines.append(f"   Subreddit: {item.get('subreddit')} | Score: {item.get('score')} upvotes")
                     else:
                         output_lines.append(f"{i}. {item.get('author')}: {item.get('content')}")
                         

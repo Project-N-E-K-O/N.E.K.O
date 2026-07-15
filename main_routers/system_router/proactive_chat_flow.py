@@ -173,7 +173,6 @@ from utils.web_scraper import (
     fetch_window_context_content, format_window_context_content,
     fetch_video_content, format_video_content,
     fetch_news_content, format_news_content,
-    fetch_xhh_feed_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
 from utils.music_crawlers import fetch_music_content
@@ -340,7 +339,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
         case 'CHAT':
             primary_channel = 'chat'
         case 'WEB':
-            # 使用细粒度 web 子通道（news/video/xhh/home/personal），fallback 到 'web'
+            # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
             web_link = ctx.get('selected_web_link')
             primary_channel = web_link.get('mode', 'web') if web_link else 'web'
             if web_link:
@@ -1183,20 +1182,6 @@ async def proactive_chat(request: Request):
                 links = _extract_links_from_raw(mode, video_content)
                 return (mode, {'formatted_content': formatted, 'raw_data': video_content, 'links': links})
 
-            elif mode == 'xhh':
-                xhh_content = await fetch_xhh_feed_content(limit=_PHASE1_FETCH_PER_SOURCE)
-                if not xhh_content['success']:
-                    raise ValueError(f"获取小黑盒社区帖子失败: {xhh_content.get('error')}")
-                links = _extract_links_from_raw(mode, xhh_content)
-                return (
-                    mode,
-                    {
-                        'formatted_content': xhh_content.get('formatted_content', ''),
-                        'raw_data': xhh_content,
-                        'links': links,
-                    },
-                )
-            
             elif mode == 'window':
                 window_context_content = await fetch_window_context_content(limit=5)
                 if not window_context_content['success']:
