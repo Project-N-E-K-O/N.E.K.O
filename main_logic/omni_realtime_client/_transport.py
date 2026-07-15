@@ -1172,28 +1172,38 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
+            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
-            self._response_arbiter.notify_connection_lost("realtime connection closed")
+            await self._close_failed_transport("realtime connection closed")
             logger.info("Connection closed as expected")
-            self._fatal_error_occurred = True
-            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
-            self._response_arbiter.notify_connection_lost(error_msg)
+            await self._close_failed_transport(error_msg)
             logger.error(f"Connection closed with error: {error_msg}")
-            self._fatal_error_occurred = True
-            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
-            self._response_arbiter.notify_connection_lost("realtime connection timeout")
-            if self.ws:
-                await self.ws.close()
+            await self._close_failed_transport("realtime connection timeout")
             if self.on_connection_error:
                 await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
+            await self._close_failed_transport(
+                f"realtime message handling failed: {type(e).__name__}"
+            )
             logger.error(f"Error in message handling: {str(e)}")
-            raise e
+            raise
+
+    async def _close_failed_transport(self, reason: str) -> None:
+        """Fail all response tickets and atomically detach the dead socket."""
+
+        self._response_arbiter.notify_connection_lost(reason)
+        self._fatal_error_occurred = True
+        ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as exc:
+                logger.debug("failed transport close also failed: %s", type(exc).__name__)
 
     async def close(self) -> None:
         """Close the WebSocket connection."""

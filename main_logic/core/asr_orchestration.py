@@ -63,15 +63,37 @@ class AsrOrchestrationMixin:
             on_connection_error=self.handle_connection_error,
             on_status_message=self.send_status,
             smart_turn_config=config,
+            routing_mode=str(
+                os.getenv("ASR_ROUTING_MODE")
+                or core_config.get("ASR_ROUTING_MODE")
+                or "auto"
+            ),
+            user_region=str(
+                os.getenv("ASR_USER_REGION")
+                or core_config.get("ASR_USER_REGION")
+                or "cn"
+            ),
         )
         try:
             await runtime.start()
         except Exception:
-            await runtime.close()
             self._independent_asr_enabled = False
+            try:
+                await runtime.close()
+            except Exception as close_exc:
+                logger.warning(
+                    "[%s] failed ASR startup cleanup also failed: %s",
+                    self.lanlan_name,
+                    type(close_exc).__name__,
+                )
             raise
         self._external_asr_runtime = runtime
-        logger.info("[%s] independent ASR + Smart Turn runtime ready", self.lanlan_name)
+        logger.info(
+            "[%s] independent ASR ready provider=%s turn_boundary=%s",
+            self.lanlan_name,
+            runtime.provider_key,
+            runtime.turn_boundary_owner,
+        )
 
     async def _stop_independent_asr(self) -> None:
         runtime = getattr(self, "_external_asr_runtime", None)
@@ -120,6 +142,7 @@ class AsrOrchestrationMixin:
         session = self.session
         if not isinstance(session, OmniRealtimeClient):
             return
+        session._ensure_response_arbiter().pause_dispatch()
         # Stop local playback first and rotate the speech id so late packets
         # from the cancelled response cannot leak into the new user turn.
         await self.handle_new_message()
@@ -139,6 +162,8 @@ class AsrOrchestrationMixin:
                 source="independent_asr",
                 metadata={"turn_id": turn.turn_id},
             )
+            if isinstance(self.session, OmniRealtimeClient):
+                self.session._ensure_response_arbiter().resume_dispatch()
             return
         if self._should_suppress_dirty_voice_transcript(turn.text):
             await self.handle_input_transcript(
@@ -147,6 +172,8 @@ class AsrOrchestrationMixin:
                 source="independent_asr",
                 metadata={"turn_id": turn.turn_id},
             )
+            if isinstance(self.session, OmniRealtimeClient):
+                self.session._ensure_response_arbiter().resume_dispatch()
             return
 
         await self.handle_input_transcript(
@@ -162,6 +189,8 @@ class AsrOrchestrationMixin:
         )
         session = self.session
         if not isinstance(session, OmniRealtimeClient) or not self.is_active:
+            if isinstance(session, OmniRealtimeClient):
+                session._ensure_response_arbiter().resume_dispatch()
             return
         try:
             ticket = await session.submit_external_text_turn(

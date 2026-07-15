@@ -167,6 +167,7 @@ class _ResponseMixin:
                 "type": "response.create",
                 "event_id": response_event_id,
             },
+            expected_item_role="user",
         )
         await ticket.sent
 
@@ -223,13 +224,17 @@ class _ResponseMixin:
             len(clean),
             text_hash,
         )
-        ticket = await self._ensure_response_arbiter().enqueue(
+        arbiter = self._ensure_response_arbiter()
+        ticket = await arbiter.enqueue(
             source="external_asr",
             events_before_response=(item_event,),
             response_event=response_event,
             expected_item_role="user",
             priority=0,
         )
+        # Speech-start pauses dispatch. Resume only after this priority-0 user
+        # turn is present, so queued proactive work cannot win the race.
+        arbiter.resume_dispatch()
         await ticket.sent
         return ticket
 
@@ -242,7 +247,7 @@ class _ResponseMixin:
         response" against the realtime API's "one active response at a time"
         constraint.
         """
-        return bool(self._is_responding)
+        return bool(self._is_responding or self._ensure_response_arbiter().is_busy)
 
     async def inject_text_and_request_response(
         self,
@@ -399,6 +404,7 @@ class _ResponseMixin:
                 source="proactive",
                 events_before_response=(item_event,),
                 response_event=create_event,
+                expected_item_role="user",
                 priority=20,
             )
             await ticket.sent
@@ -749,9 +755,7 @@ class _ResponseMixin:
 
     async def cancel_response(self, *, wait: bool = False, timeout: float = 3.0) -> None:
         """Cancel the current response."""
-        event = {
-            "type": "response.cancel"
-        }
-        await self.send_event(event)
         if wait:
-            await self._ensure_response_arbiter().wait_until_idle(timeout)
+            await self._ensure_response_arbiter().cancel_current(timeout)
+            return
+        await self.send_event({"type": "response.cancel"})

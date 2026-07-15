@@ -7,7 +7,7 @@ from main_logic.asr_client import AsrTranscriptEvent
 from main_logic.core.asr_runtime import IndependentAsrRuntime
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
-from main_logic.voice_turn.contracts import SmartTurnConfig
+from main_logic.voice_turn.contracts import SmartTurnConfig, SpeechActivityEvent
 
 
 @pytest.mark.asyncio
@@ -111,11 +111,60 @@ async def test_response_done_timeout_cancels_before_releasing_lane():
         response_done_timeout=0.01,
         cancel_timeout=0.1,
     )
-    await ticket.done
+    with pytest.raises(asyncio.TimeoutError):
+        await ticket.done
     assert [event["type"] for event in sent] == [
         "response.create",
         "response.cancel",
     ]
+
+
+@pytest.mark.asyncio
+async def test_connection_loss_fails_current_and_all_queued_tickets():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    first = await arbiter.enqueue(source="first")
+    second = await arbiter.enqueue(source="second")
+    await first.sent
+    arbiter.notify_connection_lost("socket lost")
+    with pytest.raises(ConnectionError, match="socket lost"):
+        await first.done
+    with pytest.raises(ConnectionError, match="socket lost"):
+        await second.done
+
+
+@pytest.mark.asyncio
+async def test_paused_precreated_proactive_yields_to_completed_user_turn():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({})
+            arbiter.notify_response_terminal({})
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.pause_dispatch()
+    proactive = await arbiter.enqueue(
+        source="proactive",
+        priority=20,
+        response_event={"type": "response.create", "event_id": "proactive"},
+    )
+    await asyncio.sleep(0)
+    user = await arbiter.enqueue(
+        source="external_asr",
+        priority=0,
+        response_event={"type": "response.create", "event_id": "user"},
+    )
+    arbiter.resume_dispatch()
+    await user.done
+    await proactive.done
+    assert [event["event_id"] for event in sent] == ["user", "proactive"]
 
 
 @pytest.mark.asyncio
@@ -294,4 +343,116 @@ async def test_fast_followup_turn_defers_commit_until_previous_final():
     await runtime._reset_turn_state(resume_deferred=True)
     assert fake_asr.commit_count == 1
     assert runtime._turn_complete_requested is True
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_endpoint_skips_smart_turn_and_commits_only_final():
+    captions = []
+    turns = []
+
+    async def on_caption(*args):
+        captions.append(args)
+
+    async def on_turn(turn):
+        turns.append(turn)
+
+    async def noop(*_args):
+        return None
+
+    runtime = IndependentAsrRuntime(
+        core_type="qwen",
+        on_caption=on_caption,
+        on_turn_complete=on_turn,
+        on_speech_started=noop,
+        on_connection_error=noop,
+        smart_turn_config=SmartTurnConfig(enabled=True),
+        asr_session=_FakeAsr(),
+        predictor=_FakePredictor(),
+        vad=_FakeVad(),
+        provider_endpoint=True,
+    )
+    await runtime.start()
+    assert runtime.turn_boundary_owner == "provider"
+    assert runtime._predictor is None
+    assert runtime._coordinator is None
+
+    speech_starts = []
+
+    async def on_speech_started():
+        speech_starts.append(True)
+
+    runtime._on_speech_started = on_speech_started
+    runtime._activity_gate.feed = lambda _pcm: SpeechActivityEvent.SPEECH_STARTED
+    await runtime.feed_audio(b"\x00\x00")
+    assert speech_starts == [True]
+
+    await runtime._on_asr_event(AsrTranscriptEvent("partial", 0, 0, 1, "十七加"))
+    assert not turns
+    await runtime._on_asr_event(
+        AsrTranscriptEvent("final", 0, 0, 1, "十七加二十五等于多少")
+    )
+    assert len(turns) == 1
+    assert turns[0].text == "十七加二十五等于多少"
+    assert turns[0].utterance_ids == (1,)
+    assert captions[-1][1] is True
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_soniox_connect_failure_falls_back_before_audio(monkeypatch):
+    import main_logic.core.asr_runtime as asr_runtime_module
+    import utils.config_manager as config_manager
+
+    class FakeConfigManager:
+        def get_core_config(self):
+            return {
+                "SONIOX_API_KEY": "soniox-key",
+                "ASSIST_API_KEY_QWEN": "qwen-key",
+            }
+
+    class FailingAsr(_FakeAsr):
+        async def connect(self, *args, **kwargs):
+            raise RuntimeError("initial Soniox connect failed")
+
+    fallback = _FakeAsr()
+
+    def create_fallback(*_args, **kwargs):
+        assert kwargs["force_core"] is True
+        return fallback
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
+    monkeypatch.setattr(asr_runtime_module, "create_asr_session", create_fallback)
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "SmartTurnV3",
+        lambda **_kwargs: _FakePredictor(),
+    )
+
+    async def noop(*_args):
+        return None
+
+    statuses = []
+
+    async def on_status(status):
+        statuses.append(status)
+
+    runtime = IndependentAsrRuntime(
+        core_type="qwen",
+        on_caption=noop,
+        on_turn_complete=noop,
+        on_speech_started=noop,
+        on_connection_error=noop,
+        on_status_message=on_status,
+        smart_turn_config=SmartTurnConfig(enabled=True),
+        asr_session=FailingAsr(),
+        vad=_FakeVad(),
+        routing_mode="auto",
+        user_region="us",
+        provider_endpoint=True,
+    )
+    await runtime.start()
+    assert runtime.provider_key == "qwen"
+    assert runtime.turn_boundary_owner == "smart_turn"
+    assert statuses == ["ASR_SONIOX_FALLBACK_TO_CORE"]
     await runtime.close()

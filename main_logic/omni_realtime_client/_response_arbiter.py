@@ -40,6 +40,9 @@ class _QueuedResponse:
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
+    completed: asyncio.Future[None] | None = field(default=None, compare=False)
+    bypass_count: int = field(default=0, compare=False)
+    interrupted: bool = field(default=False, compare=False)
 
 
 class RealtimeResponseArbiter:
@@ -58,6 +61,9 @@ class RealtimeResponseArbiter:
         self._worker: asyncio.Task[None] | None = None
         self._current: _QueuedResponse | None = None
         self._server_response_active = False
+        self._connection_available = True
+        self._dispatch_allowed = asyncio.Event()
+        self._dispatch_allowed.set()
         self._idle = asyncio.Event()
         self._idle.set()
 
@@ -67,7 +73,11 @@ class RealtimeResponseArbiter:
 
     @property
     def is_busy(self) -> bool:
-        return self._current is not None or self._server_response_active
+        return (
+            self._current is not None
+            or self._server_response_active
+            or not self._queue.empty()
+        )
 
     async def enqueue(
         self,
@@ -88,6 +98,9 @@ class RealtimeResponseArbiter:
             started=loop.create_future(),
             done=loop.create_future(),
         )
+        if not self._connection_available:
+            self._fail_ticket(ticket, ConnectionError("realtime connection is unavailable"))
+            return ticket
         create_event = dict(response_event or {"type": "response.create"})
         create_event.setdefault("type", "response.create")
         ids = {
@@ -108,10 +121,54 @@ class RealtimeResponseArbiter:
             cancel_timeout=cancel_timeout,
             ticket=ticket,
             event_ids=frozenset(ids),
+            completed=loop.create_future(),
         )
         await self._queue.put(queued)
         self._ensure_worker()
         return ticket
+
+    def pause_dispatch(self) -> None:
+        """Prevent queued work from starting while a user interruption settles."""
+
+        self._dispatch_allowed.clear()
+
+    def resume_dispatch(self) -> None:
+        if not self._connection_available:
+            return
+        self._dispatch_allowed.set()
+        self._ensure_worker()
+
+    async def cancel_current(self, timeout: float = 3.0) -> None:
+        """Cancel only the active/pre-created request, never drain the queue."""
+
+        current = self._current
+        if current is None:
+            if not self._server_response_active:
+                return
+            await self._send_event({"type": "response.cancel"})
+            await self.wait_until_idle(timeout)
+            return
+
+        current.interrupted = True
+        if not current.ticket.sent.done():
+            was_paused = not self._dispatch_allowed.is_set()
+            self._wake_current_with_error(
+                current,
+                RuntimeError("response dispatch interrupted before response.create"),
+            )
+            if was_paused:
+                self._dispatch_allowed.set()
+        else:
+            was_paused = False
+            await self._send_event({"type": "response.cancel"})
+        assert current.completed is not None
+        try:
+            await asyncio.wait_for(asyncio.shield(current.completed), timeout)
+            if was_paused and self._connection_available:
+                self._dispatch_allowed.clear()
+        except asyncio.TimeoutError:
+            self._fail_closed("response cancellation terminal event timed out")
+            raise
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         waiter = self._idle.wait()
@@ -141,8 +198,13 @@ class RealtimeResponseArbiter:
     def notify_response_terminal(self, _event: dict[str, Any] | None = None) -> None:
         self._server_response_active = False
         current = self._current
-        if current is not None and current.terminal is not None and not current.terminal.done():
-            current.terminal.set_result(None)
+        if current is not None:
+            if not current.ticket.started.done():
+                current.ticket.started.set_exception(
+                    RuntimeError("response terminated before response.created")
+                )
+            if current.terminal is not None and not current.terminal.done():
+                current.terminal.set_result(None)
         elif current is None:
             self._idle.set()
 
@@ -169,25 +231,79 @@ class RealtimeResponseArbiter:
             current.terminal.set_exception(exc)
 
     def notify_connection_lost(self, reason: str = "realtime connection lost") -> None:
+        self._connection_available = False
+        # Wake a worker parked behind the dispatch barrier so it can observe
+        # the failed connection and complete its selected ticket.
+        self._dispatch_allowed.set()
         self._server_response_active = False
+        exc = ConnectionError(reason)
         current = self._current
         if current is not None:
-            exc = ConnectionError(reason)
-            if current.item_ack is not None and not current.item_ack.done():
-                current.item_ack.set_exception(exc)
-                return
-            if not current.ticket.started.done():
-                current.ticket.started.set_exception(exc)
-                return
-            if current.terminal is not None and not current.terminal.done():
-                current.terminal.set_exception(exc)
+            self._wake_current_with_error(current, exc)
         else:
             self._idle.set()
+        self._fail_queued(exc)
 
     def reset_connection_state(self) -> None:
+        self._connection_available = True
+        self._dispatch_allowed.set()
         if self._current is None:
             self._server_response_active = False
             self._idle.set()
+        self._ensure_worker()
+
+    @staticmethod
+    def _fail_ticket(ticket: ResponseTicket, exc: Exception) -> None:
+        for future in (ticket.sent, ticket.started, ticket.done):
+            if not future.done():
+                future.set_exception(exc)
+
+    def _wake_current_with_error(
+        self, current: _QueuedResponse, exc: Exception
+    ) -> None:
+        if current.item_ack is not None and not current.item_ack.done():
+            current.item_ack.set_exception(exc)
+        if not current.ticket.started.done():
+            current.ticket.started.set_exception(exc)
+        if current.terminal is not None and not current.terminal.done():
+            current.terminal.set_exception(exc)
+
+    def _fail_queued(self, exc: Exception) -> None:
+        while True:
+            try:
+                queued = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._fail_ticket(queued.ticket, exc)
+            if queued.completed is not None and not queued.completed.done():
+                queued.completed.set_result(None)
+            self._queue.task_done()
+
+    def _fail_closed(self, reason: str) -> None:
+        self.notify_connection_lost(reason)
+
+    async def _next_queued(self) -> _QueuedResponse:
+        """Select fairly: a lower-priority item may be bypassed at most 3 times."""
+
+        candidates = [await self._queue.get()]
+        while True:
+            try:
+                candidates.append(self._queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        starved = [candidate for candidate in candidates if candidate.bypass_count >= 3]
+        if starved:
+            selected = min(starved, key=lambda item: item.sequence)
+        else:
+            selected = min(candidates, key=lambda item: (item.priority, item.sequence))
+        for candidate in candidates:
+            if candidate is selected:
+                continue
+            candidate.bypass_count += 1
+            self._queue.task_done()
+            self._queue.put_nowait(candidate)
+        return selected
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -197,24 +313,36 @@ class RealtimeResponseArbiter:
 
     async def _run(self) -> None:
         while True:
-            queued = await self._queue.get()
+            await self._dispatch_allowed.wait()
+            queued = await self._next_queued()
             try:
                 await self._process(queued)
             finally:
                 self._queue.task_done()
 
     async def _process(self, queued: _QueuedResponse) -> None:
-        await self._idle.wait()
         self._current = queued
-        self._idle.clear()
         loop = asyncio.get_running_loop()
-        queued.terminal = loop.create_future()
         item_acked = queued.expected_item_role is None
+        requeued = False
 
         try:
+            await self._dispatch_allowed.wait()
+            if not self._connection_available:
+                raise ConnectionError("realtime connection is unavailable")
+            if self._yield_to_higher_priority(queued):
+                requeued = True
+                return
+            await self._idle.wait()
+            self._idle.clear()
+            queued.terminal = loop.create_future()
+            if queued.interrupted:
+                raise RuntimeError("response dispatch interrupted")
             if queued.expected_item_role is not None:
                 queued.item_ack = loop.create_future()
             for event in queued.events_before_response:
+                if queued.interrupted:
+                    raise RuntimeError("response dispatch interrupted")
                 await self._send_event(event)
 
             if queued.item_ack is not None:
@@ -227,23 +355,28 @@ class RealtimeResponseArbiter:
                     item_acked = False
                     queued.item_ack.cancel()
 
+            if queued.interrupted:
+                raise RuntimeError("response dispatch interrupted")
             await self._send_event(queued.response_event)
             if not queued.ticket.sent.done():
                 queued.ticket.sent.set_result(None)
 
-            await asyncio.wait_for(
-                asyncio.shield(queued.ticket.started),
-                queued.response_started_timeout,
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(queued.ticket.started),
+                    queued.response_started_timeout,
+                )
+            except asyncio.TimeoutError as started_timeout:
+                await self._cancel_after_timeout(queued, started_timeout)
             try:
                 await asyncio.wait_for(
                     asyncio.shield(queued.terminal), queued.response_done_timeout
                 )
-            except asyncio.TimeoutError:
-                await self._send_event({"type": "response.cancel"})
-                await asyncio.wait_for(
-                    asyncio.shield(queued.terminal), queued.cancel_timeout
-                )
+            except asyncio.TimeoutError as done_timeout:
+                await self._cancel_after_timeout(queued, done_timeout)
+
+            if queued.interrupted:
+                raise RuntimeError("response dispatch interrupted")
 
             result = ResponseDispatchResult(
                 item_acknowledged=item_acked,
@@ -252,10 +385,41 @@ class RealtimeResponseArbiter:
             if not queued.ticket.done.done():
                 queued.ticket.done.set_result(result)
         except Exception as exc:
-            for future in (queued.ticket.sent, queued.ticket.started, queued.ticket.done):
-                if not future.done():
-                    future.set_exception(exc)
+            self._fail_ticket(queued.ticket, exc)
         finally:
             self._current = None
+            if (
+                not requeued
+                and queued.completed is not None
+                and not queued.completed.done()
+            ):
+                queued.completed.set_result(None)
             if not self._server_response_active:
                 self._idle.set()
+
+    def _yield_to_higher_priority(self, queued: _QueuedResponse) -> bool:
+        """Put a pre-created request back if a user turn arrived while paused."""
+
+        try:
+            candidate = self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return False
+        self._queue.task_done()
+        self._queue.put_nowait(candidate)
+        if candidate.priority >= queued.priority:
+            return False
+        self._queue.put_nowait(queued)
+        return True
+
+    async def _cancel_after_timeout(
+        self, queued: _QueuedResponse, original_timeout: asyncio.TimeoutError
+    ) -> None:
+        try:
+            await self._send_event({"type": "response.cancel"})
+            assert queued.terminal is not None
+            await asyncio.wait_for(
+                asyncio.shield(queued.terminal), queued.cancel_timeout
+            )
+        except Exception:
+            self._fail_closed("response lifecycle could not reach a terminal state")
+        raise original_timeout
