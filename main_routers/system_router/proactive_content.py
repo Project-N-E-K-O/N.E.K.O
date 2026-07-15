@@ -39,6 +39,16 @@ def _log_news_content(lanlan_name: str, news_content: dict):
             print(f"[{lanlan_name}] 成功获取{source}:")
             for word in words:
                 print(f"  - {word}")
+    tieba_data = news_content.get('tieba', {}) or {}
+    if tieba_data.get('success'):
+        posts = tieba_data.get('posts', []) or (tieba_data.get('tieba', {}) or {}).get('posts', [])
+        topics = tieba_data.get('topics', []) or (tieba_data.get('tieba', {}) or {}).get('topics', [])
+        tieba_items = list(posts or []) + list(topics or [])
+        titles = [str(item.get('title', '')).strip() for item in tieba_items[:5] if item.get('title')]
+        if titles:
+            print(f"[{lanlan_name}] 成功获取贴吧资源池: {len(tieba_items)} 条")
+            for title in titles:
+                print(f"  - {title}")
 
 
 def _log_video_content(lanlan_name: str, video_content: dict):
