@@ -225,6 +225,45 @@ async def test_fetch_news_content_routes_non_china_to_twitter(monkeypatch):
 
 
 @pytest.mark.unit
+def test_format_tieba_content_respects_topic_display_budget():
+    full_posts = web_scraper.format_tieba_content(
+        {
+            "success": True,
+            "display_limit": 2,
+            "posts": [
+                {"title": "Post A", "url": "https://tieba.baidu.com/p/a"},
+                {"title": "Post B", "url": "https://tieba.baidu.com/p/b"},
+            ],
+            "topics": [
+                {"title": "Topic A", "url": "https://tieba.baidu.com/hottopic/a"},
+            ],
+        }
+    )
+
+    assert "Post A" in full_posts
+    assert "Post B" in full_posts
+    assert "Topic A" not in full_posts
+
+    one_remaining = web_scraper.format_tieba_content(
+        {
+            "success": True,
+            "display_limit": 2,
+            "posts": [
+                {"title": "Post A", "url": "https://tieba.baidu.com/p/a"},
+            ],
+            "topics": [
+                {"title": "Topic A", "url": "https://tieba.baidu.com/hottopic/a"},
+                {"title": "Topic B", "url": "https://tieba.baidu.com/hottopic/b"},
+            ],
+        }
+    )
+
+    assert "Post A" in one_remaining
+    assert "Topic A" in one_remaining
+    assert "Topic B" not in one_remaining
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_uses_aiotieba_bars_and_hot_topics(monkeypatch):
     calls = []
