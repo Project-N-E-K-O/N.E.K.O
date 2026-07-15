@@ -69,6 +69,24 @@ def test_successful_desktop_pin_is_not_reported_as_cancelled():
     )
 
 
+def test_desktop_pin_failures_never_trigger_a_second_screenshot_fallback():
+    unavailable_block = APP_BUTTONS.split(
+        "function isDesktopRegionCaptureUnavailable(errorLike)",
+        1,
+    )[1].split("function normalizeDesktopRegionCaptureResult(raw)", 1)[0]
+    direct_capture_block = APP_BUTTONS.split(
+        "async function captureDesktopRegionDirectly()",
+        1,
+    )[1].split("async function recaptureWithoutNeko()", 1)[0]
+
+    assert "message.indexOf('unsupported')" not in unavailable_block
+    assert "message === 'unsupported'" in unavailable_block
+    assert "terminalError.capability = normalized.capability || null" in direct_capture_block
+    assert direct_capture_block.index("if (isDesktopRegionCaptureUnavailable(normalized))") < direct_capture_block.index(
+        "throw terminalError"
+    )
+
+
 def test_react_chat_marks_screenshot_capability_ready_after_binding_the_button():
     button_index = APP_BUTTONS.index(
         "screenshotButton.addEventListener('click', mod.captureScreenshotToPendingList);"
