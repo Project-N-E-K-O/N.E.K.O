@@ -158,11 +158,15 @@
         const supported = pair.contract && pair.contract.hostCapabilities
             && pair.contract.hostCapabilities.compactPetWindowLeaseV1 === true;
         if (!state.compactEnabled || !supported || !pair.host) {
+            state.compactAcquired = false;
             await acknowledge(state.phase, supported ? 'disabled' : 'unsupported');
             return false;
         }
         const payload = leasePayload();
-        if (!payload || typeof pair.host[methodName] !== 'function') return false;
+        if (!payload || typeof pair.host[methodName] !== 'function') {
+            state.compactAcquired = false;
+            return false;
+        }
         try {
             const result = await pair.host[methodName](payload);
             applyOriginDelta(result);
@@ -170,6 +174,7 @@
             await acknowledge(state.phase, state.compactAcquired ? 'acquired' : 'rejected', result && result.code);
             return state.compactAcquired;
         } catch (error) {
+            state.compactAcquired = false;
             await acknowledge(state.phase, 'failed', error);
             return false;
         }
@@ -214,7 +219,11 @@
         };
         try {
             const result = await pair.host.releaseCompactLease(payload);
-            applyOriginDelta(result);
+            if (result && result.originDelta) {
+                applyOriginDelta(result);
+            } else if (result && result.ok) {
+                applyOriginDelta({ originDelta: { x: 0, y: 0 } });
+            }
         } catch (_) {}
         state.compactAcquired = false;
     }

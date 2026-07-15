@@ -509,7 +509,10 @@ class MMDManager {
             if (next !== 'idle') {
                 this.cursorFollow.setEnabled(false);
             } else if (this._gameModeResourceCursorFollowEnabled !== null) {
-                this.cursorFollow.setEnabled(this._gameModeResourceCursorFollowEnabled === true);
+                const restoreCursorFollow = window.mouseTrackingEnabled === false
+                    ? false
+                    : this._gameModeResourceCursorFollowEnabled === true;
+                this.cursorFollow.setEnabled(restoreCursorFollow);
                 this._gameModeResourceCursorFollowEnabled = null;
             }
         }

@@ -1201,7 +1201,10 @@ class VRMManager {
         } else {
             if (this._cursorFollow && typeof this._cursorFollow.setEnabled === 'function'
                 && this._gameModeResourceCursorFollowEnabled !== null) {
-                this._cursorFollow.setEnabled(this._gameModeResourceCursorFollowEnabled === true);
+                const restoreCursorFollow = window.mouseTrackingEnabled === false
+                    ? false
+                    : this._gameModeResourceCursorFollowEnabled === true;
+                this._cursorFollow.setEnabled(restoreCursorFollow);
             }
             if (this._gameModeResourceFallbackMouseDetached && this._mouseMoveHandler) {
                 document.addEventListener('mousemove', this._mouseMoveHandler, { passive: true });

@@ -63,6 +63,7 @@ Broadcaster = Callable[[dict[str, Any]], Awaitable[int]]
 
 _PSUTIL_IMPORT_TRIED = False
 _PSUTIL: Any = None
+_NEKO_PROCESS: Any = None
 _GPU_DISABLED_UNTIL = 0.0
 _METRIC_ERROR_LOGGED: dict[str, str] = {}
 
@@ -185,6 +186,7 @@ def _read_nvidia_gpu_sample(now: float) -> dict[str, Any]:
 
 
 def collect_resource_sample() -> MetricSample:
+    global _NEKO_PROCESS
     now = time.time()
     sample: MetricSample = {
         "ts": now,
@@ -208,11 +210,14 @@ def collect_resource_sample() -> MetricSample:
         except Exception as exc:
             sample["errors"]["memory"] = _remember_metric_error("memory", exc)
         try:
-            proc = psutil.Process()
+            if _NEKO_PROCESS is None:
+                _NEKO_PROCESS = psutil.Process()
+            proc = _NEKO_PROCESS
             cpu_count = psutil.cpu_count() or 1
             sample["neko_cpu_percent"] = float(proc.cpu_percent(interval=None)) / float(cpu_count)
             sample["neko_memory_mb"] = float(proc.memory_info().rss) / (1024 * 1024)
         except Exception as exc:
+            _NEKO_PROCESS = None
             sample["errors"]["neko_process"] = _remember_metric_error("neko_process", exc)
     else:
         sample["errors"]["psutil"] = "unavailable"

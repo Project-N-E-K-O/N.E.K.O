@@ -107,6 +107,15 @@ def test_game_mode_resource_runtime_event_driven_contract():
         await new Promise(resolve => setImmediate(resolve));
         if (hostCalls.filter(x => x[0] === 'update').length !== 1) throw new Error('compact update missing');
 
+        hostContract = null;
+        emit('live2d-model-loaded');
+        await new Promise(resolve => setImmediate(resolve));
+        if (context.window.nekoGameModeResourceRuntime.getState().compactAcquired !== false) throw new Error('unsupported host kept stale compact state');
+        hostContract = {{ petInstanceId: 'pet-1', hostCapabilities: {{ compactPetWindowLeaseV1: true }} }};
+        emit('live2d-model-loaded');
+        await new Promise(resolve => setImmediate(resolve));
+        if (hostCalls.filter(x => x[0] === 'acquire').length !== 2) throw new Error('compact lease did not reacquire after host recovery');
+
         emit('pointerdown', {{ clientX: 20, clientY: 20 }});
         emit('pointerup', {{ clientX: 20, clientY: 20 }});
         await Promise.resolve();
@@ -141,6 +150,10 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (!exited) throw new Error('explicit exit failed');
         if (!managerCalls.some(x => x[0] === 'phase' && x[1] === 'idle')) throw new Error('idle restore missing');
         if (!hostCalls.some(x => x[0] === 'release')) throw new Error('lease release missing');
+        const netTranslation = managerCalls
+          .filter(x => x[0] === 'translate')
+          .reduce((sum, x) => [sum[0] + x[1], sum[1] + x[2]], [0, 0]);
+        if (netTranslation[0] !== 0 || netTranslation[1] !== 0) throw new Error('compact origin compensation not restored');
         if (!fetchCalls.some(x => x.url === '/api/game-mode-beta/resource/exit')) throw new Error('explicit exit API missing');
         if (fetchCalls.some(x => String(x.url).endsWith('/'))) throw new Error('API URL has trailing slash');
         console.log('resource runtime contract passed');

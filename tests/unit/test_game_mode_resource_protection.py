@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from main_logic import game_mode_resource_protection as game_mode_resource_protection_module
 from main_logic.game_mode_resource_protection import (
     GameModeResourceProtector,
     GameModeSettingsStore,
@@ -29,6 +30,60 @@ def normal_sample():
     sample["memory_percent"] = 40.0
     sample["gpu_percent"] = None
     return sample
+
+
+def test_resource_sample_reuses_process_for_cpu_delta_sampling(monkeypatch):
+    process_calls = 0
+
+    class Process:
+        def __init__(self):
+            self.cpu_calls = 0
+
+        def cpu_percent(self, interval=None):
+            assert interval is None
+            self.cpu_calls += 1
+            return float(self.cpu_calls * 4)
+
+        def memory_info(self):
+            return type("MemoryInfo", (), {"rss": 256 * 1024 * 1024})()
+
+    process = Process()
+
+    class Psutil:
+        @staticmethod
+        def cpu_percent(interval=None):
+            assert interval is None
+            return 25.0
+
+        @staticmethod
+        def virtual_memory():
+            return type("VirtualMemory", (), {"percent": 40.0})()
+
+        @staticmethod
+        def cpu_count():
+            return 4
+
+        @staticmethod
+        def Process():
+            nonlocal process_calls
+            process_calls += 1
+            return process
+
+    monkeypatch.setattr(game_mode_resource_protection_module, "_NEKO_PROCESS", None, raising=False)
+    monkeypatch.setattr(game_mode_resource_protection_module, "_load_psutil", lambda: Psutil)
+    monkeypatch.setattr(
+        game_mode_resource_protection_module,
+        "_read_nvidia_gpu_sample",
+        lambda _now: {"gpu_percent": None, "gpu_vram_percent": None, "gpu_error": None},
+    )
+
+    first = game_mode_resource_protection_module.collect_resource_sample()
+    second = game_mode_resource_protection_module.collect_resource_sample()
+
+    assert process_calls == 1
+    assert first["neko_cpu_percent"] == 1.0
+    assert second["neko_cpu_percent"] == 2.0
+    assert second["neko_memory_mb"] == 256.0
 
 
 def test_game_mode_runtime_starts_disabled():
