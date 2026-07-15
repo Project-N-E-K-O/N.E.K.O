@@ -25,6 +25,19 @@ from ._shared import logger
 import re
 
 
+def _interleave_link_groups(candidate_groups: list[list[dict]]) -> list[dict]:
+    """Interleave non-empty link groups row by row until all are exhausted."""
+    groups = [group for group in candidate_groups if group]
+    links: list[dict] = []
+    row = 0
+    while any(row < len(group) for group in groups):
+        for group in groups:
+            if row < len(group):
+                links.append(group[row])
+        row += 1
+    return links
+
+
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
@@ -57,13 +70,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
 
             # news 共用一个 Phase 1 候选额度；交错合并避免微博先占满 10 条后
             # 小黑盒只能拿到尾部少量名额。
-            row = 0
-            groups = [group for group in (weibo_or_twitter, xhh_links) if group]
-            while any(row < len(group) for group in groups):
-                for group in groups:
-                    if row < len(group):
-                        links.append(group[row])
-                row += 1
+            links.extend(_interleave_link_groups([weibo_or_twitter, xhh_links]))
         
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -124,12 +131,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 if group:
                     platform_links.append(group)
 
-            row = 0
-            while any(row < len(group) for group in platform_links):
-                for group in platform_links:
-                    if row < len(group):
-                        links.append(group[row])
-                row += 1
+            links.extend(_interleave_link_groups(platform_links))
 
         elif mode == 'music':
             items = raw_data.get('data', [])

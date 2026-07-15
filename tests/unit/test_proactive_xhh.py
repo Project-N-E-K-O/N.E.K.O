@@ -13,6 +13,7 @@ from utils.web_scraper.trending_content import (
     format_xhh_feed,
     normalize_xhh_feed,
 )
+from main_routers.system_router.proactive_content import _log_news_content
 from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
@@ -42,6 +43,16 @@ SAMPLE_PAYLOAD = {
         ]
     },
 }
+
+
+@pytest.mark.parametrize(
+    "xhh_data",
+    [None, {"success": True, "posts": None}],
+)
+def test_log_news_content_normalizes_optional_xhh_data(xhh_data, capsys):
+    _log_news_content("test", {"xhh": xhh_data})
+
+    assert capsys.readouterr().out == ""
 
 
 def test_proactive_presets_route_xhh_through_news():
@@ -300,6 +311,39 @@ def test_news_links_round_robin_weibo_and_xhh():
 
     assert [link["source"] for link in links[:4]] == ["微博", "小黑盒", "微博", "小黑盒"]
     assert any(link["source"] == "小黑盒" for link in links[:12])
+
+
+def test_personal_links_interleave_non_empty_groups_until_exhausted():
+    raw = {
+        "region": "china",
+        "bilibili_dynamic": {
+            "dynamics": [
+                {"content": f"bilibili-{index}", "url": f"https://bilibili/{index}"}
+                for index in range(3)
+            ],
+        },
+        "weibo_dynamic": {"statuses": []},
+        "douyin_dynamic": {
+            "dynamics": [{"content": "douyin-0", "url": "https://douyin/0"}],
+        },
+        "kuaishou_dynamic": {
+            "dynamics": [
+                {"content": f"kuaishou-{index}", "url": f"https://kuaishou/{index}"}
+                for index in range(2)
+            ],
+        },
+    }
+
+    links = _extract_links_from_raw("personal", raw)
+
+    assert [link["title"] for link in links] == [
+        "bilibili-0",
+        "douyin-0",
+        "kuaishou-0",
+        "bilibili-1",
+        "kuaishou-1",
+        "bilibili-2",
+    ]
 
 
 def test_xhh_is_hidden_as_a_standalone_menu_mode():
