@@ -98,7 +98,10 @@ class _AudioMixin:
             self._noise_reduction_enabled = enabled
             processor = self._audio_processor
             if processor is not None:
-                processor.set_enabled(enabled)
+                try:
+                    processor.set_enabled(enabled)
+                except Exception as exc:
+                    logger.error(f"Error toggling audio noise reduction: {exc}")
 
     async def _close_audio_processor(self) -> None:
         """Quiesce executor processing before releasing RNNoise/soxr state."""

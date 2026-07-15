@@ -213,6 +213,21 @@ async def test_live_noise_reduction_toggle_waits_for_chunk_processing() -> None:
     assert client._noise_reduction_enabled is False
 
 
+@pytest.mark.asyncio
+async def test_audio_toggle_failure_does_not_escape_session_setup() -> None:
+    class _Processor:
+        def set_enabled(self, enabled: bool) -> None:
+            raise RuntimeError("native close failed")
+
+    client = object.__new__(OmniRealtimeClient)
+    client._noise_reduction_enabled = True
+    client._audio_processor = _Processor()
+    client._audio_processing_lock = asyncio.Lock()
+
+    assert await client.set_audio_noise_reduction_enabled(False) is None
+    assert client._noise_reduction_enabled is False
+
+
 def test_recreated_audio_processor_preserves_noise_reduction_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
