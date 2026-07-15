@@ -425,7 +425,7 @@ def memory_export_filename(
     pseudonymised at that tier anyway), while ``standard`` / ``strict`` use a
     neutral ``角色`` placeholder so the *filename itself* does not leak the
     identity that the bundle contents just pseudonymised.
-    """
+    """  # noqa: DOCSTRING_CJK
     date = (now or datetime.now()).strftime("%Y-%m-%d")
     if tier == "minimal":
         label = _clean_filename_segment(display_name or character or "角色")

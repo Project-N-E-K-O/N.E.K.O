@@ -234,7 +234,7 @@ def apply_identity_map(obj: Any, mapping: dict[str, str]) -> Any:
 
     Longer names are replaced first so a name that is a substring of another
     (``"NEKO"`` vs ``"NEKO酱"``) does not get partially clobbered.
-    """
+    """  # noqa: DOCSTRING_CJK
     if not mapping:
         return copy.deepcopy(obj)
     ordered = sorted(mapping.items(), key=lambda kv: len(kv[0]), reverse=True)
@@ -329,7 +329,7 @@ def redact_export_bundle(
     ``{"tier", "identity_map_size", "strict_transcript_omitted", "warnings"}``.
     ``info`` deliberately does NOT contain the pseudonym → real-name reverse
     map (§5.3 铁律) — only the count.
-    """
+    """  # noqa: DOCSTRING_CJK
     if tier not in EXPORT_REDACTION_TIERS:
         raise ValueError(
             f"unknown redaction tier {tier!r}; expected one of {EXPORT_REDACTION_TIERS}"

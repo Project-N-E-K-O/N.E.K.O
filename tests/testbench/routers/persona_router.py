@@ -523,7 +523,7 @@ def _content_disposition(filename: str) -> str:
     A bare ``filename="..."`` header is latin-1, so a Chinese name cannot ride
     in it. Emit both: an ASCII fallback plus the RFC 5987 ``filename*=UTF-8''``
     form modern browsers prefer (mirrors ``memory_router._content_disposition``).
-    """
+    """  # noqa: DOCSTRING_CJK
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
     if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
         ascii_fallback = "NEKO_character_export.zip"
@@ -621,7 +621,7 @@ async def export_real_character(name: str) -> Response:
     Pure read — takes NO session lock (mirrors ``/real_characters``); triggers no
     autosave / snapshot / write. I/O + compression run off the event loop via
     ``asyncio.to_thread``. The zip is streamed from memory (no temp file).
-    """
+    """  # noqa: DOCSTRING_CJK
     session = _require_session()
     safe_name = _assert_safe_character_name(name)
 

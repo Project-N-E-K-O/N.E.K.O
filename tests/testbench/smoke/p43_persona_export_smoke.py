@@ -25,7 +25,7 @@ Env isolation mirrors p35_persona_archive_import_smoke.py.
 Usage::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p43_persona_export_smoke.py
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import base64

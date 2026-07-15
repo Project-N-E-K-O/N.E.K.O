@@ -581,7 +581,7 @@ def _content_disposition(filename: str) -> str:
     which a bare ``filename="..."`` cannot carry (header is latin-1). Emit both:
     an ASCII fallback (``filename=``, for ancient clients) plus the RFC 5987
     ``filename*=UTF-8''<percent-encoded>`` that every modern browser prefers.
-    """
+    """  # noqa: DOCSTRING_CJK
     ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
     if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
         ascii_fallback = "NEKO_testbench_memory_export.zip"
