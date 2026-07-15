@@ -75,6 +75,17 @@ router = APIRouter(prefix="/api/auth", tags=["认证管理"], dependencies=[Depe
 templates = Jinja2Templates(directory="templates")
 login_manager = PlatformLoginManager()
 
+# Only these credential types can back the personal-dynamics proactive source.
+# Keep this aligned with ``utils.web_scraper.personal_dynamics``.
+PERSONAL_DYNAMIC_PLATFORMS = frozenset({
+    "bilibili",
+    "douyin",
+    "kuaishou",
+    "weibo",
+    "reddit",
+    "twitter",
+})
+
 # ============ 0. 数据模型与校验 ============
 
 class CookieSubmit(BaseModel):
@@ -191,6 +202,7 @@ async def get_all_cookies_status():
             platform_key: {
                 "has_cookies": bool(cookies),
                 "cookies_count": len(cookies) if cookies else 0,
+                "supports_personal_dynamic": platform_key in PERSONAL_DYNAMIC_PLATFORMS,
             }
             for platform_key, cookies in zip(platforms, loaded)
         }

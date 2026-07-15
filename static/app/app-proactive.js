@@ -938,7 +938,10 @@
                 for (var _ref of Object.entries(result.data)) {
                     var platform = _ref[0];
                     var info = _ref[1];
-                    if (platform !== 'platforms' && info.has_cookies) {
+                    // A credential can belong to a non-feed platform (for example
+                    // NetEase Music or Xiaoheihe).  Presence alone must not enable
+                    // the personal-dynamics source.
+                    if (platform !== 'platforms' && info.has_cookies && info.supports_personal_dynamic === true) {
                         availablePlatforms.push(platform);
                     }
                 }
