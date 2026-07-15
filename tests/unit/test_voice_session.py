@@ -323,6 +323,54 @@ async def test_receive_text_delta(realtime_client):
     assert response_done_mock.called
 
 
+@pytest.mark.unit
+async def test_late_delta_from_cancelled_response_is_not_forwarded_after_new_response():
+    client = _make_manual_client(model="gpt-4o-realtime-preview", api_type="openai")
+    events = [
+        json.dumps({"type": "response.created", "response": {"id": "resp_old"}}),
+        json.dumps({"type": "response.created", "response": {"id": "resp_new"}}),
+        json.dumps(
+            {
+                "type": "response.text.delta",
+                "response_id": "resp_old",
+                "delta": "stale",
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.audio.delta",
+                "response_id": "resp_old",
+                "delta": base64.b64encode(b"stale-audio").decode("ascii"),
+            }
+        ),
+        json.dumps({"type": "response.done", "response": {"id": "resp_old"}}),
+        json.dumps(
+            {
+                "type": "response.text.delta",
+                "response_id": "resp_new",
+                "delta": "fresh",
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.audio.delta",
+                "response_id": "resp_new",
+                "delta": base64.b64encode(b"fresh-audio").decode("ascii"),
+            }
+        ),
+        json.dumps({"type": "response.done", "response": {"id": "resp_new"}}),
+    ]
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = events
+    client.on_text_delta = AsyncMock()
+    client.on_audio_delta = AsyncMock()
+
+    await client.handle_messages()
+
+    client.on_text_delta.assert_awaited_once_with("fresh", True)
+    client.on_audio_delta.assert_awaited_once_with(b"fresh-audio")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # VAD MANUAL turn detection tests
 # ──────────────────────────────────────────────────────────────────────

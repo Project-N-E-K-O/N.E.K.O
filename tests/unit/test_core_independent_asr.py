@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -99,6 +100,72 @@ async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
+async def test_late_first_final_then_second_final_recovers_in_linear_order() -> None:
+    runtime = _Runtime()
+    epoch = runtime._asr_session_epoch
+    events: list[str] = []
+
+    runtime.session.handle_interruption.side_effect = lambda: events.append(
+        "interruption"
+    )
+    runtime.handle_new_message.side_effect = lambda: events.append("prepare")
+    runtime.handle_input_transcript.side_effect = (
+        lambda text, **_kwargs: events.append(f"transcript:{text}") or True
+    )
+    runtime.session.create_response.side_effect = lambda text: events.append(
+        f"response:{text}"
+    )
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_final("first fragment", epoch, "openai")
+    await runtime._handle_independent_asr_final("second fragment", epoch, "openai")
+
+    assert events == [
+        "interruption",
+        "prepare",
+        "transcript:first fragment",
+        "response:first fragment",
+        "interruption",
+        "prepare",
+        "transcript:second fragment",
+        "response:second fragment",
+    ]
+
+
+async def test_three_pending_finals_recover_without_request_multiplication() -> None:
+    runtime = _Runtime()
+    epoch = runtime._asr_session_epoch
+
+    for _ in range(3):
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED,
+            epoch,
+        )
+
+    for text in ("first", "second", "third"):
+        await runtime._handle_independent_asr_final(text, epoch, "openai")
+
+    assert runtime.session.handle_interruption.await_count == 3
+    assert runtime.handle_new_message.await_count == 3
+    assert [call.args[0] for call in runtime.handle_input_transcript.await_args_list] == [
+        "first",
+        "second",
+        "third",
+    ]
+    assert [call.args[0] for call in runtime.session.create_response.await_args_list] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
 async def test_consumed_or_suppressed_final_does_not_create_response() -> None:
     runtime = _Runtime()
     runtime.handle_input_transcript.return_value = False
@@ -175,6 +242,36 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     assert runtime._asr_provider == "gemini"
     assert runtime._asr_route_mode == "independent"
     assert factory.call_args.args == ("gemini",)
+
+
+@pytest.mark.parametrize("core_type", ["qwen", "qwen_intl"])
+async def test_qwen_core_keeps_native_audio_when_text_injection_is_unsupported(
+    monkeypatch,
+    core_type: str,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = core_type
+    factory = MagicMock()
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    factory.assert_not_called()
+    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_session is None
+    runtime.send_status.assert_awaited_once()
+    status_payload = json.loads(runtime.send_status.await_args.args[0])
+    assert status_payload == {
+        "code": "ASR_INDEPENDENT_UNAVAILABLE",
+        "details": {"provider": core_type},
+    }
 
 
 async def test_start_failure_keeps_native_omni_without_leaking_error(monkeypatch) -> None:

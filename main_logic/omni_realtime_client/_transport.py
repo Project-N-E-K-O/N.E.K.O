@@ -871,6 +871,29 @@ class _TransportMixin:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+
+                # A cancelled response can still emit buffered events after a
+                # replacement response has become current.  Providers that
+                # include response identity let us reject those late events
+                # without changing the legacy behaviour of id-less proxies.
+                if event_type != "response.created":
+                    event_response_id = event.get("response_id")
+                    if event_type == "response.done" and not event_response_id:
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            event_response_id = response.get("id")
+                    if (
+                        event_response_id
+                        and self._current_response_id
+                        and event_response_id != self._current_response_id
+                    ):
+                        logger.info(
+                            "Dropping stale response event type=%s response_id=%s current_response_id=%s",
+                            event_type,
+                            event_response_id,
+                            self._current_response_id,
+                        )
+                        continue
                 # ── Tool calling events ────────────────────────────
                 # Three providers, three flavours of the same idea:
                 #   - OpenAI Realtime (gpt): the canonical event is the

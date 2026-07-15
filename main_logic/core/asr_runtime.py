@@ -68,7 +68,12 @@ class AsrRuntimeMixin:
             return
 
         route = CORE_ASR_ROUTES.get(core_type)
-        if route is None or route.provider_key == "free":
+        # Qwen Realtime's public WebSocket protocol accepts microphone audio
+        # turns, but not external user-role text turns.  Sending an ASR final
+        # through conversation.item.create is silently ignored by the current
+        # service, so keep native Omni audio instead of reporting a false
+        # independent-ASR success.  qwen_intl maps to the same provider key.
+        if route is None or route.provider_key in {"free", "qwen"}:
             await self._send_asr_status("ASR_INDEPENDENT_UNAVAILABLE", core_type or "unknown")
             return
 
