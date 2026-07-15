@@ -767,37 +767,6 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with success status and news content
     """
-    blocked_news_result = {
-        'success': False,
-        'error': 'blocked: tieba-only proactive news test',
-        'trending': [],
-    }
-    try:
-        logger.info("News source gate active: fetching Tieba only")
-        tieba_result = await fetch_tieba_content(
-            limit=limit,
-            candidate_limit=max(_tieba_limit(limit) * 4, 20),
-        )
-        success = bool(tieba_result.get('success'))
-        response: Dict[str, Any] = {
-            'success': success,
-            'region': 'china',
-            'news': blocked_news_result,
-            'tieba': tieba_result,
-        }
-        if not success:
-            response['error'] = tieba_result.get('error') or 'unable to fetch Tieba material'
-        return response
-    except Exception as e:
-        logger.error(f"Failed to fetch Tieba-only news content: error={e}")
-        return {
-            'success': False,
-            'region': 'china',
-            'news': blocked_news_result,
-            'tieba': {'success': False, 'posts': [], 'topics': [], 'error': str(e)},
-            'error': str(e),
-        }
-
     china_region = is_china_region()
     region = 'china' if china_region else 'non-china'
     try:
@@ -935,14 +904,19 @@ def _prune_tieba_recent_keys(now: float | None = None) -> None:
         _TIEBA_RECENT_KEYS.popitem(last=False)
 
 
-def _filter_tieba_recent_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _filter_tieba_recent_items(items: list[dict[str, Any]], *, minimum: int = 1) -> list[dict[str, Any]]:
     _prune_tieba_recent_keys()
     fresh: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
     for item in items:
         keys = _tieba_item_recent_keys(item)
         if not keys or not any(key in _TIEBA_RECENT_KEYS for key in keys):
             fresh.append(item)
-    return fresh
+        else:
+            recent.append(item)
+    if len(fresh) >= minimum:
+        return fresh
+    return [*fresh, *recent[:max(0, minimum - len(fresh))]]
 
 
 def _remember_tieba_items(posts: list[dict[str, Any]], topics: list[dict[str, Any]]) -> None:
@@ -1074,6 +1048,11 @@ def _tieba_post_to_hot_reply(detail_post: Any, source_post: dict[str, Any]) -> d
 
 
 async def _enrich_tieba_posts_with_hot_replies(posts: list[dict[str, Any]], errors: list[str]) -> None:
+    """Attach a small HOT-floor sample to top Tieba candidates.
+
+    This is best-effort enrichment for prompt context. Detail fetch failures are
+    recorded as warnings and must not discard the already usable thread list.
+    """
     targets = [post for post in posts if _clean_tieba_text(post.get("tid"))][:_TIEBA_DETAIL_ENRICH_POSTS]
     if not targets:
         return
@@ -1325,8 +1304,10 @@ async def fetch_tieba_content(
     """
     Fetch public Tieba community material for proactive chat.
 
-    This is intentionally login-free and read-only: it reads hot topics and
-    public forum thread lists, never cookies, floor details, or account state.
+    This is intentionally login-free and read-only: it reads public hot topics
+    and forum thread lists, then best-effort enriches a few selected threads
+    with HOT floor/comment snippets. It never sends cookies, writes content, or
+    reads account state.
     """
     normalized_limit = _tieba_limit(limit)
     normalized_candidate_limit = _tieba_candidate_limit(candidate_limit, normalized_limit)
@@ -1368,11 +1349,11 @@ async def fetch_tieba_content(
 
     posts = _dedupe_tieba_items(posts)
     posts.sort(key=_tieba_rank_key, reverse=True)
-    posts = _filter_tieba_recent_items(posts)
+    posts = _filter_tieba_recent_items(posts, minimum=normalized_limit)
     posts = _diversify_tieba_posts(posts, normalized_candidate_limit)
     topics = _dedupe_tieba_items(topics)
     topics.sort(key=lambda item: (_tieba_conversation_score(item), _tieba_heat_score(item)), reverse=True)
-    topics = _filter_tieba_recent_items(topics)
+    topics = _filter_tieba_recent_items(topics, minimum=normalized_limit)
     topics = topics[:normalized_candidate_limit]
 
     if posts:
