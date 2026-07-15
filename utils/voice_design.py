@@ -194,10 +194,16 @@ async def _minimax_design_voice(
     base_url: str,
     voice_prompt: str,
     preview_text: str,
+    voice_id: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> tuple[str, str | None]:
-    """Create a reusable MiniMax voice; the upstream API assigns voice_id."""
+    """Create a reusable MiniMax voice with an optional caller-selected ID."""
     payload = {"prompt": voice_prompt, "preview_text": preview_text}
+    requested_voice_id = str(voice_id or "").strip()
+    # MiniMax documents voice_id as optional: include NEKO's collision-safe
+    # prefixed ID when supplied, otherwise preserve upstream auto-generation.
+    if requested_voice_id:
+        payload["voice_id"] = requested_voice_id
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

@@ -1006,13 +1006,17 @@ async def voice_design(request: Request):
             base_url = get_minimax_base_url(provider)
             provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
             storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
+            original_prefix, requested_voice_id = _build_minimax_request_prefix(prefix, provider_label)
             voice_id, request_id = await _minimax_design_voice(
                 api_key=api_key,
                 base_url=base_url,
                 voice_prompt=voice_prompt,
                 preview_text=preview_text,
+                voice_id=requested_voice_id,
             )
             voice_data.update({
+                'original_prefix': original_prefix,
+                'minimax_prefix': requested_voice_id,
                 'minimax_base_url': base_url,
             })
         elif provider == 'elevenlabs':

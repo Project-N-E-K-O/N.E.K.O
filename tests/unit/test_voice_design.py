@@ -332,6 +332,7 @@ async def test_minimax_design_payload_and_parse():
             base_url="https://api.minimax.io",
             voice_prompt="a warm clear voice",
             preview_text="hello there",
+            voice_id="Aria12345678",
             http_client=client,
         )
 
@@ -343,7 +344,25 @@ async def test_minimax_design_payload_and_parse():
     assert req["body"] == {
         "prompt": "a warm clear voice",
         "preview_text": "hello there",
+        "voice_id": "Aria12345678",
     }
+
+
+@pytest.mark.unit
+async def test_minimax_design_omits_optional_voice_id_when_not_requested():
+    from utils import voice_design as cr
+
+    transport = _FakeMiniMaxDesignTransport()
+    async with httpx.AsyncClient(transport=transport) as client:
+        await cr._minimax_design_voice(
+            api_key="mini-key",
+            base_url="https://api.minimax.io",
+            voice_prompt="a warm clear voice",
+            preview_text="hello there",
+            http_client=client,
+        )
+
+    assert "voice_id" not in transport.requests[0]["body"]
 
 
 @pytest.mark.unit
@@ -486,6 +505,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     async def fake_design(**kwargs):
         assert kwargs["api_key"] == "minimax-intl-key"
         assert kwargs["base_url"] == "https://api.minimax.io"
+        assert kwargs["voice_id"].startswith("aria")
         # MiniMax's documented 500-character cap applies to preview_text, not prompt.
         assert kwargs["voice_prompt"] == long_prompt
         assert kwargs["preview_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
@@ -509,8 +529,8 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
     assert saved["voice_data"]["provider"] == "minimax_intl"
     assert saved["voice_data"]["source"] == "design"
     assert saved["voice_data"]["prefix"] == "aria"
-    assert "original_prefix" not in saved["voice_data"]
-    assert "minimax_prefix" not in saved["voice_data"]
+    assert saved["voice_data"]["original_prefix"] == "aria"
+    assert saved["voice_data"]["minimax_prefix"].startswith("aria")
     assert saved["voice_data"]["minimax_base_url"] == "https://api.minimax.io"
 
 
