@@ -35,3 +35,15 @@ def test_predict_rejects_invalid_model_probability(output):
     runtime = _runtime(output)
     with pytest.raises(RuntimeInferenceError):
         runtime.predict_probability(np.zeros(16_000, dtype=np.float32))
+
+
+def test_invalid_probabilities_open_shared_inference_circuit():
+    runtime = _runtime(float("nan"))
+    for expected_state in (RuntimeState.DEGRADED, RuntimeState.DEGRADED):
+        with pytest.raises(RuntimeInferenceError):
+            runtime.predict_probability(np.zeros(16_000, dtype=np.float32))
+        assert runtime.state is expected_state
+    with pytest.raises(RuntimeInferenceError):
+        runtime.predict_probability(np.zeros(16_000, dtype=np.float32))
+    assert runtime.state is RuntimeState.UNAVAILABLE
+    assert runtime.unavailable_reason == "inference_circuit_open:RuntimeInferenceError"

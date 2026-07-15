@@ -10,7 +10,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from .contracts import SmartTurnConfig, SpeechActivityEvent
-from .onnx_runtime import OnnxModelRuntime
+from .onnx_runtime import OnnxModelRuntime, RuntimeInferenceError
 
 
 class SileroVad(OnnxModelRuntime):
@@ -56,14 +56,19 @@ class SileroVad(OnnxModelRuntime):
                         "state": self._lstm_state,
                         "sr": self._sample_rate,
                     },
+                    validate_outputs=self._validate_outputs,
                 )
                 probability = float(np.asarray(outputs[0]).reshape(-1)[0])
-                if not 0.0 <= probability <= 1.0:
-                    raise ValueError("Silero returned a probability outside [0, 1]")
                 self._lstm_state = np.asarray(outputs[1], dtype=np.float32)
                 self._context = window[-self.CONTEXT_SAMPLES :].copy()
                 probabilities.append(probability)
         return probabilities
+
+    @staticmethod
+    def _validate_outputs(outputs: Any) -> None:
+        probability = float(np.asarray(outputs[0]).reshape(-1)[0])
+        if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise RuntimeInferenceError("Silero returned a probability outside [0, 1]")
 
 
 class SileroActivityGate:

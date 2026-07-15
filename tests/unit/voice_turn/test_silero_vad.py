@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from main_logic.voice_turn.contracts import SmartTurnConfig, SpeechActivityEvent
-from main_logic.voice_turn.onnx_runtime import RuntimeState
+from main_logic.voice_turn.onnx_runtime import RuntimeInferenceError, RuntimeState
 from main_logic.voice_turn.silero_vad import SileroActivityGate, SileroVad
 
 
@@ -41,6 +41,23 @@ def test_silero_reset_clears_context_state_and_pending_audio():
     assert not vad._pending.size
     assert np.all(vad._context == 0)
     assert np.all(vad._lstm_state == 0)
+
+
+def test_silero_invalid_probability_uses_shared_inference_circuit():
+    class InvalidSession:
+        def run(self, _output_names, inputs):
+            return [np.asarray([[np.nan]], dtype=np.float32), inputs["state"]]
+
+    vad = SileroVad(enabled=True, inference_error_limit=2)
+    vad._session = InvalidSession()
+    vad._state = RuntimeState.READY
+    pcm = np.zeros(512, dtype=np.int16).tobytes()
+    with pytest.raises(RuntimeInferenceError):
+        vad.process_pcm16(pcm)
+    assert vad.state is RuntimeState.DEGRADED
+    with pytest.raises(RuntimeInferenceError):
+        vad.process_pcm16(pcm)
+    assert vad.state is RuntimeState.UNAVAILABLE
 
 
 class _NoopVad:

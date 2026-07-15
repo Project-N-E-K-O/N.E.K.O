@@ -628,7 +628,7 @@ jobs:
             missing=1
           fi
           uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py \
-            --asset-dir dist/Xiao8/data/vad_models --offline || missing=1
+            --asset-dir "$NEKO_NUITKA_RUNTIME_DIR/data/vad_models" --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---

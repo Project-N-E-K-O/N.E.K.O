@@ -33,8 +33,16 @@ class SmartTurnV3(OnnxModelRuntime):
         if np.asarray(audio).size == 0:
             raise ValueError("Smart Turn requires non-empty audio")
         features = self._features.extract(np.asarray(audio))[None].astype(np.float32)
-        outputs = self._run_session(None, {self._input_name: features})
+        outputs = self._run_session(
+            None,
+            {self._input_name: features},
+            validate_outputs=self._validate_outputs,
+        )
+        probability = float(np.asarray(outputs[0]).reshape(-1)[0])
+        return probability
+
+    @staticmethod
+    def _validate_outputs(outputs: Any) -> None:
         probability = float(np.asarray(outputs[0]).reshape(-1)[0])
         if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
             raise RuntimeInferenceError("Smart Turn returned an invalid probability")
-        return probability

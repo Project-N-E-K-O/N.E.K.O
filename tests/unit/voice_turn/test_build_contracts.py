@@ -17,4 +17,9 @@ def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
         workflow = (ROOT / relative).read_text(encoding="utf-8")
         assert "tools/voice_eval/prepare_voice_turn_assets.py" in workflow
         assert "--include-data-dir=data/vad_models=data/vad_models" in workflow
-        assert "--asset-dir dist/Xiao8/data/vad_models --offline" in workflow
+        expected_asset_dir = (
+            '--asset-dir "$NEKO_NUITKA_RUNTIME_DIR/data/vad_models" --offline'
+            if relative.endswith("build-desktop.yml")
+            else "--asset-dir dist/Xiao8/data/vad_models --offline"
+        )
+        assert expected_asset_dir in workflow

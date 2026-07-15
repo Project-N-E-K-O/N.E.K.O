@@ -343,7 +343,10 @@ async def _step_receiver(
                             generation=key[0],
                             buffer_epoch=key[1],
                             utterance_id=key[2],
-                            text=str(event.get("text") or ""),
+                            text=(
+                                str(event.get("text") or "")
+                                + str(event.get("stash") or "")
+                            ),
                         )
                     )
                 continue

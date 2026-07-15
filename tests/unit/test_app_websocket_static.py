@@ -30,6 +30,31 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
+def test_external_asr_preview_uses_owned_react_message_id():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    preview_helper = source.split("function upsertExternalAsrPreview(text)", 1)[1].split(
+        "function removeExternalAsrPreview()", 1
+    )[0]
+    remove_helper = source.split("function removeExternalAsrPreview()", 1)[1].split(
+        "function websocketTraceEnabled()", 1
+    )[0]
+    event_block = source.split("// -------- user_transcript_preview", 1)[1].split(
+        "// -------- user_transcript --------", 1
+    )[0]
+    final_block = source.split("// -------- user_transcript --------", 1)[1].split(
+        "// --------", 1
+    )[0]
+
+    assert "reactChatWindowHost" in preview_helper
+    assert "host.appendMessage({" in preview_helper
+    assert "host.updateMessage(existingId" in preview_helper
+    assert "querySelectorAll" not in event_block
+    assert "window.appendMessage" not in event_block
+    assert "host.removeMessage(messageId)" in remove_helper
+    assert "removeExternalAsrPreview();" in final_block
+
+
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

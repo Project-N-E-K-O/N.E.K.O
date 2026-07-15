@@ -17,7 +17,10 @@ class Pcm16RingBuffer:
     def __init__(self, max_seconds: float = 8.0) -> None:
         if max_seconds <= 0:
             raise ValueError("max_seconds must be positive")
-        self._capacity_bytes = int(max_seconds * self.SAMPLE_RATE) * self.SAMPLE_WIDTH_BYTES
+        capacity_samples = int(max_seconds * self.SAMPLE_RATE)
+        if capacity_samples <= 0:
+            raise ValueError("max_seconds must contain at least one PCM sample")
+        self._capacity_bytes = capacity_samples * self.SAMPLE_WIDTH_BYTES
         self._chunks: deque[bytes] = deque()
         self._size_bytes = 0
         self._lock = Lock()

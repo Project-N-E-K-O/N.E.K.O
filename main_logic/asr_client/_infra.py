@@ -605,15 +605,22 @@ class _RealtimeAsrSessionImpl:
         while True:
             item = await self._callback_queue.get()
             try:
+                event = item.event
+                async with self._operation_lock:
+                    if (
+                        event.generation != self._generation
+                        or event.buffer_epoch != self._buffer_epoch
+                    ):
+                        continue
                 if self._on_transcript_event is not None:
                     try:
-                        await self._on_transcript_event(item.event)
+                        await self._on_transcript_event(event)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
                         logger.exception("ASR transcript event callback failed")
-                if item.event.kind == "final":
-                    await self._on_input_transcript(item.event.text)
+                if event.kind == "final":
+                    await self._on_input_transcript(event.text)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -667,12 +674,20 @@ class _RealtimeAsrSessionImpl:
             text = event.text.strip()
             if not text:
                 return False
+            key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
                 if (
                     self._state is not _SessionState.READY
                     or event.generation != self._generation
                     or event.buffer_epoch != self._buffer_epoch
                 ):
+                    return False
+                valid_keys = (
+                    self._active_utterance_keys
+                    if self._config.endpointing_mode == "server_vad"
+                    else self._committed_utterance_keys
+                )
+                if key not in valid_keys or key in self._final_keys:
                     return False
             assert self._callback_queue is not None
             await self._callback_queue.put(

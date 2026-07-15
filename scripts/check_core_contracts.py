@@ -94,7 +94,7 @@ import sys
 from pathlib import Path
 
 FACADE_MODULE_ALIAS = "_core_facade"
-OWNER_SUBMODULES = {"_shared", "callback_render", "notices"}
+OWNER_SUBMODULES = {"_shared", "asr_runtime", "callback_render", "notices"}
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
 
 

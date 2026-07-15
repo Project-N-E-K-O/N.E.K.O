@@ -99,15 +99,27 @@ async def openai_asr_worker(
         quality="HQ",
     )
 
-    async def _emit_error(error_code: str, error_message: str) -> None:
+    async def _emit_error(
+        error_code: str,
+        error_message: str,
+        *,
+        item_key: _UtteranceKey | None = None,
+    ) -> None:
         nonlocal failure_sent
         if failure_sent:
             return
         failure_sent = True
+        generation, buffer_epoch, utterance_id = item_key or (
+            last_generation,
+            0,
+            None,
+        )
         await response_queue.put(
             _AsrWorkerEvent(
                 kind="error",
-                generation=last_generation,
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
                 error_code=error_code,
                 error_message=error_message,
             )
@@ -150,6 +162,14 @@ async def openai_asr_worker(
                     )
                 )
             item_keys.pop(item_id, None)
+            return
+        if event_type == "conversation.item.input_audio_transcription.failed":
+            item_keys.pop(item_id, None)
+            await _emit_error(
+                "ASR_OPENAI_TRANSCRIPTION_FAILED",
+                "OpenAI failed to transcribe the committed utterance",
+                item_key=key,
+            )
 
     async def _receive_events(ready_event: asyncio.Event) -> None:
         nonlocal ready_sent
@@ -189,6 +209,7 @@ async def openai_asr_worker(
                 if event_type in {
                     "conversation.item.input_audio_transcription.delta",
                     "conversation.item.input_audio_transcription.completed",
+                    "conversation.item.input_audio_transcription.failed",
                 }:
                     await _handle_transcript_event(event)
                     continue

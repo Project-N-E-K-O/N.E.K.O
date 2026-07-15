@@ -359,9 +359,8 @@ async def _qwen_receiver(
                 if not state.pending_manual_commits:
                     continue
                 if item_id:
-                    state.item_keys.setdefault(
-                        item_id, state.pending_manual_commits.popleft()
-                    )
+                    if item_id not in state.item_keys:
+                        state.item_keys[item_id] = state.pending_manual_commits.popleft()
                 elif state.legacy_manual_key is None:
                     state.legacy_manual_key = state.pending_manual_commits[0]
                 continue
@@ -450,6 +449,8 @@ async def _qwen_receiver(
                             and state.pending_manual_commits[0] == key
                         ):
                             state.pending_manual_commits.popleft()
+                        if state.pending_manual_commits:
+                            state.legacy_manual_key = state.pending_manual_commits[0]
                 continue
 
             if event_type == "session.finished":

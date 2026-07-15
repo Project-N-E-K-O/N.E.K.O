@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 from threading import Lock
+from collections.abc import Callable
 from typing import Any
 
 from .asset_manifest import AssetManifestError, resolve_verified_assets
@@ -115,7 +116,13 @@ class OnnxModelRuntime:
     def _load_verified(self, paths: dict[str, Path], manifest: Any, ort: Any) -> None:
         raise NotImplementedError
 
-    def _run_session(self, output_names: Any, inputs: dict[str, Any]) -> Any:
+    def _run_session(
+        self,
+        output_names: Any,
+        inputs: dict[str, Any],
+        *,
+        validate_outputs: Callable[[Any], None] | None = None,
+    ) -> Any:
         if not self.is_ready or self._session is None:
             raise RuntimeUnavailableError(self._reason or self._state.value)
         with self._inference_lock:
@@ -124,20 +131,30 @@ class OnnxModelRuntime:
                 if session is None:
                     raise RuntimeUnavailableError("runtime_closed")
                 outputs = session.run(output_names, inputs)
+                if validate_outputs is not None:
+                    validate_outputs(outputs)
             except RuntimeUnavailableError:
                 raise
             except Exception as exc:
-                self._consecutive_errors += 1
-                if self._consecutive_errors >= self._inference_error_limit:
-                    self._mark_unavailable(f"inference_circuit_open:{type(exc).__name__}")
-                else:
-                    self._state = RuntimeState.DEGRADED
-                    self._reason = f"inference_error:{type(exc).__name__}"
-                raise RuntimeInferenceError(str(exc)) from exc
+                raise self._record_inference_failure(exc) from exc
             self._consecutive_errors = 0
             self._state = RuntimeState.READY
             self._reason = None
             return outputs
+
+    def _record_inference_failure(self, exc: Exception) -> RuntimeInferenceError:
+        """Count provider and semantic-output failures in the same breaker."""
+
+        self._consecutive_errors += 1
+        error_name = type(exc).__name__
+        if self._consecutive_errors >= self._inference_error_limit:
+            self._mark_unavailable(f"inference_circuit_open:{error_name}")
+        else:
+            self._state = RuntimeState.DEGRADED
+            self._reason = f"inference_error:{error_name}"
+        if isinstance(exc, RuntimeInferenceError):
+            return exc
+        return RuntimeInferenceError(str(exc))
 
     def _mark_unavailable(self, reason: str) -> None:
         self._session = None
