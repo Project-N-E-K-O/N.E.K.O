@@ -130,6 +130,18 @@ describe('message-schema', () => {
       timestamp: Date.now(),
     });
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+
+    expect(() => props.onAvatarInteraction?.({
+      interactionId: 'avatar-int-invalid',
+      toolId: 'fist',
+      actionId: 'bonk',
+      target: 'avatar',
+      pointer: { clientX: 10, clientY: 20 },
+      intensity: 'normal',
+      touchZone: 'head',
+      timestamp: Date.now(),
+    } as never)).toThrow(ZodError);
+    expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
   });
 
   it('keeps validated host callback identities stable across repeated prop parsing', () => {

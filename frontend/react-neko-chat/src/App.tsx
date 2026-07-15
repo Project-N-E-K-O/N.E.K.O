@@ -5066,7 +5066,6 @@ function CompactChatApp({
           compactToolOriginSuppressClickRef.current = false;
           return;
         }
-        clearActiveAvatarToolSelection();
         // onCompactMinimizeRequest 是可选 prop：真正把 surfaceMode 切到 'minimized'
         // 的是宿主回调，切回 minimized 后才会复位 compactCollapsing。宿主没传回调时
         // 若仍 setCompactCollapsing(true)，模式永不变、collapsing 永不复位，蓝条/胶囊
@@ -5074,6 +5073,7 @@ function CompactChatApp({
         if (!onCompactMinimizeRequest) {
           return;
         }
+        clearActiveAvatarToolSelection();
         // #3 折叠时若历史区已开，异步触发其收回动画（与折叠并行，不阻塞）。
         // 用 persist:false：只播收回动画、不把「关闭」写进偏好；并记下恢复后重开，
         // 这样 minimize→恢复后历史区按折叠前状态重新打开（不把临时折叠误当偏好变更）。

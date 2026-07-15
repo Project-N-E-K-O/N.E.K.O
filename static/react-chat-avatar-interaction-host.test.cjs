@@ -126,6 +126,20 @@ test('React chat queues committed avatar interactions until the authoritative ho
   assert.deepEqual(delivered.map(item => item.interactionId), ['early-1', 'early-2', 'live-1']);
 });
 
+test('queued interactions keep the handler snapshot for the whole drained batch', () => {
+  const { host, onAvatarInteraction } = loadReactChatHost();
+  const delivered = [];
+
+  onAvatarInteraction({ interactionId: 'early-1', toolId: 'fist' });
+  onAvatarInteraction({ interactionId: 'early-2', toolId: 'hammer' });
+  host.setOnAvatarInteraction((payload) => {
+    delivered.push(payload);
+    host.setOnAvatarInteraction(null);
+  });
+
+  assert.deepEqual(delivered.map(item => item.interactionId), ['early-1', 'early-2']);
+});
+
 test('a bound host callback failure is reported once and never becomes an unreachable retry', () => {
   const { host, onAvatarInteraction } = loadReactChatHost();
   let attempts = 0;

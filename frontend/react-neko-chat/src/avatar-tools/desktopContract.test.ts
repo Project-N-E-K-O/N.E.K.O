@@ -183,6 +183,17 @@ describe('desktop avatar tool contract', () => {
 
     expect(() => desktopAvatarToolContractSchema.parse({ ...valid, wireVersion: 2 })).toThrow();
     expect(() => desktopAvatarToolContractSchema.parse({ ...valid, unexpected: true })).toThrow();
+    expect(() => desktopAvatarToolContractSchema.parse({
+      ...valid,
+      definition: { ...valid.definition, id: 'unknown-tool' },
+    })).toThrow();
+
+    for (const field of ['clientX', 'clientY']) {
+      const reservedChanceField = cloneJson(valid);
+      const profile = reservedChanceField.definition?.interaction?.profile;
+      if (profile?.kind === 'locked-impact-v1') profile.chance.field = field;
+      expect(() => desktopAvatarToolContractSchema.parse(reservedChanceField)).toThrow();
+    }
 
     const unknownPolicyField = cloneJson(valid) as typeof valid & {
       runtimePolicy: NonNullable<typeof valid.runtimePolicy> & { unexpected?: boolean };

@@ -151,7 +151,7 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 2. `normalize_avatar_interaction_payload`，仅当 wire alias 或特殊归一规则确实变化时修改。
 3. `static/app/app-buttons.js` 的 `AVATAR_INTERACTION_CONTRACT`，保持宿主发送契约与后端一致。
 
-`normalize_avatar_interaction_payload` 是 Python 侧唯一归一入口；真实 greeting 和 testbench 都直接导入它，并显式注入 `_sanitize_avatar_interaction_text_context`。不要保留第二个 normalizer facade，也不要再派生第二份 allowed actions / intensities / combinations 配置。
+`normalize_avatar_interaction_payload` 是 Python 侧唯一归一入口；真实 greeting 和 testbench 都直接从 `config.prompts.avatar_interaction_contract` 导入它，并显式注入 `_sanitize_avatar_interaction_text_context`。旧的私有 `_normalize_avatar_interaction_payload` 已退役，不得通过 `main_logic.core` alias、兼容 wrapper 或其它 facade 恢复。调用方应迁移到公开入口，而不是继续依赖旧 helper 的宽松纠错语义。也不要再派生第二份 allowed actions / intensities / combinations 配置。
 
 不要把无法被归一验证的事件写进 `reaction_focus`。
 

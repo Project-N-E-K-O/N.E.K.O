@@ -93,6 +93,13 @@ describe('avatar tool hit testing', () => {
       centerY: 40,
     }));
     expect(normalizeAvatarToolBounds({ left: 0, top: 0, width: 0, height: 20 })).toBeNull();
+    expect(normalizeAvatarToolBounds({ left: '0', top: 0, width: 20, height: 20 })).toBeNull();
+    expect(normalizeAvatarToolBounds({ left: 0, top: 0, width: 20, height: 20, right: 999 })).toMatchObject({
+      right: 20,
+      bottom: 20,
+      centerX: 10,
+      centerY: 10,
+    });
   });
 
   it('uses the shared ellipse and derives touch zones', () => {

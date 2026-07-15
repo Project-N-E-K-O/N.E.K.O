@@ -1494,19 +1494,19 @@
         return fallback;
     }
 
-    function parseAvatarInteractionBool(value, fallback) {
+    function parseAvatarInteractionBool(value) {
         if (typeof value === 'boolean') return value;
         if (typeof value === 'number') {
             if (value === 1) return true;
             if (value === 0) return false;
-            return !!fallback;
+            return null;
         }
         if (typeof value === 'string') {
             var normalized = value.trim().toLowerCase();
             if (normalized === 'true' || normalized === '1') return true;
             if (normalized === 'false' || normalized === '0') return false;
         }
-        return !!fallback;
+        return null;
     }
 
     function normalizeAvatarInteractionPayload(payload) {
@@ -1601,10 +1601,21 @@
         }
 
         var booleanField = toolContract.booleanField;
-        if (booleanField && parseAvatarInteractionBool(getAvatarInteractionPayloadValue(
-            payload, booleanField.output, booleanField.input, false
-        ), false)) {
-            normalized[booleanField.output] = true;
+        if (booleanField) {
+            var carriesBooleanField = Object.prototype.hasOwnProperty.call(payload, booleanField.output)
+                || Object.prototype.hasOwnProperty.call(payload, booleanField.input);
+            if (carriesBooleanField) {
+                var parsedBoolean = parseAvatarInteractionBool(getAvatarInteractionPayloadValue(
+                    payload, booleanField.output, booleanField.input, null
+                ));
+                if (parsedBoolean === null) {
+                    console.warn('[AvatarInteraction] ignored invalid boolean field:', booleanField.output);
+                    return null;
+                }
+                if (parsedBoolean) {
+                    normalized[booleanField.output] = true;
+                }
+            }
         }
 
         if (toolId === 'hammer'

@@ -92,7 +92,7 @@ Host 与 Python 都接受顶层 snake_case / camelCase 输入。Host 的 websock
 
 每次 commit 必须携带该 action 声明的 `intensity`；猫爪和锤子还必须携带声明范围内的真实 `touchZone`。缺失、越权或非法值直接拒绝，不得回退为 `normal` 或默认位置。
 
-Python 调用方直接使用 `normalize_avatar_interaction_payload`，并显式注入 `_sanitize_avatar_interaction_text_context`；不保留第二个 normalizer facade。Host 不维护 tool/action/intensity 到模型 emotion 的 seed 表，也不直接调用模型 emotion API；即时反馈属于 React/PC 的道具视觉、声音和效果，模型情绪与动作继续由既有 assistant 响应链路决定。
+Python 调用方直接从 `config.prompts.avatar_interaction_contract` 使用 `normalize_avatar_interaction_payload`，并显式注入 `_sanitize_avatar_interaction_text_context`。旧的私有 `_normalize_avatar_interaction_payload` 已退役，不通过 `main_logic.core` 或其它 facade 提供兼容 alias；调用方必须迁移到公开严格契约，不保留第二个 normalizer。Host 不维护 tool/action/intensity 到模型 emotion 的 seed 表，也不直接调用模型 emotion API；即时反馈属于 React/PC 的道具视觉、声音和效果，模型情绪与动作继续由既有 assistant 响应链路决定。
 
 ### NEKO-PC
 

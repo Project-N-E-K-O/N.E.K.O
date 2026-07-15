@@ -248,23 +248,24 @@ export function playAvatarToolSound(sound: AvatarToolSound, disposer: AvatarTool
     audio.preload = 'auto';
     audio.volume = resource.volume;
     let unregister = () => {};
+    let released = false;
     const release = () => {
+      if (released) return false;
+      released = true;
       audio.removeEventListener('ended', release);
-      audio.removeEventListener('error', release);
+      audio.removeEventListener('error', stop);
       unregister();
+      return true;
     };
     const stop = () => {
-      audio.removeEventListener('ended', release);
-      audio.removeEventListener('error', release);
-      unregister();
-      stopAudio(audio);
+      if (release()) stopAudio(audio);
     };
     cleanup = stop;
     unregister = disposer.add(stop);
     audio.addEventListener('ended', release, { once: true });
-    audio.addEventListener('error', release, { once: true });
+    audio.addEventListener('error', stop, { once: true });
     const pending = audio.play();
-    pending?.catch?.(release);
+    pending?.catch?.(stop);
   } catch {
     // Local feedback must not block the interaction when audio is unavailable.
     cleanup();

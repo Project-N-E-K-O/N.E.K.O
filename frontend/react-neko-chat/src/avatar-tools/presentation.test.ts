@@ -260,6 +260,23 @@ describe('avatar tool sound lifecycle', () => {
     disposer.destroy();
     expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);
   });
+
+  it('stops and unregisters audio when play rejects asynchronously', async () => {
+    class RejectedPlayAudio extends AudioMock {
+      override play = vi.fn(() => Promise.reject(new Error('play rejected')));
+    }
+    vi.stubGlobal('Audio', RejectedPlayAudio);
+    const disposer = createAvatarToolDisposer(7, generation => generation === 7);
+
+    playAvatarToolSound('coin-drop', disposer);
+    await Promise.resolve();
+
+    expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);
+    expect(audioInstances[0]?.src).toBe('');
+    expect(audioInstances[0]?.load).toHaveBeenCalledTimes(1);
+    disposer.destroy();
+    expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);
+  });
 });
 
 

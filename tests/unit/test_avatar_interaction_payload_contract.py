@@ -261,8 +261,8 @@ def test_hammer_payload_and_builders_reject_contradictory_easter_egg_facts():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value", [False, 0, 0.0, "false", "FALSE", "0", 2, "yes"])
-def test_payload_normalizer_rejects_false_or_unsupported_boolean_encodings(value):
+@pytest.mark.parametrize("value", [False, 0, 0.0, "false", "FALSE", "0"])
+def test_payload_normalizer_accepts_explicit_false_boolean_encodings(value):
     normalized = normalize_avatar_interaction_payload(
         {
             "interactionId": "fist-bool-false",
@@ -278,6 +278,23 @@ def test_payload_normalizer_rejects_false_or_unsupported_boolean_encodings(value
 
     assert normalized is not None
     assert normalized["reward_drop"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [None, 2, "yes", [], {}])
+def test_payload_normalizer_rejects_present_invalid_boolean_encodings(value):
+    assert normalize_avatar_interaction_payload(
+        {
+            "interactionId": "fist-bool-invalid",
+            "toolId": "fist",
+            "actionId": "poke",
+            "target": "avatar",
+            "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
+            "rewardDrop": value,
+        }
+    ) is None
 
 
 @pytest.mark.unit

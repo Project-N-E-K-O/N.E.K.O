@@ -253,20 +253,25 @@ export const AVATAR_TOOL_UI_EXCLUSION_SELECTOR = [
 export function normalizeAvatarToolBounds(bounds: unknown): AvatarToolBounds | null {
   if (!bounds || typeof bounds !== 'object') return null;
   const raw = bounds as Partial<AvatarToolBounds>;
-  const left = Number(raw.left);
-  const top = Number(raw.top);
-  const width = Number(raw.width);
-  const height = Number(raw.height);
-  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  const { left, top, width, height } = raw;
+  if (
+    typeof left !== 'number'
+    || typeof top !== 'number'
+    || typeof width !== 'number'
+    || typeof height !== 'number'
+    || ![left, top, width, height].every(Number.isFinite)
+    || width <= 0
+    || height <= 0
+  ) return null;
   return {
     left,
     top,
     width,
     height,
-    right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
-    bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height,
-    centerX: Number.isFinite(Number(raw.centerX)) ? Number(raw.centerX) : left + width / 2,
-    centerY: Number.isFinite(Number(raw.centerY)) ? Number(raw.centerY) : top + height / 2,
+    right: left + width,
+    bottom: top + height,
+    centerX: left + width / 2,
+    centerY: top + height / 2,
   };
 }
 

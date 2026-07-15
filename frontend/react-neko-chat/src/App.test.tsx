@@ -7527,6 +7527,19 @@ describe('App', () => {
     expect(queryAvatarToolVisualOverlay()).toBeNull();
   });
 
+  it('preserves the active avatar tool when compact minimize is unsupported', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+    await waitFor(() => expect(queryAvatarToolVisualOverlay()).not.toBeNull());
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+
+    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
+  });
+
   it('dispatches compact surface drag prime and renderer drag events from the input body', () => {
     render(<App chatSurfaceMode="compact" compactChatState="input" />);
     const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;

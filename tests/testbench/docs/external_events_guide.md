@@ -51,7 +51,7 @@
 | `action_id` | 是 | 取决于 `tool_id`: `lollipop` → `offer` / `tease` / `tap_soft`; `fist` → `poke`; `hammer` → `bonk` |
 | `intensity` | 否 | `normal` / `rapid` / `burst` / `easter_egg`. **组合受限**，权威定义见 `AVATAR_INTERACTION_TOOL_CONTRACT`，详见下表 |
 | `touch_zone` | 否 (仅 `fist` / `hammer` 有效) | `ear` / `head` / `face` / `body` |
-| `text_context` | 否 | 自由文本; 仅为历史 payload 兼容和诊断预览保留，当前事件事实 instruction 不发送给模型也不消费 |
+| `text_context` | 否 | 自由文本; 仅为历史 payload 兼容和诊断预览保留。`text_context` 本身不写入发送给模型的事件事实 instruction，也不被模型消费；事件事实 instruction 仍会正常发送 |
 | `reward_drop` | 否 (仅 `fist` 有效) | 布尔值; 会体现在事件事实里 |
 | `interaction_id` | **是 (UI 自动填)** | 用于 **8000ms 去重窗口**, 同 `interaction_id` + `tool_id` + `action_id` 的二次触发会返回 `reason=dedupe_window_hit` |
 

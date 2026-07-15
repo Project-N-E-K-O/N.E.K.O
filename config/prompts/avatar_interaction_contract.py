@@ -60,7 +60,7 @@ def normalize_avatar_interaction_intensity(
     return normalized
 
 
-def parse_avatar_interaction_bool(value: Any, default: bool = False) -> bool:
+def parse_avatar_interaction_bool(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
@@ -68,14 +68,14 @@ def parse_avatar_interaction_bool(value: Any, default: bool = False) -> bool:
             return True
         if value == 0:
             return False
-        return default
+        return None
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"true", "1"}:
             return True
         if normalized in {"false", "0"}:
             return False
-    return default
+    return None
 
 
 def get_avatar_interaction_payload_value(
@@ -117,24 +117,25 @@ def normalize_avatar_interaction_payload(
     )
     if intensity is None:
         return None
-    reward_drop = (
-        parse_avatar_interaction_bool(
-            get_avatar_interaction_payload_value(
-                payload, "reward_drop", "rewardDrop", False
-            )
+    boolean_field = tool_contract["boolean_field"]
+    boolean_value = False
+    if boolean_field:
+        field_parts = boolean_field.split("_")
+        camel_field = field_parts[0] + "".join(
+            part.capitalize() for part in field_parts[1:]
         )
-        if tool_contract["boolean_field"] == "reward_drop"
-        else False
-    )
-    easter_egg = (
-        parse_avatar_interaction_bool(
-            get_avatar_interaction_payload_value(
-                payload, "easter_egg", "easterEgg", False
+        carries_boolean_field = boolean_field in payload or camel_field in payload
+        if carries_boolean_field:
+            parsed_boolean = parse_avatar_interaction_bool(
+                get_avatar_interaction_payload_value(
+                    payload, boolean_field, camel_field, None
+                )
             )
-        )
-        if tool_contract["boolean_field"] == "easter_egg"
-        else False
-    )
+            if parsed_boolean is None:
+                return None
+            boolean_value = parsed_boolean
+    reward_drop = boolean_value if boolean_field == "reward_drop" else False
+    easter_egg = boolean_value if boolean_field == "easter_egg" else False
     if tool_id == "hammer" and easter_egg != (intensity == "easter_egg"):
         return None
 

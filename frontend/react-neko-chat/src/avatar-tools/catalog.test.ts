@@ -300,30 +300,33 @@ describe('avatar tool definition validation', () => {
   it('allows a tool-owned chance field without allowing reserved or oversized payload keys', () => {
     const fist = getAvatarToolRegistration('fist').definition;
     if (fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    const interaction = fist.interaction;
     const withFutureField = asDefinition({
       ...fist,
       interaction: {
-        ...fist.interaction,
-        chance: { ...fist.interaction.chance, field: 'bonusDrop' },
-      },
-    });
-    const withReservedField = asDefinition({
-      ...fist,
-      interaction: {
-        ...fist.interaction,
-        chance: { ...fist.interaction.chance, field: 'toolId' },
+        ...interaction,
+        chance: { ...interaction.chance, field: 'bonusDrop' },
       },
     });
     const withOversizedField = asDefinition({
       ...fist,
       interaction: {
-        ...fist.interaction,
-        chance: { ...fist.interaction.chance, field: `a${'b'.repeat(64)}` },
+        ...interaction,
+        chance: { ...interaction.chance, field: `a${'b'.repeat(64)}` },
       },
     });
 
     expect(() => validateAvatarToolDefinition(withFutureField)).not.toThrow();
-    expect(() => validateAvatarToolDefinition(withReservedField)).toThrow(/reserved payload field/);
+    ['toolId', 'clientX', 'clientY'].forEach((field) => {
+      const withReservedField = asDefinition({
+        ...fist,
+        interaction: {
+          ...interaction,
+          chance: { ...interaction.chance, field },
+        },
+      });
+      expect(() => validateAvatarToolDefinition(withReservedField)).toThrow(/reserved payload field/);
+    });
     expect(() => validateAvatarToolDefinition(withOversizedField)).toThrow(/at most 64 characters/);
   });
 

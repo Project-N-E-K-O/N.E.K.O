@@ -5,6 +5,10 @@ export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer'] as cons
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
+export const AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS = [
+  'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
+  'toolId', 'actionId', 'intensity', 'touchZone', 'clientX', 'clientY',
+] as const;
 const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH = 64;
 const AVATAR_TOOL_RESOURCE_MAX_COUNT = 16;
@@ -674,8 +678,7 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
   ) {
     fail(definition, 'interaction.chance.field must be a camel-case payload field of at most 64 characters');
   }
-  if (['interactionId', 'target', 'pointer', 'textContext', 'timestamp', 'toolId', 'actionId', 'intensity', 'touchZone']
-    .includes(interaction.chance.field)) {
+  if ((AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(interaction.chance.field)) {
     fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
   }
   assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');

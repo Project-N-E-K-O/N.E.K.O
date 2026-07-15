@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import {
   AVATAR_TOOL_ASSET_PATH_MAX_LENGTH,
+  AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
+  AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS,
   AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   getAvatarToolRegistration,
@@ -28,10 +30,11 @@ const positiveIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_IN
 const probabilitySchema = finiteNumberSchema.min(0).max(1);
 const identifierSchema = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/);
 const payloadFieldSchema = z.string().min(1).max(64).regex(/^[a-z][a-zA-Z0-9]*$/)
-  .refine(field => ![
-    'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
-    'toolId', 'actionId', 'intensity', 'touchZone',
-  ].includes(field), { message: 'payload field is reserved' });
+  .refine(
+    field => !(AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(field),
+    { message: 'payload field is reserved' },
+  );
+const avatarToolDefinitionIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
 const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
 const intensitySchema = z.enum(AVATAR_TOOL_INTERACTION_INTENSITIES);
 const touchZoneSchema = z.enum(AVATAR_TOOL_TOUCH_ZONES);
@@ -371,7 +374,7 @@ export const desktopAvatarToolInteractionSchema = z.object({
 
 export const desktopAvatarToolDefinitionSchema = z.object({
   definitionVersion: z.literal(1),
-  id: identifierSchema,
+  id: avatarToolDefinitionIdSchema,
   capability: z.object({
     desktopVisual: z.boolean(),
     desktopInteraction: z.boolean(),

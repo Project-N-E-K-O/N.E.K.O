@@ -124,6 +124,7 @@ describe('useAvatarToolRuntime press lifecycle', () => {
 
   afterEach(() => {
     delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 

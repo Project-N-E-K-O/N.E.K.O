@@ -29,6 +29,14 @@ function loadAppButtons(options = {}) {
   return context.window.appButtons;
 }
 
+function runPythonContractScript(script, args = []) {
+  return JSON.parse(execFileSync(
+    'uv',
+    ['run', 'python', '-c', script, ...args],
+    { cwd: path.resolve(__dirname, '..'), encoding: 'utf8' },
+  ));
+}
+
 function createLifecycleHarness(windowOverrides = {}) {
   let now = 100_000;
   let nextTimerId = 0;
@@ -133,7 +141,6 @@ test('assistant lifecycle forwards the backend response meta unchanged', () => {
 
 test('avatar interaction host and backend contracts stay in parity', () => {
   const { avatarInteractionContract: hostContract } = loadAppButtons();
-  const repoRoot = path.resolve(__dirname, '..');
   const backendScript = String.raw`
 import json
 from config.prompts.avatar_interaction_contract import (
@@ -156,11 +163,7 @@ print(json.dumps({
     },
 }, sort_keys=True))
 `;
-  const backendContract = JSON.parse(execFileSync(
-    'uv',
-    ['run', 'python', '-c', backendScript],
-    { cwd: repoRoot, encoding: 'utf8' },
-  ));
+  const backendContract = runPythonContractScript(backendScript);
   const normalizedHostContract = {
     touchZones: Array.from(hostContract.touchZones).sort(),
     tools: Object.fromEntries(Object.entries(hostContract.tools).map(([toolId, tool]) => [
@@ -369,6 +372,19 @@ test('avatar interaction host normalizer enforces touch zones and protects other
   };
   assert.equal(normalize({ ...hammer, intensity: 'normal', easterEgg: true }), null);
   assert.equal(normalize({ ...hammer, intensity: 'easter_egg' }), null);
+
+  for (const rewardDrop of [null, 2, 'yes']) {
+    assert.equal(normalize({
+      interactionId: 'fist-invalid-bool',
+      toolId: 'fist',
+      actionId: 'poke',
+      target: 'avatar',
+      timestamp: 1,
+      intensity: 'normal',
+      touchZone: 'head',
+      rewardDrop,
+    }), null);
+  }
 });
 
 test('avatar interaction host and backend normalizers preserve the same alias facts', () => {
@@ -443,11 +459,7 @@ print(json.dumps([
     for payload in json.loads(sys.argv[1])
 ], sort_keys=True))
 `;
-  const backend = JSON.parse(execFileSync(
-    'uv',
-    ['run', 'python', '-c', backendScript, JSON.stringify(cases)],
-    { cwd: path.resolve(__dirname, '..'), encoding: 'utf8' },
-  ));
+  const backend = runPythonContractScript(backendScript, [JSON.stringify(cases)]);
 
   function canonicalHost(payload) {
     const result = normalize(payload);

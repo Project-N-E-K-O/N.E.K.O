@@ -47,6 +47,9 @@ export const DEFAULT_ACTIVE_AVATAR_TOOL_IDS: AvatarToolId[] = ['lollipop', 'fist
 
 function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): AvatarToolItem {
   const { primary, secondary, tertiary } = definition.visual.variants;
+  // Icons fall straight back to primary, while a tertiary pointer falls back
+  // through secondary in resolveAvatarToolImagePaths; compare against those
+  // respective fallback sources so the projected optional paths stay lossless.
   const secondaryIcon = secondary.iconImagePath !== primary.iconImagePath
     ? secondary.iconImagePath
     : undefined;
