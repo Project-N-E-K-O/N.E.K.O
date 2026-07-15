@@ -241,7 +241,13 @@ class ChatOpenAI:
         msg = choice.message if choice else None
         content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": getattr(choice, "finish_reason", None) if choice else None,
+            },
+        )
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         """Sync twin of ``ainvoke``. See its docstring for ``overrides``."""
@@ -250,7 +256,13 @@ class ChatOpenAI:
         msg = choice.message if choice else None
         content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": getattr(choice, "finish_reason", None) if choice else None,
+            },
+        )
 
     # --- raw-resp invoke (for callers needing reasoning_content / raw choices) ---
 

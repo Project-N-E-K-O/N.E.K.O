@@ -46,6 +46,12 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 
 
+def _clear_review_output_exhaustion_state(state: dict) -> None:
+    state['review_output_exhaustion_attempts'] = 0
+    state['review_output_exhaustion_min_context_tokens'] = None
+    state['review_output_exhaustion_blocked'] = False
+
+
 def _get_review_spawn_lock(name: str) -> asyncio.Lock:
     """Lazy per-name asyncio.Lock serializing the gate+spawn check."""
     lock = _review_spawn_locks.get(name)
@@ -132,7 +138,39 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
-        # Gate 6: 失败退避（dead-letter）。review 连续失败 ≥
+        # Gate 6a: 输出 token 耗尽断路器。它跨 tail fingerprint 累计，因此新增
+        # 消息/上下文增长不会解禁；只有压缩后 context token 严格低于失败期间的
+        # 最小值才恢复。
+        from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        from memory.recent import review_context_token_count
+        state = gates._maint_state.setdefault(name, {})
+        exhaustion_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
+        exhaustion_blocked = bool(state.get('review_output_exhaustion_blocked'))
+        if (
+            exhaustion_blocked
+            or exhaustion_attempts >= MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        ):
+            failed_min_tokens = state.get('review_output_exhaustion_min_context_tokens')
+            try:
+                failed_min_tokens = int(failed_min_tokens or 0)
+            except (TypeError, ValueError):
+                failed_min_tokens = 0
+            current_tokens = review_context_token_count(history)
+            if failed_min_tokens > 0 and current_tokens >= failed_min_tokens:
+                logger.debug(
+                    f"[Review/spawn] {name}: 输出耗尽断路器已开启 "
+                    f"(连续 {exhaustion_attempts} 次，context={current_tokens} >= "
+                    f"失败最小值 {failed_min_tokens})，跳过本轮"
+                )
+                return
+            _clear_review_output_exhaustion_state(state)
+            await gates._asave_maint_state()
+            logger.info(
+                f"[Review/spawn] {name}: context 已缩短 "
+                f"({current_tokens} < {failed_min_tokens})，恢复历史审阅"
+            )
+
+        # Gate 6b: 通用失败退避（dead-letter）。review 连续失败 ≥
         # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
         # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
         # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
@@ -141,7 +179,6 @@ async def maybe_spawn_review(name: str) -> None:
         # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.recent import build_review_fingerprint
-        state = gates._maint_state.setdefault(name, {})
         fail_attempts = state.get('review_fail_attempts', 0) or 0
         if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
             cur_fp = build_review_fingerprint(history)
@@ -185,6 +222,38 @@ async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
     state['review_fail_fp'] = cur_fp
     await gates._asave_maint_state()
     return state['review_fail_attempts']
+
+
+async def _record_review_output_exhaustion(
+    lanlan_name: str, snapshot: list,
+) -> tuple[int, int, int]:
+    """Record one output-limit failure across growing/changed tail fingerprints."""
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    from memory.recent import review_context_token_count
+
+    state = gates._maint_state.setdefault(lanlan_name, {})
+    current_tokens = review_context_token_count(snapshot)
+    previous_min = state.get('review_output_exhaustion_min_context_tokens')
+    try:
+        previous_min = int(previous_min or 0)
+    except (TypeError, ValueError):
+        previous_min = 0
+
+    attempts = state.get('review_output_exhaustion_attempts', 0) or 0
+    if previous_min > 0 and current_tokens < previous_min:
+        attempts = 0
+        minimum_tokens = current_tokens
+    else:
+        minimum_tokens = min(previous_min, current_tokens) if previous_min > 0 else current_tokens
+
+    attempts += 1
+    state['review_output_exhaustion_attempts'] = attempts
+    state['review_output_exhaustion_min_context_tokens'] = minimum_tokens
+    state['review_output_exhaustion_blocked'] = (
+        attempts >= MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    )
+    await gates._asave_maint_state()
+    return attempts, current_tokens, minimum_tokens
 
 
 # ── best-effort 后台压缩（主路径 compress 失败时兜底）─────────────────────
@@ -329,6 +398,7 @@ async def _run_review_in_background(
                               ``build_review_fingerprint(snapshot)`` is stale)
         ('white', None)    → cutoff mismatch / whole segment dropped
         ('failed', None)   → LLM failure / cancelled / malformed output
+        ('output_exhausted', None) → provider hit its output-token limit
 
     White-review handling (CodeRabbit Issue #1 fix):
     - do **not** update last_review_ts → next round's gate 4 sees "long since the
@@ -373,6 +443,7 @@ async def _run_review_in_background(
             # 成功 → 清掉失败退避计数（Gate 6）
             state['review_fail_attempts'] = 0
             state['review_fail_fp'] = None
+            _clear_review_output_exhaustion_state(state)
             await gates._asave_maint_state()
         elif status == 'white':
             logger.info(
@@ -384,12 +455,29 @@ async def _run_review_in_background(
             # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
             state['review_fail_attempts'] = 0
             state['review_fail_fp'] = None
+            _clear_review_output_exhaustion_state(state)
             await gates._asave_maint_state()
         elif cancel_event.is_set():
             # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
             # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
             # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
             logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
+        elif status == 'output_exhausted':
+            attempts, context_tokens, minimum_tokens = (
+                await _record_review_output_exhaustion(lanlan_name, snapshot)
+            )
+            from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+            if attempts >= MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS:
+                logger.warning(
+                    f"[Review/output-limit] {lanlan_name}: 连续 {attempts} 次输出耗尽，"
+                    f"暂停审阅，直到 context token 低于 {minimum_tokens}"
+                )
+            else:
+                logger.info(
+                    f"[Review/output-limit] {lanlan_name}: 输出耗尽 {attempts}/"
+                    f"{MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS} "
+                    f"(context={context_tokens}, 失败最小值={minimum_tokens})"
+                )
         else:
             # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
             # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
@@ -415,4 +503,3 @@ async def _run_review_in_background(
             correction_tasks.pop(lanlan_name, None)
         if correction_cancel_flags.get(lanlan_name) is cancel_event:
             correction_cancel_flags.pop(lanlan_name, None)
-
