@@ -14,7 +14,7 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _AsrWorkerRequest,
 )
-from main_logic.asr_client.workers import grok, openai, qwen, step
+from main_logic.asr_client.workers import grok, openai, qwen, soniox, step
 
 
 _END = object()
@@ -237,6 +237,123 @@ async def test_qwen_manual_regions_payload_and_final(
     await _stop_worker(task, requests, responses)
 
 
+async def test_qwen_manual_duplicate_item_created_does_not_consume_next_commit(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+        elif message["type"] == "session.finish":
+            await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(
+            requests, responses, "key", AsrSessionConfig(), region="intl"
+        )
+    )
+    await _next_event(responses, "ready")
+    for utterance_id in (1, 2):
+        await requests.put(
+            _AsrWorkerRequest(
+                kind="audio", generation=0, utterance_id=utterance_id, audio=b"\0\0"
+            )
+        )
+        await requests.put(
+            _AsrWorkerRequest(kind="commit", generation=0, utterance_id=utterance_id)
+        )
+    await _wait_until(lambda: commit_count == 2)
+    created = {
+        "type": "conversation.item.created",
+        "item": {"id": "item-a", "type": "message", "role": "user"},
+    }
+    await websocket.server_send(created)
+    await websocket.server_send(created)
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "item-b"}
+    )
+    for item_id, transcript in (("item-a", "first"), ("item-b", "second")):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": transcript,
+            }
+        )
+    first = await _next_event(responses, "final")
+    second = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "first")
+    assert (second.utterance_id, second.text) == (2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_qwen_legacy_without_item_ids_promotes_two_consecutive_commits(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+            await ws.server_send(
+                {
+                    "type": "conversation.item.created",
+                    "item": {"type": "message", "role": "user"},
+                }
+            )
+            await ws.server_send({"type": "input_audio_buffer.committed"})
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "transcript": f"turn-{commit_count}",
+                }
+            )
+        elif message["type"] == "session.finish":
+            await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(qwen.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(
+            requests, responses, "key", AsrSessionConfig(), region="cn"
+        )
+    )
+    await _next_event(responses, "ready")
+    for utterance_id in (1, 2):
+        await requests.put(
+            _AsrWorkerRequest(
+                kind="audio", generation=0, utterance_id=utterance_id, audio=b"\0\0"
+            )
+        )
+        await requests.put(
+            _AsrWorkerRequest(kind="commit", generation=0, utterance_id=utterance_id)
+        )
+    first = await _next_event(responses, "final")
+    second = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "turn-1")
+    assert (second.utterance_id, second.text) == (2, "turn-2")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
 async def test_qwen_server_vad_maps_items_and_reconnects_on_clear(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str):
@@ -369,7 +486,7 @@ async def test_step_manual_payload_and_cumulative_partial(monkeypatch) -> None:
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
     partial = await _next_event(responses, "partial")
     final = await _next_event(responses, "final")
-    assert partial.text == "你好，请问"
+    assert partial.text == "你好，请问退款"
     assert final.text == "你好，请问退款流程"
     assert not task.done()
 
@@ -933,6 +1050,290 @@ async def test_workers_report_unexpected_disconnect(monkeypatch) -> None:
     assert error.error_code == "ASR_OPENAI_DISCONNECTED"
     await _next_event(responses, "closed")
     await asyncio.wait_for(task, 1)
+
+
+async def test_soniox_binary_pcm_token_state_machine_and_end_dedup(monkeypatch) -> None:
+    websocket = _FakeWebSocket()
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "soniox-key",
+            AsrSessionConfig(language="auto", endpointing_mode="server_vad"),
+            region="jp",
+        )
+    )
+    await _next_event(responses, "ready")
+    config = json.loads(websocket.sent[0])
+    assert connector.calls[0][0] == soniox.SONIOX_REGION_URLS["jp"]
+    assert config == {
+        "api_key": "soniox-key",
+        "model": "stt-rt-v5",
+        "audio_format": "pcm_s16le",
+        "sample_rate": 16_000,
+        "num_channels": 1,
+        "enable_endpoint_detection": True,
+        "enable_language_identification": True,
+        "language_hints": ["en", "ja", "es"],
+    }
+
+    pcm = b"\x12\x34" * 800
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=2, buffer_epoch=3, audio=pcm)
+    )
+    await _wait_until(lambda: pcm in websocket.sent)
+    assert pcm in websocket.sent
+    assert not any(
+        isinstance(payload, str) and "audio" in payload
+        for payload in websocket.sent[1:]
+    )
+
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "Hello ", "is_final": True},
+                {"text": "wor", "is_final": False},
+            ]
+        }
+    )
+    started = await _next_event(responses, "utterance_started")
+    partial = await _next_event(responses, "partial")
+    assert (started.generation, started.buffer_epoch, started.utterance_id) == (2, 3, 1)
+    assert partial.text == "Hello wor"
+
+    await websocket.server_send(
+        {"tokens": [{"text": "world", "is_final": True}]}
+    )
+    assert (await _next_event(responses, "partial")).text == "Hello world"
+    await websocket.server_send(
+        {"tokens": [{"text": "<end>", "is_final": True}]}
+    )
+    final = await _next_event(responses, "final")
+    assert final.text == "Hello world"
+    assert "<end>" not in final.text
+
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "<end>", "is_final": True},
+                {"text": "<fin>", "is_final": True},
+            ]
+        }
+    )
+    await asyncio.sleep(0.01)
+    assert responses.empty()
+    await websocket.server_send(
+        {"tokens": [{"text": "temporary", "is_final": False}]}
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 2
+    assert (await _next_event(responses, "partial")).text == "temporary"
+    await websocket.server_send(
+        {"tokens": [{"text": "<end>", "is_final": True}]}
+    )
+    await asyncio.sleep(0.01)
+    assert responses.empty()
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "日本語🙂", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 3
+    assert (await _next_event(responses, "final")).text == "日本語🙂"
+    await _stop_worker(task, requests, responses, generation=2, buffer_epoch=3)
+    assert websocket.sent[-1] == b""
+
+
+async def test_soniox_manual_finalize_waits_for_fin(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload).get("type") == "finalize":
+            await ws.server_send(
+                {
+                    "tokens": [
+                        {"text": "manual text", "is_final": True},
+                        {"text": "<fin>", "is_final": True},
+                    ]
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+            region="eu",
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    assert (await _next_event(responses, "final")).text == "manual text"
+    await _stop_worker(task, requests, responses)
+
+
+async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> None:
+    first = _FakeWebSocket()
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="server_vad"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x20\x10" * 320
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=4, buffer_epoch=5, audio=pcm)
+    )
+    await _wait_until(lambda: pcm in first.sent)
+    await first.server_end()
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(lambda: pcm in second.sent)
+    await second.server_send(
+        {
+            "tokens": [
+                {"text": "replayed", "is_final": True},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    assert (await _next_event(responses, "utterance_started")).generation == 4
+    assert (await _next_event(responses, "final")).text == "replayed"
+    await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
+
+
+async def test_openai_transcription_failed_preserves_utterance_metadata(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            await ws.server_send(
+                {"type": "input_audio_buffer.committed", "item_id": "failed-item"}
+            )
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.failed",
+                    "item_id": "failed-item",
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(openai.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(
+            requests, responses, "key", AsrSessionConfig(language="en")
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=3,
+            buffer_epoch=7,
+            utterance_id=9,
+            audio=b"\0\0" * 320,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit", generation=3, buffer_epoch=7, utterance_id=9
+        )
+    )
+    error = await _next_event(responses, "error")
+    assert (error.generation, error.buffer_epoch, error.utterance_id) == (3, 7, 9)
+    assert error.error_code == "ASR_OPENAI_TRANSCRIPTION_FAILED"
+    await _stop_worker(
+        task, requests, responses, generation=3, buffer_epoch=7, utterance_id=10
+    )
+
+
+async def test_soniox_auth_error_is_terminal_without_reconnect(monkeypatch) -> None:
+    websocket = _FakeWebSocket(
+        initial=[
+            {
+                "error_code": 401,
+                "error_message": "not logged",
+                "request_id": "request-1",
+            }
+        ]
+    )
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "bad-key",
+            AsrSessionConfig(endpointing_mode="server_vad"),
+        )
+    )
+    await _next_event(responses, "ready")
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_CREDENTIALS_REJECTED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert len(connector.calls) == 1
+
+
+async def test_soniox_rate_limit_backs_off_and_reconnects_only_once(
+    monkeypatch,
+) -> None:
+    rate_limit_event = {
+        "error_code": 429,
+        "error_message": "rate limited",
+        "request_id": "request-rate-limit",
+    }
+    connector = _FakeConnector(
+        _FakeWebSocket(initial=[rate_limit_event]),
+        _FakeWebSocket(initial=[rate_limit_event]),
+    )
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    monkeypatch.setattr(soniox, "_RETRY_BACKOFF_BASE_SECONDS", 0.0)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="server_vad"),
+        )
+    )
+    await _next_event(responses, "ready")
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_RATE_LIMITED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert len(connector.calls) == 2
 
 
 def test_auth_rejection_classification() -> None:

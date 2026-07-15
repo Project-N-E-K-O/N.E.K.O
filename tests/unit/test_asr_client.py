@@ -202,6 +202,7 @@ def test_phase2_registry_routes_and_capabilities():
         "openai",
         "step",
         "grok",
+        "soniox",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
@@ -218,12 +219,68 @@ def test_phase2_registry_routes_and_capabilities():
     }
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
-    assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"server_vad"}
+    assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {
+        "manual",
+        "server_vad",
+    }
+    assert ASR_PROVIDER_REGISTRY["soniox"].turn_capabilities.provider_endpoint
+    assert ASR_PROVIDER_REGISTRY["soniox"].turn_capabilities.semantic_endpoint
     for provider_key in ("qwen", "openai", "step", "grok"):
         assert (
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
+
+
+def test_phase3_region_routing_and_soniox_credentials(monkeypatch):
+    import utils.config_manager as config_manager
+
+    class FakeConfigManager:
+        def get_core_config(self):
+            return {
+                "ASSIST_API_KEY_QWEN": "qwen-key",
+                "SONIOX_API_KEY": "soniox-key",
+            }
+
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_ROUTING_MODE", raising=False)
+    monkeypatch.delenv("SONIOX_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: FakeConfigManager())
+
+    domestic = asr_client._resolve_asr_selection("qwen", user_region="cn")
+    europe = asr_client._resolve_asr_selection("qwen", user_region="eu")
+    asia = asr_client._resolve_asr_selection("qwen", user_region="apac")
+    america = asr_client._resolve_asr_selection("qwen", user_region="us")
+    forced_core = asr_client._resolve_asr_selection(
+        "qwen", routing_mode="core", user_region="us"
+    )
+    assert domestic.provider_key == "qwen"
+    assert (europe.provider_key, europe.soniox_region) == ("soniox", "eu")
+    assert (asia.provider_key, asia.soniox_region) == ("soniox", "jp")
+    assert (america.provider_key, america.soniox_region) == ("soniox", "us")
+    assert forced_core.provider_key == "qwen"
+
+    worker, key, provider = asr_client._get_asr_worker(
+        "qwen",
+        "server_vad",
+        provider_key_override="soniox",
+        soniox_region="eu",
+    )
+    assert (key, provider) == ("soniox-key", "soniox")
+    assert worker.keywords == {"region": "eu"}
+
+    class CoreOnlyConfigManager:
+        def get_core_config(self):
+            return {"ASSIST_API_KEY_QWEN": "qwen-key"}
+
+    monkeypatch.setattr(
+        config_manager, "get_config_manager", lambda: CoreOnlyConfigManager()
+    )
+    missing_soniox = asr_client._resolve_asr_selection(
+        "qwen", routing_mode="auto", user_region="us"
+    )
+    assert missing_soniox.provider_key == "qwen"
 
 
 def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
@@ -669,6 +726,64 @@ async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     await asyncio.sleep(0.05)
     assert transcripts.empty()
+    await session.close()
+
+
+async def test_partial_after_final_and_queued_callback_after_clear_are_dropped():
+    release_first = asyncio.Event()
+    first_started = asyncio.Event()
+    delivered: list[str] = []
+
+    async def worker(request_queue, response_queue, _api_key, _config):
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            if request.kind == "commit":
+                common = {
+                    "generation": request.generation,
+                    "buffer_epoch": request.buffer_epoch,
+                    "utterance_id": request.utterance_id,
+                }
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="partial", text="accepted", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="partial", text="queued-stale", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text="final", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="partial", text="late-after-final", **common)
+                )
+            elif request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
+
+    async def on_event(event):
+        delivered.append(event.text)
+        if event.text == "accepted":
+            first_started.set()
+            await release_first.wait()
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_transcript_event=on_event,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\0\0" * 160)
+    await session.signal_user_activity_end()
+    await asyncio.wait_for(first_started.wait(), 1)
+    await session.clear_audio_buffer()
+    release_first.set()
+    await asyncio.sleep(0.05)
+    assert delivered == ["accepted"]
     await session.close()
 
 

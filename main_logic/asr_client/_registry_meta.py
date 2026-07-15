@@ -29,6 +29,14 @@ AsrImplementationStatus = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class AsrTurnCapabilities:
+    """Declare who owns the complete-turn boundary for one provider."""
+
+    provider_endpoint: bool
+    semantic_endpoint: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AsrCoreRoute:
     """Bind one Core to its ASR provider, credential slot, and region."""
 
@@ -47,6 +55,7 @@ class AsrProviderMeta:
     wire_sample_rate_hz: int
     supported_endpointing_modes: frozenset[AsrEndpointingMode]
     implementation_status: AsrImplementationStatus
+    turn_capabilities: AsrTurnCapabilities = AsrTurnCapabilities(False, False)
 
 
 # Business code must route through this table rather than scattering
@@ -127,8 +136,17 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
-        supported_endpointing_modes=frozenset({"server_vad"}),
+        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
         implementation_status="blocked_credentials",
+    ),
+    "soniox": AsrProviderMeta(
+        provider_key="soniox",
+        category="ws_streaming",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual", "server_vad"}),
+        implementation_status="blocked_credentials",
+        turn_capabilities=AsrTurnCapabilities(True, True),
     ),
     "glm": AsrProviderMeta(
         provider_key="glm",
