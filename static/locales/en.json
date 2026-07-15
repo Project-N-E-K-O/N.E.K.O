@@ -2580,6 +2580,7 @@
         "gameModeBeta": {
             "enabledNotice": "Edge Mode Beta is on. Drag Live2D to a screen edge to make it peek; resource pressure is recorded only and never changes the model automatically.",
             "autoSwitchNotice": "{metric} usage stayed high, so NEKO switched to cat form to reduce resource usage.",
+            "gameProtectionNotice": "Game protection is active. NEKO switched to cat form.",
             "disabledNotice": "Edge Mode Beta is off. Live2D now uses normal edge snapping.",
             "toggleFailed": "Failed to switch Edge Mode Beta. Please try again later.",
             "memoryMetric": "memory",

@@ -2580,6 +2580,7 @@
         "gameModeBeta": {
             "enabledNotice": "El modo de borde Beta está activado. Arrastra Live2D a un borde de la pantalla para que se asome; la presión de recursos solo se registra y nunca cambia el modelo automáticamente.",
             "autoSwitchNotice": "El uso de {metric} permaneció alto, por lo que NEKO cambió a forma de gato para reducir recursos.",
+            "gameProtectionNotice": "La protección del juego está activa. NEKO cambió a forma de gato.",
             "disabledNotice": "El modo de borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
             "toggleFailed": "No se pudo cambiar el modo de borde Beta. Inténtalo de nuevo más tarde.",
             "memoryMetric": "memoria",

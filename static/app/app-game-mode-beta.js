@@ -694,7 +694,7 @@
             if (!clientState.promptedThisCycle) {
                 clientState.promptedThisCycle = true;
                 showNotice(t(
-                    'settings.gameModeBeta.autoSwitchNotice',
+                    'settings.gameModeBeta.gameProtectionNotice',
                     '游戏保护已生效，NEKO 已切换到猫猫形态。'
                 ));
             }

@@ -2580,6 +2580,7 @@
         "gameModeBeta": {
             "enabledNotice": "가장자리 모드 Beta가 켜졌습니다. Live2D를 화면 가장자리로 끌면 옆에서 내다보는 상태가 됩니다. 리소스 부하는 기록만 하며 모델을 자동으로 바꾸지 않습니다.",
             "autoSwitchNotice": "{metric} 사용량이 계속 높아 리소스를 줄이는 고양이 형태로 전환했습니다.",
+            "gameProtectionNotice": "게임 보호가 활성화되어 NEKO가 고양이 형태로 전환되었습니다.",
             "disabledNotice": "가장자리 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
             "toggleFailed": "가장자리 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
             "memoryMetric": "메모리",

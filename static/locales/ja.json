@@ -2580,6 +2580,7 @@
         "gameModeBeta": {
             "enabledNotice": "エッジモード Beta を有効にしました。Live2D を画面端へドラッグすると、端から覗く表示になります。リソース負荷は記録のみで、モデルを自動変更しません。",
             "autoSwitchNotice": "{metric} の使用率が高い状態が続いたため、リソースを抑える猫形態に切り替えました。",
+            "gameProtectionNotice": "ゲーム保護が有効になり、NEKO は猫形態に切り替わりました。",
             "disabledNotice": "エッジモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
             "toggleFailed": "エッジモード Beta を切り替えられませんでした。しばらくしてから再試行してください。",
             "memoryMetric": "メモリ",

@@ -461,3 +461,17 @@ def test_edge_mode_beta_uses_the_new_visible_name_in_every_locale():
         locale_path = PROJECT_ROOT / "static" / "locales" / f"{locale}.json"
         messages = json.loads(locale_path.read_text(encoding="utf-8"))
         assert messages["settings"]["toggles"]["gameModeBeta"] == expected_label
+
+
+def test_game_protection_notice_is_separate_from_resource_pressure_notice():
+    source = APP_GAME_MODE_BETA_PATH.read_text(encoding="utf-8")
+    lifecycle_block = source.split("async function handleLifecycleMessage", 1)[1]
+
+    assert "settings.gameModeBeta.gameProtectionNotice" in lifecycle_block
+
+    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
+        locale_path = PROJECT_ROOT / "static" / "locales" / f"{locale}.json"
+        messages = json.loads(locale_path.read_text(encoding="utf-8"))
+        notice = messages["settings"]["gameModeBeta"]["gameProtectionNotice"]
+        assert notice.strip()
+        assert "{metric}" not in notice
