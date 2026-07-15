@@ -265,8 +265,12 @@ async def test_game_mode_broadcast_serializes_sends_with_session_lock(monkeypatc
     monkeypatch.setattr(game_mode_router_module, "get_session_manager", lambda: {"pet-a": Session()})
     assert await game_mode_router_module.broadcast_game_mode_event({"type": "first"}) == 1
     assert await game_mode_router_module.broadcast_game_mode_event({"type": "second"}) == 1
-    while game_mode_router_module._game_mode_broadcast_tasks:
-        await asyncio.sleep(0.01)
+
+    async def wait_for_broadcasts():
+        while game_mode_router_module._game_mode_broadcast_tasks:
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(wait_for_broadcasts(), timeout=2.0)
 
     assert max_active_sends == 1
 

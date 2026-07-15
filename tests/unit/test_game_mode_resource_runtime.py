@@ -103,6 +103,10 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (hostCalls.filter(x => x[0] === 'acquire').length !== 1) throw new Error('compact acquire missing');
         if (!managerCalls.some(x => x[0] === 'translate' && x[1] === -700 && x[2] === -40)) throw new Error('origin compensation missing');
 
+        emit('live2d-model-loaded');
+        await new Promise(resolve => setImmediate(resolve));
+        if (hostCalls.filter(x => x[0] === 'update').length !== 1) throw new Error('compact update missing');
+
         emit('pointerdown', {{ clientX: 20, clientY: 20 }});
         emit('pointerup', {{ clientX: 20, clientY: 20 }});
         await Promise.resolve();
@@ -112,7 +116,13 @@ def test_game_mode_resource_runtime_event_driven_contract():
         emit('pointermove', {{ clientX: 30, clientY: 20 }});
         emit('pointerup', {{ clientX: 30, clientY: 20 }});
         await Promise.resolve();
-        if (!hostCalls.some(x => x[0] === 'suspend') || !hostCalls.some(x => x[0] === 'resume')) throw new Error('drag lease lifecycle missing');
+        if (hostCalls.filter(x => x[0] === 'suspend').length !== 1 || hostCalls.filter(x => x[0] === 'resume').length !== 1) throw new Error('drag lease lifecycle missing');
+        for (const method of ['acquire', 'update', 'suspend', 'resume']) {{
+          const call = hostCalls.find(x => x[0] === method);
+          if (!call || call[1].sessionId !== 'session-1' || call[1].petInstanceId !== 'pet-1') {{
+            throw new Error(method + ' lease identity changed');
+          }}
+        }}
         const interactions = fetchCalls
           .filter(x => x.url === '/api/game-mode-beta/resource/interaction')
           .map(x => JSON.parse(x.options.body).interaction);
