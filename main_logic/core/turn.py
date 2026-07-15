@@ -1009,7 +1009,7 @@ class TurnMixin:
                             logger.info("[%s] session takeover: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
                         except Exception as cancel_exc:
                             logger.debug("[%s] session takeover: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
-                    return
+                    return False
             except Exception as exc:
                 logger.warning("[%s] session takeover dispatcher failed: %s", self.lanlan_name, exc)
 
@@ -1022,7 +1022,7 @@ class TurnMixin:
                 "[%s] suppressed likely AI echo voice transcript len=%d",
                 self.lanlan_name, len(transcript_text),
             )
-            return
+            return False
 
         if is_voice_source and not voice_rms_recorded:
             # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
@@ -1122,6 +1122,7 @@ class TurnMixin:
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
+        return bool(record_transcript_text)
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """Output transcription callback: handles text display and TTS (for voice mode)"""

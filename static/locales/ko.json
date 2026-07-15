@@ -928,7 +928,12 @@
         "volumeWaiting": "대기 중",
         "volumeHintWaiting": "마이크가 입력을 대기 중입니다. 말씀해 주세요.",
         "noiseReduction": "노이즈 리덕션",
-        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성"
+        "noiseReductionHint": "RNNoise AI 노이즈 리덕션으로 더 선명한 음성",
+        "independentAsr": "독립 음성 인식",
+        "independentAsrActive": "독립 ASR 사용 중: {{provider}}",
+        "independentAsrFallback": "독립 ASR을 사용할 수 없어 Omni 기본 인식으로 전환했습니다",
+        "independentAsrNextSession": "다음 음성 세션부터 활성화되며, 사용할 수 없으면 Omni로 전환됩니다",
+        "independentAsrNative": "Omni 기본 음성 인식 사용 중"
     },
     "speaker": {
         "volumeLabel": "스피커 볼륨",

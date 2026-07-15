@@ -254,6 +254,44 @@ async def test_entire_gate_tuple_is_consumed_before_evaluation_decision() -> Non
     await adapter.close()
 
 
+async def test_activity_events_are_forwarded_to_runtime_in_order() -> None:
+    observed: list[SpeechActivityEvent] = []
+
+    async def on_activity(event: SpeechActivityEvent) -> None:
+        observed.append(event)
+
+    gate = _FakeGate(
+        [
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.SPEECH_RESUMED,
+            )
+        ]
+    )
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+        on_activity=on_activity,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=3,
+        buffer_epoch=4,
+        utterance_id=5,
+        pcm16=b"\x01\x00",
+    )
+    await _eventually(lambda: len(observed) == 2)
+
+    assert observed == [
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.SPEECH_RESUMED,
+    ]
+    await adapter.close()
+
+
 async def test_bounded_queue_applies_backpressure_without_dropping_pcm() -> None:
     gate = _BlockingGate(blocked_indices=(0,))
     adapter = _VoiceTurnAdapter(

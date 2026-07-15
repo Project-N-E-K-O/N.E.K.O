@@ -230,7 +230,7 @@ def test_phase2_registry_routes_and_capabilities():
             == "blocked_credentials"
         )
     assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
-    assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
+    assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is True
     for provider_key in ("glm", "gemini"):
         meta = ASR_PROVIDER_REGISTRY[provider_key]
         assert meta.implementation_status == "implemented"
@@ -308,7 +308,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
     )
-    assert openai_session._voice_turn_factory is None
+    assert openai_session._voice_turn_factory is not None
 
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         asr_client._get_asr_worker("openai", "provider")

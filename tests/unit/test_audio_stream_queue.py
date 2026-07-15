@@ -142,3 +142,62 @@ async def test_inflight_audio_is_dropped_when_epoch_changes():
     )
 
     session.stream_audio.assert_not_awaited()
+
+
+def _make_routable_audio_manager(route_result: bool):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr.is_active = True
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._session_start_circuit_open = False
+    mgr._audio_stream_epoch = 0
+    mgr.session_closed_by_server = False
+    mgr.last_audio_send_error_time = 0.0
+    mgr.audio_error_log_interval = 2.0
+    mgr.is_hot_swap_imminent = False
+    mgr.is_flushing_hot_swap_cache = False
+    mgr.hot_swap_cache_lock = asyncio.Lock()
+    mgr._route_microphone_audio = AsyncMock(return_value=route_result)
+    mgr._record_omni_microphone_audio = MagicMock()
+
+    class _RealtimeSession(OmniRealtimeClient):
+        def __init__(self):
+            self.ws = object()
+            self._fatal_error_occurred = False
+            self._audio_processor = object()
+            self.stream_audio = AsyncMock()
+
+        async def process_audio_chunk_async(self, audio_bytes):
+            return audio_bytes
+
+    mgr.session = _RealtimeSession()
+    return mgr
+
+
+async def test_independent_asr_route_does_not_send_microphone_audio_to_omni():
+    mgr = _make_routable_audio_manager(True)
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_native_route_sends_microphone_audio_to_omni_only():
+    mgr = _make_routable_audio_manager(False)
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr.session.stream_audio.assert_awaited_once()
+    mgr._record_omni_microphone_audio.assert_called_once()

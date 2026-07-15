@@ -161,7 +161,12 @@ class StreamingMixin:
                     for i in range(0, len(combined_audio), large_chunk_size):
                         chunk = combined_audio[i:i + large_chunk_size]
                         try:
-                            await self.session.stream_audio(chunk)
+                            if not await self._route_microphone_audio(
+                                chunk,
+                                sample_rate_hz=16_000,
+                            ):
+                                self._record_omni_microphone_audio(len(chunk))
+                                await self.session.stream_audio(chunk)
                             await asyncio.sleep(0.025)
                             total_chunks_sent += 1
                         except Exception as e:
@@ -628,8 +633,17 @@ class StreamingMixin:
                                 logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
                                 self.last_audio_send_error_time = current_time
                             return
-                        
+
+                        # Exactly one microphone outlet is allowed. Independent
+                        # ASR consumes the frame; native mode leaves it for Omni.
+                        if await self._route_microphone_audio(
+                            processed_audio,
+                            sample_rate_hz=16_000,
+                        ):
+                            return
+
                         # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
+                        self._record_omni_microphone_audio(len(processed_audio))
                         await session_ref.stream_audio(processed_audio)
                     else:
                         logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")

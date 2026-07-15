@@ -210,12 +210,13 @@ async def test_clear_invalidates_late_voice_turn_commit():
     await session.close()
 
 
-async def test_glm_and_gemini_routes_create_smart_turn_sessions(monkeypatch):
+async def test_openai_glm_and_gemini_routes_create_smart_turn_sessions(monkeypatch):
     import utils.config_manager as config_manager
 
     class _ConfigManager:
         def get_core_config(self):
             return {
+                "ASSIST_API_KEY_OPENAI": "openai-key",
                 "ASSIST_API_KEY_GLM": "glm-key",
                 "ASSIST_API_KEY_GEMINI": "gemini-key",
             }
@@ -226,7 +227,7 @@ async def test_glm_and_gemini_routes_create_smart_turn_sessions(monkeypatch):
         "get_config_manager",
         lambda: _ConfigManager(),
     )
-    for core_type in ("glm", "gemini"):
+    for core_type in ("openai", "glm", "gemini"):
         session = create_asr_session(
             core_type,
             on_input_transcript=AsyncMock(),

@@ -42,6 +42,7 @@ from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .asr_runtime import AsrRuntimeMixin
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -54,6 +55,7 @@ class LLMSessionManager(
     LifecycleMixin,
     ProactiveMixin,
     GreetingMixin,
+    AsrRuntimeMixin,
     StreamingMixin,
     NotifyMixin,
 ):
@@ -68,6 +70,7 @@ class LLMSessionManager(
         self.websocket = None
         self.sync_message_queue = sync_message_queue
         self.session = None
+        self._init_asr_runtime_state()
         self.last_time = None
         self.is_active = False
         self.active_session_is_idle = False

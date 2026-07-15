@@ -1771,6 +1771,57 @@
             nrContainer.appendChild(nrHint);
             leftColumn.appendChild(nrContainer);
 
+            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            var asrContainer = document.createElement('div');
+            asrContainer.style.padding = '8px 12px';
+
+            var asrRow = document.createElement('div');
+            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var asrLabel = document.createElement('span');
+            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
+            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var asrToggle = document.createElement('label');
+            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var asrInput = document.createElement('input');
+            asrInput.type = 'checkbox';
+            asrInput.checked = S.independentAsrEnabled === true;
+            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
+            var asrSlider = document.createElement('span');
+            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var asrKnob = document.createElement('span');
+            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            asrSlider.appendChild(asrKnob);
+            asrToggle.appendChild(asrInput);
+            asrToggle.appendChild(asrSlider);
+
+            asrInput.addEventListener('change', function () {
+                S.independentAsrEnabled = asrInput.checked;
+                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
+                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
+                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                    window.appSettings.saveSettings();
+                }
+            });
+
+            asrRow.appendChild(asrLabel);
+            asrRow.appendChild(asrToggle);
+            asrContainer.appendChild(asrRow);
+
+            var asrHint = document.createElement('div');
+            var asrHintKey = S.independentAsrActive
+                ? 'microphone.independentAsrActive'
+                : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
+            asrHint.textContent = window.t
+                ? window.t(asrHintKey, { provider: S.independentAsrProvider || '' })
+                : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            asrHint.setAttribute('data-i18n', asrHintKey);
+            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            asrContainer.appendChild(asrHint);
+            leftColumn.appendChild(asrContainer);
+
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1b);

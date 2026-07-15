@@ -51,6 +51,7 @@ class _VoiceTurnAdapter:
         gate: SileroActivityGate,
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
+        on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
         queue_maxsize: int = 64,
         continuation_timeout_seconds: float = 2.0,
     ) -> None:
@@ -62,6 +63,7 @@ class _VoiceTurnAdapter:
         self._gate = gate
         self._coordinator = coordinator
         self._on_commit = on_commit
+        self._on_activity = on_activity
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=queue_maxsize)
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._consumer_task: asyncio.Task[None] | None = None
@@ -182,6 +184,8 @@ class _VoiceTurnAdapter:
 
         events = await asyncio.to_thread(self._gate.feed, item.pcm16)
         for event in events:
+            if self._on_activity is not None:
+                await self._on_activity(event)
             await self._coordinator.on_activity_event(event)
 
         if any(
@@ -266,6 +270,8 @@ class _VoiceTurnAdapter:
 
 def _create_voice_turn_adapter(
     on_commit: Callable[[int, int, int], Awaitable[None]],
+    *,
+    on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
 ) -> _VoiceTurnAdapter:
     config = SmartTurnConfig(enabled=True)
     vad = SileroVad(
@@ -283,4 +289,5 @@ def _create_voice_turn_adapter(
         gate=gate,
         coordinator=coordinator,
         on_commit=on_commit,
+        on_activity=on_activity,
     )

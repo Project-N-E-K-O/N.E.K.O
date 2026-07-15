@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from functools import partial
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 from ._infra import (
     AsrSessionConfig,
@@ -136,6 +137,7 @@ def create_asr_session(
     on_input_transcript: Callable[[str], Awaitable[None]],
     on_connection_error: Callable[[str], Awaitable[None]],
     on_status_message: Callable[[str], Awaitable[None]] | None = None,
+    on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
 ) -> RealtimeAsrSession:
     """Create an isolated ASR session or fail fast for unsupported routes."""
 
@@ -159,7 +161,7 @@ def create_asr_session(
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
         voice_turn_factory=(
-            _create_voice_turn_adapter
+            partial(_create_voice_turn_adapter, on_activity=on_speech_activity)
             if _ASR_PROVIDER_REGISTRY[provider_key].requires_smart_turn
             else None
         ),

@@ -35,6 +35,7 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'independentAsrEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
@@ -75,6 +76,7 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            independentAsrEnabled: S.independentAsrEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -310,6 +312,7 @@
         const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
+        const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -381,6 +384,7 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            independentAsrEnabled: currentIndependentAsr,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -410,6 +414,7 @@
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
+        S.independentAsrEnabled = currentIndependentAsr;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -503,6 +508,7 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
