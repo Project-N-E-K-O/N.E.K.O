@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_logic.core.asr_runtime import AsrRuntimeMixin
+from main_logic import core as core_facade
 from main_logic.core import LLMSessionManager
+from main_logic.core.asr_runtime import AsrRuntimeMixin
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from utils import preferences
 
@@ -161,7 +162,7 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
-        runtime_module,
+        core_facade,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -185,7 +186,7 @@ async def test_start_failure_keeps_native_omni_without_leaking_error(monkeypatch
     asr.connect = AsyncMock(side_effect=RuntimeError("secret provider response"))
     asr.close = AsyncMock()
     monkeypatch.setattr(
-        runtime_module,
+        core_facade,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -309,7 +310,7 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
     runtime.core_api_type = "gemini"
     factory = MagicMock()
     monkeypatch.setattr(
-        runtime_module,
+        core_facade,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -323,12 +324,10 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
 
 
 async def test_free_core_reports_unavailable_and_stays_native(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
-
     runtime = _Runtime()
     runtime.core_api_type = "free"
     monkeypatch.setattr(
-        runtime_module,
+        core_facade,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -361,7 +360,7 @@ async def test_fallback_pending_switches_to_native_only_after_silence(monkeypatc
     runtime = _Runtime()
     runtime._asr_route_mode = "fallback_pending"
     runtime._asr_fallback_pending = True
-    monkeypatch.setattr(runtime_module, "_FALLBACK_SILENCE_SECONDS", 0)
+    monkeypatch.setattr(runtime_module, "_ASR_FALLBACK_SILENCE_SECONDS", 0)
 
     assert await runtime._route_microphone_audio(
         b"\x00\x00",
@@ -380,7 +379,7 @@ async def test_continuous_silent_pcm_does_not_reset_native_fallback(monkeypatch)
     runtime = _Runtime()
     runtime._asr_route_mode = "fallback_pending"
     runtime._asr_fallback_pending = True
-    monkeypatch.setattr(runtime_module, "_FALLBACK_SILENCE_SECONDS", 0.02)
+    monkeypatch.setattr(runtime_module, "_ASR_FALLBACK_SILENCE_SECONDS", 0.02)
 
     await runtime._route_microphone_audio(b"\x00\x00", sample_rate_hz=16_000)
     fallback_task = runtime._asr_fallback_task

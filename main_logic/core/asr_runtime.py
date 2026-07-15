@@ -7,16 +7,16 @@ import json
 import time
 from typing import Any
 
+from main_logic import core as _core_facade
 from main_logic.asr_client import create_asr_session
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
 from main_logic.voice_turn.contracts import SpeechActivityEvent
-from utils.preferences import aload_global_conversation_settings
 
-from ._shared import logger
-
-
-_FALLBACK_SILENCE_SECONDS = 0.8
-_DUPLICATE_FINAL_WINDOW_SECONDS = 0.5
+from ._shared import (
+    _ASR_DUPLICATE_FINAL_WINDOW_SECONDS,
+    _ASR_FALLBACK_SILENCE_SECONDS,
+    logger,
+)
 
 
 class AsrRuntimeMixin:
@@ -60,7 +60,7 @@ class AsrRuntimeMixin:
         self._asr_core_type = core_type
 
         try:
-            settings = await aload_global_conversation_settings()
+            settings = await _core_facade.aload_global_conversation_settings()
             enabled = bool(settings.get("independentAsrEnabled", False))
         except Exception:
             enabled = False
@@ -263,7 +263,8 @@ class AsrRuntimeMixin:
             if (
                 self._asr_last_final is not None
                 and self._asr_last_final[0] == clean
-                and now - self._asr_last_final[1] <= _DUPLICATE_FINAL_WINDOW_SECONDS
+                and now - self._asr_last_final[1]
+                <= _ASR_DUPLICATE_FINAL_WINDOW_SECONDS
             ):
                 return
             self._asr_last_final = (clean, now)
@@ -339,7 +340,7 @@ class AsrRuntimeMixin:
         epoch = self._asr_session_epoch
 
         async def activate() -> None:
-            await asyncio.sleep(_FALLBACK_SILENCE_SECONDS)
+            await asyncio.sleep(_ASR_FALLBACK_SILENCE_SECONDS)
             if epoch != self._asr_session_epoch:
                 return
             self._asr_route_mode = "native"
