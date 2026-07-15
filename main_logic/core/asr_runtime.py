@@ -27,6 +27,7 @@ class AsrRuntimeMixin:
         self._asr_route_mode = "native"
         self._asr_session_epoch = 0
         self._asr_provider = None
+        self._asr_core_type = None
         self._asr_turn_prepared = False
         self._asr_final_lock = asyncio.Lock()
         self._asr_fallback_pending = False
@@ -53,6 +54,11 @@ class AsrRuntimeMixin:
         if input_mode != "audio":
             return
 
+        core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
+        # Remember attempted native/disabled/failed routes too. Hot-swap
+        # reconciliation should retry only when the Core route truly changes.
+        self._asr_core_type = core_type
+
         try:
             settings = await aload_global_conversation_settings()
             enabled = bool(settings.get("independentAsrEnabled", False))
@@ -61,7 +67,6 @@ class AsrRuntimeMixin:
         if not enabled:
             return
 
-        core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
         route = CORE_ASR_ROUTES.get(core_type)
         if route is None or route.provider_key == "free":
             await self._send_asr_status("ASR_INDEPENDENT_UNAVAILABLE", core_type or "unknown")
@@ -129,6 +134,7 @@ class AsrRuntimeMixin:
         omni_audio_bytes = self._omni_mic_audio_bytes
         self._asr_session = None
         self._asr_provider = None
+        self._asr_core_type = None
         self._asr_route_mode = "native"
         self._asr_fallback_pending = False
         self._asr_received_audio = False
@@ -206,12 +212,8 @@ class AsrRuntimeMixin:
         """Switch providers only at a completed Omni hot-swap boundary."""
 
         self._ensure_asr_runtime_state()
-        if self._asr_route_mode != "independent":
-            return
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
-        route = CORE_ASR_ROUTES.get(core_type)
-        desired_provider = route.provider_key if route is not None else None
-        if desired_provider == self._asr_provider:
+        if core_type == self._asr_core_type:
             return
         await self._start_independent_asr_if_enabled(
             str(getattr(self, "input_mode", "audio") or "audio")
@@ -331,8 +333,8 @@ class AsrRuntimeMixin:
 
     def _schedule_native_fallback_after_silence(self) -> None:
         task = self._asr_fallback_task
-        if task is not None:
-            task.cancel()
+        if task is not None and not task.done():
+            return
 
         epoch = self._asr_session_epoch
 
