@@ -170,8 +170,10 @@ class StudyOcrPipeline:
             if callable(shutdown):
                 try:
                     shutdown(wait=False)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._logger.warning(
+                        f"study OCR executor retirement shutdown failed: {exc}"
+                    )
             self._retired_executors.append(executor)
             self._executor = None
 
