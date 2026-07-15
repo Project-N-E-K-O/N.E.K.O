@@ -52,6 +52,31 @@ class _FakeVoiceTurnAdapter:
         self.closed = True
 
 
+class _FailingVoiceTurnAdapter(_FakeVoiceTurnAdapter):
+    def __init__(
+        self,
+        on_commit: Callable[[int, int, int], Awaitable[None]],
+        *,
+        fail_start: bool = False,
+        fail_close: bool = False,
+    ) -> None:
+        super().__init__(on_commit)
+        self.fail_start = fail_start
+        self.fail_close = fail_close
+        self.close_calls = 0
+
+    async def start(self) -> None:
+        self.started = True
+        if self.fail_start:
+            raise RuntimeError("adapter start failed")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.closed = True
+        if self.fail_close:
+            raise RuntimeError("adapter close failed")
+
+
 async def _recording_worker(request_queue, response_queue, api_key, config):
     del api_key, config
     await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
@@ -208,3 +233,104 @@ async def test_glm_and_gemini_routes_create_smart_turn_sessions(monkeypatch):
             on_connection_error=AsyncMock(),
         )
         assert session._voice_turn_factory is not None
+
+
+async def test_voice_turn_start_failure_fails_session_and_releases_adapter():
+    adapter = None
+    on_error = AsyncMock()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FailingVoiceTurnAdapter(on_commit, fail_start=True)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+        voice_turn_factory=factory,
+    )
+
+    with pytest.raises(RuntimeError, match="ASR_VOICE_TURN_START_FAILED"):
+        await session.connect()
+
+    assert adapter is not None
+    assert adapter.close_calls == 1
+    assert adapter.closed
+    assert session._state.value == "failed"
+    assert session._worker_task is not None and session._worker_task.done()
+    on_error.assert_awaited_once_with(
+        "ASR_VOICE_TURN_START_FAILED: voice turn adapter failed to start"
+    )
+
+
+async def test_voice_turn_close_failure_does_not_block_session_cleanup():
+    adapter = None
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FailingVoiceTurnAdapter(on_commit, fail_close=True)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+
+    await session.close()
+
+    assert adapter is not None and adapter.close_calls == 1
+    assert session._state.value == "closed"
+    assert session._worker_task is not None and session._worker_task.done()
+
+
+async def test_worker_failure_unloads_voice_turn_even_when_adapter_close_fails():
+    emit_error = asyncio.Event()
+    error_reported = asyncio.Event()
+    adapter = None
+
+    async def worker(request_queue, response_queue, api_key, config):
+        del request_queue, api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        await emit_error.wait()
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=0,
+                error_code="ASR_PROVIDER_FAILED",
+                error_message="provider failed",
+            )
+        )
+        await asyncio.Event().wait()
+
+    async def on_error(error: str) -> None:
+        assert error == "ASR_PROVIDER_FAILED: provider failed"
+        error_reported.set()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FailingVoiceTurnAdapter(on_commit, fail_close=True)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+    emit_error.set()
+    await asyncio.wait_for(error_reported.wait(), 1)
+
+    assert adapter is not None and adapter.close_calls == 1
+    assert session._voice_turn_adapter is None
+    assert session._state.value == "failed"

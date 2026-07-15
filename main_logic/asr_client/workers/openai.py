@@ -27,6 +27,7 @@ import soxr
 import websockets
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection, normalize_zh_en_language
 
 
 _OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -37,22 +38,11 @@ _UtteranceKey = tuple[int, int, int | None]
 
 
 def _normalize_openai_language(language: str) -> str | None:
-    normalized = language.strip().lower()
-    if normalized == "auto":
-        return None
-    if normalized in {"zh", "zh-cn"}:
-        return "zh"
-    if normalized in {"en", "en-us"}:
-        return "en"
-    raise ValueError("ASR_LANGUAGE_NOT_SUPPORTED: OpenAI language is unsupported")
+    return normalize_zh_en_language(language, provider_name="OpenAI")
 
 
 def _openai_is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 def _resample_pcm_16k_to_24k(

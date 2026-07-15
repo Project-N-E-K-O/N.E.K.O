@@ -2,7 +2,10 @@
 
 This backend supersedes the implementation approach in PR #2187. It is built
 from the current package-based `main` layout and intentionally does not connect
-to Omni Realtime, Core, an ASR provider, or a user-visible setting.
+directly to Omni Realtime, Core, an ASR provider, or a user-visible setting.
+Phase 3 integrates it through a session-level Voice Turn Adapter that is owned
+by `RealtimeAsrSession` and constructed only for ASR routes whose registry
+metadata declares `requires_smart_turn`, currently GLM and Gemini.
 
 ## Endpoint authority
 
@@ -11,7 +14,7 @@ to Omni Realtime, Core, an ASR provider, or a user-visible setting.
 - An ASR provider without that capability may use common VAD to find a
   candidate pause and ask Smart Turn for `COMPLETE` or `INCOMPLETE`.
 - Provider buffer commit, hard timeout, maximum turn duration, and manual
-  commit remain responsibilities of the future ASR Controller.
+  commit remain responsibilities of the ASR session/controller layer.
 
 VAD emits only speech start, resumed speech, and candidate pause events. It is
 also suitable for barge-in and connection lifecycle gating, but it never emits
@@ -38,10 +41,12 @@ licenses, and SHA-256 digests. Run:
 uv run python tools/voice_eval/prepare_voice_turn_assets.py
 ```
 
-The runtime is lazy and disabled by default. Concurrent loads are
-single-flight. Missing/corrupt assets produce `UNAVAILABLE`, which is distinct
-from a semantic `INCOMPLETE` result. Repeated inference failures open a
-per-instance circuit breaker; constructing a new instance permits recovery.
+The runtime is lazy and is loaded only for routes marked `requires_smart_turn`.
+Concurrent loads are single-flight. Missing/corrupt assets produce
+`UNAVAILABLE`, which is distinct from a semantic `INCOMPLETE` result. Repeated
+inference failures open a per-instance circuit breaker; constructing a new
+instance permits recovery. Closing or failing the ASR session unloads its
+Adapter and releases the corresponding runtime resources.
 
 ## Current verification
 
@@ -59,7 +64,7 @@ per-instance circuit breaker; constructing a new instance permits recovery.
 
 Synthetic fixtures validate the implementation contract, not conversational
 accuracy. No product-quality claim is made for Chinese, English, or Japanese.
-Before enabling the backend, maintainers must run
+Before treating the integrated routes as product-quality, maintainers must run
 `tools/voice_eval/evaluate_smart_turn_v3.py` on an authorized labelled set that
 includes sentence-internal pauses, hesitation followed by continuation,
 complete turns, keyboard noise, and barge-in. The report always includes all

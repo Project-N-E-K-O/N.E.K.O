@@ -37,6 +37,8 @@ _CREDENTIAL_FIELDS = {
     "openai": "ASSIST_API_KEY_OPENAI",
     "step": "ASSIST_API_KEY_STEP",
     "grok": "ASSIST_API_KEY_GROK",
+    "glm": "ASSIST_API_KEY_GLM",
+    "gemini": "ASSIST_API_KEY_GEMINI",
 }
 
 _AUTH_FAILURE_CODES = {
@@ -149,6 +151,14 @@ def _resolve_provider(provider: str) -> AsrWorkerFn:
         from main_logic.asr_client.workers.grok import grok_asr_worker
 
         return grok_asr_worker
+    if provider == "glm":
+        from main_logic.asr_client.workers.glm import glm_asr_worker
+
+        return glm_asr_worker
+    if provider == "gemini":
+        from main_logic.asr_client.workers.gemini import gemini_asr_worker
+
+        return gemini_asr_worker
     raise ValueError(f"unknown provider: {provider}")
 
 
@@ -233,6 +243,10 @@ async def _wait_for_final_count(
 
 async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
     turns = [_read_wav_pcm16(path) for path in args.audio]
+    if any(turn.sample_rate_hz != turns[0].sample_rate_hz for turn in turns[1:]):
+        raise ValueError(
+            "all WAV turns in one smoke session must use the same sample rate"
+        )
     result = SmokeResult(
         provider=args.provider,
         endpointing_mode=args.endpointing_mode,

@@ -203,7 +203,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/vad_models/*.onnx
-          key: voice-turn-models-${{ runner.os }}-silero-v6.2.1-smart-turn-v3.2-f766f81
+          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
 
       - name: Prepare verified voice-turn assets
         shell: bash

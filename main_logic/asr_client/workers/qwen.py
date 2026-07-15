@@ -28,6 +28,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection
 
 _QWEN_MODEL = "qwen3-asr-flash-realtime"
 _QWEN_CN_URL = f"wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={_QWEN_MODEL}"
@@ -105,11 +106,7 @@ def _qwen_language_code(language: str) -> str | None:
 
 
 def _qwen_is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 def _qwen_session_update(
@@ -359,9 +356,10 @@ async def _qwen_receiver(
                 if not state.pending_manual_commits:
                     continue
                 if item_id:
-                    state.item_keys.setdefault(
-                        item_id, state.pending_manual_commits.popleft()
-                    )
+                    if item_id not in state.item_keys:
+                        state.item_keys[item_id] = (
+                            state.pending_manual_commits.popleft()
+                        )
                 elif state.legacy_manual_key is None:
                     state.legacy_manual_key = state.pending_manual_commits[0]
                 continue

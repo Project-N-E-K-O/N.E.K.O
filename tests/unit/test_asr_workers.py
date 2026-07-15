@@ -14,7 +14,7 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _AsrWorkerRequest,
 )
-from main_logic.asr_client.workers import grok, openai, qwen, step
+from main_logic.asr_client.workers import gemini, grok, openai, qwen, step
 
 
 _END = object()
@@ -130,6 +130,74 @@ async def _stop_worker(
     await asyncio.wait_for(task, 1)
     await asyncio.wait_for(requests.join(), 1)
     return closed
+
+
+async def test_qwen_duplicate_item_created_preserves_next_manual_commit(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+        elif message["type"] == "session.finish":
+            await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(qwen.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+
+    for utterance_id in (1, 2):
+        await requests.put(
+            _AsrWorkerRequest(
+                kind="audio",
+                generation=0,
+                utterance_id=utterance_id,
+                audio=b"\0\0",
+            )
+        )
+        await requests.put(
+            _AsrWorkerRequest(
+                kind="commit",
+                generation=0,
+                utterance_id=utterance_id,
+            )
+        )
+    await _wait_until(lambda: commit_count == 2)
+
+    await websocket.server_send(
+        {"type": "conversation.item.created", "item": {"id": "first"}}
+    )
+    await websocket.server_send(
+        {"type": "conversation.item.created", "item": {"id": "first"}}
+    )
+    await websocket.server_send(
+        {"type": "conversation.item.created", "item": {"id": "second"}}
+    )
+    for item_id, transcript in (("first", "one"), ("second", "two")):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": transcript,
+            }
+        )
+
+    first = await _next_event(responses, "final")
+    second = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "one")
+    assert (second.utterance_id, second.text) == (2, "two")
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 @pytest.mark.parametrize(
@@ -1109,12 +1177,14 @@ def test_auth_rejection_classification() -> None:
     assert step._step_is_auth_rejection(error)
     assert openai._openai_is_auth_rejection(error)
     assert grok._grok_is_auth_rejection(error)
+    assert gemini._is_auth_rejection(error)
 
     ordinary_error = RuntimeError("network failure")
     assert not qwen._qwen_is_auth_rejection(ordinary_error)
     assert not step._step_is_auth_rejection(ordinary_error)
     assert not openai._openai_is_auth_rejection(ordinary_error)
     assert not grok._grok_is_auth_rejection(ordinary_error)
+    assert not gemini._is_auth_rejection(ordinary_error)
 
 
 def test_workers_preserve_provider_auto_language_detection() -> None:

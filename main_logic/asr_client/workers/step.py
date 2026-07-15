@@ -28,6 +28,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection
 
 _STEP_URL = "wss://api.stepfun.com/v1/realtime/asr/stream"
 _STEP_MODEL = "stepaudio-2.5-asr-stream"
@@ -93,11 +94,7 @@ def _step_language_code(language: str) -> str | None:
 
 
 def _step_is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 def _step_session_update(

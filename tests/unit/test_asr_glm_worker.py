@@ -322,6 +322,36 @@ async def test_glm_shutdown_cancels_inflight_request_without_final() -> None:
     await asyncio.wait_for(task, 1)
 
 
+async def test_glm_delivers_transcription_completed_with_shutdown_cycle() -> None:
+    client = _BlockingClient()
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        glm.glm_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(),
+            http_client=client,
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await asyncio.wait_for(client.started.wait(), 1)
+
+    await requests.put(_AsrWorkerRequest(kind="shutdown", generation=1, utterance_id=2))
+    client.release.set()
+    await asyncio.sleep(0)
+
+    final = await _next_event(responses, "final")
+    assert (final.generation, final.utterance_id, final.text) == (0, 1, "stale")
+    assert (await _next_event(responses, "closed")).generation == 1
+    await asyncio.wait_for(task, 1)
+
+
 @pytest.mark.parametrize(
     ("api_key", "config", "expected_code"),
     [
