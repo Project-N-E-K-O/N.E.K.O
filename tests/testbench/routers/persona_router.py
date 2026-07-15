@@ -43,6 +43,7 @@ Implementation notes:
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -54,8 +55,9 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
@@ -494,6 +496,169 @@ async def list_real_characters() -> dict[str, Any]:
         "cfa_fallback": cfa_fallback,
         "note": note,
     }
+
+
+# ── real character export (P31) ─────────────────────────────────────
+#
+# Mirror image of ``import_from_real``: the Import sub-page lists local real
+# characters; each row now also offers a one-click **[导出]** that packs that
+# character's whole main-program memory directory into a ``<name>.zip``. The
+# layout matches the reference ``悠怡.zip`` (top folder = character name holding
+# ``characters.json`` + every memory file flat, ``reflection_archive/`` nested),
+# so the produced zip round-trips straight back through
+# ``import_from_archive`` (its rglob fallback recognises a folder named after
+# the character that holds a known memory file).
+#
+# Contrast with P30 ``/memory/export``: that one is **redacted** analysis for
+# sharing; THIS one is a **faithful, un-redacted** full dump for backup /
+# migration. No secret scrubbing, no pseudonymisation — the UI tooltip is
+# honest that it contains raw private data. Pure read of the host filesystem;
+# never writes the real (un-sandboxed) tree, takes no session lock (no autosave
+# side-effect — L63), streams the zip straight from memory (no temp file).
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a ``Content-Disposition`` that survives a CJK ``<角色名>.zip`` name.
+
+    A bare ``filename="..."`` header is latin-1, so a Chinese name cannot ride
+    in it. Emit both: an ASCII fallback plus the RFC 5987 ``filename*=UTF-8''``
+    form modern browsers prefer (mirrors ``memory_router._content_disposition``).
+    """
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
+    if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
+        ascii_fallback = "NEKO_character_export.zip"
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quoted}"
+
+
+def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> bytes:
+    """Pack one real character's config + memory dir into ``<name>/...`` zip bytes.
+
+    Faithful full dump (no redaction, no rename, no skip):
+      * ``<name>/characters.json`` — the real, whole ``characters.json`` (if any).
+      * ``<name>/<relpath>`` — every file under ``memory_dir/<name>/`` (recursive;
+        preserves ``reflection_archive/`` sub-dirs; binary ``time_indexed.db`` is
+        written verbatim).
+
+    Counts actual bytes read while streaming and aborts with HTTP 413 the moment
+    the running total crosses :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES` (guards a
+    pathological memory dir from OOM-ing the export). Never reads outside
+    ``memory_dir/<name>`` / ``config_dir``.
+    """
+    prefix = f"{name}/"
+    total = 0
+    # Track arcnames already written so we never emit a duplicate zip member.
+    # This matters when the memory dir *also* holds a ``characters.json`` (e.g.
+    # a character whose memory dir was seeded from a flattened dump that put
+    # config + memory in one folder): the config-dir copy is authoritative and
+    # wins; the memory-dir duplicate is skipped. Without this, zipfile emits a
+    # "Duplicate name" warning and a malformed archive with two same-named
+    # members (last one wins on extraction).
+    written: set[str] = set()
+
+    def _guard(added: int) -> None:
+        nonlocal total
+        total += added
+        if total > _MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "error_type": "ArchiveTooLarge",
+                    "message": (
+                        f"角色 {name!r} 的记忆目录解压后体积超过导出上限 "
+                        f"({_MAX_ARCHIVE_UNCOMPRESSED_BYTES // (1024 * 1024)} MiB)."
+                    ),
+                },
+            )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        chars_path = config_dir / "characters.json"
+        if chars_path.is_file():
+            data = chars_path.read_bytes()
+            _guard(len(data))
+            arc = prefix + "characters.json"
+            zf.writestr(arc, data)
+            written.add(arc)
+
+        char_mem = memory_dir / name
+        if char_mem.is_dir():
+            for item in sorted(char_mem.rglob("*")):
+                if not item.is_file():
+                    continue
+                rel = item.relative_to(char_mem).as_posix()
+                arc = prefix + rel
+                if arc in written:
+                    # Duplicate (e.g. memory dir also holds characters.json);
+                    # the config-dir copy already written wins.
+                    continue
+                try:
+                    data = item.read_bytes()
+                except OSError as exc:
+                    python_logger().warning(
+                        "persona_router: export skip unreadable %s (%s)", item, exc,
+                    )
+                    continue
+                _guard(len(data))
+                zf.writestr(arc, data)
+                written.add(arc)
+    return buf.getvalue()
+
+
+@router.get("/export_real/{name}")
+async def export_real_character(name: str) -> Response:
+    """P31 — one-click faithful export of a local real character as ``<name>.zip``.
+
+    Mirror of :func:`import_from_real`. Reads the tester's **real** (pre-patch)
+    ``config_dir`` / ``memory_dir`` via ``session.sandbox.real_paths()`` and
+    packs ``<name>/characters.json`` + everything under ``memory_dir/<name>/``.
+    The zip layout matches the reference ``悠怡.zip`` and round-trips through
+    :func:`import_from_archive`.
+
+    Errors: 404 ``NoActiveSession`` / ``NoSuchRealCharacter``; 422
+    ``UnsafeCharacterName``; 413 ``ArchiveTooLarge``; 500 ``SandboxNotApplied``.
+
+    Pure read — takes NO session lock (mirrors ``/real_characters``); triggers no
+    autosave / snapshot / write. I/O + compression run off the event loop via
+    ``asyncio.to_thread``. The zip is streamed from memory (no temp file).
+    """
+    session = _require_session()
+    safe_name = _assert_safe_character_name(name)
+
+    paths = session.sandbox.real_paths()
+    if not paths:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "SandboxNotApplied",
+                "message": "Sandbox is not applied; cannot read real paths.",
+            },
+        )
+    config_dir: Path = paths["config_dir"]
+    memory_dir: Path = paths["memory_dir"]
+
+    raw = _read_real_characters_json(config_dir)
+    if raw is None or _extract_catgirl_entry(raw, safe_name) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "NoSuchRealCharacter",
+                "message": f"本地 characters.json 里没有角色 {safe_name!r}.",
+            },
+        )
+
+    zip_bytes = await asyncio.to_thread(
+        _zip_character_memory, config_dir, memory_dir, safe_name,
+    )
+    python_logger().info(
+        "persona.export_real: session=%s, character=%s, bytes=%d",
+        getattr(session, "id", "?"), safe_name, len(zip_bytes),
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": _content_disposition(f"{safe_name}.zip")},
+    )
 
 
 def _copytree_safe(src: Path, dst: Path) -> list[str]:

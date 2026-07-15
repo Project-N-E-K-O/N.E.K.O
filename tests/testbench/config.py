@@ -90,8 +90,8 @@ from pathlib import Path
 #      testers can tell at a glance how fresh the build is without
 #      cross-referencing CHANGELOG.md.
 
-TESTBENCH_VERSION: str = "1.10.0"
-TESTBENCH_PHASE: str = "记忆分析系统 · 一键脱敏导出"
+TESTBENCH_VERSION: str = "1.11.0"
+TESTBENCH_PHASE: str = "角色一键导出 (备份/迁移)"
 TESTBENCH_LAST_UPDATED: str = "2026-07-15"
 
 # ─── Directory layout ──────────────────────────────────────────────────────

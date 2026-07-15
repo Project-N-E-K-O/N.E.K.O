@@ -395,7 +395,7 @@ HTTP 端点按**业务域**分, 13 个 router:
 | `health_router` | `/health`, `/version`, `/docs/{name}` (P26 新增) | 健康检查 + 版本元数据 + 公共 markdown 文档渲染 |
 | `session_router` | `/api/session/*` | New / Switch / Load / Save / Export / List |
 | `config_router` | `/api/config/*` | 模型配置 / provider / api_key |
-| `persona_router` | `/api/persona/*` | Persona CRUD + 导入 (真实角色 / 内置 preset) |
+| `persona_router` | `/api/persona/*` | Persona CRUD + 导入 (真实角色 / 内置 preset / zip 档案) + `/export_real/{name}` (P31 角色忠实全量导出为 `<角色名>.zip`, 纯读) |
 | `memory_router` | `/api/memory/*` | 三层 memory 的 CRUD + 5 op preview/commit + `/api/memory/recent/import_from_session` (P25 polish r6) + `/api/memory/prompt_preview/{op}` (P25 polish r7 pure preview) |
 | `chat_router` | `/api/chat/*` | 四模式 chat (send / auto_dialog / script playback / dual_ai) + SSE |
 | `judge_router` | `/api/judge/*` | Evaluation Run + SSE + 结果查询 + Aggregate + `/api/judge/run_prompt_preview` (P25 polish r7 pure preview) |

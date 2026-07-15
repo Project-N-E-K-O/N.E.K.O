@@ -848,6 +848,8 @@ def _rewrite_internal_doc_links(html: str) -> str:
         "P26_BLUEPRINT.md",
         "P30_BLUEPRINT.md",
         "P30_BLUEPRINT",
+        "P31_BLUEPRINT.md",
+        "P31_BLUEPRINT",
         "MEMORY_CODE_INFERENCE_FEASIBILITY.md",
         "MEMORY_CODE_INFERENCE_FEASIBILITY",
     }

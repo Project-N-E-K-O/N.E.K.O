@@ -119,6 +119,104 @@ function renderArchiveImport(host) {
   );
 }
 
+// ── 角色一键导出 (P31) ────────────────────────────────────────────────
+//
+// 与"从本地导入"镜像: 每个真实角色行的 [导出] 把该角色主程序记忆目录忠实打成
+// `<角色名>.zip` (不脱敏, 备份/迁移用). 走 GET /api/persona/export_real/{name},
+// 用 File System Access 的"另存为"picker 让用户选保存位置; 回退 anchor 下载.
+// 不用 core/api.js (它会 JSON parse; 这里要原始 zip 字节).
+
+/** Parse the download name, preferring the RFC 5987 (UTF-8) form so a Chinese
+ *  角色名 survives; fall back to the plain `filename="..."`. */
+function _parseExportName(cd, fallbackName) {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if (star && star[1]) {
+    try { return decodeURIComponent(star[1].trim()); } catch { /* fall through */ }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(cd);
+  if (plain && plain[1]) return plain[1].trim().replace(/"$/, '');
+  return fallbackName;
+}
+
+/** Write the fetched ZIP: to the pre-acquired 另存为 handle if we have one, else
+ *  a plain anchor download. The picker MUST be acquired before any await (fresh
+ *  user activation), so it is passed in from the click handler. */
+async function _deliverExportZip(resp, saveHandle, fallbackName) {
+  const cd = resp.headers.get('Content-Disposition') || '';
+  const blob = await resp.blob();
+  if (saveHandle) {
+    const writable = await saveHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return saveHandle.name || _parseExportName(cd, fallbackName);
+  }
+  const filename = _parseExportName(cd, fallbackName);
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objUrl;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  setTimeout(() => { a.remove(); URL.revokeObjectURL(objUrl); }, 100);
+  return filename;
+}
+
+async function onExportReal(name, button) {
+  const suggested = `${name}.zip`;
+
+  // 1) Acquire the 另存为 handle FIRST, while user activation is still fresh
+  //    (showSaveFilePicker needs transient activation an `await fetch` consumes).
+  let saveHandle = null;
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      saveHandle = await window.showSaveFilePicker({
+        suggestedName: suggested,
+        types: [{ description: 'ZIP archive', accept: { 'application/zip': ['.zip'] } }],
+      });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // user cancelled → do nothing
+      saveHandle = null; // insecure ctx / unsupported → anchor fallback
+    }
+  }
+
+  const labelIdle = i18n('setup.import.button_export');
+  button.disabled = true;
+  button.textContent = i18n('setup.import.button_exporting');
+  try {
+    let resp;
+    try {
+      resp = await fetch(`/api/persona/export_real/${encodeURIComponent(name)}`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/zip, application/json, */*' },
+      });
+    } catch {
+      toast.err(i18n('setup.import.export_failed'), { message: i18n('errors.network') });
+      return;
+    }
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}`;
+      try {
+        const body = await resp.json();
+        const detail = body?.detail || body;
+        if (resp.status === 404) message = i18n('setup.import.export_no_session');
+        else if (resp.status === 413) message = i18n('setup.import.export_too_large');
+        else message = detail?.message || message;
+      } catch { /* keep HTTP status message */ }
+      toast.err(i18n('setup.import.export_failed'), { message });
+      return;
+    }
+    try {
+      const filename = await _deliverExportZip(resp, saveHandle, suggested);
+      toast.ok(i18n('setup.import.export_ok', filename));
+    } catch (downloadErr) {
+      toast.err(i18n('setup.import.export_failed'), { message: String(downloadErr) });
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = labelIdle;
+  }
+}
+
 function _bytesToBase64(bytes) {
   // Chunked to avoid "Maximum call stack" on large archives.
   let binary = '';
@@ -519,12 +617,20 @@ function renderRow(ch, source) {
     onClick: (ev) => onImport(ch.name, ev.currentTarget),
   }, i18n('setup.import.button_import'));
 
+  // 镜像操作: 把该本地角色的完整记忆目录忠实导出为 <角色名>.zip (P31).
+  // tooltip 明示"含隐私原始数据, 仅供备份/迁移" — 与脱敏的 P30 记忆分析导出区分.
+  const exportBtn = el('button', {
+    className: 'small',
+    title: i18n('setup.import.export_hint'),
+    onClick: (ev) => onExportReal(ch.name, ev.currentTarget),
+  }, i18n('setup.import.button_export'));
+
   return el('div', { className: 'import-row' },
     el('div', { className: 'import-row-head' },
       el('div', { className: 'import-row-name' }, ch.name, ' ', ...badges),
     ),
     el('div', { className: 'import-row-files' }, files),
-    el('div', { className: 'import-row-actions' }, button),
+    el('div', { className: 'import-row-actions' }, exportBtn, button),
   );
 }
 

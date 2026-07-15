@@ -716,6 +716,14 @@ export const I18N = {
         confirm_overwrite: name => `"${name}" 已经在当前沙盒存在同名 memory 目录. 继续将覆盖文件; 确认?`,
         import_ok: (name, count) => `已导入 ${name} (${count} 个文件)`,
         import_failed: '导入失败',
+        // P31 角色一键导出 (与"导入"镜像): 忠实全量打包该本地角色记忆目录.
+        button_export: '导出',
+        button_exporting: '导出中…',
+        export_hint: '把该角色的完整记忆目录 (含隐私原始数据) 打包为 zip, 仅供本地备份 / 迁移 / 可信分享. 与脱敏的记忆分析导出不同, 此处不做任何脱敏.',
+        export_ok: (name) => `已导出 ${name}`,
+        export_failed: '导出失败',
+        export_no_session: '没有活动会话, 或本地 characters.json 里没有该角色, 无法导出',
+        export_too_large: '该角色记忆目录过大, 超过导出上限',
         source_paths_label: '数据源',
       },
       // P12.5: Setup → Scripts 子页 (对话剧本模板编辑器).
