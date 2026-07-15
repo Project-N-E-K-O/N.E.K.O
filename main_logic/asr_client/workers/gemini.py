@@ -46,6 +46,16 @@ _GEMINI_RESPONSE_SCHEMA = {
     "required": ["transcript"],
     "additionalProperties": False,
 }
+_GOOGLE_API_KEY_REJECTION_REASONS = frozenset(
+    {
+        "API_KEY_INVALID",
+        "API_KEY_SERVICE_BLOCKED",
+        "API_KEY_HTTP_REFERRER_BLOCKED",
+        "API_KEY_IP_ADDRESS_BLOCKED",
+        "API_KEY_ANDROID_APP_BLOCKED",
+        "API_KEY_IOS_APP_BLOCKED",
+    }
+)
 _MAX_PCM_BYTES = 16_000 * 2 * 28
 
 _UtteranceKey: TypeAlias = tuple[int, int, int]
@@ -96,8 +106,44 @@ def _response_transcript(response: Any) -> str:
     return transcript.strip()
 
 
+def _has_google_api_key_rejection(details: object) -> bool:
+    if not isinstance(details, Mapping):
+        return False
+
+    error = details.get("error", details)
+    if not isinstance(error, Mapping):
+        return False
+
+    error_details = error.get("details")
+    if not isinstance(error_details, list):
+        return False
+
+    for item in error_details:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("@type") != "type.googleapis.com/google.rpc.ErrorInfo":
+            continue
+        if item.get("domain") != "googleapis.com":
+            continue
+        if item.get("reason") in _GOOGLE_API_KEY_REJECTION_REASONS:
+            return True
+    return False
+
+
 def _is_auth_rejection(exc: BaseException) -> bool:
-    return is_auth_rejection(exc)
+    if is_auth_rejection(exc):
+        return True
+
+    response = getattr(exc, "response", None)
+    code = getattr(exc, "code", None)
+    response_status = getattr(response, "status", None)
+    if code in {401, 403} or response_status in {401, 403}:
+        return True
+
+    effective_code = code if code is not None else response_status
+    if effective_code not in {None, 400}:
+        return False
+    return _has_google_api_key_rejection(getattr(exc, "details", None))
 
 
 async def gemini_asr_worker(
