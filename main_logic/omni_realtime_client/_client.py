@@ -99,6 +99,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_tool_call: Optional[OnToolCallCallback] = None,
         tool_definitions: Optional[List[ToolDefinition]] = None,
         livestream_mode: bool = False,
+        noise_reduction_enabled: bool = True,
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -186,7 +187,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Auto-resets after 2 seconds of no speech to prevent state drift
         # Input: 48kHz from PC, 16kHz from mobile
         # Output: 16kHz for API
-        self._noise_reduction_enabled = True
+        self._noise_reduction_enabled = noise_reduction_enabled
         self._audio_processor = self._create_audio_processor()
 
         # ── Uplink (client→provider) sample rate ──────────────────────

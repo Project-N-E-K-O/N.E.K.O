@@ -182,6 +182,27 @@ def test_recreated_audio_processor_preserves_noise_reduction_preference(
     assert created[0]["noise_reduce_enabled"] is False
 
 
+def test_initial_audio_processor_honors_noise_reduction_preference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[dict[str, object]] = []
+
+    def _create_processor(**kwargs):
+        created.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(client_module, "AudioProcessor", _create_processor)
+
+    client = OmniRealtimeClient(
+        base_url="",
+        api_key="",
+        noise_reduction_enabled=False,
+    )
+
+    assert client._noise_reduction_enabled is False
+    assert created[0]["noise_reduce_enabled"] is False
+
+
 @pytest.mark.asyncio
 async def test_audio_close_failure_does_not_escape_cleanup() -> None:
     class _Processor:
