@@ -210,13 +210,33 @@ async def glm_asr_worker(
         if client is None:
             client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
         await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
-        request_task = asyncio.create_task(request_queue.get(), name="glm-asr-request")
+        request_task = asyncio.create_task(
+            request_queue.get(),  # noqa: ASYNC_BLOCK - this is an asyncio.Queue.
+            name="glm-asr-request",
+        )
 
         while True:
             done, _ = await asyncio.wait(
                 {request_task, *pending},
                 return_when=asyncio.FIRST_COMPLETED,
             )
+
+            completed_transcriptions = [
+                task for task in done if task is not request_task and task in pending
+            ]
+            for task in completed_transcriptions:
+                key = pending.pop(task)
+                try:
+                    event = task.result()
+                except asyncio.CancelledError:
+                    continue
+                except _GlmRequestFailure as exc:
+                    if key[:2] != (current_generation, current_buffer_epoch):
+                        continue
+                    await emit_error(exc.code, exc.message)
+                    return
+                if key[:2] == (current_generation, current_buffer_epoch):
+                    await response_queue.put(event)
 
             if request_task in done:
                 request = request_task.result()
@@ -307,25 +327,9 @@ async def glm_asr_worker(
                 if should_stop:
                     break
                 request_task = asyncio.create_task(
-                    request_queue.get(), name="glm-asr-request"
+                    request_queue.get(),  # noqa: ASYNC_BLOCK - asyncio.Queue.
+                    name="glm-asr-request",
                 )
-
-            completed_transcriptions = [
-                task for task in done if task is not request_task and task in pending
-            ]
-            for task in completed_transcriptions:
-                key = pending.pop(task)
-                try:
-                    event = task.result()
-                except asyncio.CancelledError:
-                    continue
-                except _GlmRequestFailure as exc:
-                    if key[:2] != (current_generation, current_buffer_epoch):
-                        continue
-                    await emit_error(exc.code, exc.message)
-                    return
-                if key[:2] == (current_generation, current_buffer_epoch):
-                    await response_queue.put(event)
     except asyncio.CancelledError:
         raise
     except Exception:

@@ -34,3 +34,8 @@ def test_rejects_partial_pcm16_sample():
     buffer = Pcm16RingBuffer()
     with pytest.raises(ValueError):
         buffer.append(b"\x01")
+
+
+def test_rejects_positive_duration_smaller_than_one_sample():
+    with pytest.raises(ValueError, match="at least one sample"):
+        Pcm16RingBuffer(max_seconds=0.5 / 16_000)

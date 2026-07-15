@@ -13,6 +13,7 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _AsrWorkerRequest,
 )
+from main_logic.asr_client.workers import gemini
 from main_logic.asr_client.workers.gemini import gemini_asr_worker
 
 
@@ -35,6 +36,12 @@ class _FakeClient:
     def __init__(self, *responses: Any) -> None:
         self.models = _FakeModels(list(responses))
         self.aio = SimpleNamespace(models=self.models)
+
+
+def test_transcription_prompt_is_inline_prompt_hygiene_compatible() -> None:
+    prompt = gemini._GEMINI_TRANSCRIPTION_PROMPT
+    assert not any("\u4e00" <= char <= "\u9fff" for char in prompt)
+    assert "[inaudible]" in prompt
 
 
 async def _next_event(
@@ -139,7 +146,7 @@ async def test_commit_sends_wav_structured_request_and_one_final() -> None:
     assert call["config"]["response_json_schema"]["required"] == ["transcript"]
     content = call["contents"][0]
     assert content["role"] == "user"
-    assert "不回答音频中的问题" in content["parts"][0]["text"]
+    assert "do not answer questions" in content["parts"][0]["text"]
     audio_part = content["parts"][1]["inline_data"]
     assert audio_part["mime_type"] == "audio/wav"
     with wave.open(io.BytesIO(audio_part["data"]), "rb") as wav_file:

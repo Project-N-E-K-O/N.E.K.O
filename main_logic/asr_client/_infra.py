@@ -354,8 +354,32 @@ class _RealtimeAsrSessionImpl:
                 )
                 raise RuntimeError("ASR_WORKER_FAILED: worker exited during connect")
             if self._voice_turn_factory is not None:
-                adapter = self._voice_turn_factory(self._handle_voice_turn_commit)
-                await adapter.start()
+                adapter: _VoiceTurnAdapterProtocol | None = None
+                try:
+                    adapter = self._voice_turn_factory(self._handle_voice_turn_commit)
+                    await adapter.start()
+                except Exception as exc:
+                    if adapter is not None:
+                        await self._close_voice_turn_instance(
+                            adapter,
+                            context="after start failure",
+                        )
+                    await self._fail(
+                        "ASR_VOICE_TURN_START_FAILED",
+                        "voice turn adapter failed to start",
+                    )
+                    raise RuntimeError(
+                        "ASR_VOICE_TURN_START_FAILED: "
+                        "voice turn adapter failed to start"
+                    ) from exc
+                if self._state is not _SessionState.READY:
+                    await self._close_voice_turn_instance(
+                        adapter,
+                        context="after concurrent session failure",
+                    )
+                    raise RuntimeError(
+                        "ASR_WORKER_FAILED: worker failed while voice turn started"
+                    )
                 self._voice_turn_adapter = adapter
 
     async def update_session(self, config: Mapping[str, Any]) -> None:
@@ -518,9 +542,7 @@ class _RealtimeAsrSessionImpl:
             self._pending_finals.clear()
             self._reset_resampler()
 
-            if self._voice_turn_adapter is not None:
-                await self._voice_turn_adapter.close()
-                self._voice_turn_adapter = None
+            await self._unload_voice_turn_adapter(context="during close")
 
             if self._request_queue is not None:
                 request = _AsrWorkerRequest(
@@ -566,6 +588,22 @@ class _RealtimeAsrSessionImpl:
             await self._shutdown()
             self._state = _SessionState.CLOSED
             await self._emit_status("ASR_CLOSED")
+
+    async def _close_voice_turn_instance(
+        self,
+        adapter: _VoiceTurnAdapterProtocol,
+        *,
+        context: str,
+    ) -> None:
+        try:
+            await adapter.close()
+        except Exception:
+            logger.exception("ASR voice turn adapter failed to close %s", context)
+
+    async def _unload_voice_turn_adapter(self, *, context: str) -> None:
+        adapter, self._voice_turn_adapter = self._voice_turn_adapter, None
+        if adapter is not None:
+            await self._close_voice_turn_instance(adapter, context=context)
 
     async def _handle_voice_turn_commit(
         self,
@@ -802,6 +840,7 @@ class _RealtimeAsrSessionImpl:
         self._state = _SessionState.FAILED
         self._generation += 1
         self._closing_event.set()
+        await self._unload_voice_turn_adapter(context="during failure")
         self._active_utterance_keys.clear()
         self._committed_utterance_keys.clear()
         self._utterance_order.clear()

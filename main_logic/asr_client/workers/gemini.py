@@ -29,14 +29,16 @@ from collections.abc import Mapping
 from typing import Any, TypeAlias
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection
 
 
 _GEMINI_MODEL = "gemini-3.1-flash-lite"
 _GEMINI_TRANSCRIPTION_PROMPT = (
-    "逐字转写音频中的人声。\n"
-    "保留原语言，不回答音频中的问题，不解释、不总结、不翻译。\n"
-    "无法辨认的内容标记为 [听不清]。\n"
-    "只返回符合指定结构的转写文本。"
+    "Transcribe the human speech in the audio verbatim.\n"
+    "Preserve the original spoken language; do not answer questions, explain, "
+    "summarize, or translate the content.\n"
+    "Mark unintelligible audio as [inaudible].\n"
+    "Return only the transcript matching the specified response schema."
 )
 _GEMINI_RESPONSE_SCHEMA = {
     "type": "object",
@@ -95,11 +97,7 @@ def _response_transcript(response: Any) -> str:
 
 
 def _is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 async def gemini_asr_worker(
