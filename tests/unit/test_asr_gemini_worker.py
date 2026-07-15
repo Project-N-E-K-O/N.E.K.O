@@ -384,15 +384,16 @@ async def test_provider_failure_is_sanitized_and_scoped(
 @pytest.mark.parametrize(
     ("failure", "expected_code"),
     [
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=400,
                 status="INVALID_ARGUMENT",
                 details=_google_error_info("API_KEY_INVALID"),
             ),
             "ASR_CREDENTIALS_REJECTED",
+            id="api_key_invalid",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=400,
                 status="INVALID_ARGUMENT",
@@ -402,16 +403,18 @@ async def test_provider_failure_is_sanitized_and_scoped(
                 ),
             ),
             "ASR_CREDENTIALS_REJECTED",
+            id="api_key_service_blocked_unwrapped",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=403,
                 status="PERMISSION_DENIED",
                 details={},
             ),
             "ASR_CREDENTIALS_REJECTED",
+            id="permission_denied_code",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=400,
                 status="INVALID_ARGUMENT",
@@ -421,8 +424,9 @@ async def test_provider_failure_is_sanitized_and_scoped(
                 ),
             ),
             "ASR_GEMINI_REQUEST_FAILED",
+            id="api_key_invalid_wrong_domain",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=400,
                 status="INVALID_ARGUMENT",
@@ -438,26 +442,30 @@ async def test_provider_failure_is_sanitized_and_scoped(
                 },
             ),
             "ASR_GEMINI_REQUEST_FAILED",
+            id="bad_request_error_info_type",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=400,
                 status="INVALID_ARGUMENT",
                 details={"error": {"details": "malformed"}},
             ),
             "ASR_GEMINI_REQUEST_FAILED",
+            id="malformed_details",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(
                 code=429,
                 status="RESOURCE_EXHAUSTED",
                 details={},
             ),
             "ASR_GEMINI_REQUEST_FAILED",
+            id="resource_exhausted",
         ),
-        (
+        pytest.param(
             _GoogleProviderFailure(code=None, status=None, details={}),
             "ASR_GEMINI_REQUEST_FAILED",
+            id="missing_status",
         ),
     ],
 )
