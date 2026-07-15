@@ -329,7 +329,8 @@ async def soniox_asr_worker(
         while True:
             try:
                 request = await asyncio.wait_for(
-                    request_queue.get(), timeout=_KEEPALIVE_SECONDS
+                    request_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
+                    timeout=_KEEPALIVE_SECONDS,
                 )
             except asyncio.TimeoutError:
                 if (
