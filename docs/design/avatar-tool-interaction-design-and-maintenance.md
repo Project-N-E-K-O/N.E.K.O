@@ -175,7 +175,7 @@ Avatar bounds 的默认优先来源：
 3. VRM manager。
 4. Live2D manager。
 
-页面命中使用矩形快速过滤和中心椭圆，并使用进入/离开不同 padding 与短 hold，减少模型轻微变化或边缘移动造成的范围外/范围内视觉抖动。桌面 Pet 启动或重载后，若模型的正常命中已经可用、但 manager 尚未提供有效 bounds，只能在“没有任何有效 bounds”期间复用正常模型 hit test；一旦 bounds 可用，必须立即回到共享 contract 的范围与 touch zone 规则，不能让 fallback 覆盖有效 bounds。
+页面命中使用矩形快速过滤和中心椭圆，并使用进入/离开不同 padding 与短 hold，减少模型轻微变化或边缘移动造成的范围外/范围内视觉抖动。桌面 Pet 只读取当前活动模型的几何 bounds；通用布局与道具范围共用带模型身份的稳定快照，选中道具不得清空，短暂缺失只能在同模型的 missing grace 内沿用，release 必须强制读取当前几何且不得使用 last-known。普通模型 hit test 不得成为道具范围的第二权威。
 
 UI exclusion 至少覆盖：
 
