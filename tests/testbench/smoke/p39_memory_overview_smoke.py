@@ -32,6 +32,11 @@ O8 — **errors**: no session → 404; no character → 409 NoCharacterSelected.
 O9 — **LLM endpoints degrade, never 500**: ai_report → method 'unavailable'
      with an actionable warning when no memory model is configured; contradictions
      → 200, method in {llm, unavailable, none}, candidates returned.
+O10 — **archived source fact is present, not deleted**: a reflection citing a
+     fact that was absorbed then moved to facts_archive.json must NOT trip D4 (it
+     materialises as a ``fact_archived`` lineage node in the fact lane with a live
+     reflection<-fact edge); only a citation to an id in neither pool stays D4.
+     Active fact count / composition stay unpolluted by archived facts.
 
 Environment isolation mirrors p37_embedding_space_smoke.py.
 
@@ -222,6 +227,36 @@ def _seed_rich_memory() -> None:
     ])
 
 
+def _seed_archived_memory() -> None:
+    """A reflection that cites an absorbed-then-archived fact + one truly gone.
+
+    ``fact_arch`` lives in facts_archive.json (moved there when absorbed), still
+    cited by ``ref_ok``; ``fact_gone_forever`` exists nowhere. D4 must flag ONLY
+    the latter, and the archived one must materialise as a ``fact_archived`` node
+    with a live reflection<-fact edge (P29 dangling-source false-positive fix).
+    """
+    mem = _mem_dir()
+    _write_json(mem / "facts.json", [
+        {"id": "fact_active", "text": "主人喜欢深夜写代码", "entity": "master",
+         "importance": 5, "created_at": _RECENT},
+    ])
+    _write_json(mem / "facts_archive.json", [
+        {"id": "fact_arch", "text": "主人常喝美式咖啡", "entity": "master",
+         "importance": 6, "absorbed": True, "created_at": _OLD},
+        # An archived fact NO reflection cites — must stay unmaterialised.
+        {"id": "fact_arch_unused", "text": "无人引用的归档事实", "entity": "master",
+         "importance": 4, "absorbed": True, "created_at": _OLD},
+    ])
+    _write_json(mem / "reflections.json", [
+        {"id": "ref_ok", "text": "主人偏好黑咖啡且爱夜里工作", "entity": "master",
+         "status": "promoted",
+         "source_fact_ids": ["fact_active", "fact_arch"], "created_at": _RECENT},
+        {"id": "ref_dangling", "text": "引用真删事实的反思", "entity": "master",
+         "status": "pending",
+         "source_fact_ids": ["fact_gone_forever"], "created_at": _RECENT},
+    ])
+
+
 def _codes(findings: list[dict]) -> dict[str, dict]:
     return {f["code"]: f for f in findings}
 
@@ -400,6 +435,68 @@ def check_o9_llm_degrade(client) -> list[str]:
     return errors
 
 
+def check_o10_archived_facts(client) -> list[str]:
+    """O10 — an archived (absorbed) source fact is 'present', not 'deleted'.
+
+    Regression for the P29 dangling-source false positive: a reflection citing a
+    fact that was absorbed then moved to facts_archive.json must NOT trip D4, and
+    the archived fact must appear as a ``fact_archived`` lineage node (same lane
+    as active facts) with a live reflection<-fact edge. Only a citation to an id
+    that exists in neither pool (``fact_gone_forever``) stays a D4 dangling ref.
+    """
+    errors: list[str] = []
+    try:
+        _delete_session(client)
+        _create_session(client, "o_archived")
+        _seed_archived_memory()
+
+        # ── lineage: archived fact materialised + edge, active count unpolluted.
+        r = client.get("/api/memory/lineage")
+        _check(r.status_code == 200, "O10.lin_status", f"{r.status_code} {r.text[:160]}")
+        lin = r.json()
+        nodes = {n["id"]: n for n in lin["nodes"]}
+        _check("fact_arch" in nodes, "O10.arch_node", f"nodes={list(nodes)}")
+        _check(nodes["fact_arch"]["type"] == "fact_archived", "O10.arch_type",
+               f"{nodes['fact_arch'].get('type')}")
+        _check(nodes["fact_arch"]["lane"] == nodes["fact_active"]["lane"],
+               "O10.arch_lane", "archived fact must share the fact lane")
+        # Only referenced archived facts are materialised (budget discipline).
+        _check("fact_arch_unused" not in nodes, "O10.arch_unused_skipped",
+               "un-referenced archived fact must NOT be materialised")
+        edge_set = {(e["source"], e["target"]) for e in lin["edges"]}
+        _check(("fact_arch", "ref_ok") in edge_set, "O10.arch_edge",
+               "reflection<-archived-fact edge missing")
+        counts = lin["meta"]["counts"]
+        _check(counts.get("facts_archived") == 1, "O10.arch_count", f"{counts}")
+        _check(counts.get("facts") == 1, "O10.active_unpolluted", f"{counts}")
+
+        # ── overview: ref_ok not dangling; only ref_dangling trips D4.
+        r = client.get("/api/memory/overview")
+        _check(r.status_code == 200, "O10.ov_status", f"{r.status_code} {r.text[:160]}")
+        body = r.json()
+        comp = body["cards"]["composition"]
+        _check(comp.get("facts") == 1, "O10.comp_facts", f"{comp}")
+        _check(comp.get("facts_archived") == 1, "O10.comp_archived", f"{comp}")
+        c = _codes(body["findings"])
+        _check("D4" in c, "O10.D4_present", f"expected D4 for the真删 ref; codes={list(c)}")
+        _check(c["D4"]["data"]["dangling_refs"] == 1, "O10.D4_only_real",
+               f"only fact_gone_forever should dangle: {c['D4']['data']}")
+        d4_ids = {ex.get("id") for ex in c["D4"].get("examples", [])}
+        _check("ref_dangling" in d4_ids, "O10.D4_keeps_real", f"{d4_ids}")
+        _check("ref_ok" not in d4_ids, "O10.D4_excludes_archived", f"{d4_ids}")
+        # D1 orphan: ref_ok has valid sources (one active + one archived).
+        if "D1" in c:
+            d1_ids = {ex.get("id") for ex in c["D1"].get("examples", [])}
+            _check("ref_ok" not in d1_ids, "O10.D1_excludes_archived_sourced",
+                   f"{d1_ids}")
+    except _AssertFail as exc:
+        errors.append(str(exc))
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        errors.append(f"[O10.crash] {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+    return errors
+
+
 # ── Orchestration ───────────────────────────────────────────────────────
 
 
@@ -436,6 +533,8 @@ def main() -> int:
                      check_o8_errors(client))
     total += _report("O9 — LLM endpoints degrade, never 500",
                      check_o9_llm_degrade(client))
+    total += _report("O10 — archived source fact is present, not deleted (D4 fix)",
+                     check_o10_archived_facts(client))
 
     _delete_session(client)
 
