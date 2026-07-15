@@ -618,6 +618,41 @@ async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_elevenlabs_design_endpoint_preserves_upstream_4xx(monkeypatch):
+    from main_routers.characters_router import voice_cloning as cr
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "elevenlabs"
+            return "elevenlabs-key"
+
+    async def fake_base_url(_cm):
+        return "https://api.elevenlabs.io"
+
+    async def fake_previews(**_kwargs):
+        raise cr.ElevenLabsVoiceDesignRequestError(
+            "ElevenLabs voice design API error (429): rate limited"
+        )
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_get_elevenlabs_base_url", fake_base_url)
+    monkeypatch.setattr(cr, "_elevenlabs_design_previews", fake_previews)
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "elevenlabs",
+        "prefix": "aria",
+        "voice_prompt": "a warm and clear young adult voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == "ELEVENLABS_VOICE_DESIGN_FAILED"
+    assert body["provider"] == "elevenlabs"
+    assert "429" in body["error"]
+
+
+@pytest.mark.unit
 async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
     from main_routers.characters_router import voice_cloning as cr
 

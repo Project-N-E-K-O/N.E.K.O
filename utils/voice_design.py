@@ -47,6 +47,10 @@ class ElevenLabsVoiceDesignError(VoiceDesignError):
         self.status_code = status_code
 
 
+class ElevenLabsVoiceDesignRequestError(ValueError):
+    """ElevenLabs rejected a Voice Design request with a client error."""
+
+
 class MimoVoiceDesignError(VoiceDesignError):
     """MiMo Voice Design request failed."""
 
@@ -253,7 +257,7 @@ def _raise_for_elevenlabs_design_response(response: httpx.Response, action: str)
     message = f"ElevenLabs {action} API error ({response.status_code}): {response.text[:300]}"
     if response.status_code >= 500:
         raise ElevenLabsVoiceDesignError(response.status_code, message)
-    raise ValueError(message)
+    raise ElevenLabsVoiceDesignRequestError(message)
 
 
 async def _elevenlabs_design_previews(

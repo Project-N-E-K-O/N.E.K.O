@@ -75,6 +75,7 @@ from utils.voice_clone import (
 from utils.voice_design import (
     CosyVoiceDesignError,
     ElevenLabsVoiceDesignError,
+    ElevenLabsVoiceDesignRequestError,
     MiniMaxVoiceDesignError,
     MimoVoiceDesignClient,
     MimoVoiceDesignError,
@@ -1103,6 +1104,14 @@ async def voice_design(request: Request):
             'code': 'ELEVENLABS_VOICE_DESIGN_FAILED',
             'provider': provider,
         }, status_code=502)
+    except ElevenLabsVoiceDesignRequestError as exc:
+        # ElevenLabs uses this ValueError subtype for actionable upstream 4xx responses;
+        # preserve that client-error contract instead of reporting a server fault.
+        return JSONResponse({
+            'error': str(exc),
+            'code': 'ELEVENLABS_VOICE_DESIGN_FAILED',
+            'provider': provider,
+        }, status_code=400)
     except MimoVoiceDesignError as exc:
         logger.error(f"{provider_label} voice design failed: {exc}")
         return JSONResponse({
