@@ -171,7 +171,7 @@ async def test_cancelled_audio_processing_keeps_lock_until_worker_finishes() -> 
 
     release_processing.set()
     with pytest.raises(asyncio.CancelledError):
-        await process_task
+        _ = await process_task
     assert await close_task is None
     assert processor.close_calls == 1
     assert client._audio_processor is None
