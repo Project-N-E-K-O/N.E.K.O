@@ -153,7 +153,7 @@ describe('desktop avatar tool contract', () => {
     });
 
     const stale = cloneJson(AVATAR_TOOL_DEFINITIONS[0]) as AvatarToolDefinition;
-    stale.visual.variants.primary.iconImagePath = '/static/icons/chat_sugar1.png?v=stale';
+    stale.visual.variants.primary.iconImagePath = '/static/assets/avatar-tools/sugar/chat_sugar1.png?v=stale';
     const replaced = projectDesktopAvatarToolContract(stale);
     expect(replaced.definition?.visual?.variants.primary.iconImagePath).toContain('v=wire%201');
     expect(replaced.definition?.visual?.variants.primary.iconImagePath).not.toContain('stale');

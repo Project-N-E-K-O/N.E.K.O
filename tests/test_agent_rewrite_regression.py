@@ -1274,10 +1274,11 @@ def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
     for asset_path in (
-        "static/icons/edit_tool_unified.png",
-        "static/icons/chat_sugar1.png",
-        "static/icons/cat_claw1.png",
-        "static/icons/chat_hammer1.png",
+        "static/assets/avatar-tools/ui/edit_tool_unified.png",
+        "static/assets/avatar-tools/sugar/chat_sugar1.png",
+        "static/assets/avatar-tools/claw/cat_claw1.png",
+        "static/assets/avatar-tools/hammer/chat_hammer1.png",
+        "static/assets/avatar-tools/rps/rps_rock.png",
         "static/app/app-chat-adapter.js",
         "static/app/app-buttons.js",
     ):

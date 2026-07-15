@@ -323,6 +323,9 @@ def test_card_maker_registers_variant_stickers():
         "cat_claw2.png",
     ]:
         assert sticker_name in script
+    assert "/static/assets/avatar-tools/sugar/chat_sugar1.png" in script
+    assert "/static/assets/avatar-tools/hammer/chat_hammer1.png" in script
+    assert "/static/assets/avatar-tools/claw/cat_claw1.png" in script
     assert "STICKER_VARIANT_GROUPS" in script
     assert "switchSelectedStickerVariant" in script
     assert 'id="sticker-switch-variant-btn"' in template

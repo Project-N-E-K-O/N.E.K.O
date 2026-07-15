@@ -70,11 +70,19 @@
         'cat_moneny.png',
         { file: 'cat_claw1.png', variants: ['cat_claw1.png', 'cat_claw2.png'] }
     ];
+    const AVATAR_TOOL_STICKER_PATH_BY_FILE = {
+        'chat_sugar1.png': '/static/assets/avatar-tools/sugar/chat_sugar1.png',
+        'chat_sugar3.png': '/static/assets/avatar-tools/sugar/chat_sugar3.png',
+        'chat_hammer1.png': '/static/assets/avatar-tools/hammer/chat_hammer1.png',
+        'chat_hammer2.png': '/static/assets/avatar-tools/hammer/chat_hammer2.png',
+        'cat_claw1.png': '/static/assets/avatar-tools/claw/cat_claw1.png',
+        'cat_claw2.png': '/static/assets/avatar-tools/claw/cat_claw2.png',
+    };
     const STICKER_VARIANT_GROUPS = [
         ['chat_sugar1.png', 'chat_sugar3.png'],
         ['chat_hammer1.png', 'chat_hammer2.png'],
         ['cat_claw1.png', 'cat_claw2.png']
-    ].map(group => group.map(file => `/static/icons/${file}`));
+    ].map(group => group.map(iconStickerPath));
 
     const STICKER_VARIANT_ICON = [
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">',
@@ -1502,7 +1510,7 @@
     }
 
     function iconStickerPath(file) {
-        return `/static/icons/${file}`;
+        return AVATAR_TOOL_STICKER_PATH_BY_FILE[file] || `/static/icons/${file}`;
     }
 
     function getStickerLibraryVariants(itemConfig) {
