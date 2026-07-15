@@ -27,7 +27,7 @@ from utils.preferences import aload_user_preferences, update_model_preferences, 
 from utils.cloudsave_runtime import MaintenanceModeError
 
 
-def _apply_noise_reduction_to_active_sessions(enabled: bool):
+async def _apply_noise_reduction_to_active_sessions(enabled: bool):
     """Apply noise reduction toggle to all active voice sessions immediately."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
     try:
@@ -37,9 +37,7 @@ def _apply_noise_reduction_to_active_sessions(enabled: bool):
                 continue
             if not isinstance(mgr.session, OmniRealtimeClient):
                 continue
-            ap = getattr(mgr.session, '_audio_processor', None)
-            if ap is not None:
-                ap.set_enabled(enabled)
+            await mgr.session.set_audio_noise_reduction_enabled(enabled)
     except Exception as e:
         logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
 
@@ -167,7 +165,7 @@ async def save_conversation_settings(request: Request):
             return {"success": False, "error": "保存失败"}
 
         if 'noiseReductionEnabled' in data:
-            _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
+            await _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
 
         return {"success": True, "message": "对话设置已保存"}
     except MaintenanceModeError:

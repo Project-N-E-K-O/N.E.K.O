@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+import subprocess
+import sys
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -81,10 +84,11 @@ def test_ocr_pipeline_normalizes_strings_dicts_objects_and_join_fallback(
 
 def test_ocr_pipeline_capture_target_uses_profile_and_resets_backends_on_config_update() -> None:
     capture = _Capture("frame")
+    backend = _Backend([{"text": "hello"}, {"text": "world"}])
     pipeline = StudyOcrPipeline(
         logger=_Logger(),
         config=StudyConfig(ocr_left_inset_ratio=0.2, ocr_capture_backend=CAPTURE_BACKEND_DXCAM),
-        ocr_backend=_Backend([{"text": "hello"}, {"text": "world"}]),
+        ocr_backend=backend,
         capture_backend=capture,
     )
 
@@ -94,7 +98,8 @@ def test_ocr_pipeline_capture_target_uses_profile_and_resets_backends_on_config_
     assert snapshot.status == "ok"
     assert "hello" in snapshot.text
     assert capture.calls[0][1].left_inset_ratio == 0.2
-    assert pipeline._ocr_backend is None
+    assert pipeline._ocr_backend is backend
+    assert pipeline._owns_ocr_backend is False
     assert pipeline._capture_backend is None
 
 
@@ -189,6 +194,20 @@ def test_ocr_pipeline_imagehash_module_import_is_optional(
     assert StudyOcrPipeline._calculate_thumbnail_phash(
         Image.new("RGB", (16, 16), "white")
     ) is None
+
+
+def test_study_plugin_registration_import_does_not_load_numpy() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import plugin.plugins.study_companion; "
+                "raise SystemExit(1 if 'numpy' in sys.modules else 0)"
+            ),
+        ],
+        check=True,
+    )
 
 
 def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
@@ -385,7 +404,7 @@ def test_ocr_pipeline_reuses_executor_and_closes_it(
 
     class _FakeExecutor:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.shutdown_calls = 0
+            self.shutdown_waits: list[bool] = []
             created.append(self)
 
         def submit(self, fn, /, *args: Any, **kwargs: Any):  # noqa: ANN001
@@ -397,7 +416,7 @@ def test_ocr_pipeline_reuses_executor_and_closes_it(
             return future
 
         def shutdown(self, *, wait: bool = True) -> None:
-            self.shutdown_calls += 1
+            self.shutdown_waits.append(wait)
 
     monkeypatch.setattr(pipeline_module, "ThreadPoolExecutor", _FakeExecutor)
     pipeline = StudyOcrPipeline(
@@ -414,7 +433,88 @@ def test_ocr_pipeline_reuses_executor_and_closes_it(
     pipeline.close()
 
     assert len(created) == 1
-    assert created[0].shutdown_calls == 1
+    assert created[0].shutdown_waits == [True]
+
+
+def test_ocr_pipeline_close_drains_work_before_releasing_owned_backend() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    extraction_started = threading.Event()
+    release_extraction = threading.Event()
+
+    class _ClosableBackend(_Backend):
+        def __init__(self) -> None:
+            super().__init__("Question: text")
+            self.close_calls = 0
+
+        def extract_text(self, image: Any) -> Any:
+            extraction_started.set()
+            assert release_extraction.wait(timeout=2.0)
+            return super().extract_text(image)
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    backend = _ClosableBackend()
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=backend,
+        capture_backend=_Capture(image),
+    )
+    pipeline._owns_ocr_backend = True
+    capture_thread = threading.Thread(
+        target=pipeline.capture_lightweight,
+        kwargs={"target": {"hwnd": 1, "title": "Quiz"}},
+    )
+    capture_thread.start()
+    assert extraction_started.wait(timeout=2.0)
+
+    close_thread = threading.Thread(target=pipeline.close)
+    close_thread.start()
+    close_thread.join(timeout=0.05)
+
+    assert close_thread.is_alive()
+    assert backend.close_calls == 0
+
+    release_extraction.set()
+    capture_thread.join(timeout=2.0)
+    close_thread.join(timeout=2.0)
+
+    assert not capture_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert backend.close_calls == 1
+    assert pipeline._ocr_backend is None
+    with pytest.raises(RuntimeError, match="pipeline is closed"):
+        pipeline._resolve_ocr_backend()
+
+
+def test_ocr_pipeline_close_releases_only_owned_backend() -> None:
+    class _ClosableBackend:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    external = _ClosableBackend()
+    external_pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=external,
+    )
+    external_pipeline.close()
+    assert external.close_calls == 0
+
+    owned = _ClosableBackend()
+    owned_pipeline = StudyOcrPipeline(logger=_Logger(), config=StudyConfig())
+    owned_pipeline._ocr_backend = owned
+    owned_pipeline._owns_ocr_backend = True
+    owned_pipeline.close()
+    owned_pipeline.close()
+
+    assert owned.close_calls == 1
 
 
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:

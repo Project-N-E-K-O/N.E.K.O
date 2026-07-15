@@ -29,6 +29,8 @@ Important: RNNoise's GRU state drifts while processing background noise,
 and must be reset once end of speech is detected.
 """
 
+from contextlib import suppress
+
 import numpy as np
 from typing import Optional
 from utils.logger_config import get_module_logger
@@ -184,15 +186,18 @@ class _LiteDenoiser:
         if old_state:
             self._lib.destroy(old_state)
 
+    def close(self) -> None:
+        """Destroy the owned native RNNoise state exactly once."""
+        state = self._state
+        self._state = None
+        if state:
+            self._lib.destroy(state)
+
     def __del__(self):
-        lib = getattr(self, "_lib", None)
-        state = getattr(self, "_state", None)
-        if lib is not None and state:
-            try:
-                lib.destroy(state)
-            except Exception:
-                pass
-            self._state = None
+        # Finalization may run during interpreter teardown; never let native
+        # cleanup errors escape or depend on the logging subsystem still existing.
+        with suppress(Exception):
+            self.close()
 
 
 class AudioProcessor:
@@ -259,8 +264,10 @@ class AudioProcessor:
         self._denoiser = None
         self._init_denoiser()
         
-        # Buffer for incomplete frames (int16 for pyrnnoise)
-        self._frame_buffer = np.array([], dtype=np.int16)
+        # Fixed-capacity pending buffer. A processed call can leave at most one
+        # incomplete RNNoise frame, so a growing/ring buffer is unnecessary.
+        self._frame_buffer = np.empty(self.RNNOISE_FRAME_SIZE, dtype=np.int16)
+        self._frame_buffer_size = 0
         
         # Track voice activity for auto-reset
         self._last_speech_prob = 0.0
@@ -389,36 +396,68 @@ class AudioProcessor:
         Returns:
             Denoised int16 numpy array
         """
-        # Add to frame buffer (int16)
-        self._frame_buffer = np.concatenate([self._frame_buffer, audio])
-        
-        # Limit buffer size to prevent memory issues (max 1 seconds of audio)
-        max_buffer_samples = 1 * self.RNNOISE_SAMPLE_RATE
-        if len(self._frame_buffer) > max_buffer_samples:
-            self._frame_buffer = self._frame_buffer[-max_buffer_samples:]
-        
-        output_frames = []
-        while len(self._frame_buffer) >= self.RNNOISE_FRAME_SIZE:
-            frame = self._frame_buffer[:self.RNNOISE_FRAME_SIZE]
-            self._frame_buffer = self._frame_buffer[self.RNNOISE_FRAME_SIZE:]
-            
+        pending_size = self._frame_buffer_size
+        max_buffer_samples = self.RNNOISE_SAMPLE_RATE
+
+        # Preserve the previous one-second overflow policy without first
+        # concatenating the pending samples and the new chunk.
+        drop_samples = pending_size + len(audio) - max_buffer_samples
+        if drop_samples > 0:
+            if drop_samples < pending_size:
+                retained = pending_size - drop_samples
+                self._frame_buffer[:retained] = self._frame_buffer[
+                    drop_samples:pending_size
+                ].copy()
+                pending_size = retained
+            else:
+                audio = audio[drop_samples - pending_size :]
+                pending_size = 0
+
+        frame_count = (pending_size + len(audio)) // self.RNNOISE_FRAME_SIZE
+        if frame_count == 0:
+            self._frame_buffer[pending_size : pending_size + len(audio)] = audio
+            self._frame_buffer_size = pending_size + len(audio)
+            return np.empty(0, dtype=np.int16)
+
+        output = np.empty(frame_count * self.RNNOISE_FRAME_SIZE, dtype=np.int16)
+        input_offset = 0
+        output_offset = 0
+
+        def process_frame(frame: np.ndarray) -> None:
+            nonlocal output_offset
             try:
                 denoised, prob = self._denoiser.process_frame(frame)
                 self._last_speech_prob = prob
                 if prob > 0.2:
                     self._last_speech_time = time.time()
-                output_frames.append(denoised)
+                output[output_offset : output_offset + self.RNNOISE_FRAME_SIZE] = denoised
             except Exception as e:
                 logger.error(f"❌ RNNoise processing error: {e}")
-                output_frames.append(frame)
-        
-        if output_frames:
-            return np.concatenate(output_frames)
-        return np.array([], dtype=np.int16)
+                output[output_offset : output_offset + self.RNNOISE_FRAME_SIZE] = frame
+            output_offset += self.RNNOISE_FRAME_SIZE
+
+        if pending_size:
+            needed = self.RNNOISE_FRAME_SIZE - pending_size
+            self._frame_buffer[pending_size:] = audio[:needed]
+            input_offset = needed
+            process_frame(self._frame_buffer)
+            self._frame_buffer.fill(0)
+
+        while input_offset + self.RNNOISE_FRAME_SIZE <= len(audio):
+            frame = audio[input_offset : input_offset + self.RNNOISE_FRAME_SIZE]
+            process_frame(frame)
+            input_offset += self.RNNOISE_FRAME_SIZE
+
+        remaining = len(audio) - input_offset
+        if remaining:
+            self._frame_buffer[:remaining] = audio[input_offset:]
+        self._frame_buffer_size = remaining
+        return output
     
     def _reset_internal_state(self) -> None:
         """Reset RNNoise internal state without full reinitialization."""
-        self._frame_buffer = np.array([], dtype=np.int16)
+        self._frame_buffer.fill(0)
+        self._frame_buffer_size = 0
         self._last_speech_prob = 0.0
         # Reset AGC gain state
         self._agc_gain = 1.0
@@ -446,6 +485,19 @@ class AudioProcessor:
         self._reset_internal_state()
         self._last_speech_time = time.time()
         logger.info("🔄 AudioProcessor state reset (external call)")
+
+    def close(self) -> None:
+        """Release native denoiser and streaming-buffer resources."""
+        denoiser = self._denoiser
+        self._denoiser = None
+        if denoiser is not None:
+            close = getattr(denoiser, "close", None)
+            if callable(close):
+                close()
+        self._downsample_resampler = None
+        self._frame_buffer = np.array([], dtype=np.int16)
+        self._debug_audio_before.clear()
+        self._debug_audio_after.clear()
     
     def request_reset(self) -> None:
         """Request a reset on the next process_chunk call."""
@@ -504,8 +556,12 @@ class AudioProcessor:
         self.noise_reduce_enabled = enabled
         if enabled and self._denoiser is None:
             self._init_denoiser()
+        elif not enabled and self._denoiser is not None:
+            self._denoiser.close()
+            self._denoiser = None
         if prev != enabled:
-            self._frame_buffer = np.array([], dtype=np.int16)
+            self._frame_buffer.fill(0)
+            self._frame_buffer_size = 0
             self._agc_gain = 1.0
         logger.info(f"🎤 Noise reduction {'enabled' if enabled else 'disabled'}")
     
