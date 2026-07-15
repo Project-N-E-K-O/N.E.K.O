@@ -143,6 +143,35 @@ MUSIC_SOURCE_DOMAINS = {
     'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
 }
 
+# 主动音乐推荐面向单曲播放。超长 DJ 合集、播客和整张专辑虽然通常有封面，
+# 但其音频直链经常受 CDN、试听权限或文件大小限制，不应进入歌曲播放器。
+MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60
+
+
+def _parse_duration_seconds(value: Any, *, milliseconds: bool = False) -> float | None:
+    """Normalize numeric or HH:MM:SS duration values; unknown values stay unfiltered."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, str) and ':' in value:
+            parts = [float(part) for part in value.strip().split(':')]
+            if not parts or len(parts) > 3:
+                return None
+            seconds = 0.0
+            for part in parts:
+                seconds = seconds * 60 + part
+        else:
+            seconds = float(value)
+            if milliseconds:
+                seconds /= 1000.0
+        return seconds if seconds >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_recommendable_duration(duration_seconds: float | None) -> bool:
+    return duration_seconds is None or duration_seconds < MAX_RECOMMENDED_TRACK_DURATION_SECONDS
+
 # ==================================================
 # 去重与多样性管理
 # ==================================================
@@ -322,17 +351,27 @@ class BaseMusicCrawler:
         """Refresh the User-Agent dynamically to avoid bans"""
         self.client.headers.update({'User-Agent': get_random_user_agent()})
 
-    def _format_item(self, name: str, url: str, artist: str = "未知艺术家", cover: str = "") -> Dict[str, Any]:
+    def _format_item(
+        self,
+        name: str,
+        url: str,
+        artist: str = "未知艺术家",
+        cover: str = "",
+        duration_seconds: float | None = None,
+    ) -> Dict[str, Any]:
         """
         Normalize fetched data into the APlayer-compatible format.
         """
-        return {
+        item = {
             'name': name,
             'artist': artist,
             'url': url,
             'cover': cover or f'https://dummyimage.com/150x150/44b7fe/fff&text={self.platform_name}',
             'theme': '#44b7fe'  # 统一使用蓝色主题
         }
+        if duration_seconds is not None:
+            item['duration'] = duration_seconds
+        return item
 
     async def close(self):
         """
@@ -486,7 +525,16 @@ class NeteaseCrawler(BaseMusicCrawler):
                 return []
 
             final_results = []
-            for song in found_songs[:limit]:
+            for song in found_songs:
+                duration_seconds = _parse_duration_seconds(
+                    song.get("duration") or song.get("dt"), milliseconds=True
+                )
+                if not _is_recommendable_duration(duration_seconds):
+                    logger.info(
+                        "[%s] 跳过超长候选: %s (%ss)",
+                        self.platform_name, song.get("name", "未知曲目"), int(duration_seconds),
+                    )
+                    continue
                 song_id = song.get("id")
                 song_name = song.get("name", "未知曲目")
                 artists = song.get("artists", [])
@@ -497,7 +545,15 @@ class NeteaseCrawler(BaseMusicCrawler):
                 cover_url = song.get("album", {}).get("picUrl", "")
                 # 使用本地代理路由，支持 VIP 歌曲解析重定向
                 audio_url = f"/api/music/play/netease/{song_id}"
-                final_results.append(self._format_item(name=song_name, url=audio_url, artist=artist_name, cover=cover_url))
+                final_results.append(self._format_item(
+                    name=song_name,
+                    url=audio_url,
+                    artist=artist_name,
+                    cover=cover_url,
+                    duration_seconds=duration_seconds,
+                ))
+                if len(final_results) >= limit:
+                    break
             
             return final_results
 
@@ -589,6 +645,13 @@ class SoundCloudCrawler(BaseMusicCrawler):
                     try:
                         title = track.get('title', '未知曲目')
                         artist = track.get('user', {}).get('username', '未知艺术家')
+                        duration_seconds = _parse_duration_seconds(track.get('duration'), milliseconds=True)
+                        if not _is_recommendable_duration(duration_seconds):
+                            logger.info(
+                                "[%s] 跳过超长候选: %s (%ss)",
+                                self.platform_name, title, int(duration_seconds),
+                            )
+                            return None
                         
                         transcodings = track.get('media', {}).get('transcodings', [])
                         if not transcodings:
@@ -611,7 +674,13 @@ class SoundCloudCrawler(BaseMusicCrawler):
                         if cover_url:
                             cover_url = cover_url.replace('-large', '-t500x500')
 
-                        return self._format_item(name=title, url=real_audio_url, artist=artist, cover=cover_url)
+                        return self._format_item(
+                            name=title,
+                            url=real_audio_url,
+                            artist=artist,
+                            cover=cover_url,
+                            duration_seconds=duration_seconds,
+                        )
                     except Exception as e:
                         logger.debug(f"[{self.platform_name}] 解析音频流内部错误: {e}")
                         return None
@@ -666,6 +735,13 @@ class iTunesCrawler(BaseMusicCrawler):
                 title = track.get('trackName', '未知曲目')
                 artist = track.get('artistName', '未知艺术家')
                 preview_url = track.get('previewUrl')
+                duration_seconds = _parse_duration_seconds(track.get('trackTimeMillis'), milliseconds=True)
+                if not _is_recommendable_duration(duration_seconds):
+                    logger.info(
+                        "[%s] 跳过超长候选: %s (%ss)",
+                        self.platform_name, title, int(duration_seconds),
+                    )
+                    continue
                 # 【核心修复】iTunes API 封面带 bb 后缀，修正替换逻辑以获取高清图
                 cover_url = track.get('artworkUrl100', '').replace('100x100bb', '600x600bb')
                 
@@ -674,7 +750,8 @@ class iTunesCrawler(BaseMusicCrawler):
                         name=title,
                         url=preview_url,
                         artist=artist,
-                        cover=cover_url
+                        cover=cover_url,
+                        duration_seconds=duration_seconds,
                     ))
                     if len(results) >= limit:
                         break
@@ -873,6 +950,15 @@ class FMACrawler(BaseMusicCrawler):
                 title = track_info.get('title', '未知FMA曲目')
                 artist = track_info.get('artistName', '未知FMA艺术家')
                 audio_url = track_info.get('playbackUrl')
+                duration_seconds = _parse_duration_seconds(
+                    track_info.get('duration') or track_info.get('durationText')
+                )
+                if not _is_recommendable_duration(duration_seconds):
+                    logger.info(
+                        "[%s] 跳过超长候选: %s (%ss)",
+                        self.platform_name, title, int(duration_seconds),
+                    )
+                    continue
 
                 # === FMA 封面抓取 ===
                 cover_url = ""
@@ -897,7 +983,13 @@ class FMACrawler(BaseMusicCrawler):
                     cover_url = ""
                 # =============================
                 if audio_url:
-                    results.append(self._format_item(name=title, url=audio_url, artist=artist, cover=cover_url))
+                    results.append(self._format_item(
+                        name=title,
+                        url=audio_url,
+                        artist=artist,
+                        cover=cover_url,
+                        duration_seconds=duration_seconds,
+                    ))
                     # 收集满 limit 数量后及时退出循环
                     if len(results) >= limit:
                         break
@@ -966,6 +1058,13 @@ class BandcampCrawler(BaseMusicCrawler):
                     audio_url = tracks[0]['file']['mp3-128']
                     title = tracks[0].get('title', '独立曲目')
                     artist = tralbum.get('artist', 'Bandcamp 艺术家')
+                    duration_seconds = _parse_duration_seconds(tracks[0].get('duration'))
+                    if not _is_recommendable_duration(duration_seconds):
+                        logger.info(
+                            "[%s] 跳过超长候选: %s (%ss)",
+                            self.platform_name, title, int(duration_seconds),
+                        )
+                        return None
                     
                     cover_art = track_soup.find('a', class_='popupImage')
                     if cover_art:
@@ -978,7 +1077,8 @@ class BandcampCrawler(BaseMusicCrawler):
                         name=title,
                         url=audio_url,
                         artist=artist,
-                        cover=cover_url
+                        cover=cover_url,
+                        duration_seconds=duration_seconds,
                     )
                 except Exception as e:
                     logger.debug(f"[{self.platform_name}] 获取曲目失败: {e}")
@@ -1235,6 +1335,20 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
         for res in crawler_results:
             if isinstance(res, list) and res:
                 all_results.extend(res)
+
+    # 最终防线：即使未来某个 crawler 忘记在源头过滤，只要它带回标准化时长，
+    # 超长内容也不会进入主动推荐和播放器。
+    recommendable_results = []
+    for item in all_results:
+        duration_seconds = _parse_duration_seconds(item.get('duration'))
+        if _is_recommendable_duration(duration_seconds):
+            recommendable_results.append(item)
+        else:
+            logger.info(
+                "[音乐推荐] 最终过滤超长候选: %s (%ss)",
+                item.get('name', '未知曲目'), int(duration_seconds),
+            )
+    all_results = recommendable_results
 
     # 统一的去重与返回逻辑
     netease_crawler = all_crawlers.get('netease')

@@ -127,6 +127,44 @@ async def test_netease_crawler_parsing():
         assert "12345" in results[0]['url']
     await crawler.close()
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_netease_crawler_skips_ten_minute_candidates_and_backfills_limit():
+    crawler = NeteaseCrawler()
+    crawler._vip_checked = True
+    mock_response = MagicMock(status_code=200)
+    mock_response.json.return_value = {
+        "code": 200,
+        "result": {
+            "songs": [
+                {
+                    "id": 1,
+                    "name": "Long DJ Mix",
+                    "artists": [{"name": "DJ"}],
+                    "fee": 0,
+                    "duration": 10 * 60 * 1000,
+                    "album": {"picUrl": "http://pic.url/long"},
+                },
+                {
+                    "id": 2,
+                    "name": "Normal Song",
+                    "artists": [{"name": "Singer"}],
+                    "fee": 0,
+                    "duration": 4 * 60 * 1000,
+                    "album": {"picUrl": "http://pic.url/normal"},
+                },
+            ]
+        },
+    }
+
+    with patch.object(httpx.AsyncClient, 'post', new=AsyncMock(return_value=mock_response)):
+        results = await crawler.search("test", limit=1)
+
+    assert [track['name'] for track in results] == ["Normal Song"]
+    assert results[0]['duration'] == 4 * 60
+    await crawler.close()
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_itunes_crawler_parsing():
@@ -189,6 +227,40 @@ async def test_soundcloud_crawler_token_logic():
         results: List[Dict[str, Any]] = await crawler.search("test", limit=1)
         assert len(results) == 1
         assert results[0]['url'] == "http://sc.real/audio.mp3"
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soundcloud_crawler_skips_ten_minute_candidates_before_stream_resolution():
+    crawler = SoundCloudCrawler()
+    crawler.client_id = "a" * 32
+
+    mock_search = MagicMock(status_code=200)
+    mock_search.json.return_value = {
+        "collection": [
+            {
+                "title": "Long DJ Set",
+                "duration": 10 * 60 * 1000,
+                "media": {"transcodings": [{"url": "http://sc.url/long"}]},
+            },
+            {
+                "title": "Normal Track",
+                "duration": 5 * 60 * 1000,
+                "media": {"transcodings": [{"url": "http://sc.url/normal"}]},
+            },
+        ]
+    }
+    mock_stream = MagicMock(status_code=200)
+    mock_stream.json.return_value = {"url": "http://sc.real/normal.mp3"}
+
+    get_mock = AsyncMock(side_effect=[mock_search, mock_stream])
+    with patch.object(httpx.AsyncClient, 'get', new=get_mock):
+        results = await crawler.search("test", limit=1)
+
+    assert [track['name'] for track in results] == ["Normal Track"]
+    assert results[0]['duration'] == 5 * 60
+    assert get_mock.await_count == 2
     await crawler.close()
 
 # ==========================================
