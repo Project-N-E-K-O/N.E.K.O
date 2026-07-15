@@ -482,6 +482,8 @@ async def _run_review_in_background(
             # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
             # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
             # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
+            # 普通失败会中断“连续输出耗尽”序列，不能让两类失败交错累计后误开断路器。
+            _clear_review_output_exhaustion_state(state)
             attempts = await _record_review_failure(lanlan_name, snapshot)
             logger.info(
                 f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"

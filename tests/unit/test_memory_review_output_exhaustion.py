@@ -215,3 +215,35 @@ async def test_success_clears_output_exhaustion_state():
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
     memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generic_failure_breaks_output_exhaustion_streak():
+    from app import memory_server
+
+    name = "output-limit-then-generic-failure"
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": 2,
+        "review_output_exhaustion_min_context_tokens": 1000,
+        "review_output_exhaustion_blocked": False,
+    }
+    fake_manager = MagicMock()
+    fake_manager.review_history = AsyncMock(return_value=("failed", None))
+
+    with (
+        patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
+        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+    ):
+        await memory_server._run_review_in_background(
+            name,
+            _history(10),
+            asyncio.Event(),
+        )
+
+    state = memory_server.gates._maint_state[name]
+    assert state["review_output_exhaustion_attempts"] == 0
+    assert state["review_output_exhaustion_min_context_tokens"] is None
+    assert state["review_output_exhaustion_blocked"] is False
+    assert state["review_fail_attempts"] == 1
+    memory_server.gates._maint_state.pop(name, None)
