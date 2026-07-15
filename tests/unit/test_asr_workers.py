@@ -1186,6 +1186,36 @@ def test_auth_rejection_classification() -> None:
     assert not grok._grok_is_auth_rejection(ordinary_error)
     assert not gemini._is_auth_rejection(ordinary_error)
 
+    websocket_auth_error = RuntimeError("sensitive close reason")
+    websocket_auth_error.code = 3000  # type: ignore[attr-defined]
+    websocket_auth_error.reason = "invalid_request_error.invalid_api_key"  # type: ignore[attr-defined]
+    assert openai._openai_is_auth_rejection(websocket_auth_error)
+
+    websocket_other_error = RuntimeError("sensitive close reason")
+    websocket_other_error.code = 3000  # type: ignore[attr-defined]
+    websocket_other_error.reason = "invalid_request_error.unsupported_model"  # type: ignore[attr-defined]
+    assert not openai._openai_is_auth_rejection(websocket_other_error)
+
+    assert openai._openai_event_is_auth_rejection(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_api_key",
+                "message": "sensitive provider body",
+            },
+        }
+    )
+    assert not openai._openai_event_is_auth_rejection(
+        {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": "unsupported_model",
+            },
+        }
+    )
+
 
 def test_workers_preserve_provider_auto_language_detection() -> None:
     assert qwen._qwen_language_code("auto") is None

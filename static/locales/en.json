@@ -927,7 +927,12 @@
         "volumeWaiting": "Waiting",
         "volumeHintWaiting": "Mic is listening, go ahead and speak",
         "noiseReduction": "Noise Reduction",
-        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice",
+        "independentAsr": "Independent Speech Recognition",
+        "independentAsrActive": "Independent ASR active: {{provider}}",
+        "independentAsrFallback": "Independent ASR unavailable; using Omni native recognition",
+        "independentAsrNextSession": "Enabled for the next voice session; falls back to Omni if unavailable",
+        "independentAsrNative": "Using Omni native speech recognition"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",

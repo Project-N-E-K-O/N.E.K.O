@@ -1355,6 +1355,10 @@ class LifecycleMixin:
         # 启动消息处理任务
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
+        # Resolve the microphone route before session_started opens the frontend
+        # input path. Independent-ASR failure is non-fatal and stays on Omni.
+        await self._start_independent_asr_if_enabled(input_mode)
+
         # 启动成功，重置失败计数器和熔断
         self.session_start_failure_count = 0
         self.session_start_last_failure_time = None
@@ -1928,6 +1932,10 @@ class LifecycleMixin:
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
+            # The pending Omni session is now the active session. If its Core
+            # provider changed, replace the independent ASR before replaying
+            # cached microphone audio so one frame can never cross providers.
+            await self._reconcile_independent_asr_after_core_change()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
@@ -2124,6 +2132,10 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+
+        # Stale expected_session callbacks have already returned above. Invalidate
+        # ASR callbacks before any remaining teardown awaits can yield.
+        await self._close_independent_asr()
 
         if _inactive_early:
             if reset_starting_count:

@@ -927,7 +927,12 @@
         "volumeWaiting": "等待聲音",
         "volumeHintWaiting": "麥克風正在監聽，請說話",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰",
+        "independentAsr": "獨立語音辨識",
+        "independentAsrActive": "目前使用獨立 ASR：{{provider}}",
+        "independentAsrFallback": "獨立 ASR 無法使用，已切回 Omni 原生辨識",
+        "independentAsrNextSession": "將於下次語音會話啟用；無法使用時自動切回 Omni",
+        "independentAsrNative": "目前使用 Omni 原生語音辨識"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",

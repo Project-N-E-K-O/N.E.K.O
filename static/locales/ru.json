@@ -927,7 +927,12 @@
         "volumeWaiting": "Ожидание",
         "volumeHintWaiting": "Микрофон слушает, можете говорить",
         "noiseReduction": "Шумоподавление",
-        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
+        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса",
+        "independentAsr": "Независимое распознавание речи",
+        "independentAsrActive": "Активен независимый ASR: {{provider}}",
+        "independentAsrFallback": "Независимый ASR недоступен; используется встроенное распознавание Omni",
+        "independentAsrNextSession": "Включится в следующем голосовом сеансе; при сбое будет использован Omni",
+        "independentAsrNative": "Используется встроенное распознавание речи Omni"
     },
     "speaker": {
         "volumeLabel": "Громкость динамика",

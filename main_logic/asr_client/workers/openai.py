@@ -42,7 +42,22 @@ def _normalize_openai_language(language: str) -> str | None:
 
 
 def _openai_is_auth_rejection(exc: BaseException) -> bool:
-    return is_auth_rejection(exc)
+    if is_auth_rejection(exc):
+        return True
+    return (
+        getattr(exc, "code", None) == 3000
+        and getattr(exc, "reason", None)
+        == "invalid_request_error.invalid_api_key"
+    )
+
+
+def _openai_event_is_auth_rejection(event: dict[str, Any]) -> bool:
+    error = event.get("error")
+    return (
+        isinstance(error, dict)
+        and error.get("type") == "invalid_request_error"
+        and error.get("code") == "invalid_api_key"
+    )
 
 
 def _resample_pcm_16k_to_24k(
@@ -183,15 +198,26 @@ async def openai_asr_worker(
                     await _handle_transcript_event(event)
                     continue
                 if event_type == "error":
-                    await _emit_error(
-                        "ASR_OPENAI_ERROR",
-                        "OpenAI realtime transcription failed",
-                    )
+                    if _openai_event_is_auth_rejection(event):
+                        await _emit_error(
+                            "ASR_CREDENTIALS_REJECTED",
+                            "OpenAI credentials were rejected",
+                        )
+                    else:
+                        await _emit_error(
+                            "ASR_OPENAI_ERROR",
+                            "OpenAI realtime transcription failed",
+                        )
                     return
         except asyncio.CancelledError:
             raise
-        except websockets.exceptions.ConnectionClosed:
-            pass
+        except websockets.exceptions.ConnectionClosed as exc:
+            if _openai_is_auth_rejection(exc):
+                await _emit_error(
+                    "ASR_CREDENTIALS_REJECTED",
+                    "OpenAI credentials were rejected",
+                )
+                return
         except Exception:
             await _emit_error(
                 "ASR_OPENAI_WORKER_FAILED",

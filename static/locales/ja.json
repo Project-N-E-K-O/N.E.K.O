@@ -927,7 +927,12 @@
         "volumeWaiting": "待機中",
         "volumeHintWaiting": "マイクが入力を待っています、話してください",
         "noiseReduction": "ノイズリダクション",
-        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに",
+        "independentAsr": "独立音声認識",
+        "independentAsrActive": "独立 ASR を使用中：{{provider}}",
+        "independentAsrFallback": "独立 ASR を利用できないため、Omni 標準認識に切り替えました",
+        "independentAsrNextSession": "次の音声セッションから有効。利用不可の場合は Omni に切り替えます",
+        "independentAsrNative": "Omni 標準音声認識を使用中"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",

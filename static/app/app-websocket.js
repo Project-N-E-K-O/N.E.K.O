@@ -2086,6 +2086,31 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
+                        var asrProvider = (statusDetails && statusDetails.provider) || '';
+                        S.independentAsrProvider = asrProvider;
+                        if (statusCode === 'ASR_INDEPENDENT_READY') {
+                            S.independentAsrActive = true;
+                            if (typeof window.showStatusToast === 'function') {
+                                window.showStatusToast(
+                                    window.t ? window.t('microphone.independentAsrActive', { provider: asrProvider }) : ('Independent ASR active: ' + asrProvider),
+                                    3000
+                                );
+                            }
+                            return;
+                        }
+                        if (statusCode !== 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            S.independentAsrActive = false;
+                        }
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable; using Omni native recognition',
+                                5000
+                            );
+                        }
+                        return;
+                    }
+
                     if (statusCode === 'TTS_CONNECTION_FAILED') {
                         emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
                             turnId: resolveAssistantLifecycleTurnId(response.turn_id),

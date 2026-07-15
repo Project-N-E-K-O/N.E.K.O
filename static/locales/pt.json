@@ -927,7 +927,12 @@
         "volumeWaiting": "Aguardando",
         "volumeHintWaiting": "O microfone está ouvindo, pode falar",
         "noiseReduction": "Redução de ruído",
-        "noiseReductionHint": "Redução de ruído RNNoise AI para voz mais clara"
+        "noiseReductionHint": "Redução de ruído RNNoise AI para voz mais clara",
+        "independentAsr": "Reconhecimento de voz independente",
+        "independentAsrActive": "ASR independente ativo: {{provider}}",
+        "independentAsrFallback": "ASR independente indisponível; usando o reconhecimento nativo do Omni",
+        "independentAsrNextSession": "Ativo na próxima sessão de voz; usa Omni se estiver indisponível",
+        "independentAsrNative": "Usando o reconhecimento de voz nativo do Omni"
     },
     "speaker": {
         "volumeLabel": "Volume do alto-falante",
