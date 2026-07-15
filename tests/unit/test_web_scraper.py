@@ -13,6 +13,13 @@ import utils.web_scraper.trending_content as trending_content
 import utils.web_scraper.window_context as window_context
 
 
+@pytest.fixture(autouse=True)
+def clear_tieba_recent_keys():
+    trending_content._TIEBA_RECENT_KEYS.clear()
+    yield
+    trending_content._TIEBA_RECENT_KEYS.clear()
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_generate_diverse_queries_sends_user_message(monkeypatch):
@@ -74,6 +81,34 @@ class _FakeTiebaThread:
         self.reply_num = reply_num
         self.view_num = view_num
         self.is_top = is_top
+
+
+class _FakeTiebaComment:
+    def __init__(self, text, *, agree=0, create_time=0):
+        self.text = text
+        self.agree = agree
+        self.create_time = create_time
+
+
+class _FakeTiebaDetailPost:
+    def __init__(
+        self,
+        text,
+        *,
+        floor=0,
+        agree=0,
+        reply_num=0,
+        create_time=0,
+        is_thread_author=False,
+        comments=None,
+    ):
+        self.text = text
+        self.floor = floor
+        self.agree = agree
+        self.reply_num = reply_num
+        self.create_time = create_time
+        self.is_thread_author = is_thread_author
+        self.comments = comments or []
 
 
 @pytest.mark.unit
@@ -160,6 +195,33 @@ async def test_fetch_news_content_succeeds_when_tieba_fails_but_weibo_succeeds(m
     assert result["news"]["success"] is True
     assert result["tieba"]["success"] is False
     assert "微博仍可用" in web_scraper.format_news_content(result)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_news_content_routes_non_china_to_twitter(monkeypatch):
+    async def fake_weibo(limit):
+        raise AssertionError("non-China news must not fetch Weibo")
+
+    async def fake_tieba(keyword="", limit=5, candidate_limit=None):
+        raise AssertionError("non-China news must not fetch Tieba")
+
+    async def fake_twitter(limit):
+        return {
+            "success": True,
+            "trending": [{"word": "Global trend", "url": "https://twitter.com/search?q=x"}],
+        }
+
+    monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
+    monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+    monkeypatch.setattr(trending_content, "fetch_twitter_trending", fake_twitter)
+
+    result = await web_scraper.fetch_news_content(limit=3)
+
+    assert result["success"] is True
+    assert result["region"] == "non-china"
+    assert result["news"]["trending"][0]["word"] == "Global trend"
 
 
 @pytest.mark.unit
@@ -317,6 +379,187 @@ async def test_fetch_tieba_content_candidate_pool_is_larger_than_display(monkeyp
     assert result["posts"][0]["title"] == "\u5982\u4f55\u8bc4\u4ef7\u65b0\u7248\u672c\u5267\u60c5"
     assert len({post["bar_name"] for post in result["posts"][:3]}) == 3
     assert result["formatted_content"].count("https://tieba.baidu.com/p/") == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_tieba_content_reuses_recent_candidates_when_pool_is_static(monkeypatch):
+    async def fake_bar_posts(bar_name, *, rn):
+        if bar_name == "\u539f\u795e":
+            return [
+                {
+                    "title": "\u9759\u6001\u5019\u9009\u8ba8\u8bba",
+                    "url": "https://tieba.baidu.com/p/777",
+                    "abstract": "\u5c0f\u5019\u9009\u6c60\u4ecd\u7136\u5e94\u8be5\u53ef\u7528",
+                    "source": "\u8d34\u5427",
+                    "bar_name": "\u539f\u795e",
+                    "reply_num": 10,
+                    "view_num": 1000,
+                    "tid": "777",
+                    "type": "post",
+                    "origin": "bar",
+                }
+            ]
+        return []
+
+    async def fake_hot_topics(limit):
+        return []
+
+    async def fake_topic_posts(topics, limit):
+        return []
+
+    async def fake_enrich(posts, errors):
+        return None
+
+    monkeypatch.setattr(trending_content, "_fetch_tieba_bar_posts", fake_bar_posts)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_hot_topics", fake_hot_topics)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_topic_posts", fake_topic_posts)
+    monkeypatch.setattr(trending_content, "_enrich_tieba_posts_with_hot_replies", fake_enrich)
+
+    first = await web_scraper.fetch_tieba_content(limit=1)
+    second = await web_scraper.fetch_tieba_content(limit=1)
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert second["posts"][0]["title"] == "\u9759\u6001\u5019\u9009\u8ba8\u8bba"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_tieba_content_enriches_top_three_posts_with_hot_replies(monkeypatch):
+    detail_calls = []
+
+    async def fake_bar_posts(bar_name, *, rn):
+        if bar_name != "\u539f\u795e":
+            return []
+        return [
+            {
+                "title": f"\u70ed\u95e8\u8ba8\u8bba{i}",
+                "url": f"https://tieba.baidu.com/p/{i}",
+                "abstract": "\u8fd9\u662f\u5e16\u5b50\u6458\u8981",
+                "source": "\u8d34\u5427",
+                "bar_name": f"bar-{i}",
+                "reply_num": 30 - i,
+                "view_num": 3000 - i,
+                "tid": str(i),
+                "type": "post",
+                "origin": "bar",
+            }
+            for i in range(1, 5)
+        ]
+
+    async def fake_hot_topics(limit):
+        return []
+
+    async def fake_topic_posts(topics, limit):
+        return []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_posts(self, tid, pn=1, **kwargs):
+            detail_calls.append((tid, pn, kwargs))
+            assert pn == 1
+            assert kwargs["rn"] == 12
+            assert getattr(kwargs["sort"], "name", "") == "HOT"
+            assert kwargs["with_comments"] is True
+            assert kwargs["comment_sort_by_agree"] is True
+            assert kwargs["comment_rn"] == 3
+            return [
+                _FakeTiebaDetailPost(
+                    "\u7b2c\u4e00\u6761\u70ed\u95e8\u697c\u5c42\u89c2\u70b9\u5f88\u5177\u4f53",
+                    floor=9,
+                    agree=1,
+                    reply_num=6,
+                    create_time=101,
+                    comments=[
+                        _FakeTiebaComment("\u8fd9\u4e2a\u53cd\u5e94\u4e5f\u633a\u6709\u4fe1\u606f\u91cf", agree=8, create_time=201),
+                        _FakeTiebaComment("\u592a\u77ed", agree=99, create_time=202),
+                        _FakeTiebaComment("\u53e6\u4e00\u4e2a\u56f4\u89c2\u89d2\u5ea6\u4e5f\u80fd\u7528", agree=7, create_time=203),
+                    ],
+                ),
+                _FakeTiebaDetailPost(
+                    "\u7b2c\u4e8c\u6761\u5e94\u8be5\u4fdd\u6301HOT\u8fd4\u56de\u987a\u5e8f",
+                    floor=2,
+                    agree=100,
+                    reply_num=1,
+                    create_time=102,
+                ),
+                _FakeTiebaDetailPost("\u7b2c\u4e09\u6761\u70ed\u95e8\u697c\u5c42\u5185\u5bb9", floor=5, agree=30),
+                _FakeTiebaDetailPost("\u7b2c\u56db\u6761\u8d85\u51fa\u4e0a\u9650\u5e94\u8be5\u88ab\u622a\u6389", floor=6, agree=40),
+            ]
+
+    monkeypatch.setattr(trending_content, "_fetch_tieba_bar_posts", fake_bar_posts)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_hot_topics", fake_hot_topics)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_topic_posts", fake_topic_posts)
+    monkeypatch.setattr(trending_content, "_get_aiotieba_client_class", lambda: FakeClient)
+
+    result = await web_scraper.fetch_tieba_content(limit=2, candidate_limit=4)
+
+    assert [call[0] for call in detail_calls] == [1, 2, 3]
+    assert "hot_replies" in result["posts"][0]
+    assert "hot_replies" not in result["posts"][3]
+    first_replies = result["posts"][0]["hot_replies"]
+    assert len(first_replies) == 3
+    assert [reply["floor"] for reply in first_replies[:2]] == [9, 2]
+    assert len(first_replies[0]["reactions"]) == 2
+    assert "\u70ed\u95e8\u56de\u590d" in result["formatted_content"]
+    assert "\u53cd\u5e94\uff1a" in result["formatted_content"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_tieba_content_keeps_posts_when_hot_reply_fetch_fails(monkeypatch):
+    async def fake_bar_posts(bar_name, *, rn):
+        if bar_name == "\u539f\u795e":
+            return [
+                {
+                    "title": "\u53ef\u7528\u8ba8\u8bba\u5e16",
+                    "url": "https://tieba.baidu.com/p/99",
+                    "abstract": "\u5e16\u5b50\u672c\u8eab\u53ef\u7528",
+                    "source": "\u8d34\u5427",
+                    "bar_name": "\u539f\u795e",
+                    "reply_num": 10,
+                    "view_num": 1000,
+                    "tid": "99",
+                    "type": "post",
+                    "origin": "bar",
+                }
+            ]
+        return []
+
+    async def fake_hot_topics(limit):
+        return []
+
+    async def fake_topic_posts(topics, limit):
+        return []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_posts(self, tid, pn=1, **kwargs):
+            raise RuntimeError("detail blocked")
+
+    monkeypatch.setattr(trending_content, "_fetch_tieba_bar_posts", fake_bar_posts)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_hot_topics", fake_hot_topics)
+    monkeypatch.setattr(trending_content, "_fetch_tieba_topic_posts", fake_topic_posts)
+    monkeypatch.setattr(trending_content, "_get_aiotieba_client_class", lambda: FakeClient)
+
+    result = await web_scraper.fetch_tieba_content(limit=1)
+
+    assert result["success"] is True
+    assert result["posts"][0]["title"] == "\u53ef\u7528\u8ba8\u8bba\u5e16"
+    assert "hot_replies" not in result["posts"][0]
+    assert "warnings" in result
+    assert "detail blocked" in "; ".join(result["warnings"])
 
 
 @pytest.mark.unit
