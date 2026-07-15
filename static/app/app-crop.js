@@ -9,8 +9,10 @@
  *           keyboard nudging (arrows), Enter confirm, Delete clear.
  *
  * Exports: window.appCrop
- *   - cropImage(dataUrl, opts) → Promise<string|null>
+ *   - cropImage(dataUrl, opts) → Promise<string|{action,dataUrl}|null>
  *     opts.recaptureFn: async () => dataUrl  (called by "隐藏NEKO" tab)
+ *     opts.rightClickCancelsAll: true  (system-style overlay: right click exits immediately)
+ *     opts.allowPin: true  (show the desktop pin action in a PC-owned overlay)
  */
 (function () {
     'use strict';
@@ -28,6 +30,9 @@
     // 这样切回"截图"页签可以恢复回最初的图，而不是停留在隐藏后的版本。
     var originalDataUrl = null;
     var recaptureFn = null;
+    var onRecaptureImageReady = null;
+    var rightClickCancelsAll = false;
+    var allowPin = false;
     var selectionBox = null;
     var selectionBadge = null;
     var crosshairX = null;
@@ -89,6 +94,7 @@
     var textEditor = null;      // 文字工具的 <textarea> DOM
     var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
     var toolbarEl = null;       // 标注工具栏 DOM
+    var pinBtn = null;          // PC 独立截图层才显示的“贴图”动作
     var optionsBarEl = null;    // 上下文选项条 DOM（随当前工具刷新内容）
     var toolBtns = {};          // name -> button，用于切换 active 态
     var colorSwatches = [];     // 调色板按钮
@@ -246,6 +252,10 @@
         // Right-click behaviour depends on the active tool
         canvas.addEventListener('contextmenu', function (e) {
             e.preventDefault();
+            if (rightClickCancelsAll) {
+                cancelAll();
+                return;
+            }
             // 绘图进行中：丢弃当前草稿，不关遮罩
             if (annoDraft) {
                 annoDraft = null;
@@ -351,7 +361,10 @@
                 if (runId !== recaptureRunId) return;
                 if (newDataUrl && activeTab === 'hideNeko') {
                     sourceDataUrl = newDataUrl;
-                    loadImage(newDataUrl);
+                    loadImage(newDataUrl, function () {
+                        if (runId !== recaptureRunId || activeTab !== 'hideNeko' || !onRecaptureImageReady) return;
+                        Promise.resolve(onRecaptureImageReady()).catch(function () {});
+                    });
                 }
             }).catch(function (err) {
                 if (runId !== recaptureRunId) return;
@@ -1080,12 +1093,21 @@
         bar.appendChild(actGrp);
         bar.appendChild(divider());
 
-        // 取消选区 / 确认
+        // 取消选区 / 贴图 / 确认
         var endGrp = document.createElement('div');
         endGrp.className = 'crop-tool-group';
         var cancelBtn = makeToolButton('crop-tool-btn crop-tool-cancel', svgIcon('cancel'), 'chat.cropClearSelectionTitle', '取消选区', clearSelection);
+        pinBtn = document.createElement('button');
+        pinBtn.type = 'button';
+        pinBtn.className = 'crop-tool-btn crop-tool-pin';
+        pinBtn.textContent = tr('chat.cropPin', '贴图');
+        pinBtn.title = tr('chat.cropPinTitle', '将截图贴到桌面');
+        pinBtn.setAttribute('aria-label', pinBtn.title);
+        pinBtn.style.display = 'none';
+        pinBtn.addEventListener('click', pinCrop);
         var confirmBtn = makeToolButton('crop-tool-btn crop-tool-confirm', svgIcon('confirm'), 'chat.cropConfirmTitle', '确认截图', confirmCrop);
         endGrp.appendChild(cancelBtn);
+        endGrp.appendChild(pinBtn);
         endGrp.appendChild(confirmBtn);
         bar.appendChild(endGrp);
 
@@ -1857,6 +1879,12 @@
         close(result);
     }
 
+    function pinCrop() {
+        var result = cropToDataUrl();
+        if (!result) return;
+        close({ action: 'pin', dataUrl: result });
+    }
+
     function cancelAll() {
         close(null);
     }
@@ -1873,6 +1901,10 @@
         sourceDataUrl = null;
         originalDataUrl = null;
         recaptureFn = null;
+        onRecaptureImageReady = null;
+        rightClickCancelsAll = false;
+        allowPin = false;
+        if (pinBtn) pinBtn.style.display = 'none';
         activeTab = 'screenshot';
         pointerPos = null;
         hideActionBtns();
@@ -1918,7 +1950,7 @@
     }
 
     // ======================== Image loading ========================
-    function loadImage(dataUrl) {
+    function loadImage(dataUrl, onLoaded) {
         imgEl.onload = function () {
             sizeCanvas();
             computeImgMetrics();
@@ -1927,6 +1959,11 @@
             hideActionBtns();
             requestRender();
             overlay.focus();
+            if (typeof onLoaded === 'function') {
+                requestAnimationFrame(function () {
+                    requestAnimationFrame(function () { onLoaded(); });
+                });
+            }
         };
         imgEl.onerror = function () {
             close(null);
@@ -1945,6 +1982,9 @@
             originalDataUrl = dataUrl;
             resolvePromise = resolve;
             recaptureFn = (opts && opts.recaptureFn) || null;
+            onRecaptureImageReady = (opts && opts.onRecaptureImageReady) || null;
+            rightClickCancelsAll = !!(opts && opts.rightClickCancelsAll);
+            allowPin = !!(opts && opts.allowPin);
 
             // Reset state
             sel = null;
@@ -1961,6 +2001,12 @@
             tabHideNeko.style.display = recaptureFn ? '' : 'none';
             tabHideNeko.disabled = false;
             tabHideNeko.textContent = tr('chat.cropTabHideNeko', '\u9690\u85CFNEKO');
+            if (pinBtn) {
+                pinBtn.textContent = tr('chat.cropPin', '\u8d34\u56fe');
+                pinBtn.title = tr('chat.cropPinTitle', '\u5c06\u622a\u56fe\u8d34\u5230\u684c\u9762');
+                pinBtn.setAttribute('aria-label', pinBtn.title);
+                pinBtn.style.display = allowPin ? '' : 'none';
+            }
             hideActionBtns();
 
             loadImage(dataUrl);
