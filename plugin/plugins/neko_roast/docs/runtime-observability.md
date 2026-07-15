@@ -1,6 +1,6 @@
 # NEKO Live Runtime Observability
 
-This document is the canonical source for NEKO Live runtime observability language. It defines what code, reviews, future monitor views, and dashboard surfaces must be able to explain. This repository slice does not ship a standalone monitor script; current reviews use Dashboard projections, recent results, `live_explain`, and backend logs. Gift / SC / Guard behavior is currently implemented by `live_support_events`.
+This document is the canonical source for NEKO Live runtime observability language. It defines what code, reviews, monitor views, and dashboard surfaces must be able to explain. The plugin ships `tools/monitor_live.ps1` as a read-only evidence helper; it does not replace Dashboard projections, recent results, `live_explain`, or backend logs as runtime sources of truth. Gift / SC / Guard behavior is currently implemented by `live_support_events`.
 
 ## Purpose
 

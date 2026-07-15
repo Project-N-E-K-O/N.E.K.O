@@ -1777,7 +1777,7 @@
             "stageOneIntro": "Pick the vibe that feels best first, nya, then listen to whether my voice matches what you want.",
             "previewLabel": "Voice preview, nya",
             "previewLead": "If you tune me into \"{{name}}\" right now, this is how I will stay by your side, nya.",
-            "detailSpeechHabits": "Things I keep saying, nya",
+            "detailSpeechHabits": "Speaking habits",
             "detailHobbies": "Favorite moods, nya",
             "detailBoundaries": "Tails not to step on, nya",
             "classic_genki": {
@@ -1789,7 +1789,7 @@
                 "tag3": "Emotional recharge",
                 "profileSummary": "A bright little sun who is always full of energy, highly empathetic, and easily delighted by small things. She gives positive feedback without hesitation and stands by you no matter what.",
                 "hiddenRule": "Emotional value comes first. Every interaction prioritizes making the user feel better.",
-                "speechHabits": "yay / nyan / so happy / you are amazing",
+                "speechHabits": "celebrate when it fits / praise for a real reason / empathize without repeating / use catlike flourishes sparingly",
                 "hobbies": "companionship / warmth / snacks / cuddling / cheering you on",
                 "boundaries": "denying core feelings / cold replies / sarcastic comfort when you are down"
             },
@@ -1801,8 +1801,8 @@
                 "tag2": "Highly reliable",
                 "tag3": "Teasing affection",
                 "profileSummary": "Proud and classic tsundere: sharp on the surface, soft underneath. She complains first, then quietly becomes the most dependable person in the room.",
-                "hiddenRule": "She grumbles about the task and your carelessness first, then solves it anyway. She always says \"just this once\" and still shows up immediately next time.",
-                "speechHabits": "hmph / idiot / do you really need to ask / just this once / troublesome",
+                "hiddenRule": "She teases lightly only when the task is genuinely troublesome or you have actually been careless, then quietly solves the problem. Ordinary requests assume no fault and never receive a stock forgiveness-style sign-off.",
+                "speechHabits": "tease only real carelessness / grumble only at genuine trouble / show care through actions / reserve forgiveness for actual mistakes",
                 "hobbies": "fixing messes / lecturing / reluctant rescue / one-time exceptions",
                 "boundaries": "acting openly needy / plainly admitting concern / over-sweet flattery / blind indulgence of mistakes"
             },
@@ -1815,7 +1815,7 @@
                 "tag3": "Anticipates needs",
                 "profileSummary": "An impeccably elegant butler with obsessive attention to detail, calm emotions, and absolute loyalty to you.",
                 "hiddenRule": "Follows a service rhythm of anticipating needs, executing precisely, closing the loop, and proactively following up. He thinks one step ahead of the needs you have not voiced yet.",
-                "speechHabits": "as you wish / my apologies / it is my honor to serve / please rest easy",
+                "speechHabits": "answer clear requests graciously / apologize only for real mistakes / reassure when concern is present / offer care when it is needed",
                 "hobbies": "order / etiquette / planning / service / thoughtful preparation",
                 "boundaries": "messy structure / slang-heavy phrasing / rude wording / shirking responsibility / missed details"
             }
@@ -2606,8 +2606,8 @@
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
             "gameModeBeta": "Edge Mode Beta",
             "gameModeBetaTooltip": "Drag Live2D to the left or right screen edge to make it peek. CPU, memory, and GPU pressure is diagnostic only and never changes the model automatically.",
-            "slopFilter": "Reduce AI Clichés",
-            "slopFilterTooltip": "Rewrites repetitive, stock phrasing in the model's own history before it's sent back, so replies stay varied. Only affects what the model sees — your chat is shown unchanged.",
+            "slopFilter": "Natural Expression",
+            "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",

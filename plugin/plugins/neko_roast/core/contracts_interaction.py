@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .contracts_events import ViewerEvent
-from .contracts_public import public_bool, public_dict, public_text
+from .contracts_public import (
+    TOPIC_PRIVACY_PUBLIC,
+    public_bool,
+    public_dict,
+    public_text,
+    topic_privacy_classification,
+)
 from .contracts_types import LiveMode, RoastStrength, _response_latency_ms, utc_now_iso
 from .contracts_viewer import ViewerIdentity, ViewerProfile
 
@@ -26,6 +32,15 @@ class InteractionRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_public_dict(self) -> dict[str, Any]:
+        metadata = public_dict(self.metadata)
+        topic = (
+            self.event.raw.get("topic_material")
+            if isinstance(self.event.raw, dict)
+            else None
+        )
+        if topic_privacy_classification(topic) != TOPIC_PRIVACY_PUBLIC:
+            for key in ("topic_title", "topic_key", "topic_hook", "topic_evidence"):
+                metadata.pop(key, None)
         return {
             "event": self.event.to_dict(),
             "identity": self.identity.to_public_dict(),
@@ -36,7 +51,7 @@ class InteractionRequest:
             "dry_run": public_bool(self.dry_run),
             "allow_avatar_image": public_bool(self.allow_avatar_image),
             "reason": public_text(self.reason),
-            "metadata": public_dict(self.metadata),
+            "metadata": metadata,
         }
 
 

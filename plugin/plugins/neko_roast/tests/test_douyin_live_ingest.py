@@ -2973,6 +2973,31 @@ async def test_douyin_provider_event_requires_safe_room_ref_before_publish():
 
 
 @pytest.mark.asyncio
+async def test_douyin_provider_event_reports_room_ref_mismatch_before_publish():
+    ctx = _LiveEventsCtx()
+    ingest = DouyinLiveIngestModule()
+    hub = LiveEventsModule()
+    await hub.setup(ctx)
+    await ingest.setup(ctx)
+    ingest._room_ref = "room-42"
+
+    live_event = ingest.publish_provider_event(
+        {
+            "event_type": "chat",
+            "uid": "123",
+            "text": "must not publish",
+            "room_ref": "another-room",
+        }
+    )
+    await _drain(hub)
+
+    assert live_event is None
+    assert ctx.payloads == []
+    assert ctx.event_bus.status()["publish_count"] == 0
+    assert ingest.status()["last_error"] == "douyin room_ref mismatch before publishing events"
+
+
+@pytest.mark.asyncio
 async def test_douyin_unknown_event_type_is_not_published_or_leaked():
     ctx = _LiveEventsCtx()
     ingest = DouyinLiveIngestModule()

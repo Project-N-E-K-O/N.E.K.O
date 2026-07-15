@@ -3,6 +3,13 @@ export type RoastConfig = {
   live_room_ref?: string
   live_room_id?: number
   live_enabled?: boolean
+  avatar_roast_enabled?: boolean
+  avatar_analysis_enabled?: boolean
+  danmaku_response_enabled?: boolean
+  live_support_events_enabled?: boolean
+  warmup_hosting_enabled?: boolean
+  idle_hosting_enabled?: boolean
+  active_engagement_enabled?: boolean
   developer_tools_enabled?: boolean
   live_mode?: string
   activity_level?: string
@@ -32,6 +39,7 @@ export type DashboardState = {
   modules?: Array<Record<string, any>>
   recent_profiles?: Array<Record<string, any>>
   recent_results?: Array<Record<string, any>>
+  live_session?: Record<string, any>
   recent_sandbox_results?: Array<Record<string, any>>
   recent_audit?: Array<Record<string, any>>
   speech_explanation?: Record<string, any>
@@ -49,6 +57,13 @@ export const configDefaults = {
   douyin_uid: "",
   douyin_nickname: "",
   live_enabled: false,
+  avatar_roast_enabled: true,
+  avatar_analysis_enabled: true,
+  danmaku_response_enabled: true,
+  live_support_events_enabled: true,
+  warmup_hosting_enabled: true,
+  idle_hosting_enabled: true,
+  active_engagement_enabled: true,
   developer_tools_enabled: false,
   live_mode: "co_stream",
   activity_level: "standard",

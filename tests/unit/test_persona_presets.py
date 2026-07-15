@@ -4,7 +4,9 @@ import pytest
 
 from utils.persona_presets import (
     PERSONA_OVERRIDE_FIELDS,
+    _PERSONA_L10N,
     get_persona_preset,
+    get_persona_prompt_guidance,
     list_persona_presets,
 )
 
@@ -27,6 +29,10 @@ def test_list_persona_presets_returns_three_fixed_presets():
     assert presets[0]["profile"]["性格原型"] == "经典元气猫娘"
     assert presets[1]["profile"]["性格原型"] == "傲娇毒舌小猫"
     assert presets[2]["profile"]["性格原型"] == "优雅全能管家"
+    assert all(preset["profile"]["口癖"].startswith("不用固定") for preset in presets)
+    assert "下不为例喵" not in repr(presets)
+    assert "普通请求不预设过错" in presets[1]["profile"]["隐藏设定"]
+    assert "先吐槽" not in presets[1]["profile"]["隐藏设定"]
 
 
 @pytest.mark.unit
@@ -52,3 +58,47 @@ def test_persona_override_fields_cover_supported_profile_keys():
         "隐藏设定",
         "一句话台词",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_persona_prompts_replace_literal_catchphrase_lists_with_speech_discipline(lang):
+    literal_list_markers = (
+        "常用口癖",
+        "口癖：",
+        "Signature phrases:",
+        "입버릇:",
+        "Коронные фразы:",
+    )
+
+    for preset_id, localized_parts in _PERSONA_L10N.items():
+        parts = localized_parts[lang]
+        assert parts["speech_discipline"]
+        assert not any(marker in parts["personality"] for marker in literal_list_markers)
+
+        prompt = get_persona_prompt_guidance(preset_id, lang)
+        assert "- Natural Speech:" in prompt
+        assert "{_persona_speech_discipline}" not in prompt
+        assert "下不为例喵" not in prompt
+
+    assert "grumble first and help second" not in get_persona_prompt_guidance("tsundere_helper", lang)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("lang", "old_unconditional_marker"),
+    [
+        ("zh", "常带「喵」"),
+        ("zh-TW", "常帶「喵」"),
+        ("en", "often peppered"),
+        ("ja", "よく「にゃ」"),
+        ("ko", "자주 \"냐\""),
+        ("ru", "часто с «мяу»"),
+        ("es", "a menudo salpicado"),
+        ("pt", "muitas vezes pontuado"),
+    ],
+)
+def test_classic_catlike_flourish_is_context_gated(lang, old_unconditional_marker):
+    language_tail = _PERSONA_L10N["classic_genki"][lang]["language_tail"]
+
+    assert old_unconditional_marker not in language_tail

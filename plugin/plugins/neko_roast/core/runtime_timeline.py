@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 import uuid
 from typing import Any
 
 from .viewer_preferences import safe_text
+
+_REASON_CODES = {
+    "accepted", "allowed", "already_roasted", "batch_welcome", "blocked",
+    "cooldown", "dispatcher.dry_run", "dispatcher.failed", "dispatcher.pushed",
+    "dispatcher.skipped", "dry_run", "live_disabled", "live_ingest_disconnected",
+    "live_room_offline", "manual_paused", "missing_uid", "normalized", "ok",
+    "output_channel_unavailable", "ready", "room_not_configured", "safety_degraded",
+    "safety_tripped",
+}
 
 
 def new_trace_id() -> str:
@@ -41,9 +52,9 @@ def record_timeline(
             "at": time.time(),
             "stage": safe_text(stage, max_len=80),
             "status": safe_text(status, max_len=80),
-            "reason": safe_text(reason, max_len=160),
+            "reason": _reason_code(reason),
             "route": safe_text(route, max_len=80),
-            "uid": safe_text(getattr(event, "uid", ""), max_len=80),
+            "uid": _opaque_uid(runtime, getattr(event, "uid", "")),
             "source": safe_text(getattr(event, "source", ""), max_len=80),
         },
     )
@@ -67,9 +78,9 @@ def record_payload_timeline(
             "at": time.time(),
             "stage": safe_text(stage, max_len=80),
             "status": safe_text(status, max_len=80),
-            "reason": safe_text(reason, max_len=160),
+            "reason": _reason_code(reason),
             "route": safe_text(route, max_len=80),
-            "uid": safe_text(payload.get("uid"), max_len=80),
+            "uid": _opaque_uid(runtime, payload.get("uid")),
             "source": "live_payload",
         },
     )
@@ -96,3 +107,37 @@ def _append(runtime: Any, item: dict[str, Any]) -> None:
         timeline.append(item)
     except Exception:
         pass
+
+
+def _opaque_uid(runtime: Any, value: Any) -> str:
+    uid = safe_text(value, max_len=80)
+    salt = getattr(runtime, "_timeline_salt", b"")
+    if not uid or not isinstance(salt, bytes) or not salt:
+        return ""
+    digest = hmac.new(salt, uid.encode("utf-8"), hashlib.sha256).hexdigest()
+    return "viewer_" + digest[:12]
+
+
+def _reason_code(value: Any) -> str:
+    reason = safe_text(value, max_len=160)
+    if reason in _REASON_CODES:
+        return reason
+    lowered = reason.lower()
+    if lowered.startswith("selected "):
+        event_type = safe_text(lowered.removeprefix("selected "), max_len=32)
+        return f"selected.{event_type}" if event_type.replace("_", "").isalnum() else "selected"
+    for prefix in ("signal_only.", "support."):
+        if lowered.startswith(prefix) and lowered.replace(".", "").replace("_", "").isalnum():
+            return lowered
+    if lowered.startswith("support "):
+        event_type = safe_text(lowered.removeprefix("support "), max_len=32)
+        return f"support.{event_type}" if event_type.replace("_", "").isalnum() else "support"
+    if lowered.startswith("dry_run("):
+        return "dispatcher.dry_run"
+    if lowered.startswith("queued_to_neko("):
+        return "dispatcher.pushed"
+    if lowered.startswith("skipped_to_neko("):
+        return "dispatcher.skipped"
+    if reason.endswith(("Error", "Exception")):
+        return "exception"
+    return ""

@@ -54,6 +54,13 @@ class RoastConfig:
     live_room_id: int = 0
     live_mode: LiveMode = "co_stream"
     live_enabled: bool = False
+    avatar_roast_enabled: bool = True
+    avatar_analysis_enabled: bool = True
+    danmaku_response_enabled: bool = True
+    live_support_events_enabled: bool = True
+    warmup_hosting_enabled: bool = True
+    idle_hosting_enabled: bool = True
+    active_engagement_enabled: bool = True
     developer_tools_enabled: bool = False
     dry_run: bool = False  # Run the full pipeline without pushing output to NEKO.
     roast_once_per_uid: bool = True
@@ -106,6 +113,13 @@ class RoastConfig:
             live_room_id=live_room_id,
             live_mode=live_mode,  # type: ignore[arg-type]
             live_enabled=_safe_bool(raw.get("live_enabled"), default=False),
+            avatar_roast_enabled=_safe_bool(raw.get("avatar_roast_enabled"), default=True),
+            avatar_analysis_enabled=_safe_bool(raw.get("avatar_analysis_enabled"), default=True),
+            danmaku_response_enabled=_safe_bool(raw.get("danmaku_response_enabled"), default=True),
+            live_support_events_enabled=_safe_bool(raw.get("live_support_events_enabled"), default=True),
+            warmup_hosting_enabled=_safe_bool(raw.get("warmup_hosting_enabled"), default=True),
+            idle_hosting_enabled=_safe_bool(raw.get("idle_hosting_enabled"), default=True),
+            active_engagement_enabled=_safe_bool(raw.get("active_engagement_enabled"), default=True),
             developer_tools_enabled=_safe_bool(raw.get("developer_tools_enabled"), default=False),
             dry_run=_safe_bool(raw.get("dry_run"), default=False),
             roast_once_per_uid=_safe_bool(raw.get("roast_once_per_uid"), default=True),
@@ -188,6 +202,13 @@ class RoastConfig:
             "live_room_id": live_room_id,
             "live_mode": self.live_mode if isinstance(self.live_mode, str) and self.live_mode in {"co_stream", "solo_stream"} else "co_stream",
             "live_enabled": public_bool(self.live_enabled),
+            "avatar_roast_enabled": public_bool(self.avatar_roast_enabled, default=True),
+            "avatar_analysis_enabled": public_bool(self.avatar_analysis_enabled, default=True),
+            "danmaku_response_enabled": public_bool(self.danmaku_response_enabled, default=True),
+            "live_support_events_enabled": public_bool(self.live_support_events_enabled, default=True),
+            "warmup_hosting_enabled": public_bool(self.warmup_hosting_enabled, default=True),
+            "idle_hosting_enabled": public_bool(self.idle_hosting_enabled, default=True),
+            "active_engagement_enabled": public_bool(self.active_engagement_enabled, default=True),
             "developer_tools_enabled": public_bool(self.developer_tools_enabled),
             "dry_run": public_bool(self.dry_run, default=False),
             "roast_once_per_uid": public_bool(self.roast_once_per_uid, default=True),

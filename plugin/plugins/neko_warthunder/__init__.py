@@ -102,6 +102,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._takeoff_radio_altitude_grace_active = False
         self._last_user_chat_at = 0.0
         self._last_battle_respond_at = 0.0
+        self._startup_completed = False
 
     # ------------------------------------------------------------------ 配置
     async def _reload_config(self) -> None:
@@ -158,6 +159,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
             f"neko_warthunder started (dry_run={self.cfg.dry_run}, url={self.cfg.data_layer_url}, "
             f"data_layer={data_layer_status.get('mode')})"
         )
+        self._startup_completed = True
         return Ok(
             {
                 "status": "running",
@@ -169,6 +171,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_):
+        self._startup_completed = False
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
@@ -734,6 +737,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
     def _dashboard_payload(self, s: BattleState) -> dict[str, Any]:
         identity = identity_summary_from_combat(s.combat)
         saved_player_name = str(self.cfg.player_name or "").strip()
+        runtime_state = self._load_runtime_state()
+        onboarding_completed = bool(runtime_state.get("onboarding_completed_v1", False))
         if saved_player_name:
             identity["saved_player_name"] = saved_player_name
             identity["player_name"] = identity.get("player_name") or saved_player_name
@@ -753,6 +758,11 @@ class NekoWarthunderPlugin(NekoPluginBase):
             "profile_family": s.profile_family,
             "scenario": s.scenario,
             "level": s.level,
+            "onboarding": {
+                "completed": onboarding_completed,
+                "required": bool(getattr(self, "_startup_completed", False) and not onboarding_completed),
+                "trigger": "first_plugin_start",
+            },
             "identity": identity,
             "data_layer": self.data_layer_manager.snapshot(),
             "telemetry": self._telemetry_snapshot(s),
@@ -845,23 +855,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
     @plugin_entry(
         id="test_say",
         name="测试开口",
-        description="在 dry_run=false 且未暂停时推一条测试消息给猫娘，验证 push 链路。",
+        description="主动推送一条固定测试消息给猫娘，独立验证 push 链路；急停或安全保护时仍会阻止。",
         input_schema={"type": "object", "properties": {"text": {"type": "string", "default": "副驾驶测试：能听到我吗？"}}},
     )
     async def test_say(self, text: str = "副驾驶测试：能听到我吗？", **_):
-        if self.cfg.dry_run:
-            if getattr(self, "timeline", None):
-                self.timeline.record_stage(
-                    stage="test_say_blocked",
-                    outcome="blocked",
-                    reason="dry_run",
-                    kind="test_say",
-                    ai_behavior="respond",
-                    pushed=False,
-                    dry_run=True,
-                    safe_summary="test_say/dry_run",
-                )
-            return Ok({"pushed": False, "blocked": "dry_run", "text": str(text)})
         if self.safety.stopped:
             if getattr(self, "timeline", None):
                 self.timeline.record_stage(
@@ -892,7 +889,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                     kind="test_say",
                     ai_behavior="respond",
                     pushed=True,
-                    dry_run=False,
+                    dry_run=bool(self.cfg.dry_run),
                     safe_summary="test_say/respond",
                 )
             return Ok({"pushed": True, "text": str(text)})
@@ -942,6 +939,36 @@ class NekoWarthunderPlugin(NekoPluginBase):
                         combat[key] = result.get(key)
                 self.state.combat = combat
         return Ok({"identity": result})
+
+    @ui.action(id="complete_onboarding", label="完成新手教程", tone="primary", group="runtime", order=60, refresh_context=True)
+    @plugin_entry(
+        id="complete_onboarding",
+        name="完成新手教程",
+        description="记录首次启动教程已完成或已跳过，之后启动插件时不再自动弹出。",
+        input_schema={
+            "type": "object",
+            "properties": {"skipped": {"type": "boolean", "default": False}},
+        },
+    )
+    async def complete_onboarding(self, skipped: bool = False, **_):
+        completed_at = time.time()
+        self._save_runtime_state(
+            {
+                "onboarding_completed_v1": True,
+                "onboarding_skipped_v1": bool(skipped),
+                "onboarding_completed_at_v1": completed_at,
+            }
+        )
+        return Ok(
+            {
+                "onboarding": {
+                    "completed": True,
+                    "required": False,
+                    "skipped": bool(skipped),
+                    "completed_at": completed_at,
+                }
+            }
+        )
 
     @plugin_entry(id="status", name="状态", description="查看当前连接/场景/安全状态。")
     def status(self, **_):

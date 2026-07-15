@@ -858,7 +858,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
-        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '降低 AI 味', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
+        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
         { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true, dependsOnToggleId: 'auto-cat' },
     ];
@@ -2603,7 +2603,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
                 window.saveNEKOSettings();
             }
         } else if (toggle.id === 'slop-filter') {
-            // 降低 AI 味（slop reduction）总开关。关掉后端 _params 不再改写历史
+            // 自然表达（slop reduction）总开关。关掉后端 _params 不再改写历史
             // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
             // 不影响用户看到的原文。
             window.slopFilterEnabled = isChecked;

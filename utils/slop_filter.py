@@ -37,6 +37,15 @@ System instructions and user messages pass through untouched, so prompt
 contracts and the user's own words are never altered. The realtime (voice) path
 does not flow through here and is out of scope by construction.
 
+Repeat and stability semantics
+------------------------------
+Matches are counted per rule over the original assistant history in chronological
+message / text-part / match order. The first two eligible occurrences remain
+verbatim; the third and later occurrences are rewritten. Replacement selection is
+derived from stable rule and match coordinates rather than global randomness, so
+repeating a request or appending later history cannot reshuffle older rewrites.
+Fenced code, inline code, and URLs are excluded from both counting and rewriting.
+
 Rule format (see ``config/prompts/prompts_slop.py``)
 ----------------------------------------------------
 Each language maps to a list of rule dicts::
@@ -45,7 +54,7 @@ Each language maps to a list of rule dicts::
         "id": "ZH_003",
         "name": "heart pounding",
         "find": r"...",            # a Python ``re`` pattern (NOT JS)
-        "replace": ["...", ...],   # pool; one is picked at random per match
+        "replace": ["...", ...],   # pool; one is picked deterministically per match
         "flags": 0,                # optional ``re`` flags (default 0)
     }
 
@@ -54,10 +63,11 @@ capture groups from ``find`` through to the replacement, e.g. preserving the
 pronoun. Substitution uses :meth:`re.Match.expand`, so the syntax is exactly
 what ``re.sub`` accepts as a template string.
 """
+
 from __future__ import annotations
 
+import hashlib
 import os
-import random
 import re
 from typing import Any, Callable, Iterable, Optional
 
@@ -94,10 +104,12 @@ class _CompiledRuleCache:
             return value
         try:
             compiled: Optional[re.Pattern[str]] = re.compile(pattern, flags)
-        except re.error as exc:
+        except (re.error, TypeError, ValueError) as exc:
             # Bad pattern from a curated or learned rule — log the pattern (it is
             # author-supplied, not conversation content) once and poison the key.
-            logger.warning("slop rule failed to compile, skipping: %r (%s)", pattern, exc)
+            logger.warning(
+                "slop rule failed to compile, skipping: %r (%s)", pattern, exc
+            )
             compiled = None
         if len(self._cache) >= self._max_size:
             # Evict the oldest entry.
@@ -128,6 +140,21 @@ def get_rules_for_language(lang: str) -> list[dict]:
         logger.warning("slop rules unavailable: %s", exc)
         return []
     return SLOP_RULES.get(lang, [])
+
+
+def _get_ruleset_config() -> tuple[int, int]:
+    """Return the deterministic rule version and built-in repeat threshold."""
+    try:
+        from config.prompts.prompts_slop import (
+            SLOP_REPEAT_THRESHOLD,
+            SLOP_RULESET_VERSION,
+        )
+
+        return int(SLOP_RULESET_VERSION), max(1, int(SLOP_REPEAT_THRESHOLD))
+    except Exception:
+        # Keep prompt construction available even if a partially-upgraded rule
+        # module is imported during development.
+        return 1, 2
 
 
 # ────────────────────────────────────────────────────────────────
@@ -166,57 +193,311 @@ def _is_tool_turn(m: Any) -> bool:
     return False
 
 
+_URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>()]+", re.IGNORECASE)
+
+
+def _fenced_code_spans(text: str) -> list[tuple[int, int]]:
+    """Return Markdown fenced-code spans, including an unclosed final fence."""
+    spans: list[tuple[int, int]] = []
+    fence_start: Optional[int] = None
+    fence_char = ""
+    fence_len = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip(" \t")
+        indent = len(line) - len(stripped)
+        if indent <= 3:
+            if fence_start is None:
+                opening = re.match(r"(`{3,}|~{3,})", stripped)
+                if opening:
+                    marker = opening.group(1)
+                    fence_start = offset
+                    fence_char = marker[0]
+                    fence_len = len(marker)
+            else:
+                closing = re.match(
+                    rf"{re.escape(fence_char)}{{{fence_len},}}[ \t]*(?:\r?\n)?\Z",
+                    stripped,
+                )
+                if closing:
+                    spans.append((fence_start, offset + len(line)))
+                    fence_start = None
+                    fence_char = ""
+                    fence_len = 0
+        offset += len(line)
+    if fence_start is not None:
+        spans.append((fence_start, len(text)))
+    return spans
+
+
+def _inline_code_spans(
+    text: str,
+    fenced_spans: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Return same-line backtick code spans outside fenced blocks.
+
+    An unclosed backtick run protects the rest of its line. That conservative
+    fallback is preferable to rewriting a technical fragment that merely has
+    malformed Markdown.
+    """
+    spans: list[tuple[int, int]] = []
+    index = 0
+    fence_index = 0
+    while index < len(text):
+        while fence_index < len(fenced_spans) and fenced_spans[fence_index][1] <= index:
+            fence_index += 1
+        if (
+            fence_index < len(fenced_spans)
+            and fenced_spans[fence_index][0] <= index < fenced_spans[fence_index][1]
+        ):
+            index = fenced_spans[fence_index][1]
+            continue
+        if text[index] != "`":
+            index += 1
+            continue
+
+        run_end = index + 1
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        delimiter = text[index:run_end]
+        newline = text.find("\n", run_end)
+        line_end = len(text) if newline < 0 else newline
+        closing = text.find(delimiter, run_end, line_end)
+        end = line_end if closing < 0 else closing + len(delimiter)
+        spans.append((index, end))
+        index = max(end, run_end)
+    return spans
+
+
+def _protected_spans(text: str) -> list[tuple[int, int]]:
+    """Return merged spans for fenced code, inline code, and URLs."""
+    fenced = _fenced_code_spans(text)
+    spans = fenced + _inline_code_spans(text, fenced)
+    spans.extend(match.span() for match in _URL_RE.finditer(text))
+    if not spans:
+        return []
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        elif end > merged[-1][1]:
+            merged[-1] = (merged[-1][0], end)
+    return merged
+
+
+def _overlaps_spans(
+    start: int,
+    end: int,
+    spans: Iterable[tuple[int, int]],
+) -> bool:
+    return any(
+        start < protected_end and protected_start < end
+        for protected_start, protected_end in spans
+    )
+
+
+def _prepare_rules(
+    rules: Iterable[dict],
+) -> list[tuple[int, str, tuple[str, ...], re.Pattern[str]]]:
+    """Compile and validate rules without allowing one bad entry to escape."""
+    prepared: list[tuple[int, str, tuple[str, ...], re.Pattern[str]]] = []
+    for order, rule in enumerate(rules):
+        try:
+            pattern = rule.get("find")
+            raw_pool = rule.get("replace")
+            if not isinstance(pattern, str) or not pattern:
+                continue
+            if not isinstance(raw_pool, (list, tuple)):
+                continue
+            pool = tuple(item for item in raw_pool if isinstance(item, str))
+            if not pool:
+                continue
+            flags = int(rule.get("flags", 0) or 0)
+            compiled = _RULE_CACHE.get(pattern, flags)
+            if compiled is None:
+                continue
+            rule_id = str(rule.get("id") or pattern)
+            prepared.append((order, rule_id, pool, compiled))
+        except Exception as exc:
+            logger.debug(
+                "slop rule %s could not be prepared: %s",
+                rule.get("id") if isinstance(rule, dict) else None,
+                exc,
+            )
+    return prepared
+
+
+def _stable_pool_choice(
+    pool: tuple[str, ...],
+    *,
+    ruleset_version: int,
+    lang: str,
+    rule_id: str,
+    rule_order: int,
+    message_index: int,
+    part_index: int,
+    occurrence: int,
+    match: "re.Match[str]",
+    original_text_fingerprint: str,
+) -> str:
+    """Choose a replacement without process-global or call-order state.
+
+    The locator is prefix-stable: appending later history leaves every existing
+    message index, text-part index, match span, and occurrence ordinal intact.
+    """
+    digest = hashlib.blake2b(digest_size=8, person=b"NEKO-slop-v1")
+    components: tuple[Any, ...] = (
+        ruleset_version,
+        lang,
+        rule_id,
+        rule_order,
+        message_index,
+        part_index,
+        occurrence,
+        match.start(),
+        match.end(),
+        match.group(0),
+        original_text_fingerprint,
+    )
+    for component in components:
+        encoded = str(component).encode("utf-8", "surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    index = int.from_bytes(digest.digest(), "big") % len(pool)
+    return pool[index]
+
+
 def _rewrite_text(
     text: str,
-    rules: Iterable[dict],
-    rng: random.Random,
+    prepared_rules: Iterable[tuple[int, str, tuple[str, ...], re.Pattern[str]]],
+    *,
+    lang: str,
+    ruleset_version: int,
+    repeat_threshold: int,
+    message_index: int,
+    part_index: int,
+    occurrence_counts: dict[int, int],
     counters: dict[str, int],
 ) -> str:
-    """Apply every rule to ``text`` in order. Each rule is isolated in its own
-    try/except so one malformed rule can never break the dialog turn."""
-    out = text
-    for rule in rules:
-        pattern = rule.get("find")
-        pool = rule.get("replace")
-        if not pattern or not pool:
-            continue
-        compiled = _RULE_CACHE.get(pattern, int(rule.get("flags", 0) or 0))
-        if compiled is None:
-            continue
+    """Count on original text, then rewrite stable non-overlapping candidates.
 
-        def _replacer(match: "re.Match[str]") -> str:
-            template = rng.choice(pool)
-            try:
-                return match.expand(template)
-            except (re.error, IndexError):
-                # Backref to a group the pattern didn't capture, or a stray
-                # escape in the pool entry — fall back to the literal template.
-                return template
-
+    Counts are independent per rule and therefore unaffected by replacements
+    from earlier rules. If rewrite spans overlap, the earlier rule in the table
+    wins; accepted replacements are finally applied right-to-left to preserve
+    every original match coordinate.
+    """
+    protected = _protected_spans(text)
+    text_fingerprint = hashlib.blake2b(
+        text.encode("utf-8", "surrogatepass"),
+        digest_size=16,
+        person=b"NEKO-slop-text",
+    ).hexdigest()
+    candidates: list[tuple[int, int, int, str, str]] = []
+    for order, rule_id, pool, compiled in prepared_rules:
         try:
-            new_out, n = compiled.subn(_replacer, out)
+            for match in compiled.finditer(text):
+                start, end = match.span()
+                if start == end or _overlaps_spans(start, end, protected):
+                    continue
+                occurrence = occurrence_counts.get(order, 0) + 1
+                occurrence_counts[order] = occurrence
+                if occurrence < repeat_threshold:
+                    continue
+                template = _stable_pool_choice(
+                    pool,
+                    ruleset_version=ruleset_version,
+                    lang=lang,
+                    rule_id=rule_id,
+                    rule_order=order,
+                    message_index=message_index,
+                    part_index=part_index,
+                    occurrence=occurrence,
+                    match=match,
+                    original_text_fingerprint=text_fingerprint,
+                )
+                try:
+                    replacement = match.expand(template)
+                except Exception:
+                    # Preserve the previous fail-soft contract for a bad
+                    # backreference or escape in one pool entry.
+                    replacement = template
+                candidates.append((order, start, end, replacement, rule_id))
         except Exception as exc:
-            logger.debug("slop rule %s errored at apply time: %s", rule.get("id"), exc)
+            logger.debug("slop rule %s errored at apply time: %s", rule_id, exc)
+
+    accepted: list[tuple[int, int, int, str, str]] = []
+    for candidate in sorted(candidates, key=lambda item: (item[0], item[1], item[2])):
+        _, start, end, _, _ = candidate
+        if any(
+            start < kept_end and kept_start < end
+            for _, kept_start, kept_end, _, _ in accepted
+        ):
             continue
-        if n:
-            counters[rule.get("id") or pattern] = counters.get(rule.get("id") or pattern, 0) + n
-            out = new_out
+        accepted.append(candidate)
+    if not accepted:
+        return text
+
+    out = text
+    for _, start, end, replacement, rule_id in sorted(
+        accepted,
+        key=lambda item: item[1],
+        reverse=True,
+    ):
+        out = out[:start] + replacement + out[end:]
+        counters[rule_id] = counters.get(rule_id, 0) + 1
     return out
 
 
-def _rewrite_content(content: Any, rules, rng, counters) -> Any:
-    """Rewrite a message's ``content`` field, handling both a plain string and
-    the multimodal list-of-parts shape (only ``text`` parts are touched)."""
+def _rewrite_content(
+    content: Any,
+    prepared_rules,
+    *,
+    lang: str,
+    ruleset_version: int,
+    repeat_threshold: int,
+    message_index: int,
+    occurrence_counts: dict[int, int],
+    counters: dict[str, int],
+) -> Any:
+    """Rewrite plain or multimodal text while retaining non-text part identity."""
     if isinstance(content, str):
-        return _rewrite_text(content, rules, rng, counters)
+        return _rewrite_text(
+            content,
+            prepared_rules,
+            lang=lang,
+            ruleset_version=ruleset_version,
+            repeat_threshold=repeat_threshold,
+            message_index=message_index,
+            part_index=0,
+            occurrence_counts=occurrence_counts,
+            counters=counters,
+        )
     if isinstance(content, list):
         new_parts = []
+        changed = False
+        text_part_index = 0
         for part in content:
             if isinstance(part, dict) and isinstance(part.get("text"), str):
-                new_parts.append({**part, "text": _rewrite_text(part["text"], rules, rng, counters)})
+                new_text = _rewrite_text(
+                    part["text"],
+                    prepared_rules,
+                    lang=lang,
+                    ruleset_version=ruleset_version,
+                    repeat_threshold=repeat_threshold,
+                    message_index=message_index,
+                    part_index=text_part_index,
+                    occurrence_counts=occurrence_counts,
+                    counters=counters,
+                )
+                text_part_index += 1
+                if new_text != part["text"]:
+                    new_parts.append({**part, "text": new_text})
+                    changed = True
+                else:
+                    new_parts.append(part)
             else:
                 new_parts.append(part)
-        return new_parts
+        return new_parts if changed else content
     return content
 
 
@@ -225,7 +506,8 @@ def apply_slop_reduction(
     lang: str,
     *,
     rules: Optional[list[dict]] = None,
-    rng: Optional[random.Random] = None,
+    ruleset_version: Optional[int] = None,
+    repeat_threshold: Optional[int] = None,
     dry_run: bool = False,
 ) -> list:
     """Return a NEW message list with AI-writing clichés rewritten in the
@@ -236,7 +518,9 @@ def apply_slop_reduction(
         messages: the history list (``BaseMessage`` objects and/or dicts).
         lang: short language code selecting the rule set (``zh``/``en``/...).
         rules: override rule set (defaults to ``get_rules_for_language(lang)``).
-        rng: inject a seeded ``random.Random`` for deterministic tests.
+        ruleset_version: stable version mixed into replacement selection.
+        repeat_threshold: first occurrence ordinal eligible for replacement;
+            defaults to the built-in value (2) and is not a user setting.
         dry_run: count + log what *would* change but return ``messages`` as-is.
 
     Returns ``messages`` unchanged (same object) when there is nothing to do —
@@ -245,11 +529,23 @@ def apply_slop_reduction(
     rules = rules if rules is not None else get_rules_for_language(lang)
     if not rules:
         return messages
-    rng = rng or random
+    default_ruleset_version, default_repeat_threshold = _get_ruleset_config()
+    ruleset_version = (
+        default_ruleset_version if ruleset_version is None else int(ruleset_version)
+    )
+    repeat_threshold = max(
+        1,
+        default_repeat_threshold if repeat_threshold is None else int(repeat_threshold),
+    )
+    prepared_rules = _prepare_rules(rules)
+    if not prepared_rules:
+        return messages
     counters: dict[str, int] = {}
+    occurrence_counts: dict[int, int] = {}
 
     out: list = []
     changed = False
+    assistant_message_index = 0
     for m in messages:
         # Rewrite only completed plain assistant turns. System instructions and
         # the user's own words pass through; an in-flight assistant+tool_calls
@@ -258,10 +554,21 @@ def apply_slop_reduction(
         if not _is_assistant_message(m) or _is_tool_turn(m):
             out.append(m)
             continue
+        message_index = assistant_message_index
+        assistant_message_index += 1
         if isinstance(m, dict):
             content = m.get("content")
-            new_content = _rewrite_content(content, rules, rng, counters)
-            if new_content is not content:
+            new_content = _rewrite_content(
+                content,
+                prepared_rules,
+                lang=lang,
+                ruleset_version=ruleset_version,
+                repeat_threshold=repeat_threshold,
+                message_index=message_index,
+                occurrence_counts=occurrence_counts,
+                counters=counters,
+            )
+            if new_content != content:
                 out.append({**m, "content": new_content})
                 changed = True
             else:
@@ -272,8 +579,17 @@ def apply_slop_reduction(
             # succeeds, so the log never reports replacements that were dropped
             # because the message object could not be safely cloned.
             scratch: dict[str, int] = {}
-            new_content = _rewrite_content(content, rules, rng, scratch)
-            if new_content is not content:
+            new_content = _rewrite_content(
+                content,
+                prepared_rules,
+                lang=lang,
+                ruleset_version=ruleset_version,
+                repeat_threshold=repeat_threshold,
+                message_index=message_index,
+                occurrence_counts=occurrence_counts,
+                counters=scratch,
+            )
+            if new_content != content:
                 # Defensive copy of the message object — never mutate the one
                 # that lives in the persisted history.
                 clone = _clone_message(m, new_content)
@@ -337,6 +653,7 @@ def _resolve_short_lang(raw: Optional[str]) -> str:
         return ""
     try:
         from utils.language_utils import normalize_language_code
+
         return normalize_language_code(raw, format="short") or ""
     except Exception:
         return ""
@@ -351,6 +668,7 @@ def _is_traditional_chinese(raw: Optional[str]) -> bool:
         return False
     try:
         from utils.language_utils import normalize_language_code
+
         return (normalize_language_code(raw, format="full") or "") == "zh-TW"
     except Exception:
         return False
@@ -363,6 +681,7 @@ def is_slop_filter_enabled() -> bool:
     leaves the feature on (its rewrites are reversible and low-risk)."""
     try:
         from utils.preferences import load_global_conversation_settings
+
         return bool(load_global_conversation_settings().get("slopFilterEnabled", True))
     except Exception:
         return True

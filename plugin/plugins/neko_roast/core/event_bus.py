@@ -45,6 +45,7 @@ class EventBus:
         self._last_publish_at: float = 0.0
         self._last_event_type: str = ""
         self._publish_count: int = 0
+        self._accepting_events = True
 
     def subscribe(self, event_type: str, handler: Callable[[Any], Any], *, owner: str = "") -> Callable[[], None]:
         """订阅某类直播事件。``owner``=归属模块 id（失败 audit 用）。返回取消订阅的句柄。"""
@@ -63,6 +64,8 @@ class EventBus:
 
     def publish(self, event_type: str, event: Any) -> None:
         """按类型逐订阅者隔离派发。无订阅者 = 静默丢弃。"""
+        if not self._accepting_events:
+            return
         event_type = str(event_type)
         if getattr(event, "schema_version", None) is not None and getattr(event, "type", ""):
             self._last_publish_at = time.time()
@@ -82,7 +85,25 @@ class EventBus:
             "last_publish_at": self._last_publish_at,
             "last_event_type": self._last_event_type,
             "publish_count": self._publish_count,
+            "accepting_events": self._accepting_events,
+            "pending_tasks": len(self._tasks),
         }
+
+    async def close(self, *, timeout: float = 5.0) -> None:
+        """Stop accepting events and deterministically drain isolated handlers."""
+
+        self._accepting_events = False
+        tasks = tuple(self._tasks)
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=max(0.0, float(timeout)))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
 
     # —— 向后兼容的观测别名（runtime 的 sandbox_result / result 仍走这俩；无订阅者即 no-op）——
     def on(self, event: str, listener: Callable[[Any], Any]) -> Callable[[], None]:
