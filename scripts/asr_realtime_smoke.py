@@ -263,14 +263,17 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
     observation = _Observation(started_at=time.perf_counter())
     worker_fn = _observe_worker(_resolve_provider(args.provider), observation)
     final_event = asyncio.Event()
+    credential_result_event = asyncio.Event()
     transcripts: list[str] = []
 
     async def on_transcript(text: str) -> None:
         transcripts.append(text)
         final_event.set()
+        credential_result_event.set()
 
     async def on_error(error: str) -> None:
         result.errors.append(error)
+        credential_result_event.set()
 
     async def on_status(status: str) -> None:
         result.statuses.append(status)
@@ -294,31 +297,54 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         await session.connect()
         connected_at = time.perf_counter()
         result.ready_ms = (connected_at - observation.started_at) * 1000
-        if args.invalid_credential:
-            raise RuntimeError("invalid credential unexpectedly reached ASR_READY")
 
         if not args.skip_clear:
             await session.clear_audio_buffer()
 
-        for index, turn in enumerate(turns, start=1):
+        if args.invalid_credential:
             await _stream_turn(
                 session,
-                turn,
+                turns[0],
                 chunk_ms=args.chunk_ms,
                 endpointing_mode=args.endpointing_mode,
                 realtime=not args.no_realtime,
                 vad_silence_ms=args.vad_silence_ms,
             )
-            await _wait_for_final_count(
-                final_event,
-                transcripts,
-                index,
-                args.timeout_s,
-            )
-            if not session.is_ready:
-                raise RuntimeError("commit or provider endpointing closed the session")
+            try:
+                await asyncio.wait_for(
+                    credential_result_event.wait(), timeout=args.timeout_s
+                )
+            except TimeoutError:
+                raise RuntimeError(
+                    "invalid credential was not rejected before timeout"
+                ) from None
+            error_codes = {error.partition(":")[0] for error in result.errors}
+            if not error_codes & _AUTH_FAILURE_CODES:
+                raise RuntimeError(
+                    "invalid credential unexpectedly reached a provider result"
+                )
+        else:
+            for index, turn in enumerate(turns, start=1):
+                await _stream_turn(
+                    session,
+                    turn,
+                    chunk_ms=args.chunk_ms,
+                    endpointing_mode=args.endpointing_mode,
+                    realtime=not args.no_realtime,
+                    vad_silence_ms=args.vad_silence_ms,
+                )
+                await _wait_for_final_count(
+                    final_event,
+                    transcripts,
+                    index,
+                    args.timeout_s,
+                )
+                if not session.is_ready:
+                    raise RuntimeError(
+                        "commit or provider endpointing closed the session"
+                    )
 
-        if result.errors:
+        if result.errors and not args.invalid_credential:
             raise RuntimeError(result.errors[-1])
         result.ok = len(transcripts) == len(turns)
     except Exception as exc:
