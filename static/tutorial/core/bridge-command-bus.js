@@ -18,6 +18,7 @@
         yui_guide_append_chat_message: true,
         yui_guide_update_chat_message: true,
         yui_guide_clear_chat_messages: true,
+        yui_guide_set_chat_input_locked: true,
         tutorial_chat_identity_override: true
     });
 

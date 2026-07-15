@@ -27,6 +27,7 @@
             this.destroyed = false;
             this.active = false;
             this.externalizedChatSpotlightKind = '';
+            this.externalizedChatSpotlightVariant = '';
             this.tutorialFaceForwardLockSnapshot = null;
             this.externalChatCommandBus = this.createExternalChatCommandBus();
         }
@@ -50,6 +51,7 @@
 
             const live2dManager = this.window.live2dManager || null;
             const vrmManager = this.window.vrmManager || null;
+            const pngtuberManager = this.window.pngtuberManager || null;
             const mmdManager = this.window.mmdManager || null;
             this.tutorialFaceForwardLockSnapshot = {
                 hadWindowMouseTrackingEnabled: typeof this.window.mouseTrackingEnabled !== 'undefined',
@@ -59,6 +61,9 @@
                     : null,
                 vrmMouseTrackingEnabled: vrmManager && typeof vrmManager.isMouseTrackingEnabled === 'function'
                     ? vrmManager.isMouseTrackingEnabled()
+                    : null,
+                pngtuberMouseTrackingEnabled: pngtuberManager && typeof pngtuberManager.isMouseTrackingEnabled === 'function'
+                    ? pngtuberManager.isMouseTrackingEnabled()
                     : null,
                 mmdCursorFollowEnabled: mmdManager && mmdManager.cursorFollow
                     ? mmdManager.cursorFollow.enabled !== false
@@ -92,6 +97,15 @@
                     }
                 } catch (error) {
                     console.warn('[TutorialInteractionTakeover] 锁定 VRM 正脸失败:', error);
+                }
+            }
+
+            const pngtuberManager = this.window.pngtuberManager || null;
+            if (pngtuberManager && typeof pngtuberManager.setMouseTrackingEnabled === 'function') {
+                try {
+                    pngtuberManager.setMouseTrackingEnabled(false);
+                } catch (error) {
+                    console.warn('[TutorialInteractionTakeover] 锁定 PNGTuber 正脸失败:', error);
                 }
             }
 
@@ -150,6 +164,19 @@
                     );
                 } catch (error) {
                     console.warn('[TutorialInteractionTakeover] 恢复 VRM 鼠标跟踪失败:', error);
+                }
+            }
+
+            const pngtuberManager = this.window.pngtuberManager || null;
+            if (pngtuberManager && typeof pngtuberManager.setMouseTrackingEnabled === 'function') {
+                try {
+                    pngtuberManager.setMouseTrackingEnabled(
+                        snapshot.pngtuberMouseTrackingEnabled !== null
+                            ? snapshot.pngtuberMouseTrackingEnabled
+                            : restoredMouseTrackingEnabled
+                    );
+                } catch (error) {
+                    console.warn('[TutorialInteractionTakeover] 恢复 PNGTuber 鼠标追踪失败:', error);
                 }
             }
 
@@ -342,13 +369,24 @@
         }
 
         setExternalizedChatSpotlight(kind) {
+            const options = arguments.length > 1 && arguments[1] && typeof arguments[1] === 'object'
+                ? arguments[1]
+                : null;
             const previousKind = this.externalizedChatSpotlightKind;
-            this.externalizedChatSpotlightKind = typeof kind === 'string' ? kind : '';
+            const previousVariant = this.externalizedChatSpotlightVariant;
+            const normalizedKind = typeof kind === 'string' ? kind : '';
+            const hasVariantOption = options && Object.prototype.hasOwnProperty.call(options, 'variant');
+            const normalizedVariant = hasVariantOption && typeof options.variant === 'string'
+                ? options.variant.trim()
+                : (normalizedKind && normalizedKind === previousKind ? previousVariant : '');
+            this.externalizedChatSpotlightKind = normalizedKind;
+            this.externalizedChatSpotlightVariant = this.externalizedChatSpotlightKind ? normalizedVariant : '';
             const message = {
-                kind: this.externalizedChatSpotlightKind
+                kind: this.externalizedChatSpotlightKind,
+                variant: this.externalizedChatSpotlightVariant
             };
             if (
-                (this.externalizedChatSpotlightKind || previousKind)
+                (this.externalizedChatSpotlightKind || previousKind || previousVariant)
                 && safeInvoke(this.isResistancePaused, [], false) === true
             ) {
                 message.preserveDuringResistance = true;
@@ -362,6 +400,7 @@
             }
             return this.postExternalChatCommand('yui_guide_set_chat_spotlight', {
                 kind: this.externalizedChatSpotlightKind,
+                variant: this.externalizedChatSpotlightVariant,
                 preserveDuringResistance: true
             });
         }
@@ -376,7 +415,8 @@
                 targetIndex: options && Number.isFinite(options.targetIndex)
                     ? Math.max(0, Math.floor(options.targetIndex))
                     : 0,
-                freezePoint: !!(options && options.freezePoint === true)
+                freezePoint: !!(options && options.freezePoint === true),
+                preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor === true)
             };
             if (options && Number.isFinite(options.durationMs)) {
                 message.durationMs = Math.max(0, Math.floor(options.durationMs));
@@ -480,6 +520,7 @@
 
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
+            this.externalizedChatSpotlightVariant = '';
             this.setExternalizedChatInputLocked(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
@@ -494,6 +535,7 @@
             }
 
             this.setExternalizedChatButtonsDisabled(true);
+            this.setExternalizedChatInputLocked(true, 'external-chat-ready');
             if (
                 this.document.body
                 && this.document.body.classList.contains('yui-guide-compact-chat-fixed')

@@ -230,7 +230,7 @@ User Plugin Server (48916) ──> 返回插件列表（含 name 字段）
 | 文件 | 说明 |
 |------|------|
 | `static/common-ui-hud.js` | HUD 组件核心实现 |
-| `static/app.js` | WebSocket 消息处理，调用 HUD 更新 |
+| `static/app/app.js` | WebSocket 消息处理，调用 HUD 更新 |
 | `static/locales/*.json` | i18n 翻译文件 |
 | `agent_server.py` | `_get_plugin_friendly_name()` 跨进程获取插件名称 |
 

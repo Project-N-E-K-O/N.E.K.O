@@ -21,7 +21,6 @@ async def handle_bus_subscribe(request: dict[str, object], send_response: SendRe
             bus=request.get("bus"),
             deliver=request.get("deliver"),
             rules=request.get("rules"),
-            plan=request.get("plan"),
             debounce_ms=request.get("debounce_ms"),
             timeout=timeout,
         )

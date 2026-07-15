@@ -11,7 +11,8 @@ Now: that screenshot is stashed in a dedicated single slot
 
 Caching policy (latest spec): cache the last screenshot whenever the backend
 obtained one AND a vision model is available; a new proactive round overwrites /
-clears the prior cache; the cache has a 2-minute TTL and expired frames are not
+clears the prior cache; the cache has a short TTL
+(``_PROACTIVE_SCREENSHOT_TTL_SECONDS``, currently 60s) and expired frames are not
 injected.
 
 Contracts under test:
@@ -22,7 +23,7 @@ Contracts under test:
    frame(s) (temporal order) and is consumed one-shot; with nothing staged the
    behavior is byte-for-byte the old text-only path.
 3. TTL + supersede: a screenshot older than ``_PROACTIVE_SCREENSHOT_TTL_SECONDS``
-   (120s), OR one whose AI turn was superseded by a later AI message appended
+   (60s), OR one whose AI turn was superseded by a later AI message appended
    through another path (greeting / agent callback via ``prompt_ephemeral``), is
    dropped lazily at injection (Codex P2).
 4. ``LLMSessionManager.finish_proactive_delivery(vision_screenshot_b64=...)``:
@@ -121,6 +122,11 @@ def _make_offline_for_stream(*, vision_model: str = "vm") -> tuple[OmniOfflineCl
     c._proactive_image_to_inject = None
     c._proactive_image_staged_at = 0.0
     c._proactive_image_history_len = 0
+    # stream_text 在到达 astream stub 前会读 self.llm.max_completion_tokens（focus
+    # overrides / summary-budget bump），且 self.llm is None 会被当成「client 已 close」
+    # 提前 break。astream 本身被 stub，llm 只当占位，给个可读写 max_completion_tokens
+    # 的轻量对象即可。
+    c.llm = SimpleNamespace(max_completion_tokens=2000)
     c.model = "m"
     c.vision_model = vision_model
     c.max_response_rerolls = 0

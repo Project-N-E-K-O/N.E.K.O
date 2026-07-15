@@ -197,7 +197,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       journey: 'Getting Started', quick: 'Quick Start', base: 'Plugin Capabilities',
       toml: 'Plugin Config (plugin.toml)',
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
-      sdk: 'SDK Reference', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
+      sdk: 'SDK Reference', migration: 'v0.9 Migration', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
     },
     'zh-CN': {
@@ -205,7 +205,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       journey: '旅程的起点', quick: '快速开始', base: '插件能力',
       toml: '插件配置 (plugin.toml)',
       entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
-      sdk: 'SDK 参考', dec: '装饰器', ex: '示例', adv: '进阶话题',
+      sdk: 'SDK 参考', migration: 'v0.9 迁移', dec: '装饰器', ex: '示例', adv: '进阶话题',
       hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
     },
     ja: {
@@ -213,7 +213,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       journey: 'はじめの一歩', quick: 'クイックスタート', base: 'プラグイン機能',
       toml: 'プラグイン設定 (plugin.toml)',
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
-      sdk: 'SDK リファレンス', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
+      sdk: 'SDK リファレンス', migration: 'v0.9 移行', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
       hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
     },
   }[lang]
@@ -235,6 +235,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
             { text: t.base, link: `${p}/plugins/plugin-base` },
           ],
         },
+        { text: t.migration, link: `${p}/plugins/migration-v0.9` },
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
         { text: t.tool, link: `${p}/plugins/tool-calling` },

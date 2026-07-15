@@ -18,7 +18,7 @@ import pytest
 
 @pytest.fixture
 def srv(monkeypatch: pytest.MonkeyPatch):
-    from app import agent_server as agent_srv
+    from app.agent_server import api_routes as agent_srv
 
     M = agent_srv.Modules
     saved_registry = dict(M.task_registry)
@@ -169,5 +169,34 @@ def test_end_all_cancels_orphan_dispatch_handles(srv):
         result = await srv.admin_control({"action": "end_all"})
         assert result["success"] is True
         assert orphan.cancelled()
+
+    asyncio.run(_scenario())
+
+
+def test_end_all_retries_browser_close_after_cancelling_tracked_teardown(
+    srv, monkeypatch: pytest.MonkeyPatch,
+):
+    M = srv.Modules
+    teardown_cancelled = asyncio.Event()
+    retried = AsyncMock()
+    monkeypatch.setattr(srv, "_close_browser_use_adapter", retried)
+
+    async def _pending_teardown():
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            teardown_cancelled.set()
+
+    async def _scenario():
+        pending = asyncio.create_task(_pending_teardown())
+        M._background_tasks.add(pending)
+        await asyncio.sleep(0)
+
+        result = await srv.admin_control({"action": "end_all"})
+
+        assert result["success"] is True
+        assert pending.cancelled()
+        assert teardown_cancelled.is_set()
+        retried.assert_awaited_once_with(update_capability=False)
 
     asyncio.run(_scenario())

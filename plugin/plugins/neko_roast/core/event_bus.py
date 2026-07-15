@@ -23,6 +23,7 @@ handler 可同步可异步：同步 handler 内联调用（沿用插件既有「
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -41,6 +42,10 @@ class EventBus:
         self._subs: dict[str, list[_Subscription]] = {}
         self._audit = audit
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._last_publish_at: float = 0.0
+        self._last_event_type: str = ""
+        self._publish_count: int = 0
+        self._accepting_events = True
 
     def subscribe(self, event_type: str, handler: Callable[[Any], Any], *, owner: str = "") -> Callable[[], None]:
         """订阅某类直播事件。``owner``=归属模块 id（失败 audit 用）。返回取消订阅的句柄。"""
@@ -59,14 +64,46 @@ class EventBus:
 
     def publish(self, event_type: str, event: Any) -> None:
         """按类型逐订阅者隔离派发。无订阅者 = 静默丢弃。"""
-        for sub in list(self._subs.get(str(event_type), [])):
+        if not self._accepting_events:
+            return
+        event_type = str(event_type)
+        if getattr(event, "schema_version", None) is not None and getattr(event, "type", ""):
+            self._last_publish_at = time.time()
+            self._last_event_type = event_type
+            self._publish_count += 1
+        for sub in list(self._subs.get(event_type, [])):
             try:
                 result = sub.handler(event)
             except Exception as exc:  # noqa: BLE001 — 单订阅者失败隔离，不波及其余
                 self._record_error(sub.owner, str(event_type), exc)
                 continue
             if asyncio.iscoroutine(result):
-                self._spawn_isolated(result, sub.owner, str(event_type))
+                self._spawn_isolated(result, sub.owner, event_type)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "last_publish_at": self._last_publish_at,
+            "last_event_type": self._last_event_type,
+            "publish_count": self._publish_count,
+            "accepting_events": self._accepting_events,
+            "pending_tasks": len(self._tasks),
+        }
+
+    async def close(self, *, timeout: float = 5.0) -> None:
+        """Stop accepting events and deterministically drain isolated handlers."""
+
+        self._accepting_events = False
+        tasks = tuple(self._tasks)
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=max(0.0, float(timeout)))
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
 
     # —— 向后兼容的观测别名（runtime 的 sandbox_result / result 仍走这俩；无订阅者即 no-op）——
     def on(self, event: str, listener: Callable[[Any], Any]) -> Callable[[], None]:

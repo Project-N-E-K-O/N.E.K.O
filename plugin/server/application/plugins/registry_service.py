@@ -52,7 +52,6 @@ _MANAGED_META_KEYS = {
     "input_schema",
     "author",
     "dependencies",
-    "host_plugin_id",
     "i18n",
     "plugin_ui",
     "config_path",
@@ -187,27 +186,6 @@ def _find_existing_runtime_plugin_id_by_config_path(
         if meta_config_path is not None and meta_config_path == resolved_config_path:
             return plugin_id
     return None
-
-
-def _read_extension_prefix_sync(config_path: Path) -> str:
-    try:
-        with config_path.open("rb") as file_obj:
-            raw_conf = tomllib.load(file_obj)
-    except (FileNotFoundError, PermissionError, OSError, tomllib.TOMLDecodeError):
-        return ""
-
-    plugin_conf_obj = raw_conf.get("plugin")
-    if not isinstance(plugin_conf_obj, dict):
-        return ""
-
-    host_conf_obj = plugin_conf_obj.get("host")
-    if not isinstance(host_conf_obj, dict):
-        return ""
-
-    prefix_obj = host_conf_obj.get("prefix")
-    if isinstance(prefix_obj, str):
-        return prefix_obj
-    return ""
 
 
 def _collect_plugin_contexts_from_roots_sync(
@@ -382,13 +360,6 @@ def _build_discovery_payload(
     *,
     plugin_id: str,
 ) -> dict[str, object]:
-    host_plugin_id: str | None = None
-    host_conf_obj = ctx.pdata.get("host")
-    if isinstance(host_conf_obj, dict):
-        host_plugin_id_obj = host_conf_obj.get("plugin_id")
-        if isinstance(host_plugin_id_obj, str) and host_plugin_id_obj:
-            host_plugin_id = host_plugin_id_obj
-
     plugin_type = str(ctx.pdata.get("type", "plugin") or "plugin")
     error_type: str | None = None
     error_message: str | None = None
@@ -494,14 +465,13 @@ def _build_discovery_payload(
         sdk_untested_str=ctx.sdk_untested_str,
         sdk_conflicts_list=ctx.sdk_conflicts_list,
         dependencies=ctx.dependencies,
-        host_plugin_id=host_plugin_id,
         plugin_ui=_extract_plugin_ui_config(ctx.conf, plugin_id=plugin_id, logger=logger),
     )
     payload = plugin_meta.model_dump(mode="python")
     payload["config_path"] = str(ctx.toml_path)
     payload["entry_point"] = ctx.entry
     payload["runtime_enabled"] = bool(ctx.enabled)
-    payload["runtime_auto_start"] = bool(ctx.auto_start) if plugin_type != "extension" else False
+    payload["runtime_auto_start"] = bool(ctx.auto_start)
     payload["entries_preview"] = entries_preview
     payload["plugin_type"] = plugin_type
     if plugin_type == "adapter":
@@ -587,7 +557,6 @@ def _apply_discovery_record_sync(
         sdk_untested_str=record.meta_payload.get("sdk_untested") if isinstance(record.meta_payload.get("sdk_untested"), str) else None,
         sdk_conflicts_list=record.meta_payload.get("sdk_conflicts") if isinstance(record.meta_payload.get("sdk_conflicts"), list) else None,
         dependencies=record.meta_payload.get("dependencies") if isinstance(record.meta_payload.get("dependencies"), list) else None,
-        host_plugin_id=record.meta_payload.get("host_plugin_id") if isinstance(record.meta_payload.get("host_plugin_id"), str) else None,
         plugin_ui=record.meta_payload.get("plugin_ui") if isinstance(record.meta_payload.get("plugin_ui"), dict) else None,
     )
     resolved_id = register_plugin(
@@ -672,8 +641,6 @@ def _get_autostart_plugin_ids_sync() -> list[str]:
         for plugin_id, raw_meta in state.plugins.items():
             if not isinstance(plugin_id, str) or not isinstance(raw_meta, dict):
                 continue
-            if raw_meta.get("type") == "extension":
-                continue
             if raw_meta.get("runtime_enabled") is False:
                 continue
             if raw_meta.get("runtime_auto_start") is False:
@@ -698,9 +665,6 @@ class PluginRegistryService:
 
     async def order_plugin_ids(self, plugin_ids: list[str]) -> list[str]:
         return await asyncio.to_thread(self._order_plugin_ids_sync, plugin_ids)
-
-    async def list_extension_configs_for_host(self, host_plugin_id: str) -> list[dict[str, str]]:
-        return await asyncio.to_thread(self._list_extension_configs_for_host_sync, host_plugin_id)
 
     def _refresh_registry_sync(self) -> dict[str, object]:
         roots = tuple(PLUGIN_CONFIG_ROOTS)
@@ -837,43 +801,3 @@ class PluginRegistryService:
 
     def _order_plugin_ids_sync(self, plugin_ids: list[str]) -> list[str]:
         return _build_ordered_plugin_ids_sync({plugin_id for plugin_id in plugin_ids if isinstance(plugin_id, str)})
-
-    def _list_extension_configs_for_host_sync(self, host_plugin_id: str) -> list[dict[str, str]]:
-        extension_configs: list[dict[str, str]] = []
-        with state.acquire_plugins_read_lock():
-            snapshot = {
-                plugin_id: dict(meta)
-                for plugin_id, meta in state.plugins.items()
-                if isinstance(plugin_id, str) and isinstance(meta, dict)
-            }
-
-        for plugin_id, meta in snapshot.items():
-            if meta.get("type") != "extension":
-                continue
-            if meta.get("host_plugin_id") != host_plugin_id:
-                continue
-            if meta.get("runtime_enabled") is False:
-                continue
-            if meta.get("runtime_source_missing") is True:
-                continue
-
-            entry_point_obj = meta.get("entry_point")
-            if not isinstance(entry_point_obj, str) or ":" not in entry_point_obj:
-                continue
-
-            prefix = ""
-            config_path = _resolve_meta_config_path(meta)
-            if config_path is not None:
-                prefix = _read_extension_prefix_sync(config_path)
-
-            extension_configs.append(
-                {
-                    "ext_id": plugin_id,
-                    "ext_entry": entry_point_obj,
-                    "prefix": prefix,
-                    "config_path": str(config_path) if config_path is not None else "",
-                }
-            )
-
-        extension_configs.sort(key=lambda item: item["ext_id"])
-        return extension_configs

@@ -3,7 +3,7 @@ import rightCatEarUrl from '../../../static/assets/tutorial/highlight/right-cat-
 import catPawUrl from '../../../static/assets/tutorial/highlight/cat-paw.png'
 import defaultGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/default-ghost-cursor.png'
 import clickGhostCursorUrl from '../../../static/assets/tutorial/ghost-cursor/click-ghost-cursor.png'
-import { getLocale } from './i18n'
+import { i18n, getLocale } from './i18n'
 import router from './router'
 
 const START_EVENT = 'neko:yui-guide:plugin-dashboard:start'
@@ -13,25 +13,26 @@ const TERMINATE_EVENT = 'neko:yui-guide:plugin-dashboard:terminate'
 const NARRATION_FINISHED_EVENT = 'neko:yui-guide:plugin-dashboard:narration-finished'
 const INTERRUPT_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-request'
 const INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack'
+const SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:plugin-dashboard:system-cursor-temporary-reveal'
 const DESKTOP_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack'
 const DESKTOP_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished'
+const DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT = 'neko:yui-guide:desktop-system-cursor-temporary-reveal'
 const SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request'
 const HANDOFF_STORAGE_KEY = 'neko_yui_guide_handoff_token'
 const HANDOFF_TOKEN_VERSION = 1
 const PREACTIVATE_CLEANUP_MS = 8000
 const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/'
 const DEFAULT_GUIDE_LOCALE = 'zh'
-const DEFAULT_INTERRUPT_DISTANCE = 32
-const DEFAULT_INTERRUPT_SPEED_THRESHOLD = 1.8
-const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09
-const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3
+const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100
+const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50
+const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600
+const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100
+const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8
+const DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD = 0
 const DEFAULT_INTERRUPT_THROTTLE_MS = 500
-const SCRIPTED_MOTION_INTERRUPT_STREAK = 2
-const SCRIPTED_MOTION_INTERRUPT_WINDOW_MS = 220
 const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10
 const DEFAULT_PASSIVE_RESISTANCE_SPEED_THRESHOLD = 0.2
 const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140
-const DEFAULT_RESISTANCE_CURSOR_REVEAL_MS = 3000
 const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14
 const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160
 const DEFAULT_USER_CURSOR_REVEAL_MOVES = 2
@@ -46,21 +47,85 @@ const PLUGIN_DASHBOARD_NARRATION_FINISH_FALLBACK_EXTRA_MS = 30000
 const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
 const MIN_SPOTLIGHT_RADIUS = 4
+
+type InterruptShakeVector = {
+  dx: number
+  dy: number
+  distance: number
+}
+
+type InterruptShakeMotion = {
+  lastX: number | null
+  lastY: number | null
+  lastAt: number
+  lastVector: InterruptShakeVector | null
+  reversals: Array<{ at: number; distance: number }>
+}
+
+function createInterruptShakeMotion(): InterruptShakeMotion {
+  return {
+    lastX: null,
+    lastY: null,
+    lastAt: 0,
+    lastVector: null,
+    reversals: [],
+  }
+}
+
+function isInterruptShakeReversal(previousVector: InterruptShakeVector | null, currentVector: InterruptShakeVector) {
+  if (!previousVector) {
+    return false
+  }
+
+  const denominator = previousVector.distance * currentVector.distance
+  if (!Number.isFinite(denominator) || denominator <= 0) {
+    return false
+  }
+
+  const dot = (
+    previousVector.dx * currentVector.dx
+    + previousVector.dy * currentVector.dy
+  ) / denominator
+  return Number.isFinite(dot) && dot <= DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD
+}
+
+function isInterruptShakeReady(reversals: Array<{ at: number; distance: number }>) {
+  if (reversals.length < DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS) {
+    return false
+  }
+
+  const first = reversals[0]
+  const last = reversals[reversals.length - 1]
+  if (!first || !last) {
+    return false
+  }
+  const spanMs = last.at - first.at
+  if (!Number.isFinite(spanMs) || spanMs < DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS) {
+    return false
+  }
+
+  const totalDistance = reversals.slice(1).reduce((sum, item) => sum + item.distance, 0)
+  const sustainedSpeed = totalDistance / Math.max(0.001, spanMs / 1000)
+  return sustainedSpeed >= DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED
+}
+
 const RESISTANCE_LINES = [
-  '喂！不要拽我啦，现在还没轮到你的回合呢！',
-  '等一下啦！还没结束呢，不要这么随便打断我啦！',
+  '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
+  '真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！',
+  '最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！',
 ] as const
 const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
+  'interrupt_resist_light_2',
   'interrupt_resist_light_3',
 ] as const
-const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！'
+const ANGRY_EXIT_LINE = '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！'
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
-  interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
-  interrupt_resist_light_1_zh: '喂！不要拽我啦，现在.mp3',
-  interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
-  interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
+  interrupt_resist_light_1: '喵！现在是人家的教学.mp3',
+  interrupt_resist_light_2: '真是的，又在乱动鼠标.mp3',
+  interrupt_resist_light_3: '最后警告一次喵！你要.mp3',
+  interrupt_angry_exit: '人家已经忍你很久了！.mp3',
 } as const
 const GUIDE_AUDIO_BY_KEY = {
   takeover_plugin_preview_dashboard: {
@@ -71,11 +136,18 @@ const GUIDE_AUDIO_BY_KEY = {
     ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1_zh,
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+  },
+  interrupt_resist_light_2: {
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
+    ru: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_2,
   },
   interrupt_resist_light_3: {
     zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_3,
@@ -216,6 +288,9 @@ const SVG_NS = 'http://www.w3.org/2000/svg'
 const BACKDROP_MASK_ID = `${ROOT_ID}-mask`
 const DEFAULT_SPOTLIGHT_PADDING = 6
 const BACKDROP_CUTOUT_INSET = 4
+const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'
+const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse'
+const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000
 let currentGuideAudio: HTMLAudioElement | null = null
 let currentGuideAudioTimer: number | null = null
 let currentGuideSpeechStop: (() => void) | null = null
@@ -305,6 +380,8 @@ function normalizeGuideLocale(locale?: string) {
   if (current.startsWith('en')) return 'en'
   if (current.startsWith('ko')) return 'ko'
   if (current.startsWith('ru')) return 'ru'
+  if (current.startsWith('es')) return 'es'
+  if (current.startsWith('pt')) return 'pt'
   if (current.startsWith('zh')) return 'zh'
   return DEFAULT_GUIDE_LOCALE
 }
@@ -329,6 +406,21 @@ function resolveGuideLocale() {
   }
 
   return DEFAULT_GUIDE_LOCALE
+}
+
+function resolveControlBannerText() {
+  try {
+    const translated = i18n.global.t(CONTROL_BANNER_TEXT_KEY)
+    if (
+      typeof translated === 'string'
+      && translated.trim()
+      && translated !== CONTROL_BANNER_TEXT_KEY
+    ) {
+      return translated
+    }
+  } catch (_) {}
+
+  return CONTROL_BANNER_FALLBACK_TEXT
 }
 
 function getAllowedOpenerOrigins() {
@@ -391,9 +483,10 @@ function resolveGuideAudioSrc(voiceKey?: keyof typeof GUIDE_AUDIO_BY_KEY, audioU
   }
 
   const locale = resolveGuideLocale()
+  const audioLocale = ['zh', 'en', 'ja', 'ko', 'ru'].includes(locale) ? locale : 'en'
   const files = GUIDE_AUDIO_BY_KEY[voiceKey]
-  const fileName = files[locale as keyof typeof files] || files.zh || ''
-  const fileLocale = files[locale as keyof typeof files] ? locale : DEFAULT_GUIDE_LOCALE
+  const fileName = files[audioLocale as keyof typeof files] || files.en || ''
+  const fileLocale = files[audioLocale as keyof typeof files] ? audioLocale : 'en'
   return fileName ? `${GUIDE_AUDIO_BASE_URL}${fileLocale}/${encodeURIComponent(fileName)}` : ''
 }
 
@@ -786,9 +879,9 @@ async function resolveNarrationDurationMs(payload: StartPayload) {
 }
 
 function resolveResistanceTextKey(interruptCount: number) {
-  return interruptCount >= 2
-    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+  if (interruptCount >= 3) return 'tutorial.yuiGuide.lines.interruptResistLight3'
+  if (interruptCount >= 2) return 'tutorial.yuiGuide.lines.interruptResistLight2'
+  return 'tutorial.yuiGuide.lines.interruptResistLight1'
 }
 
 function shouldReduceMotion() {
@@ -820,43 +913,6 @@ function injectStyle() {
       cursor: auto !important;
     }
 
-    html.yui-taking-over.yui-resistance-cursor-reveal,
-    html.yui-taking-over.yui-resistance-cursor-reveal *,
-    body.yui-taking-over.yui-resistance-cursor-reveal,
-    body.yui-taking-over.yui-resistance-cursor-reveal * {
-      cursor: auto !important;
-    }
-
-    html.yui-taking-over.yui-user-cursor-revealed,
-    html.yui-taking-over.yui-user-cursor-revealed *,
-    body.yui-taking-over.yui-user-cursor-revealed,
-    body.yui-taking-over.yui-user-cursor-revealed * {
-      cursor: auto !important;
-    }
-
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    html.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID},
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-backdrop *,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    body.yui-taking-over.yui-resistance-cursor-reveal #${ROOT_ID} .yui-guide-plugin-spotlight,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    html.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID},
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight {
-      cursor: auto !important;
-    }
-
     html.yui-guide-plugin-dashboard-running button,
     html.yui-guide-plugin-dashboard-running a[href],
     html.yui-guide-plugin-dashboard-running input,
@@ -878,11 +934,116 @@ function injectStyle() {
       cursor: auto !important;
     }
 
+    /* Double .yui-taking-over to out-specificity earlier cursor:auto !important rules. */
+    html.yui-taking-over.yui-taking-over,
+    html.yui-taking-over.yui-taking-over *,
+    body.yui-taking-over.yui-taking-over,
+    body.yui-taking-over.yui-taking-over *,
+    html.yui-taking-over [data-yui-cursor-hidden="true"],
+    body.yui-taking-over [data-yui-cursor-hidden="true"],
+    html.yui-guide-plugin-dashboard-running.yui-taking-over button,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over a[href],
+    html.yui-guide-plugin-dashboard-running.yui-taking-over input,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over select,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over textarea,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over summary,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over [role="button"],
+    html.yui-guide-plugin-dashboard-running.yui-taking-over [role="link"],
+    html.yui-guide-plugin-dashboard-running.yui-taking-over [tabindex]:not([tabindex="-1"]),
+    body.yui-guide-plugin-dashboard-running.yui-taking-over button,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over a[href],
+    body.yui-guide-plugin-dashboard-running.yui-taking-over input,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over select,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over textarea,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over summary,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over [role="button"],
+    body.yui-guide-plugin-dashboard-running.yui-taking-over [role="link"],
+    body.yui-guide-plugin-dashboard-running.yui-taking-over [tabindex]:not([tabindex="-1"]) {
+      cursor: none !important;
+    }
+
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    html.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-user-cursor-revealed *,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal,
+    body.yui-guide-plugin-dashboard-running.yui-taking-over.yui-resistance-cursor-reveal * {
+      cursor: auto !important;
+    }
+
     #${ROOT_ID} {
       position: fixed;
       inset: 0;
       pointer-events: none;
       z-index: 2147483646;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner {
+      position: fixed;
+      top: max(14px, env(safe-area-inset-top));
+      left: 50%;
+      z-index: 42;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      max-width: min(520px, calc(100vw - 180px));
+      min-height: 34px;
+      box-sizing: border-box;
+      padding: 7px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(19, 28, 40, 0.9);
+      box-shadow:
+        0 12px 32px rgba(12, 18, 26, 0.22),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      color: #fff8ef;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.3;
+      text-align: center;
+      overflow-wrap: anywhere;
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, -6px);
+      --yui-guide-plugin-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1);
+      transition:
+        opacity 180ms ease,
+        top 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        max-width 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        padding 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        font-size 420ms var(--yui-guide-plugin-control-banner-emphasis-ease),
+        transform 420ms var(--yui-guide-plugin-control-banner-emphasis-ease);
+      backdrop-filter: blur(10px) saturate(1.08);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner.is-visible {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner.is-interrupt-emphasis {
+      top: 50%;
+      max-width: min(720px, calc(100vw - 40px));
+      padding: 16px 26px;
+      font-size: 17px;
+      transform: translate(-50%, -50%) scale(3);
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner[hidden] {
+      display: none !important;
+    }
+
+    #${ROOT_ID} .yui-guide-plugin-control-banner::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #38d6bb;
+      box-shadow: 0 0 0 4px rgba(56, 214, 187, 0.18);
     }
 
     #${ROOT_ID} .yui-guide-plugin-backdrop {
@@ -901,7 +1062,6 @@ function injectStyle() {
       inset: 0;
       pointer-events: auto;
       background: transparent;
-      cursor: auto !important;
       touch-action: none;
       user-select: none;
       -webkit-user-select: none;
@@ -1109,6 +1269,14 @@ function injectStyle() {
       display: none !important;
     }
 
+    @media (max-width: 768px) {
+      #${ROOT_ID} .yui-guide-plugin-control-banner {
+        top: max(56px, calc(env(safe-area-inset-top) + 56px));
+        max-width: calc(100vw - 28px);
+        font-size: 12px;
+      }
+    }
+
     @keyframes yui-guide-plugin-pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.02); }
@@ -1130,6 +1298,7 @@ function injectStyle() {
     }
 
     @media (prefers-reduced-motion: reduce) {
+      #${ROOT_ID} .yui-guide-plugin-control-banner,
       #${ROOT_ID} .yui-guide-plugin-spotlight,
       #${ROOT_ID} .yui-guide-plugin-spotlight-sweep::before,
       #${ROOT_ID} .yui-guide-plugin-pointer {
@@ -1148,6 +1317,12 @@ class PluginDashboardGuideRuntime {
   backdropFill: SVGRectElement | null = null
   backdropCutout: SVGRectElement | null = null
   interactionShield: HTMLDivElement | null = null
+  controlBanner: HTMLDivElement | null = null
+  controlBannerEmphasisTimer: number | null = null
+  controlBannerEmphasisActive = false
+  renderedControlBannerText = ''
+  renderedControlBannerVisible: boolean | null = null
+  renderedControlBannerEmphasis: boolean | null = null
   spotlight: HTMLDivElement | null = null
   pointer: HTMLDivElement | null = null
   cursorPosition: { x: number; y: number } | null = null
@@ -1161,15 +1336,13 @@ class PluginDashboardGuideRuntime {
   homeNarrationOwnedByOpener = false
   angryExitTriggered = false
   interruptCount = 0
-  interruptAccelerationStreak = 0
+  interruptShakeMotion = createInterruptShakeMotion()
   lastInterruptAt = 0
   lastPassiveResistanceAt = 0
   lastPointerPoint: { x: number; y: number; t: number; speed: number } | null = null
-  scriptedMotionInterruptDistance = 0
-  scriptedMotionInterruptWindowStartedAt = 0
   resistanceCursorTimer: number | null = null
   userCursorRevealMoveCount = 0
-  userCursorRevealed = false
+  userCursorRevealSuppressed = false
   lastUserCursorRevealMoveAt = 0
   narrationResumeTimer: number | null = null
   scenePauseResolvers: Array<() => void> = []
@@ -1309,6 +1482,7 @@ class PluginDashboardGuideRuntime {
 
   ensureRoot() {
     if (this.root && this.root.isConnected) {
+      this.syncControlBanner()
       return
     }
 
@@ -1357,10 +1531,19 @@ class PluginDashboardGuideRuntime {
     const interactionShield = document.createElement('div')
     interactionShield.className = 'yui-guide-plugin-interaction-shield'
 
+    const controlBanner = document.createElement('div')
+    controlBanner.className = 'yui-guide-plugin-control-banner'
+    controlBanner.hidden = true
+    controlBanner.setAttribute('role', 'status')
+    controlBanner.setAttribute('aria-live', 'polite')
+    controlBanner.setAttribute('data-yui-cursor-hidden', 'true')
+    controlBanner.textContent = resolveControlBannerText()
+
     root.appendChild(backdrop)
     root.appendChild(interactionShield)
     root.appendChild(spotlight)
     root.appendChild(pointer)
+    root.appendChild(controlBanner)
     document.body.appendChild(root)
 
     this.root = root
@@ -1369,9 +1552,68 @@ class PluginDashboardGuideRuntime {
     this.backdropFill = backdropFill
     this.backdropCutout = backdropCutout
     this.interactionShield = interactionShield
+    this.controlBanner = controlBanner
     this.spotlight = spotlight
     this.pointer = pointer
+    this.syncControlBanner()
     this.syncBackdropViewport()
+  }
+
+  syncControlBanner(active?: boolean) {
+    if (!this.controlBanner) {
+      return
+    }
+
+    const isVisible = active === undefined
+      ? (
+          document.documentElement.classList.contains('yui-taking-over')
+          || document.body.classList.contains('yui-taking-over')
+        )
+      : active === true
+    const isEmphasized = isVisible && this.controlBannerEmphasisActive === true
+    const text = resolveControlBannerText()
+
+    if (
+      this.renderedControlBannerText === text
+      && this.renderedControlBannerVisible === isVisible
+      && this.renderedControlBannerEmphasis === isEmphasized
+      && this.controlBanner.hidden === !isVisible
+      && this.controlBanner.classList.contains('is-visible') === isVisible
+      && this.controlBanner.classList.contains('is-interrupt-emphasis') === isEmphasized
+    ) {
+      return
+    }
+
+    if (this.renderedControlBannerText !== text) {
+      this.controlBanner.textContent = text
+      this.renderedControlBannerText = text
+    }
+    this.controlBanner.hidden = !isVisible
+    this.controlBanner.classList.toggle('is-visible', isVisible)
+    this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized)
+    this.renderedControlBannerVisible = isVisible
+    this.renderedControlBannerEmphasis = isEmphasized
+  }
+
+  emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS) {
+    if (
+      !document.documentElement.classList.contains('yui-taking-over')
+      && !document.body.classList.contains('yui-taking-over')
+    ) {
+      return
+    }
+    this.ensureRoot()
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = true
+    this.syncControlBanner(true)
+    this.controlBannerEmphasisTimer = window.setTimeout(() => {
+      this.controlBannerEmphasisTimer = null
+      this.controlBannerEmphasisActive = false
+      this.syncControlBanner()
+    }, Math.max(0, Math.round(Number(durationMs) || CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)))
   }
 
   hasDesktopTutorialSkipBridge() {
@@ -1458,6 +1700,8 @@ class PluginDashboardGuideRuntime {
       ja: 'スキップ',
       ko: '건너뛰기',
       ru: 'Пропустить',
+      es: 'Saltar',
+      pt: 'Pular',
     }
     const label = labelByLocale[locale] || 'Skip'
     button.textContent = label
@@ -1601,6 +1845,23 @@ class PluginDashboardGuideRuntime {
     if (sessionId) {
       this.markHomeNarrationFinished(sessionId)
     }
+  }
+
+  handleSystemCursorTemporaryRevealData(data: unknown) {
+    const detail = data && typeof data === 'object' ? data as { sessionId?: unknown, durationMs?: unknown } : null
+    if (!detail) {
+      return
+    }
+    const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId : ''
+    if (!sessionId || !this.isCurrentRun(sessionId)) {
+      return
+    }
+    const durationMs = Number.isFinite(detail?.durationMs) ? Number(detail.durationMs) : undefined
+    this.revealSystemCursorTemporarily(durationMs)
+  }
+
+  handleDesktopSystemCursorTemporaryRevealEvent(event: Event) {
+    this.handleSystemCursorTemporaryRevealData((event as CustomEvent).detail)
   }
 
   async requestHomeInterruptPlayback(
@@ -1986,6 +2247,7 @@ class PluginDashboardGuideRuntime {
     document.documentElement.classList.add('yui-taking-over')
     document.body.classList.add('yui-guide-plugin-dashboard-running')
     document.body.classList.add('yui-taking-over')
+    this.syncControlBanner(true)
   }
 
   showCursor(x: number, y: number) {
@@ -2140,7 +2402,7 @@ class PluginDashboardGuideRuntime {
       this.cursorClickResetTimer = null
     }
     this.pointer?.classList.remove('is-pressed')
-    if (!this.userCursorRevealed) {
+    if (!this.userCursorRevealSuppressed) {
       document.documentElement.classList.remove('yui-user-cursor-revealed')
       document.body.classList.remove('yui-user-cursor-revealed')
     }
@@ -2292,8 +2554,7 @@ class PluginDashboardGuideRuntime {
     }
     this.scenePausedForResistance = true
     this.cancelCursorMotion()
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
   }
 
   resumeCurrentSceneAfterResistance() {
@@ -2606,6 +2867,59 @@ class PluginDashboardGuideRuntime {
     await this.moveCursor(returnTarget.x, returnTarget.y, 260, undefined, false)
   }
 
+  resetInterruptShakeMotion() {
+    this.interruptShakeMotion = createInterruptShakeMotion()
+  }
+
+  getInterruptShakePoint(event: MouseEvent, now: number) {
+    const screenX = Number.isFinite(event.screenX) ? event.screenX : null
+    const screenY = Number.isFinite(event.screenY) ? event.screenY : null
+    const hasScreenPoint = screenX !== null && screenY !== null
+    return {
+      x: hasScreenPoint ? screenX : event.clientX,
+      y: hasScreenPoint ? screenY : event.clientY,
+      at: now,
+    }
+  }
+
+  trackInterruptShakeMotion(point: { x: number; y: number; at: number }) {
+    const motion = this.interruptShakeMotion
+    if (motion.lastX === null || motion.lastY === null) {
+      motion.lastX = point.x
+      motion.lastY = point.y
+      motion.lastAt = point.at
+      return false
+    }
+
+    const vector: InterruptShakeVector = {
+      dx: point.x - motion.lastX,
+      dy: point.y - motion.lastY,
+      distance: 0,
+    }
+    vector.distance = Math.hypot(vector.dx, vector.dy)
+    if (!Number.isFinite(vector.distance) || vector.distance < DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE) {
+      return false
+    }
+
+    const elapsedMs = point.at - motion.lastAt
+    let shakeReady = false
+    if (elapsedMs > 0 && isInterruptShakeReversal(motion.lastVector, vector)) {
+      const cutoff = point.at - DEFAULT_INTERRUPT_SHAKE_WINDOW_MS
+      motion.reversals = motion.reversals.filter((item) => item.at >= cutoff)
+      motion.reversals.push({
+        at: point.at,
+        distance: vector.distance,
+      })
+      shakeReady = isInterruptShakeReady(motion.reversals)
+    }
+
+    motion.lastX = point.x
+    motion.lastY = point.y
+    motion.lastAt = point.at
+    motion.lastVector = vector
+    return shakeReady
+  }
+
   onPointerDown(event: MouseEvent) {
     if (!event) {
       return
@@ -2621,9 +2935,7 @@ class PluginDashboardGuideRuntime {
       t: Date.now(),
       speed: 0,
     }
-    this.interruptAccelerationStreak = 0
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
   }
 
   handleInterrupt(event: MouseEvent) {
@@ -2660,10 +2972,12 @@ class PluginDashboardGuideRuntime {
     }
 
     const now = Date.now()
+    const shakePoint = this.getInterruptShakePoint(event, now)
     const previousPoint = this.lastPointerPoint
     if (!previousPoint || !Number.isFinite(previousPoint.t)) {
       this.lastPointerPoint = { x, y, t: now, speed: 0 }
-      this.interruptAccelerationStreak = 0
+      this.resetInterruptShakeMotion()
+      this.trackInterruptShakeMotion(shakePoint)
       return
     }
 
@@ -2672,11 +2986,9 @@ class PluginDashboardGuideRuntime {
     const distance = Math.hypot(dx, dy)
     const dt = Math.max(1, now - previousPoint.t)
     const speed = distance / dt
-    const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0
-    const acceleration = (speed - previousSpeed) / dt
 
     this.lastPointerPoint = { x, y, t: now, speed }
-    this.noteUserCursorRevealAttempt(distance, now)
+    this.noteUserCursorRevealSuppressionAttempt(distance, now)
     this.maybePlayPassiveResistance(x, y, distance, speed, now)
 
     if (
@@ -2684,47 +2996,14 @@ class PluginDashboardGuideRuntime {
       && !this.homeNarrationFinished
       && !this.canRequestHomeInterruptPlayback()
     ) {
+      this.resetInterruptShakeMotion()
       return
     }
 
-    const isScriptedMotionInterrupt = this.cursorTransitionActive
-    let effectiveDistance = distance
-    if (isScriptedMotionInterrupt && distance < DEFAULT_INTERRUPT_DISTANCE) {
-      if (
-        this.scriptedMotionInterruptWindowStartedAt <= 0
-        || (now - this.scriptedMotionInterruptWindowStartedAt) > SCRIPTED_MOTION_INTERRUPT_WINDOW_MS
-      ) {
-        this.scriptedMotionInterruptWindowStartedAt = now
-        this.scriptedMotionInterruptDistance = 0
-      }
-      this.scriptedMotionInterruptDistance += distance
-      effectiveDistance = this.scriptedMotionInterruptDistance
-    }
-
-    if (effectiveDistance < DEFAULT_INTERRUPT_DISTANCE) {
-      this.interruptAccelerationStreak = 0
+    if (!this.trackInterruptShakeMotion(shakePoint)) {
       return
     }
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
-
-    if (speed < DEFAULT_INTERRUPT_SPEED_THRESHOLD) {
-      this.interruptAccelerationStreak = 0
-      return
-    }
-    if (!isScriptedMotionInterrupt && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD) {
-      this.interruptAccelerationStreak = 0
-      return
-    }
-
-    this.interruptAccelerationStreak += 1
-    const requiredStreak = isScriptedMotionInterrupt
-      ? SCRIPTED_MOTION_INTERRUPT_STREAK
-      : DEFAULT_INTERRUPT_ACCELERATION_STREAK
-    if (this.interruptAccelerationStreak < requiredStreak) {
-      return
-    }
-    this.interruptAccelerationStreak = 0
+    this.resetInterruptShakeMotion()
 
     if ((now - this.lastInterruptAt) < DEFAULT_INTERRUPT_THROTTLE_MS) {
       return
@@ -2733,7 +3012,7 @@ class PluginDashboardGuideRuntime {
     this.interruptCount += 1
     this.cancelCursorMotion()
 
-    if (this.interruptCount >= 3) {
+    if (this.interruptCount >= 4) {
       void this.abortAsAngryExit()
       return
     }
@@ -2741,9 +3020,9 @@ class PluginDashboardGuideRuntime {
     void this.playLightResistance(x, y)
   }
 
-  noteUserCursorRevealAttempt(distance: number, now: number) {
+  noteUserCursorRevealSuppressionAttempt(distance: number, now: number) {
     if (
-      this.userCursorRevealed
+      this.userCursorRevealSuppressed
       || !Number.isFinite(distance)
       || distance < DEFAULT_USER_CURSOR_REVEAL_DISTANCE
       || !document.body.classList.contains('yui-taking-over')
@@ -2758,28 +3037,28 @@ class PluginDashboardGuideRuntime {
     this.lastUserCursorRevealMoveAt = now
     this.userCursorRevealMoveCount += 1
     if (this.userCursorRevealMoveCount >= DEFAULT_USER_CURSOR_REVEAL_MOVES) {
-      this.revealUserCursor()
+      this.suppressUserCursorReveal()
     }
   }
 
-  revealUserCursor() {
+  suppressUserCursorReveal() {
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = true
-    document.documentElement.classList.add('yui-user-cursor-revealed')
-    document.body.classList.add('yui-user-cursor-revealed')
-    document.documentElement.classList.add('yui-resistance-cursor-reveal')
-    document.body.classList.add('yui-resistance-cursor-reveal')
+    this.userCursorRevealSuppressed = true
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
+    document.body.classList.remove('yui-user-cursor-revealed')
+    document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
-  clearUserCursorReveal() {
+  clearUserCursorRevealSuppression() {
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = false
+    this.userCursorRevealSuppressed = false
     this.userCursorRevealMoveCount = 0
     this.lastUserCursorRevealMoveAt = 0
     document.documentElement.classList.remove('yui-user-cursor-revealed')
@@ -2788,23 +3067,33 @@ class PluginDashboardGuideRuntime {
     document.body.classList.remove('yui-resistance-cursor-reveal')
   }
 
-  revealRealCursorTemporarily() {
-    if (this.userCursorRevealed) {
-      this.revealUserCursor()
+  suppressResistanceCursorReveal() {
+    if (this.userCursorRevealSuppressed) {
+      this.suppressUserCursorReveal()
       return
     }
     if (this.resistanceCursorTimer !== null) {
       window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
     }
-    document.documentElement.classList.add('yui-resistance-cursor-reveal')
-    document.body.classList.add('yui-resistance-cursor-reveal')
+    document.documentElement.classList.remove('yui-user-cursor-revealed')
+    document.body.classList.remove('yui-user-cursor-revealed')
+    document.documentElement.classList.remove('yui-resistance-cursor-reveal')
+    document.body.classList.remove('yui-resistance-cursor-reveal')
+  }
+
+  revealSystemCursorTemporarily(durationMs = 2000) {
+    const normalizedDurationMs = Math.min(10000, Math.max(0, Math.floor(Number(durationMs) || 0)))
+    if (this.resistanceCursorTimer !== null) {
+      window.clearTimeout(this.resistanceCursorTimer)
+      this.resistanceCursorTimer = null
+    }
+    document.documentElement.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
+    document.body.classList.add('yui-user-cursor-revealed', 'yui-resistance-cursor-reveal')
     this.resistanceCursorTimer = window.setTimeout(() => {
       this.resistanceCursorTimer = null
-      if (!this.userCursorRevealed) {
-        document.documentElement.classList.remove('yui-resistance-cursor-reveal')
-        document.body.classList.remove('yui-resistance-cursor-reveal')
-      }
-    }, DEFAULT_RESISTANCE_CURSOR_REVEAL_MS)
+      this.suppressResistanceCursorReveal()
+    }, normalizedDurationMs)
   }
 
   async playLightResistance(x: number, y: number) {
@@ -2817,7 +3106,8 @@ class PluginDashboardGuideRuntime {
 
     this.pauseCurrentSceneForResistance()
     this.interruptNarrationForResistance()
-    this.revealRealCursorTemporarily()
+    this.suppressResistanceCursorReveal()
+    this.emphasizeControlBanner()
 
     const voiceIndex = Math.min(RESISTANCE_VOICE_KEYS.length - 1, Math.max(0, this.interruptCount - 1))
     const line = RESISTANCE_LINES[voiceIndex] || RESISTANCE_LINES[0]
@@ -2864,8 +3154,7 @@ class PluginDashboardGuideRuntime {
     this.interruptsEnabled = false
     this.cancelActiveNarration()
     this.stopGhostCursorAnimation()
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
+    this.resetInterruptShakeMotion()
     this.clearSpotlight()
     this.setAngryVisual(true)
     this.homeNarrationFinished = false
@@ -2931,6 +3220,7 @@ class PluginDashboardGuideRuntime {
     document.body.classList.remove('yui-taking-over')
     document.body.classList.remove('yui-resistance-cursor-reveal')
     document.body.classList.remove('yui-user-cursor-revealed')
+    this.syncControlBanner(false)
     document
       .querySelector('[data-yui-guide-id="plugin-main"]')
       ?.removeAttribute('data-yui-guide-spotlight-padding')
@@ -2952,7 +3242,7 @@ class PluginDashboardGuideRuntime {
       window.clearTimeout(this.resistanceCursorTimer)
       this.resistanceCursorTimer = null
     }
-    this.userCursorRevealed = false
+    this.userCursorRevealSuppressed = false
     this.userCursorRevealMoveCount = 0
     this.lastUserCursorRevealMoveAt = 0
     this.resetCursorVisualState()
@@ -2994,6 +3284,15 @@ class PluginDashboardGuideRuntime {
     this.backdropFill = null
     this.backdropCutout = null
     this.interactionShield = null
+    this.controlBanner = null
+    if (this.controlBannerEmphasisTimer !== null) {
+      window.clearTimeout(this.controlBannerEmphasisTimer)
+      this.controlBannerEmphasisTimer = null
+    }
+    this.controlBannerEmphasisActive = false
+    this.renderedControlBannerText = ''
+    this.renderedControlBannerVisible = null
+    this.renderedControlBannerEmphasis = null
     this.spotlight = null
     this.pointer = null
     this.cursorPosition = null
@@ -3009,12 +3308,10 @@ class PluginDashboardGuideRuntime {
     this.homeNarrationOwnedByOpener = false
     this.angryExitTriggered = false
     this.interruptCount = 0
-    this.interruptAccelerationStreak = 0
+    this.resetInterruptShakeMotion()
     this.lastInterruptAt = 0
     this.lastPassiveResistanceAt = 0
     this.lastPointerPoint = null
-    this.scriptedMotionInterruptDistance = 0
-    this.scriptedMotionInterruptWindowStartedAt = 0
     this.narrationResumeTimer = null
     this.cursorMotionToken = 0
     this.cursorReactionInFlight = false
@@ -3713,6 +4010,9 @@ export function initPluginDashboardYuiGuideRuntime() {
   const handleDesktopNarrationFinishedEvent = (event: Event) => {
     runtime.handleDesktopNarrationFinishedEvent(event)
   }
+  const handleDesktopSystemCursorTemporaryRevealEvent = (event: Event) => {
+    runtime.handleDesktopSystemCursorTemporaryRevealEvent(event)
+  }
 
   const handleRuntimeMessage = (event: MessageEvent) => {
     const data = event.data
@@ -3740,6 +4040,11 @@ export function initPluginDashboardYuiGuideRuntime() {
       if (sessionId) {
         runtime.markHomeNarrationFinished(sessionId)
       }
+      return
+    }
+
+    if (data.type === SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT && isAllowedOpenerEvent(event)) {
+      runtime.handleSystemCursorTemporaryRevealData(data)
       return
     }
 
@@ -3779,16 +4084,18 @@ export function initPluginDashboardYuiGuideRuntime() {
   const cleanupRuntimeListeners = () => {
     window.removeEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
     window.removeEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+    window.removeEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
     window.removeEventListener('message', handleRuntimeMessage)
+    window.removeEventListener('pagehide', handleRuntimePageHide, true)
     pluginDashboardRuntimeInitialized = false
   }
-  const originalRuntimeCleanup = runtime.cleanup.bind(runtime)
-  runtime.cleanup = () => {
+  const handleRuntimePageHide = () => {
     cleanupRuntimeListeners()
-    originalRuntimeCleanup()
   }
 
   window.addEventListener(DESKTOP_INTERRUPT_ACK_EVENT, handleDesktopInterruptAckEvent, true)
   window.addEventListener(DESKTOP_NARRATION_FINISHED_EVENT, handleDesktopNarrationFinishedEvent, true)
+  window.addEventListener(DESKTOP_SYSTEM_CURSOR_TEMPORARY_REVEAL_EVENT, handleDesktopSystemCursorTemporaryRevealEvent, true)
   window.addEventListener('message', handleRuntimeMessage)
+  window.addEventListener('pagehide', handleRuntimePageHide, true)
 }

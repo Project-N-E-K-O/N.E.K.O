@@ -19,6 +19,8 @@ from config.prompts.prompts_minigame_route import (
     get_game_recent_history_message_labels,
 )
 from main_routers import game_router
+from main_routers.game_router import game_context as gr_game_context
+from main_routers.game_router import runtime as gr_runtime
 
 
 LOCALES = ("zh", "en", "ja", "ko", "ru", "es", "pt")
@@ -89,7 +91,7 @@ def test_english_archive_prompts_keep_literal_localized_markers():
 
 @pytest.mark.unit
 def test_game_context_signal_normalizer_accepts_legacy_zh_group_keys():
-    normalized = game_router._normalize_game_context_signals({
+    normalized = gr_game_context._normalize_game_context_signals({
         "玩家信号": [{
             "signalLabel": "玩家在意追分",
             "summary": "玩家多次提到追分。",
@@ -109,12 +111,12 @@ def test_game_context_signal_normalizer_accepts_legacy_zh_group_keys():
 
 @pytest.mark.unit
 def test_router_formatter_uses_requested_english_locale():
-    zh_text = game_router._compact_realtime_context_text(
+    zh_text = gr_runtime._compact_realtime_context_text(
         "soccer",
         {"state": {"score": {"player": 1, "ai": 2}}, "pendingItems": []},
         "zh",
     )
-    en_text = game_router._compact_realtime_context_text(
+    en_text = gr_runtime._compact_realtime_context_text(
         "soccer",
         {"state": {"score": {"player": 1, "ai": 2}}, "pendingItems": []},
         "en",

@@ -122,6 +122,7 @@
         beginOverride(options) {
             const normalizedOptions = options || {};
             const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
+            const skipSourceModelFade = normalizedOptions.skipSourceModelFade === true;
             const host = this.host;
             if (!host) {
                 return Promise.reject(new Error('tutorial avatar reload host is required'));
@@ -182,9 +183,11 @@
                 this.override.proactiveSnapshot = snapshotProactiveState();
                 applyProactiveState(buildDisabledProactiveState());
 
-                await Promise.resolve(this.fadeOutCurrentModel({
-                    deferRevealPrepared
-                }));
+                if (!skipSourceModelFade) {
+                    await Promise.resolve(this.fadeOutCurrentModel({
+                        deferRevealPrepared
+                    }));
+                }
                 ensureOverrideActive();
                 this.setPreparing(true);
                 await this.reloadModel(currentName, tutorialModelPayload, {

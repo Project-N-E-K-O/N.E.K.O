@@ -2427,6 +2427,29 @@ def test_ocr_stability_ignores_whitelisted_trailing_orphan_only() -> None:
     clean = galgame_ocr_reader._clean_ocr_dialogue_text("三年前初患此病，我便将人视作走兽。")
     orphan = galgame_ocr_reader._clean_ocr_dialogue_text("三年前初患此病，我便将人视作走兽。义")
     assert orphan == clean
+    dash_orphan = galgame_ocr_reader._clean_ocr_dialogue_text(
+        "我身着布衣，倚墙半躺，微眯着眼望向不远处一一义"
+    )
+    assert dash_orphan == "我身着布衣，倚墙半躺，微眯着眼望向不远处一一"
+    assert (
+        galgame_ocr_reader._clean_ocr_dialogue_text("军爷，此乃绍兴女儿红，万历四十二年的陈酿。1")
+        == "军爷，此乃绍兴女儿红，万历四十二年的陈酿。"
+    )
+    assert (
+        galgame_ocr_reader._clean_ocr_dialogue_text("购得，专供军爷一醉！1交")
+        == "购得，专供军爷一醉！"
+    )
+    assert galgame_ocr_reader._clean_ocr_dialogue_text("什么花谢香消？2") == "什么花谢香消？"
+    assert (
+        galgame_ocr_reader._clean_ocr_dialogue_text("话说绍兴有习俗，当爹的闻得女儿第一声啼哭，便要酿这“女儿红”。1")
+        == "话说绍兴有习俗，当爹的闻得女儿第一声啼哭，便要酿这“女儿红”。"
+    )
+    assert galgame_ocr_reader._clean_ocr_dialogue_text("女儿红？这名字有何讲究！？了") == "女儿红？这名字有何讲究！？"
+    assert (
+        galgame_ocr_reader._clean_ocr_dialogue_text("军爷问得好！此酒大有来头，且听我细细道来·")
+        == "军爷问得好！此酒大有来头，且听我细细道来"
+    )
+    assert galgame_ocr_reader._clean_ocr_dialogue_text("作陪嫁之礼。交") == "作陪嫁之礼。"
     assert galgame_ocr_reader._ocr_stability_key(orphan) == galgame_ocr_reader._ocr_stability_key(clean)
     assert not galgame_ocr_reader._ocr_stability_keys_match(
         galgame_ocr_reader._ocr_stability_key("我喜欢你"),
@@ -2926,11 +2949,21 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
         process_name="chrome.exe",
         pid=1500,
     )
+    excluded_plugin_ui_window = DetectedGameWindow(
+        hwnd=303,
+        title="Galgame Play Assistant",
+        process_name="electron.exe",
+        pid=1600,
+    )
     plugin._ocr_reader_manager = OcrReaderManager(
         logger=plugin.logger,
         config=plugin._cfg,
         platform_fn=lambda: True,
-        window_scanner=lambda: [eligible_window, excluded_window],
+        window_scanner=lambda: [
+            eligible_window,
+            excluded_window,
+            excluded_plugin_ui_window,
+        ],
         capture_backend=_FakeCaptureBackend(),
         ocr_backend=_FakeOcrBackend(),
     )
@@ -2939,9 +2972,16 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
     assert isinstance(listed, Ok)
     assert listed.value["candidate_count"] == 1
-    assert listed.value["excluded_candidate_count"] == 1
+    assert listed.value["excluded_candidate_count"] == 2
     assert listed.value["windows"][0]["window_key"] == eligible_window.window_key
-    assert listed.value["excluded_windows"][0]["exclude_reason"] == "excluded_self_window"
+    excluded_by_key = {
+        item["window_key"]: item for item in listed.value["excluded_windows"]
+    }
+    assert excluded_by_key[excluded_window.window_key]["exclude_reason"] == "excluded_self_window"
+    assert (
+        excluded_by_key[excluded_plugin_ui_window.window_key]["exclude_reason"]
+        == "excluded_self_window"
+    )
 
     saved = await plugin.galgame_set_ocr_window_target(window_key=eligible_window.window_key)
 
@@ -2959,6 +2999,13 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
     assert isinstance(rejected, Err)
     assert "excluded OCR window" in str(rejected.error)
+
+    rejected_plugin_ui = await plugin.galgame_set_ocr_window_target(
+        window_key=excluded_plugin_ui_window.window_key
+    )
+
+    assert isinstance(rejected_plugin_ui, Err)
+    assert "excluded OCR window" in str(rejected_plugin_ui.error)
 
     cleared = await plugin.galgame_set_ocr_window_target(clear=True)
 

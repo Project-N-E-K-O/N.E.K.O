@@ -372,8 +372,7 @@
             }
 
             try {
-                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-                    || localStorage.getItem('neko_tutorial_home') === 'true';
+                return localStorage.getItem('neko_tutorial_home_yui_v1') === 'true';
             } catch (_) {
                 return false;
             }
@@ -1106,9 +1105,9 @@
             const profile = preset.profile && typeof preset.profile === 'object' ? preset.profile : {};
             [
                 {
-                    containerId: 'detailCatchphrases',
+                    containerId: 'detailSpeechHabits',
                     groupClassName: 'detail-group',
-                    label: translate('memory.characterSelection.detailSpeechHabits', '常挂嘴边的话喵'),
+                    label: translate('memory.characterSelection.detailSpeechHabits', '说话习惯喵'),
                     items: this.getPresetDetailItems(
                         preset,
                         'speechHabits',

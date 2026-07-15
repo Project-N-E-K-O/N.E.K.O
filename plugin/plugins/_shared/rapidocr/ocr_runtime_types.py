@@ -12,6 +12,7 @@ _LOGGER = logging.getLogger(__name__)
 _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS = 300.0
 _RAPIDOCR_RUNTIME_CACHE_LOCK = threading.RLock()
 _RAPIDOCR_RUNTIME_CACHE: dict[tuple[str, str, str, str, str, str], tuple[Any, float]] = {}
+_RAPIDOCR_RUNTIME_CACHE_OWNERS: dict[tuple[str, str, str, str, str, str], int] = {}
 _RAPIDOCR_INFERENCE_LOCK = threading.Lock()
 
 _OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE = 900
@@ -99,10 +100,14 @@ def _prune_rapidocr_runtime_cache(now: float) -> None:
         stale_keys = [
             key
             for key, (_runtime, last_used_at) in _RAPIDOCR_RUNTIME_CACHE.items()
-            if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+            if (
+                now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+                and _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) <= 0
+            )
         ]
         for key in stale_keys:
             _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
 
 
 def _get_rapidocr_runtime_cache(
@@ -113,10 +118,15 @@ def _get_rapidocr_runtime_cache(
     with _RAPIDOCR_RUNTIME_CACHE_LOCK:
         cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
         if cached is None:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
             return None
         runtime, last_used_at = cached
-        if now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS:
+        if (
+            now - float(last_used_at or 0.0) >= _RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS
+            and _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) <= 0
+        ):
             _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
             return None
         _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
         return runtime
@@ -130,7 +140,43 @@ def _store_rapidocr_runtime_cache(
 ) -> None:
     with _RAPIDOCR_RUNTIME_CACHE_LOCK:
         _prune_rapidocr_runtime_cache(now)
+        if key not in _RAPIDOCR_RUNTIME_CACHE:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = 0
         _RAPIDOCR_RUNTIME_CACHE[key] = (runtime, now)
+
+
+def _acquire_rapidocr_runtime_cache(
+    key: tuple[str, str, str, str, str, str],
+) -> None:
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = (
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) + 1
+        )
+
+
+def _release_rapidocr_runtime_cache(
+    key: tuple[str, str, str, str, str, str],
+    *,
+    runtime: Any | None = None,
+    owner_acquired: bool = False,
+) -> bool:
+    """Drop a cached native runtime when its owning backend is closed."""
+    with _RAPIDOCR_RUNTIME_CACHE_LOCK:
+        cached = _RAPIDOCR_RUNTIME_CACHE.get(key)
+        if cached is None:
+            return False
+        if runtime is not None and cached[0] is not runtime:
+            return False
+        if owner_acquired:
+            remaining = max(0, _RAPIDOCR_RUNTIME_CACHE_OWNERS.get(key, 0) - 1)
+            if remaining:
+                _RAPIDOCR_RUNTIME_CACHE_OWNERS[key] = remaining
+                return False
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
+        else:
+            _RAPIDOCR_RUNTIME_CACHE_OWNERS.pop(key, None)
+        _RAPIDOCR_RUNTIME_CACHE.pop(key, None)
+        return True
 
 
 def _prepare_ocr_image(image: Any, *, apply_filters: bool = True) -> Any:
@@ -389,9 +435,11 @@ __all__ = [
     "_RAPIDOCR_RUNTIME_CACHE_LOCK",
     "_RAPIDOCR_RUNTIME_IDLE_TTL_SECONDS",
     "_RapidOcrToken",
+    "_acquire_rapidocr_runtime_cache",
     "_get_rapidocr_runtime_cache",
     "_join_ocr_segments",
     "_prepare_ocr_image",
+    "_release_rapidocr_runtime_cache",
     "_rapidocr_lines_from_output",
     "_rapidocr_points",
     "_rapidocr_runtime_cache_key",

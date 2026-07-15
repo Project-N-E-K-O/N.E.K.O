@@ -1138,6 +1138,84 @@ def test_knowledge_seed_loads_idempotently(tmp_path: Path) -> None:
         store.close()
 
 
+def test_math_seed_keeps_reviewed_stage_and_edge_contracts() -> None:
+    math_seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_seeds"
+        / "math.json"
+    )
+    payload = json.loads(math_seed.read_text(encoding="utf-8"))
+    topics = {
+        str(topic.get("id") or ""): topic
+        for topic in payload.get("topics", [])
+        if isinstance(topic, dict)
+    }
+
+    real_numbers = topics["real_number_concept"]
+    number_sense = next(
+        requirement
+        for requirement in real_numbers["prerequisites"]
+        if requirement.get("id") == "primary_number_sense"
+    )
+    assert number_sense["required_mastery"] == 0.55
+
+    for topic in topics.values():
+        curriculum_versions = topic.get("curriculum_version")
+        versions = (
+            curriculum_versions
+            if isinstance(curriculum_versions, list)
+            else [curriculum_versions]
+        )
+        if any(str(version or "").endswith("_junior") for version in versions):
+            assert topic.get("stage") == "junior_high"
+        question_types = topic.get("question_types")
+        if isinstance(question_types, list):
+            assert len(question_types) == len(set(question_types))
+
+
+def test_knowledge_seed_persists_curriculum_context(tmp_path: Path) -> None:
+    knowledge_seed = tmp_path / "curriculum_context_seed.json"
+    knowledge_seed.write_text(
+        json.dumps(
+            {
+                "subject": "math",
+                "topics": [
+                    {
+                        "id": "curriculum_context_topic",
+                        "name": "Curriculum Context Topic",
+                        "stage": "junior_high",
+                        "curriculum_version": [
+                            "generic_cn_junior",
+                            "renjiao_junior",
+                        ],
+                        "exam_region": "zhongkao_beijing_style",
+                        "exam_type": ["unit_test", "zhongkao_style"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = StudyStore(
+        tmp_path / "study.db", tmp_path / "seed.json", _Logger(), knowledge_seed
+    )
+    store.open()
+    try:
+        topic = store.get_topic("curriculum_context_topic")
+        assert topic is not None
+        assert topic["curriculum_version"] == [
+            "generic_cn_junior",
+            "renjiao_junior",
+        ]
+        assert topic["exam_region"] == "zhongkao_beijing_style"
+        assert topic["exam_type"] == ["unit_test", "zhongkao_style"]
+    finally:
+        store.close()
+
+
 def test_knowledge_seed_and_topic_upsert_tolerate_bad_numeric_fields(
     tmp_path: Path,
 ) -> None:

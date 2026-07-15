@@ -187,6 +187,32 @@ def test_pyautogui_display_error_is_not_reported_as_missing(monkeypatch: pytest.
     assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
 
 
+def test_pyautogui_macos_pyobjc_error_has_dedicated_reason(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(
+        cu_module,
+        "_PYAUTOGUI_IMPORT_ERROR",
+        AssertionError("You must first install pyobjc-core and pyobjc"),
+    )
+
+    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
+
+
+def test_pyautogui_generic_import_failure_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(
+        cu_module,
+        "_PYAUTOGUI_IMPORT_ERROR",
+        RuntimeError("dlopen failed while importing pyautogui backend"),
+    )
+
+    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_IMPORT_FAILED"
+
+
 def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: pytest.MonkeyPatch):
     from brain import computer_use as cu_module
 
@@ -499,7 +525,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     so tests can mutate freely. Also stubs out the side-effectful calls
     inside set_agent_enabled/set_agent_flags that need full process state
     (ZMQ bridge, plugin lifecycle, openclaw probe, etc)."""
-    from app import agent_server as srv
+    from app.agent_server import api_routes as srv
 
     backup_analyzer_enabled = srv.Modules.analyzer_enabled
     backup_analyzer_profile = dict(srv.Modules.analyzer_profile)
@@ -804,7 +830,7 @@ async def test_restore_once_flag_blocks_duplicate_runs(
 ):
     """Once flag must prevent duplicate restore from concurrent
     greeting_check signals from N WebSockets."""
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
     srv_mod._reset_intent_restore_for_testing()
 
     call_count = {"n": 0}
@@ -827,7 +853,7 @@ async def test_restore_escape_hatch_via_env(
     agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """NEKO_DISABLE_AGENT_AUTO_RESTORE=1 must skip restore entirely."""
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
     srv_mod._reset_intent_restore_for_testing()
 
     monkeypatch.setenv("NEKO_DISABLE_AGENT_AUTO_RESTORE", "1")
@@ -850,7 +876,7 @@ async def test_restore_llm_dependent_all_retries_fail_clears_intent(
     flip to False so the user gets a clear AGENT_AUTO_DISABLED notification
     and next restart doesn't keep banging on the same dead endpoint."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
     ari.set_intent("browser_use_enabled", True)
@@ -880,7 +906,7 @@ async def test_restore_llm_dependent_permanent_error_short_circuits(
     """Permanent reason (e.g. API key invalid) must bail after the first
     attempt — don't waste 15s retrying when we know the API is dead."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
 
@@ -906,7 +932,7 @@ async def test_restore_llm_dependent_success_keeps_intent(
     set_agent_flags with _persist_intent=False is called, which won't
     write intent)."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
 
@@ -934,7 +960,7 @@ async def test_restore_llm_dependent_module_not_loaded_is_permanent(
     """If computer_use module is None (not loaded), restore should
     immediately clear intent — not retry, since the module won't appear."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
     ari.set_intent("browser_use_enabled", True)
@@ -957,7 +983,7 @@ async def test_restore_skipped_when_master_intent_off(
     probe — master is the runtime gate. Sub-flag intents stay in the file
     untouched."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("analyzer_enabled", False)
     ari.set_intent("computer_use_enabled", True)
@@ -1011,7 +1037,7 @@ async def test_restore_skipped_when_master_intent_never_set(
     """When master intent is None (never toggled), default-deny: don't spin
     up sub components. User can turn master on explicitly to activate them."""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     # Master intent NOT set; sub flags set.
     ari.set_intent("user_plugin_enabled", True)
@@ -1035,7 +1061,7 @@ async def test_restore_proceeds_when_master_intent_on(
     """Sanity counter-test: master=True + user_plugin=True must trigger
     user_plugin restore. (Pairs with the master-OFF skip test above.)"""
     from app import agent_runtime_intent as ari
-    from app import agent_server as srv_mod
+    from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("analyzer_enabled", True)
     ari.set_intent("user_plugin_enabled", True)

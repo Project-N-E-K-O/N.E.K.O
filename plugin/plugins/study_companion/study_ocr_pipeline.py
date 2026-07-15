@@ -4,18 +4,15 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import io
+import importlib
+import importlib.util
 import subprocess
 import sys
+from threading import RLock
 import time
 from typing import Any
 
 from PIL import Image
-
-try:
-    import imagehash
-except ImportError:
-    imagehash = None
-
 from .models import (
     ActivitySnapshot,
     OCR_SNIPPET_MAX_CHARS,
@@ -24,6 +21,25 @@ from .models import (
     utc_now_iso,
 )
 from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
+
+_IMAGEHASH_UNLOADED = object()
+imagehash: Any = _IMAGEHASH_UNLOADED
+
+
+def _get_imagehash() -> Any | None:
+    global imagehash
+    if imagehash is _IMAGEHASH_UNLOADED:
+        try:
+            imagehash = importlib.import_module("imagehash")
+        except ImportError:
+            imagehash = None
+    return imagehash
+
+
+def _imagehash_is_available() -> bool:
+    if imagehash is not _IMAGEHASH_UNLOADED:
+        return imagehash is not None
+    return importlib.util.find_spec("imagehash") is not None
 
 CAPTURE_BACKEND_AUTO = "auto"
 CAPTURE_BACKEND_DXCAM = "dxcam"
@@ -94,49 +110,82 @@ class StudyOcrPipeline:
         self._logger = logger
         self._config = config
         self._ocr_backend = ocr_backend
+        self._owns_ocr_backend = ocr_backend is None
         self._capture_backend = capture_backend
         self._latest_vision_snapshot: dict[str, Any] = {}
         self._latest_vision_image_base64 = ""
         self._last_thumbnail_phash = ""
+        self._lifecycle_lock = RLock()
+        self._closed = False
+        self._retired_executors: list[ThreadPoolExecutor] = []
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="study-ocr"
         )
-        if imagehash is None:
+        if not _imagehash_is_available():
             self._logger.warning(
                 "study OCR content-change detection disabled: imagehash is unavailable"
             )
 
     def update_config(self, config: StudyConfig) -> None:
-        self._config = config
-        self._ocr_backend = None
-        self._capture_backend = None
-        self._last_thumbnail_phash = ""
-        self._clear_vision_snapshot()
+        with self._lifecycle_lock:
+            self._release_owned_ocr_backend()
+            self._config = config
+            self._capture_backend = None
+            self._last_thumbnail_phash = ""
+            self._clear_vision_snapshot()
 
     def close(self) -> None:
-        executor = self._executor
-        if executor is None:
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._closed = True
+            executors = self._retired_executors
+            self._retired_executors = []
+            executor = self._executor
+            self._executor = None
+            if executor is not None:
+                executors.append(executor)
+        for executor in executors:
+            executor.shutdown(wait=True)
+        self._release_owned_ocr_backend()
+
+    def _release_owned_ocr_backend(self) -> None:
+        with self._lifecycle_lock:
+            if not self._owns_ocr_backend:
+                return
+            backend = self._ocr_backend
+            self._ocr_backend = None
+            self._owns_ocr_backend = True
+        if backend is None:
             return
-        executor.shutdown(wait=False)
-        self._executor = None
+        close = getattr(backend, "close", None)
+        if callable(close):
+            close()
 
     def _retire_executor(self, executor: ThreadPoolExecutor) -> None:
-        if self._executor is not executor:
-            return
-        shutdown = getattr(executor, "shutdown", None)
-        if callable(shutdown):
-            try:
-                shutdown(wait=False)
-            except Exception:
-                pass
-        self._executor = None
+        with self._lifecycle_lock:
+            if self._executor is not executor:
+                return
+            shutdown = getattr(executor, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    shutdown(wait=False)
+                except Exception as exc:
+                    self._logger.warning(
+                        f"study OCR executor retirement shutdown failed: {exc}"
+                    )
+            self._retired_executors.append(executor)
+            self._executor = None
 
     def _require_executor(self) -> ThreadPoolExecutor:
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(
-                max_workers=2, thread_name_prefix="study-ocr"
-            )
-        return self._executor
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("study OCR pipeline is closed")
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="study-ocr"
+                )
+            return self._executor
 
     def snapshot_from_image(self, image: Any, *, backend_name: str = "") -> OcrSnapshot:
         if image is None:
@@ -388,9 +437,10 @@ class StudyOcrPipeline:
 
     @staticmethod
     def _calculate_thumbnail_phash(image: Image.Image) -> str | None:
-        if imagehash is None:
+        imagehash_module = _get_imagehash()
+        if imagehash_module is None:
             return None
-        return str(imagehash.phash(image, hash_size=8))
+        return str(imagehash_module.phash(image, hash_size=8))
 
     def _has_content_change(self, thumbnail_phash: str) -> bool:
         previous = str(self._last_thumbnail_phash or "").strip()
@@ -605,29 +655,34 @@ class StudyOcrPipeline:
             return rendered
 
     def _resolve_ocr_backend(self) -> Any:
-        if self._ocr_backend is not None:
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("study OCR pipeline is closed")
+            if self._ocr_backend is not None:
+                return self._ocr_backend
+            selection = str(self._config.ocr_backend_selection or "rapidocr").strip().lower()
+            if selection == "tesseract":
+                from .tesseract_support import TesseractOcrBackend
+
+                self._ocr_backend = TesseractOcrBackend(
+                    tesseract_path=self._config.ocr_tesseract_path,
+                    install_target_dir_raw=self._config.ocr_install_target_dir,
+                    languages=self._config.ocr_languages,
+                )
+                self._owns_ocr_backend = True
+            else:
+                from plugin.plugins._shared.rapidocr.ocr_backends import RapidOcrBackend
+
+                self._ocr_backend = RapidOcrBackend(
+                    install_target_dir_raw=self._config.rapidocr_install_target_dir,
+                    engine_type=self._config.rapidocr_engine_type,
+                    lang_type=self._config.rapidocr_lang_type,
+                    model_type=self._config.rapidocr_model_type,
+                    ocr_version=self._config.rapidocr_ocr_version,
+                    plugin_id="study_companion",
+                )
+                self._owns_ocr_backend = True
             return self._ocr_backend
-        selection = str(self._config.ocr_backend_selection or "rapidocr").strip().lower()
-        if selection == "tesseract":
-            from .tesseract_support import TesseractOcrBackend
-
-            self._ocr_backend = TesseractOcrBackend(
-                tesseract_path=self._config.ocr_tesseract_path,
-                install_target_dir_raw=self._config.ocr_install_target_dir,
-                languages=self._config.ocr_languages,
-            )
-        else:
-            from plugin.plugins._shared.rapidocr.ocr_backends import RapidOcrBackend
-
-            self._ocr_backend = RapidOcrBackend(
-                install_target_dir_raw=self._config.rapidocr_install_target_dir,
-                engine_type=self._config.rapidocr_engine_type,
-                lang_type=self._config.rapidocr_lang_type,
-                model_type=self._config.rapidocr_model_type,
-                ocr_version=self._config.rapidocr_ocr_version,
-                plugin_id="study_companion",
-            )
-        return self._ocr_backend
 
     def _resolve_capture_backend(self) -> Any:
         if self._capture_backend is not None:

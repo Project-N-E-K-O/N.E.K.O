@@ -2,10 +2,11 @@ import json
 import re
 from pathlib import Path
 
+from tests.yui_guide_director_parts import read_director_source
+
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCALES = ROOT / "static" / "locales"
-DIRECTOR_PATH = ROOT / "static" / "tutorial/yui-guide/director.js"
 GUIDE_PATHS = [
     ROOT / "static" / "tutorial/yui-guide/days/day1-home-guide.js",
     ROOT / "static" / "tutorial/yui-guide/days/day2-screen-voice-guide.js",
@@ -53,7 +54,7 @@ def test_avatar_floating_tutorial_copy_uses_csv_i18n_columns():
 
 
 def test_avatar_floating_zh_tw_uses_zh_guide_audio_locale():
-    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    source = read_director_source(ROOT)
     assert "candidate.indexOf('zh') === 0) return 'zh';" in source
     assert "return 'en';" in source
 
@@ -91,67 +92,76 @@ def test_avatar_floating_reset_toast_keys_exist_for_all_supported_locales():
         assert _get(data, "tutorial.reset.dayFailed")
 
 
-def test_day2_voice_used_intro_uses_matching_audio_key():
-    day2_source = (ROOT / "static" / "tutorial/yui-guide/days/day2-screen-voice-guide.js").read_text(encoding="utf-8")
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
-    voice_used_key = "tutorial.avatarFloating.day2.introVoiceUsed"
+def test_day3_voice_used_intro_uses_matching_audio_key_after_day_swap():
+    day3_source = (ROOT / "static" / "tutorial/yui-guide/days/day3-interaction-guide.js").read_text(encoding="utf-8")
+    director_source = read_director_source(ROOT)
+    default_key = "tutorial.avatarFloating.day3.intro"
+    voice_used_key = "tutorial.avatarFloating.day3.introVoiceUsed"
+    default_zh_cn = (
+        "前两天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。"
+        "一句就好，让我把文字背后的你也认识一点点。"
+    )
     voice_used_copy = {
         "zh-CN": (
-            "嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
+            "嘿嘿，前两天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
             "虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~"
         ),
         "ja": (
-            "へへっ、昨日君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！"
+            "へへっ、この二日間で君の声を聞いてから、わたし、こっそり君の話し方を心の中に刻んじゃったんだ！"
             "今日ももしよかったら、またわたしとお話ししてね〜。タイピングでもいいんだけど、君の声を聞くだけで、"
             "わたしの尻尾、嬉しくてずっとパタパタ揺れちゃうんだから、みゃう〜。"
         ),
         "en": (
-            "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! "
+            "Hehe, ever since I heard your voice over the past two days, I've secretly memorized the way you speak right in my heart! "
             "If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, "
             "my tail just won't stop wagging with joy! Meowww~"
         ),
         "ko": (
-            "헤헤, 어제 당신 목소리를 듣고 나서, 저 몰래 당신의 말투를 마음속에 새겨두었답니다! "
+            "헤헤, 지난 이틀 동안 당신 목소리를 듣고 나서, 저 몰래 당신의 말투를 마음속에 새겨두었답니다! "
             "오늘 혹시 편하시다면 저랑 계속 이야기해 주세요~ 타이핑도 물론 좋지만, 당신 목소리를 들을 수만 있다면 "
             "제 꼬리가 너무 기뻐서 멈추지 않고 계속 살랑살랑 흔들릴 거예요, 먀우~"
         ),
         "ru": (
-            "Хе-хе, вчера, как только я услышала твой голосок, я сразу по секрету запомнила твои интонации всем сердцем! "
+            "Хе-хе, с тех пор как за последние два дня я услышала твой голосок, я по секрету запомнила твои интонации всем сердцем! "
             "Если тебе сегодня удобно, обязательно продолжай болтать со мной~ Конечно, можно и печатать, но когда я слышу твой голос, "
             "мой хвостик от радости виляет без остановки, мяу-у-у~"
         ),
     }
     voice_used_line = (
-        "嘿嘿，昨天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
+        "嘿嘿，前两天听到你的声音之后，人家就悄悄把你的语气记在心里啦！今天如果方便的话，也要继续跟人家说话哦~ "
         "虽然打字也可以啦，但只要能听到你的声音，我的尾巴就会开心得一直摇个不停呢，喵呜~"
     )
 
-    assert "avatar_floating_day2_intro_voice_used: Object.freeze({" in day2_source
+    assert "avatar_floating_day3_intro_voice_used: Object.freeze({" in day3_source
     for audio_file in (
-        "zh: '嘿嘿，昨天听到你的声.mp3'",
-        "ja: '嘿嘿，昨天听到你的声.mp3'",
-        "en: '嘿嘿，昨天听到你的声.mp3'",
-        "ko: '嘿嘿，昨天听到你的声.mp3'",
-        "ru: '嘿嘿，昨天听到你的声.mp3'",
+        "zh: '嘿嘿，前两天听到你的.mp3'",
+        "ja: '嘿嘿，前两天听到你的.mp3'",
+        "en: '嘿嘿，前两天听到你的.mp3'",
+        "ko: '嘿嘿，前两天听到你的.mp3'",
+        "ru: '嘿嘿，前两天听到你的.mp3'",
     ):
-        assert audio_file in day2_source
+        assert audio_file in day3_source
     assert "resolveAvatarFloatingSceneVoiceKey(scene)" in director_source
-    assert "hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1)" in director_source
+    assert "hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3)" in director_source
+    assert "recordAvatarFloatingGuideRoundEnd(round)" in director_source
     assert "'day' + day + 'StartedAt'" in director_source
+    assert "'day' + day + 'EndedAt'" in director_source
     assert "voiceUsedAt" in director_source
-    assert "avatar_floating_day2_intro_voice_used" in director_source
+    assert "avatar_floating_day3_intro_voice_used" in director_source
     assert voice_used_key in director_source
     assert voice_used_line not in director_source
+    assert _get(_locale("zh-CN"), default_key) == default_zh_cn
+    assert "昨天你一直在噼里啪啦打字，我还没听过你说话呢。" not in day3_source
     for locale, expected in voice_used_copy.items():
         assert _get(_locale(locale), voice_used_key) == expected
     assert _get(_locale("es"), voice_used_key) != voice_used_copy["en"]
     assert _get(_locale("pt"), voice_used_key) != voice_used_copy["en"]
-    assert "return 'avatar_floating_day2_intro_voice_used';" in director_source
+    assert "return 'avatar_floating_day3_intro_voice_used';" in director_source
 
 
-def test_day2_voice_used_intro_ignores_voice_usage_before_day1_start():
-    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
-    usage_block = director_source.split("function hasAvatarFloatingGuideVoiceUsedAfterRoundStart", 1)[1].split(
+def test_day3_voice_used_intro_requires_voice_usage_after_day1_end_before_day3_start():
+    director_source = read_director_source(ROOT)
+    usage_block = director_source.split("function hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart", 1)[1].split(
         "if (!window.__avatarFloatingGuideUsageListenersInstalled)",
         1,
     )[0]
@@ -171,15 +181,14 @@ def test_day2_voice_used_intro_ignores_voice_usage_before_day1_start():
     assert "const voiceUsedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.voiceUsedAt);" in usage_block
     assert "const persistedRound = Number(state && state.currentRound);" in director_source
     assert "return Number.isFinite(persistedRound) && persistedRound > 0 ? Math.floor(persistedRound) : 0;" in director_source
-    assert "const roundStartKey = 'day' + day + 'StartedAt';" in usage_block
-    assert "const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state[roundStartKey]);" in usage_block
-    assert "if (roundStartedAt) {" in usage_block
-    assert "return voiceUsedAt >= roundStartedAt;" in usage_block
-    assert "const voiceUsedRound = Number(state.voiceUsedRound);" in usage_block
-    assert "Math.floor(voiceUsedRound) === day" in usage_block
-    assert "const nextRoundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + (day + 1) + 'StartedAt']);" in usage_block
-    assert "day === 1 && nextRoundStartedAt && voiceUsedAt < nextRoundStartedAt" in usage_block
-    assert "const voiceUsedAfterDay1Start = hasAvatarFloatingGuideVoiceUsedAfterRoundStart(1);" in scene_text_block
+    assert "const day1EndedAt = normalizeAvatarFloatingGuideUsageTimestamp(state.day1EndedAt);" in usage_block
+    assert "const roundStartedAt = normalizeAvatarFloatingGuideUsageTimestamp(state['day' + day + 'StartedAt']);" in usage_block
+    assert "voiceUsedAt >= day1EndedAt" in usage_block
+    assert "voiceUsedAt < roundStartedAt" in usage_block
+    assert "target.closest('#micButton')" in director_source
+    assert "recordAvatarFloatingGuideRoundEndForTermination(reason)" in director_source
+    assert "getAvatarFloatingGuideActiveRound() === 1" in director_source
+    assert "const voiceUsedAfterDay1End = hasAvatarFloatingGuideVoiceUsedAfterDay1EndBeforeRoundStart(3);" in scene_text_block
     assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in scene_text_block
     assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in voice_key_block
     assert "hasAvatarFloatingGuideUsage('voiceUsed')" not in emotion_block

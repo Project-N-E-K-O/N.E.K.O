@@ -1,23 +1,25 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 import json
 import re
 
+from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
 
-YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/director.js"
+
 YUI_GUIDE_OVERLAY_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/overlay.js"
 YUI_GUIDE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css/yui-guide.css"
 YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/steps.js"
 YUI_GUIDE_DAY1_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/days/day1-home-guide.js"
 SCENE_ORCHESTRATOR_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/scene-orchestrator.js"
 NEW_USER_ICEBREAKER_PATH = Path(__file__).resolve().parents[2] / "static" / "icebreaker/new-user-icebreaker.js"
-APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-interpage"
 PLUGIN_YUI_GUIDE_RUNTIME_PATH = Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager/src/yui-guide-runtime.ts"
 YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/yui-guide/common.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
 
 def _read_director() -> str:
-    return YUI_GUIDE_DIRECTOR_PATH.read_text(encoding="utf-8")
+    return read_director_source(Path(__file__).resolve().parents[2])
 
 
 def _read_steps() -> str:
@@ -29,11 +31,42 @@ def _read_day1_guide() -> str:
 
 
 def _read_interpage() -> str:
-    return APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+    return read_js_parts(APP_INTERPAGE_PATH)
 
 
 def _read_static_locale(locale_name: str) -> dict:
     return json.loads((STATIC_LOCALES_DIR / f"{locale_name}.json").read_text(encoding="utf-8"))
+
+
+def test_director_parts_use_domain_names_and_explicit_template_order():
+    root = Path(__file__).resolve().parents[2]
+    expected_parts = (
+        "tutorial/yui-guide/director/foundation.js",
+        "tutorial/yui-guide/director/voice-queue.js",
+        "tutorial/yui-guide/director/emotion-bridge.js",
+        "tutorial/yui-guide/director/cursor-anchor-store.js",
+        "tutorial/yui-guide/director/director-core.js",
+        "tutorial/yui-guide/director/avatar-rounds.js",
+        "tutorial/yui-guide/director/page-flows.js",
+        "tutorial/yui-guide/director/chat-performance.js",
+        "tutorial/yui-guide/director/lifecycle.js",
+        "tutorial/yui-guide/director/bootstrap.js",
+    )
+
+    assert DIRECTOR_SCRIPT_NAMES == expected_parts
+    for relative_path in expected_parts:
+        source = (root / "static" / relative_path).read_text(encoding="utf-8")
+        assert source.startswith("(function (") or source.startswith("(function ()")
+        assert "'use strict';" in {line.strip() for line in source.splitlines()[:3]}
+        assert not re.search(r"director/\d", relative_path)
+
+    for template_name in ("index.html", "api_key_settings.html", "memory_browser.html"):
+        template_source = (root / "templates" / template_name).read_text(encoding="utf-8")
+        indexes = [template_source.index(f"/static/{relative_path}") for relative_path in expected_parts]
+        assert indexes == sorted(indexes)
+
+    pages_router_source = (root / "main_routers/pages_router.py").read_text(encoding="utf-8")
+    assert '"static/tutorial/yui-guide/director").glob("*.js")' in pages_router_source
 
 
 def _extract_deep_freeze_registration_block(source: str) -> str:
@@ -124,7 +157,10 @@ def test_home_tutorial_chat_targets_prefer_compact_capsule_over_removed_full_win
 def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     source = _read_director()
 
-    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 900;" in source
+    assert "const DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS = 1120;" in source
+    assert "const DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS = 500;" in source
+    assert "const DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS = 480;" in source
+    assert "const DAY6_PLUGIN_DASHBOARD_DONE_GRACE_MS = 120;" in source
     assert "finishPluginDashboardHandoff(reason) {" in source
 
     boundary_block = source.split(
@@ -136,6 +172,13 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     )[0]
     dashboard_block = source.split(
         "        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {",
+        1,
+    )[1].split(
+        "        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {",
+        1,
+    )[0]
+    dashboard_cleanup_block = source.split(
+        "        async cleanupDay6PluginDashboardPostNarration(previewState, homeCursorPosition, sceneRunId) {",
         1,
     )[1].split(
         "        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {",
@@ -154,13 +197,105 @@ def test_day6_plugin_dashboard_handoff_closes_at_narration_boundary():
     assert "this.finishPluginDashboardHandoff('plugin_dashboard_done_grace_timeout');" in boundary_block
     assert "return await Promise.race([performancePromise, boundaryPromise]);" in boundary_block
 
+    missing_window_block = dashboard_block.split(
+        "if (!pluginDashboardWindow || pluginDashboardWindow.closed) {",
+        1,
+    )[1].split(
+        "if (guardFailed()) {",
+        1,
+    )[0]
+    assert "const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(" in missing_window_block
+    assert "this.day6PluginDashboardPreview = null;" in missing_window_block
+    assert "return cleanupCompleted && !guardFailed();" in missing_window_block
     assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in dashboard_block
+    assert "const cleanupCompleted = await this.cleanupDay6PluginDashboardPostNarration(" in dashboard_block
+    assert "if (!cleanupCompleted || guardFailed()) {" in dashboard_block
+    assert "scheduleDay6PluginDashboardPostNarrationCleanup(" not in source
+    assert "await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');" not in dashboard_block
+    assert "await this.closeAgentPanel().catch(() => {});" not in dashboard_block
+    assert "await this.waitForHomeMainUIReady(3600);" not in dashboard_block
+    assert "await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');" in dashboard_cleanup_block
+    assert "await this.closeAgentPanel().catch(() => {});" in dashboard_cleanup_block
+    assert "const homeReady = await this.waitForHomeMainUIReady(3600);" in dashboard_cleanup_block
     assert "this.waitForPluginDashboardPerformanceUntilNarrationBoundary(pluginDashboardWindow" in side_panel_block
     assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in dashboard_block
     assert "await this.waitForPluginDashboardPerformance(pluginDashboardWindow" not in side_panel_block
 
 
-def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
+def test_day6_agent_status_cursor_moves_to_cat_paw_and_clicks_during_line():
+    source = _read_director()
+
+    assert "const DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS = 2800;" in source
+    assert "const DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS = 500;" in source
+    assert "const DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS = 620;" in source
+    assert "const DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y = 8;" in source
+
+    status_block = source.split(
+        "        async runDay6PluginOpenAgentPanelFlow(scene) {",
+        1,
+    )[1].split(
+        "        async runDay6PluginOpenManagementPanelFlow(scene) {",
+        1,
+    )[0]
+
+    assert "const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);" in status_block
+    assert "const catPawButton = await this.waitForVisibleTarget([" in status_block
+    assert "], 2200);" in status_block
+    assert "const catPawButton = this.getFloatingButtonShell(this.getFallbackFloatingButton('agent'))" not in status_block
+    assert "await this.waitForSceneDelay(DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS)" in status_block
+    assert "await this.moveAvatarFloatingCursor(Object.assign({}, scene || {}, {" in status_block
+    assert (
+        status_block.index("await this.waitForSceneDelay(DAY6_PLUGIN_AGENT_PANEL_CURSOR_START_DELAY_MS)")
+        < status_block.index("await this.moveAvatarFloatingCursor(Object.assign({}, scene || {}, {")
+    )
+    assert "targetPointOffset: { y: DAY6_PLUGIN_CAT_PAW_CURSOR_OFFSET_Y }" in status_block
+    assert "clampTargetPointToRect: true" in status_block
+    assert "targetPointClampInsetPx: 4" in status_block
+    assert "await this.ensureDay6AgentPanelCursorHasStartPoint()" not in source
+    assert "async ensureDay6AgentPanelCursorHasStartPoint() {" not in source
+    assert "const catPawCursorPoint = await this.moveDay6CursorToCatPawButton(" not in source
+    assert "async moveDay6CursorToCatPawButton(element, durationMs) {" not in source
+    assert "getDay6CatPawCursorPoint" not in source
+    assert "catPawCursorPoint: catPawCursorPoint" not in status_block
+    assert "scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CURSOR_MOVE_MS, 2100, 5200)" in status_block
+    assert "await this.runActionWithCursorClickExact(" in status_block
+    assert "scaleSceneMs(DAY6_PLUGIN_AGENT_PANEL_CLICK_VISIBLE_MS, 480, 1200)" in status_block
+    assert "() => this.openAgentPanel()" in status_block
+    assert "resolveCursorPointFromRect(rect, options)" in source
+    assert "this.resolveCursorPointFromRect(rect, normalizedOptions)" in source
+
+    management_block = source.split(
+        "        async runDay6PluginOpenManagementPanelFlow(scene) {",
+        1,
+    )[1].split(
+        "        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {",
+        1,
+    )[0]
+    assert "const scaleSceneMs = this.createSceneScaler(scene && scene.voiceKey);" in management_block
+    assert "await this.ensureDay6ManagementCursorStartsFromPreviousCatPaw()" not in source
+    assert "async ensureDay6ManagementCursorStartsFromPreviousCatPaw() {" not in source
+    assert "previewState.catPawCursorPoint" not in source
+    assert "await this.waitForSceneDelay(DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS)" in management_block
+    assert (
+        management_block.index("await this.waitForSceneDelay(DAY6_PLUGIN_SIDE_PANEL_CURSOR_START_DELAY_MS)")
+        < management_block.index("const userPluginMovePromise = this.moveCursorToTrackedElement(")
+    )
+    assert "const sidePanelShownPromise = this.ensureAvatarFloatingAgentSidePanel('user-plugin');" not in management_block
+    assert "const movedToUserPlugin = await userPluginMovePromise;" in management_block
+    assert "const sidePanelShown = await this.runActionWithCursorClickExact(" in management_block
+    assert "() => this.ensureAvatarFloatingAgentSidePanel('user-plugin')" in management_block
+    assert (
+        management_block.index("const movedToUserPlugin = await userPluginMovePromise;")
+        < management_block.index("const sidePanelShown = await this.runActionWithCursorClickExact(")
+    )
+    assert "this.applyGuideHighlights({" in management_block
+    assert "key: sceneId + '-clear-user-plugin'," in management_block
+    assert "primary: null" in management_block
+    assert "scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CURSOR_MOVE_MS, 840, 2100)" in management_block
+    assert "scaleSceneMs(DAY6_PLUGIN_SIDE_PANEL_CLICK_VISIBLE_MS, 360, 900)" in management_block
+
+
+def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner():
     guide_css = YUI_GUIDE_CSS_PATH.read_text(encoding="utf-8")
     overlay_source = YUI_GUIDE_OVERLAY_PATH.read_text(encoding="utf-8")
     director_source = _read_director()
@@ -173,8 +308,73 @@ def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
         Path(__file__).resolve().parents[2] / "static" / "tutorial/visual/resistance-controllers.js"
     ).read_text(encoding="utf-8")
 
-    assert not re.search(r"cursor\s*:\s*none\b", guide_css)
-    assert not re.search(r"cursor\s*:\s*none\b", plugin_runtime_source)
+    assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in guide_css
+    assert "body.yui-taking-over.yui-taking-over," in guide_css
+    assert re.search(
+        r"body\.yui-taking-over\.yui-taking-over,[\s\S]*?body\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?cursor\s*:\s*none\s*!important",
+        guide_css,
+    )
+    assert re.search(
+        r"body\.yui-taking-over\.yui-taking-over #neko-tutorial-skip-btn,[\s\S]*?body\.yui-taking-over\.yui-taking-over \[data-yui-emergency-exit\] \*[\s\S]*?cursor\s*:\s*auto\s*!important",
+        guide_css,
+    )
+    assert "body.yui-taking-over.yui-resistance-cursor-reveal" in guide_css
+    assert "body.yui-taking-over.yui-user-cursor-revealed" in guide_css
+
+    assert "Double .yui-taking-over to out-specificity earlier cursor:auto !important rules." in plugin_runtime_source
+    assert "html.yui-taking-over.yui-taking-over," in plugin_runtime_source
+    assert re.search(
+        r"html\.yui-taking-over\.yui-taking-over,[\s\S]*?html\.yui-taking-over \[data-yui-cursor-hidden=\"true\"\][\s\S]*?body\.yui-guide-plugin-dashboard-running\.yui-taking-over button[\s\S]*?cursor\s*:\s*none\s*!important",
+        plugin_runtime_source,
+    )
+    assert "DEFAULT_RESISTANCE_CURSOR_REVEAL_MS" not in plugin_runtime_source
+    assert "yui-guide-control-banner" in guide_css
+    assert ".yui-guide-control-banner.is-visible" in guide_css
+    assert ".yui-guide-control-banner.is-interrupt-emphasis" in guide_css
+    assert "transform: translate(-50%, 0);" in guide_css
+    assert "translate(-50%, -50%) scale(3)" in guide_css
+    assert "--yui-guide-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1)" in guide_css
+    assert "top 420ms var(--yui-guide-control-banner-emphasis-ease)" in guide_css
+    assert "yui-guide-control-banner" in overlay_source
+    assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in overlay_source
+    assert "syncControlBanner()" in overlay_source
+    assert "emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)" in overlay_source
+    assert "CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000" in overlay_source
+    assert "controlBannerEmphasisActive" in overlay_source
+    assert "this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized);" in overlay_source
+    assert "renderedControlBannerText" in overlay_source
+    assert "renderedControlBannerVisible" in overlay_source
+    assert "renderedControlBannerEmphasis" in overlay_source
+    assert "this.renderedControlBannerText === text" in overlay_source
+    assert "this.renderedControlBannerVisible === isVisible" in overlay_source
+    assert "this.renderedControlBannerEmphasis === isEmphasized" in overlay_source
+    assert "yui-guide-plugin-control-banner" in plugin_runtime_source
+    assert ".yui-guide-plugin-control-banner.is-visible" in plugin_runtime_source
+    assert ".yui-guide-plugin-control-banner.is-interrupt-emphasis" in plugin_runtime_source
+    assert "transform: translate(-50%, 0);" in plugin_runtime_source
+    assert "translate(-50%, -50%) scale(3)" in plugin_runtime_source
+    assert "--yui-guide-plugin-control-banner-emphasis-ease: cubic-bezier(0.16, 1, 0.3, 1)" in plugin_runtime_source
+    assert "top 420ms var(--yui-guide-plugin-control-banner-emphasis-ease)" in plugin_runtime_source
+    assert "CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner'" in plugin_runtime_source
+    assert "CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000" in plugin_runtime_source
+    assert "syncControlBanner(active?: boolean)" in plugin_runtime_source
+    assert "emphasizeControlBanner(durationMs = CONTROL_BANNER_INTERRUPT_EMPHASIS_MS)" in plugin_runtime_source
+    assert "controlBannerEmphasisActive" in plugin_runtime_source
+    assert "this.controlBanner.classList.toggle('is-interrupt-emphasis', isEmphasized)" in plugin_runtime_source
+    assert "renderedControlBannerText" in plugin_runtime_source
+    assert "renderedControlBannerVisible" in plugin_runtime_source
+    assert "renderedControlBannerEmphasis" in plugin_runtime_source
+    assert "this.renderedControlBannerText === text" in plugin_runtime_source
+    assert "this.renderedControlBannerVisible === isVisible" in plugin_runtime_source
+    assert "this.renderedControlBannerEmphasis === isEmphasized" in plugin_runtime_source
+
+    for locale_name in ["en", "ja", "ko", "zh-CN", "zh-TW", "ru", "pt", "es"]:
+        locale = _read_static_locale(locale_name)
+        assert locale["tutorial"]["yuiGuide"]["controlBanner"].strip()
+
+    plugin_locale_dir = Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager/src/i18n/locales"
+    for locale_file in ["en-US.ts", "ja.ts", "ko.ts", "zh-CN.ts", "zh-TW.ts", "ru.ts", "pt.ts", "es.ts"]:
+        assert "controlBanner:" in (plugin_locale_dir / locale_file).read_text(encoding="utf-8")
 
     taking_over_block = overlay_source.split("        setTakingOver(active) {", 1)[1].split(
         "        setInteractionShieldSuppressed(active) {",
@@ -182,42 +382,152 @@ def test_avatar_floating_guides_delegate_real_cursor_visibility_to_pc():
     )[0]
     assert "active ? 'none'" not in taking_over_block
     assert "style.cursor = '';" in taking_over_block
+    assert "this.syncControlBanner();" in taking_over_block
 
-    resistance_block = director_source.split("        prepareResistanceCursorReveal() {", 1)[1].split(
+    director_takeover_block = director_source.split("        setTutorialTakingOver(active, options) {", 1)[1].split(
+        "        getAvatarStandInCue(day, sceneId) {",
+        1,
+    )[0]
+    assert "const shouldSyncCursor = !(options && options.syncSystemCursor === false);" in director_takeover_block
+    assert "if (isActive && shouldSyncCursor) {" in director_takeover_block
+    assert "this.syncSystemCursorHidden(true, 'taking_over_started');" in director_takeover_block
+
+    resistance_block = director_source.split("        suppressResistanceCursorReveal() {", 1)[1].split(
         "        playLightResistance(x, y, options) {",
         1,
     )[0]
     assert "style.cursor = 'none';" not in resistance_block
-    assert "return false;" in resistance_block
-    assert "return true;" in resistance_block
-    assert "this.restoreHiddenCursorAfterResistance = false;" in resistance_block
+    assert "classList.add('yui-resistance-cursor-reveal')" not in resistance_block
+    assert "return false;" not in resistance_block
+    assert "return true;" not in resistance_block
+    assert "prepareResistanceCursorReveal" not in director_source
+    assert "restoreHiddenCursorAfterResistance" not in director_source
+    assert "this.syncSystemCursorHidden(true, 'resistance_cursor_reveal_suppressed');" in resistance_block
+    assert "noteUserCursorRevealSuppressionAttempt" in director_source
+    assert "noteUserCursorRevealAttempt" not in director_source
+    assert "noteUserCursorRevealSuppressionAttempt" in resistance_source
+    assert "noteUserCursorRevealAttempt" not in resistance_source
+    assert "noteUserCursorRevealSuppressionAttempt" in plugin_runtime_source
+    assert "noteUserCursorRevealAttempt" not in plugin_runtime_source
 
-    reveal_block = director_source.split("        revealUserCursor() {", 1)[1].split(
-        "        clearUserCursorReveal(resetCursor) {",
+    reveal_block = director_source.split("        suppressUserCursorReveal() {", 1)[1].split(
+        "        clearUserCursorRevealSuppression(resetCursor) {",
         1,
     )[0]
-    assert "this.syncSystemCursorHidden(false, 'user_cursor_revealed');" in reveal_block
+    assert "classList.add('yui-user-cursor-revealed')" not in reveal_block
+    assert "classList.add('yui-resistance-cursor-reveal')" not in reveal_block
+    assert "this.syncSystemCursorHidden(false, 'user_cursor_revealed');" not in reveal_block
+    assert "this.syncSystemCursorHidden(true, 'user_cursor_reveal_suppressed');" in reveal_block
+    assert "revealUserCursor()" not in director_source
+    assert "userCursorRevealed" not in director_source
+
+    plugin_reveal_block = plugin_runtime_source.split("  suppressUserCursorReveal() {", 1)[1].split(
+        "  clearUserCursorRevealSuppression() {",
+        1,
+    )[0]
+    assert "classList.add('yui-user-cursor-revealed')" not in plugin_reveal_block
+    assert "classList.add('yui-resistance-cursor-reveal')" not in plugin_reveal_block
+    assert "classList.remove('yui-resistance-cursor-reveal')" in plugin_reveal_block
+
+    plugin_resistance_reveal_block = plugin_runtime_source.split("  suppressResistanceCursorReveal() {", 1)[1].split(
+        "  async playLightResistance(x: number, y: number) {",
+        1,
+    )[0]
+    assert "classList.add('yui-resistance-cursor-reveal')" not in plugin_resistance_reveal_block
+    assert "window.setTimeout" in plugin_resistance_reveal_block
+    assert "revealUserCursor()" not in plugin_runtime_source
+    assert "revealRealCursorTemporarily" not in plugin_runtime_source
+    assert "userCursorRevealed" not in plugin_runtime_source
 
     assert "syncPcSystemCursorHidden(hidden, reason = 'tutorial')" in manager_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in manager_source
     assert "function syncPcSystemCursorHidden(hidden, reason = 'tutorial', options)" in common_source
-    assert "action: 'yui_guide_system_cursor_visibility'" in common_source
+    assert "function syncPcSystemCursorTemporaryReveal(durationMs = 2000, reason = 'tutorial-temporary-reveal', options)" in common_source
+    assert "'yui_guide_system_cursor_visibility'" in common_source
+    assert "'yui_guide_system_cursor_temporary_reveal'" in common_source
+    assert "syncPcSystemCursorTemporaryReveal(normalizedDurationMs, reason)" in director_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in manager_source
     assert "action: 'yui_guide_system_cursor_visibility'" not in director_source
+    assert "ensurePcTutorialGlobalOverlayStarted(reason = 'tutorial-started')" in manager_source
+    assert "const overlay = window.nekoTutorialOverlay;" in manager_source
+    assert "overlay.begin({" in manager_source
+    assert "relayYuiGuideTutorialLifecycleStarted(page, source);" in manager_source
+    assert "action: 'yui_guide_tutorial_lifecycle_started'" in manager_source
+    assert "window.nekoTutorialOverlay.relayToChat(startedMessage);" in manager_source
+    assert "window.nekoTutorialOverlay.relayToPet(startedMessage);" in manager_source
+    lifecycle_started_block = manager_source.split(
+        "    relayYuiGuideTutorialLifecycleStarted(page, source) {",
+        1,
+    )[1].split(
+        "    syncYuiGuideCompactChatFixedLayout",
+        1,
+    )[0]
+    assert lifecycle_started_block.index(
+        "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
+    ) < lifecycle_started_block.index("const startedMessage = {")
+    emit_started_block = manager_source.split(
+        "    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {",
+        1,
+    )[1].split(
+        "    showSkipButton() {",
+        1,
+    )[0]
+    assert emit_started_block.index("relayYuiGuideTutorialLifecycleStarted(page, source);") < emit_started_block.index(
+        "this.syncPcSystemCursorHidden(true, 'tutorial-started');"
+    )
     assert "this.syncPcSystemCursorHidden(true, 'tutorial-started');" in manager_source
     assert "this.syncPcSystemCursorHidden(false, rawReason);" in manager_source
     assert "syncSystemCursorHidden(hidden, reason = 'tutorial')" in director_source
     assert "syncPcSystemCursorHidden(hidden === true, reason);" in director_source
-    assert "this.syncSystemCursorHidden(false, 'interrupt_resist_light');" in resistance_source
-    assert "let shouldRestoreHiddenCursorAfterResistance = false;" in resistance_source
-    assert "shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);" in resistance_source
-    assert "if (shouldRestoreHiddenCursorAfterResistance) {" in resistance_source
-    assert "this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');" in resistance_source
-    assert "shouldRestoreHiddenCursorAfterResistance = call(" in resistance_source
-    assert "call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');" in resistance_source
+    assert "syncSystemCursorHidden(false, 'interrupt_resist_light')" not in resistance_source
+    assert "syncSystemCursorHidden', null, false, 'interrupt_resist_light')" not in resistance_source
+    assert "director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');" in resistance_source
+    assert "director.revealRealCursorForInterruptCount();" not in resistance_source
+    assert "syncSystemCursorHidden(true, 'interrupt_resist_light')" not in resistance_source
+    assert "director.overlay.emphasizeControlBanner();" in resistance_source
+    assert "call(this.overlay, 'emphasizeControlBanner', null);" in resistance_source
+    assert "call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);" in resistance_source
+    assert "director.suppressResistanceCursorReveal(normalizedOptions);" in resistance_source
+    assert "shouldRestoreHiddenCursorAfterResistance" not in resistance_source
+    assert "prepareResistanceCursorReveal" not in resistance_source
+    assert "interrupt_resist_light_done" not in resistance_source
     assert "this.syncSystemCursorHidden(false, 'interrupt_angry_exit');" in resistance_source
+    assert "call(this.callbacks, 'setTutorialTakingOver', null, true, {" in resistance_source
+    assert "director.setTutorialTakingOver(true, {" in resistance_source
+    assert "syncSystemCursor: false" in resistance_source
+    assert "this.emphasizeControlBanner()" in plugin_runtime_source
     assert "this.syncSystemCursorHidden(false, 'destroy');" in director_source
     assert "syncSystemCursorHidden: optional callback" in resistance_source
+
+
+def test_externalized_chat_clear_preserves_pc_cursor_without_stale_cache():
+    director_source = _read_director()
+    app_interpage_source = read_js_parts(APP_INTERPAGE_PATH)
+
+    clear_target_block = director_source.split(
+        "        clearExternalizedChatGuideTarget(options) {",
+        1,
+    )[1].split(
+        "        createAvatarFloatingUnionTarget(key, elements, options) {",
+        1,
+    )[0]
+    cursor_clear_block = app_interpage_source.split(
+        "function applyYuiGuideChatCursor(kind, options) {",
+        1,
+    )[1].split(
+        "        if (isYuiGuidePcCursorOnlyMode()) {",
+        1,
+    )[0]
+
+    assert "if (shouldClearCursor && shouldPreservePcOverlayCursor) {" in clear_target_block
+    assert "this.setHomePcCursorOutputSuppressedForExternalizedChat(false);" in clear_target_block
+    assert (
+        clear_target_block.index("this.setHomePcCursorOutputSuppressedForExternalizedChat(false);")
+        < clear_target_block.index("this.overlay.syncCursorPosition(currentCursorPoint.x, currentCursorPoint.y, true);")
+    )
+    assert "preservePcOverlayCursor: shouldPreservePcOverlayCursor" in clear_target_block
+    assert "else if (isYuiGuidePcCursorOnlyMode()) {" in cursor_clear_block
+    assert "yuiGuidePcOverlayCursor = null;" in cursor_clear_block
 
 
 def test_day1_intro_activation_copy_matches_auto_advance_behavior():
@@ -275,15 +585,16 @@ def test_steps_keep_default_non_home_page_registrations():
 def test_timeline_voice_key_resolution_uses_director_before_normalized_audio():
     source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
     runtime_block = source.split("createTimelineAudioRuntime(scene, timelineScene, context)", 1)[1].split(
-        "async runLegacyScene",
+        "async playScene",
         1,
     )[0]
 
-    assert "const resolveTimelineVoiceKey = (voiceKey) => {" in runtime_block
-    assert "director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
-    assert "return resolvedSceneVoiceKey || voiceKey || audio.voiceKey || legacyScene.voiceKey || '';" in runtime_block
-    assert "const resolvedVoiceKey = resolveTimelineVoiceKey(voiceKey);" in runtime_block
-    assert "director.getGuideVoiceDurationMs(\n                            resolveTimelineVoiceKey(voiceKey)," in runtime_block
+    assert "const resolveVoiceKey = (fallbackVoiceKey) => {" in runtime_block
+    assert "return director.resolveAvatarFloatingSceneVoiceKey(legacyScene)" in runtime_block
+    assert "|| fallbackVoiceKey" in runtime_block
+    assert "|| audio.voiceKey" in runtime_block
+    assert "const resolvedVoiceKey = resolveVoiceKey(voiceKey);" in runtime_block
+    assert "director.getGuideVoiceDurationMs(resolveVoiceKey(voiceKey || audio.voiceKey), '')" in runtime_block
 
 
 def test_icebreaker_does_not_restart_completed_current_day():
@@ -310,15 +621,15 @@ def test_return_control_scene_highlights_compact_input_while_final_line_plays():
         "        getActionSpotlightTarget",
         1,
     )[0]
-    persistent_setup_block = source.split("            const persistentSpotlightTarget = this.getSceneSpotlightTarget(stepId, performance);", 1)[1].split(
-        "            const actionSpotlightTarget = this.getActionSpotlightTarget(stepId, performance);",
+    persistent_setup_block = source.split("                const spotlightTarget = this.getSceneSpotlightTarget(this.currentSceneId, performance);", 1)[1].split(
+        "                const actionSpotlightTarget = this.getActionSpotlightTarget(this.currentSceneId, performance);",
         1,
     )[0]
 
-    assert "if (stepId === 'takeover_return_control')" in scene_target_block
-    assert "return this.getChatInputTarget() || fallbackTarget;" in scene_target_block
-    assert "if (stepId === 'takeover_return_control') {\n                this.overlay.clearPersistentSpotlight();" not in persistent_setup_block
-    assert "this.overlay.setPersistentSpotlight(persistentSpotlightTarget);" in persistent_setup_block
+    assert "if (stepId === 'day1_intro_greeting' || stepId === 'day1_takeover_return_control')" in scene_target_block
+    assert "return this.getChatCapsuleInputTarget() || this.getChatInputTarget() || this.getChatWindowTarget() || null;" in scene_target_block
+    assert "if (stepId === 'day1_takeover_return_control') {\n                this.overlay.clearPersistentSpotlight();" not in persistent_setup_block
+    assert "this.overlay.setPersistentSpotlight(spotlightTarget);" in persistent_setup_block
 
 
 def test_standalone_chat_spotlight_input_prefers_compact_capsule():
@@ -352,46 +663,34 @@ def test_tutorial_chat_messages_match_react_assistant_message_shape():
     )[0]
 
     assert "role: 'assistant'" in append_block
-    assert "const author = this.getGuideAssistantName();" in append_block
-    assert "author: author" in append_block
-    assert "avatarLabel:" in append_block
+    assert "author: this.getGuideAssistantName()" in append_block
     assert "avatarUrl: this.getGuideAssistantAvatarUrl()" in append_block
     assert "blocks: [{" in append_block
     assert "type: 'text'" in append_block
     assert "status: 'sent'" in append_block
 
 
-def test_tutorial_chat_streams_finalize_as_sent_on_termination():
+def test_tutorial_chat_streams_finalize_as_sent_on_completion():
     source = _read_director()
 
-    assert "this.activeGuideChatMessages = new Map();" in source
-    assert "finalizeActiveGuideChatMessages()" in source
-
+    # Post-#1901 each guide line streams into its own message id via
+    # updateGuideChatMessage instead of a shared activeGuideChatMessages map.
     stream_block = source.split("        streamGuideChatMessage(message, content, options) {", 1)[1].split(
         "        appendGuideChatMessage(text, options) {",
         1,
     )[0]
-    assert "this.activeGuideChatMessages.set(String(message.id), message);" in stream_block
-    assert "this.activeGuideChatMessages.delete(String(message.id));" in stream_block
-
-    finalize_block = source.split("        finalizeActiveGuideChatMessages() {", 1)[1].split(
-        "        scheduleGuideChatStream(callback, delayMs) {",
-        1,
-    )[0]
-    assert "status: 'sent'" in finalize_block
-    assert "blocks: message.blocks" in finalize_block
-    assert "actions: message.actions" in finalize_block
-
-    termination_block = source.split("        beginTerminationVisualCleanup() {", 1)[1].split(
-        "        async run",
-        1,
-    )[0]
-    destroy_block = source.split("        destroy() {", 2)[2].split(
-        "        handleGlobalClick",
-        1,
-    )[0]
-    assert "this.finalizeActiveGuideChatMessages();" in termination_block
-    assert "this.finalizeActiveGuideChatMessages();" in destroy_block
+    # In-place updates carry a 'streaming' status for partial text and finalize to
+    # 'sent' once the full line has played.
+    assert "this.updateGuideChatMessage(message.id, {" in stream_block
+    assert "blocks: message.blocks," in stream_block
+    assert "actions: message.actions," in stream_block
+    assert "status: 'streaming'" in stream_block
+    assert "status: 'sent'" in stream_block
+    # Zero-duration lines finalize straight to 'sent' without an animation.
+    assert "if (durationMs <= 0) {" in stream_block
+    # Termination / destroy / angry-exit halts an in-flight stream.
+    assert "this.destroyed" in stream_block
+    assert "this.terminationRequested" in stream_block
 
 
 def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_close():
@@ -457,64 +756,61 @@ def test_tutorial_exit_force_hides_managed_home_surfaces_before_async_panel_clos
     )
 
 
-def test_new_tutorial_chat_line_finishes_previous_stream_before_append():
+def test_new_tutorial_chat_line_streams_each_message_independently():
     source = _read_director()
 
     append_block = source.split("        appendGuideChatMessage(text, options) {", 1)[1].split(
         "        focusAndHighlightChatInput",
         1,
     )[0]
+    # Each guide line becomes its own uniquely-keyed message and is streamed
+    # independently (streamGuideChatMessage targets message.id), so appending a new
+    # line never clobbers the previous line's in-flight stream.
+    assert "id: 'yui-guide-' + createdAt" in append_block
+    assert "this.streamGuideChatMessage(message, content, streamOptions);" in append_block
     content_index = append_block.index("const content = formatGuideDebugText(")
-    clear_index = append_block.index("this.clearGuideChatStreamTimers();")
-    finalize_index = append_block.index("this.finalizeActiveGuideChatMessages();")
     message_index = append_block.index("const message = {")
+    stream_index = append_block.index("this.streamGuideChatMessage(message, content, streamOptions);")
 
-    assert content_index < clear_index < finalize_index < message_index
+    assert content_index < message_index < stream_index
 
 
-def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_clear():
+def test_guide_audio_duration_governs_compact_capsule_message_clear():
     source = _read_director()
 
-    assert "const GUIDE_SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';" in source
-    assert "const GUIDE_SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';" in source
-    assert "publishGuideSpeechPlaybackState('guide_audio_started'" in source
-    assert "publishGuideSpeechPlaybackState(success ? 'guide_audio_ended' : 'guide_audio_failed'" in source
-
+    # Post-#1901 the speech-playback state channel moved out of the director (it now
+    # lives in static/app/app-audio-playback.js). The director instead ties the
+    # compact-capsule caption lifetime to the guide line's voice duration: the retain
+    # window is seeded from getGuideVoiceDurationMs and honored when clearing.
     constructor_block = source.split("    class YuiGuideDirector {", 1)[1].split(
         "        async init()",
         1,
     )[0]
     append_block = source.split("        appendGuideChatMessage(text, options) {", 1)[1].split(
-        "            if (Array.isArray(normalizedOptions.buttons)",
+        "        focusAndHighlightChatInput",
         1,
     )[0]
-    speak_block = source.split("        async speakGuideLine(text, options) {", 1)[1].split(
-        "        resolvePerformanceBubbleText",
-        1,
-    )[0]
-    normalize_block = source.split("        normalizeVoiceQueueSpeakOptions(options) {", 1)[1].split(
-        "        async guideChatTypeMessage",
-        1,
-    )[0]
-    run_narration_block = source.split("        async runNarration(narration) {", 1)[1].split(
-        "        async speakLineAndWait",
+    clear_block = source.split("        clearGuideChatMessages() {", 1)[1].split(
+        "        resolveGuideChatStreamDurationMs",
         1,
     )[0]
 
-    assert "this.guideChatVoiceMessageIds = new Map();" in constructor_block
-    assert "this.guideChatVoiceMessageIds.set(voiceKey, message.id);" in append_block
-    assert "this.normalizeVoiceQueueSpeakOptions(options)" in speak_block
-    assert "normalizedOptions.playbackTurnId = guideMessageId;" in normalize_block
-    assert "playbackTurnId: narration.playbackTurnId" in run_narration_block
+    assert "this.latestGuideChatMessageRetainId = ''" in constructor_block
+    assert "const retainDurationMs = this.getGuideVoiceDurationMs(" in append_block
+    assert "this.latestGuideChatMessageRetainId = message.id;" in append_block
+    assert "this.latestGuideChatMessageRetainUntilMs = createdAt + retainDurationMs;" in append_block
+    # While the voice-duration retain window is still open, clearing is deferred.
+    assert "this.latestGuideChatMessageRetainUntilMs > now" in clear_block
+    assert "this.clearGuideChatMessages();" in clear_block
 
 
 def test_settings_peek_copy_matches_existing_voice_audio_script():
     expected_audio_script_markers = {
         "en": ("little space", "warmth of my words"),
-        "es": ("little space", "warmth of my words"),
+        "es": ("pertenece solo a nosotros", "calidez de mis palabras"),
         "ja": ("小さな空間", "ワガママ"),
         "ko": ("우리만의", "다정함"),
-        "pt": ("little space", "warmth of my words"),
+        "pt": ("pertence só a nós dois", "calor das minhas palavras"),
         "ru": ("крошечном пространстве", "Теплоту"),
         "zh-CN": ("小空间", "说话的温度"),
         "zh-TW": ("小空間", "說話的溫度"),
@@ -532,15 +828,16 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
 
 def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
     day1_source = _read_day1_guide()
-    match = re.search(r"bubbleText: '([^']+)',\n\s+bubbleTextKey: 'tutorial\.yuiGuide\.lines\.introBasic'", day1_source)
-    assert match is not None
-    fallback_text = match.group(1)
-    static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
+    # The intro-basic scene now drives its copy purely from the i18n key (no inline
+    # fallback string); the audio filename encodes the same "神奇的按钮" script theme.
+    assert "textKey: 'tutorial.yuiGuide.lines.introBasic'" in day1_source
+    assert "voiceKey: 'intro_basic'" in day1_source
+    assert "intro_basic: '这里有一个神奇的按钮.mp3'" in day1_source
 
-    assert "神奇的按钮" in fallback_text
-    assert static_intro == fallback_text
-    assert not fallback_text.endswith("喵！")
-    assert fallback_text.endswith("啦！")
+    static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
+    assert "神奇的按钮" in static_intro
+    assert not static_intro.endswith("喵！")
+    assert static_intro.endswith("啦！")
 
 
 def test_day1_audio_files_by_key_preserves_locale_override_map():

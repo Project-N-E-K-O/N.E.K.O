@@ -31,9 +31,9 @@ import websockets
 from functools import partial
 
 from utils.config_manager import get_config_manager
-from utils.native_voice_registry import get_native_tts_worker
-from utils.mimo_tts_voices import MIMO_PRESET_CATALOG
-from utils import tts_provider_registry as _tts_providers
+from utils.tts.native_voice_registry import get_native_tts_worker
+from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
+from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
 
 # ── shared infrastructure (re-exported for namespace stability) ──────────────
@@ -94,6 +94,11 @@ from .workers.mimo import (
     _mimo_is_selected,
     _mimo_resolve,
 )
+from .workers.doubao import (
+    doubao_tts_worker,
+    _doubao_is_selected,
+    _doubao_resolve,
+)
 from .workers.gptsovits import (
     gptsovits_tts_worker,
     get_custom_tts_voices,
@@ -145,6 +150,7 @@ __all__ = [
     "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
     # provider constants
@@ -171,6 +177,7 @@ __all__ = [
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
     "_mimo_is_selected", "_mimo_resolve",
+    "_doubao_is_selected", "_doubao_resolve",
 ]
 
 
@@ -230,7 +237,7 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
     if not voice_id:
         return False
     try:
-        from utils.grok_tts_voices import normalize_grok_tts_voice
+        from utils.tts.providers.grok import normalize_grok_tts_voice
     except Exception:
         # 没装 grok adapter — 保守要求 xAI custom 格式才路由
         return bool(_XAI_CUSTOM_VOICE_PATTERN.match(voice_id))
@@ -283,7 +290,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     assist_api_type = str(core_cfg.get('assistApi') or '').strip().lower()
 
     # 特异 TTS provider（用户显式配置端点的 vllm_omni / 本地 GPT-SoVITS 等）的
-    # 选择与 worker 解析已收敛到 utils.tts_provider_registry，按 priority 顺序匹配：
+    # 选择与 worker 解析已收敛到 utils.tts.provider_registry，按 priority 顺序匹配：
     # GPT-SoVITS（本地显式开关）优先于 vLLM-Omni，二者都优先于克隆音色 /
     # assistApi fallback / 原生 TTS（沿用原内联顺序）。新增此类 provider 只需在
     # 本文件末尾 register 一条，不再在此处插内联特判。凭证防泄漏（vllm_omni 无 key
@@ -389,7 +396,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         return dummy_tts_worker, None, None
 
 
-# ─── 特异 TTS provider 注册（与 utils.tts_provider_registry 对偶）────────────
+# ─── 特异 TTS provider 注册（与 utils.tts.provider_registry 对偶）────────────
 #
 # 在所有 worker 定义之后注册，避免元数据模块过早拉入 soxr/websockets 等重依赖
 # （与 native_voice_registry 的两层注册同源）。各 adapter 精确复刻
@@ -474,7 +481,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
 # MiMo：priority 60（clone 之后、native 之前，沿用原 get_tts_worker 顺序）。
 # capabilities {preset, clone}：
 #   - preset：固定音色目录由 preset_catalog 提供（MIMO_PRESET_CATALOG，数据复用
-#     utils.mimo_tts_voices 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
+#     utils.tts.providers.mimo 的固定音色表）——MiMo 预制音色的单一真相，UI /voices 与
 #     validate_voice_id 都查注册表，不再借道 native_voice_registry（MiMo 是 hosted SaaS，
 #     不是核心自带，见设计文档 §4）。
 #   - clone：voiceclone enrollment（characters_router /voice_clone 的 mimo 分支，对偶
@@ -492,4 +499,21 @@ _tts_providers.register(_tts_providers.TTSProvider(
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='doubao_tts',
+    kind='hosted',
+    priority=65,
+    capabilities=frozenset({'clone'}),
+    is_selected=_doubao_is_selected,
+    resolve=_doubao_resolve,
+    default_url='https://openspeech.bytedance.com',
+    default_model='seed-icl-2.0',
+    default_voice='',
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='doubao_tts',
+    tts_dropdown_only=True,
+    tts_config_visible=False,
 ))

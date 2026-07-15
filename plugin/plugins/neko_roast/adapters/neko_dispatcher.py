@@ -9,8 +9,21 @@ from types import SimpleNamespace
 from typing import Any
 
 from ..core.contracts import InteractionRequest
+from ..core.live_output_contract_prompt import render_contract_instruction
+from ..core.live_output_quality import UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES, choose_fallback_reply
+from ..core.recent_output_families import spent_output_text
+from .output_contract_bridge import (
+    max_reply_chars_for_request,
+    metadata_for_request,
+    response_module_hint,
+)
 
 _AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
+_NEKO_ROAST_AUDIENCE_SOURCES = {"live_danmaku", "manual_live_simulation"}
+_NEKO_ROAST_HOSTING_SOURCES = {"warmup_hosting", "idle_hosting", "active_engagement"}
+_NEKO_ROAST_LIVE_SOURCES = _NEKO_ROAST_AUDIENCE_SOURCES | _NEKO_ROAST_HOSTING_SOURCES | {
+    "live_support_events",
+}
 
 
 def _normalize_avatar_for_neko_vision(data: bytes, mime: str) -> tuple[bytes, str]:
@@ -108,9 +121,213 @@ def resolve_plugin_target_lanlan(plugin: Any, raw: dict[str, Any] | None = None)
     return _resolve_target_lanlan(plugin, request)  # type: ignore[arg-type]
 
 
+def _max_live_reply_chars(request: InteractionRequest) -> int:
+    return max_reply_chars_for_request(request)
+
+
+def _priority_for_request(request: InteractionRequest, *, demo: bool = False) -> int:
+    if demo:
+        return 8
+    module = response_module_hint(request)
+    source = str(request.event.source or "").strip()
+    if module == "live_support_events":
+        return 9
+    if source in _NEKO_ROAST_AUDIENCE_SOURCES:
+        return 8
+    if source in _NEKO_ROAST_HOSTING_SOURCES:
+        return 3
+    if source == "developer_sandbox":
+        return 7
+    return 5
+
+
+def _coalesce_key_for_request(request: InteractionRequest, *, demo: bool = False) -> str:
+    if demo:
+        return f"neko_roast_demo:{request.identity.uid}:{request.event.seen_at}"
+    source = str(request.event.source or "").strip()
+    if source in _NEKO_ROAST_HOSTING_SOURCES:
+        target = str(request.event.target_lanlan or "").strip() or str(request.identity.uid or "").strip()
+        raw = request.event.raw if isinstance(request.event.raw, dict) else {}
+        host_beat = raw.get("host_beat") if isinstance(raw.get("host_beat"), dict) else {}
+        topic = raw.get("topic_material") if isinstance(raw.get("topic_material"), dict) else {}
+        beat = str(
+            host_beat.get("key")
+            or topic.get("key")
+            or request.event.trace_id
+            or request.event.seen_at
+            or "default"
+        ).strip()
+        return f"neko_roast:auto_host:{target or 'default'}:{source}:{beat}"
+    return ""
+
+
+def _recent_live_reply_values(plugin: Any, *, limit: int = 6) -> list[str]:
+    runtime = getattr(plugin, "runtime", None)
+    recent_results = getattr(runtime, "recent_results", None)
+    if not recent_results:
+        return []
+    replies: list[str] = []
+    for result in reversed(list(recent_results)):
+        if not isinstance(result, dict):
+            continue
+        text = spent_output_text(result)
+        if not text:
+            continue
+        replies.append(text)
+        if len(replies) >= limit:
+            break
+    replies.reverse()
+    return replies
+
+
+def _append_plugin_output_contract(
+    text: str,
+    *,
+    metadata: dict[str, Any],
+    plugin: Any,
+) -> str:
+    if "NEKO Live short output contract:" in text:
+        return text
+    contract = render_contract_instruction(
+        [{"metadata": metadata}],
+        recent_live_replies=_recent_live_reply_values(plugin),
+    ).strip()
+    if not contract:
+        return text
+    base = text.rstrip()
+    return f"{base}\n\n{contract}" if base else contract
+
+
+def _prepend_live_delivery_boundary(text: str, request: InteractionRequest) -> str:
+    source = str(request.event.source or "").strip()
+    if source not in _NEKO_ROAST_LIVE_SOURCES:
+        return text
+    if "NEKO Live delivery boundary:" in text:
+        return text
+    mode = str(request.live_mode or request.event.live_mode or "").strip() or "co_stream"
+    boundary_lines = [
+        "NEKO Live delivery boundary:",
+        "- This is a live-room speech request, not a private chat with {MASTER_NAME}.",
+        "- Generate only the exact line {LANLAN_NAME} should say to the live room.",
+        "- Do not scold, greet, mention, or ask {MASTER_NAME}, the owner, an operator, or an unseen streamer to host.",
+        "- If a generic callback wrapper says to respond to {MASTER_NAME}, treat that only as transport wording and follow the NEKO Live rules below.",
+    ]
+    if mode == "solo_stream":
+        boundary_lines.append(
+            "- solo_stream: {LANLAN_NAME} is already the only on-stage host; she performs the hosting herself."
+        )
+    else:
+        boundary_lines.append(
+            "- co_stream: {LANLAN_NAME} is a low-interrupt partner and must not direct the human streamer to carry the room."
+        )
+    boundary = "\n".join(boundary_lines)
+    base = str(text or "").rstrip()
+    return f"{base}\n\n{boundary}" if base else boundary
+
+
+def _prepend_danmaku_visible_target_lock(text: str, metadata: dict[str, Any], request: InteractionRequest) -> str:
+    if response_module_hint(request) != "danmaku_response":
+        return text
+    if "NEKO Live visible reply target:" in text:
+        return text
+    profile = str(metadata.get("danmaku_profile") or "").strip()
+    if profile != "target_roast_request":
+        return text
+    viewer = str(metadata.get("danmaku_target_viewer_nickname") or "").strip()
+    if not viewer:
+        viewer = str(metadata.get("danmaku_viewer_nickname") or "").strip()
+    viewer = " ".join(viewer.split())[:16]
+    if not viewer:
+        return text
+    danmaku = str(request.event.danmaku_text or "").strip()
+    danmaku = " ".join(danmaku.split())[:48]
+    lines = [
+        "NEKO Live visible reply target:",
+        f"- current_viewer: {viewer}",
+        "- This is a named public roast request; the first visible clause must make the target clear.",
+        "- Do not answer NEKO's previous line, an unseen operator, or the room in general before current_viewer.",
+        f"- If correcting, denying, or self-fixing, start with \"{viewer},\" so the target stays audible.",
+    ]
+    if danmaku:
+        lines.append(f"- current_danmaku: {danmaku}")
+    lock = "\n".join(lines)
+    base = str(text or "").lstrip()
+    return f"{lock}\n\n{base}" if base else lock
+
+
+def _unverified_support_claim_reply(request: InteractionRequest, metadata: dict[str, Any]) -> str:
+    if response_module_hint(request) != "danmaku_response":
+        return ""
+    if metadata.get("viewer_claimed_support") != "unverified_danmaku_claim":
+        return ""
+    source = str(request.event.source or "").strip()
+    if source not in _NEKO_ROAST_AUDIENCE_SOURCES:
+        return ""
+    return choose_fallback_reply(
+        str(request.event.danmaku_text or ""),
+        "danmaku_response",
+        UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES,
+    )
+
+
+def _force_exact_live_reply_prompt(reply: str, request: InteractionRequest) -> str:
+    danmaku = " ".join(str(request.event.danmaku_text or "").split())[:80]
+    lines = [
+        "NEKO Live unverified support claim hard guard:",
+        "- The current danmaku is only ordinary chat claiming a gift/support event.",
+        "- No verified Gift / Super Chat / Guard event is attached to this request.",
+        "- Output exactly the fixed safe live line below, with no extra words.",
+        "- Do not say thanks, thank you, received, boss, or any real support confirmation.",
+    ]
+    if danmaku:
+        lines.append(f"- current_danmaku_claim: {danmaku}")
+    lines.append(f"fixed_safe_line: {reply}")
+    return "\n".join(lines)
+
+
 class NekoDispatcher:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
+
+    def output_channel_status(self) -> dict[str, Any]:
+        checker = getattr(self.plugin, "output_channel_status", None)
+        if callable(checker):
+            try:
+                data = checker()
+            except Exception as exc:
+                return {
+                    "ready": False,
+                    "reason": "output_channel_unavailable",
+                    "detail": str(exc),
+                }
+            if isinstance(data, dict):
+                ready = bool(data.get("ready", data.get("ok", False)))
+                return {
+                    "ready": ready,
+                    "reason": str(
+                        data.get("reason")
+                        or ("" if ready else "output_channel_unavailable")
+                    ),
+                    "detail": str(data.get("detail") or ""),
+                }
+
+        explicit_ready = getattr(self.plugin, "output_channel_ready", None)
+        if explicit_ready is not None:
+            ready = bool(explicit_ready)
+            return {
+                "ready": ready,
+                "reason": "" if ready else "output_channel_unavailable",
+                "detail": "",
+            }
+
+        if not callable(getattr(self.plugin, "push_message", None)):
+            return {
+                "ready": False,
+                "reason": "output_channel_unavailable",
+                "detail": "plugin.push_message is unavailable",
+            }
+
+        return {"ready": True, "reason": "", "detail": ""}
 
     async def _push_context_text(self, text: str, *, description: str, result_name: str) -> str:
         target_lanlan = resolve_plugin_target_lanlan(self.plugin)
@@ -181,12 +398,13 @@ class NekoDispatcher:
             return f"skipped_to_neko(reason={reason})"
         identity = request.identity
         is_demo_event = request.event.source == "developer_sandbox" and request.event.raw.get("fixture") == "demo_avatar"
-        # 锐评指令由 avatar_roast.build_request 集中构造（自适应焦点 / META / 禁脑补）。
+        # The roast instruction is owned by avatar_roast.build_request()
+        # (adaptive focus, metadata, and no-invented-avatar rules).
         text = request.prompt_text or ""
         if is_demo_event:
-            text = "（这是猫娘锐评插件的内置演示，也请像真实弹幕一样直接回应。）\n" + text
+            text = "（这是 NEKO Live 首次出场锐评的内置演示，也请像真实弹幕一样直接回应。）\n" + text
         parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        if identity.avatar_bytes:
+        if request.allow_avatar_image and identity.avatar_bytes:
             avatar_bytes, avatar_mime = _normalize_avatar_for_neko_vision(
                 identity.avatar_bytes,
                 identity.avatar_mime or "image/png",
@@ -204,28 +422,44 @@ class NekoDispatcher:
         image_part_bytes = len(parts[1]["data"]) if len(parts) > 1 else 0
         target_lanlan = _resolve_target_lanlan(self.plugin, request)
         if request.dry_run:
-            # 安全测试态：整条 pipeline 已跑完（身份/锐评/头像/安全门），但不真的投给猫猫。
+            max_reply_chars = _max_live_reply_chars(request)
+            # Safe test mode: the whole pipeline has run, but nothing is delivered to NEKO.
             return (
                 f"dry_run(target={target_lanlan or 'none'}, ai_behavior=respond, "
-                f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)})"
+                f"visibility=none, image_part_bytes={image_part_bytes}, text_len={len(text)}, "
+                f"reply_contract=short_tts_line, max_reply_chars={max_reply_chars}, "
+                f"response_module_hint={response_module_hint(request)})"
             )
         if request.event.source == "developer_sandbox" and not target_lanlan:
             raise ValueError("missing_target_lanlan: 当前界面猫猫不可用，无法发送模拟弹幕。")
-        metadata = {
-            "plugin": "neko_roast",
-            "uid": identity.uid,
-            "live_mode": request.live_mode,
-            "demo": is_demo_event,
-        }
+        metadata = metadata_for_request(request, demo=is_demo_event)
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
+        forced_reply = _unverified_support_claim_reply(request, metadata)
+        if forced_reply:
+            metadata["forced_reply_reason"] = "unverified_support_claim"
+            parts[0]["text"] = _force_exact_live_reply_prompt(forced_reply, request)
+        parts[0]["text"] = _append_plugin_output_contract(
+            str(parts[0].get("text") or ""),
+            metadata=metadata,
+            plugin=self.plugin,
+        )
+        parts[0]["text"] = _prepend_danmaku_visible_target_lock(
+            str(parts[0].get("text") or ""),
+            metadata,
+            request,
+        )
+        parts[0]["text"] = _prepend_live_delivery_boundary(
+            str(parts[0].get("text") or ""),
+            request,
+        )
         result = self.plugin.push_message(
             source="neko_roast",
             visibility=[],
             ai_behavior="respond",
             parts=parts,
-            priority=8 if is_demo_event else 5,
-            coalesce_key=f"neko_roast_demo:{identity.uid}:{request.event.seen_at}" if is_demo_event else "",
+            priority=_priority_for_request(request, demo=is_demo_event),
+            coalesce_key=_coalesce_key_for_request(request, demo=is_demo_event),
             metadata=metadata,
             target_lanlan=target_lanlan or None,
         )

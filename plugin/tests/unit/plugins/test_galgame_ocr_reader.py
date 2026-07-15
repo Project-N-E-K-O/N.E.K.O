@@ -18,6 +18,7 @@ from plugin.plugins.galgame_plugin import ocr_capture as galgame_ocr_capture
 from plugin.plugins.galgame_plugin import ocr_backends as galgame_ocr_backends
 from plugin.plugins.galgame_plugin import ocr_bridge_writer as galgame_ocr_bridge_writer
 from plugin.plugins.galgame_plugin import ocr_capture_backends as galgame_ocr_capture_backends
+from plugin.plugins.galgame_plugin import dialogue_library as galgame_dialogue_library
 from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as galgame_printwindow_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
@@ -386,6 +387,126 @@ def _window() -> list[DetectedGameWindow]:
             pid=4242,
         )
     ]
+
+
+def _write_senren_banka_dialogue_library(
+    library_dir: Path,
+    *,
+    line_id: str = "fixture:001",
+    text: str = "这是千恋万花台词库的开发者测试行。",
+    aliases: list[str] | None = None,
+) -> Path:
+    library_dir.mkdir(parents=True, exist_ok=True)
+    (library_dir / "senren_banka.json").write_text(
+        json.dumps(
+            {
+                "game_id": galgame_dialogue_library.SENREN_BANKA_GAME_ID,
+                "title": "千恋＊万花",
+                "lines": [
+                    {
+                        "id": line_id,
+                        "text": text,
+                        "aliases": aliases or [],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    galgame_dialogue_library._load_dialogue_library_cached.cache_clear()
+    return library_dir
+
+
+def test_senren_banka_dialogue_library_matches_fixture_line_with_minor_ocr_error(
+    tmp_path: Path,
+) -> None:
+    expected_line_id = "fixture:ocr-fuzzy"
+    expected_text = "这是千恋万花台词库的开发者测试行。"
+    library_dir = _write_senren_banka_dialogue_library(
+        tmp_path / "dialogue_libraries",
+        line_id=expected_line_id,
+        text=expected_text,
+    )
+
+    match = galgame_dialogue_library.match_dialogue_library_for_target(
+        "这是千恋万花台词库的开发者测试句。",
+        process_name="SenrenBanka.exe",
+        normalized_title="千恋＊万花",
+        library_dir=library_dir,
+    )
+
+    assert match is not None
+    assert match.game_id == galgame_dialogue_library.SENREN_BANKA_GAME_ID
+    assert match.line_id == expected_line_id
+    assert match.text == expected_text
+    assert match.score >= 0.9
+
+
+def test_senren_banka_dialogue_library_matches_normalized_traditional_title(
+    tmp_path: Path,
+) -> None:
+    library_dir = _write_senren_banka_dialogue_library(tmp_path / "dialogue_libraries")
+
+    match = galgame_dialogue_library.match_dialogue_library_for_target(
+        "这是千恋万花台词库的开发者测试行。",
+        process_name="",
+        normalized_title="千戀＊萬花",
+        library_dir=library_dir,
+    )
+
+    assert match is not None
+    assert match.game_id == galgame_dialogue_library.SENREN_BANKA_GAME_ID
+
+
+def test_dialogue_library_rejects_invalid_line(tmp_path: Path) -> None:
+    library_dir = tmp_path / "dialogue_libraries"
+    library_dir.mkdir()
+    path = library_dir / "senren_banka.json"
+    path.write_text(
+        json.dumps(
+            {
+                "game_id": galgame_dialogue_library.SENREN_BANKA_GAME_ID,
+                "title": "千恋＊万花",
+                "lines": [{"id": "fixture:bad", "text": ""}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"line #1.*game_id=senren_banka"):
+        galgame_dialogue_library.load_dialogue_library(path)
+
+
+def test_dialogue_library_match_ignores_invalid_library_on_hot_path(tmp_path: Path) -> None:
+    library_dir = tmp_path / "dialogue_libraries"
+    library_dir.mkdir()
+    (library_dir / "senren_banka.json").write_text("{", encoding="utf-8")
+
+    assert (
+        galgame_dialogue_library.match_dialogue_library_for_target(
+            "这是千恋万花台词库的开发者测试句。",
+            process_name="SenrenBanka.exe",
+            normalized_title="千恋＊万花",
+            library_dir=library_dir,
+        )
+        is None
+    )
+
+
+def test_dialogue_library_does_not_match_unrelated_game_target(tmp_path: Path) -> None:
+    library_dir = _write_senren_banka_dialogue_library(tmp_path / "dialogue_libraries")
+
+    assert (
+        galgame_dialogue_library.match_dialogue_library_for_target(
+            "这是千恋万花台词库的开发者测试句。",
+            process_name="DemoGame.exe",
+            normalized_title="Demo Window",
+            library_dir=library_dir,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -4282,6 +4403,57 @@ async def test_ocr_reader_runtime_exposes_stable_text_tracker(
     assert result.runtime["stable_ocr_block_reason"] == "waiting_for_repeat"
 
 
+@pytest.mark.asyncio
+async def test_ocr_reader_senren_banka_dialogue_library_confirms_matched_line_immediately(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    expected_text = "这是千恋万花台词库的开发者测试行。"
+    observed_text = "这是千恋万花台词库的开发者测试句。"
+    library_dir = _write_senren_banka_dialogue_library(
+        tmp_path / "dialogue_libraries",
+        line_id="fixture:ocr-runtime",
+        text=expected_text,
+    )
+    monkeypatch.setattr(galgame_dialogue_library, "_DEFAULT_LIBRARY_DIR", library_dir)
+    galgame_dialogue_library._load_dialogue_library_cached.cache_clear()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        time_fn=lambda: 3000.0,
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=101,
+                title="千恋＊万花",
+                process_name="SenrenBanka.exe",
+                pid=28828,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend([observed_text]),
+    )
+
+    result = await manager.tick(bridge_sdk_available=False, memory_reader_runtime={})
+
+    session = read_session_json(bridge_root / result.runtime["game_id"] / "session.json").session
+
+    assert result.runtime["detail"] == "receiving_text"
+    assert result.runtime["last_observed_line"]["text"] == expected_text
+    assert result.runtime["last_stable_line"]["text"] == expected_text
+    assert result.runtime["stable_ocr_stable_text"] == expected_text
+    assert result.runtime["stable_ocr_block_reason"] == ""
+    assert session is not None
+    assert session["state"]["text"] == expected_text
+
+
 def test_ocr_reader_starts_foreground_advance_monitor_for_real_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4934,7 +5106,7 @@ def test_build_config_defaults_ocr_languages_to_chi_sim_jpn_eng(tmp_path: Path) 
     )
 
 
-def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
+def test_ocr_reader_manager_defers_rapidocr_until_first_ocr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4955,7 +5127,8 @@ def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
     )
 
     assert manager._writer.bridge_root == bridge_root
-    assert warmup_calls
+    assert warmup_calls == []
+    assert manager._rapidocr_backend_cache is None
 
 
 @pytest.mark.asyncio
@@ -5171,8 +5344,50 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         assert first._ensure_runtime() is runtime
         assert second._ensure_runtime() is runtime
         assert len(load_calls) == 1
+        first.close()
+        assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+        second.close()
+        assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
     finally:
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_backend_close_releases_cached_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+    runtime = object()
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+
+    assert backend._ensure_runtime() is runtime
+    assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+
+    backend.close()
+    backend.close()
+
+    assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
+    assert backend._runtime is None
+    with pytest.raises(RuntimeError, match="closed"):
+        backend._ensure_runtime()
 
 
 def test_rapidocr_runtime_cache_reloads_after_idle_timeout(
@@ -5470,6 +5685,11 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
         rapidocr_lang_changed_callback=persisted.append,
     )
     manager._ocr_lang_detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+    backend_close_calls: list[bool] = []
+    manager._rapidocr_backend_cache_key = manager._rapidocr_cache_key()
+    manager._rapidocr_backend_cache = SimpleNamespace(
+        close=lambda: backend_close_calls.append(True)
+    )
     monkeypatch.setattr(
         galgame_ocr_reader,
         "inspect_rapidocr_installation",
@@ -5494,6 +5714,8 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
     assert manager._config.rapidocr_lang_type == "korean"
     assert manager._config.rapidocr_auto_detect_last_lang == "korean"
     assert persisted == ["korean"]
+    assert backend_close_calls == [True]
+    assert manager._rapidocr_backend_cache is None
 
 
 def test_rapidocr_auto_lang_does_not_override_manual_disable_during_inspection(
@@ -6655,6 +6877,45 @@ def test_rapidocr_text_adapter_groups_lines_and_filters_low_confidence() -> None
     assert _rapidocr_text_from_output(output) == "雪乃Hello\n今天回家"
 
 
+def test_rapidocr_text_adapter_drops_short_low_confidence_ui_marker_line() -> None:
+    output = [
+        (
+            [[10, 20], [360, 20], [360, 42], [10, 42]],
+            "此时此刻，王生正摆了一桌宴席。",
+            0.96,
+        ),
+        (
+            [[380, 60], [398, 60], [398, 78], [380, 78]],
+            "三·",
+            0.52,
+        ),
+    ]
+
+    lines = galgame_ocr_reader._rapidocr_lines_from_output(output)
+
+    assert [text for text, _score, _box in lines] == [
+        "此时此刻，王生正摆了一桌宴席。"
+    ]
+    assert _rapidocr_text_from_output(output) == "此时此刻，王生正摆了一桌宴席。"
+
+
+def test_rapidocr_text_adapter_drops_single_ascii_ui_marker_line() -> None:
+    output = [
+        (
+            [[10, 20], [300, 20], [300, 42], [10, 42]],
+            "我抬眼一望，摇了摇头，心中暗笑。",
+            0.96,
+        ),
+        (
+            [[320, 60], [334, 60], [334, 78], [320, 78]],
+            "P",
+            0.71,
+        ),
+    ]
+
+    assert _rapidocr_text_from_output(output) == "我抬眼一望，摇了摇头，心中暗笑。"
+
+
 def test_fix_ocr_punctuation_confusion_for_cjk_dialogue() -> None:
     assert galgame_ocr_reader._fix_ocr_punctuation_confusion("这是对白.") == "这是对白。"
     assert galgame_ocr_reader._fix_ocr_punctuation_confusion("但是, 另一个") == "但是、另一个"
@@ -6800,6 +7061,54 @@ async def test_ocr_reader_manager_excludes_neko_self_window_and_waits_for_valid_
     assert result.runtime["candidate_count"] == 0
     assert result.runtime["excluded_candidate_count"] == 1
     assert result.runtime["last_exclude_reason"] == "excluded_self_window"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Galgame Play Assistant",
+        "Galgame 游玩助手",
+        "Galgame 遊玩助手",
+        "Galgame プレイアシスタント",
+        "Galgame 플레이 도우미",
+        "Помощник для Galgame",
+    ],
+)
+def test_ocr_window_inventory_excludes_galgame_plugin_ui_titles(
+    tmp_path: Path,
+    ocr_runtime_root: Path,
+    title: str,
+) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(
+            bridge_root,
+            enabled=True,
+            install_target_dir=str(ocr_runtime_root),
+        ),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [
+            DetectedGameWindow(
+                hwnd=303,
+                title=title,
+                process_name="electron.exe",
+                pid=1600,
+                width=1280,
+                height=900,
+                area=1280 * 900,
+            )
+        ],
+        capture_backend=_FakeCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(),
+    )
+
+    eligible, excluded = manager._scan_window_inventory()
+
+    assert eligible == []
+    assert len(excluded) == 1
+    assert excluded[0].exclude_reason == "excluded_self_window"
 
 
 @pytest.mark.asyncio

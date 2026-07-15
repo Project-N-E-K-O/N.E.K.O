@@ -204,6 +204,20 @@ describe('hosted TSX document runtime', () => {
     expect(root.querySelector('h1')?.textContent).toBe('Title Mika')
   })
 
+  it('forwards hosted console messages to the parent frame', () => {
+    const { messages } = executeHostedDocument(`
+      export default function Panel() {
+        console.log("hello from hosted", { ok: true })
+        return <div>ready</div>
+      }
+    `)
+
+    const consoleMessage = messages.find((message) => message.type === 'neko-hosted-surface-console')
+    expect(consoleMessage?.payload?.level).toBe('log')
+    expect(consoleMessage?.payload?.args).toEqual(['hello from hosted', { ok: true }])
+    expect(consoleMessage?.payload?.surface?.surface).toBe('panel:main')
+  })
+
   it('strips multiline and side-effect UI kit imports before executing TSX', () => {
     const { root } = executeHostedDocument(`
       import {

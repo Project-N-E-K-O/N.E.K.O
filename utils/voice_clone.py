@@ -413,7 +413,7 @@ class MimoVoiceCloneClient:
         self.base_url = base_url or None
 
     def _build_payload(self, audio_bytes: bytes, mime_type: str, text: str) -> dict:
-        from utils.mimo_tts_voices import MIMO_TTS_VOICECLONE_MODEL, mimo_voice_clone_data_uri
+        from utils.tts.providers.mimo import MIMO_TTS_VOICECLONE_MODEL, mimo_voice_clone_data_uri
         return {
             'model': MIMO_TTS_VOICECLONE_MODEL,
             'messages': [{'role': 'assistant', 'content': text}],
@@ -426,7 +426,7 @@ class MimoVoiceCloneClient:
         }
 
     async def _post(self, payload: dict) -> dict:
-        from utils.mimo_tts_voices import mimo_chat_completions_url
+        from utils.tts.providers.mimo import mimo_chat_completions_url
         url = mimo_chat_completions_url(self.base_url)
         headers = {'Content-Type': 'application/json', 'api-key': self.api_key}
         try:

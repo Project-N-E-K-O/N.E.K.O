@@ -3,12 +3,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES
+
 
 playwright_sync_api = pytest.importorskip("playwright.sync_api")
 Page = playwright_sync_api.Page
 expect = playwright_sync_api.expect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_YUI_DIRECTOR_SCRIPTS = DIRECTOR_SCRIPT_NAMES
 _UNIVERSAL_TUTORIAL_DEPENDENCIES = (
     "tutorial/core/skip-controller.js",
     "tutorial/avatar/reload-controller.js",
@@ -93,6 +96,13 @@ __FETCH_JS__
 def _expand_script_dependencies(script_names: tuple[str, ...]) -> tuple[str, ...]:
     expanded = []
     for script_name in script_names:
+        script_path = PROJECT_ROOT / "static" / script_name
+        if script_path.is_dir():
+            for part_path in sorted(script_path.glob("*.js")):
+                relative_part = part_path.relative_to(PROJECT_ROOT / "static").as_posix()
+                if relative_part not in expanded:
+                    expanded.append(relative_part)
+            continue
         if script_name == "tutorial/yui-guide/common.js" and "tutorial/core/guide-helpers.js" not in expanded:
             expanded.append("tutorial/core/guide-helpers.js")
         if script_name == "tutorial/yui-guide/common.js" and "tutorial/core/scoped-resources.js" not in expanded:
@@ -119,7 +129,7 @@ def _expand_script_dependencies(script_names: tuple[str, ...]) -> tuple[str, ...
             for dependency in _YUI_OVERLAY_DEPENDENCIES:
                 if dependency not in expanded:
                     expanded.append(dependency)
-        if script_name == "tutorial/yui-guide/director.js":
+        if script_name in _YUI_DIRECTOR_SCRIPTS:
             for dependency in _YUI_DIRECTOR_DEPENDENCIES:
                 if dependency not in expanded:
                     expanded.append(dependency)
@@ -176,11 +186,11 @@ def _bootstrap_tutorial_prompt_page(
         script_names.append("common_dialogs.js")
     if include_autostart_provider:
         setup_js = setup_js + "\nwindow.nekoAutostartProvider = undefined;"
-        script_names.append("app-autostart-provider.js")
-    script_names.append("app-prompt-shared.js")
+        script_names.append("app/app-autostart-provider.js")
+    script_names.append("app/app-prompt-shared.js")
     script_names.append("tutorial/core/app-prompt.js")
     if include_autostart_prompt or include_autostart_provider:
-        script_names.append("app-autostart-prompt.js")
+        script_names.append("app/app-autostart-prompt.js")
     _bootstrap_page(
         mock_page,
         setup_js=setup_js,
@@ -207,7 +217,7 @@ def _bootstrap_autostart_provider_page(
         mock_page,
         setup_js=setup_js,
         fetch_js=fetch_js,
-        script_names=("app-autostart-provider.js",),
+        script_names=("app/app-autostart-provider.js",),
     )
 
 
@@ -228,7 +238,7 @@ def _has_playwright_browser() -> bool:
 def test_yui_intro_activation_targets_compact_chat_input_shell_without_click_whitelist(mock_page: Page):
     _bootstrap_page(
         mock_page,
-        script_names=("tutorial/yui-guide/director.js",),
+        script_names=(*_YUI_DIRECTOR_SCRIPTS,),
         init_js="""
             () => {
                 document.body.innerHTML = `
@@ -300,7 +310,7 @@ def test_changelog_notice_preserves_leading_list_item(mock_page: Page):
             window.appState = { dom: {} };
             window.appConst = {};
         """,
-        script_names=("app-ui.js",),
+        script_names=("app/app-ui",),
     )
 
     mock_page.evaluate(
@@ -803,7 +813,7 @@ def test_home_prompt_later_locally_suppresses_repeat_before_autostart_prompt(
 
 
 @pytest.mark.frontend
-def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
+def test_completed_home_tutorial_server_state_marks_versioned_home_storage_key_seen(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -813,9 +823,7 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 hasSeenTutorial: function() {
                     return false;
@@ -865,17 +873,15 @@ def test_completed_home_tutorial_server_state_marks_all_home_storage_keys_seen(
         """
         () => ({
             preferred: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacy: localStorage.getItem('neko_tutorial_home'),
         })
         """
     ) == {
         "preferred": "true",
-        "legacy": "true",
     }
 
 
 @pytest.mark.frontend
-def test_legacy_home_tutorial_storage_key_counts_as_seen(
+def test_legacy_home_tutorial_storage_key_is_ignored(
     mock_page: Page,
 ):
     _bootstrap_tutorial_prompt_page(
@@ -888,9 +894,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                 currentPage: 'home',
                 isTutorialRunning: false,
                 getStorageKeysForPage: function(page) {
-                    return page === 'home'
-                        ? ['neko_tutorial_home_yui_v1', 'neko_tutorial_home']
-                        : [];
+                    return page === 'home' ? ['neko_tutorial_home_yui_v1'] : [];
                 },
                 getStorageKey: function() {
                     return 'neko_tutorial_home_yui_v1';
@@ -922,7 +926,7 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
                     ok: true,
                     should_prompt: true,
                     prompt_reason: 'idle_timeout',
-                    prompt_token: 'legacy-seen-token',
+                    prompt_token: 'legacy-ignored-token',
                     state: {
                         status: 'observing',
                         never_remind: false,
@@ -937,8 +941,8 @@ def test_legacy_home_tutorial_storage_key_counts_as_seen(
 
     mock_page.wait_for_function("() => window.__heartbeatBodies.length > 0")
 
-    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is True
-    expect(mock_page.locator(".modal-overlay")).to_have_count(0)
+    assert mock_page.evaluate("() => window.__heartbeatBodies[0].home_tutorial_completed") is False
+    expect(mock_page.locator(".modal-overlay")).to_be_visible()
 
 
 @pytest.mark.frontend
@@ -1329,7 +1333,6 @@ def test_home_tutorial_skip_persists_completion_state(
         () => ({
             completedBodies: window.__tutorialCompletedBodies.slice(),
             preferredSeen: window.localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: window.localStorage.getItem('neko_tutorial_home'),
         })
         """
     )
@@ -1337,7 +1340,6 @@ def test_home_tutorial_skip_persists_completion_state(
     assert result["completedBodies"][0]["source"] == "manual"
     assert result["completedBodies"][0]["tutorial_run_token"] == "skip-run-token"
     assert result["preferredSeen"] == "true"
-    assert result["legacySeen"] == "true"
 
 
 @pytest.mark.frontend
@@ -1388,13 +1390,13 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
         """
         async () => {
-            localStorage.setItem('neko_tutorial_home', 'true');
+            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1406,8 +1408,8 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
             pageConfigFetchCount: window.__pageConfigFetchCount,
             resetTokens: window.__resetTokens.slice(),
             resetBodies: window.__resetBodies.slice(),
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
@@ -1416,7 +1418,7 @@ def test_home_tutorial_reset_refreshes_stale_csrf_token_once(mock_page: Page):
     assert result["resetTokens"] == ["stale-token", "fresh-token"]
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["resetBodies"][1]["reason"] == "manual_home_tutorial_reset"
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1447,7 +1449,7 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -1455,7 +1457,6 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1465,14 +1466,12 @@ def test_home_tutorial_reset_without_manager_clears_versioned_home_key(mock_page
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1507,14 +1506,13 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
         """
         async () => {
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -1524,14 +1522,12 @@ def test_home_tutorial_reset_still_clears_state_without_custom_event(mock_page: 
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -1580,10 +1576,7 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
 
     mock_page.wait_for_function(
         """
-        () => (
-            localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
-            || localStorage.getItem('neko_tutorial_home') === 'true'
-        )
+        () => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'
         """,
         timeout=5000,
     )
@@ -1605,13 +1598,13 @@ def test_home_tutorial_reset_event_prevents_stale_completion_heartbeat(mock_page
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -1697,7 +1690,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
             staleHeartbeat: window.__heartbeatBodies[0],
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1707,7 +1699,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completed_heartbeat(
     assert result["staleHeartbeat"]["manual_home_tutorial_viewed"] is True
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1840,7 +1831,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
             completedBodies: window.__completedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1849,7 +1839,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_completion_lifecycle
     assert result["completedBodies"][0]["tutorial_run_token"] == "tutorial-run-token"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -1955,7 +1944,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
             startedBodies: window.__startedBodies.slice(),
             resetBodies: window.__resetBodies.slice(),
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
@@ -1964,7 +1952,6 @@ def test_home_tutorial_reset_event_re_resets_after_inflight_started_lifecycle(mo
     assert result["startedBodies"][0]["source"] == "manual"
     assert result["resetBodies"][0]["reason"] == "manual_home_tutorial_reset"
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["suppressAutoStart"] is False
 
 
@@ -2035,13 +2022,11 @@ def test_home_tutorial_reset_event_ignores_stale_initial_state_response(mock_pag
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             suppressAutoStart: window.appTutorialPrompt.shouldSuppressAutomaticHomeTutorialStart(),
         })
         """
     ) == {
         "versionedSeen": None,
-        "legacySeen": None,
         "suppressAutoStart": False,
     }
 
@@ -2333,7 +2318,7 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     )
 
     mock_page.wait_for_function(
-        "() => localStorage.getItem('neko_tutorial_home') === 'true'",
+        "() => localStorage.getItem('neko_tutorial_home_yui_v1') === 'true'",
         timeout=5000,
     )
     mock_page.evaluate(
@@ -2359,13 +2344,13 @@ def test_cross_window_home_tutorial_reset_event_prevents_stale_completion_heartb
     result = mock_page.evaluate(
         """
         () => ({
-            homeSeen: localStorage.getItem('neko_tutorial_home'),
+            versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
             latestHeartbeat: window.__heartbeatBodies[window.__heartbeatBodies.length - 1],
         })
         """
     )
 
-    assert result["homeSeen"] is None
+    assert result["versionedSeen"] is None
     assert result["latestHeartbeat"]["home_tutorial_completed"] is False
     assert result["latestHeartbeat"]["manual_home_tutorial_viewed"] is False
 
@@ -2397,7 +2382,7 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -2405,7 +2390,6 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         async () => {
             window.universalTutorialManager = null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             localStorage.setItem('neko_tutorial_model_manager_mmd', 'true');
             await resetAllTutorials();
         }
@@ -2416,15 +2400,13 @@ def test_all_tutorial_reset_without_manager_clears_versioned_home_key(mock_page:
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
             modelManagerMmdSeen: localStorage.getItem('neko_tutorial_model_manager_mmd'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["modelManagerMmdSeen"] is None
     assert result["manualIntent"] == "true"
 
@@ -2456,7 +2438,7 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
                 });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/universal-manager.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/universal-manager.js"),
     )
 
     mock_page.evaluate(
@@ -2465,7 +2447,6 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
             await initUniversalTutorialManager();
             window.universalTutorialManager.getYuiGuideVersionedPageKey = () => null;
             localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
-            localStorage.setItem('neko_tutorial_home', 'true');
             await resetTutorialForPage('home');
         }
         """
@@ -2475,14 +2456,12 @@ def test_home_tutorial_reset_with_manager_clears_versioned_home_key(mock_page: P
         """
         () => ({
             versionedSeen: localStorage.getItem('neko_tutorial_home_yui_v1'),
-            legacySeen: localStorage.getItem('neko_tutorial_home'),
-            manualIntent: localStorage.getItem('neko_tutorial_home_manual_intent'),
+            manualIntent: localStorage.getItem('neko_tutorial_home_yui_v1_manual_intent'),
         })
         """
     )
 
     assert result["versionedSeen"] is None
-    assert result["legacySeen"] is None
     assert result["manualIntent"] == "true"
 
 
@@ -2495,7 +2474,7 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window",),
     )
 
     mock_page.wait_for_function(
@@ -2541,7 +2520,7 @@ def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window",),
     )
 
     mock_page.wait_for_function(
@@ -2587,7 +2566,7 @@ def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_ev
         setup_js="""
             window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window",),
     )
 
     mock_page.wait_for_function(
@@ -2682,10 +2661,11 @@ def test_home_tutorial_feature_controller_restores_live_galgame_state_after_lega
                 return jsonResponse({ success: true });
             }
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/app-prompt.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
         init_js="() => window.appTutorialPrompt.init()",
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app-react-chat-window.js"))
+    for script_name in _expand_script_dependencies(("app/app-react-chat-window",)):
+        mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
 
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === false",
@@ -2793,7 +2773,7 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
             window.stopProactiveVisionDuringSpeech = () => { window.stopProactiveVisionDuringSpeechCalls += 1; };
             window.releaseProactiveVisionStream = () => { window.releaseProactiveVisionStreamCalls += 1; };
         """,
-        script_names=("app-prompt-shared.js", "tutorial/core/app-prompt.js"),
+        script_names=("app/app-prompt-shared.js", "tutorial/core/app-prompt.js"),
     )
 
     mock_page.evaluate(
@@ -2803,7 +2783,8 @@ def test_home_tutorial_feature_controller_enforce_reapplies_suppression_after_ch
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / "app-react-chat-window.js"))
+    for script_name in _expand_script_dependencies(("app/app-react-chat-window",)):
+        mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === false",
         timeout=5000,
@@ -2892,7 +2873,7 @@ def test_avatar_floating_round_ensures_chat_visible_before_first_highlight(
                 isActive: () => true,
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -2955,7 +2936,7 @@ def test_avatar_floating_round_starts_cursor_look_at_before_first_scene(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3027,7 +3008,7 @@ def test_avatar_floating_round_locks_compact_input_until_round_cleanup(mock_page
                 },
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3078,7 +3059,7 @@ def test_day3_round_resets_compact_tool_wheel_import_to_slot_zero(mock_page: Pag
                 },
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3128,7 +3109,7 @@ def test_avatar_floating_daily_scenes_keep_persistent_cursor_look_at_enabled(
             window.history.pushState({}, '', '/');
             document.body.innerHTML = '<button id="live2d-btn-agent" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>';
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3232,7 +3213,7 @@ def test_avatar_floating_open_agent_clears_button_highlight_for_panel(
         setup_js="""
             window.history.pushState({}, '', '/');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3292,7 +3273,7 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                 </section>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3300,7 +3281,12 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         async () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
             const calls = [];
-            director.waitForSceneDelay = async () => true;
+            director.waitForSceneDelay = async (durationMs) => {
+                if (durationMs === 500) {
+                    calls.push({ type: 'wait', durationMs });
+                }
+                return true;
+            };
             const dashboardWindow = { closed: false };
             director.setSpotlightGeometryHint = (element, options) => {
                 calls.push({
@@ -3341,6 +3327,9 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                     id: element && element.id,
                     durationMs,
                     exactDuration: !!(options && options.exactDuration),
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
                 });
                 return true;
             };
@@ -3366,9 +3355,19 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             director.isCursorAlignedWithElement = () => true;
             director.cursor = {
                 hasPosition: () => true,
+                hasVisiblePosition: () => true,
                 showAt: () => {},
                 moveToRect: async () => true,
-                moveToPoint: async () => true,
+                moveToPoint: async (x, y, options) => {
+                    calls.push({
+                        type: 'pointMove',
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        durationMs: options && options.durationMs,
+                        exactDuration: !!(options && options.exactDuration),
+                    });
+                    return true;
+                },
                 click: (visibleMs) => calls.push({ type: 'click', visibleMs }),
                 wobble: () => calls.push({ type: 'wobble' }),
                 cancel: () => {},
@@ -3470,8 +3469,18 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
     assert result["calls"] == [
         {"type": "geometry", "id": "live2d-btn-agent", "geometry": "circle", "padding": 4},
         {"type": "highlight", "key": "day6_agent_status_master-cat-paw", "primaryId": "live2d-btn-agent", "persistentId": None},
-        {"type": "move", "id": "live2d-btn-agent", "durationMs": 760, "exactDuration": False},
-        {"type": "click", "visibleMs": 420},
+        {"type": "wait", "durationMs": 500},
+        {
+            "type": "move",
+            "id": "live2d-btn-agent",
+            "durationMs": 2800,
+            "exactDuration": False,
+            "offsetY": 8,
+            "clamp": True,
+            "inset": 4,
+        },
+        {"type": "click", "visibleMs": 620},
+        {"type": "api:openAgentPanel"},
         {"type": "api:openAgentPanel"},
         {"type": "stableRect", "id": "live2d-toggle-agent-user-plugin", "timeoutMs": 760},
         {
@@ -3480,21 +3489,15 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "primaryId": "live2d-toggle-agent-user-plugin",
             "persistentId": None,
         },
+        {"type": "wait", "durationMs": 500},
         {
             "type": "trackedMove",
             "id": "live2d-toggle-agent-user-plugin",
-            "durationMs": 420,
+            "durationMs": 1120,
             "exactDuration": True,
             "recheckDelayMs": 120,
             "settleDelayMs": 40,
         },
-        {
-            "type": "highlight",
-            "key": "day6_plugin_side_panel-user-plugin",
-            "primaryId": "live2d-toggle-agent-user-plugin",
-            "persistentId": None,
-        },
-        {"type": "click", "visibleMs": 320},
         {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
         {
             "type": "api:ensureActionVisible",
@@ -3506,6 +3509,12 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
             "timeoutMs": 760,
         },
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-clear-user-plugin",
+            "primaryId": None,
+            "persistentId": None,
+        },
         {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
         {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
         {
@@ -3517,7 +3526,7 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         {
             "type": "trackedMove",
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
-            "durationMs": 420,
+            "durationMs": 1120,
             "exactDuration": True,
             "recheckDelayMs": 120,
             "settleDelayMs": 40,
@@ -3530,7 +3539,7 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "primaryId": "",
             "persistentId": None,
         },
-        {"type": "click", "visibleMs": 320},
+        {"type": "click", "visibleMs": 480},
         {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},
         {
             "type": "api:clickAgentSidePanelAction",
@@ -3562,6 +3571,276 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
 
 
 @pytest.mark.frontend
+def test_day6_plugin_side_panel_does_not_clear_externalized_chat_target_when_entering_from_cat_paw_scene(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const sidePanelScene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_plugin_side_panel'
+            );
+            director.currentSceneId = 'day6_agent_status_master';
+            director.isHomeChatExternalized = () => true;
+            director.clearExternalizedChatGuideTarget = (options) => {
+                events.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
+            director.sceneOrchestrator.canPlayTimelineScene = () => false;
+            director.sceneOrchestrator.playGenericScene = async () => {
+                events.push({ type: 'play-generic' });
+                return true;
+            };
+
+            const played = await director.playAvatarFloatingScene(sidePanelScene, 6, 2, 8);
+            return { played, events };
+        }
+        """
+    )
+
+    assert result == {
+        "played": True,
+        "events": [{"type": "play-generic"}],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_status_reveals_hidden_cat_paw_before_cursor_move(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="live2d-floating-buttons" style="display:none; position:fixed; left:20px; top:30px; width:60px; height:300px;">
+                    <button id="live2d-btn-agent" style="position:absolute; left:0; top:0; width:44px; height:44px;"></button>
+                </div>
+                <section id="live2d-popup-agent" style="display:none; opacity:0; position:absolute; left:90px; top:28px; width:320px; height:440px;"></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.waitForSceneDelay = async () => true;
+            director.prepareDay6AgentPanelCursorFromCapsule = async () => {
+                calls.push({ type: 'unexpected:fromCapsule' });
+                return false;
+            };
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
+                });
+                return true;
+            };
+            director.cursor.click = (visibleMs) => calls.push({ type: 'click', visibleMs });
+            director.openAgentPanel = async () => {
+                calls.push({ type: 'api:openAgentPanel' });
+                return true;
+            };
+
+            const opened = await director.runDay6PluginOpenAgentPanelFlow({
+                id: 'day6_agent_status_master',
+                voiceKey: 'avatar_floating_day6_status_master',
+            });
+            const toolbar = document.getElementById('live2d-floating-buttons');
+            return {
+                opened,
+                toolbarDisplay: toolbar ? window.getComputedStyle(toolbar).display : '',
+                calls,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "opened": True,
+        "toolbarDisplay": "flex",
+        "calls": [
+            {
+                "type": "move",
+                "id": "live2d-btn-agent",
+                "durationMs": 2800,
+                "offsetY": 8,
+                "clamp": True,
+                "inset": 4,
+            },
+            {"type": "click", "visibleMs": 620},
+            {"type": "api:openAgentPanel"},
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_status_opens_cat_paw_without_capsule_cursor_start(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-agent" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <section id="live2d-popup-agent" style="display:none; opacity:0; position:absolute; left:90px; top:28px; width:320px; height:440px;"></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.waitForSceneDelay = async () => true;
+            director.prepareDay6AgentPanelCursorFromCapsule = async () => {
+                calls.push({ type: 'unexpected:fromCapsule' });
+                return false;
+            };
+            director.moveCursorToElement = async (element, durationMs, options) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    offsetY: options && options.targetPointOffset && options.targetPointOffset.y,
+                    clamp: !!(options && options.clampTargetPointToRect),
+                    inset: options && options.targetPointClampInsetPx,
+                });
+                return true;
+            };
+            director.cursor.click = (visibleMs) => calls.push({ type: 'click', visibleMs });
+            director.openAgentPanel = async () => {
+                calls.push({ type: 'api:openAgentPanel' });
+                return true;
+            };
+
+            const opened = await director.runDay6PluginOpenAgentPanelFlow({
+                id: 'day6_agent_status_master',
+                voiceKey: 'avatar_floating_day6_status_master',
+            });
+            return { opened, calls };
+        }
+        """
+    )
+
+    assert result == {
+        "opened": True,
+        "calls": [
+            {
+                "type": "move",
+                "id": "live2d-btn-agent",
+                "durationMs": 2800,
+                "offsetY": 8,
+                "clamp": True,
+                "inset": 4,
+            },
+            {"type": "click", "visibleMs": 620},
+            {"type": "api:openAgentPanel"},
+        ],
+    }
+
+
+@pytest.mark.frontend
+def test_day6_move_cursor_to_element_supports_target_point_offset(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-agent" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const button = document.getElementById('live2d-btn-agent');
+            director.cursor = {
+                moveToPoint: async (x, y, options) => {
+                    calls.push({
+                        type: 'pointMove',
+                        x: Math.round(x),
+                        y: Math.round(y),
+                        durationMs: options && options.durationMs,
+                    });
+                    return true;
+                },
+                cancel: () => {},
+            };
+
+            const moved = await director.moveCursorToElement(button, 2800, {
+                targetPointOffset: { y: 8 },
+                clampTargetPointToRect: true,
+                targetPointClampInsetPx: 4,
+            });
+            return { moved, calls };
+        }
+        """
+    )
+
+    assert result == {
+        "moved": True,
+        "calls": [
+            {"type": "pointMove", "x": 42, "y": 60, "durationMs": 2800},
+        ],
+    }
+
+@pytest.mark.frontend
+def test_day6_wrap_cleanup_holds_cursor_to_avoid_resistance_move_overlap(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+        """,
+        script_names=(
+            "tutorial/yui-guide/overlay.js",
+            *_YUI_DIRECTOR_SCRIPTS,
+            "tutorial/yui-guide/days/day6-agent-guide.js",
+        ),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const scene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_wrap_cleanup'
+            );
+            return {
+                cursorAction: scene && scene.cursorAction,
+                target: scene && scene.target,
+                operation: scene && scene.operation,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "cursorAction": "hold",
+        "target": "chat-input",
+        "operation": "cleanup",
+    }
+
+
+@pytest.mark.frontend
 def test_day6_management_panel_spotlight_extends_width_and_vertical_margin_without_padding(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -3574,7 +3853,7 @@ def test_day6_management_panel_spotlight_extends_width_and_vertical_margin_witho
                 ></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3627,7 +3906,7 @@ def test_day6_task_hud_only_moves_cursor_to_hud_without_post_line_tour(mock_page
                 </section>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -3692,7 +3971,7 @@ def test_day6_task_hud_only_moves_cursor_to_hud_without_post_line_tour(mock_page
 
 
 @pytest.mark.frontend
-def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
+def test_day6_task_hud_control_moves_cursor_to_hud_with_reused_spotlight(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -3704,7 +3983,7 @@ def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
                 ></section>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -3766,17 +4045,191 @@ def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
 
     assert {
         "type": "highlight",
-        "key": "day6_agent_task_hud_control",
+        "key": "day6_agent_task_hud",
         "primaryId": "agent-task-hud",
     } in result
-    assert any(
-        call["type"] == "move"
-        and call["id"] == "agent-task-hud"
-        for call in result
-    )
+    assert [
+        call for call in result
+        if call["type"] == "move"
+    ] == [{
+        "type": "move",
+        "id": "agent-task-hud",
+        "durationMs": 760,
+    }]
     assert not any(call["type"] == "ellipse" for call in result)
     assert {"type": "wobble"} not in result
     assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_reuses_hud_spotlight_key_while_moving_cursor_to_hud(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section
+                    id="agent-task-hud"
+                    style="position:absolute; left:120px; top:90px; width:260px; height:140px;"
+                ></section>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const scenes = window.YuiGuideDailyGuides[6].round.scenes;
+            const hudScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud');
+            const controlScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud_control');
+            director.waitForSceneDelay = async () => true;
+            director.prepareAvatarFloatingScene = async () => {};
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                calls.push({ type: 'operation', id: playedScene.id, operation: playedScene.operation || '' });
+                return true;
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({
+                    type: 'move',
+                    sceneId: director.currentSceneId,
+                    id: element && element.id,
+                    durationMs,
+                });
+                return true;
+            };
+            director.speakGuideLine = async () => {};
+            director.cursor = {
+                hasPosition: () => true,
+                hasVisiblePosition: () => true,
+                showAt: (x, y) => calls.push({ type: 'showAt', x, y }),
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => calls.push({ type: 'hide' }),
+            };
+
+            await director.playAvatarFloatingScene(hudScene, 6, 4, 8);
+            await director.playAvatarFloatingScene(controlScene, 6, 5, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert [
+        call for call in result
+        if call["type"] == "highlight"
+    ] == [
+        {"type": "highlight", "key": "day6_agent_task_hud", "primaryId": "agent-task-hud"},
+        {"type": "highlight", "key": "day6_agent_task_hud", "primaryId": "agent-task-hud"},
+    ]
+    assert [
+        call for call in result
+        if call["type"] == "move"
+    ] == [
+        {
+            "type": "move",
+            "sceneId": "day6_agent_task_hud",
+            "id": "agent-task-hud",
+            "durationMs": 760,
+        },
+        {
+            "type": "move",
+            "sceneId": "day6_agent_task_hud_control",
+            "id": "agent-task-hud",
+            "durationMs": 760,
+        },
+    ]
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_preserves_externalized_chat_target_from_hud_scene(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const scenes = window.YuiGuideDailyGuides[6].round.scenes;
+            const controlScene = scenes.find((candidate) => candidate.id === 'day6_agent_task_hud_control');
+            return {
+                id: controlScene && controlScene.id,
+                target: controlScene && controlScene.target,
+                cursorAction: controlScene && controlScene.cursorAction,
+                spotlightKey: controlScene && controlScene.spotlightKey,
+                preserveExternalizedChatGuideTarget: !!(
+                    controlScene && controlScene.preserveExternalizedChatGuideTarget === true
+                ),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "id": "day6_agent_task_hud_control",
+        "target": "#agent-task-hud",
+        "cursorAction": "move",
+        "spotlightKey": "day6_agent_task_hud",
+        "preserveExternalizedChatGuideTarget": True,
+    }
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_does_not_clear_externalized_chat_target_when_entering_from_hud(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const controlScene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_agent_task_hud_control'
+            );
+            director.currentSceneId = 'day6_agent_task_hud';
+            director.isHomeChatExternalized = () => true;
+            director.clearExternalizedChatGuideTarget = (options) => {
+                events.push({
+                    type: 'clear-external',
+                    clearCursor: !!(options && options.clearCursor),
+                    preservePcOverlayCursor: !!(options && options.preservePcOverlayCursor),
+                });
+            };
+            director.sceneOrchestrator.canPlayTimelineScene = () => false;
+            director.sceneOrchestrator.playGenericScene = async () => {
+                events.push({ type: 'play-generic' });
+                return true;
+            };
+
+            const played = await director.playAvatarFloatingScene(controlScene, 6, 5, 8);
+            return { played, events };
+        }
+        """
+    )
+
+    assert result == {
+        "played": True,
+        "events": [{"type": "play-generic"}],
+    }
 
 
 @pytest.mark.frontend
@@ -3792,7 +4245,7 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
             `;
             document.getElementById('chat-settings-panel')._anchorElement = document.getElementById('chat-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -3904,7 +4357,7 @@ def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_p
             };
             document.getElementById('animation-settings-panel')._anchorElement = document.getElementById('animation-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4023,7 +4476,7 @@ def test_day5_character_settings_moves_from_chat_to_settings_and_sidebar(mock_pa
             `;
             document.getElementById('character-settings-panel')._anchorElement = document.getElementById('character-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4156,7 +4609,7 @@ def test_day5_character_panic_keeps_character_sidebar_highlight_then_clears(mock
                 panel.style.opacity = '0';
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4254,7 +4707,7 @@ def test_day4_gaze_follow_highlights_mouse_tracking_toggle(mock_page: Page):
                 </section>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4358,7 +4811,7 @@ def test_day4_privacy_mode_highlights_privacy_without_privacy_sidepanel(mock_pag
                 privacyPanel.style.opacity = '0';
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4479,7 +4932,7 @@ def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page)
                 privacyPanel.style.opacity = '0';
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4572,7 +5025,7 @@ def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_liv
                 <button id="vrm-lock-icon" style="display:none; position:absolute; left:120px; top:60px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4643,7 +5096,7 @@ def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_liv
 def test_avatar_floating_tutorial_marks_global_tutorial_mode_while_active(mock_page: Page):
     _bootstrap_page(
         mock_page,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4693,7 +5146,7 @@ def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_ga
             window.stopProactiveVisionDuringSpeech = () => { window.__fallbackProactiveStops.push('vision'); };
             window.releaseProactiveVisionStream = () => { window.__fallbackProactiveStops.push('stream'); };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4744,7 +5197,7 @@ def test_day2_first_scene_does_not_hide_cursor_before_chat_anchor(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4798,7 +5251,7 @@ def test_day2_personalization_detail_clicks_character_settings_then_ellipses_sid
             `;
             document.getElementById('character-settings-panel')._anchorElement = document.getElementById('character-settings-button');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4918,7 +5371,7 @@ def test_day2_proactive_chat_highlights_only_proactive_toggle(
                 <button id="proactive-toggle" style="position:absolute; left:280px; top:180px; width:150px; height:42px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -4983,7 +5436,7 @@ def test_day2_proactive_chat_closes_settings_panel_after_line(mock_page: Page):
                 <button id="proactive-toggle" style="position:absolute; left:280px; top:180px; width:150px; height:42px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5040,7 +5493,7 @@ def test_day2_personalization_space_opens_settings_on_cursor_click_without_chara
                 <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5114,7 +5567,7 @@ def test_day3_to_day7_first_scene_does_not_hide_cursor_before_visible_anchor(
             "tutorial/yui-guide/days/day6-agent-guide.js",
             "tutorial/yui-guide/days/day7-graduation-guide.js",
             "tutorial/yui-guide/overlay.js",
-            "tutorial/yui-guide/director.js",
+            *_YUI_DIRECTOR_SCRIPTS,
         ),
     )
 
@@ -5191,7 +5644,7 @@ def test_day2_wrap_intro_cursor_start_prefers_previous_screen_button_anchor(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5233,7 +5686,7 @@ def test_day2_wrap_intro_externalized_cursor_target_is_not_reissued_after_cleanu
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5314,7 +5767,7 @@ def test_day2_screen_entry_uses_externalized_intro_cursor_anchor(mock_page: Page
                 <button id="live2d-btn-screen" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5354,7 +5807,7 @@ def test_day2_externalized_intro_records_visible_cursor_anchor(mock_page: Page):
                 <div id="react-chat-window-overlay" style="display:none;"></div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5434,7 +5887,7 @@ def test_day2_externalized_intro_to_screen_entry_preserves_cursor_visibility(
                 <button id="live2d-btn-screen" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5527,7 +5980,7 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
                 <div id="react-chat-window-shell" style="position:fixed; left:600px; top:400px; width:240px; height:160px;"></div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -5616,7 +6069,7 @@ def test_externalized_chat_spotlight_refresh_does_not_override_active_cursor_cli
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -5708,7 +6161,7 @@ def test_externalized_chat_input_cursor_without_effect_shows_without_pc_move(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -5780,7 +6233,7 @@ def test_externalized_chat_cursor_explicit_duration_overrides_handoff_speed(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -5847,7 +6300,7 @@ def test_externalized_chat_cursor_anchor_reports_after_pc_move_duration(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -5915,7 +6368,7 @@ def test_home_director_receives_externalized_chat_cursor_anchor_event(
                 <button id="live2d-btn-screen" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -5973,7 +6426,7 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6041,7 +6494,7 @@ def test_settled_externalized_cursor_anchor_refreshes_home_pc_cursor_cache(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6098,7 +6551,7 @@ def test_home_spotlight_refresh_does_not_replay_stale_cursor_while_externalized_
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6146,7 +6599,7 @@ def test_home_petal_update_does_not_replay_stale_cursor_while_externalized_chat_
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6191,7 +6644,7 @@ def test_home_director_ignores_click_effect_from_externalized_chat_anchor(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6248,7 +6701,7 @@ def test_home_director_smoothly_moves_hidden_cursor_to_externalized_chat_anchor(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6324,7 +6777,7 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6345,6 +6798,116 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
     assert result["domExists"] is False
     assert result["bodyActive"] is False
     assert result["updates"][0]["payload"]["cursor"]["visible"] is True
+
+
+@pytest.mark.frontend
+def test_tutorial_skip_and_angry_exit_do_not_start_new_user_icebreaker(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.__icebreakerFetchCount = 0;",
+        fetch_js="""
+            window.__icebreakerFetchCount += 1;
+            return jsonResponse({}, 200);
+        """,
+        script_names=("tutorial/icebreaker/new-user-icebreaker.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-skip', {
+                detail: {
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-skipped', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    reason: 'skip',
+                },
+            }));
+            window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
+                detail: {
+                    page: 'home',
+                    day: 1,
+                    endState: {
+                        day: 1,
+                        ended: true,
+                        outcome: 'skip',
+                        rawReason: 'angry_exit',
+                        isAngryExit: true,
+                    },
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 700));
+            return {
+                fetchCount: window.__icebreakerFetchCount,
+                activeSession: window.newUserIcebreaker.getActiveSession(),
+            };
+        }
+        """
+    )
+
+    assert result == {"fetchCount": 0, "activeSession": None}
+
+
+@pytest.mark.frontend
+def test_yui_overlay_lifecycle_epoch_blocks_late_dom_recreation(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.isInTutorial = true;",
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const staleOverlay = new window.YuiGuideOverlay(document);
+            staleOverlay.showBubble('active tutorial');
+            const initiallyCreated = !!document.getElementById('yui-guide-overlay');
+
+            staleOverlay.destroy();
+            staleOverlay.showBubble('late callback');
+            const recreatedByStaleInstance = !!document.getElementById('yui-guide-overlay');
+
+            const nextOverlay = new window.YuiGuideOverlay(document);
+            nextOverlay.showBubble('next tutorial');
+            const recreatedByNextInstance = !!document.getElementById('yui-guide-overlay');
+            const nextRoot = document.getElementById('yui-guide-overlay');
+            const nextEpoch = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__;
+            staleOverlay.destroy();
+            staleOverlay.showBubble('older callback after next tutorial');
+            const nextRootPreserved = document.getElementById('yui-guide-overlay') === nextRoot;
+            const nextContentPreserved = document.querySelector('.yui-guide-bubble-body')?.textContent === 'next tutorial';
+            const nextEpochPreserved = window.__NEKO_YUI_GUIDE_OVERLAY_LIFECYCLE_EPOCH__ === nextEpoch;
+            return {
+                initiallyCreated,
+                recreatedByStaleInstance,
+                recreatedByNextInstance,
+                nextRootPreserved,
+                nextContentPreserved,
+                nextEpochPreserved,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "initiallyCreated": True,
+        "recreatedByStaleInstance": False,
+        "recreatedByNextInstance": True,
+        "nextRootPreserved": True,
+        "nextContentPreserved": True,
+        "nextEpochPreserved": True,
+    }
 
 
 @pytest.mark.frontend
@@ -6410,7 +6973,7 @@ def test_pc_overlay_cursor_is_hidden_before_plugin_dashboard_handoff(mock_page: 
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -6575,7 +7138,7 @@ def test_externalized_chat_spotlight_renders_compact_capsule_in_pc_overlay_only(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -6604,8 +7167,8 @@ def test_externalized_chat_spotlight_renders_compact_capsule_in_pc_overlay_only(
     assert result["begins"] == [{"tutorialRunId": "test-run"}]
     assert len(result["updates"]) >= 1
     spotlight_payload = result["updates"][-1]["payload"]["spotlights"][0]
-    assert spotlight_payload["id"] == "external-chat-input-0"
-    assert spotlight_payload["kind"] == "primary"
+    assert spotlight_payload["id"] == "external-chat-input"
+    assert spotlight_payload["kind"] == "input"
     assert spotlight_payload["shape"] == "rounded-rect"
     assert spotlight_payload["x"] == 692
     assert spotlight_payload["y"] == 442
@@ -6640,7 +7203,7 @@ def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -6682,8 +7245,8 @@ def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(
         """
     )
 
-    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input-0"
-    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "primary"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["id"] == "external-chat-input"
+    assert result["updates"][-1]["payload"]["spotlights"][0]["kind"] == "input"
     assert result["updates"][-1]["payload"]["spotlights"][0]["width"] == 446
     assert result["updates"][-1]["payload"]["spotlights"][0]["height"] == 70
 
@@ -6725,7 +7288,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("tutorial/yui-guide/common.js", "app/app-interpage"),
     )
 
     result = mock_page.evaluate(
@@ -6769,7 +7332,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
         if entry.get("payload", {}).get("spotlights")
     ]
     assert first_spotlight_payloads
-    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input-0"
+    assert first_spotlight_payloads[0]["payload"]["spotlights"][0]["id"] == "external-chat-capsule-input"
     hidden_spotlight_lengths = [
         len(entry.get("payload", {}).get("spotlights", []))
         for entry in result["hiddenUpdates"][:-1]
@@ -6778,6 +7341,76 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
     assert hidden_spotlight_lengths
     assert all(length > 0 for length in hidden_spotlight_lengths)
     assert result["hiddenUpdates"][-1]["payload"]["spotlights"] == []
+
+
+@pytest.mark.frontend
+def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_without_variant(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-shell" style="position:fixed; left:560px; top:360px; width:480px; height:90px;">
+                    <div id="react-chat-window-root">
+                        <div
+                            class="compact-chat-surface-frame"
+                            data-compact-geometry-owner="surface"
+                            data-compact-geometry-item="capsule"
+                            data-compact-geometry-part="capsuleBody"
+                            data-compact-drag-surface="true"
+                            style="position:fixed; left:600px; top:400px; width:430px; height:54px; border-radius:999px;"
+                        ></div>
+                        <button
+                            class="compact-chat-capsule-button"
+                            data-compact-hit-region-id="capsule:text"
+                            style="position:fixed; left:780px; top:408px; width:180px; height:38px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/common.js", "app/app-interpage"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: 'capsule-input',
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 160));
+            const updates = window.__externalChatOverlayUpdates || [];
+            return updates.filter((entry) => entry.payload && entry.payload.spotlights);
+        }
+        """
+    )
+
+    assert result
+    spotlight = result[-1]["payload"]["spotlights"][0]
+    assert spotlight["id"] == "external-chat-capsule-input"
+    assert spotlight["x"] == 692
+    assert spotlight["width"] == 446
 
 
 @pytest.mark.frontend
@@ -6969,7 +7602,7 @@ def test_return_petal_transition_keeps_dom_fallback_without_pc_petal_capability(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7031,7 +7664,7 @@ def test_return_petal_transition_keeps_dom_fallback_with_pc_petal_capability(
                 clear: () => Promise.resolve({ ok: true }),
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7076,7 +7709,7 @@ def test_avatar_floating_petal_cue_does_not_wait_for_petal_sequence_preload(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7152,7 +7785,7 @@ def test_return_petal_transition_pc_overlay_starts_before_dom_sequence_load(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7239,7 +7872,7 @@ def test_day1_skip_clears_externalized_chat_cursor_immediately(mock_page: Page):
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7277,7 +7910,7 @@ def test_day2_screen_entry_does_not_use_bottom_right_chat_proxy_fallback(
                 <button id="live2d-btn-screen" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7317,7 +7950,7 @@ def test_avatar_floating_cursor_start_uses_visible_target_without_previous_ancho
                 <div id="target" style="position:absolute; left:40px; top:40px; width:120px; height:80px;"></div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7348,7 +7981,7 @@ def test_managed_scene_cursor_start_uses_previous_scene_anchor_when_position_los
                 <div id="target" style="position:absolute; left:40px; top:40px; width:120px; height:80px;"></div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7412,7 +8045,7 @@ def test_avatar_floating_resistance_cursor_moves_away_from_pointer_without_motio
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7448,7 +8081,7 @@ def test_avatar_floating_resistance_cursor_returns_to_current_position_not_last_
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7487,7 +8120,7 @@ def test_avatar_floating_repeated_cursor_reaction_returns_to_original_rest_point
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7541,7 +8174,7 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7574,17 +8207,96 @@ def test_plugin_dashboard_light_resistance_keeps_cursor_reaction(
     )
 
     resist_call = next(call for call in result if call["type"] == "resist")
-    assert resist_call["options"] == {"suppressCursorReveal": True}
+    assert resist_call["options"] == {
+        "suppressCursorReveal": True,
+        "forceSystemCursorReveal": True,
+    }
 
 
 @pytest.mark.frontend
-def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
+def test_plugin_dashboard_light_resistance_temporarily_reveals_system_cursor(
     mock_page: Page,
 ):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const previousCommon = window.YuiGuideCommon;
+            const temporaryReveals = [];
+            window.YuiGuideCommon = {
+                syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                    temporaryReveals.push({ reason, durationMs });
+                },
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const calls = [];
+                director.dispatchDesktopPluginDashboardInterruptAck = (payload) => {
+                    calls.push({ type: 'ack', payload });
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_resist_light') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop pulling me',
+                                voiceKey: 'interrupt_resist_light_1',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.resolvePerformanceResistanceVoices = () => [];
+                director.captureCurrentGuidePresentationSnapshot = () => null;
+                director.pauseCurrentSceneForResistance = () => {};
+                director.resumeCurrentSceneAfterResistance = () => {};
+                director.interruptNarrationForResistance = () => {};
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.voiceQueue.speak = async () => null;
+                director.runInterruptResistPerformance = async () => null;
+                director.cursor.resistTo = async () => null;
+
+                await director.handlePluginDashboardInterruptRequest(null, {
+                    windowRef: null,
+                    targetOrigin: window.location.origin,
+                }, {
+                    requestId: 'interrupt-request-1',
+                    sessionId: 'session-1',
+                    detail: {
+                        kind: 'interrupt_resist_light',
+                        x: 160,
+                        y: 100,
+                    },
+                });
+                return { calls, temporaryReveals };
+            } finally {
+                window.YuiGuideCommon = previousCommon;
+            }
+        }
+        """
+    )
+
+    assert result["temporaryReveals"] == [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert any(call["type"] == "ack" for call in result["calls"])
+
+
+@pytest.mark.frontend
+def test_avatar_floating_cursor_reaction_waits_for_meaningful_real_mouse_move(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7617,9 +8329,18 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
                 director.handleInterrupt({
                     isTrusted: true,
                     type: 'mousemove',
-                    clientX: 102,
+                    clientX: 124,
                     clientY: 100,
-                    movementX: 2,
+                    movementX: 24,
+                    movementY: 0,
+                });
+                window.__now = 1032;
+                director.handleInterrupt({
+                    isTrusted: true,
+                    type: 'mousemove',
+                    clientX: 155,
+                    clientY: 100,
+                    movementX: 31,
                     movementY: 0,
                 });
                 return reactions;
@@ -7631,7 +8352,7 @@ def test_avatar_floating_cursor_reacts_to_every_real_mouse_move(
     )
 
     assert len(result) == 1
-    assert result[0]["options"]["motionDx"] == 2
+    assert result[0]["options"]["motionDx"] == 31
     assert result[0]["options"]["motionDy"] == 0
     assert result[0]["options"]["scale"] >= 0.4
     assert result[0]["options"]["outDurationMs"] >= 140
@@ -7645,7 +8366,7 @@ def test_avatar_floating_cursor_reaction_ignores_hidden_position(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7679,7 +8400,7 @@ def test_avatar_floating_cursor_reaction_fallback_moves_away_from_pointer(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7720,7 +8441,7 @@ def test_avatar_floating_cursor_move_retries_after_resistance_reaction(
                 <button id="target" style="position:absolute; left:180px; top:130px; width:40px; height:40px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7777,7 +8498,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7789,6 +8510,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
             try {
                 const director = window.createYuiGuideDirector({ page: 'home' });
                 const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
                 director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
@@ -7800,13 +8522,16 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                 director.cursor.reactToUserMotion = () => {};
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal && !options.cursorRevealAlreadyRequested) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
                 };
 
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 140 },
-                    { t: 3000, x: 180 },
-                    { t: 4000, x: 220 },
+                    { t: 2000, x: 280 },
+                    { t: 3000, x: 460 },
+                    { t: 4000, x: 640 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -7814,7 +8539,7 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 40,
+                        movementX: 180,
                         movementY: 0,
                     });
                 });
@@ -7836,13 +8561,13 @@ def test_avatar_floating_distance_below_new_threshold_does_not_trigger_light_res
 
 
 @pytest.mark.frontend
-def test_avatar_floating_distance_threshold_triggers_light_resistance_without_speed_or_acceleration(
+def test_avatar_floating_large_straight_moves_do_not_trigger_light_resistance(
     mock_page: Page,
 ):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7866,15 +8591,11 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                 director.playLightResistance = (x, y, options) => {
                     lightInterrupts.push({ x, y, options });
                 };
-                director.abortAsAngryExit = (source) => {
-                    throw new Error('first light interrupt should not angry-exit: ' + source);
-                };
-
                 director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0.04 };
                 [
-                    { t: 2000, x: 164 },
-                    { t: 3000, x: 228 },
-                    { t: 4000, x: 292 },
+                    { t: 2000, x: 320 },
+                    { t: 3000, x: 540 },
+                    { t: 4000, x: 760 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -7882,7 +8603,7 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
                         type: 'mousemove',
                         clientX: sample.x,
                         clientY: 100,
-                        movementX: 64,
+                        movementX: 220,
                         movementY: 0,
                     });
                 });
@@ -7898,19 +8619,871 @@ def test_avatar_floating_distance_threshold_triggers_light_resistance_without_sp
         """
     )
 
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_sustained_shake_triggers_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                const playShake = (samples, startAt) => {
+                    samples.forEach((x, index) => {
+                        const previousX = index > 0 ? samples[index - 1] : 0;
+                        window.__now = startAt + (index * 100);
+                        director.handleInterrupt({
+                            isTrusted: true,
+                            type: 'mousemove',
+                            clientX: x,
+                            clientY: 100,
+                            screenX: x,
+                            screenY: 100,
+                            movementX: x - previousX,
+                            movementY: 0,
+                        });
+                    });
+                };
+
+                playShake([100, 200, 100, 200, 100, 200, 100, 200], 1000);
+                const belowRaisedThreshold = {
+                    lightInterruptCount: lightInterrupts.length,
+                    interruptCount: director.interruptCount,
+                };
+                playShake([100, 220, 100, 220, 100, 220, 100, 220, 100, 220], 2000);
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                    belowRaisedThreshold,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["belowRaisedThreshold"] == {
+        "lightInterruptCount": 0,
+        "interruptCount": 0,
+    }
     assert len(result["lightInterrupts"]) == 1
     assert result["interruptCount"] == 1
     assert result["streak"] == 0
 
 
 @pytest.mark.frontend
-def test_avatar_floating_acceleration_threshold_triggers_light_resistance_without_distance(
+def test_avatar_floating_near_threshold_shake_uses_matching_distance_and_time_interval(
     mock_page: Page,
 ):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                [100, 200, 100, 200, 100, 200, 100, 200, 100, 200].forEach((x, index, samples) => {
+                    const previousX = index > 0 ? samples[index - 1] : 0;
+                    window.__now = 1000 + (index * 100);
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        screenX: x,
+                        screenY: 100,
+                        movementX: x - previousX,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_slow_shake_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                const samples = [
+                    { t: 1000, x: 100 },
+                    { t: 1200, x: 200 },
+                    { t: 1400, x: 100 },
+                    { t: 1600, x: 200 },
+                    { t: 1800, x: 100 },
+                    { t: 2000, x: 200 },
+                    { t: 2200, x: 100 },
+                    { t: 2400, x: 200 },
+                ];
+                samples.forEach((sample, index) => {
+                    const previousX = index > 0 ? samples[index - 1].x : 0;
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        screenX: sample.x,
+                        screenY: 100,
+                        movementX: sample.x - previousX,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_quick_mousemove_under_single_event_threshold_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1040, x: 260 },
+                    { t: 1080, x: 420 },
+                    { t: 1120, x: 580 },
+                    { t: 1160, x: 740 },
+                    { t: 1200, x: 900 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: 160,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_slow_continuous_mousemove_does_not_accumulate_forever(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = {
+                    x: 100,
+                    y: 100,
+                    t: 1000,
+                    speed: 0,
+                };
+                let x = 100;
+                for (let index = 1; index <= 30; index += 1) {
+                    x += 20;
+                    window.__now = 1000 + index * 100;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: x,
+                        clientY: 100,
+                        movementX: 20,
+                        movementY: 0,
+                    });
+                }
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_light_resistance_reveals_real_cursor_for_two_seconds(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                const temporaryReveals = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        temporaryReveals.push({ reason, durationMs });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                document.body.classList.add('yui-taking-over');
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.hasVisiblePosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                    if (options && options.forceSystemCursorReveal && !options.cursorRevealAlreadyRequested) {
+                        director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                    }
+                };
+
+                director.lastPointerPoint = { x: 0, y: 100, t: 900, speed: 0 };
+                const samples = [
+                    { t: 1000, x: 100 },
+                    { t: 1100, x: 220 },
+                    { t: 1200, x: 100 },
+                    { t: 1300, x: 220 },
+                    { t: 1400, x: 100 },
+                    { t: 1500, x: 220 },
+                    { t: 1600, x: 100 },
+                    { t: 1700, x: 220 },
+                    { t: 1800, x: 100 },
+                    { t: 1900, x: 220 },
+                ];
+                samples.forEach((sample, index) => {
+                    const previousX = index > 0 ? samples[index - 1].x : 0;
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        screenX: sample.x,
+                        screenY: 100,
+                        movementX: sample.x - previousX,
+                        movementY: 0,
+                    });
+                });
+                const beforeTimer = cursorVisibility.slice();
+                const htmlInterruptCountClassBeforeTimer = document.documentElement.classList.contains('yui-interrupt-count-cursor-revealed');
+                const bodyInterruptCountClassBeforeTimer = document.body.classList.contains('yui-interrupt-count-cursor-revealed');
+                const temporaryCursorClassBeforeTimer = document.body.classList.contains('yui-resistance-cursor-reveal');
+                const activeTimer = timers[timers.length - 1];
+                activeTimer.callback();
+                return {
+                    lightInterrupts,
+                    cursorVisibility,
+                    temporaryReveals,
+                    beforeTimer,
+                    htmlInterruptCountClassBeforeTimer,
+                    bodyInterruptCountClassBeforeTimer,
+                    temporaryCursorClassBeforeTimer,
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimers: clearedTimers.length,
+                };
+            } finally {
+                Date.now = originalNow;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert len(result["lightInterrupts"]) == 1
+    assert result["lightInterrupts"][0]["options"]["forceSystemCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["suppressCursorReveal"] is True
+    assert result["lightInterrupts"][0]["options"]["cursorRevealAlreadyRequested"] is True
+    expected_temporary_reveals = [{
+        "reason": "interrupt_resist_light",
+        "durationMs": 2000,
+    }]
+    assert result["temporaryReveals"] == expected_temporary_reveals
+    assert result["beforeTimer"] == [{
+        "hidden": True,
+        "reason": "user_cursor_reveal_suppressed",
+    }]
+    assert result["htmlInterruptCountClassBeforeTimer"] is False
+    assert result["bodyInterruptCountClassBeforeTimer"] is False
+    assert result["temporaryCursorClassBeforeTimer"] is True
+    assert result["timerDelays"] == [2000]
+    assert result["cursorVisibility"]
+    assert all(
+        entry == {
+            "hidden": True,
+            "reason": "user_cursor_reveal_suppressed",
+        }
+        for entry in result["cursorVisibility"]
+    )
+    assert result["clearedTimers"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_active_light_resistance_does_not_count_continuous_shake(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const temporaryReveals = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: () => {},
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        temporaryReveals.push({ reason, durationMs });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.hasVisiblePosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                director.interruptCount = 1;
+                director.resistanceController.lightResistanceActive = true;
+                director.scenePausedForResistance = true;
+
+                const playQualifyingGroup = () => {
+                    const startAt = window.__now;
+                    director.lastPointerPoint = { x: 0, y: 100, t: startAt, speed: 0 };
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
+                    samples.forEach((x, index) => {
+                        window.__now = startAt + ((index + 1) * 100);
+                        director.handleInterrupt({
+                            isTrusted: true,
+                            type: 'mousemove',
+                            clientX: x,
+                            clientY: 100,
+                            screenX: x,
+                            screenY: 100,
+                            movementX: x - (index > 0 ? samples[index - 1] : 0),
+                            movementY: 0,
+                        });
+                    });
+                };
+
+                playQualifyingGroup();
+
+                return {
+                    activeDuringSecond: director.resistanceController.lightResistanceActive,
+                    pausedDuringSecond: director.scenePausedForResistance,
+                    interruptCount: director.interruptCount,
+                    temporaryReveals,
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimers: clearedTimers.length,
+                };
+            } finally {
+                Date.now = originalNow;
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["activeDuringSecond"] is True
+    assert result["pausedDuringSecond"] is True
+    assert result["interruptCount"] == 1
+    assert result["temporaryReveals"] == [
+        {"reason": "interrupt_resist_light", "durationMs": 2000},
+    ]
+    assert result["timerDelays"] == [2000]
+    assert result["clearedTimers"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_interrupt_cursor_reveal_survives_angry_exit_timeout(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = () => {};
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+
+                director.revealRealCursorForInterruptCount();
+                director.angryExitTriggered = true;
+                timers[0].callback();
+
+                return {
+                    htmlClassRetained: document.documentElement.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    bodyClassRetained: document.body.classList.contains('yui-interrupt-count-cursor-revealed'),
+                    cursorVisibility,
+                    timerDelay: timers[0] && timers[0].delay,
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelay"] == 3000
+    assert result["htmlClassRetained"] is True
+    assert result["bodyClassRetained"] is True
+    assert result["cursorVisibility"] == [
+        {"hidden": False, "reason": "interrupt_count_reveal"},
+    ]
+
+
+@pytest.mark.frontend
+def test_avatar_floating_angry_exit_clears_temporary_system_cursor_reveal_timer(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const cursorVisibility = [];
+                window.YuiGuideCommon = {
+                    syncPcSystemCursorHidden: (hidden, reason) => {
+                        cursorVisibility.push({ hidden, reason });
+                    },
+                    syncPcSystemCursorTemporaryReveal: (durationMs, reason) => {
+                        cursorVisibility.push({ temporaryReveal: durationMs, reason });
+                    },
+                };
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                document.body.classList.add('yui-taking-over');
+                director.currentSceneId = 'test_scene';
+                director.interruptCount = 3;
+                director.recordExperienceMetric = () => {};
+                director.clearSceneTimers = () => {};
+                director.disableInterrupts = () => {};
+                director.cancelActiveNarration = () => {};
+                director.beginGuideInterruptPresentation = () => {};
+                director.getStep = () => ({ performance: {} });
+                director.resolvePerformanceBubbleText = () => '';
+                director.getGuideVoiceDurationMs = () => 0;
+                director.setTutorialTakingOver = () => {};
+                director.overlay = {
+                    setAngry: () => {},
+                    hidePluginPreview: () => {},
+                    hideBubble: () => {},
+                };
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.runAngryExitPerformance = async () => null;
+                director.speakGuideLine = async () => null;
+                director.notifyPluginDashboardNarrationFinished = () => {};
+                director.requestTermination = () => {};
+
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+                await director.abortAsAngryExit('pointer_interrupt');
+
+                return {
+                    timerCount: timers.length,
+                    clearedTimerCount: clearedTimers.length,
+                    cursorVisibility,
+                    hasResistanceClass: document.body.classList.contains('yui-resistance-cursor-reveal'),
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+                delete window.YuiGuideCommon;
+            }
+        }
+        """
+    )
+
+    assert result["timerCount"] == 1
+    assert result["clearedTimerCount"] == 1
+    assert result["cursorVisibility"] == [
+        {"temporaryReveal": 2000, "reason": "interrupt_resist_light"},
+        {"hidden": False, "reason": "interrupt_angry_exit"},
+    ]
+    assert result["hasResistanceClass"] is True
+
+
+@pytest.mark.frontend
+def test_voice_queue_speak_stays_cancelled_when_stopped_during_start_delay(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const originalSetTimeout = window.setTimeout;
+            const originalClearTimeout = window.clearTimeout;
+            const timers = [];
+            const clearedTimers = [];
+            window.setTimeout = (callback, delay) => {
+                const timer = { callback, delay };
+                timers.push(timer);
+                return timer;
+            };
+            window.clearTimeout = (timer) => {
+                clearedTimers.push(timer);
+            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                director.voiceQueue.resolveGuideAudioSrc = () => '';
+
+                const speakPromise = director.voiceQueue.speak('hello', {
+                    minDurationMs: 1200,
+                });
+                director.voiceQueue.stop();
+                timers[0].callback();
+                await speakPromise;
+
+                return {
+                    timerDelays: timers.map((timer) => timer.delay),
+                    clearedTimerCount: clearedTimers.length,
+                    currentFinishActive: typeof director.voiceQueue.currentFinish === 'function',
+                };
+            } finally {
+                window.setTimeout = originalSetTimeout;
+                window.clearTimeout = originalClearTimeout;
+            }
+        }
+        """
+    )
+
+    assert result["timerDelays"] == [48]
+    assert result["clearedTimerCount"] == 0
+    assert result["currentFinishActive"] is False
+
+
+@pytest.mark.frontend
+def test_avatar_floating_acceleration_below_new_threshold_does_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 101, dx: 1 },
+                    { t: 1002, x: 103, dx: 2 },
+                    { t: 1003, x: 106, dx: 3 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_small_acceleration_spikes_do_not_trigger_light_resistance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7940,6 +9513,72 @@ def test_avatar_floating_acceleration_threshold_triggers_light_resistance_withou
                     { t: 1001, x: 105, dx: 5 },
                     { t: 1002, x: 115, dx: 10 },
                     { t: 1003, x: 135, dx: 20 },
+                    { t: 1004, x: 160, dx: 25 },
+                ].forEach((sample) => {
+                    window.__now = sample.t;
+                    director.handleInterrupt({
+                        isTrusted: true,
+                        type: 'mousemove',
+                        clientX: sample.x,
+                        clientY: 100,
+                        movementX: sample.dx,
+                        movementY: 0,
+                    });
+                });
+                return {
+                    lightInterrupts,
+                    interruptCount: director.interruptCount,
+                    streak: director.interruptQualifyingMoveStreak,
+                };
+            } finally {
+                Date.now = originalNow;
+            }
+        }
+        """
+    )
+
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
+    assert result["streak"] == 0
+
+
+@pytest.mark.frontend
+def test_avatar_floating_acceleration_threshold_requires_single_event_distance(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const originalNow = Date.now;
+            window.__now = 1000;
+            Date.now = () => window.__now;
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const lightInterrupts = [];
+                director.platformCapabilities = { windowBoundsSource: 'electron-window-bounds' };
+                director.currentSceneId = 'test_scene';
+                director.currentStep = {
+                    performance: {},
+                    interrupts: { threshold: 3, throttleMs: 0 },
+                };
+                director.interruptsEnabled = true;
+                director.cursor.hasPosition = () => true;
+                director.cursor.reactToUserMotion = () => {};
+                director.playLightResistance = (x, y, options) => {
+                    lightInterrupts.push({ x, y, options });
+                };
+
+                director.lastPointerPoint = { x: 100, y: 100, t: 1000, speed: 0 };
+                [
+                    { t: 1001, x: 140, dx: 40 },
+                    { t: 1002, x: 200, dx: 60 },
+                    { t: 1003, x: 290, dx: 90 },
                 ].forEach((sample) => {
                     window.__now = sample.t;
                     director.handleInterrupt({
@@ -7962,18 +9601,18 @@ def test_avatar_floating_acceleration_threshold_triggers_light_resistance_withou
         """
     )
 
-    assert len(result["lightInterrupts"]) == 1
-    assert result["interruptCount"] == 1
+    assert result["lightInterrupts"] == []
+    assert result["interruptCount"] == 0
 
 
 @pytest.mark.frontend
-def test_avatar_floating_third_light_resistance_enters_angry_exit(
+def test_avatar_floating_fourth_interrupt_enters_angry_exit_after_three_resistance_lines(
     mock_page: Page,
 ):
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -7990,7 +9629,7 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                 director.currentSceneId = 'test_scene';
                 director.currentStep = {
                     performance: {},
-                    interrupts: { threshold: 3, throttleMs: 0 },
+                    interrupts: { threshold: 4, throttleMs: 0 },
                 };
                 director.interruptsEnabled = true;
                 director.cursor.hasPosition = () => true;
@@ -8002,25 +9641,27 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
                     angryExits.push(source);
                 };
 
-                let x = 100;
                 let t = 1000;
                 const playQualifyingGroup = () => {
-                    director.lastPointerPoint = { x, y: 100, t, speed: 0 };
-                    for (let index = 0; index < 3; index += 1) {
-                        x += 64;
-                        t += 1000;
+                    const samples = [100, 220, 100, 220, 100, 220, 100, 220, 100, 220];
+                    director.lastPointerPoint = { x: 0, y: 100, t, speed: 0 };
+                    samples.forEach((sampleX, index) => {
+                        t += 100;
                         window.__now = t;
                         director.handleInterrupt({
                             isTrusted: true,
                             type: 'mousemove',
-                            clientX: x,
+                            clientX: sampleX,
                             clientY: 100,
-                            movementX: 64,
+                            screenX: sampleX,
+                            screenY: 100,
+                            movementX: sampleX - (index > 0 ? samples[index - 1] : 0),
                             movementY: 0,
                         });
-                    }
+                    });
                 };
 
+                playQualifyingGroup();
                 playQualifyingGroup();
                 playQualifyingGroup();
                 playQualifyingGroup();
@@ -8036,9 +9677,9 @@ def test_avatar_floating_third_light_resistance_enters_angry_exit(
         """
     )
 
-    assert result["lightInterruptCount"] == 2
+    assert result["lightInterruptCount"] == 3
     assert result["angryExits"] == ["pointer_interrupt"]
-    assert result["interruptCount"] == 3
+    assert result["interruptCount"] == 4
 
 
 @pytest.mark.frontend
@@ -8048,7 +9689,7 @@ def test_avatar_floating_light_resistance_forces_angry_then_restores_emotion(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -8116,52 +9757,65 @@ def test_avatar_floating_angry_exit_forces_angry_emotion(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
         """
         async () => {
-            const director = window.createYuiGuideDirector({ page: 'home' });
-            const emotions = [];
-            const terminationRequests = [];
-            const originalApplyGuideEmotion = director.applyGuideEmotion.bind(director);
-            director.applyGuideEmotion = (emotion, options) => {
-                emotions.push({
-                    emotion,
-                    allowDuringInterrupt: !!(options && options.allowDuringInterrupt),
-                });
-                originalApplyGuideEmotion(emotion, options);
+            const cursorVisibility = [];
+            const previousYuiGuideCommon = window.YuiGuideCommon;
+            window.YuiGuideCommon = {
+                syncPcSystemCursorHidden: (hidden, reason) => {
+                    cursorVisibility.push({ hidden, reason });
+                },
             };
-            director.getStep = (stepId) => {
-                if (stepId === 'interrupt_angry_exit') {
-                    return {
-                        performance: {
-                            bubbleText: 'Stop now',
-                            emotion: 'happy',
-                            voiceKey: 'interrupt_angry_exit',
-                        },
-                    };
-                }
-                return null;
-            };
-            director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
-            director.voiceQueue.speak = async () => null;
-            director.runAngryExitPerformance = async () => null;
-            director.requestTermination = (reason, tutorialReason) => {
-                terminationRequests.push({ reason, tutorialReason });
-            };
+            try {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const emotions = [];
+                const terminationRequests = [];
+                const originalApplyGuideEmotion = director.applyGuideEmotion.bind(director);
+                director.applyGuideEmotion = (emotion, options) => {
+                    emotions.push({
+                        emotion,
+                        allowDuringInterrupt: !!(options && options.allowDuringInterrupt),
+                    });
+                    originalApplyGuideEmotion(emotion, options);
+                };
+                director.getStep = (stepId) => {
+                    if (stepId === 'interrupt_angry_exit') {
+                        return {
+                            performance: {
+                                bubbleText: 'Stop now',
+                                emotion: 'happy',
+                                voiceKey: 'interrupt_angry_exit',
+                            },
+                        };
+                    }
+                    return null;
+                };
+                director.resolvePerformanceBubbleText = (performance) => performance && performance.bubbleText || '';
+                director.voiceQueue.speak = async () => null;
+                director.runAngryExitPerformance = async () => null;
+                director.requestTermination = (reason, tutorialReason) => {
+                    terminationRequests.push({ reason, tutorialReason });
+                };
 
-            await director.abortAsAngryExit('pointer_interrupt');
+                await director.abortAsAngryExit('pointer_interrupt');
 
-            return {
-                emotions,
-                terminationRequests,
-            };
+                return {
+                    cursorVisibility,
+                    emotions,
+                    terminationRequests,
+                };
+            } finally {
+                window.YuiGuideCommon = previousYuiGuideCommon;
+            }
         }
         """
     )
 
+    assert {"hidden": False, "reason": "interrupt_angry_exit"} in result["cursorVisibility"]
     assert {"emotion": "angry", "allowDuringInterrupt": True} in result["emotions"]
     assert result["terminationRequests"] == [
         {"reason": "pointer_interrupt", "tutorialReason": "angry_exit"}
@@ -8187,7 +9841,7 @@ def test_externalized_chat_handoff_remembers_home_cursor_screen_point(mock_page:
             };
             window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -8238,7 +9892,7 @@ def test_externalized_chat_handoff_does_not_clear_home_cursor_position(mock_page
             };
             window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -8306,7 +9960,7 @@ def test_externalized_chat_cursor_uses_recent_handoff_anchor_for_first_smooth_mo
                 at: Date.now(),
             }));
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -8412,7 +10066,7 @@ def test_day3_externalized_cursor_effect_never_defaults_to_wobble(mock_page: Pag
         setup_js="""
             window.history.pushState({}, '', '/');
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -8460,7 +10114,7 @@ def test_day3_first_line_highlights_capsule_input_and_centers_cursor(mock_page: 
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -8539,7 +10193,7 @@ def test_day3_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Pa
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -8640,7 +10294,7 @@ def test_day4_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Pa
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day4-companion-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day4-companion-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -8744,7 +10398,7 @@ def test_day5_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Pa
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day5-personalization-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day5-personalization-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -8863,7 +10517,7 @@ def test_day6_day7_wrap_highlights_capsule_input_and_keeps_cursor_there(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", script_name),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, script_name),
     )
 
     result = mock_page.evaluate(
@@ -8958,7 +10612,7 @@ def test_day6_day7_wrap_highlights_capsule_input_and_keeps_cursor_there(
 
 
 @pytest.mark.frontend
-def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(mock_page: Page):
+def test_day6_wrap_cleanup_and_final_wrap_hold_cursor_after_hud(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -8975,7 +10629,7 @@ def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(moc
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9028,18 +10682,10 @@ def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(moc
         """
     )
 
-    assert [
+    assert not [
         event for event in result
         if event["type"] == "move"
-    ] == [{
-        "type": "move",
-        "id": "compact-chat-input",
-        "item": "input",
-        "x": 320,
-        "y": 280,
-        "durationMs": 760,
-        "sceneId": "day6_wrap_cleanup",
-    }]
+    ]
     assert {
         "type": "highlight",
         "key": "day6_wrap",
@@ -9056,7 +10702,7 @@ def test_day6_wrap_cleanup_externalized_keeps_input_cursor_target_during_cleanup
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day6-agent-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day6-agent-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9108,7 +10754,7 @@ def test_day6_wrap_cleanup_externalized_keeps_input_cursor_target_during_cleanup
     assert [event for event in result if event["type"] == "cursor"] == [{
         "type": "cursor",
         "kind": "input",
-        "effect": "move",
+        "effect": "",
     }]
     assert not [
         event for event in result
@@ -9127,7 +10773,7 @@ def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9197,7 +10843,7 @@ def test_day2_to_day7_first_line_externalized_chat_uses_input_spotlight_and_curs
         """,
         script_names=(
             "tutorial/yui-guide/overlay.js",
-            "tutorial/yui-guide/director.js",
+            *_YUI_DIRECTOR_SCRIPTS,
             "tutorial/yui-guide/days/day2-screen-voice-guide.js",
             "tutorial/yui-guide/days/day3-interaction-guide.js",
             "tutorial/yui-guide/days/day4-companion-guide.js",
@@ -9307,7 +10953,7 @@ def test_day3_avatar_tools_line_moves_to_toggle_and_opens_tool_fan_on_click(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9395,7 +11041,7 @@ def test_day3_avatar_tools_externalized_moves_to_toggle_and_opens_tool_fan_on_cl
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9494,7 +11140,7 @@ def test_day3_avatar_tools_externalized_waits_for_anchor_before_click(
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9585,7 +11231,7 @@ def test_day3_externalized_click_waits_for_future_anchor_report_before_click(
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9658,7 +11304,7 @@ def test_settled_externalized_anchor_syncs_home_cursor_without_second_move(
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -9707,7 +11353,7 @@ def test_day3_externalized_click_uses_cursor_move_helper_like_local_click(
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9789,7 +11435,7 @@ def test_day3_galgame_entry_drags_wheel_down_and_moves_to_centered_galgame(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9889,7 +11535,7 @@ def test_day3_galgame_entry_rotates_wheel_before_local_drag_settles(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -9992,7 +11638,7 @@ def test_day3_galgame_entry_waits_for_rotated_slot_before_final_local_move(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -10059,7 +11705,7 @@ def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -10219,7 +11865,7 @@ def test_externalized_chat_drag_without_duration_uses_default_click_drag_motion(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10311,7 +11957,7 @@ def test_externalized_compact_tool_wheel_rotate_request_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10356,7 +12002,7 @@ def test_externalized_compact_tool_wheel_rotate_broadcast_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10400,7 +12046,7 @@ def test_externalized_compact_tool_wheel_index_request_reaches_chat_host(
             };
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10438,7 +12084,7 @@ def test_externalized_compact_tool_wheel_rotate_retries_until_chat_host_ready(
             window.__hostRequests = [];
             document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10484,7 +12130,7 @@ def test_day3_avatar_tools_props_externalized_uses_single_cursor_click_and_opens
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -10585,7 +12231,7 @@ def test_day3_avatar_tools_props_externalized_waits_for_cursor_move_before_open_
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js", "tutorial/yui-guide/days/day3-interaction-guide.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS, "tutorial/yui-guide/days/day3-interaction-guide.js"),
     )
 
     result = mock_page.evaluate(
@@ -10678,7 +12324,7 @@ def test_day3_externalized_avatar_tool_menu_operation_does_not_send_cursor_effec
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -10753,7 +12399,7 @@ def test_externalized_compact_tool_fan_request_opens_fan_immediately_when_toggle
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10823,7 +12469,7 @@ def test_externalized_avatar_tool_menu_request_opens_menu_when_button_disabled(
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10866,7 +12512,7 @@ def test_externalized_avatar_tool_menu_request_replays_after_early_relay_duplica
             window.history.pushState({}, '', '/chat');
             window.__hostRequests = [];
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10948,7 +12594,7 @@ def test_externalized_avatar_tool_click_request_triggers_button_click_without_ho
                 </div>
             `;
         """,
-        script_names=("app-interpage.js",),
+        script_names=("app/app-interpage",),
     )
 
     result = mock_page.evaluate(
@@ -10989,7 +12635,7 @@ def test_avatar_floating_avatar_tool_menu_api_fires_with_cursor_click(
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11057,7 +12703,7 @@ def test_avatar_floating_click_scene_operation_starts_with_cursor_click(
                 <button id="click-target" style="position:absolute; left:80px; top:80px; width:40px; height:40px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11142,7 +12788,7 @@ def test_day1_externalized_history_click_starts_operation_with_externalized_clic
             };
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11243,7 +12889,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
             window.__NEKO_MULTI_WINDOW__ = true;
             document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11279,7 +12925,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
             await director.playAvatarFloatingScene({
                 id: 'day1_capsule_drag_hint',
                 text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorAction: 'wobble',
                 cursorWobbleDurationMs: 2000,
                 spotlight: false,
@@ -11300,7 +12946,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
     )
 
     assert "spotlight:input" not in result
-    assert "cursor:input:wobble" in result
+    assert "cursor:capsule-input:wobble" in result
     assert "cursor:history:move" in result
 
 
@@ -11311,7 +12957,7 @@ def test_day1_takeover_operation_uses_round_operation_registry(
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11375,7 +13021,7 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
                 <button id="live2d-btn-agent" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11439,6 +13085,68 @@ def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
 
 
 @pytest.mark.frontend
+def test_day1_intro_greeting_restore_keeps_capsule_spotlight_target(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:20px; top:20px; width:280px; height:48px;"
+                    ></div>
+                    <div
+                        id="compact-chat-capsule"
+                        data-compact-geometry-part="capsuleBody"
+                        style="position:absolute; left:80px; top:90px; width:360px; height:56px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const persistentSpotlights = [];
+            director.overlay.setPersistentSpotlight = (target) => {
+                persistentSpotlights.push(target ? target.id : '');
+            };
+            director.overlay.activateSpotlight = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.overlay.clearPersistentSpotlight = () => {};
+            director.overlay.showBubble = () => {};
+            director.applyCircularFloatingButtonSpotlightHint = () => {};
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.currentSceneId = 'day1_intro_greeting';
+            director.currentStep = {
+                performance: {
+                    bubbleText: 'hello',
+                    emotion: 'happy',
+                    cursorTarget: 'chat-capsule-input',
+                },
+                anchor: 'chat-capsule-input',
+            };
+
+            director.restoreCurrentScenePresentation({});
+
+            return { persistentSpotlights };
+        }
+        """
+    )
+
+    assert result["persistentSpotlights"] == ["compact-chat-capsule"]
+
+
+@pytest.mark.frontend
 def test_day1_intro_basic_voice_waits_for_history_cursor_move_before_voice_button(
     mock_page: Page,
 ):
@@ -11450,7 +13158,7 @@ def test_day1_intro_basic_voice_waits_for_history_cursor_move_before_voice_butto
                 <button id="live2d-btn-mic" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11502,7 +13210,7 @@ def test_day1_history_to_intro_basic_voice_preserves_externalized_cursor(mock_pa
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11525,7 +13233,7 @@ def test_day1_intro_basic_voice_to_screen_entry_preserves_externalized_cursor(mo
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11548,7 +13256,7 @@ def test_day1_screen_entry_invite_preserves_externalized_cursor(mock_page: Page)
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11571,7 +13279,7 @@ def test_day1_screen_entry_invite_to_takeover_capture_preserves_externalized_cur
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11594,7 +13302,7 @@ def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mo
     _bootstrap_page(
         mock_page,
         setup_js="window.history.pushState({}, '', '/');",
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11641,7 +13349,7 @@ def test_normal_externalized_panel_cleanup_preserves_cursor(mock_page: Page):
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11682,7 +13390,7 @@ def test_exit_externalized_panel_cleanup_clears_cursor(mock_page: Page):
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11723,7 +13431,7 @@ def test_cross_window_handoff_does_not_hide_pc_overlay_cursor(mock_page: Page):
             window.history.pushState({}, '', '/');
             window.__NEKO_MULTI_WINDOW__ = true;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11776,7 +13484,7 @@ def test_externalized_chat_handoff_forgets_home_pc_cursor_cache(mock_page: Page)
                 ></div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11838,7 +13546,7 @@ def test_home_owned_cursor_move_reenables_pc_overlay_after_externalized_handoff(
                 ></div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11877,7 +13585,7 @@ def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page)
                 <button id="live2d-btn-screen" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11925,7 +13633,7 @@ def test_day1_intro_basic_voice_sends_pc_overlay_move_from_history_to_voice_butt
                 <button id="live2d-btn-mic" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -11981,7 +13689,7 @@ def test_highlighted_api_click_starts_action_with_cursor_click(mock_page: Page):
                 <button id="click-target" style="position:absolute; left:80px; top:80px; width:40px; height:40px;"></button>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -12082,7 +13790,7 @@ def test_avatar_floating_open_avatar_tool_menu_retries_until_three_tools_visible
                 },
             };
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -12138,7 +13846,7 @@ def test_day3_avatar_tools_props_opens_tools_on_click_then_closes_after_narratio
                 </div>
             `;
         """,
-        script_names=("tutorial/yui-guide/overlay.js", "tutorial/yui-guide/director.js"),
+        script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
     )
 
     result = mock_page.evaluate(
@@ -12245,7 +13953,7 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
                 },
             };
         """,
-        script_names=("app-react-chat-window.js",),
+        script_names=("app/app-react-chat-window",),
     )
 
     mock_page.evaluate(
@@ -13487,7 +15195,7 @@ def test_fire_and_forget_json_uses_cached_csrf_token_without_awaiting_during_unl
             });
             return jsonResponse({ ok: true });
         """,
-        script_names=("app-prompt-shared.js",),
+        script_names=("app/app-prompt-shared.js",),
     )
 
     mock_page.evaluate(

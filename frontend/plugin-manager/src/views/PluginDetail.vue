@@ -44,10 +44,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="panelSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -75,10 +75,10 @@
                 :label="surface.title || surface.id"
                 :name="surface.id"
               >
-                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+                <HostedSurfaceFrame :plugin-id="pluginId" :surface="surface" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
               </el-tab-pane>
             </el-tabs>
-            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" height="560px" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
+            <HostedSurfaceFrame v-else :plugin-id="pluginId" :surface="guideSurfaces[0]!" :height="hostedSurfaceFrameHeight" @open-logs="openLogsTab" @message="relayHostedSurfaceMessageToStaticUi" />
           </div>
         </el-tab-pane>
 
@@ -98,12 +98,7 @@
                 </el-tag>
               </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.sdkVersion')">{{ plugin.sdk_version || $t('common.nA') }}</el-descriptions-item>
-              <el-descriptions-item v-if="isExtension" :label="$t('plugins.hostPlugin')">
-                <el-link type="primary" @click="goToPlugin(plugin.host_plugin_id!)">
-                  {{ plugin.host_plugin_id }}
-                </el-link>
-              </el-descriptions-item>
-              <el-descriptions-item v-if="!isExtension" :label="$t('plugins.autoStart')">
+              <el-descriptions-item :label="$t('plugins.autoStart')">
                 <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'">
                   {{ plugin.autoStart ? $t('plugins.autoStart') : $t('plugins.manualStart') }}
                 </el-tag>
@@ -113,25 +108,6 @@
               </el-descriptions-item>
             </el-descriptions>
 
-            <!-- 普通插件：显示绑定的 Extension 列表 -->
-            <div v-if="!isExtension && boundExtensions.length > 0" class="bound-extensions">
-              <h4 class="bound-extensions-title">{{ $t('plugins.boundExtensions') }} ({{ boundExtensions.length }})</h4>
-              <div class="bound-extensions-list">
-                <el-card
-                  v-for="ext in boundExtensions"
-                  :key="ext.id"
-                  shadow="hover"
-                  class="bound-ext-card"
-                  @click="goToPlugin(ext.id)"
-                >
-                  <div class="bound-ext-info">
-                    <span class="bound-ext-name">{{ resolveDisplayText(ext).name }}</span>
-                    <StatusIndicator :status="ext.status || 'pending'" />
-                  </div>
-                  <p class="bound-ext-desc">{{ resolveDisplayText(ext).description || $t('common.noData') }}</p>
-                </el-card>
-              </div>
-            </div>
           </div>
         </el-tab-pane>
 
@@ -184,7 +160,7 @@ import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { get } from '@/api'
 import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
 import { useI18n } from 'vue-i18n'
-import type { PluginMeta, PluginUiSurface, PluginUiWarning } from '@/types/api'
+import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -199,6 +175,7 @@ const surfaceWarnings = ref<PluginUiWarning[]>([])
 const activePanelSurfaceId = ref('')
 const activeGuideSurfaceId = ref('')
 const staticUiFrameRef = ref<InstanceType<typeof PluginUIFrame> | null>(null)
+const hostedSurfaceFrameHeight = 'clamp(560px, calc(100vh - 220px), 1200px)'
 const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
 const studySurfaceRelayMessageTypes = new Set([
   'neko-study-review-completed',
@@ -226,33 +203,21 @@ const pluginDisplayText = computed(() => {
   return plugin.value ? resolvePluginDisplayText(plugin.value, locale.value) : emptyPluginDisplayText
 })
 
-function resolveDisplayText(target: PluginMeta): PluginDisplayText {
-  return resolvePluginDisplayText(target, locale.value)
-}
-
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
 
-const isExtension = computed(() => plugin.value?.type === 'extension')
 const isAdapter = computed(() => plugin.value?.type === 'adapter')
 
 // 获取插件类型显示文本
 const pluginTypeText = computed(() => {
-  if (isExtension.value) return 'plugins.extension'
   if (isAdapter.value) return 'plugins.typeAdapter'
   return 'plugins.pluginTypeNormal'
 })
 
 // 获取插件类型标签颜色
 const pluginTypeTagType = computed(() => {
-  if (isExtension.value) return 'primary'
   if (isAdapter.value) return 'warning'
   return 'info'
-})
-
-const boundExtensions = computed(() => {
-  if (!plugin.value || isExtension.value) return []
-  return pluginStore.getExtensionsForHost(pluginId.value)
 })
 
 // 确保 status 始终是字符串类型
@@ -267,10 +232,6 @@ const pluginStatus = computed(() => {
 
 function goBack() {
   router.push('/plugins')
-}
-
-function goToPlugin(pid: string) {
-  router.push(`/plugins/${encodeURIComponent(pid)}`)
 }
 
 function resolveActiveTab(value: unknown): string {
@@ -522,50 +483,4 @@ watch(locale, () => {
   color: var(--el-color-warning);
 }
 
-.bound-extensions {
-  margin-top: 24px;
-}
-
-.bound-extensions-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0 0 12px 0;
-  color: var(--el-text-color-primary);
-}
-
-.bound-extensions-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-}
-
-.bound-ext-card {
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.bound-ext-card:hover {
-  border-color: var(--el-color-primary);
-}
-
-.bound-ext-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
-.bound-ext-name {
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.bound-ext-desc {
-  margin: 0;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 </style>

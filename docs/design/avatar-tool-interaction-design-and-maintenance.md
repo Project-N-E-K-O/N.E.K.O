@@ -69,14 +69,14 @@
 
 宿主和后端：
 
-1. `static/app-react-chat-window.js`
+1. `static/app/app-react-chat-window`
    - 接收 React 的 `onAvatarInteraction` 和 `onAvatarToolStateChange`。
    - 对外派发 `neko-react-chat-window:avatar-interaction` 和 `neko-react-chat-window:avatar-tool-state`。
-2. `static/app-buttons.js`
+2. `static/app/app-buttons.js`
    - 归一化并校验 avatar interaction payload。
    - 通过 websocket 发送 `action: "avatar_interaction"`。
    - 处理本地 seed emotion、发送节流和普通文本输入延后。
-3. `static/app-websocket.js`
+3. `static/app/app-websocket.js`
    - 接收后端 `avatar_interaction_ack`，转成 `neko-avatar-interaction-ack` 生命周期事件。
 4. `main_routers/websocket_router.py`
    - 收到 `avatar_interaction` 后转给当前 session manager。
@@ -391,7 +391,7 @@ en / es / ja / ko / pt / ru / zh-CN / zh-TW
 
 需要同步：
 
-1. `static/app-buttons.js` 的允许 action / intensity / seed emotion。
+1. `static/app/app-buttons.js` 的允许 action / intensity / seed emotion。
 2. `config/prompts/prompts_avatar_interaction.py` 的 allowed actions、intensity combinations、labels、reaction profiles、memory meta。
 3. 必要时更新 `main_logic/core.py` 的特殊处理，但优先保持通用链路不变。
 
@@ -426,7 +426,7 @@ en / es / ja / ko / pt / ru / zh-CN / zh-TW
 
 改后端语义时检查：
 
-1. `static/app-buttons.js` 和 `config/prompts/prompts_avatar_interaction.py` 白名单一致。
+1. `static/app/app-buttons.js` 和 `config/prompts/prompts_avatar_interaction.py` 白名单一致。
 2. 前端 action / intensity / flag 与 prompt 事件事实一致。
 3. `avatar_interaction_ack` 的 accepted/reason 仍能让前端收尾。
 4. 冷却、去重、文本会话忙、语音会话 active 的拒绝路径不被绕过。

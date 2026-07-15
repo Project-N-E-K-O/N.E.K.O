@@ -4,8 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from .game_route_test_helpers import mark_game_started
+# gr_patch_all: single source of truth for the submodule tuple. A local copy
+# here silently loses patch coverage whenever the package grows a submodule.
+from .game_route_test_helpers import (
+    gr_patch_all as _gr_patch_all,
+    mark_game_started,
+)
 from main_routers import game_router
+from main_routers.game_router import archive as gr_archive
+from main_routers.game_router import game_context as gr_game_context
+from main_routers.game_router import memory_policy as gr_memory_policy
+from main_routers.game_router import runtime as gr_runtime
 
 
 def _badminton_html() -> str:
@@ -15,20 +24,20 @@ def _badminton_html() -> str:
 
 
 def _badminton_route_state(monkeypatch: pytest.MonkeyPatch) -> dict:
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
-    return game_router._build_route_state("badminton", "bd-session", "Lan")
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
+    return gr_runtime._build_route_state("badminton", "bd-session", "Lan")
 
 
 @pytest.mark.unit
 def test_badminton_game_memory_policy_uses_badminton_fields_and_aliases():
-    policy = game_router._game_memory_policy("badminton", {})
+    policy = gr_memory_policy._game_memory_policy("badminton", {})
 
-    for field in game_router._game_memory_policy_fields("badminton"):
+    for field in gr_memory_policy._game_memory_policy_fields("badminton"):
         assert policy[field] is False
     assert policy["game_memory_enabled"] is False
     assert "soccer_game_memory_enabled" not in policy
 
-    enabled = game_router._game_memory_policy(
+    enabled = gr_memory_policy._game_memory_policy(
         "badminton",
         {"badmintonGameMemoryEnabled": True},
     )
@@ -46,7 +55,7 @@ def test_badminton_game_memory_policy_uses_badminton_fields_and_aliases():
 def test_badminton_memory_payload_updates_state_without_touching_soccer_fields(monkeypatch):
     state = _badminton_route_state(monkeypatch)
 
-    game_router._update_game_memory_enabled_from_payload(
+    gr_runtime._update_game_memory_enabled_from_payload(
         state,
         {
             "badmintonGameMemoryEnabled": True,
@@ -82,7 +91,7 @@ def test_badminton_memory_policy_is_attached_to_events_and_archives(monkeypatch)
         }
     )
 
-    event = game_router._attach_game_memory_flag_to_event(
+    event = gr_memory_policy._attach_game_memory_flag_to_event(
         {"kind": "shot_result"},
         state,
         game_type="badminton",
@@ -95,7 +104,7 @@ def test_badminton_memory_policy_is_attached_to_events_and_archives(monkeypatch)
     assert event["gameMemoryPlayerInteractionEnabled"] is False
     assert event["gameMemoryEventReplyEnabled"] is True
 
-    archive = game_router._build_game_archive(state)
+    archive = gr_archive._build_game_archive(state)
     assert archive["badminton_game_memory_enabled"] is True
     assert archive["badminton_game_memory_player_interaction_enabled"] is False
     assert archive["badminton_game_memory_postgame_context_enabled"] is False
@@ -114,7 +123,7 @@ def test_badminton_memory_controls_external_events_and_archive_filters(monkeypat
         }
     )
 
-    event = game_router._build_external_user_event(
+    event = gr_runtime._build_external_user_event(
         state,
         "nice shot",
         kind="user-text",
@@ -133,9 +142,9 @@ def test_badminton_memory_controls_external_events_and_archive_filters(monkeypat
         "badminton_game_memory_player_interaction_enabled": False,
         "badminton_game_memory_event_reply_enabled": True,
     }
-    assert game_router._game_dialog_item_allowed_for_memory({"type": "user"}, archive) is False
+    assert gr_game_context._game_dialog_item_allowed_for_memory({"type": "user"}, archive) is False
     assert (
-        game_router._game_dialog_item_allowed_for_memory(
+        gr_game_context._game_dialog_item_allowed_for_memory(
             {"type": "assistant", "source": "opening_line"}, archive
         )
         is True
@@ -154,14 +163,14 @@ async def test_badminton_external_transcript_meta_uses_badminton_prefix(monkeypa
             "last_state": {"score": {"player": 3, "ai": 2}, "round": 5},
         }
     )
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {})
+    _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
     async def fake_run_game_chat(game_type, session_id, event):
         return {"line": "ok", "control": {}, "game_type": game_type, "session_id": session_id}
 
-    monkeypatch.setattr(game_router, "_run_game_chat", fake_run_game_chat)
+    _gr_patch_all(monkeypatch, "_run_game_chat", fake_run_game_chat)
 
-    handled = await game_router._route_external_transcript_to_game(
+    handled = await gr_runtime._route_external_transcript_to_game(
         "Lan",
         state,
         "nice shot",
@@ -187,8 +196,8 @@ def test_badminton_archive_disabled_uses_generic_skip_reason(monkeypatch):
     state["badminton_game_memory_archive_enabled"] = False
     state["game_memory_archive_enabled"] = False
 
-    reason = game_router._game_archive_memory_skip_reason(state, "route_end")
-    skipped = game_router._build_game_archive_memory_skipped_result(reason)
+    reason = gr_archive._game_archive_memory_skip_reason(state, "route_end")
+    skipped = gr_archive._build_game_archive_memory_skipped_result(reason)
 
     assert reason == "game_memory_archive_disabled"
     assert skipped["status"] == "skipped"

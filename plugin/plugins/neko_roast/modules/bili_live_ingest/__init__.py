@@ -12,6 +12,8 @@ from typing import Any
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
 from .._base import BaseModule
 
+SUPPORT_EVENT_DEDUPE_SECONDS = 0.35
+
 
 class _ListenerLog:
     """把 DanmakuListener 的日志收敛到 audit：info/debug 丢弃（避免刷屏+隐私），warning/error 入 audit。"""
@@ -43,6 +45,9 @@ class BiliLiveIngestModule(BaseModule):
         # 吞并自 plugin/plugins/bilibili_danmaku 的 DanmakuListener（见 live-center 计划）。
         self._listener: Any = None
         self._listener_task: "asyncio.Task[Any] | None" = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._listener_generation = 0
+        self._listener_ready_timeout = 20.0
         self._room_id: int = 0
         # lookup 反 -352：临时 buvid3 缓存 + 房间状态短期缓存（见 _lookup_room_status_sync）
         self._lookup_buvid3: str = ""
@@ -50,16 +55,30 @@ class BiliLiveIngestModule(BaseModule):
         self._lookup_buvid3_ttl: float = 6 * 3600.0
         self._room_status_cache: "dict[int, tuple[LiveRoomStatus, float]]" = {}
         self._room_status_ttl: float = 60.0
+        self._last_event_at: float = 0.0
+        self._last_event_type: str = ""
+        self._recent_support_event_keys: dict[str, float] = {}
 
     async def teardown(self) -> None:
         await self.stop_listening()
         await super().teardown()
 
     def status(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "listening": self.is_listening(), "room_id": self._room_id}
+        return {
+            "enabled": self.enabled,
+            "listening": self.is_listening(),
+            "room_id": self._room_id,
+            "last_event_at": self._last_event_at,
+            "last_event_type": self._last_event_type,
+        }
 
     def is_listening(self) -> bool:
-        return self._listener is not None
+        if self._listener is None or self._listener_task is None or self._listener_task.done():
+            return False
+        try:
+            return self._listener.get_connection_state().get("state") == "receiving"
+        except Exception:
+            return False
 
     def listener_state(self) -> dict[str, Any]:
         if self._listener is None:
@@ -74,36 +93,90 @@ class BiliLiveIngestModule(BaseModule):
         room_id = int(room_id or 0)
         if room_id <= 0:
             return False
-        await self.stop_listening()
-        audit = self.ctx.audit if self.ctx else None
+        async with self._lifecycle_lock:
+            await self._stop_listening_locked()
+            audit = self.ctx.audit if self.ctx else None
+            try:
+                from .danmaku_core import DanmakuListener
+            except Exception as exc:
+                if audit is not None:
+                    audit.record("live_listener_import_failed", f"{type(exc).__name__}: {exc}", level="error")
+                return False
+            self._listener_generation += 1
+            generation = self._listener_generation
+
+            async def on_live() -> None:
+                await self._on_live(generation=generation)
+
+            async def on_preparing() -> None:
+                await self._on_preparing(generation=generation)
+
+            async def on_error(exc: Any) -> None:
+                await self._on_error(exc, generation=generation)
+
+            callbacks = {
+                # 富模型 on_event（带 get_score 打分）→ live_events 中枢窗口择优；不再用轻量
+                # on_danmaku 直连 pipeline，避免同一条弹幕被两条路各锐评一次。
+                "on_event": lambda cmd, event: self._on_live_event(cmd, event, generation=generation),
+                "on_gift": lambda event: self._on_gift_event(event, generation=generation),
+                "on_sc": lambda event: self._on_super_chat_event(event, generation=generation),
+                "on_live": on_live,
+                "on_preparing": on_preparing,
+                "on_error": on_error,
+            }
+            listener = DanmakuListener(
+                room_id=room_id,
+                # 登录态（若有）让弹幕连接走登录会话，更稳、低风控；未登录=匿名只读（临时 buvid3 绕风控）。
+                credential=getattr(self.ctx, "bili_credential", None) if self.ctx else None,
+                logger=_ListenerLog(audit),
+                callbacks=callbacks,
+            )
+            task = asyncio.create_task(listener.start())
+            self._listener = listener
+            self._listener_task = task
+            self._room_id = room_id
+            task.add_done_callback(lambda done: self._listener_task_done(generation, listener, done))
+
+        ready_task = asyncio.create_task(listener.wait_until_ready())
         try:
-            from .danmaku_core import DanmakuListener
-        except Exception as exc:
-            if audit is not None:
-                audit.record("live_listener_import_failed", f"{type(exc).__name__}: {exc}", level="error")
-            return False
-        callbacks = {
-            # 富模型 on_event（带 get_score 打分）→ live_events 中枢窗口择优；不再用轻量
-            # on_danmaku 直连 pipeline，避免同一条弹幕被两条路各锐评一次。
-            "on_event": self._on_live_event,
-            "on_live": self._on_live,
-            "on_preparing": self._on_preparing,
-            "on_error": self._on_error,
-        }
-        self._listener = DanmakuListener(
-            room_id=room_id,
-            # 登录态（若有）让弹幕连接走登录会话，更稳、低风控；未登录=匿名只读（临时 buvid3 绕风控）。
-            credential=getattr(self.ctx, "bili_credential", None) if self.ctx else None,
-            logger=_ListenerLog(audit),
-            callbacks=callbacks,
-        )
-        self._room_id = room_id
-        self._listener_task = asyncio.create_task(self._listener.start())
-        if audit is not None:
-            audit.record("live_listener_started", "danmaku listener started", detail={"room_id": room_id})
-        return True
+            done, _pending = await asyncio.wait(
+                {task, ready_task},
+                timeout=self._listener_ready_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            ready = ready_task in done and not ready_task.cancelled() and ready_task.exception() is None
+        except asyncio.CancelledError:
+            await self._stop_generation(generation)
+            raise
+        finally:
+            if not ready_task.done():
+                ready_task.cancel()
+            try:
+                await ready_task
+            except asyncio.CancelledError:
+                pass
+
+        async with self._lifecycle_lock:
+            current = generation == self._listener_generation and self._listener is listener and self._listener_task is task
+            if ready and current and not task.done():
+                if audit is not None:
+                    audit.record("live_listener_started", "danmaku listener authenticated", detail={"room_id": room_id})
+                return True
+        await self._stop_generation(generation)
+        return False
 
     async def stop_listening(self) -> None:
+        async with self._lifecycle_lock:
+            await self._stop_listening_locked()
+
+    async def _stop_generation(self, generation: int) -> None:
+        async with self._lifecycle_lock:
+            if generation != self._listener_generation:
+                return
+            await self._stop_listening_locked()
+
+    async def _stop_listening_locked(self) -> None:
+        self._listener_generation += 1
         listener = self._listener
         task = self._listener_task
         self._listener = None
@@ -131,17 +204,33 @@ class BiliLiveIngestModule(BaseModule):
         if self.ctx is not None and listener is not None:
             self.ctx.audit.record("live_listener_stopped", "danmaku listener stopped", detail={"room_id": self._room_id})
 
+    def _listener_task_done(self, generation: int, listener: Any, task: "asyncio.Task[Any]") -> None:
+        if task.cancelled():
+            exc = None
+        else:
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                exc = None
+        if generation != self._listener_generation or self._listener is not listener or self._listener_task is not task:
+            return
+        self._listener = None
+        self._listener_task = None
+        if exc is not None and self.ctx is not None:
+            self.ctx.audit.record("live_listener_task_failed", str(exc)[:200], level="warning")
+
     # 命令名 → LiveEvent.type 路由键（见 core/contracts.LiveEvent）。未列出的命令回落 cmd 小写。
     _CMD_TO_TYPE = {
         "DANMU_MSG": "danmaku",
         "SEND_GIFT": "gift",
+        "COMBO_SEND": "gift",
         "SUPER_CHAT_MESSAGE": "super_chat",
         "SUPER_CHAT_MESSAGE_JPN": "super_chat",
         "GUARD_BUY": "guard",
         "INTERACT_WORD": "entry",
     }
 
-    def _on_live_event(self, cmd: str, event: Any) -> None:
+    def _on_live_event(self, cmd: str, event: Any, *, generation: int | None = None) -> None:
         """富模型直播事件回调 → 包成 ``LiveEvent`` 发布到 ``EventBus``，由订阅者按类型消费。
 
         同步、非阻塞：``publish`` 只做同步派发（订阅者内部各自 fire-and-forget），不拖慢弹幕
@@ -149,9 +238,13 @@ class BiliLiveIngestModule(BaseModule):
         ``on_event``，全部发布到总线；``live_events`` 订阅 danmaku/gift/super_chat/guard
         参与窗口择优；其他事件族 handler 可各自订阅（见 docs/development.md「直播事件中枢」）。
         """
-        if not self.ctx:
+        if generation is not None and generation != self._listener_generation:
             return
-        if event is not None and getattr(event, "room_id", 0) in (0, None):
+        if not self.ctx or not self._owns_current_live_session():
+            return
+        if isinstance(event, dict) and event.get("room_id") in (0, None):
+            event["room_id"] = self._room_id
+        elif event is not None and getattr(event, "room_id", 0) in (0, None):
             try:
                 event.room_id = self._room_id
             except Exception as exc:
@@ -160,12 +253,60 @@ class BiliLiveIngestModule(BaseModule):
         if bus is None:
             return
         live_event = self._to_live_event(cmd, event)
+        if self._is_duplicate_support_event(live_event):
+            return
+        self._last_event_at = live_event.ts or time.time()
+        self._last_event_type = live_event.type
         bus.publish(live_event.type, live_event)
+
+    def _owns_current_live_session(self) -> bool:
+        """Reject events from a provider generation that no longer owns input."""
+        if self.ctx is None or getattr(self.ctx, "_stopping", False) is True:
+            return False
+        router = getattr(self.ctx, "live_provider", None)
+        if router is None:
+            return True
+        try:
+            if getattr(router, "platform", "") != "bilibili":
+                return False
+            provider_for = getattr(router, "provider_for", None)
+            if callable(provider_for) and provider_for("bilibili") is not self:
+                return False
+            configured_room_ref = getattr(router, "configured_room_ref", None)
+            if callable(configured_room_ref):
+                room_ref = str(configured_room_ref() or "").strip()
+                if room_ref and room_ref != str(self._room_id):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def _on_gift_event(self, event: Any, *, generation: int | None = None) -> None:
+        """Fallback path for Bilibili's lightweight gift callback."""
+        self._on_live_event("SEND_GIFT", event, generation=generation)
+
+    def _on_super_chat_event(self, event: Any, *, generation: int | None = None) -> None:
+        """Fallback path for Bilibili's lightweight Super Chat callback."""
+        self._on_live_event("SUPER_CHAT_MESSAGE", event, generation=generation)
 
     def _to_live_event(self, cmd: str, event: Any) -> LiveEvent:
         """把富模型 + 命令名包成统一信封。``raw`` 保留富模型，供需要完整字段（如
         ``get_score()``）的 handler（如 ``live_events`` 中枢）解包使用。"""
-        event_type = self._CMD_TO_TYPE.get(str(cmd), str(cmd).lower())
+        normalized_cmd = self._normalize_cmd(cmd)
+        event_type = self._CMD_TO_TYPE.get(normalized_cmd, normalized_cmd.lower())
+        if isinstance(event, dict):
+            payload = dict(event)
+            payload["event_type"] = event_type
+            payload["room_id"] = payload.get("room_id") or self._room_id
+            uid = str(payload.get("uid") or payload.get("user_id") or "").strip()
+            nickname = str(payload.get("nickname") or payload.get("user_name") or payload.get("uname") or "")
+            text = str(payload.get("danmaku_text") or payload.get("text") or payload.get("message") or "")
+            payload["uid"] = uid
+            payload["nickname"] = nickname
+            payload["danmaku_text"] = text
+            payload["event_label"] = self._event_label(event_type, text)
+            payload["raw_type"] = normalized_cmd
+            return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=payload)
         uid = str(getattr(event, "uid", "") or "").strip()
         nickname = str(getattr(event, "nickname", "") or "")
         text = str(getattr(event, "text", "") or "")
@@ -175,12 +316,77 @@ class BiliLiveIngestModule(BaseModule):
             "nickname": nickname,
             "text": text,
             "event_label": self._event_label(event_type, text),
-            "raw_type": str(cmd),
+            "raw_type": normalized_cmd,
             "guard_level": getattr(event, "guard_level", 0),
             "room_id": getattr(event, "room_id", 0) or self._room_id,
-            "cmd": str(cmd),
+            "cmd": normalized_cmd,
         }
         return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=event)
+
+    @staticmethod
+    def _normalize_cmd(cmd: Any) -> str:
+        return str(cmd or "").split(":", 1)[0].strip()
+
+    def _is_duplicate_support_event(self, live_event: LiveEvent) -> bool:
+        if live_event.type not in {"gift", "super_chat", "guard"}:
+            return False
+        now = float(live_event.ts or time.time())
+        expired = [
+            key
+            for key, seen_at in self._recent_support_event_keys.items()
+            if now - seen_at > SUPPORT_EVENT_DEDUPE_SECONDS
+        ]
+        for key in expired:
+            self._recent_support_event_keys.pop(key, None)
+        key = self._support_event_key(live_event)
+        if not key:
+            return False
+        last_seen = self._recent_support_event_keys.get(key)
+        if last_seen is not None and 0 <= now - last_seen <= SUPPORT_EVENT_DEDUPE_SECONDS:
+            return True
+        self._recent_support_event_keys[key] = now
+        return False
+
+    @staticmethod
+    def _support_event_key(live_event: LiveEvent) -> str:
+        raw = live_event.raw
+        payload = live_event.payload if isinstance(live_event.payload, dict) else {}
+        gift = getattr(raw, "gift", None) if raw is not None else None
+        command = BiliLiveIngestModule._normalize_cmd(
+            payload.get("raw_cmd") or payload.get("cmd") or payload.get("raw_type") or ""
+        )
+        uid = str(live_event.uid or payload.get("uid") or payload.get("user_id") or "")
+        if live_event.type == "super_chat":
+            text = str(
+                payload.get("danmaku_text")
+                or payload.get("text")
+                or payload.get("message")
+                or getattr(raw, "text", "")
+                or ""
+            )
+            return "|".join(part.strip()[:80] for part in (live_event.type, command, uid, text))
+        parts = [
+            live_event.type,
+            command,
+            uid,
+            str(
+                payload.get("gift_name")
+                or payload.get("giftName")
+                or getattr(gift, "gift_name", "")
+                or payload.get("danmaku_text")
+                or payload.get("text")
+                or ""
+            ),
+            str(payload.get("gift_count") or payload.get("num") or getattr(gift, "num", "") or ""),
+            str(
+                payload.get("gift_value")
+                or payload.get("total_coin")
+                or getattr(gift, "total_coin", "")
+                or getattr(gift, "price", "")
+                or ""
+            ),
+        ]
+        return "|".join(part.strip()[:80] for part in parts)
 
     @staticmethod
     def _event_label(event_type: str, text: str) -> str:
@@ -191,15 +397,37 @@ class BiliLiveIngestModule(BaseModule):
             return "进入直播间"
         return cleaned
 
-    async def _on_live(self) -> None:
+    async def _on_live(self, *, generation: int | None = None) -> None:
+        if generation is not None and generation != self._listener_generation:
+            return
+        self._mark_room_live_status("live")
         if self.ctx is not None:
             self.ctx.audit.record("live_room_live", "live started", detail={"room_id": self._room_id})
 
-    async def _on_preparing(self) -> None:
+    async def _on_preparing(self, *, generation: int | None = None) -> None:
+        if generation is not None and generation != self._listener_generation:
+            return
+        self._mark_room_live_status("offline")
         if self.ctx is not None:
             self.ctx.audit.record("live_room_preparing", "live ended", detail={"room_id": self._room_id})
 
-    async def _on_error(self, exc: Any) -> None:
+    def _mark_room_live_status(self, live_status: str) -> None:
+        if self.ctx is None:
+            return
+        context = getattr(self.ctx, "live_room_context", None)
+        if not isinstance(context, dict):
+            context = {}
+        context = dict(context)
+        context["platform"] = "bilibili"
+        if self._room_id > 0:
+            context["room_ref"] = str(self._room_id)
+            context["room_id"] = self._room_id
+        context["live_status"] = live_status
+        self.ctx.live_room_context = context
+
+    async def _on_error(self, exc: Any, *, generation: int | None = None) -> None:
+        if generation is not None and generation != self._listener_generation:
+            return
         if self.ctx is not None:
             self.ctx.audit.record("live_listener_error", str(exc)[:200], level="warning")
 
@@ -217,6 +445,7 @@ class BiliLiveIngestModule(BaseModule):
             target_lanlan=target_lanlan,
             source="live_danmaku",
             live_mode=self.ctx.config.live_mode if self.ctx else "co_stream",
+            trace_id=str(payload.get("trace_id") or "").strip(),
             raw=dict(payload),
         )
 
@@ -376,3 +605,13 @@ class BiliLiveIngestModule(BaseModule):
         if status == 2:
             return "rounding"
         return "unknown"
+
+
+def _safe_non_negative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0

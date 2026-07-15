@@ -340,7 +340,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -361,6 +361,7 @@ import type {
   GroupChoiceDescriptor,
   LayoutChoiceDescriptor,
 } from '@/composables/workbenchDescriptors'
+import { getMarketUrl } from '@/api/market'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
 import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
@@ -435,7 +436,6 @@ const {
   groupCounts,
   filteredPurePlugins,
   filteredAdapters,
-  filteredExtensions,
   selectedPluginIds,
   togglePlugin: togglePluginSelection,
   selectAllVisible,
@@ -480,19 +480,11 @@ const pluginSections = computed(() => [
     items: filteredAdapters.value,
     variant: 'adapter' as const,
   },
-  {
-    key: 'extension',
-    title: t('plugins.extensionsSection'),
-    icon: Expand,
-    items: filteredExtensions.value,
-    variant: 'extension' as const,
-  },
 ])
 
 const typeFilterChoices = computed<GroupChoiceDescriptor[]>(() => [
   { id: 'plugin', label: t('plugins.typePlugin'), icon: Box },
   { id: 'adapter', label: t('plugins.typeAdapter'), icon: Connection },
-  { id: 'extension', label: t('plugins.typeExtension'), icon: Expand },
 ])
 
 const layoutChoices = computed<LayoutChoiceDescriptor[]>(() => [
@@ -521,10 +513,8 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'type:plugin', label: t('plugins.filterRuleLabels.plugin') },
       { token: 'type:adapter', label: t('plugins.filterRuleLabels.adapter') },
-      { token: 'type:extension', label: t('plugins.filterRuleLabels.extension') },
       { token: 'is:ui', label: t('plugins.filterRuleLabels.ui') },
       { token: 'has:entries', label: t('plugins.filterRuleLabels.entries') },
-      { token: 'has:host', label: t('plugins.filterRuleLabels.host') },
     ],
   },
   {
@@ -533,7 +523,6 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
     rules: [
       { token: 'name:', label: t('plugins.filterRuleLabels.name') },
       { token: 'id:', label: t('plugins.filterRuleLabels.id') },
-      { token: 'host:', label: t('plugins.filterRuleLabels.hostTarget') },
       { token: 'version:', label: t('plugins.filterRuleLabels.version') },
       { token: 'entry:', label: t('plugins.filterRuleLabels.entry') },
       { token: 'author:', label: t('plugins.filterRuleLabels.author') },
@@ -541,11 +530,28 @@ const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   },
 ])
 
-async function handleRefresh() {
+type PluginListRefreshMode = 'full' | 'initial-open' | 'light'
+
+async function refreshPluginListData(mode: PluginListRefreshMode) {
   let warningMessage = ''
   try {
-    const syncResult = await pluginStore.syncRegistryAndFetch()
-    warningMessage = syncResult.warningMessage || ''
+    if (mode === 'full') {
+      const syncResult = await pluginStore.syncRegistryAndFetch()
+      warningMessage = syncResult.warningMessage || ''
+    } else if (mode === 'initial-open') {
+      try {
+        const syncResult = await pluginStore.ensurePluginListRegistrySynced()
+        warningMessage = syncResult?.warningMessage || ''
+        if (!syncResult) {
+          await pluginStore.fetchPlugins()
+        }
+      } catch (syncError) {
+        console.warn('Failed to sync plugin registry on first plugin list open:', syncError)
+        await pluginStore.fetchPlugins()
+      }
+    } else {
+      await pluginStore.fetchPlugins()
+    }
     await pluginStore.fetchPluginStatus()
   } catch (error) {
     console.warn('Failed to refresh plugin data:', error)
@@ -560,6 +566,18 @@ async function handleRefresh() {
   if (warningMessage) {
     ElMessage.warning(warningMessage)
   }
+}
+
+async function handleRefresh() {
+  await refreshPluginListData('full')
+}
+
+async function refreshAfterPluginChange() {
+  await refreshPluginListData('full')
+}
+
+async function refreshForInitialOpen() {
+  await refreshPluginListData('initial-open')
 }
 
 async function toggleMetrics() {
@@ -660,6 +678,17 @@ function closeDangerDialog() {
   pendingDangerPlugin.value = null
 }
 
+async function loadMarketEntry() {
+  try {
+    const url = await getMarketUrl()
+    if (!url) return
+    marketUrl.value = url
+    loadMarketAuthStatus().catch(() => {})
+  } catch {
+    // Market is optional; keep the local plugin list usable if it is absent.
+  }
+}
+
 function openDangerDialog(
   action: ResolvedPluginListAction,
   plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean },
@@ -695,7 +724,7 @@ function handlePluginContextMenu(
 }
 
 function getTutorialPlugin() {
-  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || filteredExtensions.value[0] || rawPlugins.value[0] || null
+  return filteredPurePlugins.value[0] || filteredAdapters.value[0] || rawPlugins.value[0] || null
 }
 
 async function showTutorialContextMenu() {
@@ -806,7 +835,7 @@ async function handleImportFileChange(event: Event) {
     const result = await uploadAndInstallPlugin(file)
     const count = result.install.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
-    await handleRefresh()
+    await refreshAfterPluginChange()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
     const detail = formatHttpError(error)
@@ -886,12 +915,12 @@ async function handleBatchStart() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.start(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.start(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchStartSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchStop() {
@@ -911,12 +940,12 @@ async function handleBatchStop() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.stop(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.stop(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchStopSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchReload() {
@@ -936,12 +965,12 @@ async function handleBatchReload() {
   batchBusy.value = true
   let ok = 0; let fail = 0
   for (const p of plugins) {
-    try { await pluginStore.reload(p.id); ok++ } catch { fail++ }
+    try { await pluginStore.reload(p.id, { refresh: false }); ok++ } catch { fail++ }
   }
   batchBusy.value = false
   if (fail === 0) ElMessage.success(t('plugins.batchReloadSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleBatchDelete() {
@@ -964,7 +993,7 @@ async function handleBatchDelete() {
   clearSelection()
   if (fail === 0) ElMessage.success(t('plugins.batchDeleteSuccess', { count: ok }))
   else ElMessage.warning(t('plugins.batchPartial', { success: ok, fail }))
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 async function handleReloadAll() {
@@ -1008,7 +1037,7 @@ async function handleReloadAll() {
     reloadingAll.value = false
   }
 
-  await handleRefresh()
+  await refreshAfterPluginChange()
 }
 
 watch(
@@ -1052,20 +1081,7 @@ watch(packagePanelVisible, (visible) => {
 
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
-  await handleRefresh()
-  // 获取 Market URL（用于显示"获取新插件"入口）
-  try {
-    const res = await fetch('/market/status')
-    if (res.ok) {
-      const data = await res.json()
-      if (data.market_url) {
-        marketUrl.value = data.market_url
-        loadMarketAuthStatus().catch(() => {})
-      }
-    }
-  } catch {
-    // 静默失败
-  }
+  await Promise.all([loadMarketEntry(), refreshForInitialOpen()])
 })
 
 onUnmounted(() => {
@@ -1162,9 +1178,9 @@ onUnmounted(() => {
 
 .workbench-header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 10px;
 }
 
@@ -1625,7 +1641,8 @@ onUnmounted(() => {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  width: 100%;
   flex: 0 1 auto;
   min-width: 0;
 }

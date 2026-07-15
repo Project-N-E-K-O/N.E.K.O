@@ -39,6 +39,20 @@ function isStandaloneAgentHudPage() {
     }
 }
 
+function isAgentHudSuppressedByGoodbye() {
+    if (isStandaloneAgentHudPage()) return false;
+    try {
+        if (typeof window.isNekoGoodbyeResourceSuspendingOrSuspended === 'function' &&
+            window.isNekoGoodbyeResourceSuspendingOrSuspended()) {
+            return true;
+        }
+        if (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive()) {
+            return true;
+        }
+    } catch (_) { /* ignore */ }
+    return false;
+}
+
 function setAgentHudDraggingState(active) {
     try {
         if (document.body) {
@@ -144,6 +158,63 @@ let cachedDisplayHUD = {
     height: window.innerHeight
 };
 
+function getAgentHudViewportBounds() {
+    return {
+        left: 0,
+        top: 0,
+        width: Math.max(1, Math.round(Number(window.innerWidth) || 1)),
+        height: Math.max(1, Math.round(Number(window.innerHeight) || 1))
+    };
+}
+
+function clampAgentHudViewportPosition(left, top, width, height) {
+    const viewport = getAgentHudViewportBounds();
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const safeHeight = Math.max(1, Number(height) || 1);
+    const maxLeft = Math.max(viewport.left, viewport.left + viewport.width - safeWidth);
+    const maxTop = Math.max(viewport.top, viewport.top + viewport.height - safeHeight);
+    return {
+        left: Math.max(viewport.left, Math.min(Number(left) || 0, maxLeft)),
+        top: Math.max(viewport.top, Math.min(Number(top) || 0, maxTop))
+    };
+}
+
+function getAgentHudPixelCoordinate(value, fallback) {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    const numeric = parseFloat(normalized);
+    if (normalized.endsWith('px') && Number.isFinite(numeric)) {
+        return numeric;
+    }
+    const safeFallback = Number(fallback);
+    return Number.isFinite(safeFallback) ? safeFallback : 0;
+}
+
+function clampAgentHudElementToViewport(hud, options = {}) {
+    if (!hud) return null;
+    const rect = hud.getBoundingClientRect();
+    const currentLeft = getAgentHudPixelCoordinate(hud.style.left, rect.left);
+    const currentTop = getAgentHudPixelCoordinate(hud.style.top, rect.top);
+    const clamped = clampAgentHudViewportPosition(currentLeft, currentTop, rect.width, rect.height);
+    hud.style.left = clamped.left + 'px';
+    hud.style.top = clamped.top + 'px';
+    hud.style.right = 'auto';
+    hud.style.transform = 'none';
+
+    if (options.persist) {
+        try {
+            localStorage.setItem('agent-task-hud-position', JSON.stringify({
+                left: hud.style.left,
+                top: hud.style.top,
+                right: hud.style.right,
+                transform: hud.style.transform
+            }));
+        } catch (error) {
+            console.warn('Failed to save position to localStorage:', error);
+        }
+    }
+    return clamped;
+}
+
 // 更新显示器边界信息
 async function updateDisplayBounds(centerX, centerY) {
     if (!window.electronScreen || !window.electronScreen.getAllDisplays) {
@@ -216,10 +287,13 @@ try {
 // 创建Agent弹出框内容
 window.AgentHUD._createAgentPopupContent = function (popup) {
     popup.style.gap = '0';
+    const avatarPrefix = this && typeof this._avatarPrefix === 'string' && this._avatarPrefix
+        ? this._avatarPrefix
+        : 'live2d';
 
     // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'live2d-agent-status';
+    statusDiv.id = `${avatarPrefix}-agent-status`;
     Object.assign(statusDiv.style, {
         fontSize: '12px',
         color: 'var(--neko-popup-accent, #2a7bc4)',
@@ -445,9 +519,6 @@ window.AgentHUD.createAgentTaskHUD = function () {
         this._cleanupDragging();
         this._cleanupDragging = null;
     }
-
-    // 初始化显示器边界缓存
-    updateDisplayBounds();
 
     const hud = document.createElement('div');
     hud.id = 'agent-task-hud';
@@ -771,6 +842,10 @@ window.AgentHUD._setupCollapseFunctionality = function (emptyState, collapseButt
 // 显示任务 HUD
 window.AgentHUD.showAgentTaskHUD = function () {
     console.log('[AgentHUD][TimeoutTrace] showAgentTaskHUD called. Current timeout ID:', this._hideTimeout);
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     
     // 清除任何正在进行的隐藏动画定时器，防止闪现后立刻消失
     if (this._hideTimeout) {
@@ -802,6 +877,7 @@ window.AgentHUD.showAgentTaskHUD = function () {
         } catch (e) {
             hud.style.transform = 'translateY(-50%) translateX(0)';
         }
+        clampAgentHudElementToViewport(hud, { persist: true });
     } else {
         hud.style.transform = 'translateY(-50%) translateX(0)';
     }
@@ -864,6 +940,14 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 window.AgentHUD.updateAgentTaskHUD = function (tasksData) {
     // Cache latest snapshot so deferred re-render won't use stale closure data.
     this._latestTasksData = tasksData;
+    if (isAgentHudSuppressedByGoodbye()) {
+        if (this._updateRafId) {
+            cancelAnimationFrame(this._updateRafId);
+            this._updateRafId = null;
+        }
+        this.hideAgentTaskHUD();
+        return;
+    }
 
     // RAF throttle: coalesce rapid-fire WebSocket updates into a single frame
     if (this._updateRafId) return;
@@ -937,6 +1021,10 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
 
 // Internal: actual HUD update logic (called via RAF throttle)
 window.AgentHUD._doUpdateAgentTaskHUD = function () {
+    if (isAgentHudSuppressedByGoodbye()) {
+        this.hideAgentTaskHUD();
+        return;
+    }
     const tasksData = this._latestTasksData;
     if (!tasksData) return;
 
@@ -1640,43 +1728,9 @@ window.AgentHUD._setupDragging = function (hud) {
         // 恢复视觉状态
         resetDragVisualState();
 
-        // 最终位置校准（多屏幕支持）
+        // DOM HUD 使用 viewport 坐标；不要混用 Electron screen 坐标。
         requestAnimationFrame(() => {
-            const rect = hud.getBoundingClientRect();
-
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 确保位置在当前屏幕内
-            let finalLeft = parseFloat(hud.style.left) || 0;
-            let finalTop = parseFloat(hud.style.top) || 0;
-
-            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
-            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
-
-            hud.style.left = finalLeft + 'px';
-            hud.style.top = finalTop + 'px';
-
-            // 保存位置到localStorage
-            const position = {
-                left: hud.style.left,
-                top: hud.style.top,
-                right: hud.style.right,
-                transform: hud.style.transform
-            };
-
-            try {
-                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-            } catch (error) {
-                console.warn('Failed to save position to localStorage:', error);
-            }
+            clampAgentHudElementToViewport(hud, { persist: true });
         });
 
         e.preventDefault();
@@ -1746,43 +1800,9 @@ window.AgentHUD._setupDragging = function (hud) {
         // 恢复视觉状态
         resetDragVisualState();
 
-        // 最终位置校准（多屏幕支持）
+        // DOM HUD 使用 viewport 坐标；不要混用 Electron screen 坐标。
         requestAnimationFrame(() => {
-            const rect = hud.getBoundingClientRect();
-
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 确保位置在当前屏幕内
-            let finalLeft = parseFloat(hud.style.left) || 0;
-            let finalTop = parseFloat(hud.style.top) || 0;
-
-            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
-            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
-
-            hud.style.left = finalLeft + 'px';
-            hud.style.top = finalTop + 'px';
-
-            // 保存位置到localStorage
-            const position = {
-                left: hud.style.left,
-                top: hud.style.top,
-                right: hud.style.right,
-                transform: hud.style.transform
-            };
-
-            try {
-                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-            } catch (error) {
-                console.warn('Failed to save position to localStorage:', error);
-            }
+            clampAgentHudElementToViewport(hud, { persist: true });
         });
 
         e.preventDefault();
@@ -1797,54 +1817,16 @@ window.AgentHUD._setupDragging = function (hud) {
     window.addEventListener('pointercancel', cancelDragState, true);
 
     // 窗口大小变化时重新校准位置（多屏幕支持）
-    const handleResize = async () => {
+    const handleResize = () => {
         if (isDragging || touchDragging) return;
-
-        // 更新屏幕信息
-        const rect = hud.getBoundingClientRect();
-        const centerX = rect.left + rect.width / 2;
-        const centerY = rect.top + rect.height / 2;
-        await updateDisplayBounds(centerX, centerY);
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
+            const viewport = getAgentHudViewportBounds();
 
-            // 使用缓存的屏幕边界进行限制
-            if (!cachedDisplayHUD) {
-                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
-                return;
-            }
-            const displayLeft = cachedDisplayHUD.x;
-            const displayTop = cachedDisplayHUD.y;
-            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
-            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
-
-            // 如果HUD超出当前屏幕，调整到可见位置
-            if (rect.left < displayLeft || rect.top < displayTop ||
-                rect.right > displayRight || rect.bottom > displayBottom) {
-
-                let newLeft = parseFloat(hud.style.left) || 0;
-                let newTop = parseFloat(hud.style.top) || 0;
-
-                newLeft = Math.max(displayLeft, Math.min(newLeft, displayRight - rect.width));
-                newTop = Math.max(displayTop, Math.min(newTop, displayBottom - rect.height));
-
-                hud.style.left = newLeft + 'px';
-                hud.style.top = newTop + 'px';
-
-                // 更新保存的位置
-                const position = {
-                    left: hud.style.left,
-                    top: hud.style.top,
-                    right: hud.style.right,
-                    transform: hud.style.transform
-                };
-
-                try {
-                    localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
-                } catch (error) {
-                    console.warn('Failed to save position to localStorage:', error);
-                }
+            if (rect.left < viewport.left || rect.top < viewport.top ||
+                rect.right > viewport.left + viewport.width || rect.bottom > viewport.top + viewport.height) {
+                clampAgentHudElementToViewport(hud, { persist: true });
             }
         });
     };
@@ -2015,3 +1997,76 @@ window.AgentHUD._setupDragging = function (hud) {
     `;
     document.head.appendChild(style);
 })();
+
+// ===== i18n 就绪 / 语言切换后重译任务 HUD 外壳 =====
+// HUD 外壳文案（标题 / 统计 / 折叠·终止按钮 title / 空态文本）由 createAgentTaskHUD
+// 用 window.t 直接写入且没有 data-i18n 属性，因此 i18n 的 updatePageTexts() 不会重译它们。
+// 当 HUD 在 i18n 初始化完成前就抢先构建时（典型场景：启动时后端恢复了上次 NekoClaw 会话的
+// 任务，agenthud 页面拉到 active_tasks 后立即渲染 HUD），这些外壳文案会停留在初始兜底态，
+// 表现为「i18n 文字加载异常」。这里监听 localechange（i18n 初始化完成及语言切换时派发），
+// 补一次外壳重译，并用缓存快照刷新任务卡片状态/类型文案。
+window.AgentHUD.refreshHudI18n = function () {
+    if (typeof window.t !== 'function') return;
+    // 仅当 i18n 真正解析出翻译（而非降级返回 key）时才重译，避免把兜底文案覆盖成 key。
+    const titleText = window.t('agent.taskHud.title');
+    if (!titleText || titleText === 'agent.taskHud.title') return;
+
+    const title = document.getElementById('agent-task-hud-title');
+    if (title) {
+        // 用 DOM 节点重建（图标 span + 文本节点），避免 innerHTML 拼接触发静态扫描告警；
+        // titleText 是受信任的 i18n 文案，此处仅为规避 innerHTML 用法。
+        title.textContent = '';
+        const icon = document.createElement('span');
+        icon.textContent = '⚡';
+        icon.style.color = 'var(--neko-popup-accent, #2a7bc4)';
+        icon.style.marginRight = '8px';
+        title.appendChild(icon);
+        title.appendChild(document.createTextNode(titleText));
+    }
+    const stats = document.getElementById('agent-task-hud-stats');
+    if (stats) {
+        const labelled = stats.querySelectorAll('span[title]');
+        if (labelled[0]) labelled[0].title = window.t('agent.taskHud.running');
+        if (labelled[1]) labelled[1].title = window.t('agent.taskHud.queued');
+    }
+    const minimizeBtn = document.getElementById('agent-task-hud-minimize');
+    if (minimizeBtn) minimizeBtn.title = window.t('agent.taskHud.minimize');
+    const cancelBtn = document.getElementById('agent-task-hud-cancel');
+    if (cancelBtn) cancelBtn.title = window.t('agent.taskHud.cancelAll');
+    const emptyState = document.getElementById('agent-task-empty');
+    if (emptyState && emptyState.firstElementChild) {
+        emptyState.firstElementChild.textContent = window.t('agent.taskHud.noTasks');
+    }
+
+    // 用缓存的任务快照重渲染卡片，刷新状态 / 类型 / 终止按钮等文案。
+    // 仅在 HUD 已存在且当前可见时执行：updateAgentTaskHUD 在 HUD 缺失时会创建、
+    // 在有活动任务且隐藏时会自动显示，纯 i18n 重译不应触发这些副作用。
+    const hud = document.getElementById('agent-task-hud');
+    const hudVisible = !!(hud && hud.style.display !== 'none' && hud.style.opacity !== '0');
+    if (hudVisible && this._latestTasksData && typeof this.updateAgentTaskHUD === 'function') {
+        // 卡片走差分更新：_updateTaskCard 仅在状态变化时改状态徽标，且从不更新类型标签 /
+        // 卡片终止按钮 title。语言切换而任务状态不变时（例如运行中的 computer_use 任务）
+        // 卡片文案会停留旧语言。差分门控是每次 WS 更新的热路径，不宜改动；因此在这条低频的
+        // 重译路径里显式清空已有卡片，再走 updateAgentTaskHUD（保留其 RAF 节流，与常规渲染
+        // 管线一致）用当前语言重建，完整覆盖状态 / 类型 / 终止按钮等本地化字段。
+        const taskList = document.getElementById('agent-task-list');
+        if (taskList) {
+            taskList.querySelectorAll('.task-card').forEach((card) => {
+                const descRow = card.querySelector('.task-card-desc');
+                if (descRow && window.NekoTooltip && typeof window.NekoTooltip.destroyFor === 'function') {
+                    try { window.NekoTooltip.destroyFor(descRow); } catch (_) { /* ignore */ }
+                }
+                card.remove();
+            });
+        }
+        try { this.updateAgentTaskHUD(this._latestTasksData); } catch (_) { /* ignore */ }
+    }
+};
+
+window.addEventListener('localechange', function () {
+    try {
+        if (window.AgentHUD && typeof window.AgentHUD.refreshHudI18n === 'function') {
+            window.AgentHUD.refreshHudI18n();
+        }
+    } catch (_) { /* ignore */ }
+});

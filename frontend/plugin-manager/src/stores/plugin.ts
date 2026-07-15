@@ -9,8 +9,6 @@ import {
   startPlugin,
   stopPlugin,
   reloadPlugin,
-  disableExtension,
-  enableExtension,
   refreshPluginsRegistry,
 } from '@/api/plugins'
 import { getLocale } from '@/i18n'
@@ -20,6 +18,10 @@ import { PluginStatus as StatusEnum } from '@/utils/constants'
 type RegistrySyncResult = {
   registryRefreshed: boolean
   warningMessage: string | null
+}
+
+type PluginMutationOptions = {
+  refresh?: boolean
 }
 
 export const usePluginStore = defineStore('plugin', () => {
@@ -33,6 +35,8 @@ export const usePluginStore = defineStore('plugin', () => {
   // 防止请求堆积：正在进行的请求
   let pendingFetchPlugins: Promise<void> | null = null
   let pendingFetchStatus: Promise<void> | null = null
+  let pendingPluginListRegistrySync: Promise<RegistrySyncResult> | null = null
+  const pluginListRegistrySynced = ref(false)
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
   // 请求序列号，用于忽略过期响应
@@ -49,24 +53,14 @@ export const usePluginStore = defineStore('plugin', () => {
     return plugins.value.map(plugin => {
       const enabled = plugin.runtime_enabled !== false
       const autoStart = plugin.runtime_auto_start !== false
-      const isExtension = plugin.type === 'extension'
-
-      // Extension 状态由后端 build_plugin_list 推导（injected/pending/disabled），
-      // 直接使用 GET /plugins 返回的 status 字段，因为 Extension 不是独立进程，
-      // pluginStatuses（GET /plugin/status）中不会有它的数据。
-      // 非 extension 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
+      // 不再把 `runtime_enabled=false` 提升成 DISABLED 状态：
       // 历史上 stop 写 `runtime_overrides.json[pid]=false`，下次启动 plugin
       // 不被 import，前端拿到 status=stopped 但又被 enabled=false 覆盖成
       // disabled，按钮被 isDisabled 拦截 → 用户"停过就再也开不起来"。
       // 现在直接信任 runtime status（stopped / running / load_failed），
       // start API 仍会把 override 翻回 true，所以"停过下次还停"的持久化
       // 行为不变，只是不再用一个独立的灰色 disabled 态遮蔽 start 按钮。
-      let displayStatus: string
-      if (isExtension) {
-        displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.PENDING
-      } else {
-        displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
-      }
+      const displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.STOPPED
       
       return {
         ...plugin,
@@ -78,16 +72,8 @@ export const usePluginStore = defineStore('plugin', () => {
   })
 
   const normalPlugins = computed(() => {
-    return pluginsWithStatus.value.filter(p => p.type !== 'extension')
+    return pluginsWithStatus.value
   })
-
-  const extensions = computed(() => {
-    return pluginsWithStatus.value.filter(p => p.type === 'extension')
-  })
-
-  function getExtensionsForHost(hostPluginId: string) {
-    return extensions.value.filter(e => e.host_plugin_id === hostPluginId)
-  }
 
   // 操作
   async function fetchPlugins(force = false) {
@@ -160,10 +146,24 @@ export const usePluginStore = defineStore('plugin', () => {
     }
 
     await fetchPlugins(true)
+    pluginListRegistrySynced.value = true
     return {
       registryRefreshed,
       warningMessage,
     }
+  }
+
+  async function ensurePluginListRegistrySynced(): Promise<RegistrySyncResult | null> {
+    if (pluginListRegistrySynced.value) {
+      return null
+    }
+    if (pendingPluginListRegistrySync) {
+      return pendingPluginListRegistrySync
+    }
+    pendingPluginListRegistrySync = syncRegistryAndFetch().finally(() => {
+      pendingPluginListRegistrySync = null
+    })
+    return pendingPluginListRegistrySync
   }
 
   async function fetchPluginStatus(pluginId?: string) {
@@ -217,49 +217,37 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
-  async function start(pluginId: string) {
+  async function start(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await startPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
   }
 
-  async function stop(pluginId: string) {
+  async function stop(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await stopPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
   }
 
-  async function reload(pluginId: string) {
+  async function reload(pluginId: string, options: PluginMutationOptions = {}) {
     try {
       await reloadPlugin(pluginId)
-      await fetchPluginStatus(pluginId)
-      await fetchPlugins(true)
-    } catch (err: any) {
-      throw err
-    }
-  }
-
-  async function disableExt(extId: string) {
-    try {
-      await disableExtension(extId)
-      await fetchPlugins()
-    } catch (err: any) {
-      throw err
-    }
-  }
-
-  async function enableExt(extId: string) {
-    try {
-      await enableExtension(extId)
-      await fetchPlugins()
+      if (options.refresh !== false) {
+        await fetchPluginStatus(pluginId)
+        await fetchPlugins(true)
+      }
     } catch (err: any) {
       throw err
     }
@@ -277,19 +265,17 @@ export const usePluginStore = defineStore('plugin', () => {
     selectedPlugin,
     pluginsWithStatus,
     normalPlugins,
-    extensions,
+    pluginListRegistrySynced,
     loading,
     error,
     // 操作
     fetchPlugins,
     syncRegistryAndFetch,
+    ensurePluginListRegistrySynced,
     fetchPluginStatus,
     start,
     stop,
     reload,
-    disableExt,
-    enableExt,
-    getExtensionsForHost,
     setSelectedPlugin
   }
 })

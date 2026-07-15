@@ -309,7 +309,7 @@ def test_tutorial_prompt_flushes_pending_heartbeat_on_beforeunload(mock_page: Pa
     page.add_init_script(
         """
         (() => {
-            localStorage.setItem('neko_tutorial_home', 'true');
+            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
         })();
         """
     )
@@ -363,7 +363,7 @@ def test_tutorial_prompt_beforeunload_replays_inflight_heartbeat_without_double_
     page.add_init_script(
         """
         (() => {
-            localStorage.setItem('neko_tutorial_home', 'true');
+            localStorage.setItem('neko_tutorial_home_yui_v1', 'true');
         })();
         """
     )

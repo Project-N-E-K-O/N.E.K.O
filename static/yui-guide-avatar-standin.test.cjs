@@ -1,19 +1,21 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
+const { readJsParts } = require('./app-part-test-utils.cjs');
 
 const standIn = require('./tutorial/avatar/yui-standin.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 const avatarStageSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/yui-stage.js'), 'utf8');
 const controllerSource = fs.readFileSync(path.join(__dirname, 'tutorial/avatar/standin-controller.js'), 'utf8');
 const overlaySource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/overlay.js'), 'utf8');
-const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d-interaction.js'), 'utf8');
-const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d-init.js'), 'utf8');
-const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d-ui-buttons.js'), 'utf8');
-const appUiSource = fs.readFileSync(path.join(__dirname, 'app-ui.js'), 'utf8');
-const appInterpageSource = fs.readFileSync(path.join(__dirname, 'app-interpage.js'), 'utf8');
+const live2dInteractionSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-interaction.js'), 'utf8');
+const live2dInitSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-init.js'), 'utf8');
+const live2dButtonsSource = fs.readFileSync(path.join(__dirname, 'live2d', 'live2d-ui-buttons.js'), 'utf8');
+const appUiSource = readJsParts(path.join(__dirname, 'app/app-ui'));
+const appInterpageSource = readJsParts(path.join(__dirname, 'app/app-interpage'));
 const universalManagerSource = fs.readFileSync(path.join(__dirname, 'tutorial/core/universal-manager.js'), 'utf8');
 
 function loadAvatarStageContext(options) {
@@ -235,16 +237,21 @@ function createHeadAnchoredCornerPeekSession(position) {
 }
 
 test('returns fixed Live2D corner peek cues without image resources', () => {
-    assert.equal(standIn.getCue(2, 'day2_intro_context'), null);
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
     assert.equal(
-        standIn.getCue(3, 'day3_avatar_tools'),
+        standIn.getCue(2, 'day2_avatar_tools'),
         null,
-        'day3_avatar_tools stays disabled because it sits too close to the opening motion'
+        'day2_avatar_tools stays disabled because it sits too close to the opening motion'
     );
-    assert.deepEqual(standIn.getCue(3, 'day3_galgame_entry'), {
+    assert.deepEqual(standIn.getCue(2, 'day2_galgame_entry'), {
         delay: 900,
         duration: 5000,
         position: 'top-right'
+    });
+    assert.deepEqual(standIn.getCue(3, 'day3_proactive_chat'), {
+        delay: 900,
+        duration: 5000,
+        position: 'top-left'
     });
     assert.deepEqual(standIn.getCue(4, 'day4_privacy_mode'), {
         delay: 900,
@@ -283,13 +290,13 @@ test('exports all fixed day two through seven cue positions', () => {
 });
 
 test('does not schedule Live2D corner peek on final wrap-adjacent scenes', () => {
-    assert.equal(standIn.getCue(2, 'day2_intro_context'), null);
+    assert.equal(standIn.getCue(2, 'day2_tool_toggle_intro'), null);
     assert.equal(
-        standIn.getCue(3, 'day3_avatar_tools'),
+        standIn.getCue(2, 'day2_avatar_tools'),
         null,
-        'day3_avatar_tools intentionally remains outside the legacy stand-in cue table'
+        'day2_avatar_tools intentionally remains outside the legacy stand-in cue table'
     );
-    assert.equal(standIn.getCue(3, 'day3_galgame_choices'), null);
+    assert.equal(standIn.getCue(2, 'day2_galgame_choices'), null);
     assert.equal(standIn.getCue(4, 'day4_return_home'), null);
     assert.equal(standIn.getCue(5, 'day5_character_settings'), null);
     assert.equal(standIn.getCue(5, 'day5_memory_entry'), null);

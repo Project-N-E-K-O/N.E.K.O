@@ -11,7 +11,7 @@ from .store_common import (
 )
 
 _SQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_COLUMN_DEFINITION_ALLOWLIST = {"TEXT", "TEXT NOT NULL DEFAULT ''"}
+_COLUMN_DEFINITION_ALLOWLIST = {"TEXT", "TEXT NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT '[]'"}
 
 
 def _validate_sql_identifier(value: str, field: str) -> str:
@@ -124,11 +124,20 @@ def _init_db(self) -> None:
             subject TEXT NOT NULL,
             chapter TEXT,
             stage TEXT NOT NULL DEFAULT '',
+            unit TEXT NOT NULL DEFAULT '',
             depth INTEGER DEFAULT 1,
             difficulty REAL DEFAULT 0.5,
             prerequisites TEXT NOT NULL DEFAULT '[]',
             related TEXT NOT NULL DEFAULT '[]',
             typical_misconceptions TEXT NOT NULL DEFAULT '[]',
+            skills TEXT NOT NULL DEFAULT '[]',
+            question_types TEXT NOT NULL DEFAULT '[]',
+            examples TEXT NOT NULL DEFAULT '[]',
+            course_family TEXT NOT NULL DEFAULT '',
+            curriculum_version TEXT NOT NULL DEFAULT '[]',
+            exam_region TEXT NOT NULL DEFAULT '[]',
+            exam_type TEXT NOT NULL DEFAULT '[]',
+            aliases TEXT NOT NULL DEFAULT '[]',
             source TEXT NOT NULL DEFAULT 'runtime',
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
@@ -324,9 +333,42 @@ def _init_db(self) -> None:
     ensure_memory_schema(conn)
     self._ensure_column(conn, "topics", "stage", "TEXT NOT NULL DEFAULT ''")
     conn.execute("UPDATE topics SET stage = '' WHERE stage IS NULL")
-    self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
+    self._ensure_column(conn, "topics", "unit", "TEXT NOT NULL DEFAULT ''")
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage, subject, chapter, depth, id)"
+        """
+        UPDATE topics
+        SET unit = COALESCE(NULLIF(chapter, ''), 'general')
+        WHERE unit IS NULL OR unit = ''
+        """
+    )
+    self._ensure_column(conn, "topics", "skills", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute("UPDATE topics SET skills = '[]' WHERE skills IS NULL OR skills = ''")
+    self._ensure_column(conn, "topics", "question_types", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute("UPDATE topics SET question_types = '[]' WHERE question_types IS NULL OR question_types = ''")
+    self._ensure_column(conn, "topics", "examples", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute("UPDATE topics SET examples = '[]' WHERE examples IS NULL OR examples = ''")
+    self._ensure_column(conn, "topics", "course_family", "TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE topics SET course_family = '' WHERE course_family IS NULL")
+    for context_column in ("curriculum_version", "exam_region", "exam_type"):
+        self._ensure_column(
+            conn, "topics", context_column, "TEXT NOT NULL DEFAULT '[]'"
+        )
+        conn.execute(
+            f"UPDATE topics SET {context_column} = '[]' "
+            f"WHERE {context_column} IS NULL OR {context_column} = ''"
+        )
+    self._ensure_column(conn, "topics", "aliases", "TEXT NOT NULL DEFAULT '[]'")
+    conn.execute("UPDATE topics SET aliases = '[]' WHERE aliases IS NULL OR aliases = ''")
+    self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
+    expected_idx_topics_stage = ["stage", "subject", "chapter", "unit", "depth", "id"]
+    current_idx_topics_stage = [
+        row["name"] if isinstance(row, sqlite3.Row) else row[2]
+        for row in conn.execute("PRAGMA index_info(idx_topics_stage)").fetchall()
+    ]
+    if current_idx_topics_stage and current_idx_topics_stage != expected_idx_topics_stage:
+        conn.execute("DROP INDEX IF EXISTS idx_topics_stage")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage, subject, chapter, unit, depth, id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)"

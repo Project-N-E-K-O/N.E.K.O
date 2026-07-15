@@ -1,8 +1,28 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
+
+
+MODEL_MANAGER_PART_NAMES = (
+    "runtime-loaders.js",
+    "dropdown-manager.js",
+    "page-bridge.js",
+    "card-face.js",
+    "path-request-fullscreen.js",
+    "page-controller.js",
+    "window-lifecycle.js",
+)
+
+
+def read_model_manager_source() -> str:
+    parts_dir = Path("static/js/model_manager")
+    return "".join(
+        (parts_dir / part_name).read_text(encoding="utf-8")
+        for part_name in MODEL_MANAGER_PART_NAMES
+    )
 
 
 def test_avatar_model_manager_popup_opens_fullscreen():
-    source = Path("static/avatar-ui-popup.js").read_text(encoding="utf-8")
+    source = Path("static/avatar/avatar-ui-popup.js").read_text(encoding="utf-8")
 
     assert "function buildAvatarFullscreenWindowFeatures()" in source
     assert "screenRef.availWidth || screenRef.width" in source
@@ -27,13 +47,30 @@ def test_yui_model_manager_handoff_opens_fullscreen():
 
 
 def test_model_manager_hide_show_cross_page_messages_are_removed():
-    model_manager_source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
-    interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
+    model_manager_source = read_model_manager_source()
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
 
     assert "hide_main_ui" not in model_manager_source
     assert "show_main_ui" not in model_manager_source
     assert "hide_main_ui" not in interpage_source
     assert "show_main_ui" not in interpage_source
+
+
+def test_model_manager_pngtuber_import_supports_package_files_and_folders():
+    template = Path("templates/model_manager.html").read_text(encoding="utf-8")
+    source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+
+    assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
+    assert 'id="pngtuber-package-upload"' in template
+    assert '.pngremix,.pngRemix,.save,.veadomini,.veado' in template
+    assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in source
+    assert "showPNGTuberUploadChoice()" in source
+    assert "let pngtuberUploadChoiceOpeningPicker = false;" in source
+    assert "if (pngtuberUploadChoiceOpeningPicker) return;" in source
+    assert "menu.parentNode.removeChild(menu);" in source
+    assert "async function uploadPNGTuberFiles(" in source
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);" in source
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);" in source
 
 
 def test_voice_clone_api_settings_uses_shared_named_window():

@@ -22,10 +22,10 @@
 
     const CUES = Object.freeze({
         2: Object.freeze({
-            day2_proactive_chat: cue('top-left')
+            day2_galgame_entry: cue('top-right')
         }),
         3: Object.freeze({
-            day3_galgame_entry: cue('top-right')
+            day3_proactive_chat: cue('top-left')
         }),
         4: Object.freeze({
             day4_gaze_follow: cue('top-left'),

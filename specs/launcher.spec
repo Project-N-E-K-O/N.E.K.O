@@ -2,12 +2,14 @@
 import sys
 import os
 import platform
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 from PyInstaller.building.build_main import Tree
 
 # 获取 spec 文件所在目录和项目根目录
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 PROJECT_ROOT = os.path.dirname(SPEC_DIR)
+VERSION_INFO_PATH = os.path.join(PROJECT_ROOT, 'version_info.txt')
+ICON_PATH = os.path.join(PROJECT_ROOT, 'assets', 'icon.ico')
 
 # 切换到项目根目录，以便所有路径都是相对于根目录
 original_dir = os.getcwd()
@@ -21,6 +23,7 @@ print(f"[Build] Working from: {os.getcwd()}")
 datas = []
 binaries = []
 hiddenimports = []
+hiddenimports += collect_submodules('plugin.sdk', on_error='raise')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
@@ -66,14 +69,15 @@ embedding_assets_present = os.path.isdir(
 #   - galgame_group_packages: live in [dependency-groups] galgame in
 #     pyproject.toml. Failure means maintainer ran plain `uv sync` instead
 #     of `uv sync --group galgame` — the actionable fix is the group sync.
-#     `cv2` is provided by opencv-python-headless via [tool.uv].override-dependencies.
+#     rapidocr_onnxruntime is provided by the local rapidocr-pillow fork, which
+#     removes the old opencv/shapely dependency chain.
 #
 #   - galgame_main_packages: live in [project.dependencies]. They're always
 #     installed by default `uv sync`; failure here means the main venv state
 #     is broken (interrupted install, manual deletion, etc) — actionable
 #     fix is recreating the venv. `dxcam` is in this set only on Windows
 #     (PEP 508 sys_platform marker keeps it out of macOS/Linux installs).
-galgame_group_packages = {'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper'}
+galgame_group_packages = {'rapidocr_onnxruntime', 'pyclipper'}
 galgame_main_packages = {'mss'}
 if sys.platform == 'win32':
     galgame_main_packages = galgame_main_packages | {'dxcam'}
@@ -152,23 +156,12 @@ def add_data(src, dest):
     else:
         print(f"[Build] Warning: {src_path} not found, skipping")
 
-add_data('static/css', 'static/css')
-add_data('static/js', 'static/js')
-add_data('static/fonts', 'static/fonts')
-add_data('static/vrm', 'static/vrm')
-add_data('static/mao_pro', 'static/mao_pro')
-add_data('static/ziraitikuwa', 'static/ziraitikuwa') 
-add_data('static/libs', 'static/libs')
-add_data('static/icons', 'static/icons')
-add_data('static/locales', 'static/locales')
-add_data('static/neko', 'static/neko')
-add_data('static/kemomimi', 'static/kemomimi')
-add_data('static/default', 'static/default')
-add_data('static/*.js', 'static')
-add_data('static/*.html', 'static')
-add_data('static/*.json', 'static')
-add_data('static/*.ico', 'static')
-add_data('static/*.png', 'static')
+# static/ 整目录收录，与 Nuitka 链路（build-desktop.yml 的
+# --include-data-dir=static=static）语义对齐。此前是子目录白名单 +
+# 根级 glob，static/ 整理系列（#2268/#2271/#2275/#2277 等）把根级
+# *.js 搬进 live2d/ mmd/ avatar/ app/ 等子目录后白名单收不到，打包版
+# 会 404；白名单也一直缺 mmd/ tutorial/ react/ sounds/ 等既有目录。
+add_data('static', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
 add_data('data/browser_use_prompts', 'data/browser_use_prompts')
@@ -287,6 +280,7 @@ hiddenimports += [
     
     # main_logic 子模块
     'main_logic',
+    'main_logic._module_state_proxy',
     'main_logic.core',
     'main_logic.cross_server',
     'main_logic.omni_offline_client',
@@ -355,11 +349,6 @@ hiddenimports += [
     'plugin.core.state',
     'plugin.runtime',
     'plugin.sdk',
-    'plugin.sdk.base',
-    'plugin.sdk.decorators',
-    'plugin.sdk.events',
-    'plugin.sdk.logger',
-    'plugin.sdk.version',
     'plugin.server',
     'plugin.server.exceptions',
     'plugin.server.lifecycle',
@@ -401,8 +390,9 @@ exe = EXE(
     target_arch=platform.machine() if sys.platform == 'darwin' else None,  # 自动检测 macOS 架构 (arm64/x86_64)
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico' if sys.platform == 'win32' else None,  # macOS 暂不使用图标
-    version='version_info.txt' if sys.platform == 'win32' else None,  # 添加版本信息减少误报
+    icon=ICON_PATH if sys.platform == 'win32' else None,  # macOS 暂不使用图标
+    version=VERSION_INFO_PATH if sys.platform == 'win32' and os.path.isfile(VERSION_INFO_PATH) else None,
+    # 本地 version_info.txt 未生成时保持可构建；仅跳过 Windows 版本资源。
 )
 
 # 使用 COLLECT 创建目录模式分发包

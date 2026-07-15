@@ -2896,7 +2896,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 /* 堆砌区顶部的高度 resize bar：视觉抓手平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
    与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。
    注意：透明只施加在 ::after 伪元素上，bar 本体保持不透明——宿主几何收集器
-   （app-react-chat-window.js）会按 computed opacity <= 0.01 丢弃 hit-region，
+   （app-react-chat-window）会按 computed opacity <= 0.01 丢弃 hit-region，
    若 bar 本体透明则 Electron 下整条会鼠标穿透、永远 hover/点不到、无法发起拖拽。 */
 .compact-export-history-resize-bar {
   flex: 0 0 auto;
@@ -4848,6 +4848,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   position: fixed;
   left: var(--avatar-tool-manager-left);
   top: var(--avatar-tool-manager-top);
+}
+
+.avatar-tool-manager-dialog.is-desktop-compact-layout {
+  width: var(--avatar-tool-manager-width, 380px);
+  height: var(--avatar-tool-manager-height, 600px);
+  max-height: var(--avatar-tool-manager-max-height, 600px);
 }
 
 .avatar-tool-manager-dialog.is-dragging {

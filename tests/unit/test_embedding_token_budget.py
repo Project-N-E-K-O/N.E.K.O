@@ -19,6 +19,8 @@ Test goals:
 """
 from __future__ import annotations
 
+import asyncio
+import threading
 import types
 
 import pytest
@@ -91,6 +93,10 @@ def service_with_fake_session(monkeypatch):
     svc._session = fake_sess
     svc._tokenizer = object()  # 占位,只要不是 None 就行(不会被调到)
     svc._dim = None  # 不做 Matryoshka 截断
+    svc._load_lock = asyncio.Lock()
+    svc._lifecycle_condition = asyncio.Condition()
+    svc._active_operations = 0
+    svc._closing = False
     return svc, fake_sess, embeddings
 
 
@@ -110,6 +116,89 @@ def _run_with_lengths(svc, fake_sess, embeddings_mod, lengths):
     # texts 列表只起占位作用,长度跟 encoded 对齐就行
     texts = ["x"] * len(lengths)
     return svc._infer_blocking(texts)
+
+
+def test_embedding_service_close_releases_native_owners(service_with_fake_session):
+    svc, _session, embeddings_mod = service_with_fake_session
+    svc._state = embeddings_mod.EmbeddingState.READY
+
+    asyncio.run(svc.close())
+
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
+    assert asyncio.run(svc.request_load()) is False
+
+
+@pytest.mark.asyncio
+async def test_embedding_close_waits_for_inflight_inference(
+    service_with_fake_session,
+) -> None:
+    svc, _session, embeddings_mod = service_with_fake_session
+    inference_started = threading.Event()
+    release_inference = threading.Event()
+    svc._state = embeddings_mod.EmbeddingState.READY
+
+    def _blocking_inference(_texts):
+        inference_started.set()
+        assert release_inference.wait(timeout=2.0)
+        return [[1.0]]
+
+    svc._infer_blocking = _blocking_inference
+    embed_task = asyncio.create_task(svc.embed("hello"))
+    assert await asyncio.to_thread(inference_started.wait, 2.0)
+    embed_task.cancel()
+    await asyncio.sleep(0)
+    close_task = asyncio.create_task(svc.close())
+    await asyncio.sleep(0)
+
+    assert svc._closing is True
+    assert svc._active_operations == 1
+    assert not close_task.done()
+    release_inference.set()
+
+    cancelled_result = await asyncio.gather(embed_task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
+    assert await close_task is None
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_embedding_load_cannot_publish_after_close_starts(
+    service_with_fake_session,
+) -> None:
+    svc, _session, embeddings_mod = service_with_fake_session
+    load_started = threading.Event()
+    release_load = threading.Event()
+    svc._state = embeddings_mod.EmbeddingState.INIT
+
+    def _blocking_load() -> None:
+        load_started.set()
+        assert release_load.wait(timeout=2.0)
+        svc._session = object()
+        svc._tokenizer = object()
+
+    svc._load_session_blocking = _blocking_load
+    load_task = asyncio.create_task(svc.request_load())
+    assert await asyncio.to_thread(load_started.wait, 2.0)
+    load_task.cancel()
+    await asyncio.sleep(0)
+    close_task = asyncio.create_task(svc.close())
+    await asyncio.sleep(0)
+
+    assert svc._closing is True
+    assert svc._active_operations == 1
+    assert not close_task.done()
+    release_load.set()
+
+    cancelled_result = await asyncio.gather(load_task, return_exceptions=True)
+    assert isinstance(cancelled_result[0], asyncio.CancelledError)
+    assert await close_task is None
+    assert svc._session is None
+    assert svc._tokenizer is None
+    assert svc._state is embeddings_mod.EmbeddingState.CLOSED
 
 
 def test_short_batch_runs_in_single_bucket(service_with_fake_session):
@@ -253,13 +342,20 @@ def test_truncation_failure_aborts_load_with_distinct_reason():
     monkey["_is_nonempty_file"] = embeddings._is_nonempty_file
     embeddings._is_nonempty_file = fake_nonempty
 
-    # 伪 ort 模块
+    # 伪 ort 模块。SessionOptions 用一个轻量类而不是 SimpleNamespace,因为
+    # _load_session_blocking 会调 add_session_config_entry(关 spin),
+    # SimpleNamespace 没有这个方法会 AttributeError。
+    class _FakeSessOpts:
+        def __init__(self):
+            self.intra_op_num_threads = 0
+            self.graph_optimization_level = 0
+            self.enable_cpu_mem_arena = True
+
+        def add_session_config_entry(self, _key, _value):
+            pass
+
     fake_ort = types.SimpleNamespace(
-        SessionOptions=lambda: types.SimpleNamespace(
-            intra_op_num_threads=0,
-            graph_optimization_level=0,
-            enable_cpu_mem_arena=True,
-        ),
+        SessionOptions=_FakeSessOpts,
         InferenceSession=lambda *a, **kw: object(),
         GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=0),
     )

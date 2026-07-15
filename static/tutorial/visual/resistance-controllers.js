@@ -13,16 +13,27 @@
 
     const DEFAULT_RESISTANCE_VOICE_KEYS = Object.freeze([
         'interrupt_resist_light_1',
+        'interrupt_resist_light_2',
         'interrupt_resist_light_3'
     ]);
-    const DEFAULT_INTERRUPT_DISTANCE = 56;
-    const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.16;
-    const DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK = 3;
-    const DEFAULT_RESISTANCE_LINES = Object.freeze([
-        '喂！不要拽我啦，现在还没轮到你的回合呢！',
-        '等一下啦！还没结束呢，不要这么随便打断我啦！'
+    const DEFAULT_RESISTANCE_TEXT_KEYS = Object.freeze([
+        'tutorial.yuiGuide.lines.interruptResistLight1',
+        'tutorial.yuiGuide.lines.interruptResistLight2',
+        'tutorial.yuiGuide.lines.interruptResistLight3'
     ]);
-    const DEFAULT_ANGRY_EXIT_TEXT = '人类！你真的很没礼貌喵！既然你这么想自己操作，那你就自己对着冰冷的屏幕玩去吧！哼！';
+    const DEFAULT_CURSOR_RESISTANCE_DISTANCE = 30;
+    const DEFAULT_INTERRUPT_SHAKE_WINDOW_MS = 1100;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE = 50;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS = 600;
+    const DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED = 1100;
+    const DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS = 8;
+    const DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD = 0;
+    const DEFAULT_RESISTANCE_LINES = Object.freeze([
+        '喵！现在是人家的教学时间，不可以乱动鼠标和键盘啦！乖乖看着人家，好不好嘛？',
+        '真是的，又在乱动鼠标和键盘！再不听话的话，人家可真的要生气了喵！',
+        '最后警告一次喵！你要是再乱动一下，人家就直接退出新手教程，不教你了！'
+    ]);
+    const DEFAULT_ANGRY_EXIT_TEXT = '人家已经忍你很久了！既然你就是不肯乖乖听话，那新手教程到此结束，接下来你自己慢慢研究吧，哼！';
     const DEFAULT_ANGRY_EXIT_VOICE_KEY = 'interrupt_angry_exit';
 
     function call(callbacks, name, fallbackValue, ...args) {
@@ -38,13 +49,57 @@
         return Math.max(0, Math.floor(Number.isFinite(value) ? value : 0));
     }
 
+    function createInterruptShakeMotion() {
+        return {
+            lastX: null,
+            lastY: null,
+            lastAt: 0,
+            lastVector: null,
+            reversals: []
+        };
+    }
+
+    function isInterruptShakeReversal(previousVector, currentVector) {
+        if (!previousVector || !currentVector) {
+            return false;
+        }
+
+        const denominator = previousVector.distance * currentVector.distance;
+        if (!Number.isFinite(denominator) || denominator <= 0) {
+            return false;
+        }
+
+        const dot = (
+            previousVector.dx * currentVector.dx
+            + previousVector.dy * currentVector.dy
+        ) / denominator;
+        return Number.isFinite(dot) && dot <= DEFAULT_INTERRUPT_SHAKE_REVERSE_DOT_THRESHOLD;
+    }
+
+    function isInterruptShakeReady(reversals) {
+        if (!Array.isArray(reversals) || reversals.length < DEFAULT_INTERRUPT_SHAKE_REQUIRED_REVERSALS) {
+            return false;
+        }
+
+        const first = reversals[0];
+        const last = reversals[reversals.length - 1];
+        const spanMs = Number(last.at) - Number(first.at);
+        if (!Number.isFinite(spanMs) || spanMs < DEFAULT_INTERRUPT_SHAKE_MIN_SPAN_MS) {
+            return false;
+        }
+
+        const totalDistance = reversals.slice(1).reduce((sum, item) => sum + Number(item.distance || 0), 0);
+        const sustainedSpeed = totalDistance / Math.max(0.001, spanMs / 1000);
+        return sustainedSpeed >= DEFAULT_INTERRUPT_SHAKE_MIN_SUSTAINED_SPEED;
+    }
+
     class ResetInterruptController {
         constructor(options) {
             const normalizedOptions = options || {};
             this.overlay = normalizedOptions.overlay || null;
             this.cursor = normalizedOptions.cursor || null;
             // syncSystemCursorHidden: optional callback for PC builds that need
-            // to reveal the real cursor during resistance and angry-exit scenes.
+            // to keep the real cursor hidden during takeover and resistance.
             this.callbacks = normalizedOptions.callbacks || {};
             this.resistanceVoiceKeys = Array.isArray(normalizedOptions.resistanceVoiceKeys)
                 && normalizedOptions.resistanceVoiceKeys.length
@@ -75,9 +130,7 @@
             return {
                 message: message,
                 voiceKey: this.resistanceVoiceKeys[voiceIndex] || '',
-                textKey: this.resistanceVoiceKeys[voiceIndex] === 'interrupt_resist_light_3'
-                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+                textKey: DEFAULT_RESISTANCE_TEXT_KEYS[voiceIndex] || DEFAULT_RESISTANCE_TEXT_KEYS[0]
             };
         }
 
@@ -102,16 +155,10 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = call(this.callbacks, 'capturePresentationSnapshot', null);
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = call(
-                    this.callbacks,
-                    'prepareResistanceCursorReveal',
-                    false,
-                    normalizedOptions
-                ) === true;
+                call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light');
+                call(this.callbacks, 'suppressResistanceCursorReveal', null, normalizedOptions);
             }
 
             call(this.callbacks, 'pauseCurrentSceneForResistance', null);
@@ -120,6 +167,7 @@
             if (this.overlay && typeof this.overlay.hideBubble === 'function') {
                 this.overlay.hideBubble();
             }
+            call(this.overlay, 'emphasizeControlBanner', null);
 
             call(this.callbacks, 'appendGuideChatMessage', null, resistanceMessage.message, {
                 textKey: resistanceMessage.textKey,
@@ -169,9 +217,6 @@
                 if (this.isStopping()) {
                     return;
                 }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    call(this.callbacks, 'syncSystemCursorHidden', null, true, 'interrupt_resist_light_done');
-                }
 
                 const didRestorePresentationSnapshot = call(
                     this.callbacks,
@@ -214,6 +259,7 @@
             call(this.callbacks, 'disableInterrupts', null);
             call(this.callbacks, 'cancelActiveNarration', null);
             call(this.callbacks, 'beginGuideInterruptPresentation', null);
+            // 修改原因：生气退出会脱离教程接管态，必须先恢复真实鼠标，避免退出台词播放时系统鼠标仍被隐藏。
             call(this.callbacks, 'syncSystemCursorHidden', null, false, 'interrupt_angry_exit');
 
             const angryStep = call(this.callbacks, 'getStep', null, 'interrupt_angry_exit') || {};
@@ -234,7 +280,9 @@
                 ? lastPointerPoint
                 : null;
 
-            call(this.callbacks, 'setTutorialTakingOver', null, true);
+            call(this.callbacks, 'setTutorialTakingOver', null, true, {
+                syncSystemCursor: false
+            });
             if (this.overlay && typeof this.overlay.setAngry === 'function') {
                 this.overlay.setAngry(true);
             }
@@ -294,6 +342,7 @@
             this.destroyed = false;
             this.lightResistanceActive = false;
             this.resistanceVoiceKeys = DEFAULT_RESISTANCE_VOICE_KEYS.slice();
+            this.interruptShakeMotion = createInterruptShakeMotion();
         }
 
         getInterruptCount() {
@@ -326,10 +375,65 @@
             return {
                 message: message,
                 voiceKey: voiceKey,
-                textKey: voiceKey === 'interrupt_resist_light_3'
-                    ? 'tutorial.yuiGuide.lines.interruptResistLight3'
-                    : 'tutorial.yuiGuide.lines.interruptResistLight1'
+                textKey: DEFAULT_RESISTANCE_TEXT_KEYS[voiceIndex] || DEFAULT_RESISTANCE_TEXT_KEYS[0]
             };
+        }
+
+        resetInterruptShakeMotion() {
+            this.interruptShakeMotion = createInterruptShakeMotion();
+            this.director.interruptQualifyingMoveStreak = 0;
+        }
+
+        getInterruptShakePoint(event, now) {
+            const screenX = Number.isFinite(event.screenX) ? event.screenX : null;
+            const screenY = Number.isFinite(event.screenY) ? event.screenY : null;
+            const hasScreenPoint = screenX !== null && screenY !== null;
+            return {
+                x: hasScreenPoint ? screenX : event.clientX,
+                y: hasScreenPoint ? screenY : event.clientY,
+                at: now
+            };
+        }
+
+        trackInterruptShakeMotion(point) {
+            const motion = this.interruptShakeMotion;
+            if (
+                !Number.isFinite(motion.lastX)
+                || !Number.isFinite(motion.lastY)
+            ) {
+                motion.lastX = point.x;
+                motion.lastY = point.y;
+                motion.lastAt = point.at;
+                return null;
+            }
+
+            const vector = {
+                dx: point.x - motion.lastX,
+                dy: point.y - motion.lastY
+            };
+            vector.distance = Math.hypot(vector.dx, vector.dy);
+            if (!Number.isFinite(vector.distance) || vector.distance < DEFAULT_INTERRUPT_SHAKE_MIN_DISTANCE) {
+                return null;
+            }
+
+            const elapsedMs = point.at - motion.lastAt;
+            let shakeReady = false;
+            if (elapsedMs > 0 && isInterruptShakeReversal(motion.lastVector, vector)) {
+                const cutoff = point.at - DEFAULT_INTERRUPT_SHAKE_WINDOW_MS;
+                motion.reversals = motion.reversals.filter((item) => item.at >= cutoff);
+                motion.reversals.push({
+                    at: point.at,
+                    distance: vector.distance
+                });
+                this.director.interruptQualifyingMoveStreak = motion.reversals.length;
+                shakeReady = isInterruptShakeReady(motion.reversals);
+            }
+
+            motion.lastX = point.x;
+            motion.lastY = point.y;
+            motion.lastAt = point.at;
+            motion.lastVector = vector;
+            return shakeReady ? vector : null;
         }
 
         recordPointerDown(event) {
@@ -344,13 +448,14 @@
                 return;
             }
 
+            const now = Date.now();
             director.lastPointerPoint = {
                 x: x,
                 y: y,
-                t: Date.now(),
+                t: now,
                 speed: 0
             };
-            director.interruptQualifyingMoveStreak = 0;
+            this.resetInterruptShakeMotion();
         }
 
         handleInterrupt(event) {
@@ -359,6 +464,7 @@
                 director.destroyed
                 || director.angryExitTriggered
                 || director.scenePausedForResistance
+                || this.lightResistanceActive
                 || !director.interruptsEnabled
                 || !event
                 || event.isTrusted === false
@@ -413,6 +519,7 @@
             }
 
             const now = Date.now();
+            const shakePoint = this.getInterruptShakePoint(event, now);
             const previousPoint = director.lastPointerPoint;
             if (!previousPoint || !Number.isFinite(previousPoint.t)) {
                 director.lastPointerPoint = {
@@ -425,10 +532,13 @@
                     const initialDx = sampleDx === null ? 0 : sampleDx;
                     const initialDy = sampleDy === null ? 0 : sampleDy;
                     const initialDistance = Math.hypot(initialDx, initialDy);
-                    director.noteUserCursorRevealAttempt(initialDistance, now);
-                    director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    director.noteUserCursorRevealSuppressionAttempt(initialDistance, now);
+                    if (initialDistance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                        director.playCursorResistanceToUserMotion(x, y, initialDistance, initialDx, initialDy);
+                    }
                 }
-                director.interruptQualifyingMoveStreak = 0;
+                this.resetInterruptShakeMotion();
+                this.trackInterruptShakeMotion(shakePoint);
                 return;
             }
 
@@ -437,8 +547,6 @@
             const distance = Math.hypot(dx, dy);
             const dt = Math.max(1, now - previousPoint.t);
             const speed = distance / dt;
-            const previousSpeed = Number.isFinite(previousPoint.speed) ? previousPoint.speed : 0;
-            const acceleration = (speed - previousSpeed) / dt;
 
             director.lastPointerPoint = {
                 x: x,
@@ -447,22 +555,16 @@
                 speed: speed
             };
 
-            director.noteUserCursorRevealAttempt(distance, now);
-            director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
-
-            if (
-                distance < DEFAULT_INTERRUPT_DISTANCE
-                && acceleration < DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD
-            ) {
-                director.interruptQualifyingMoveStreak = 0;
-                return;
+            director.noteUserCursorRevealSuppressionAttempt(distance, now);
+            if (distance > DEFAULT_CURSOR_RESISTANCE_DISTANCE) {
+                director.playCursorResistanceToUserMotion(x, y, distance, dx, dy);
             }
 
-            director.interruptQualifyingMoveStreak += 1;
-            if (director.interruptQualifyingMoveStreak < DEFAULT_INTERRUPT_QUALIFYING_MOVE_STREAK) {
+            const interruptMotion = this.trackInterruptShakeMotion(shakePoint);
+            if (!interruptMotion) {
                 return;
             }
-            director.interruptQualifyingMoveStreak = 0;
+            this.resetInterruptShakeMotion();
 
             const throttleMs = Number.isFinite(interrupts.throttleMs) ? interrupts.throttleMs : 500;
             if (now - director.lastInterruptAt < throttleMs) {
@@ -479,10 +581,19 @@
                 return;
             }
 
+            // 修改原因：轻对抗计数成立时先刷新 2 秒真实鼠标显示；
+            // 即使上一段台词演出还在 active 保护内，第二次触发也不能只剩第一次显示的尾巴。
+            const cursorRevealAlreadyRequested = typeof director.revealSystemCursorTemporarily === 'function';
+            if (cursorRevealAlreadyRequested) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
+            }
             director.lastPointerPoint = null;
             director.playLightResistance(x, y, {
-                motionDx: dx,
-                motionDy: dy
+                motionDx: interruptMotion.dx,
+                motionDy: interruptMotion.dy,
+                forceSystemCursorReveal: true,
+                suppressCursorReveal: true,
+                cursorRevealAlreadyRequested: cursorRevealAlreadyRequested
             });
         }
 
@@ -504,11 +615,17 @@
             const performance = resistanceStep.performance || {};
             const resistanceMessage = this.getResistanceMessage(performance);
             const presentationSnapshot = director.captureCurrentGuidePresentationSnapshot();
-            let shouldRestoreHiddenCursorAfterResistance = false;
 
             if (!normalizedOptions.suppressCursorReveal) {
-                this.syncSystemCursorHidden(false, 'interrupt_resist_light');
-                shouldRestoreHiddenCursorAfterResistance = director.prepareResistanceCursorReveal(normalizedOptions);
+                director.suppressResistanceCursorReveal(normalizedOptions);
+            }
+            // 修改原因：正常进入轻对抗演出时仍由这里兜底显示真实鼠标；
+            // 已在触发点刷新过的场景跳过，避免同一次轻对抗重复发送两次 PC 临时显示事件。
+            if (
+                !normalizedOptions.cursorRevealAlreadyRequested
+                && typeof director.revealSystemCursorTemporarily === 'function'
+            ) {
+                director.revealSystemCursorTemporarily(2000, 'interrupt_resist_light');
             }
 
             director.pauseCurrentSceneForResistance();
@@ -516,6 +633,9 @@
 
             if (director.overlay && typeof director.overlay.hideBubble === 'function') {
                 director.overlay.hideBubble();
+            }
+            if (director.overlay && typeof director.overlay.emphasizeControlBanner === 'function') {
+                director.overlay.emphasizeControlBanner();
             }
 
             director.appendGuideChatMessage(resistanceMessage.message, {
@@ -555,9 +675,6 @@
                 if (this.isStopping()) {
                     return;
                 }
-                if (shouldRestoreHiddenCursorAfterResistance) {
-                    this.syncSystemCursorHidden(true, 'interrupt_resist_light_done');
-                }
 
                 const didRestorePresentationSnapshot = director.restoreGuidePresentationSnapshot(presentationSnapshot);
                 const narration = director.activeNarration;
@@ -596,6 +713,12 @@
             director.disableInterrupts();
             director.cancelActiveNarration();
             director.beginGuideInterruptPresentation();
+            // 修改原因：生气退出会脱离教程接管态，必须先取消页面侧轻对抗临时显示 timer；
+            // 随后的 interrupt_angry_exit 可见性消息也是 PC 侧清理临时显示 timer 的跨端契约。
+            if (director.resistanceCursorTimer) {
+                window.clearTimeout(director.resistanceCursorTimer);
+                director.resistanceCursorTimer = null;
+            }
             this.syncSystemCursorHidden(false, 'interrupt_angry_exit');
 
             const angryStep = director.getStep('interrupt_angry_exit') || {};
@@ -613,7 +736,9 @@
                 ? lastPointerPoint
                 : null;
 
-            director.setTutorialTakingOver(true);
+            director.setTutorialTakingOver(true, {
+                syncSystemCursor: false
+            });
             if (director.overlay && typeof director.overlay.setAngry === 'function') {
                 director.overlay.setAngry(true);
             }
@@ -667,6 +792,7 @@
         destroy() {
             this.destroyed = true;
             this.lightResistanceActive = false;
+            this.resetInterruptShakeMotion();
         }
 
         syncSystemCursorHidden(hidden, reason) {
@@ -849,6 +975,9 @@
             const finalReason = tutorialReason || reason || 'skip';
             director.setGuideChatInputLocked(false, 'avatar-floating-guide-' + finalReason);
             director.notifyPluginDashboardTerminationRequested(finalReason);
+            if (typeof director.recordAvatarFloatingGuideRoundEndForTermination === 'function') {
+                director.recordAvatarFloatingGuideRoundEndForTermination(finalReason);
+            }
             director.closePluginDashboardWindowIfCreatedByGuide('终止请求').catch((error) => {
                 console.warn('[YuiGuide] 终止请求时关闭插件面板失败:', error);
             });

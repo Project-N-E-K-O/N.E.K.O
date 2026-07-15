@@ -11,8 +11,10 @@ import asyncio
 
 import pytest
 
+import main_logic.core as core_module
 from main_logic.proactive_delivery import (
     DELIVERY_ACK_FUTURE_KEY,
+    DELIVERY_RETRACTED_KEY,
     ProactiveDeliveryManager,
     effective_priority,
 )
@@ -238,3 +240,288 @@ async def test_stale_cue_dropped_by_ttl():
     mgr.on_playback_end()
     await _settle()
     assert delivered == []          # dropped as stale, never spoken
+
+
+# ── enqueue_agent_callback path (passive / ai_behavior="read") ────────────────
+# The ProactiveDeliveryManager above only governs proactive ("respond") cues.
+# Passive/read cues bypass it and land directly in pending_agent_callbacks; the
+# same OPT-IN coalesce_key semantics apply there so a rapid read-stream can
+# dedup queued snapshots by key instead of piling up until the flood guard.
+
+
+class _FakeAckFuture:
+    """Minimal delivery-ack future stand-in (no event loop needed)."""
+
+    def __init__(self):
+        self._done = False
+        self.result = None
+
+    def done(self):
+        return self._done
+
+    def set_result(self, value):
+        self._done = True
+        self.result = value
+
+
+def _make_session_mgr():
+    mgr = core_module.LLMSessionManager.__new__(core_module.LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.pending_agent_callbacks = []
+    mgr.pending_extra_replies = []
+    # Identity normalizer: isolate the per-source token-budget path, which is
+    # irrelevant to coalescing and pulls in config/budget dependencies.
+    mgr._normalize_context_text_for_source = lambda _src, text: text
+    return mgr
+
+
+def _passive_cb(summary, *, coalesce_key="", **extra):
+    cb = {
+        "event": "agent_task_callback",
+        "origin": "event",
+        "summary": summary,
+        "detail": summary,
+        "status": "completed",
+        "coalesce_key": coalesce_key,
+    }
+    cb.update(extra)
+    return cb
+
+
+def test_enqueue_coalesce_same_key_newest_replaces():
+    # Same explicit key → newest collapses the older queued cue, on BOTH the
+    # LLM-inject queue and its voice-mode mirror (which drift, so the mirror is
+    # evicted by delivery_id, not by position).
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gamestate"))
+    mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gamestate"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new snapshot"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]
+
+
+def test_enqueue_coalesce_empty_key_never_collapses():
+    # Unset / explicit-empty key never coalesces — the non-regression guarantee
+    # for read-cues that didn't opt in.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("a"))                    # no key
+    mgr.enqueue_agent_callback(_passive_cb("b"))                    # no key
+    mgr.enqueue_agent_callback(_passive_cb("c", coalesce_key=""))   # explicit empty
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["a", "b", "c"]
+    assert len(mgr.pending_extra_replies) == 3
+
+
+def test_enqueue_coalesce_distinct_keys_independent():
+    # Only the matching key collapses; a different key is untouched.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("x1", coalesce_key="x"))
+    mgr.enqueue_agent_callback(_passive_cb("y1", coalesce_key="y"))
+    mgr.enqueue_agent_callback(_passive_cb("x2", coalesce_key="x"))
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["y1", "x2"]
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["y1", "x2"]
+
+
+def test_enqueue_coalesce_resolves_superseded_ack_false():
+    # A superseded cue's delivery-ack future resolves False immediately so a
+    # waiter unblocks instead of stalling until timeout (parity with the
+    # manager path).
+    mgr = _make_session_mgr()
+    fut = _FakeAckFuture()
+    old = _passive_cb("old", coalesce_key="k")
+    old[DELIVERY_ACK_FUTURE_KEY] = fut
+    mgr.enqueue_agent_callback(old)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert fut.done() and fut.result is False
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]
+
+
+def test_enqueue_coalesce_marks_superseded_retracted():
+    # A superseded cue must be FLAGGED retracted, not merely dropped: a voice
+    # delivery already in flight snapshots pending_agent_callbacks before its
+    # await and re-filters that snapshot only by DELIVERY_RETRACTED_KEY. Without
+    # the flag the captured stale cue is still spoken even though its ack was
+    # resolved False.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert old.get(DELIVERY_RETRACTED_KEY) is True
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["new"]
+
+
+def test_enqueue_coalesce_older_manager_release_loses_to_newer_read():
+    # Cross-path newest-wins: a respond cue held in ProactiveDeliveryManager
+    # (submission seq stamped at submit_proactive_callback) that is RELEASED into
+    # enqueue AFTER a newer same-key read cue was direct-queued must NOT overwrite
+    # the newer read cue. The submission seq lets enqueue tell the late manager
+    # release from a genuinely newer cue.
+    mgr = _make_session_mgr()
+    # A respond cue stamped early, then held by the manager during playback.
+    respond = _passive_cb("respond held", coalesce_key="k")
+    respond["_coalesce_submit_seq"] = 1
+    # A newer read cue enqueued directly gets a later seq.
+    mgr._coalesce_seq_counter = 5  # next direct-enqueue seq = 6 > 1
+    mgr.enqueue_agent_callback(_passive_cb("newer read", coalesce_key="k"))
+    # The manager now releases the OLDER respond cue into the same queue.
+    mgr.enqueue_agent_callback(respond)
+    # Newer read cue survives; the stale respond is dropped AND retracted (so any
+    # in-flight snapshot that captured it discards it too).
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
+    assert respond.get(DELIVERY_RETRACTED_KEY) is True
+
+
+def test_pull_model_retracts_checked_out_snapshot():
+    # PULL model: a cue checked OUT of pending_agent_callbacks into a local
+    # delivery snapshot is invisible to the enqueue-time push scan. When a
+    # newer same-key cue arrives (bumping _coalesce_latest), the delivery point
+    # calls _retract_stale_coalesced on its snapshot and the stale cue must be
+    # retracted there — acked False and flagged — instead of being delivered.
+    mgr = _make_session_mgr()
+    old = _passive_cb("checked out", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    snapshot = list(mgr.pending_agent_callbacks)
+    mgr.pending_agent_callbacks.clear()  # simulate checkout (text delivery path)
+    # Newer same-key cue arrives while the old one is in-flight.
+    mgr.enqueue_agent_callback(_passive_cb("newer", coalesce_key="k"))
+    fut = _FakeAckFuture()
+    snapshot[0][DELIVERY_ACK_FUTURE_KEY] = fut
+    assert mgr._retract_stale_coalesced(snapshot) is True
+    assert snapshot[0].get(DELIVERY_RETRACTED_KEY) is True
+    assert fut.done() and fut.result is False
+    # The newer cue is NOT stale (it holds the latest seq itself).
+    assert mgr._retract_stale_coalesced(list(mgr.pending_agent_callbacks)) is False
+
+
+def test_pull_model_manager_held_window():
+    # The staleness map is bumped at SUBMIT time (submit_proactive_callback),
+    # not only at enqueue — so an older direct-queued cue is already stale
+    # while the newer respond cue is still held by the delivery manager.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old read", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    # Newer respond cue submitted; manager holds it (we stub the manager).
+    class _MgrStub:
+        def submit(self, cb, **kw):
+            pass
+    mgr.proactive_manager = _MgrStub()
+    mgr.is_goodbye_silent = lambda: False
+    newer = {"status": "completed", "summary": "respond held"}
+    core_module.LLMSessionManager.submit_proactive_callback(
+        mgr, newer, priority=1, coalesce_key="k",
+    )
+    # The old cue must now test stale even though the newer one never enqueued.
+    assert mgr._coalesce_entry_is_stale(old) is True
+    assert mgr._coalesce_entry_is_stale(newer) is False
+
+
+def test_pull_model_stale_extra_is_detected():
+    # _coalesce_entry_is_stale works on pending_extra_replies mirrors too (the
+    # hot-swap prime guard filters its selection with it). Legacy plain-string
+    # extras are never stale.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old", coalesce_key="k"))
+    old_extra = mgr.pending_extra_replies[0]
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert mgr._coalesce_entry_is_stale(old_extra) is True
+    assert mgr._coalesce_entry_is_stale(mgr.pending_extra_replies[-1]) is False
+    assert mgr._coalesce_entry_is_stale("legacy plain string") is False
+
+
+async def test_deliver_batch_releases_inflight_when_all_superseded():
+    # An older manager-released respond cue that loses to a newer same-key
+    # direct cue during enqueue produces an all-retracted batch; the release
+    # hook must free the manager's inflight slot instead of stalling until the
+    # inflight timeout (and must not fire a trigger for nothing).
+    mgr = _make_session_mgr()
+    released = []
+    class _MgrStub:
+        def release_inflight_noop(self):
+            released.append(True)
+    mgr.proactive_manager = _MgrStub()
+    triggered = []
+    async def _fake_trigger():
+        triggered.append(True)
+        return True
+    mgr.trigger_agent_callbacks = _fake_trigger
+    mgr._topic_hook_release_allowed = lambda cb: True
+    # Newer same-key cue already direct-queued with a higher seq.
+    mgr._coalesce_seq_counter = 5
+    mgr.enqueue_agent_callback(_passive_cb("newer read", coalesce_key="k"))
+    # Manager releases the OLDER respond cue (stamped seq=1 at submit time).
+    stale = _passive_cb("older respond", coalesce_key="k")
+    stale["_coalesce_submit_seq"] = 1
+    await core_module.LLMSessionManager._deliver_proactive_batch(mgr, [stale])
+    assert released == [True]   # inflight slot freed immediately
+    assert triggered == []      # no pointless trigger for an empty batch
+    assert [c["summary"] for c in mgr.pending_agent_callbacks] == ["newer read"]
+
+
+def test_drain_skips_read_superseded_by_manager_held_respond():
+    # Codex scenario: a newer respond cue is submitted and PARKED in the
+    # delivery manager (playback / min-gap keeps it from releasing). If the
+    # user's next text turn arrives first, the passive drain must already see
+    # the older same-key read cue as stale — the submit-time bump of
+    # _coalesce_latest plus the drain-point pull check cover the window where
+    # release-time coalescing has not run yet.
+    mgr = _make_session_mgr()
+    old = _passive_cb("stale read", coalesce_key="k")
+    fut = _FakeAckFuture()
+    old[DELIVERY_ACK_FUTURE_KEY] = fut
+    mgr.enqueue_agent_callback(old)
+
+    class _MgrStub:  # manager holds the newer cue; never releases in this test
+        def submit(self, cb, **kw):
+            pass
+
+    mgr.proactive_manager = _MgrStub()
+    mgr.is_goodbye_silent = lambda: False
+    core_module.LLMSessionManager.submit_proactive_callback(
+        mgr, {"status": "completed", "summary": "newer respond"},
+        priority=1, coalesce_key="k",
+    )
+    out = core_module.LLMSessionManager.drain_agent_callbacks_for_llm(mgr)
+    assert out == ""                      # stale read NOT injected
+    assert fut.done() and fut.result is False
+    assert mgr.pending_agent_callbacks == []  # purged, not redelivered later
+
+
+def test_enqueue_coalesce_evicts_legacy_mirror_by_delivery_id():
+    # A mirror created before the coalesce_key stamp existed (legacy shape,
+    # paired by _callback_delivery_id only) must still be evicted when its
+    # callback half is retracted by a same-key enqueue — key-only matching
+    # would orphan it for the hot-swap path.
+    mgr = _make_session_mgr()
+    old = _passive_cb("old", coalesce_key="k")
+    mgr.enqueue_agent_callback(old)
+    # Strip the key/seq stamps from the mirror to simulate the legacy shape.
+    legacy_mirror = mgr.pending_extra_replies[0]
+    legacy_mirror.pop("coalesce_key", None)
+    legacy_mirror.pop("_coalesce_submit_seq", None)
+    mgr.enqueue_agent_callback(_passive_cb("new", coalesce_key="k"))
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new"]
+
+
+def test_enqueue_coalesce_guards_legacy_string_extra():
+    # pending_extra_replies may hold a legacy plain-string entry that the render
+    # path tolerates. A keyed enqueue must not raise on it (the broad except in
+    # enqueue_agent_callback would otherwise swallow the error and silently drop
+    # the new callback).
+    mgr = _make_session_mgr()
+    mgr.pending_extra_replies.append("legacy plain string")  # non-dict entry
+    mgr.enqueue_agent_callback(_passive_cb("fresh", coalesce_key="k"))
+    assert "fresh" in [
+        c["summary"] for c in mgr.pending_agent_callbacks
+    ]  # new callback survived, not swallowed
+    assert "legacy plain string" in mgr.pending_extra_replies  # legacy left intact
+
+
+def test_enqueue_coalesce_evicts_drained_extras_orphan():
+    # After a text user turn, drain_agent_callbacks_for_llm clears the callback
+    # side but KEEPS the paired voice mirror in pending_extra_replies. A later
+    # same-key cue has no callback half to match by id, so eviction must be by
+    # the stamped coalesce_key — otherwise hot-swap injects BOTH snapshots.
+    mgr = _make_session_mgr()
+    mgr.enqueue_agent_callback(_passive_cb("old snapshot", coalesce_key="gs"))
+    mgr.pending_agent_callbacks.clear()  # simulate drain (callback side only)
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["old snapshot"]
+    mgr.enqueue_agent_callback(_passive_cb("new snapshot", coalesce_key="gs"))
+    assert [r["summary"] for r in mgr.pending_extra_replies] == ["new snapshot"]

@@ -32,7 +32,12 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
             return Promise.resolve(true);
         },
         runAvatarFloatingSceneOperation(scene, primaryTarget) {
-            calls.push(['operation', scene.operation, primaryTarget && primaryTarget.id]);
+            calls.push([
+                'operation',
+                scene.operation,
+                primaryTarget && primaryTarget.id,
+                scene.preserveExternalizedChatGuideTarget === true
+            ]);
             return Promise.resolve(true);
         },
         cursor: {
@@ -58,7 +63,12 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
     await registry.dispatch({ command: 'cursor.move', target: 'chat-input', durationMs: 320 }, { director });
     await registry.dispatch({ command: 'cursor.click', effectDurationMs: 180 }, { director });
     await registry.dispatch({ command: 'cursor.wobble', durationMs: 120 }, { director });
-    await registry.dispatch({ command: 'operation.run', operation: 'cleanup', target: 'chat-input' }, {
+    await registry.dispatch({
+        command: 'operation.run',
+        operation: 'cleanup',
+        target: 'chat-input',
+        preserveExternalizedChatGuideTarget: true
+    }, {
         scene: { id: 'scene-a' },
         director
     });
@@ -74,16 +84,16 @@ test('VisualRuntime registers timeline command handlers against director APIs', 
         ['wobble', 120],
         ['delay', 120],
         ['resolve', 'chat-input'],
-        ['operation', 'cleanup', 'chat-input']
+        ['operation', 'cleanup', 'chat-input', true]
     ]);
 });
 
 test('VisualRuntime resolves timeline chat voice key and emotion through director hooks', async () => {
     const calls = [];
     const legacyScene = {
-        id: 'day2_intro_context',
+        id: 'day3_intro_context',
         text: '昨天默认台词',
-        voiceKey: 'avatar_floating_day2_intro',
+        voiceKey: 'avatar_floating_day3_intro',
         emotion: 'happy'
     };
     const director = {
@@ -93,7 +103,7 @@ test('VisualRuntime resolves timeline chat voice key and emotion through directo
         },
         resolveAvatarFloatingSceneVoiceKey(scene) {
             calls.push(['voice', scene.id]);
-            return 'avatar_floating_day2_intro_voice_used';
+            return 'avatar_floating_day3_intro_voice_used';
         },
         resolveAvatarFloatingSceneEmotion(scene) {
             calls.push(['emotion:resolve', scene.id]);
@@ -109,14 +119,14 @@ test('VisualRuntime resolves timeline chat voice key and emotion through directo
     const runtime = createTutorialVisualRuntime(director);
 
     runtime.handleChatMessage(
-        { command: 'chat.message', text: '昨天默认台词', voiceKey: 'avatar_floating_day2_intro' },
+        { command: 'chat.message', text: '昨天默认台词', voiceKey: 'avatar_floating_day3_intro' },
         {
             director,
             legacyScene,
             scene: {
                 audio: {
                     text: '昨天默认台词',
-                    voiceKey: 'avatar_floating_day2_intro'
+                    voiceKey: 'avatar_floating_day3_intro'
                 }
             }
         }
@@ -127,10 +137,10 @@ test('VisualRuntime resolves timeline chat voice key and emotion through directo
     );
 
     assert.deepEqual(calls, [
-        ['text', 'day2_intro_context'],
-        ['voice', 'day2_intro_context'],
-        ['chat', '嘿嘿分支台词', 'avatar_floating_day2_intro_voice_used'],
-        ['emotion:resolve', 'day2_intro_context'],
+        ['text', 'day3_intro_context'],
+        ['voice', 'day3_intro_context'],
+        ['chat', '嘿嘿分支台词', 'avatar_floating_day3_intro_voice_used'],
+        ['emotion:resolve', 'day3_intro_context'],
         ['emotion', 'sad']
     ]);
 });
@@ -244,9 +254,9 @@ test('VisualRuntime keeps non-lock timeline targets on the selector resolver pat
         durationMs: 640
     }, {
         scene: {
-            id: 'day3_galgame_entry',
+            id: 'day2_galgame_entry',
             legacyScene: {
-                id: 'day3_galgame_entry',
+                id: 'day2_galgame_entry',
                 target: 'chat-galgame',
                 cursorAction: 'move'
             }
@@ -266,7 +276,7 @@ test('VisualRuntime uses the capsule input spotlight for first daily timeline in
     const director = {
         isAvatarFloatingInputIntroScene(scene) {
             calls.push(['intro?', scene.id]);
-            return scene.id === 'day3_tool_toggle_intro';
+            return scene.id === 'day2_tool_toggle_intro';
         },
         isHomeChatExternalized() {
             calls.push('externalized?');
@@ -290,14 +300,14 @@ test('VisualRuntime uses the capsule input spotlight for first daily timeline in
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'spotlight.show',
-        key: 'day3_tool_toggle_intro',
+        key: 'day2_tool_toggle_intro',
         target: 'chat-input'
     }, {
         isFirstDailyScene: true,
         scene: {
-            id: 'day3_tool_toggle_intro',
+            id: 'day2_tool_toggle_intro',
             legacyScene: {
-                id: 'day3_tool_toggle_intro',
+                id: 'day2_tool_toggle_intro',
                 target: 'chat-input'
             }
         },
@@ -306,10 +316,10 @@ test('VisualRuntime uses the capsule input spotlight for first daily timeline in
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['intro?', 'day3_tool_toggle_intro'],
+        ['intro?', 'day2_tool_toggle_intro'],
         'externalized?',
-        ['intro-target', 'day3_tool_toggle_intro'],
-        ['spotlight', 'day3_tool_toggle_intro', 'capsule-input']
+        ['intro-target', 'day2_tool_toggle_intro'],
+        ['spotlight', 'day2_tool_toggle_intro', 'capsule-input']
     ]);
 });
 
@@ -412,15 +422,15 @@ test('VisualRuntime applies externalized spotlight at the start of non-intro tim
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'spotlight.show',
-        key: 'day3_avatar_tools_props',
+        key: 'day2_avatar_tools_props',
         target: 'chat-avatar-tools',
         persistent: 'chat-tool-toggle'
     }, {
         isFirstDailyScene: false,
         scene: {
-            id: 'day3_avatar_tools_props',
+            id: 'day2_avatar_tools_props',
             legacyScene: {
-                id: 'day3_avatar_tools_props',
+                id: 'day2_avatar_tools_props',
                 persistent: 'chat-tool-toggle',
                 target: 'chat-avatar-tools',
                 cursorAction: 'click'
@@ -432,8 +442,8 @@ test('VisualRuntime applies externalized spotlight at the start of non-intro tim
     assert.equal(result, true);
     assert.deepEqual(calls, [
         'externalized?',
-        ['kind', 'chat-tool-toggle', 'day3_avatar_tools_props'],
-        ['kind', 'chat-avatar-tools', 'day3_avatar_tools_props'],
+        ['kind', 'chat-tool-toggle', 'day2_avatar_tools_props'],
+        ['kind', 'chat-avatar-tools', 'day2_avatar_tools_props'],
         ['spotlight', 'avatar-tools']
     ]);
 });
@@ -446,7 +456,9 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
         },
         getExternalizedChatCursorTargetKind(scene) {
             calls.push(['kind', scene.id, scene.target, scene.cursorTarget, scene.cursorAction]);
-            return 'input';
+            return scene.cursorTarget === 'chat-capsule-input' || scene.target === 'chat-capsule-input'
+                ? 'capsule-input'
+                : 'input';
         },
         setExternalizedChatCursorEffect(kind, effect, options) {
             calls.push(['effect', kind, effect, options.durationMs]);
@@ -471,14 +483,14 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'cursor.move',
-        target: 'chat-input',
+        target: 'chat-capsule-input',
         durationMs: 640
     }, {
         scene: {
             id: 'day1_takeover_return_control',
             legacyScene: {
                 id: 'day1_takeover_return_control',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorTarget: 'chat-capsule-input',
                 cursorAction: 'move'
             }
@@ -488,8 +500,8 @@ test('VisualRuntime routes externalized chat cursor moves through settled anchor
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day1_takeover_return_control', 'chat-input', 'chat-capsule-input', 'move'],
-        ['effect', 'input', 'move', 640],
+        ['kind', 'day1_takeover_return_control', 'chat-capsule-input', 'chat-capsule-input', 'move'],
+        ['effect', 'capsule-input', 'move', 640],
         ['wait', 'day1_takeover_return_control', 1140]
     ]);
 });
@@ -526,7 +538,7 @@ test('VisualRuntime waits for externalized cursor move before afterCursorMove op
             id: 'day1_takeover_return_control',
             legacyScene: {
                 id: 'day1_takeover_return_control',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorMoveDurationMs: 900
             }
         },
@@ -536,8 +548,8 @@ test('VisualRuntime waits for externalized cursor move before afterCursorMove op
     assert.equal(result, true);
     assert.deepEqual(calls, [
         ['wait', 'day1_takeover_return_control', 1400],
-        ['resolve', 'chat-input'],
-        ['operation', 'cleanup', 'chat-input']
+        ['resolve', 'chat-capsule-input'],
+        ['operation', 'cleanup', 'chat-capsule-input']
     ]);
 });
 
@@ -566,9 +578,9 @@ test('VisualRuntime treats cursor hold as preserving the existing cursor state',
         target: 'chat-galgame'
     }, {
         scene: {
-            id: 'day3_galgame_choices',
+            id: 'day2_galgame_choices',
             legacyScene: {
-                id: 'day3_galgame_choices',
+                id: 'day2_galgame_choices',
                 target: 'chat-galgame',
                 cursorAction: 'hold'
             }
@@ -605,9 +617,9 @@ test('VisualRuntime pins externalized cursor holds to the requested target witho
         target: 'chat-galgame'
     }, {
         scene: {
-            id: 'day3_galgame_choices',
+            id: 'day2_galgame_choices',
             legacyScene: {
-                id: 'day3_galgame_choices',
+                id: 'day2_galgame_choices',
                 target: 'chat-galgame',
                 cursorTarget: 'chat-galgame',
                 cursorAction: 'hold'
@@ -618,7 +630,7 @@ test('VisualRuntime pins externalized cursor holds to the requested target witho
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day3_galgame_choices', 'chat-galgame', 'chat-galgame', 'hold'],
+        ['kind', 'day2_galgame_choices', 'chat-galgame', 'chat-galgame', 'hold'],
         ['effect', 'galgame', '', 0, 0]
     ]);
 });
@@ -652,9 +664,9 @@ test('VisualRuntime freezes externalized cursor holds with a single sampled poin
         freezePoint: true
     }, {
         scene: {
-            id: 'day3_galgame_choices',
+            id: 'day2_galgame_choices',
             legacyScene: {
-                id: 'day3_galgame_choices',
+                id: 'day2_galgame_choices',
                 target: 'chat-galgame',
                 cursorTarget: 'chat-galgame',
                 cursorAction: 'hold'
@@ -665,7 +677,7 @@ test('VisualRuntime freezes externalized cursor holds with a single sampled poin
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day3_galgame_choices', 'chat-galgame', 'chat-galgame', 'hold'],
+        ['kind', 'day2_galgame_choices', 'chat-galgame', 'chat-galgame', 'hold'],
         ['effect', 'galgame', '', 0, 0, true]
     ]);
 });
@@ -835,9 +847,9 @@ test('VisualRuntime routes day3 externalized clicks through the PC overlay curso
         }]
     }, {
         scene: {
-            id: 'day3_avatar_tools',
+            id: 'day2_avatar_tools',
             legacyScene: {
-                id: 'day3_avatar_tools',
+                id: 'day2_avatar_tools',
                 persistent: 'chat-tool-toggle',
                 target: 'chat-tool-toggle',
                 cursorMoveDurationMs: 760
@@ -849,8 +861,8 @@ test('VisualRuntime routes day3 externalized clicks through the PC overlay curso
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['wait', 'day3_avatar_tools', 1260],
-        ['kind', 'day3_avatar_tools', 'chat-tool-toggle', 'chat-tool-toggle', 'click'],
+        ['wait', 'day2_avatar_tools', 1260],
+        ['kind', 'day2_avatar_tools', 'chat-tool-toggle', 'chat-tool-toggle', 'click'],
         ['external-click', 'tool-toggle', 'click', 420],
         ['resolve', 'chat-tool-toggle'],
         ['delay', 420],
@@ -866,7 +878,9 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
         },
         getExternalizedChatCursorTargetKind(scene) {
             calls.push(['kind', scene.id, scene.target, scene.cursorTarget, scene.cursorAction]);
-            return 'input';
+            return scene.cursorTarget === 'chat-capsule-input' || scene.target === 'chat-capsule-input'
+                ? 'capsule-input'
+                : 'input';
         },
         setExternalizedChatCursorEffect(kind, effect, options) {
             calls.push(['effect', kind, effect, options.effectDurationMs]);
@@ -888,14 +902,14 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
     runtime.registerCommands(registry);
     const result = await registry.dispatch({
         command: 'cursor.wobble',
-        target: 'chat-input',
+        target: 'chat-capsule-input',
         durationMs: 2000
     }, {
         scene: {
             id: 'day1_capsule_drag_hint',
             legacyScene: {
                 id: 'day1_capsule_drag_hint',
-                target: 'chat-input',
+                target: 'chat-capsule-input',
                 cursorAction: 'wobble'
             }
         },
@@ -904,8 +918,8 @@ test('VisualRuntime routes externalized wobble through PC overlay cursor effect'
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['kind', 'day1_capsule_drag_hint', 'chat-input', 'chat-input', 'wobble'],
-        ['effect', 'input', 'wobble', 2000],
+        ['kind', 'day1_capsule_drag_hint', 'chat-capsule-input', 'chat-capsule-input', 'wobble'],
+        ['effect', 'capsule-input', 'wobble', 2000],
         ['delay', 2000]
     ]);
 });
@@ -931,9 +945,9 @@ test('VisualRuntime routes day3 galgame wheel rotation command to the existing d
         target: 'chat-galgame'
     }, {
         scene: {
-            id: 'day3_galgame_entry',
+            id: 'day2_galgame_entry',
             legacyScene: {
-                id: 'day3_galgame_entry',
+                id: 'day2_galgame_entry',
                 target: 'chat-galgame',
                 cursorAction: 'move',
                 operation: 'rotate-galgame-tool-into-center'
@@ -945,13 +959,16 @@ test('VisualRuntime routes day3 galgame wheel rotation command to the existing d
     assert.equal(result, true);
     assert.deepEqual(calls, [
         ['resolve', 'chat-galgame'],
-        ['galgame-wheel', 'day3_galgame_entry', 'chat-galgame']
+        ['galgame-wheel', 'day2_galgame_entry', 'chat-galgame']
     ]);
 });
 
-test('VisualRuntime routes settings tour command to SettingsTourFlow with scene context', async () => {
+test('VisualRuntime clears day four externalized chat cursor before settings tour playback', async () => {
     const calls = [];
     const director = {
+        clearExternalizedChatGuideTarget(options) {
+            calls.push(['clear-externalized-chat', options.clearCursor]);
+        },
         settingsTourFlow: {
             play(scene, context) {
                 calls.push([
@@ -995,7 +1012,44 @@ test('VisualRuntime routes settings tour command to SettingsTourFlow with scene 
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
+        ['clear-externalized-chat', true],
         ['settings-tour', 'day4_chat_settings', 41, 'day4_intro_companion', 1, 6]
+    ]);
+});
+
+test('VisualRuntime leaves non-day-four settings tours externalized cursor state intact', async () => {
+    const calls = [];
+    const director = {
+        clearExternalizedChatGuideTarget(options) {
+            calls.push(['clear-externalized-chat', options.clearCursor]);
+        },
+        settingsTourFlow: {
+            play(scene, context) {
+                calls.push(['settings-tour', scene.id, context.sceneRunId]);
+                return Promise.resolve(true);
+            }
+        }
+    };
+    const registry = new CommandRegistry();
+    const runtime = createTutorialVisualRuntime(director);
+
+    runtime.registerCommands(registry);
+    const result = await registry.dispatch({
+        command: 'settingsTour.play'
+    }, {
+        scene: {
+            id: 'day5_character_settings',
+            legacyScene: {
+                id: 'day5_character_settings'
+            }
+        },
+        director,
+        sceneRunId: 51
+    });
+
+    assert.equal(result, true);
+    assert.deepEqual(calls, [
+        ['settings-tour', 'day5_character_settings', 51]
     ]);
 });
 

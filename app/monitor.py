@@ -31,6 +31,7 @@ import asyncio
 import json
 import os
 import logging
+from contextlib import asynccontextmanager
 from config import MONITOR_SERVER_PORT, DEFAULT_LIVE2D_MODEL_NAME
 from utils.config_manager import get_config_manager, get_reserved
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -70,7 +71,17 @@ def get_resource_path(relative_path):
 
 templates = Jinja2Templates(directory=get_resource_path(""))
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: launch a background task that periodically cleans up
+    # disconnected WebSocket clients. Replaces the deprecated
+    # @app.on_event("startup") hook (FastAPI lifespan is the supported API).
+    _fire_task(cleanup_disconnected_clients())
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 DEFAULT_LIVE2D_MODEL = DEFAULT_LIVE2D_MODEL_NAME
 LEGACY_DEFAULT_LIVE2D_MODELS = {
@@ -81,7 +92,7 @@ LEGACY_DEFAULT_LIVE2D_MODELS = {
 app.mount("/static", StaticFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
 
-# 挂载用户Live2D目录（与main_server.py保持一致，CFA感知）
+# 挂载用户Live2D目录（与 main_server 包保持一致，CFA感知）
 _readable_live2d = _config_manager.readable_live2d_dir
 _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
 if os.path.exists(_serve_live2d_path):
@@ -94,7 +105,7 @@ if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
         app.mount("/user_live2d_local", StaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
-# 挂载创意工坊目录（与main_server.py保持一致）
+# 挂载创意工坊目录（与 main_server 包保持一致）
 workshop_path = get_default_workshop_folder()
 if workshop_path and os.path.exists(workshop_path):
     app.mount("/workshop", StaticFiles(directory=workshop_path), name="workshop")
@@ -159,7 +170,7 @@ async def get_page_config(lanlan_name: str = ""):
 
 @app.get("/api/config/preferences")
 async def get_preferences():
-    """Get user preferences (consistent with main_server.py)"""
+    """Get user preferences consistent with the main server package."""
     preferences = await aload_user_preferences()
     return preferences
 
@@ -459,12 +470,8 @@ def _fire_task(coro):
     return task
 
 
-# 定期清理断开的连接
-@app.on_event("startup")
-async def startup_event():
-    _fire_task(cleanup_disconnected_clients())
-
-
+# Periodically clean up disconnected WebSocket clients. Launched from the
+# FastAPI lifespan handler above (replaces the deprecated on_event("startup")).
 async def cleanup_disconnected_clients():
     while True:
         try:
@@ -474,7 +481,9 @@ async def cleanup_disconnected_clients():
                     await client.send_json({"type": "heartbeat"})
                 except Exception as e:
                     print("广播错误:", e)
-                    connected_clients.remove(client)
+                    # discard() avoids KeyError if the client was already
+                    # removed concurrently; connected_clients is a set.
+                    connected_clients.discard(client)
             await asyncio.sleep(60)  # 每分钟检查一次
         except Exception as e:
             print(f"清理客户端错误: {e}")
@@ -483,4 +492,7 @@ async def cleanup_disconnected_clients():
 
 if __name__ == "__main__":
     # 在打包环境中，直接传递 app 对象而不是字符串
+    # The monitor server is a read-only status receiver designed to be
+    # reachable by external clients. Keep binding to 0.0.0.0 to preserve
+    # its intended use; hardening (e.g. token auth) should be additive.
     uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)

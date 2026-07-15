@@ -526,6 +526,20 @@ PROMPTS: Dict[str, Dict[str, str]] = {
         "es": "La tarea anterior que enviaste (\"{task_text}\") en realidad terminó (resultado: {status}).",
         "pt": "A tarefa anterior que você enviou (\"{task_text}\") na real terminou (resultado: {status}).",
     },
+    "RETROACTIVE_HEADER_ENDED": {
+        # Used when the late frame's status is NOT a genuine completion
+        # (interrupted / superseded / failed / timeout). The plain
+        # RETROACTIVE_HEADER asserts "actually finished", which would
+        # contradict the status and re-tell 猫娘 a completion that never
+        # happened. {task_text} = the earlier task, {status} = final status.
+        "zh": "你之前派出去的「{task_text}」已经结束了，但没真正跑完（结果 {status}）。",
+        "en": "The earlier task you dispatched (\"{task_text}\") has since ended, but didn't actually complete (result: {status}).",
+        "ja": "前に送った「{task_text}」、もう終わったけど実際には完了しなかった（結果: {status}）。",
+        "ko": "전에 보낸 \"{task_text}\", 이제 끝났는데 실제로 완료되진 않았어 (결과: {status}).",
+        "ru": "Та задача, которую ты раньше отправил(а) («{task_text}»), уже завершилась, но по-настоящему не выполнена (результат: {status}).",
+        "es": "La tarea anterior que enviaste (\"{task_text}\") ya terminó, pero en realidad no se completó (resultado: {status}).",
+        "pt": "A tarefa anterior que você enviou (\"{task_text}\") já encerrou, mas na real não foi concluída (resultado: {status}).",
+    },
     "RETROACTIVE_INVENTORY_LINE": {
         # {snippet} = item list
         "zh": "现在背包：{snippet}",

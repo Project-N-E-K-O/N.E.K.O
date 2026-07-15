@@ -28,6 +28,7 @@ See ``main_routers/characters_router.py`` docstring or
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import os
 import time
 import uuid
 from pathlib import Path
@@ -455,8 +456,14 @@ async def proxy_mcp_availability():
 
 @router.get('/user_plugin/dashboard')
 async def redirect_plugin_dashboard(request: Request):
-    user_plugin_base = await _resolve_user_plugin_base()
-    target_url = f"{user_plugin_base}/ui"
+    # Docker 部署（位于 Nginx 反向代理后方）：使用相对路径 /ui，
+    # 由 Nginx 代理到插件服务（48916），避免返回容器内部 127.0.0.1
+    behind_proxy = os.environ.get("NEKO_BEHIND_PROXY", "").strip().lower() in ("1", "true", "yes")
+    if behind_proxy:
+        target_url = "/ui"
+    else:
+        user_plugin_base = await _resolve_user_plugin_base()
+        target_url = f"{user_plugin_base}/ui"
     query_params: dict[str, str] = {}
     if "v" in request.query_params:
         v = request.query_params["v"].strip()

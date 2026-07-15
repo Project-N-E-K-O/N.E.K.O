@@ -1,11 +1,12 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readDirectorSource } = require('./yui-guide-director-test-parts.cjs');
 const test = require('node:test');
 
 const repoRoot = path.resolve(__dirname, '..');
 const orchestratorPath = path.join(__dirname, 'tutorial/core/scene-orchestrator.js');
-const directorSource = fs.readFileSync(path.join(__dirname, 'tutorial/yui-guide/director.js'), 'utf8');
+const directorSource = readDirectorSource(__dirname);
 
 test('scene orchestrator exports reusable round facade', () => {
     assert.ok(fs.existsSync(orchestratorPath), 'tutorial/core/scene-orchestrator.js should exist');
@@ -730,24 +731,24 @@ test('SceneOrchestrator owns round setup, scene loop, metrics and cleanup', asyn
     };
     const orchestrator = new SceneOrchestrator(director);
 
-    const completed = await orchestrator.playRound(3, { source: 'test' });
+    const completed = await orchestrator.playRound(2, { source: 'test' });
 
     assert.equal(completed, true);
     assert.deepEqual(calls, [
-        ['config', 3],
-        ['metric', 'avatar_floating_round_start', 3],
+        ['config', 2],
+        ['metric', 'avatar_floating_round_start', 2],
         'bubble:hide',
-        ['surface', 3],
-        ['input', true, 'avatar-floating-guide-day3'],
-        ['wheel', 0, 'avatar-floating-guide-day3-entry-reset'],
+        ['surface', 2],
+        ['input', true, 'avatar-floating-guide-day2'],
+        ['wheel', 0, 'avatar-floating-guide-day2-entry-reset'],
         'spotlight:persistent',
-        ['lookAt', 'avatar_floating_day3_complete'],
-        ['scene', 'a', 3, 0, 2],
-        ['scene', 'b', 3, 1, 2],
-        ['metric', 'avatar_floating_round_complete', 3],
+        ['lookAt', 'avatar_floating_day2_complete'],
+        ['scene', 'a', 2, 0, 2],
+        ['scene', 'b', 2, 1, 2],
+        ['metric', 'avatar_floating_round_complete', 2],
         'interrupts:disable',
         ['standIn:clear', true, true],
-        ['input', false, 'avatar-floating-guide-day3-complete'],
+        ['input', false, 'avatar-floating-guide-day2-complete'],
         ['panels:close', true],
         'spotlight:virtual',
         'spotlight:extra',
@@ -757,6 +758,75 @@ test('SceneOrchestrator owns round setup, scene loop, metrics and cleanup', asyn
         'spotlight:action',
         'cursor:hide',
         ['takeover', false]
+    ]);
+});
+
+test('SceneOrchestrator records Day1 end only after Day1 round completes', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const director = {
+        destroyed: false,
+        day1RoundWakeupCompleted: false,
+        getAvatarFloatingRoundConfig(round) {
+            calls.push(['config', round]);
+            return { scenes: [{ id: 'day1_capsule_drag_hint' }] };
+        },
+        recordExperienceMetric(name, payload) {
+            calls.push(['metric', name, payload.round]);
+        },
+        overlay: {
+            hideBubble() {},
+            clearPersistentSpotlight() {},
+            clearActionSpotlight() {}
+        },
+        ensureAvatarFloatingGuideSurfaceReady() {
+            return Promise.resolve();
+        },
+        setGuideChatInputLocked() {},
+        isHomeChatExternalized() {
+            return false;
+        },
+        ensurePersistentGhostCursorLookAtPerformance() {
+            return Promise.resolve(null);
+        },
+        stopPersistentGhostCursorLookAtPerformance() {
+            return Promise.resolve();
+        },
+        isStopping() {
+            return false;
+        },
+        playAvatarFloatingScene(scene, round) {
+            calls.push(['scene', scene.id, round]);
+            return Promise.resolve(true);
+        },
+        recordAvatarFloatingGuideRoundEnd(round) {
+            calls.push(['round-end', round]);
+        },
+        disableInterrupts() {},
+        clearAvatarStandIn() {},
+        closeAvatarFloatingGuidePanels() {
+            return Promise.resolve();
+        },
+        clearAllVirtualSpotlights() {},
+        clearAllExtraSpotlights() {},
+        clearSpotlightGeometryHints() {},
+        clearSpotlightVariantHints() {},
+        cursor: {
+            hide() {}
+        },
+        setTutorialTakingOver() {}
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const completed = await orchestrator.playRound(1, { source: 'test' });
+
+    assert.equal(completed, true);
+    assert.deepEqual(calls, [
+        ['config', 1],
+        ['metric', 'avatar_floating_round_start', 1],
+        ['scene', 'day1_capsule_drag_hint', 1],
+        ['metric', 'avatar_floating_round_complete', 1],
+        ['round-end', 1]
     ]);
 });
 
@@ -840,7 +910,7 @@ test('SceneOrchestrator waits for angry exit presentation before round cleanup',
     };
     const orchestrator = new SceneOrchestrator(director);
 
-    const roundPromise = orchestrator.playRound(3, { source: 'test' });
+    const roundPromise = orchestrator.playRound(2, { source: 'test' });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1032,15 +1102,15 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         }
     };
     const orchestrator = new SceneOrchestrator(director);
-    orchestrator.playGenericScene = function () {
-        calls.push('core');
+    orchestrator.playGenericScene = function (_scene, _day, _index, _total, context) {
+        calls.push(['core', context.introCursorPreludeApplied]);
         return Promise.resolve(true);
     };
 
     const result = await orchestrator.playScene(scene, 6, 0, 8);
 
     assert.equal(result, true);
-    assert.ok(calls.includes('core'));
+    assert.ok(calls.some((entry) => Array.isArray(entry) && entry[0] === 'core' && entry[1] === true));
     assert.ok(!calls.includes('externalized:clear'));
     assert.ok(calls.some((entry) => (
         Array.isArray(entry)
@@ -1049,7 +1119,100 @@ test('SceneOrchestrator places the first daily guide cursor in the capsule input
         && entry[2] === ''
         && entry[3] === 0
     )));
-    assert.ok(calls.indexOf('cursor:home-hide') < calls.indexOf('core'));
+    assert.ok(calls.indexOf('cursor:home-hide') < calls.findIndex((entry) => Array.isArray(entry) && entry[0] === 'core'));
+});
+
+test('SceneOrchestrator preserves Day1 input-origin wobble during the first externalized cursor handoff', () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions(inputScene) {
+            calls.push(['options', inputScene.id]);
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        hideHomeCursorForExternalizedChat() {
+            calls.push('hide-home-cursor');
+        }
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const applied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+
+    assert.equal(applied, true);
+    assert.deepEqual(calls, [
+        ['options', 'day1_intro_activation'],
+        ['cursor', 'capsule-input', 'wobble', 0],
+        'hide-home-cursor'
+    ]);
+});
+
+test('SceneOrchestrator sends the first externalized intro cursor only once across prelude and spotlight', async () => {
+    const { SceneOrchestrator } = require('./tutorial/core/scene-orchestrator.js');
+    const calls = [];
+    const scene = { id: 'day1_intro_activation', cursorAction: 'input-origin' };
+    const director = {
+        currentStep: null,
+        isAvatarFloatingInputIntroScene() {
+            return true;
+        },
+        isHomeChatExternalized() {
+            return true;
+        },
+        getAvatarFloatingIntroSpotlightTarget() {
+            return null;
+        },
+        getAvatarFloatingIntroExternalizedSpotlightKind() {
+            return 'capsule-input';
+        },
+        getAvatarFloatingIntroExternalizedCursorOptions() {
+            return { effect: 'wobble', durationMs: 0 };
+        },
+        interactionTakeover: {
+            setExternalizedChatSpotlight(kind) {
+                calls.push(['spotlight', kind]);
+            },
+            setExternalizedChatCursor(kind, options) {
+                calls.push(['cursor', kind, options.effect, options.durationMs]);
+            }
+        },
+        clearHomeSpotlightsForExternalizedChat() {},
+        setHomePcCursorOutputSuppressedForExternalizedChat() {},
+        hideHomeCursorForExternalizedChat() {},
+        enableInterrupts() {}
+    };
+    const orchestrator = new SceneOrchestrator(director);
+
+    const introCursorPreludeApplied = orchestrator.applyFirstDailySceneIntroCursorPrelude(scene, {
+        isFirstDailyScene: true
+    });
+    await orchestrator.resolveAndApplySceneSpotlight(scene, {
+        isFirstDailyScene: true,
+        introCursorPreludeApplied
+    });
+
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'cursor'), [
+        ['cursor', 'capsule-input', 'wobble', 0]
+    ]);
+    assert.deepEqual(calls.filter((entry) => entry[0] === 'spotlight'), [
+        ['spotlight', 'capsule-input']
+    ]);
 });
 
 test('SceneOrchestrator schedules avatar stand-ins after scene surface preparation', async () => {
@@ -1071,9 +1234,9 @@ test('SceneOrchestrator schedules avatar stand-ins after scene surface preparati
     const orchestrator = new SceneOrchestrator(director);
 
     const result = await orchestrator.prepareGenericSceneSurface({
-        id: 'day3_avatar_tools'
+        id: 'day2_avatar_tools'
     }, {
-        day: 3,
+        day: 2,
         sceneRunId: 21,
         isFirstDailyScene: false,
         preserveExternalizedChatGuideTarget: true
@@ -1081,8 +1244,8 @@ test('SceneOrchestrator schedules avatar stand-ins after scene surface preparati
 
     assert.equal(result, true);
     assert.deepEqual(calls, [
-        ['prepare', 'day3_avatar_tools', true],
-        ['standIn:schedule', 'day3_avatar_tools', 3, 21]
+        ['prepare', 'day2_avatar_tools', true],
+        ['standIn:schedule', 'day2_avatar_tools', 2, 21]
     ]);
 });
 
@@ -1420,11 +1583,11 @@ test('full tutorial pages load scene orchestrator before director', () => {
         const source = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
         const settingsTourFlowIndex = source.indexOf('/static/tutorial/core/settings-tour-flow.js');
         const orchestratorIndex = source.indexOf('/static/tutorial/core/scene-orchestrator.js');
-        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director.js');
+        const directorIndex = source.indexOf('/static/tutorial/yui-guide/director/bootstrap.js');
 
         assert.notEqual(settingsTourFlowIndex, -1, templatePath + ' should load tutorial/core/settings-tour-flow.js');
         assert.notEqual(orchestratorIndex, -1, templatePath + ' should load tutorial/core/scene-orchestrator.js');
-        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director.js');
+        assert.notEqual(directorIndex, -1, templatePath + ' should load tutorial/yui-guide/director parts');
         assert.ok(settingsTourFlowIndex < orchestratorIndex, templatePath + ' should load settings tour flow before scene orchestrator');
         assert.ok(orchestratorIndex < directorIndex, templatePath + ' should load scene orchestrator before director');
     }

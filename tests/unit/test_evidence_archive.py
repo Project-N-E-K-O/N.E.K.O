@@ -59,8 +59,8 @@ def _install(tmpdir: str):
     cm = _mock_cm(tmpdir)
     with patch("memory.event_log.get_config_manager", return_value=cm), \
          patch("memory.facts.get_config_manager", return_value=cm), \
-         patch("memory.persona.get_config_manager", return_value=cm), \
-         patch("memory.reflection.get_config_manager", return_value=cm):
+         patch("memory.persona.manager.get_config_manager", return_value=cm), \
+         patch("memory.reflection.manager.get_config_manager", return_value=cm):
         event_log = EventLog()
         event_log._config_manager = cm
         fs = FactStore()
@@ -1488,7 +1488,7 @@ async def test_persona_sync_save_evicts_cache_on_atomic_write_failure(tmp_path):
                 )
         return _real_atomic(path, *args, **kwargs)
 
-    with patch("memory.persona.atomic_write_json",
+    with patch("memory.persona.persistence.atomic_write_json",
                side_effect=_boom_on_second_persona_write):
         with pytest.raises(RuntimeError, match="simulated persona.json"):
             await pm.amerge_into(
@@ -1572,7 +1572,7 @@ async def test_persona_sync_save_evicts_cache_on_cloudsave_gate_raise(tmp_path):
                     "simulated cloudsave readonly on entry_updated save"
                 )
 
-    with patch("memory.persona.assert_cloudsave_writable",
+    with patch("memory.persona.persistence.assert_cloudsave_writable",
                side_effect=_boom_on_second_cloudsave):
         with pytest.raises(RuntimeError, match="simulated cloudsave"):
             await pm.amerge_into(
@@ -1678,7 +1678,7 @@ def test_save_persona_evicts_cache_on_atomic_write_failure(tmp_path):
             raise RuntimeError("simulated atomic_write_json failure")
         return _real_atomic(path, *args, **kwargs)
 
-    with patch("memory.persona.atomic_write_json", side_effect=_boom):
+    with patch("memory.persona.persistence.atomic_write_json", side_effect=_boom):
         with pytest.raises(RuntimeError, match="simulated atomic_write_json"):
             pm.save_persona("小天", _persona_round7_polluted())
 
@@ -1710,7 +1710,7 @@ def test_save_persona_evicts_cache_on_cloudsave_gate_raise(tmp_path):
         if target.endswith("persona.json") and operation == "save":
             raise RuntimeError("simulated cloudsave readonly")
 
-    with patch("memory.persona.assert_cloudsave_writable",
+    with patch("memory.persona.persistence.assert_cloudsave_writable",
                side_effect=_boom_gate):
         with pytest.raises(RuntimeError, match="simulated cloudsave"):
             pm.save_persona("小天", _persona_round7_polluted())
@@ -1743,7 +1743,7 @@ async def test_asave_persona_evicts_cache_on_atomic_write_failure(tmp_path):
             raise RuntimeError("simulated atomic_write_json_async failure")
         return await _real_atomic_a(path, *args, **kwargs)
 
-    with patch("memory.persona.atomic_write_json_async", side_effect=_boom_async):
+    with patch("memory.persona.persistence.atomic_write_json_async", side_effect=_boom_async):
         with pytest.raises(RuntimeError, match="simulated atomic_write_json_async"):
             await pm.asave_persona("小天", _persona_round7_polluted())
 
@@ -1773,7 +1773,7 @@ async def test_asave_persona_evicts_cache_on_cloudsave_gate_raise(tmp_path):
         if target.endswith("persona.json") and operation == "save":
             raise RuntimeError("simulated cloudsave readonly (async)")
 
-    with patch("memory.persona.assert_cloudsave_writable",
+    with patch("memory.persona.persistence.assert_cloudsave_writable",
                side_effect=_boom_gate):
         with pytest.raises(RuntimeError, match="simulated cloudsave"):
             await pm.asave_persona("小天", _persona_round7_polluted())

@@ -10,29 +10,7 @@
     >
       {{ uiActionLabel }}
     </el-button>
-    <!-- Extension 操作按钮 -->
-    <el-button-group v-if="isExtension">
-      <el-button
-        v-if="status !== 'disabled'"
-        type="warning"
-        :icon="SwitchButton"
-        @click="handleDisableExt"
-        :loading="loading"
-      >
-        {{ t('plugins.disableExtension') }}
-      </el-button>
-      <el-button
-        v-else
-        type="success"
-        :icon="SwitchButton"
-        @click="handleEnableExt"
-        :loading="loading"
-      >
-        {{ t('plugins.enableExtension') }}
-      </el-button>
-    </el-button-group>
-    <!-- 普通插件操作按钮 -->
-    <el-button-group v-else>
+    <el-button-group>
       <el-button
         v-if="status !== 'running'"
         type="success"
@@ -67,7 +45,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { VideoPlay, VideoPause, Refresh, SwitchButton, Monitor } from '@element-plus/icons-vue'
+import { VideoPlay, VideoPause, Refresh, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
@@ -90,7 +68,6 @@ const currentPlugin = computed(() => {
 })
 
 const status = computed(() => currentPlugin.value?.status || 'stopped')
-const isExtension = computed(() => currentPlugin.value?.type === 'extension')
 const uiAction = computed(() => {
   return currentPlugin.value?.list_actions?.find((action) => action.kind === 'ui') || null
 })
@@ -231,34 +208,6 @@ async function handleReload() {
   }
 }
 
-async function handleDisableExt() {
-  try {
-    await ElMessageBox.confirm(t('messages.confirmDisableExt'), t('common.confirm'), {
-      type: 'warning'
-    })
-    loading.value = true
-    await pluginStore.disableExt(props.pluginId)
-    ElMessage.success(t('messages.extensionDisabled'))
-  } catch (error: any) {
-    if (error !== 'cancel') {
-      showActionError(error, t('messages.disableExtFailed'))
-    }
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleEnableExt() {
-  try {
-    loading.value = true
-    await pluginStore.enableExt(props.pluginId)
-    ElMessage.success(t('messages.extensionEnabled'))
-  } catch (error: any) {
-    showActionError(error, t('messages.enableExtFailed'))
-  } finally {
-    loading.value = false
-  }
-}
 </script>
 
 <style scoped>

@@ -39,19 +39,31 @@ default suffix filter. For everything else, prefer
 `--include-package=<dotted.name>` so Nuitka compiles the modules into the
 binary.
 
-## Rule 3: New directories require synced updates in build script + CI
+## Rule 3: Built-in plugins must go through the shared staging step
 
-Two independent build configurations exist:
+Two build entrypoints exist:
 
 - `build_nuitka.bat` — local maintainer script, **gitignored** (contains
   signing paths, machine-specific settings).
 - `.github/workflows/build-desktop.yml` — CI build for Linux/macOS/Windows
   release artifacts.
 
-If you add a directory that needs to ship in the bundle, you must update
-**both**. After the Nuitka build, the CI workflow runs
-`scripts/check_nuitka_dist.py` to verify critical assets exist; register new
-required assets there too.
+Both must run `scripts/prepare_nuitka_plugins.py prepare` before Nuitka and
+compile the generated `build_nuitka_launcher.py`. The helper applies every
+plugin's `[tool.neko.build]` rules to a shared staging directory and emits
+selective `--nofollow-import-to` directives for Python modules excluded by
+those same rules. After Nuitka finishes, `prepare_nuitka_plugins.py install`
+replaces `dist/Xiao8/plugin/plugins` with the filtered runtime payload.
+
+Do not add `--include-data-dir=plugin/plugins=plugin/plugins` back to either
+build: it bypasses the plugin rules and still drops `.py` files. Do not add a
+blanket `--nofollow-import-to=plugin.plugins` either, because built-in plugins
+are dynamically imported and must be compiled.
+
+The CI workflow then runs `scripts/check_nuitka_dist.py --plugin-stage ...` to
+verify that the installed plugin tree matches the filtered stage byte for
+byte. New non-plugin assets still require explicit updates in both build
+entrypoints and in the required-asset checker.
 
 ## Rule 4: Don't run the bundled exe casually for diagnosis
 
@@ -78,8 +90,9 @@ The historical neko-plugin-cli bug (PR #1115, "rename neko-plugin-cli
 it. We now have three layers:
 
 1. **Build-time check** — `scripts/check_nuitka_dist.py` runs in CI after
-   Nuitka, verifying the dist root contains every critical directory and
-   that each built-in plugin has its `plugin.toml`.
+   Nuitka, verifying the dist root contains every critical directory, every
+   built-in plugin has its `plugin.toml`, and the installed plugin payload
+   exactly matches the filtered stage.
 2. **Source-level lint** — `tests/unit/test_no_hyphen_python_packages.py`
    fails at PR time if any tracked directory with a hyphen name contains
    `.py` files.

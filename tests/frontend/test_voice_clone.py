@@ -13,6 +13,7 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "minimax_intl": {"config_field": "assistApiKeyMinimaxIntl", "restricted": True},
         "elevenlabs": {"config_field": "assistApiKeyElevenlabs", "restricted": True},
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
+        "doubao_tts": {"config_field": "assistApiKeyDoubaoTts", "restricted": False},
     },
 }
 
@@ -128,7 +129,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo,doubao_tts,vllm_omni';
         }"""
     )
 
@@ -136,7 +137,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
     values = mock_page.locator("#voiceProvider-menu .api-provider-dropdown-option").evaluate_all(
         "(nodes) => nodes.map(node => node.dataset.value)"
     )
-    assert values == ["cosyvoice", "minimax", "mimo"]
+    assert values == ["cosyvoice", "minimax", "mimo", "doubao_tts", "vllm_omni"]
 
 
 @pytest.mark.frontend
@@ -157,9 +158,82 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_
             const visibleValues = Array.from(select.options)
                 .filter(option => !option.hidden && option.style.display !== 'none')
                 .map(option => option.value);
-            return visibleValues.join(',') === 'cosyvoice,minimax,mimo';
+            return visibleValues.join(',') === 'cosyvoice,minimax,mimo,doubao_tts,vllm_omni';
         }"""
     )
+
+
+@pytest.mark.frontend
+def test_doubao_tts_keybook_key_counts_as_clone_api_key(mock_page: Page, running_server: str):
+    route_voice_clone_region_dependencies(
+        mock_page,
+        {
+            "success": True,
+            "steam_language": "schinese",
+            "i18n_language": "zh-CN",
+            "ip_country": "CN",
+            "is_mainland_china": True,
+        },
+    )
+
+    mock_page.goto(f"{running_server}/voice_clone")
+    mock_page.wait_for_load_state("domcontentloaded")
+    mock_page.wait_for_function("typeof cfgHasCloneProviderKey === 'function'")
+
+    has_key = mock_page.evaluate(
+        """() => cfgHasCloneProviderKey({
+            ttsProvider: '',
+            ttsModelProvider: '',
+            ttsModelApiKey: '',
+            assistApiKeyDoubaoTts: 'doubao-speech-key',
+            assistApiKeyDoubao: ''
+        }, 'doubao_tts')"""
+    )
+
+    assert has_key is True
+
+
+@pytest.mark.frontend
+def test_doubao_tts_clone_key_check_matches_backend_routing(mock_page: Page, running_server: str):
+    route_voice_clone_region_dependencies(
+        mock_page,
+        {
+            "success": True,
+            "steam_language": "schinese",
+            "i18n_language": "zh-CN",
+            "ip_country": "CN",
+            "is_mainland_china": True,
+        },
+    )
+
+    mock_page.goto(f"{running_server}/voice_clone")
+    mock_page.wait_for_load_state("domcontentloaded")
+    mock_page.wait_for_function("typeof cfgHasCloneProviderKey === 'function'")
+
+    assert mock_page.evaluate(
+        """() => cfgHasCloneProviderKey({
+            ttsModelProvider: '',
+            ttsModelApiKey: '',
+            assistApiKeyDoubaoTts: '',
+            assistApiKeyDoubao: 'doubao-chat-key'
+        }, 'doubao_tts')"""
+    ) is False
+    assert mock_page.evaluate(
+        """() => cfgHasCloneProviderKey({
+            ttsModelProvider: 'doubao_tts',
+            ttsModelApiKey: 'doubao-speech-key',
+            assistApiKeyDoubaoTts: '',
+            assistApiKeyDoubao: ''
+        }, 'doubao_tts')"""
+    ) is False
+    assert mock_page.evaluate(
+        """() => cfgHasCloneProviderKey({
+            ttsModelProvider: '',
+            ttsModelApiKey: '',
+            assistApiKeyDoubaoTts: 'doubao-speech-key',
+            assistApiKeyDoubao: ''
+        }, 'doubao_tts')"""
+    ) is True
 
 
 @pytest.mark.frontend
@@ -177,6 +251,20 @@ def test_voice_clone_localizes_free_api_native_voice_labels(mock_page: Page, run
             status=200,
             content_type="application/json",
             body=json.dumps({"success": True, "lanlan_name": "test-lanlan"}),
+        ),
+    )
+    mock_page.route(
+        "**/api/config/steam_language",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "success": True,
+                "uiLanguage": None,
+                "steam_language": "english",
+                "i18n_language": "en",
+                "ip_country": "US",
+            }),
         ),
     )
     mock_page.route(

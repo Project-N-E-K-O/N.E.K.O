@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from plugin.core.bus.types import BusHubProtocol
     from plugin.core.bus.events import EventClient
     from plugin.core.bus.lifecycle import LifecycleClient
-    from plugin.core.bus.memory_client import MemoryClient
+    from plugin.core.bus.memory import MemoryClient
     from plugin.core.bus.messages import MessageClient
     from plugin.core.bus.conversations import ConversationClient
     # ⚠ 严禁 import loguru。logger 字段实际类型是 plugin.logging_config.PluginLoggerAdapter。
@@ -105,7 +105,7 @@ class _BusHub:
 
     @functools.cached_property
     def memory(self) -> "MemoryClient":
-        from plugin.core.bus.memory_client import MemoryClient
+        from plugin.core.bus.memory import MemoryClient
 
         return MemoryClient(self._ctx)
 
@@ -881,9 +881,9 @@ class PluginContext:
 
         All other parameters (``message_type``, ``content``, ``binary_data``,
         ``binary_url``, ``mime``, ``delivery``, ``reply``, ``description``,
-        ``unsafe``) are deprecated.  They still work for the deprecation
-        window but emit ``DeprecationWarning`` and are scheduled for
-        removal in v0.9 (see ``docs/changelog``).
+        ``unsafe``, ``fast_mode``) are deprecated.  They still work for the
+        deprecation window but emit ``DeprecationWarning`` and are scheduled
+        for removal in v0.9 (see ``docs/changelog``).
         """
         from plugin.sdk.shared.core.push_message_schema import (
             translate_push_message,
@@ -902,6 +902,7 @@ class PluginContext:
             delivery=delivery,
             reply=reply,
             unsafe=unsafe if unsafe else None,
+            fast_mode=fast_mode if fast_mode else None,
             source=source,
             metadata=metadata,
             target_lanlan=target_lanlan,

@@ -9,7 +9,7 @@ def _source(relative_path: str) -> str:
 
 
 def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "const SNOOZE_MS = 3 * 24 * 60 * 60 * 1000;" in source
     assert "state.snoozeUntil = now() + SNOOZE_MS;" in source
@@ -17,12 +17,13 @@ def test_multiscreen_drag_hint_ack_snoozes_for_three_days():
 
 
 def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_displays():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "const REQUIRED_MISSES = 2;" in source
     assert "const MISS_WINDOW_MS = 30 * 1000;" in source
     assert "function hasDisplaySwitchBridge()" in source
     assert "typeof window.electronScreen.moveWindowToDisplay === 'function'" in source
+    assert "typeof window.electronScreen.getCurrentDisplay === 'function'" in source
     assert "async function hasMultipleDisplays()" in source
     assert "window.electronScreen.getAllDisplays" in source
     assert "if (!hasDisplaySwitchBridge()) return false;" in source
@@ -30,22 +31,39 @@ def test_multiscreen_drag_hint_counts_display_switch_misses_only_on_multiple_dis
     assert "function recordDisplaySwitchMiss(source)" in source
     assert "if (!(await hasMultipleDisplays())) return false;" in source
     assert "state.recentMissCount >= REQUIRED_MISSES" in source
-    assert "hasDisplaySwitchBridge() && !displaySwitched && isModelCenterOutsideCurrentWindow(model)" in source
+    assert "async function isModelCenterOnAnotherDisplay(model)" in source
+    assert "if (!displaySwitched && await isModelCenterOnAnotherDisplay(model))" in source
 
 
 def test_multiscreen_drag_hint_serializes_display_switch_miss_updates():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "let missRecordQueue = Promise.resolve();" in source
     assert "function recordDisplaySwitchMiss(source) {" in source
     assert "const nextRecord = missRecordQueue.then(function () {" in source
-    assert "return recordDisplaySwitchMissNow(source);" in source
+    assert "return recordDisplaySwitchMissNow(normalizedSource);" in source
     assert "missRecordQueue = nextRecord.catch(function () {});" in source
     assert "function recordDisplaySwitchMissNow(source)" in source
 
 
+def test_multiscreen_drag_hint_records_pointer_edge_release_intent():
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
+
+    assert "const EDGE_RELEASE_THRESHOLD_PX = 180;" in source
+    assert "const MIN_EDGE_DRAG_DISTANCE_PX = 48;" in source
+    assert "function getPointerEdgeIntents(pointer, currentDisplay)" in source
+    assert "function hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer)" in source
+    assert "async function recordPointerEdgeApproach(source, pointer)" in source
+    assert "async function recordPointerEdgeRelease(source, pointer)" in source
+    assert "edges.some(edge => hasAdjacentDisplayForEdge(displays, currentDisplay, edge, pointer))" in source
+    assert "wasDisplaySwitchMissRecordedSince(source, startedAt)" in source
+    assert "window.electronScreen.getCurrentDisplay" in source
+    assert "recordPointerEdgeApproach," in source
+    assert "recordPointerEdgeRelease," in source
+
+
 def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "state.never = true;" in source
     assert "state.successAt = now();" in source
@@ -56,7 +74,7 @@ def test_multiscreen_drag_hint_can_be_disabled_or_suppressed_after_success():
 
 
 def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
-    source = _source("static/avatar-multiscreen-drag-hint.js")
+    source = _source("static/avatar/avatar-multiscreen-drag-hint.js")
 
     assert "left: 50%;" in source
     assert "top: calc" in source
@@ -74,29 +92,44 @@ def test_multiscreen_drag_hint_uses_top_center_project_popup_style():
 
 
 def test_model_interactions_report_display_switch_misses_and_success():
-    helper = _source("static/avatar-multiscreen-drag-hint.js")
-    live2d = _source("static/live2d-interaction.js")
-    mmd = _source("static/mmd-interaction.js")
-    vrm = _source("static/vrm-interaction.js")
+    helper = _source("static/avatar/avatar-multiscreen-drag-hint.js")
+    live2d = _source("static/live2d/live2d-interaction.js")
+    mmd = _source("static/mmd/mmd-interaction.js")
+    vrm = _source("static/vrm/vrm-interaction.js")
 
     assert "installLive2DDisplaySwitchMissHook" in helper
     assert "window.Live2DManager" in helper
     assert "_checkAndSwitchDisplay" in helper
     assert "recordDisplaySwitchMiss('live2d')" in helper
     assert "recordDisplaySwitchMiss('live2d')" not in live2d
+    assert "recordPointerEdgeApproach('live2d'" in live2d
+    assert "recordPointerEdgeRelease('live2d'" in live2d
+    assert "recordEdgeBounce('live2d')" not in live2d
     assert "markDisplaySwitchSuccess('live2d')" in live2d
     assert "recordDisplaySwitchMiss('mmd')" in mmd
+    assert "void this._recordDragHintPointerEdgeApproach('mmd');" in mmd
+    assert "if (!targetDisplay) {\n                return false;\n            }" in mmd
+    mmd_release = mmd.split("if (!displaySwitched) {", 1)[1].split("// 鼠标离开", 1)[0]
+    assert mmd_release.index("if (wasPanDrag) {") < mmd_release.index(
+        "await this._recordDragHintPointerEdgeRelease('mmd');"
+    )
     assert "recordEdgeBounce('mmd')" not in mmd
     assert "markDisplaySwitchSuccess('mmd')" in mmd
     assert "recordDisplaySwitchMiss('vrm')" in vrm
+    assert "void this._recordDragHintPointerEdgeApproach('vrm');" in vrm
+    assert "if (!targetDisplay) {\n                return false;\n            }" in vrm
+    vrm_release = vrm.split("if (!displaySwitched) {", 1)[1].split("// 5. 鼠标进入", 1)[0]
+    assert vrm_release.index("if (wasPanDrag) {") < vrm_release.index(
+        "await this._recordDragHintPointerEdgeRelease('vrm');"
+    )
     assert "recordEdgeBounce('vrm')" not in vrm
     assert "markDisplaySwitchSuccess('vrm')" in vrm
 
 
 def test_model_renderers_refresh_pixel_density_after_display_switch():
-    live2d_core = _source("static/live2d-core.js")
-    mmd_core = _source("static/mmd-core.js")
-    vrm_core = _source("static/vrm-core.js")
+    live2d_core = _source("static/live2d/live2d-core.js")
+    mmd_core = _source("static/mmd/mmd-core.js")
+    vrm_core = _source("static/vrm/vrm-core.js")
 
     assert "lastDevicePixelRatio = window.devicePixelRatio || 1;" in live2d_core
     assert "renderer.resolution = nextResolution;" in live2d_core
@@ -114,10 +147,10 @@ def test_model_renderers_refresh_pixel_density_after_display_switch():
 def test_multiscreen_drag_hint_script_loads_before_model_interactions():
     source = _source("templates/index.html")
 
-    helper_index = source.index("/static/avatar-multiscreen-drag-hint.js")
-    live2d_index = source.index("/static/live2d-interaction.js")
-    vrm_index = source.index("/static/vrm-init.js")
-    mmd_index = source.index("/static/mmd-init.js")
+    helper_index = source.index("/static/avatar/avatar-multiscreen-drag-hint.js")
+    live2d_index = source.index("/static/live2d/live2d-interaction.js")
+    vrm_index = source.index("/static/vrm/vrm-init.js")
+    mmd_index = source.index("/static/mmd/mmd-init.js")
 
     assert helper_index < live2d_index
     assert helper_index < vrm_index

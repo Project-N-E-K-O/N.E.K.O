@@ -1,6 +1,6 @@
 # 三服务器设计
 
-## 主服务器（`app/main_server.py`，端口 48911）
+## 主服务器（`app/main_server/__init__.py`，端口 48911）
 
 主服务器是一个 FastAPI 应用，作为所有交互的用户侧入口。
 

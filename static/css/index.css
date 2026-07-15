@@ -29,7 +29,8 @@ body {
 /* Status 气泡框样式 - 更显眼的样式 */
 #status-toast {
     position: fixed;
-    top: 20px;
+    --neko-status-toast-crop-safe-area-top: calc(var(--neko-niri-pet-crop-offset-y, 0) * 1px);
+    top: calc(20px + var(--neko-status-toast-crop-safe-area-top));
     right: 20px;
     z-index: 99999;
     max-width: 500px;
@@ -249,7 +250,7 @@ body {
 /* 移动端响应式设计 */
 @media (max-width: 600px) {
     #status-toast {
-        top: 10px;
+        top: calc(10px + var(--neko-status-toast-crop-safe-area-top));
         right: 10px;
         left: 10px;
         max-width: none;
@@ -493,7 +494,7 @@ button * {
      1) 静态容器：avatar 三家（live2d/vrm/mmd）+ chat 主面板 + 字幕条 +
         React chat 浮窗 + avatar preview 弹窗 + status toast。
         #sidebar 自带 inline display:none 不需要再列。
-     2) 动态浮动 UI：avatar-ui-buttons.js 用 `{prefix}-floating-buttons` /
+     2) 动态浮动 UI：avatar-ui-buttons parts 用 `{prefix}-floating-buttons` /
         `{prefix}-return-button-container` / `{prefix}-lock-icon` 三组 ID
         命名约定（live2d / vrm / mmd 各一份）注入到 body，靠属性后缀
         匹配统一收掉，避免漏一个 prefix 留个浮动按钮挡鼠标。 */
@@ -617,6 +618,64 @@ body.neko-game-active [id$="-lock-icon"] {
     transform-origin: center center;
 }
 
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn {
+    --neko-idle-return-size: clamp(56px, 8vw, 72px);
+    border-radius: 999px;
+    background: transparent;
+    box-shadow:
+        0 0 8px rgba(68, 183, 254, 0.6),
+        0 0 18px rgba(68, 183, 254, 0.18);
+    animation: nekoGoodbyeIdleBallBreathing 2000ms ease-in-out infinite;
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn::after {
+    content: "";
+    position: absolute;
+    inset: -28%;
+    border-radius: inherit;
+    background: radial-gradient(circle, rgba(68, 183, 254, 0.18) 0%, rgba(68, 183, 254, 0) 70%);
+    pointer-events: none;
+    z-index: -1;
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] .neko-idle-return-art {
+    display: block !important;
+    width: 100% !important;
+    min-width: 100%;
+    max-width: 100%;
+    height: 100% !important;
+    top: 0;
+    object-fit: contain;
+    transform: none !important;
+    filter: drop-shadow(0 0 6px rgba(68, 183, 254, 0.28));
+}
+
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] .neko-idle-return-art-next,
+.neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] span[class~="neko-idle-thought-bubble"] {
+    display: none !important;
+}
+
+@keyframes nekoGoodbyeIdleBallBreathing {
+    0%, 100% {
+        transform: scale(0.985);
+        box-shadow:
+            0 0 8px rgba(68, 183, 254, 0.6),
+            0 0 18px rgba(68, 183, 254, 0.18);
+    }
+    50% {
+        transform: scale(1.035);
+        box-shadow:
+            0 0 16px rgba(68, 183, 254, 1),
+            0 0 30px rgba(68, 183, 254, 0.28);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-button-container[data-neko-goodbye-idle-appearance="ball"] > .neko-idle-return-btn {
+        animation: none;
+    }
+}
+
 .neko-idle-return-btn.is-cat1-playing > .neko-idle-return-art,
 .neko-idle-return-art[data-neko-cat1-play-finishing="true"] {
     width: 175% !important;
@@ -637,6 +696,25 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+/*
+ * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
+ * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
+ * 待机规则使用独立站位侧，而不是会在 settle 后重置的 facingRight，避免误伤左侧待机。
+ */
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action) > .neko-idle-return-art {
+    left: 33px;
+}
+
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-walking:not(.is-cat1-facing-right) > .neko-idle-return-art,
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-stretching:not(.is-cat1-facing-right) > .neko-idle-return-art {
+    left: calc(12.3046875% + 33px);
+}
+
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-walking.is-cat1-facing-right > .neko-idle-return-art,
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-stretching.is-cat1-facing-right > .neko-idle-return-art {
+    left: -17.96875%;
 }
 
 .neko-idle-return-btn.is-cat1-edge-peek-left > .neko-idle-return-art {
@@ -770,7 +848,7 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-cat1-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
-.neko-idle-return-btn.is-cat1-eating .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-hover-paused .neko-idle-thought-bubble {
     display: none;
 }
@@ -2988,6 +3066,20 @@ body.react-chat-window-dragging {
 .crop-tool-confirm { color: #34c759; }
 .crop-tool-confirm:hover { background: rgba(52, 199, 89, 0.16); color: #4cd964; }
 .crop-tool-confirm.is-active { background: rgba(52, 199, 89, 0.16); color: #34c759; }
+
+.crop-tool-pin {
+    width: auto;
+    min-width: 48px;
+    padding: 0 10px;
+    color: #8bd8ff;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.crop-tool-pin:hover {
+    background: rgba(68, 183, 254, 0.18);
+    color: #b9e9ff;
+}
 
 .crop-tool-cancel { color: #ff6b7a; }
 .crop-tool-cancel:hover { background: rgba(220, 53, 69, 0.18); color: #ff8a97; }

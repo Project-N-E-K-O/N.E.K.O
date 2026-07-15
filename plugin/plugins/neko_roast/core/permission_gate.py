@@ -17,7 +17,13 @@ class PermissionGate:
             if not self.config.developer_tools_enabled:
                 return False, "developer tools are disabled"
             return True, ""
-        if source in {"live_danmaku", "manual_live_simulation"}:
+        if source == "manual_live_simulation":
+            if not self.config.developer_tools_enabled:
+                return False, "developer tools are disabled"
+            if not self.config.live_enabled:
+                return False, "live roast is disabled"
+            return True, ""
+        if source in {"live_danmaku", "idle_hosting", "active_engagement", "warmup_hosting"}:
             if not self.config.live_enabled:
                 return False, "live roast is disabled"
             return True, ""

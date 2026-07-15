@@ -7,6 +7,14 @@ from playwright.sync_api import Page
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _add_script_parts(page: Page, relative_dir: str) -> None:
+    part_dir = PROJECT_ROOT / "static" / relative_dir
+    part_paths = sorted(part_dir.glob("*.js"))
+    assert part_paths, f"no JavaScript parts found under {part_dir}"
+    for part_path in part_paths:
+        page.add_script_tag(path=str(part_path))
+
+
 def test_subtitle_panel_uses_two_thicker_corner_lines_without_texture():
     css = (PROJECT_ROOT / "static/css/subtitle.css").read_text(encoding="utf-8")
 
@@ -70,7 +78,7 @@ def test_web_subtitle_opacity_slider_matches_design_minimum():
 
 
 def test_web_danmaku_layout_uses_animation_frames_for_visual_tracking():
-    script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "static/subtitle/subtitle.js").read_text(encoding="utf-8")
     layout_block = script.split("function attachWebDanmakuModeLayout", 1)[1].split(
         "function applySharedSubtitleSettings", 1
     )[0]
@@ -138,7 +146,7 @@ def test_subtitle_danmaku_mode_switch_persists_and_propagates(mock_page: Page):
         """,
         path="/subtitle-danmaku-mode-switch-harness",
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -276,8 +284,8 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -307,6 +315,16 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
                 },
             });
             await new Promise((resolve) => setTimeout(resolve, 0));
+            window.dispatchEvent(new CustomEvent('neko-subtitle-state-sync', {
+                detail: {
+                    opacity: 72,
+                    bounds: { width: 655, height: 109 },
+                    locked: false,
+                    interactionPassthrough: false,
+                    danmakuMode: true,
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
             const afterOn = {
                 subscriptions: window.__avatarBoundsSubscriptions.slice(),
                 settings: shared.getSettings(),
@@ -314,6 +332,7 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
                 calls: window.__subtitleSetBoundsCalls.slice(),
                 changes: window.__subtitleSettingsChanges.slice(),
                 panelState: display.dataset.subtitlePanelState || '',
+                backgroundOpacity: display.dataset.subtitleBackgroundOpacity || '',
                 panelHidden: panel.classList.contains('hidden'),
                 closeCount: window.__subtitleSettingsCloseCount,
             };
@@ -341,16 +360,17 @@ def test_subtitle_window_danmaku_mode_tracks_avatar_head_and_restores(mock_page:
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
-    assert result["afterOn"]["nativeBounds"] == {"x": 794, "y": 249, "width": 212, "height": 79}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
+    assert result["afterOn"]["nativeBounds"] == {"x": 780, "y": 244, "width": 240, "height": 88}
     assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["backgroundOpacity"] == "0"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["closeCount"] == 1
     assert {"type": "lock", "value": True, "transient": True} in result["afterOn"]["changes"]
     assert {"type": "opacity", "value": 0, "transient": True} in result["afterOn"]["changes"]
     assert {
         "type": "bounds",
-        "value": {"width": 200, "height": 67},
+        "value": {"width": 228, "height": 76},
         "transient": True,
     } in result["afterOn"]["changes"]
 
@@ -442,8 +462,8 @@ def test_subtitle_window_danmaku_mode_restores_delayed_native_bounds(mock_page: 
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -588,8 +608,8 @@ def test_subtitle_window_danmaku_mode_does_not_move_when_native_bounds_fail(mock
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -707,8 +727,8 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -720,6 +740,22 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
             const panel = document.getElementById('subtitle-settings-panel');
             shared.updateSettings({ subtitleDanmakuMode: true }, { source: 'test-enable-web-danmaku' });
             await new Promise((resolve) => setTimeout(resolve, 150));
+            shared.updateSettings({
+                subtitlePanelBounds: { width: 655, height: 109 },
+                subtitlePanelPosition: {
+                    left: 300,
+                    top: 500,
+                    coordinateSpace: 'viewport',
+                },
+                subtitlePanelLocked: false,
+                subtitleInteractionPassthrough: false,
+                subtitleOpacity: 72,
+                subtitleDanmakuMode: true,
+            }, {
+                persist: false,
+                source: 'test-settings-refresh',
+            });
+            await new Promise((resolve) => setTimeout(resolve, 50));
             const afterOn = {
                 settings: shared.getSettings(),
                 style: {
@@ -729,6 +765,7 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
                     height: display.style.height,
                 },
                 panelState: display.dataset.subtitlePanelState || '',
+                backgroundOpacity: display.dataset.subtitleBackgroundOpacity || '',
                 panelHidden: panel.classList.contains('hidden'),
                 storage: {
                     bounds: JSON.parse(window.localStorage.getItem('subtitlePanelBounds')),
@@ -770,19 +807,20 @@ def test_web_subtitle_danmaku_mode_tracks_avatar_head_and_restores(mock_page: Pa
     assert result["afterOn"]["settings"]["subtitlePanelLocked"] is True
     assert result["afterOn"]["settings"]["subtitleInteractionPassthrough"] is True
     assert result["afterOn"]["settings"]["subtitleOpacity"] == 0
-    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 200, "height": 67}
+    assert result["afterOn"]["settings"]["subtitlePanelBounds"] == {"width": 228, "height": 76}
     assert result["afterOn"]["settings"]["subtitlePanelPosition"] == {
-        "left": 800,
-        "top": 254.5,
+        "left": 786,
+        "top": 250,
         "coordinateSpace": "viewport",
     }
     assert result["afterOn"]["style"] == {
-        "left": "800px",
-        "top": "254.5px",
-        "width": "200px",
-        "height": "67px",
+        "left": "786px",
+        "top": "250px",
+        "width": "228px",
+        "height": "76px",
     }
     assert result["afterOn"]["panelState"] == "clean"
+    assert result["afterOn"]["backgroundOpacity"] == "0"
     assert result["afterOn"]["panelHidden"] is True
     assert result["afterOn"]["storage"] == {
         "bounds": {"width": 655, "height": 109},
@@ -891,8 +929,8 @@ def test_web_subtitle_danmaku_mode_tracks_each_frame_without_rerendering_text(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -1001,8 +1039,8 @@ def test_web_subtitle_danmaku_mode_does_not_take_over_electron_pet(mock_page: Pa
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -1096,8 +1134,8 @@ def test_goodbye_temporarily_hides_subtitle_without_disabling_translation(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
     mock_page.evaluate("() => document.dispatchEvent(new Event('DOMContentLoaded'))")
 
     result = mock_page.evaluate(
@@ -1229,7 +1267,7 @@ def test_subtitle_danmaku_renderer_groups_every_two_punctuation_marks(
         path="/subtitle-danmaku-renderer-harness",
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1317,8 +1355,8 @@ def test_web_subtitle_write_text_uses_danmaku_renderer_when_mode_enabled(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -1367,7 +1405,7 @@ def test_subtitle_background_opacity_tracks_dark_theme(
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/dark-mode.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1495,7 +1533,7 @@ def test_standalone_subtitle_background_uses_stored_dark_theme_on_open(
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/dark-mode.css"))
     mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/theme-manager.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1570,7 +1608,7 @@ def test_subtitle_settings_state_persists_panel_position_and_locked_state(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1705,7 +1743,7 @@ def test_subtitle_shared_does_not_migrate_legacy_passthrough_to_locked(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1756,7 +1794,7 @@ def test_subtitle_shared_restores_explicit_passthrough_separately_from_lock(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1849,7 +1887,7 @@ def test_subtitle_color_scheme_select_persists_and_updates_panel(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -1953,7 +1991,7 @@ def test_subtitle_color_scheme_storage_event_updates_window_realtime(
         """,
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2038,7 +2076,7 @@ def test_subtitle_font_size_select_persists_and_updates_panel(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2132,8 +2170,8 @@ def test_subtitle_font_size_change_reflows_existing_inline_text(
         """,
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -2193,7 +2231,7 @@ def test_subtitle_panel_runtime_state_is_render_only_not_persisted(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2262,7 +2300,7 @@ def test_subtitle_panel_controls_settings_state_machine(
         </div>
         """,
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2385,7 +2423,7 @@ def test_subtitle_panel_controls_hide_after_settings_button_keeps_focus(
         </div>
         """,
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2456,7 +2494,7 @@ def test_subtitle_panel_controls_follow_mousemove_when_pointerenter_is_missed(
         </div>
         """,
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2542,7 +2580,7 @@ def test_web_subtitle_locked_passthrough_includes_text_area(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     initial = mock_page.evaluate(
         """
@@ -2694,7 +2732,7 @@ def test_subtitle_panel_lock_and_close_buttons_update_runtime_state(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2820,7 +2858,7 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -2869,6 +2907,70 @@ def test_subtitle_panel_close_fallback_updates_state_before_propagating(
 
 
 @pytest.mark.frontend
+def test_web_subtitle_panel_close_persists_app_settings(mock_page: Page):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls" aria-hidden="true">
+                <button type="button" id="subtitle-close-btn"></button>
+            </div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('subtitleEnabled', 'true');
+            window.localStorage.setItem('userLanguage', 'en');
+            window.appState = { subtitleEnabled: true };
+            window.__subtitleSaveSettingsCalls = 0;
+            window.__savedSubtitleEnabled = null;
+            window.appSettings = {
+                saveSettings: () => {
+                    window.__subtitleSaveSettingsCalls += 1;
+                    window.__savedSubtitleEnabled = window.appState.subtitleEnabled;
+                },
+            };
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            initSubtitleHostUi();
+            document.getElementById('subtitle-close-btn').click();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const display = document.getElementById('subtitle-display');
+            return {
+                saveSettingsCalls: window.__subtitleSaveSettingsCalls,
+                savedEnabled: window.__savedSubtitleEnabled,
+                enabled: window.nekoSubtitleShared.getSettings().subtitleEnabled,
+                storedEnabled: window.localStorage.getItem('subtitleEnabled'),
+                appStateEnabled: window.appState.subtitleEnabled,
+                isHidden: display.classList.contains('hidden'),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "saveSettingsCalls": 1,
+        "savedEnabled": False,
+        "enabled": False,
+        "storedEnabled": "false",
+        "appStateEnabled": False,
+        "isHidden": True,
+    }
+
+
+@pytest.mark.frontend
 def test_react_translate_button_tracks_external_subtitle_enabled_changes(
     mock_page: Page,
 ):
@@ -2903,8 +3005,8 @@ def test_react_translate_button_tracks_external_subtitle_enabled_changes(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -2991,8 +3093,8 @@ def test_react_translate_button_accepts_initial_shared_state_without_changed_key
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.nekoSubtitleShared",
         timeout=5000,
@@ -3070,7 +3172,7 @@ def test_react_translate_button_direct_toggle_controls_subtitle_window(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -3146,7 +3248,7 @@ def test_react_translate_button_fallback_uses_current_view_state_after_desktop_s
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/app-react-chat-window.js"))
+    _add_script_parts(mock_page, "app/app-react-chat-window")
     mock_page.wait_for_function(
         "() => window.reactChatWindowHost && window.__lastReactChatProps === undefined",
         timeout=5000,
@@ -3234,8 +3336,8 @@ def test_subtitle_incremental_translation_starts_when_sentence_punctuation_arriv
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3304,8 +3406,8 @@ def test_electron_chat_window_does_not_start_subtitle_translation_requests(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3372,8 +3474,8 @@ def test_subtitle_streaming_does_not_show_original_text_while_translation_is_pen
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3464,8 +3566,8 @@ def test_subtitle_incremental_translation_does_not_merge_fast_streaming_sentence
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3591,8 +3693,8 @@ def test_subtitle_incremental_translation_waits_for_user_language_before_request
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3688,8 +3790,8 @@ def test_subtitle_same_language_response_displays_for_spanish_and_portuguese_tar
         """,
         {"configuredLanguage": configured_language},
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3812,8 +3914,8 @@ def test_subtitle_skips_translated_sentence_with_unexpected_source_residue(
             "secondTranslation": second_translation,
         },
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -3901,8 +4003,8 @@ def test_subtitle_reenable_restarts_current_turn_after_pending_queue_cancelled(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4045,8 +4147,8 @@ def test_subtitle_retranslate_invalidates_stale_incremental_response(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4164,8 +4266,8 @@ def test_subtitle_structured_mode_invalidates_pending_incremental_response(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4256,8 +4358,8 @@ def test_subtitle_turn_end_keeps_pending_incremental_sentence_queue(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4385,8 +4487,8 @@ def test_subtitle_translation_failure_does_not_fall_back_to_original_and_next_tu
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4453,8 +4555,8 @@ def test_subtitle_toggle_off_hides_panel_and_persists_disabled_state(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4517,8 +4619,8 @@ def test_subtitle_initial_enabled_shows_empty_panel_after_refresh(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4598,8 +4700,8 @@ def test_subtitle_empty_turn_does_not_request_translation_or_show_original_text(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -4743,7 +4845,7 @@ def test_chat_template_keeps_subtitle_as_hidden_bridge_placeholder():
 
 @pytest.mark.frontend
 def test_subtitle_shared_drops_legacy_panel_control_branches():
-    shared_script = (PROJECT_ROOT / "static" / "subtitle-shared.js").read_text(encoding="utf-8")
+    shared_script = (PROJECT_ROOT / "static" / "subtitle" / "subtitle-shared.js").read_text(encoding="utf-8")
 
     legacy_tokens = [
         "#subtitle-passthrough-toggle",
@@ -4776,7 +4878,7 @@ def test_subtitle_window_settings_hides_passthrough_toggle_and_allows_small_boun
 @pytest.mark.frontend
 def test_subtitle_settings_window_includes_color_and_danmaku_switch():
     template = (PROJECT_ROOT / "static" / "subtitle-settings.html").read_text(encoding="utf-8")
-    script = (PROJECT_ROOT / "static" / "subtitle-settings-window.js").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "static" / "subtitle" / "subtitle-settings-window.js").read_text(encoding="utf-8")
 
     assert 'id="subtitle-color-scheme-select"' in template
     assert 'data-subtitle-color-scheme-label="colorSchemeDefault"' in template
@@ -4820,7 +4922,7 @@ def test_subtitle_window_resize_handles_share_web_offsets():
 
 @pytest.mark.frontend
 def test_subtitle_window_resize_method_matches_desktop_chat_handle_bridge():
-    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "static/subtitle/subtitle-window.js").read_text(encoding="utf-8")
 
     assert "target.closest('[data-resize-dir]')" in script
     assert "refs.display.addEventListener('mousedown', onPointerDown, true)" in script
@@ -4873,8 +4975,8 @@ def test_subtitle_window_handles_stay_inside_native_window_hit_margin(mock_page:
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -4965,8 +5067,8 @@ def test_subtitle_window_size_bridge_expands_only_native_bounds(mock_page: Page)
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -5030,7 +5132,7 @@ def test_subtitle_window_fallback_resize_includes_native_edge_insets(mock_page: 
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
     mock_page.evaluate(
         """
         () => {
@@ -5128,8 +5230,8 @@ def test_subtitle_window_skips_duplicate_size_bridge_updates(mock_page: Page):
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -5223,8 +5325,8 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -5261,6 +5363,8 @@ def test_subtitle_window_resize_closes_settings_float_before_native_resize(mock_
         "panelBounds": {"width": 260, "height": 68},
     }
     assert result["calls"][1]["type"] == "resizeStart"
+    assert result["calls"][1]["minWidth"] == 240
+    assert result["calls"][1]["minHeight"] == 52
     assert all(call["type"] != "setBounds" for call in result["calls"])
 
 
@@ -5339,8 +5443,8 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -5405,29 +5509,35 @@ def test_subtitle_window_left_and_top_resize_use_native_bridge_without_carrier_b
 
 
 @pytest.mark.frontend
-def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
+def test_subtitle_panel_bounds_enforce_usable_minimum_without_legacy_scale_controls(
     mock_page: Page,
 ):
     _open_subtitle_harness(
         mock_page,
         "subtitle-web-host",
         """
-        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
+        <div id="subtitle-display" class="show" data-subtitle-panel-state="controls" style="display:flex; opacity:1; visibility:visible; animation:none; transform:none;">
             <div id="subtitle-scroll"><span id="subtitle-text">Translated text.</span></div>
+            <div id="subtitle-panel-controls">
+                <button type="button" class="subtitle-panel-control-btn"></button>
+                <button type="button" id="subtitle-settings-btn"></button>
+                <button type="button" class="subtitle-panel-control-btn"></button>
+            </div>
         </div>
         """,
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
         () => {
             const shared = window.nekoSubtitleShared;
             const display = document.getElementById('subtitle-display');
-            const bounds = shared.getPanelBounds({ width: 80, height: 36 });
+            const bounds = shared.getPanelBounds({ width: 80, height: 20 });
             shared.applySubtitlePanelBounds(display, bounds, { host: 'web' });
             const rect = display.getBoundingClientRect();
+            const controlsRect = document.getElementById('subtitle-panel-controls').getBoundingClientRect();
             const style = getComputedStyle(display);
             return {
                 bounds,
@@ -5435,6 +5545,10 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
                     width: Math.round(rect.width),
                     height: Math.round(rect.height),
                 },
+                controlsContained: controlsRect.left >= rect.left
+                    && controlsRect.right <= rect.right
+                    && controlsRect.top >= rect.top
+                    && controlsRect.bottom <= rect.bottom,
                 cssMinWidth: style.minWidth,
                 legacySlider: document.querySelectorAll('#subtitle-size-slider').length,
                 legacyButtons: document.querySelectorAll('.subtitle-size-btn').length,
@@ -5443,11 +5557,119 @@ def test_subtitle_panel_bounds_are_free_not_legacy_size_limited(
         """
     )
 
-    assert result["bounds"] == {"width": 80, "height": 36}
-    assert result["rect"] == {"width": 80, "height": 36}
-    assert result["cssMinWidth"] == "0px"
+    assert result["bounds"] == {"width": 228, "height": 40}
+    assert result["rect"] == {"width": 228, "height": 40}
+    assert result["controlsContained"] is True
+    assert result["cssMinWidth"] == "228px"
     assert result["legacySlider"] == 0
     assert result["legacyButtons"] == 0
+
+
+@pytest.mark.frontend
+def test_web_subtitle_panel_minimum_does_not_overflow_a_small_viewport(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 180, "height": 32})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const display = document.getElementById('subtitle-display');
+            const logical = window.nekoSubtitleShared.applySubtitlePanelBounds(
+                display,
+                { width: 80, height: 20 },
+                { host: 'web' },
+            );
+            const rect = display.getBoundingClientRect();
+            return {
+                logical,
+                datasetWidth: display.dataset.subtitlePanelWidth,
+                datasetHeight: display.dataset.subtitlePanelHeight,
+                rectWidth: Math.round(rect.width),
+                rectHeight: Math.round(rect.height),
+                cssMinWidth: getComputedStyle(display).minWidth,
+                cssMinHeight: getComputedStyle(display).minHeight,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "logical": {"width": 228, "height": 40},
+        "datasetWidth": "180",
+        "datasetHeight": "32",
+        "rectWidth": 180,
+        "rectHeight": 32,
+        "cssMinWidth": "180px",
+        "cssMinHeight": "32px",
+    }
+
+
+@pytest.mark.frontend
+def test_web_subtitle_panel_reapplies_viewport_limits_after_resize(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-web-host",
+        """
+        <div id="subtitle-display" class="show" style="display:flex; opacity:1; visibility:visible;"></div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => localStorage.setItem(
+            'subtitlePanelBounds',
+            JSON.stringify({ width: 655, height: 109 }),
+        )
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.evaluate(
+        """
+        () => {
+            window.subtitleTestController = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+        }
+        """
+    )
+
+    def panel_size() -> dict[str, int]:
+        return mock_page.evaluate(
+            """
+            () => {
+                const rect = document.getElementById('subtitle-display').getBoundingClientRect();
+                return { width: Math.round(rect.width), height: Math.round(rect.height) };
+            }
+            """
+        )
+
+    assert panel_size() == {"width": 655, "height": 109}
+
+    mock_page.set_viewport_size({"width": 180, "height": 32})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '32'
+        """
+    )
+    assert panel_size() == {"width": 180, "height": 32}
+
+    mock_page.set_viewport_size({"width": 800, "height": 300})
+    mock_page.wait_for_function(
+        """
+        () => document.getElementById('subtitle-display').dataset.subtitlePanelHeight === '109'
+        """
+    )
+    assert panel_size() == {"width": 655, "height": 109}
+    mock_page.evaluate("() => window.subtitleTestController.destroy()")
 
 
 @pytest.mark.frontend
@@ -5491,7 +5713,7 @@ def test_subtitle_boundary_resize_persists_free_panel_bounds(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -5631,8 +5853,8 @@ def test_subtitle_window_boundary_resize_uses_native_window_resize_bounds(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result_start = mock_page.evaluate(
         """
@@ -5784,8 +6006,8 @@ def test_subtitle_window_native_resize_updates_controls_scale_before_mouseup(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -5902,8 +6124,8 @@ def test_subtitle_window_native_resize_keeps_panel_size_until_main_frame_arrives
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6007,8 +6229,8 @@ def test_subtitle_window_uses_web_font_size_without_desktop_shrink(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6083,8 +6305,8 @@ def test_subtitle_window_state_sync_updates_font_size_realtime(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6203,8 +6425,8 @@ def test_subtitle_window_resize_handles_do_not_start_window_drag(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6298,8 +6520,8 @@ def test_subtitle_window_drag_starts_only_after_non_edge_movement(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6391,7 +6613,7 @@ def test_subtitle_empty_placeholder_is_visual_only_and_uses_text_edge_protection
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -6463,7 +6685,7 @@ def test_subtitle_empty_placeholder_follows_target_language(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -6542,8 +6764,8 @@ def test_subtitle_window_settings_button_uses_external_layer_without_resizing(mo
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6707,8 +6929,8 @@ def test_subtitle_window_settings_button_falls_back_to_inline_panel_without_exte
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -6780,7 +7002,7 @@ def test_subtitle_external_settings_button_works_without_inline_panel(mock_page:
         """,
         path="/subtitle-window-external-no-inline-panel-harness",
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -6889,8 +7111,8 @@ def test_subtitle_window_external_settings_closes_when_resize_or_drag_starts(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7020,8 +7242,8 @@ def test_subtitle_window_height_uses_content_bounds_not_dropdown_height(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7121,7 +7343,7 @@ def test_subtitle_scroll_box_accepts_mouse_wheel_for_long_translation(
         path="/subtitle-scroll-wheel-harness",
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -7233,7 +7455,7 @@ def test_subtitle_overflow_auto_scroll_is_slow_and_wheel_cancels_it(
         path="/subtitle-auto-scroll-harness",
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -7350,8 +7572,8 @@ def test_subtitle_translation_write_path_starts_overflow_auto_scroll(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle.js"))
 
     result = mock_page.evaluate(
         """
@@ -7425,8 +7647,8 @@ def test_subtitle_window_transcript_event_starts_overflow_auto_scroll(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7504,8 +7726,8 @@ def test_subtitle_window_danmaku_mode_suppresses_overflow_auto_scroll(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7619,8 +7841,8 @@ def test_subtitle_window_ignores_raw_transcript_after_translated_render_state(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7685,8 +7907,8 @@ def test_subtitle_window_danmaku_mode_renders_translated_text_as_scrolling_items
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7765,8 +7987,8 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """
@@ -7810,11 +8032,107 @@ def test_subtitle_window_native_passthrough_toggles_by_cursor_position(
 
 @pytest.mark.frontend
 def test_subtitle_window_passthrough_poll_matches_desktop_chat_latency():
-    script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "static/subtitle/subtitle-window.js").read_text(encoding="utf-8")
 
+    # The responsive cadence near the panel still matches the desktop chat passthrough
+    # poll (16ms) so interaction latency stays imperceptible where the cursor can act.
     assert "var INTERACTION_PASSTHROUGH_POLL_MS = 16;" in script
-    assert "setInterval(updateNativeInteractionPassthrough, INTERACTION_PASSTHROUGH_POLL_MS)" in script
+    # Idle backoff: while the cursor is parked away from the panel the poll relaxes so a
+    # visible subtitle doesn't drive a 60Hz bridge round-trip that never changes state.
+    assert "var INTERACTION_PASSTHROUGH_IDLE_POLL_MS = 96;" in script
+    assert "var INTERACTION_PASSTHROUGH_NEAR_MARGIN = 64;" in script
+    assert "computeNextInteractionPollDelay" in script
+    assert "scheduleInteractionPoll(computeNextInteractionPollDelay(" in script
+    # Proximity reuses the hit-test's page-space conversion, so the idle backoff engages
+    # for both the {screenX,screenY} and the {x,y} cursor-point shapes the bridge returns.
+    assert "cursorPointToPagePoint(point, bounds)" in script
+    # Relaxed cadence ramps in from the responsive rate rather than hard-jumping to the
+    # ceiling, so a cursor that only just left the panel stays responsive to a return.
+    assert "interactionFarStreak" in script
+    # Never regress to a fixed slow poll for the responsive path.
     assert "setInterval(updateNativeInteractionPassthrough, 80)" not in script
+
+
+@pytest.mark.frontend
+def test_subtitle_window_passthrough_poll_backs_off_when_cursor_is_far(
+    mock_page: Page,
+):
+    mock_page.set_viewport_size({"width": 360, "height": 80})
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display" data-subtitle-panel-state="clean">
+            <div id="subtitle-scroll"><span id="subtitle-text">Translated subtitle.</span></div>
+            <div id="subtitle-settings-panel" class="hidden"></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.__pollCount = 0;
+            window.__cursorPoint = { x: 20, y: 18, screenX: 120, screenY: 138 };
+            window.nekoSubtitle = {
+                getBounds: () => Promise.resolve({ x: 100, y: 120, width: 360, height: 80 }),
+                getCursorPoint: () => {
+                    window.__pollCount += 1;
+                    return Promise.resolve(window.__cursorPoint);
+                },
+                enableInteraction: () => {},
+                disableInteraction: () => {},
+                setSize: () => {},
+                changeSettings: () => {},
+                dragStart: () => {},
+                dragStop: () => {},
+            };
+            window.localStorage.setItem('subtitleInteractionPassthrough', 'true');
+            window.localStorage.setItem('subtitlePanelBounds', JSON.stringify({
+                width: 360,
+                height: 80,
+            }));
+        }
+        """
+    )
+    mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+            const WINDOW_MS = 360;
+            // Settle past the 16->32->64->96ms ramp so we measure the steady cadence.
+            const SETTLE_MS = 150;
+            async function measure(cursor) {
+                window.__cursorPoint = cursor;
+                window.dispatchEvent(new Event('focus'));
+                await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
+                window.__pollCount = 0;
+                await new Promise((resolve) => setTimeout(resolve, WINDOW_MS));
+                return window.__pollCount;
+            }
+            // Cursor parked far outside the panel bounds -> relaxed idle cadence.
+            const farScreen = await measure({ x: 1880, y: 1900, screenX: 1980, screenY: 2020 });
+            // Cursor over the panel -> responsive 16ms cadence.
+            const near = await measure({ x: 20, y: 18, screenX: 120, screenY: 138 });
+            // Cursor-point shape with only window-local {x, y} (no screen coords), far
+            // from the panel -> must still relax (idle backoff keys off page-space coords).
+            const farLocalOnly = await measure({ x: 1880, y: 1900 });
+            return { farScreen, near, farLocalOnly };
+        }
+        """
+    )
+
+    # Over a 360ms window: ~4 polls at the 96ms idle cadence when far, ~22 at 16ms when
+    # near. Use generous bounds to stay robust against headless timer jitter.
+    assert result["farScreen"] <= 8
+    # {x, y}-only cursor must back off too, not fall through to the responsive path.
+    assert result["farLocalOnly"] <= 8
+    assert result["near"] >= 10
+    assert result["near"] >= result["farScreen"] * 2
+    assert result["near"] >= result["farLocalOnly"] * 2
 
 
 @pytest.mark.frontend
@@ -7826,9 +8144,9 @@ def test_launcher_packages_top_level_static_html_files():
 
 @pytest.mark.frontend
 def test_subtitle_shared_cleanup_and_owner_guard_contracts():
-    shared_script = (PROJECT_ROOT / "static/subtitle-shared.js").read_text(encoding="utf-8")
-    subtitle_script = (PROJECT_ROOT / "static/subtitle.js").read_text(encoding="utf-8")
-    subtitle_window_script = (PROJECT_ROOT / "static/subtitle-window.js").read_text(encoding="utf-8")
+    shared_script = (PROJECT_ROOT / "static/subtitle/subtitle-shared.js").read_text(encoding="utf-8")
+    subtitle_script = (PROJECT_ROOT / "static/subtitle/subtitle.js").read_text(encoding="utf-8")
+    subtitle_window_script = (PROJECT_ROOT / "static/subtitle/subtitle-window.js").read_text(encoding="utf-8")
     show_block = subtitle_script.split("function showSubtitleWithoutOriginalAndRestartCurrentTurn()", 1)[1].split(
         "if (currentTurnIsStructured)",
         1,
@@ -7895,7 +8213,7 @@ def test_web_subtitle_settings_panel_does_not_overlap_subtitle_text(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -7983,7 +8301,7 @@ def test_subtitle_panel_controls_scale_up_from_default_bounds_without_shrinking(
         path="/subtitle-controls-scale-harness",
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -8071,7 +8389,7 @@ def test_web_subtitle_panel_drag_persists_position_and_lock_blocks_drag(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -8151,7 +8469,7 @@ def test_web_subtitle_panel_drag_persists_position_and_lock_blocks_drag(
 
     mock_page.reload()
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
     reopened = mock_page.evaluate(
         """
         () => {
@@ -8203,7 +8521,7 @@ def test_web_subtitle_panel_position_clamps_to_viewport_on_open_and_resize(
         """
     )
     mock_page.add_style_tag(path=str(PROJECT_ROOT / "static/css/subtitle.css"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     initial = mock_page.evaluate(
         """
@@ -8297,7 +8615,7 @@ def test_window_subtitle_drag_bridge_respects_panel_lock(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
 
     result = mock_page.evaluate(
         """
@@ -8389,8 +8707,8 @@ def test_subtitle_window_state_sync_lock_blocks_drag_bridge(
         }
         """
     )
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
-    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-window.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-shared.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle/subtitle-window.js"))
 
     result = mock_page.evaluate(
         """

@@ -50,9 +50,11 @@
                 : this.defaultDelayMs;
             const sceneId = 'avatar_floating_day' + day;
             const deferRevealPrepared = normalizedOptions.deferRevealPrepared === true;
+            const skipSourceModelFade = normalizedOptions.skipSourceModelFade === true;
 
             await toPromise(() => this.beginAvatarOverride({
-                deferRevealPrepared
+                deferRevealPrepared,
+                skipSourceModelFade
             })).catch((error) => {
                 this.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，中止教程:', error);
                 return toPromise(() => this.revealPrepared()).then(() => {

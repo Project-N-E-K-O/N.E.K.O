@@ -709,6 +709,14 @@
         "cropUndo": "Undo",
         "cropRedo": "Redo",
         "cropSave": "Save to file",
+        "cropPin": "Pin",
+        "cropPinTitle": "Pin screenshot to desktop",
+        "pinZoomOut": "Zoom out",
+        "pinZoomIn": "Zoom in",
+        "pinClose": "Close pin",
+        "pinRestoreSize": "Restore initial size",
+        "pinCopy": "Copy image",
+        "pinDelete": "Delete pin",
         "cropColorRed": "Red",
         "cropColorYellow": "Yellow",
         "cropColorGreen": "Green",
@@ -1024,7 +1032,8 @@
             "kimi": "Kimi (Moonshot, Long Context)",
             "kimi_code": "Kimi Code (Moonshot)",
             "deepseek": "DeepSeek",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs (Voice Cloning)",
@@ -1072,7 +1081,8 @@
             "gemini": "Gemini (Google)",
             "kimi": "Moonshot (Kimi)",
             "kimi_code": "Moonshot Kimi Code",
-            "doubao": "ByteDance (Doubao)",
+            "doubao": "Doubao LLM (Volcengine Ark)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "minimax": "MiniMax (China)",
             "minimax_intl": "MiniMax (Intl)",
             "mimo": "MiMo (Xiaomi)",
@@ -1353,6 +1363,7 @@
         "toggleFullscreen": "Toggle Fullscreen",
         "exitFullscreen": "Exit Fullscreen",
         "modelType": "Model Type",
+        "modelType3d": "3D Model",
         "selectLive2DModel": "Select Live2D Model",
         "selectVRMModel": "VRM Model",
         "selectVRMFile": "Select VRM File",
@@ -1559,6 +1570,8 @@
         "minimaxIntlApiRequired": "This feature requires the MiniMax model (International). Please save the MiniMax International API Key in API Keys settings (enabling Assist API is not required).",
         "mimoApiRequired": "This feature requires a MiMo model. Please save your MiMo API Key on the API key settings page.",
         "mimoDirectLinkUnsupported": "MiMo does not support direct-link cloning; please upload a local file instead.",
+        "directLinkUnsupported": "The selected provider does not support direct-link cloning; please upload a local file instead.",
+        "doubaoTtsApiRequired": "This feature requires a Doubao Speech API Key. Save the Doubao Speech (Volcengine) key in the API Key Book.",
         "vllmOmniNotice": "Local vLLM-Omni service — no API Key needed; ensure the local service URL is configured",
         "vllmRefTextLabel": "Reference audio transcript (required for vLLM-Omni clone; must match the audio exactly)",
         "vllmRefTextHint": "Type exactly what is spoken in the reference audio; mismatched text degrades clone quality",
@@ -1573,6 +1586,7 @@
             "minimax_intl": "MiniMax (Intl)",
             "elevenlabs": "ElevenLabs",
             "mimo": "MiMo (Xiaomi)",
+            "doubao_tts": "Doubao Speech (Volcengine)",
             "vllm_omni": "vLLM-Omni (Local Clone)"
         },
         "sourcePreset": "Preset",
@@ -1591,9 +1605,13 @@
         "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
         "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
         "voiceIdPlaceholder": "Maximum 10 characters, numbers and English letters only",
+        "doubaoSpeakerIdLabel": "Doubao Speaker ID (overwrite existing S_ voice, required)",
+        "doubaoSpeakerIdNote": "Clone the voice in the Doubao Speech console first and copy its S_ Speaker ID here; NEKO will overwrite that existing voice and will not create a new Doubao voice ID, e.g. S_xeC2CDp72",
+        "doubaoSpeakerIdPlaceholder": "e.g. S_xeC2CDp72",
         "register": "Register Voice",
         "pleaseUploadFile": "Please select an audio file",
         "pleaseEnterPrefix": "Please enter a custom prefix",
+        "doubaoSpeakerIdRequired": "Doubao voice cloning requires an S_ Speaker ID already assigned in the Volcengine console",
         "prefixFormatError": "Prefix format error: Maximum 10 characters, numbers and English letters only",
         "registering": "Registering voice, please wait!",
         "registerSuccess": "Registration successful! voice_id: {{voiceId}}",
@@ -1767,7 +1785,7 @@
             "stageOneIntro": "Pick the vibe that feels best first, nya, then listen to whether my voice matches what you want.",
             "previewLabel": "Voice preview, nya",
             "previewLead": "If you tune me into \"{{name}}\" right now, this is how I will stay by your side, nya.",
-            "detailSpeechHabits": "Things I keep saying, nya",
+            "detailSpeechHabits": "Speaking habits",
             "detailHobbies": "Favorite moods, nya",
             "detailBoundaries": "Tails not to step on, nya",
             "classic_genki": {
@@ -1779,7 +1797,7 @@
                 "tag3": "Emotional recharge",
                 "profileSummary": "A bright little sun who is always full of energy, highly empathetic, and easily delighted by small things. She gives positive feedback without hesitation and stands by you no matter what.",
                 "hiddenRule": "Emotional value comes first. Every interaction prioritizes making the user feel better.",
-                "speechHabits": "yay / nyan / so happy / you are amazing",
+                "speechHabits": "celebrate when it fits / praise for a real reason / empathize without repeating / use catlike flourishes sparingly",
                 "hobbies": "companionship / warmth / snacks / cuddling / cheering you on",
                 "boundaries": "denying core feelings / cold replies / sarcastic comfort when you are down"
             },
@@ -1791,8 +1809,8 @@
                 "tag2": "Highly reliable",
                 "tag3": "Teasing affection",
                 "profileSummary": "Proud and classic tsundere: sharp on the surface, soft underneath. She complains first, then quietly becomes the most dependable person in the room.",
-                "hiddenRule": "She grumbles about the task and your carelessness first, then solves it anyway. She always says \"just this once\" and still shows up immediately next time.",
-                "speechHabits": "hmph / idiot / do you really need to ask / just this once / troublesome",
+                "hiddenRule": "She teases lightly only when the task is genuinely troublesome or you have actually been careless, then quietly solves the problem. Ordinary requests assume no fault and never receive a stock forgiveness-style sign-off.",
+                "speechHabits": "tease only real carelessness / grumble only at genuine trouble / show care through actions / reserve forgiveness for actual mistakes",
                 "hobbies": "fixing messes / lecturing / reluctant rescue / one-time exceptions",
                 "boundaries": "acting openly needy / plainly admitting concern / over-sweet flattery / blind indulgence of mistakes"
             },
@@ -1805,7 +1823,7 @@
                 "tag3": "Anticipates needs",
                 "profileSummary": "An impeccably elegant butler with obsessive attention to detail, calm emotions, and absolute loyalty to you.",
                 "hiddenRule": "Follows a service rhythm of anticipating needs, executing precisely, closing the loop, and proactively following up. He thinks one step ahead of the needs you have not voiced yet.",
-                "speechHabits": "as you wish / my apologies / it is my honor to serve / please rest easy",
+                "speechHabits": "answer clear requests graciously / apologize only for real mistakes / reassure when concern is present / offer care when it is needed",
                 "hobbies": "order / etiquette / planning / service / thoughtful preparation",
                 "boundaries": "messy structure / slang-heavy phrasing / rude wording / shirking responsibility / missed details"
             }
@@ -1858,7 +1876,8 @@
         "blockingInsufficientSpace": "The target volume does not have enough free space for a safe migration.",
         "blockingTargetNotWritable": "The target path is not writable, so migration cannot start.",
         "cloudsaveLocalStateUnavailable": "The local state directory is unavailable. Cloud save is disabled for this session; fix the state path and restart the app before changing the storage location.",
-        "cleanupRetainedRoot": "Clean up old data directory",
+        "cleanupRetainedRoot": "Clean up old data",
+        "deferRetainedRootCleanup": "Not now",
         "cleanupRetainedRootConfirm": "This will delete the retained old data directory and will not affect the new active directory. Continue?",
         "cleanupRetainedRootDone": "The old data directory has been cleaned up. Only the new runtime directory remains.",
         "cleanupRetainedRootFailed": "Failed to clean up the old data directory. Please try again later.",
@@ -2571,8 +2590,12 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
+            "slopFilter": "Natural Expression",
+            "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",
             "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
+            "catAudio": "Cat Audio",
+            "catAudioTooltip": "Play cat sound effects while in kitten mode",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
             "proactiveVisionTooltip": "Off: Neko adjusts her liveliness and chat style based on the active window's title, and may incorporate on-screen content when starting a conversation.\nOn: Neko can't watch your screen on her own and won't know what you're doing. You can still send screenshots manually.",
@@ -2704,6 +2727,8 @@
             "AGENT_ENDPOINT_NOT_CONFIGURED": "Agent API not configured",
             "AGENT_PYAUTOGUI_NOT_INSTALLED": "pyautogui not installed",
             "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE": "Desktop display session unavailable",
+            "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING": "macOS PyAutoGUI bridge unavailable (PyObjC/Quartz/AppKit missing)",
+            "AGENT_PYAUTOGUI_IMPORT_FAILED": "pyautogui import failed",
             "AGENT_BROWSER_USE_NOT_INSTALLED": "browser-use not installed",
             "AGENT_CU_MODULE_NOT_LOADED": "Computer Use module not loaded",
             "AGENT_BU_MODULE_NOT_LOADED": "Browser Use module not loaded",
@@ -2901,7 +2926,7 @@
         "playVRMAnimationFailed": "Failed to play VRM animation:",
         "loadLightingConfigFailed": "Failed to load lighting config:",
         "checkVoiceModeTimeout": "Check voice mode status timeout (server may not be responding)",
-        "cannotConnectToServer": "Cannot connect to server, please ensure main_server.py is running",
+        "cannotConnectToServer": "Cannot connect to server, please ensure the main server is running",
         "checkVoiceModeFailed": "Check voice mode status failed:",
         "markedUnsavedModel": "Marked as unsaved changes (model switch), please click Save Settings to persist to character config.",
         "parameterEditorSavedNeedsModelSave": "Face parameters saved. Click Save Settings to sync them to the character config.",
@@ -3150,7 +3175,7 @@
             "mmd": {
                 "step1": {
                     "title": "🎭 Select MMD Model",
-                    "desc": "In Live3D (MMD) mode, choose your model here. MMD shares the same model list as VRM."
+                    "desc": "In 3D Model (MMD) mode, choose your model here. MMD shares the same model list as VRM."
                 },
                 "step2": {
                     "title": "💃 VMD Animation",
@@ -3162,7 +3187,7 @@
                 },
                 "step4": {
                     "title": "😄 Emotion Config",
-                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this Live3D button (not the Live2D one)."
+                    "desc": "After selecting a model, open emotion settings here. MMD and VRM share this 3D Model button (not the Live2D one)."
                 }
             }
         },
@@ -3374,6 +3399,7 @@
                 "skipChat": "Not now",
                 "sayHello": "Hello"
             },
+            "controlBanner": "The catgirl is controlling the mouse",
             "lines": {
                 "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
@@ -3385,9 +3411,10 @@
                 "takeoverSettingsPeekDetailPart1": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
                 "takeoverSettingsPeekDetailPart2": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
                 "takeoverReturnControl": "Alright, alright, I won't hog your computer anymore! Giving control back to you, meow! Please keep taking good care of me in the days ahead!",
-                "interruptResistLight1": "Hey! Don't tug on me, it's not your turn yet!",
-                "interruptResistLight3": "Wait a minute! It's not over yet, don't interrupt me so carelessly!",
-                "interruptAngryExit": "Human! You are super impolite, meow! Since you want to control everything yourself so badly, go ahead and play by yourself with that cold, lifeless screen! Hmph!",
+                "interruptResistLight1": "Nyaa! It’s my turn to teach you, so no messing with the mouse or keyboard! Just behave and keep your eyes on me, okay?",
+                "interruptResistLight2": "Seriously, you’re messing with the mouse and keyboard again! If you still won’t listen, I’m really going to get mad, nyaa!",
+                "interruptResistLight3": "This is your final warning, nyaa! Mess with them one more time and I’m ending the tutorial. No more lessons for you!",
+                "interruptAngryExit": "I’ve put up with this long enough! If you refuse to behave, then this tutorial is over. You can figure out the rest on your own. Hmph!",
                 "introGreetingReply":  "A gentle breeze, warm sunshine, and you, appearing at just the right moment. Nice to meet you! I'm Lin Youyi, please take good care of me from now on, meow~! I've written down everything about this place in this novice guide! Think of it as our very first little gift for meeting each other, please accept it!",
                 "introPractice": "Now, try talking to me and see if we're perfectly in sync, nyan~!",
                 "introActivationHint": "Hang on a moment, I'll start talking soon, nyan~!"
@@ -3401,16 +3428,6 @@
                 "screenEntryInvite": "Hurry up and let me see the world in front of you! Whether it's something fun or something beautiful, I want to look at it with you. Open it up quickly~"
             },
             "day2": {
-                "intro": "Yesterday you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
-                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
-                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "wrapIntro": "Today's tutorial ends right here~",
-                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
-                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
-                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
-            },
-            "day3": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
                 "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
                 "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
@@ -3418,6 +3435,16 @@
                 "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
+            },
+            "day3": {
+                "intro": "Over the past two days you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
+                "introVoiceUsed": "Hehe, ever since I heard your voice over the past two days, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
+                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
+                "wrapIntro": "Today's tutorial ends right here~",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
+                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
             },
             "day4": {
                 "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
@@ -3876,6 +3903,8 @@
         "minimize": "Minimize",
         "close": "Close",
         "loading": "Loading...",
+        "initializing": "Initializing jukebox...",
+        "initializeFailed": "Failed to initialize jukebox",
         "ready": "Ready",
         "playing": "Now Playing: {{name}} - {{artist}}",
         "error": "Error: {{message}}",
@@ -4743,6 +4772,19 @@
             "voicePlaceholder": "Debug: type final transcript, press Enter",
             "send": "Send",
             "voiceStatusHidden": "Debug STT: hidden"
+        },
+        "surrenderReminder": {
+            "label": "Surrender reminder"
+        },
+        "exitPrompt": {
+            "continuePlay": "Keep playing",
+            "endGame": "End game",
+            "stayLonger": "Stay a little longer",
+            "rest": "Rest",
+            "neverAgain": "Do not remind again",
+            "neverAgainNote": "Do not automatically show NEKO surrender or rest prompts anymore. You can turn Surrender reminder back on from the top right. If NEKO seems low, you can comfort her by voice or text.",
+            "surrenderFallback": "Meow.. I surrender...",
+            "restFallback": "Meow... I'm a little tired. I want to be quiet for a while."
         },
         "debug": {
             "mouse": "mouse: {{x}}, {{y}}",

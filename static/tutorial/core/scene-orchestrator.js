@@ -158,11 +158,35 @@
             };
         }
 
+        clearSuppressedTimelineSpotlight(scene) {
+            const director = this.director;
+            if (!scene || scene.spotlight !== false || !director) {
+                return false;
+            }
+
+            if (director.overlay && typeof director.overlay.clearActionSpotlight === 'function') {
+                director.overlay.clearActionSpotlight();
+            }
+            if (director.overlay && typeof director.overlay.clearPersistentSpotlight === 'function') {
+                director.overlay.clearPersistentSpotlight();
+            }
+            if (typeof director.clearExternalizedChatSpotlightOnly === 'function') {
+                director.clearExternalizedChatSpotlightOnly();
+            } else if (
+                director.interactionTakeover
+                && typeof director.interactionTakeover.setExternalizedChatSpotlight === 'function'
+            ) {
+                director.interactionTakeover.setExternalizedChatSpotlight('');
+            }
+            return true;
+        }
+
         async playTimelineScene(scene, day, index, total, context) {
             const surfaceReady = await this.prepareGenericSceneSurface(scene, context);
             if (!surfaceReady) {
                 return false;
             }
+            this.clearSuppressedTimelineSpotlight(scene);
             const timelineScene = this.normalizeSceneToTimeline(scene);
             if (!timelineScene) {
                 return false;
@@ -258,6 +282,9 @@
             if (typeof director.syncAvatarFloatingToolbarForScene === 'function') {
                 director.syncAvatarFloatingToolbarForScene(scene, scene.id || 'scene');
             }
+            if (typeof director.syncDay4LockSpotlightSafeAreaForScene === 'function') {
+                director.syncDay4LockSpotlightSafeAreaForScene(scene);
+            }
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = !!(
                 director.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
@@ -272,8 +299,22 @@
                 director.cursor.cancel();
                 director.cursorAnchorStore.clear();
             }
+            const shouldClearExternalizedChatCursor = !!(
+                scene && scene.clearExternalizedChatCursorOnEnter === true
+            );
             director.clearSceneTimers();
             director.overlay.setAngry(false);
+            if (
+                shouldClearExternalizedChatCursor
+                && director.isHomeChatExternalized()
+                && !preserveExternalizedChatGuideTarget
+                && !preserveIntroExternalizedChatGuideTarget
+            ) {
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: true,
+                    preservePcOverlayCursor: true
+                });
+            }
             director.clearSceneExtraSpotlights();
             director.clearAllVirtualSpotlights();
             director.clearSpotlightGeometryHints();
@@ -282,10 +323,14 @@
                 director.isHomeChatExternalized()
                 && !preserveExternalizedChatGuideTarget
                 && !preserveIntroExternalizedChatGuideTarget
+                && !shouldClearExternalizedChatCursor
             ) {
-                director.clearExternalizedChatGuideTarget();
+                director.clearExternalizedChatGuideTarget({
+                    clearCursor: shouldClearExternalizedChatCursor,
+                    preservePcOverlayCursor: shouldClearExternalizedChatCursor
+                });
             }
-            this.applyFirstDailySceneIntroCursorPrelude(scene, {
+            const introCursorPreludeApplied = this.applyFirstDailySceneIntroCursorPrelude(scene, {
                 isFirstDailyScene,
                 preserveIntroExternalizedChatGuideTarget
             });
@@ -323,6 +368,7 @@
                 isFirstDailyScene,
                 preserveExternalizedChatGuideTarget,
                 preserveIntroExternalizedChatGuideTarget,
+                introCursorPreludeApplied,
                 revealPrepared: roundContext.revealPrepared
             });
         }
@@ -376,10 +422,16 @@
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                director.interactionTakeover.setExternalizedChatCursor(introExternalizedCursorKind || 'capsule-input', {
-                    effect: '',
-                    durationMs: 0
-                });
+                const introExternalizedCursorOptions = typeof director.getAvatarFloatingIntroExternalizedCursorOptions === 'function'
+                    ? director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
+                    : {
+                        effect: '',
+                        durationMs: 0
+                    };
+                director.interactionTakeover.setExternalizedChatCursor(
+                    introExternalizedCursorKind || 'capsule-input',
+                    introExternalizedCursorOptions
+                );
                 if (typeof director.hideHomeCursorForExternalizedChat === 'function') {
                     director.hideHomeCursorForExternalizedChat();
                 }
@@ -437,6 +489,12 @@
                 ? director.getExternalizedChatTargetKind(scene.persistent, scene)
                 : '';
             const shouldShowSceneSpotlight = scene.spotlight !== false;
+            const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
+            const externalizedSpotlightOptions = {
+                variant: sceneSpotlightVariant
+            };
             let persistentTarget = null;
             let primaryTarget = null;
             let secondaryTarget = null;
@@ -444,11 +502,17 @@
                 if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                     director.clearHomeSpotlightsForExternalizedChat();
                 }
-                director.interactionTakeover.setExternalizedChatSpotlight(introExternalizedChatSpotlightKind);
+                director.interactionTakeover.setExternalizedChatSpotlight(
+                    introExternalizedChatSpotlightKind,
+                    externalizedSpotlightOptions
+                );
                 if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
                     director.setHomePcCursorOutputSuppressedForExternalizedChat(true);
                 }
-                if (typeof director.interactionTakeover.setExternalizedChatCursor === 'function') {
+                if (
+                    !context.introCursorPreludeApplied
+                    && typeof director.interactionTakeover.setExternalizedChatCursor === 'function'
+                ) {
                     director.interactionTakeover.setExternalizedChatCursor(
                         introExternalizedChatSpotlightKind,
                         director.getAvatarFloatingIntroExternalizedCursorOptions(scene)
@@ -477,11 +541,12 @@
             } else if (externalizedSceneTargetKind) {
                 const shouldSkipExternalizedSceneCursor = !!(
                     scene
-                    && scene.id === 'day3_galgame_entry'
+                    && scene.id === 'day2_galgame_entry'
                     && scene.operation === 'rotate-galgame-tool-into-center'
                 );
                 const externalizedCursorOptions = {
-                    effect: director.getExternalizedChatCursorEffect(scene)
+                    effect: director.getExternalizedChatCursorEffect(scene),
+                    spotlightVariant: sceneSpotlightVariant
                 };
                 if (scene && scene.cursorAction === 'click') {
                     externalizedCursorOptions.effect = 'move';
@@ -492,6 +557,9 @@
                 }
                 if (Number.isFinite(scene.cursorWobbleDurationMs)) {
                     externalizedCursorOptions.effectDurationMs = Math.max(0, Math.floor(scene.cursorWobbleDurationMs));
+                }
+                if (scene.freezeCursorAfterMove === true) {
+                    externalizedCursorOptions.freezePoint = true;
                 }
                 const shouldPreferExternalizedPrimaryKind = !!(
                     scene
@@ -518,7 +586,10 @@
                         if (typeof director.clearHomeSpotlightsForExternalizedChat === 'function') {
                             director.clearHomeSpotlightsForExternalizedChat();
                         }
-                        director.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
+                        director.interactionTakeover.setExternalizedChatSpotlight(
+                            externalizedSpotlightKind,
+                            externalizedSpotlightOptions
+                        );
                     }
                 } else {
                     director.clearExternalizedChatSpotlightOnly();
@@ -542,7 +613,7 @@
                 primaryTarget = await director.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await director.resolveAvatarFloatingTarget(scene, 'secondary');
                 const highlightConfig = {
-                    key: scene.id,
+                    key: scene.spotlightKey || scene.id,
                     persistent: shouldShowSceneSpotlight ? persistentTarget : null,
                     primary: shouldShowSceneSpotlight ? primaryTarget : null,
                     secondary: shouldShowSceneSpotlight ? secondaryTarget : null
@@ -583,7 +654,8 @@
                     sceneRunId,
                     voiceKey,
                     text,
-                    narrationStartedAt
+                    narrationStartedAt,
+                    scene.petalCueBeforeAudioEndMs
                 ).catch((error) => {
                     console.warn('[YuiGuide] 悬浮窗教程每日花瓣转场失败，继续流程:', scene.id, error);
                 })
@@ -667,7 +739,7 @@
                 };
             }
             const highlightConfig = {
-                key: scene.id,
+                key: scene.spotlightKey || scene.id,
                 persistent: persistentTarget,
                 primary: primaryTarget,
                 secondary: secondaryTarget
@@ -835,13 +907,13 @@
                 await director.ensureAvatarFloatingGuideSurfaceReady(round);
             }
             director.setGuideChatInputLocked(true, 'avatar-floating-guide-day' + roundNumber);
-            if (roundNumber === 3) {
-                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day3-entry-reset');
+            if (roundNumber === 2) {
+                director.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day2-entry-reset');
             }
             if (isDay1Round) {
                 director.overlay.clearPersistentSpotlight();
                 director.overlay.clearActionSpotlight();
-            } else if (roundNumber === 3) {
+            } else if (roundNumber === 2) {
                 if (director.isHomeChatExternalized()) {
                     if (
                         director.interactionTakeover
@@ -908,6 +980,12 @@
                         round: roundNumber,
                         durationMs: Math.max(0, Date.now() - startedAt)
                     });
+                    if (
+                        isDay1Round
+                        && typeof director.recordAvatarFloatingGuideRoundEnd === 'function'
+                    ) {
+                        director.recordAvatarFloatingGuideRoundEnd(roundNumber);
+                    }
                     return !director.isStopping();
                 } finally {
                     if (
@@ -927,6 +1005,9 @@
                     director.clearAllExtraSpotlights();
                     director.clearSpotlightGeometryHints();
                     director.clearSpotlightVariantHints();
+                    if (typeof director.setDay4LockSpotlightSafeAreaActive === 'function') {
+                        director.setDay4LockSpotlightSafeAreaActive(false, 'round-complete');
+                    }
                     director.overlay.clearPersistentSpotlight();
                     director.overlay.clearActionSpotlight();
                     director.cursor.hide();
