@@ -793,6 +793,8 @@ async def preview_external_memory_import(request: Request):
         counts = {
             "persona": len(persona_cands),
             "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
+            # daily 日记走 commit 阶段 LLM 抽取，preview 显示的是解析出的片段数（近似）。
+            "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
         }
         # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
         # (neko / master) 分组，每组一次 LLM 往返；facts 走纯写盘、不调 LLM。空

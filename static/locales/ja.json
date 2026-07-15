@@ -1744,6 +1744,7 @@
         "externalImportReading": "外部メモリを解析中…",
         "externalImportFailed": "外部メモリのインポートに失敗しました。",
         "externalImportConfirm": "{{persona}} 件のペルソナと {{facts}} 件の事実を {{character}} にインポートしますか？不審な内容の警告: {{warnings}} 件。",
+        "externalImportDailyNote": "デイリー日記（{{daily}} 件）は取り込み時に LLM が事実として抽出します。最終的な事実の件数はこのプレビューと異なる場合があります。",
         "externalImportCancelled": "インポートをキャンセルしました。",
         "externalImportWorking": "メモリをインポート中…",
         "externalImportDoNotClose": "記憶を統合しています。このウィンドウを閉じたりアプリを終了したりしないでください。中断すると取り込みに失敗します。",

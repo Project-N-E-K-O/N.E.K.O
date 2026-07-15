@@ -1744,6 +1744,7 @@
         "externalImportReading": "正在解析外部记忆…",
         "externalImportFailed": "外部记忆导入失败。",
         "externalImportConfirm": "将 {{persona}} 条人设和 {{facts}} 条事实导入 {{character}}？检测到 {{warnings}} 条可疑内容警告。",
+        "externalImportDailyNote": "每日日记（{{daily}} 篇）将在导入时由 LLM 抽取为事实，最终事实条数可能与此预览不同。",
         "externalImportCancelled": "已取消导入。",
         "externalImportWorking": "正在导入记忆…",
         "externalImportDoNotClose": "正在融合记忆，请勿关闭本窗口或退出程序，否则导入会失败。",

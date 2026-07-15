@@ -1686,6 +1686,14 @@
                     warnings: preview.warning_count
                 }
             );
+            if (preview.counts.daily) {
+                // daily 日记在 commit 阶段经 LLM 抽取，最终 fact 数会与 preview 不同。
+                confirmation += '\n\n' + translate(
+                    'memory.externalImportDailyNote',
+                    'Daily journals ({{daily}}) are extracted into facts by an LLM on import; the final fact count may differ from this preview.',
+                    { daily: preview.counts.daily }
+                );
+            }
             if (Array.isArray(preview.warnings) && preview.warnings.length) {
                 const warningDetails = preview.warnings.slice(0, 5).map(item => {
                     const patterns = Array.isArray(item.patterns) ? item.patterns.join(', ') : '';

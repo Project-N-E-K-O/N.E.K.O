@@ -1744,6 +1744,7 @@
         "externalImportReading": "Lendo a memória externa…",
         "externalImportFailed": "Falha ao importar a memória externa.",
         "externalImportConfirm": "Importar {{persona}} entradas de personalidade e {{facts}} fatos para {{character}}? Avisos de conteúdo suspeito: {{warnings}}.",
+        "externalImportDailyNote": "Os diários ({{daily}}) são extraídos como fatos por um LLM na importação; a contagem final de fatos pode diferir desta prévia.",
         "externalImportCancelled": "Importação cancelada.",
         "externalImportWorking": "Importando memória…",
         "externalImportDoNotClose": "Fundindo memórias: não feche esta janela nem saia do aplicativo, ou a importação falhará.",

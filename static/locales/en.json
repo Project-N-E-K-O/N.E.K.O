@@ -1744,6 +1744,7 @@
         "externalImportReading": "Reading external memory…",
         "externalImportFailed": "External-memory import failed.",
         "externalImportConfirm": "Import {{persona}} persona entries and {{facts}} facts into {{character}}? Suspicious-content warnings: {{warnings}}.",
+        "externalImportDailyNote": "Daily journals ({{daily}}) are extracted into facts by an LLM on import; the final fact count may differ from this preview.",
         "externalImportCancelled": "Import cancelled.",
         "externalImportWorking": "Importing memory…",
         "externalImportDoNotClose": "Fusing memories — do not close this window or quit the app, or the import will fail.",

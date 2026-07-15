@@ -1744,6 +1744,7 @@
         "externalImportReading": "Чтение внешней памяти…",
         "externalImportFailed": "Не удалось импортировать внешнюю память.",
         "externalImportConfirm": "Импортировать {{persona}} записей личности и {{facts}} фактов в {{character}}? Предупреждений о подозрительном содержимом: {{warnings}}.",
+        "externalImportDailyNote": "Ежедневные записи ({{daily}}) при импорте извлекаются в факты с помощью LLM; итоговое число фактов может отличаться от этого предпросмотра.",
         "externalImportCancelled": "Импорт отменён.",
         "externalImportWorking": "Импорт памяти…",
         "externalImportDoNotClose": "Идёт слияние воспоминаний. Не закрывайте это окно и не выходите из приложения, иначе импорт не удастся.",
