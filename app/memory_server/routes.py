@@ -103,9 +103,11 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     )
 
     imported_at = datetime.now().astimezone().isoformat()
-    # persona 候选按 entity(master / neko) 分组，各自送 LLM 融合；facts 走纯追加。
+    # persona 候选按 entity(master / neko) 分组各自送 LLM 融合；facts 里 MEMORY.md
+    # 走纯追加，daily 日记(带 event_date)走 LLM 事实抽取。
     persona_candidates_by_entity: dict[str, list[dict]] = {}
-    extracted_facts: list[dict] = []
+    extracted_facts: list[dict] = []       # MEMORY.md → 确定性纯追加
+    daily_candidates: list[dict] = []      # daily 日记 → LLM 事实抽取
     for candidate in request.candidates:
         if not isinstance(candidate, dict):
             raise HTTPException(status_code=400, detail="Invalid candidate")
@@ -133,7 +135,17 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 "source_section": source_section,
                 "event_date": event_date,
             })
+        elif event_date:
+            # daily 日记（memory/·memories/YYYY-MM-DD.md）：散文，不逐条追加，
+            # 交给 aimport_external_daily 按日跑 LLM 事实抽取（见其 docstring）。
+            daily_candidates.append({
+                "text": text,
+                "source_file": source_file,
+                "source_section": source_section,
+                "event_date": event_date,
+            })
         else:
+            # MEMORY.md：已是 fact 清单，确定性纯追加。
             extracted_facts.append({
                 "text": text,
                 "entity": entity,
@@ -226,8 +238,43 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             },
         )
-    added_facts = len(new_facts)
-    skipped_facts = len(extracted_facts) - added_facts
+    memory_added = len(new_facts)
+
+    # daily 日记 → LLM 事实抽取（按日 best-effort，见 aimport_external_daily）。
+    # 已落盘的 persona / MEMORY.md facts 不因 daily 失败回滚；系统性异常返回 partial。
+    daily_added = 0
+    if daily_candidates:
+        try:
+            daily_result = await runtime.fact_store.aimport_external_daily(
+                name, daily_candidates, request.source_format, imported_at,
+            )
+        except Exception:
+            logger.exception(
+                "External Markdown import: daily extraction failed after persona+memory: "
+                "character=%s added_persona=%s memory_facts=%s",
+                name, added_persona, memory_added,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "External memory import was only partially completed",
+                    "error_code": "external_import_partial",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added,
+                    },
+                },
+            )
+        daily_added = daily_result["added"]
+        if daily_result["failed_days"]:
+            logger.warning(
+                "External Markdown import: %s daily journal(s) failed extraction: character=%s",
+                daily_result["failed_days"], name,
+            )
+
+    added_facts = memory_added + daily_added
+    skipped_facts = len(extracted_facts) - memory_added
     return {
         "status": "success",
         "character_name": name,

@@ -36,6 +36,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MAX_NEW_FACTS,
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+    EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
     MEMORY_SCHEMA_VERSION_CURRENT,
 )
 from memory.temporal import (
@@ -1189,6 +1190,77 @@ class FactStore:
         if not extracted:
             return []
         return await self._apersist_new_facts(lanlan_name, extracted)
+
+    async def aimport_external_daily(
+        self, lanlan_name: str, candidates: list[dict], source_format: str,
+        imported_at: str,
+    ) -> dict:
+        """LLM-extract facts from imported daily journals (Stage-1, no signals).
+
+        Mirrors the persona side (``afuse_external_facts``): external daily files
+        (``memory/`` or ``memories/YYYY-MM-DD.md``) are free-form journal prose,
+        so rather than appending their raw fragments verbatim they are run through
+        the conversation fact-extraction LLM. Candidates are grouped by source
+        file (one file == one day); each day's fragments are joined into a single
+        user turn (input capped to ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS``) and
+        extracted independently so the day's ``event_date`` can be stamped onto
+        every fact it yields. One LLM call per day, sequential. Best-effort per
+        day: a day whose Stage-1 call fails (None) or yields nothing is logged and
+        skipped so one bad day never aborts the whole import.
+
+        Returns ``{'added': int, 'days': int, 'failed_days': int}``.
+        """
+        from utils.llm_client import convert_to_messages
+        from utils.tokenize import truncate_to_tokens
+
+        by_file: dict[str, list[dict]] = {}
+        for cand in candidates:
+            if not isinstance(cand, dict):
+                continue
+            by_file.setdefault(str(cand.get("source_file") or ""), []).append(cand)
+
+        added = 0
+        failed_days = 0
+        for source_file, group in by_file.items():
+            event_date = next(
+                (str(g["event_date"]) for g in group if g.get("event_date")), None
+            )
+            parts = [str(g.get("text") or "").strip() for g in group]
+            journal_text = truncate_to_tokens(
+                "\n".join(p for p in parts if p),
+                EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
+            )
+            if not journal_text:
+                continue
+            messages = convert_to_messages(
+                [{"role": "user", "content": journal_text}]
+            )
+            extracted = await self._allm_extract_facts(lanlan_name, messages)
+            if extracted is None:
+                # Stage-1 terminal failure for this day → skip it, keep the rest.
+                failed_days += 1
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，跳过 {source_file}"
+                )
+                continue
+            if not extracted:
+                continue
+            for fact in extracted:
+                if isinstance(fact, dict):
+                    # Stamp provenance; _apersist_new_facts_locked turns event_date
+                    # into event_start_at and tags the entry as external_import.
+                    fact["_external_import"] = {
+                        "format": source_format,
+                        "file": source_file,
+                        "section": "daily",
+                        "event_date": event_date,
+                        "imported_at": imported_at,
+                    }
+            new_facts = await self._apersist_new_facts(
+                lanlan_name, extracted, semantic_dedup=True,
+            )
+            added += len(new_facts)
+        return {"added": added, "days": len(by_file), "failed_days": failed_days}
 
     async def aextract_facts_with_known_pool(
         self,

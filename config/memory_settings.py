@@ -421,6 +421,9 @@ EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
 # 上下文，不钉死的话大量带长标题的候选会把输入池吃光、把后面候选的正文挤出 LLM
 # 输入（尾部截断），导致后段记忆永久漏掉。
 EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
+# daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
+# 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
+EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。
