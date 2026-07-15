@@ -601,6 +601,60 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
 
 
 @pytest.mark.asyncio
+async def test_update_config_stops_captured_old_provider_before_platform_switch(
+    runtime: RoastRuntime,
+) -> None:
+    douyin = FakeLiveProvider("room-42")
+    runtime.douyin_live_ingest = douyin
+    runtime.config.live_platform = "bilibili"
+    runtime.config.live_room_ref = "100"
+    runtime.config.live_room_id = 100
+    runtime.config.live_enabled = True
+    await runtime.bili_live_ingest.start_listening(100)
+
+    await runtime.update_config(
+        {
+            "live_platform": "douyin",
+            "live_room_ref": "room-42",
+            "live_enabled": True,
+        }
+    )
+
+    assert runtime.bili_live_ingest.stopped == 1
+    assert runtime.bili_live_ingest.room_id == 0
+    assert douyin.stopped == 0
+    assert douyin.started == ["room-42"]
+    assert runtime.config.live_platform == "douyin"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_developer_mode_updates_serialize_transition_side_effects(
+    runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[bool] = []
+
+    async def sync_developer_mode(*, announce: bool = False, force: bool = False) -> str:
+        calls.append(bool(runtime.config.developer_tools_enabled))
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        return "synced"
+
+    monkeypatch.setattr(runtime, "sync_developer_mode", sync_developer_mode)
+    first = asyncio.create_task(runtime.update_config({"developer_tools_enabled": True}))
+    await entered.wait()
+    second = asyncio.create_task(runtime.update_config({"developer_tools_enabled": False}))
+    release.set()
+    await asyncio.gather(first, second)
+
+    assert calls == [True, False]
+    assert runtime.config.developer_tools_enabled is False
+
+
+@pytest.mark.asyncio
 async def test_update_config_force_syncs_developer_mode_only_on_transition(
     runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -753,6 +807,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: Roast
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
+    runtime.live_audience_session.start_session()
 
     await runtime.update_config({"live_enabled": False})
 
@@ -761,6 +816,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: Roast
     assert runtime.config.live_enabled is False
     assert runtime.safety_guard.connected is False
     assert runtime.live_connection_snapshot()["connected"] is False
+    assert runtime.live_audience_session.snapshot()["active"] is False
 
 
 @pytest.mark.asyncio
@@ -911,12 +967,26 @@ async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntim
     runtime.config.live_enabled = True
     runtime.live_room_context = {"live_status": "live", "title": "room"}
     await runtime.bili_live_ingest.start_listening(100)
+    runtime.live_audience_session.start_session()
 
     await stop_live_listener(runtime)
 
     assert runtime.config.live_enabled is False
     assert runtime.live_connection_snapshot()["connected"] is False
     assert runtime.live_room_context == {"live_status": "unknown"}
+    assert runtime.live_audience_session.snapshot()["active"] is False
+    assert runtime.live_audience_session.snapshot()["has_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: RoastRuntime) -> None:
+    await runtime._start_live_listener(123)
+
+    state = await runtime.dashboard_state()
+
+    assert state["live_session"]["active"] is True
+    assert state["live_session"]["has_session"] is True
+    assert state["live_session"]["interaction_viewer_count"] == 0
 
 
 async def test_dashboard_state_uses_public_config_projection(runtime: RoastRuntime) -> None:
@@ -1771,6 +1841,24 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
 
 
 @pytest.mark.asyncio
+async def test_idle_and_warmup_hosting_controls_block_manual_and_automatic_triggers(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.idle_hosting_enabled = False
+    runtime.config.warmup_hosting_enabled = False
+
+    idle = await runtime.trigger_idle_hosting()
+    warmup = await runtime.trigger_warmup_hosting()
+
+    assert idle.status == "skipped"
+    assert idle.reason == "idle_hosting.disabled"
+    assert warmup.status == "skipped"
+    assert warmup.reason == "warmup_hosting.disabled"
+    assert await runtime.maybe_trigger_idle_hosting() is None
+    assert await runtime.maybe_trigger_warmup_hosting() is None
+
+
+@pytest.mark.asyncio
 async def test_auto_idle_hosting_skips_when_previous_idle_has_no_viewer_reply(
     runtime: RoastRuntime,
 ) -> None:
@@ -2410,6 +2498,26 @@ async def test_stop_cancels_idle_hosting_loop(runtime: RoastRuntime) -> None:
     await runtime.stop()
 
     assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stop_can_be_retried(runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def cancel_stop() -> None:
+        raise asyncio.CancelledError
+
+    async def complete_stop() -> None:
+        return None
+
+    monkeypatch.setattr(runtime, "_stop_idle_hosting_loop", cancel_stop)
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.stop()
+
+    assert runtime._stopping is False
+
+    monkeypatch.setattr(runtime, "_stop_idle_hosting_loop", complete_stop)
+    await runtime.stop()
+
+    assert runtime._stopping is True
 
 
 @pytest.mark.asyncio

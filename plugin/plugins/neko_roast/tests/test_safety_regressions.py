@@ -364,6 +364,37 @@ async def test_bili_identity_avatar_fetch_tolerates_ctx_release():
 
 
 @pytest.mark.asyncio
+async def test_bili_identity_skips_avatar_download_when_analysis_is_disabled():
+    module = BiliIdentityModule()
+    module.ctx = SimpleNamespace(
+        avatar_cache=SimpleNamespace(
+            get=lambda _key: (_ for _ in ()).throw(
+                AssertionError("avatar cache must not be read")
+            )
+        ),
+        config=SimpleNamespace(
+            avatar_analysis_enabled=False,
+            avatar_fetch_timeout_seconds=1,
+        ),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+    )
+    module._fetch_avatar = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("avatar must not be downloaded")
+    )
+
+    identity = await module.resolve(
+        ViewerEvent(
+            uid="7",
+            nickname="viewer",
+            avatar_url="https://example.test/a.png",
+        )
+    )
+
+    assert identity.avatar_url == "https://example.test/a.png"
+    assert identity.avatar_bytes is None
+
+
+@pytest.mark.asyncio
 async def test_bili_identity_ignores_undecodable_avatar_bytes():
     module = BiliIdentityModule()
     module.ctx = SimpleNamespace(

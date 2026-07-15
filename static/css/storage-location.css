@@ -869,6 +869,7 @@ body.storage-location-modal-open #storage-location-overlay * {
 }
 
 .storage-location-completion-card {
+    box-sizing: border-box;
     position: fixed;
     right: 20px;
     bottom: 20px;
@@ -907,6 +908,100 @@ body.storage-location-modal-open #storage-location-overlay * {
     background-repeat: no-repeat;
     background-size: 78px 58px, 54px 40px, 64px 48px, 46px 35px;
     background-position: 92% 12%, 14% 96%, 78% 88%, 28% 18%;
+}
+
+.storage-location-completion-card .storage-location-completion-path-list {
+    gap: 16px;
+}
+
+.storage-location-completion-card .storage-location-completion-path-item {
+    grid-template-columns: minmax(0, 1fr) max-content;
+    grid-template-areas:
+        "label link"
+        "path link";
+    column-gap: 16px;
+    row-gap: 6px;
+    align-items: end;
+    min-width: 0;
+}
+
+.storage-location-completion-path-item .storage-location-label {
+    grid-area: label;
+}
+
+.storage-location-completion-path-item .storage-location-path {
+    grid-area: path;
+    min-width: 0;
+}
+
+.storage-location-completion-link {
+    grid-area: link;
+    position: relative;
+    align-self: end;
+    justify-self: end;
+    appearance: none;
+    width: auto;
+    min-height: 0;
+    padding: 0 0 3px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: #376f9d;
+    box-shadow: none;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.35;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.16s ease;
+}
+
+.storage-location-completion-link::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 1px;
+    background: currentColor;
+    opacity: 0.28;
+}
+
+.storage-location-completion-link:hover {
+    color: #145f9c;
+}
+
+.storage-location-completion-link:focus-visible {
+    outline: 2px solid rgba(47, 150, 242, 0.58);
+    outline-offset: 3px;
+}
+
+.storage-location-completion-card .storage-location-completion-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 2px;
+}
+
+.storage-location-completion-actions .storage-location-btn {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+}
+
+.storage-location-completion-card .storage-location-completion-later {
+    border-color: rgba(100, 112, 124, 0.2);
+    background: linear-gradient(180deg, #aeb5bc, #99a2ab);
+    color: #f8fbff;
+    text-shadow: 0 1px 2px rgba(39, 51, 63, 0.38);
+    box-shadow: 0 10px 22px rgba(67, 78, 89, 0.2);
+}
+
+.storage-location-completion-card .storage-location-completion-later:hover {
+    border-color: rgba(90, 103, 116, 0.3);
+    background: linear-gradient(180deg, #b3b9c0, #a0a8b0);
+    box-shadow: 0 12px 24px rgba(67, 78, 89, 0.24);
 }
 
 .storage-location-completion-card > *:not(.storage-location-close) {
@@ -1059,6 +1154,26 @@ body.storage-location-modal-open #storage-location-overlay * {
         right: 12px;
         bottom: 12px;
         width: calc(100vw - 24px);
+    }
+}
+
+@media (max-width: 480px) {
+    .storage-location-completion-card .storage-location-completion-path-item {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "label"
+            "path"
+            "link";
+    }
+
+    .storage-location-completion-link {
+        justify-self: start;
+    }
+}
+
+@media (max-width: 360px) {
+    .storage-location-completion-card .storage-location-completion-actions {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -1400,4 +1515,24 @@ body.storage-location-modal-open #storage-location-overlay * {
     background: linear-gradient(180deg, rgba(28, 36, 50, 0.98), rgba(22, 30, 44, 0.98));
     color: #e6eef7;
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="dark"] .storage-location-completion-link {
+    color: #b7d9f7;
+}
+
+[data-theme="dark"] .storage-location-completion-link:hover {
+    color: #d7ebff;
+}
+
+[data-theme="dark"] .storage-location-completion-card .storage-location-completion-later {
+    border-color: rgba(190, 200, 212, 0.2);
+    background: linear-gradient(180deg, #747d88, #5d6670);
+    color: #f4f7fa;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .storage-location-completion-card .storage-location-completion-later:hover {
+    border-color: rgba(210, 220, 232, 0.28);
+    background: linear-gradient(180deg, #818b97, #69737e);
 }

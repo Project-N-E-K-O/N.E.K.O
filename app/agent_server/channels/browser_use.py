@@ -101,10 +101,15 @@ async def dispatch(
                     # disabled browser_use while this task waited for
                     # the slot (mirrors the computer-use scheduler's
                     # disabled-drop path).
-                    if not _shared.Modules.analyzer_enabled or not _shared.Modules.agent_flags.get("browser_use_enabled", False):
+                    adapter = _shared.Modules.browser_use
+                    if (
+                        not _shared.Modules.analyzer_enabled
+                        or not _shared.Modules.agent_flags.get("browser_use_enabled", False)
+                        or adapter is None
+                    ):
                         bu_info["status"] = "cancelled"
                         bu_info["end_time"] = _now_iso()
-                        bu_info["error"] = "browser_use disabled before dispatch"
+                        bu_info["error"] = "browser_use unavailable before dispatch"
                         # Close out the record_assigned entry; otherwise
                         # the tracker keeps showing [ASSIGNED] and later
                         # analyzer passes treat the same user request as
@@ -112,7 +117,7 @@ async def dispatch(
                         _task_tracker.record_completed(
                             lanlan_name, task_id=bu_task_id, method="browser_use",
                             desc=result.task_description or "",
-                            detail="browser_use disabled before dispatch",
+                            detail="browser_use unavailable before dispatch",
                             success=False, cancelled=True,
                             trigger_user_fingerprint=trigger_user_msg_sig,
                         )
@@ -139,7 +144,7 @@ async def dispatch(
                         )
                     except Exception as e:
                         logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
-                    bres = await _shared.Modules.browser_use.run_instruction(
+                    bres = await adapter.run_instruction(
                         result.task_description,
                         session_id=bu_session.session_id,
                     )

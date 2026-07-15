@@ -53,6 +53,19 @@ _ugc_sync_lock = asyncio.Lock()
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
+def _find_casefold_conflict_name(existing_names, candidate_name: str) -> str | None:
+    candidate = str(candidate_name or "").strip()
+    if not candidate:
+        return None
+    candidate_casefold = candidate.casefold()
+    for existing_name in existing_names:
+        normalized_existing = str(existing_name or "").strip()
+        if not normalized_existing or normalized_existing == candidate:
+            continue
+        if normalized_existing.casefold() == candidate_casefold:
+            return normalized_existing
+    return None
+
 async def sync_workshop_character_cards(
     target_item_id: str | int | None = None,
     restore_deleted: bool = False,
@@ -171,8 +184,10 @@ async def sync_workshop_character_cards(
         async def _clear_restored_existing_tombstones():
             nonlocal error_count
             restored_existing_candidates = [
-                name for name in confirmed_recoverable_existing_names
-                if name not in restored_deleted_names
+                tombstone_name
+                for character_name, tombstone_name
+                in confirmed_recoverable_existing_names.items()
+                if character_name not in restored_deleted_names
             ]
             if not restored_existing_candidates:
                 return None
@@ -189,8 +204,12 @@ async def sync_workshop_character_cards(
                     config_mgr,
                     restored_existing_candidates,
                 )
-                for removed_name in removed_names:
-                    _append_unique(restored_deleted_names, removed_name)
+                removed_casefolds = {name.casefold() for name in removed_names}
+                for character_name, tombstone_name in (
+                    confirmed_recoverable_existing_names.items()
+                ):
+                    if tombstone_name.casefold() in removed_casefolds:
+                        _append_unique(restored_deleted_names, character_name)
                 if removed_names:
                     logger.info(
                         "sync_workshop_character_cards: 已移除已存在恢复角色的 tombstone: %s",
@@ -221,8 +240,8 @@ async def sync_workshop_character_cards(
             pending_added_catgirls = {}
             pending_card_face_writes = {}
             pending_item_ids = {}
-            pending_restore_tombstone_names: set[str] = set()
-            confirmed_recoverable_existing_names: set[str] = set()
+            pending_restore_tombstone_names: dict[str, str] = {}
+            confirmed_recoverable_existing_names: dict[str, str] = {}
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
@@ -251,6 +270,11 @@ async def sync_workshop_character_cards(
                                 continue
                             name_validation = validate_character_name(
                                 chara_name_raw,
+                                # Workshop 中仍有严格命名规则启用前发布的角色卡（例如
+                                # ``N.E.K.O``）。嵌入式点号本身是安全的，现有角色路径、
+                                # memory 与 cloudsave 也已兼容；这里只放宽点号，统一校验仍会
+                                # 拒绝 ``..``、尾随点号、路径分隔符和其它危险名称。
+                                allow_dots=True,
                                 max_units=PROFILE_NAME_MAX_UNITS,
                             )
                             chara_name = name_validation.normalized
@@ -264,10 +288,18 @@ async def sync_workshop_character_cards(
                                 continue
                             _append_unique(found_character_names, chara_name)
 
-                            if chara_name in deleted_character_names:
+                            deleted_name = (
+                                chara_name
+                                if chara_name in deleted_character_names
+                                else _find_casefold_conflict_name(
+                                    deleted_character_names,
+                                    chara_name,
+                                )
+                            )
+                            if deleted_name is not None:
                                 _append_unique(deleted_character_names_seen, chara_name)
                                 if restore_deleted:
-                                    pending_restore_tombstone_names.add(chara_name)
+                                    pending_restore_tombstone_names[chara_name] = deleted_name
                                 else:
                                     skipped_count += 1
                                     logger.info(
@@ -276,6 +308,31 @@ async def sync_workshop_character_cards(
                                         item_id,
                                     )
                                     continue
+                            conflict_name = _find_casefold_conflict_name(
+                                characters['猫娘'].keys(),
+                                chara_name,
+                            )
+                            if conflict_name is not None:
+                                _append_unique(existing_character_names, conflict_name)
+                                if (
+                                    restore_deleted
+                                    and chara_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        characters['猫娘'].get(conflict_name) or {},
+                                        item_id,
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names[conflict_name] = (
+                                        pending_restore_tombstone_names[chara_name]
+                                    )
+                                skipped_count += 1
+                                logger.warning(
+                                    "sync_workshop_character_cards: 跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold，物品 %s）",
+                                    chara_name,
+                                    conflict_name,
+                                    item_id,
+                                )
+                                continue
                             chara_file_stem = Path(chara_file_path).name[:-11]
                             preview_image_path = find_preview_image_in_folder(
                                 installed_folder,
@@ -300,7 +357,9 @@ async def sync_workshop_character_cards(
                                 existing_data = characters['猫娘'].get(chara_name) or {}
                                 existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
                                 if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
-                                    confirmed_recoverable_existing_names.add(chara_name)
+                                    confirmed_recoverable_existing_names[chara_name] = (
+                                        pending_restore_tombstone_names[chara_name]
+                                    )
                                 if existing_matches_item:
                                     try:
                                         blocked_result = _abort_if_write_fence_active(
@@ -478,10 +537,21 @@ async def sync_workshop_character_cards(
                     actually_added_count = 0
                     skipped_due_to_race_count = 0
                     for pending_name, pending_payload in pending_added_catgirls.items():
-                        pending_name_is_deleted = pending_name in latest_deleted_character_names
+                        pending_name_is_deleted = (
+                            pending_name in latest_deleted_character_names
+                            or _find_casefold_conflict_name(
+                                latest_deleted_character_names,
+                                pending_name,
+                            ) is not None
+                        )
+                        conflict_name = _find_casefold_conflict_name(
+                            latest_catgirls.keys(),
+                            pending_name,
+                        )
                         if (
                             (pending_name_is_deleted and not restore_deleted)
                             or pending_name in latest_catgirls
+                            or conflict_name is not None
                         ):
                             skipped_due_to_race_count += 1
                             if pending_name in latest_catgirls:
@@ -494,7 +564,27 @@ async def sync_workshop_character_cards(
                                         pending_item_ids.get(pending_name, ""),
                                     )
                                 ):
-                                    confirmed_recoverable_existing_names.add(pending_name)
+                                    confirmed_recoverable_existing_names[pending_name] = (
+                                        pending_restore_tombstone_names[pending_name]
+                                    )
+                            elif conflict_name is not None:
+                                _append_unique(existing_character_names, conflict_name)
+                                if (
+                                    restore_deleted
+                                    and pending_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        latest_catgirls.get(conflict_name) or {},
+                                        pending_item_ids.get(pending_name, ""),
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names[conflict_name] = (
+                                        pending_restore_tombstone_names[pending_name]
+                                    )
+                                logger.warning(
+                                    "sync_workshop_character_cards: 保存前跳过大小写折叠冲突角色 '%s'（与 '%s' 共用 casefold）",
+                                    pending_name,
+                                    conflict_name,
+                                )
                             continue
                         latest_catgirls[pending_name] = pending_payload
                         actually_added_count += 1
@@ -522,19 +612,29 @@ async def sync_workshop_character_cards(
                         _append_unique(added_character_names, added_name)
 
                     if restore_deleted and actually_added_names:
-                        restored_candidates = [
-                            name for name in actually_added_names
+                        restored_candidates = {
+                            name: pending_restore_tombstone_names[name]
+                            for name in actually_added_names
                             if name in pending_restore_tombstone_names
-                        ]
+                        }
                         if restored_candidates:
                             try:
                                 removed_names = await asyncio.to_thread(
                                     _remove_deleted_character_tombstones,
                                     config_mgr,
-                                    restored_candidates,
+                                    list(restored_candidates.values()),
                                 )
-                                for removed_name in removed_names:
-                                    _append_unique(restored_deleted_names, removed_name)
+                                removed_casefolds = {
+                                    name.casefold() for name in removed_names
+                                }
+                                for character_name, tombstone_name in (
+                                    restored_candidates.items()
+                                ):
+                                    if tombstone_name.casefold() in removed_casefolds:
+                                        _append_unique(
+                                            restored_deleted_names,
+                                            character_name,
+                                        )
                                 if removed_names:
                                     logger.info(
                                         "sync_workshop_character_cards: 已移除手动恢复角色的 tombstone: %s",

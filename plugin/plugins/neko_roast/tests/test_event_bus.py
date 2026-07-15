@@ -390,3 +390,25 @@ def test_bili_lightweight_super_chat_event_dict_publishes_safe_super_chat_event(
     assert event.raw["gift_name"] == "Super Chat"
     assert event.raw["gift_value"] == 30000
     assert event.raw["room_id"] == 100
+
+
+async def test_event_bus_close_drains_handlers_and_rejects_late_publish():
+    bus = EventBus()
+    release = asyncio.Event()
+    received: list[str] = []
+
+    async def handler(value: str) -> None:
+        await release.wait()
+        received.append(value)
+
+    bus.subscribe("chat", handler, owner="test")
+    bus.publish("chat", "before-close")
+    closing = asyncio.create_task(bus.close(timeout=1.0))
+    await asyncio.sleep(0)
+    bus.publish("chat", "after-close")
+    release.set()
+    await closing
+
+    assert received == ["before-close"]
+    assert bus.status()["accepting_events"] is False
+    assert bus.status()["pending_tasks"] == 0

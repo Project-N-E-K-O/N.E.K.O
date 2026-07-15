@@ -13,6 +13,7 @@ from .pipeline_skip_results import (
     skip_already_roasted,
     skip_before_event,
     skip_before_output,
+    skip_module_disabled,
     skip_permission,
 )
 
@@ -25,6 +26,7 @@ __all__ = [
     "skip_already_roasted",
     "skip_before_event",
     "skip_before_output",
+    "skip_module_disabled",
     "skip_dispatcher",
     "skip_permission",
 ]

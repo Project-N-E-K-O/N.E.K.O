@@ -59,9 +59,13 @@ If a feature has no matching documentation, treat the implementation as incomple
 
 - Split work as Feature -> Slice -> PR. One PR should carry one reviewable slice, or one pure docs / tests / refactor purpose.
 - Keep a PR at 20 files or fewer by default. If it exceeds 20 files, explain why in the PR description and prefer Draft until the shape is reviewed.
-- Use Draft PRs for new base contracts, cross-module migrations, broad documentation governance, or work that intentionally seeds follow-up PRs.
+- Use Draft PRs for new base contracts, cross-module migrations, broad documentation governance, or work that will have independent follow-up PRs created from the updated target branch after this PR merges.
 - Do not mix feature work with unrelated cleanup, panel rewrites, host/server changes, or old-plugin removal.
-- Each dependent PR must state its base PR, merge order, tests run, and rollback/degrade behavior.
+- Stacked PRs are prohibited: an open PR must not use another unmerged feature branch or PR as its base, and maintainers must not keep a cascading chain that requires fixes or conflict resolutions to be propagated downstream. A PR is still logically stacked when GitHub shows `main` as its base but its correctness, tests, review, merge, or rollback depend on another unmerged PR.
+- Create every PR independently from the latest `main` or an explicitly designated release branch. If slices depend on one another, merge the prerequisite PR first, then create the next branch from the updated target branch.
+- Every PR must be independently reviewable, testable, mergeable, and revertible on its declared target branch. Use backward-compatible contracts, feature flags, adapters, or a single cohesive PR instead of an unmerged dependency chain.
+- If an open stack is discovered, stop extending and propagating it. Merge the PR closest to the target branch first; then recreate or retarget only the next slice from the updated target branch, verifying that its diff contains no accumulated ancestor changes.
+- Only an explicit written maintainer approval for an emergency release or an indivisible migration may waive the no-stacked-PR rule; the exception must document merge order, risk, and the plan to return to independent PRs.
 - Phase-specific governance: do not use documentation-governance PRs to implement runtime observability, Gift/SC/Guard behavior, `panel.tsx` refactors, or product changes.
 
 ## Review Gate

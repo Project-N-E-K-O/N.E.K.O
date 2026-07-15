@@ -17,15 +17,13 @@ N.E.K.O 是一只**桌面 AI 猫娘**；neko_roast 让她去给主播**当直播
 
 | 一级页(tab) | id | 域 | 现在 | 未来落点 |
 |---|---|---|---|---|
-| 控制台 | `console` | 开播 | 账号登录 + 房号 + 查询/连接 + 状态总览四格 + 模式 + dry_run 速开关（已折入原「直播间配置」） | 锐评 feed |
-| 直播间互动 | `interaction` | 直播间互动 + 互动产出 | **弹幕锐评功能卡**(卡头 3 态徽章 + 绿色功能开关绑 `live_enabled`；强度 pill；同人去重) + 礼物/SC/进场占位卡 + 平台参数说明条 | P3 礼物/SC/进场 handler 注册为模块、占位卡转真卡 |
-| 观众 | `viewers` | 身份/档案 | 直播总结 + 链路解释 + 安全画像档案（熟悉度 / 画像置信度 / 偏好标签 / 回复建议） | P4 贡献榜/观看时长/可控画像管理 |
-| 私信 | `dm` | 私信 | 占位页（即将上线） | `bili_dm_ingest` 模块 |
-| 自动化 | `automation` | 自动化 | 占位页（即将上线） | `automation_ops` 模块 |
-| ⚙设置 | `settings` | 平台 | 「节奏与安全」(dry_run/急停/冷却/队列) + **「档案存储」**(当前只读展示默认目录，自定义入口暂时屏蔽) + 高级状态 + 模块总览表 + 开发者开关 | 自定义目录待配置持久化修复后恢复 |
-| 开发者沙盒 | `dev` | 调试 | 沙盒（**仅 dev 模式开时出现**） | — |
+| 控制台 | `console` | 开播 | 登录优先的账号入口 + 显式无账号兜底 + 房号/链接确认 + 查询/连接 + 状态总览四格 + 模式（已折入原「直播间配置」） | 锐评 feed |
+| 直播间互动 | `interaction` | 直播间互动 + 互动产出 | 首次出场锐评、后续弹幕接话、礼物事件、开场营业、冷场陪播和主动营业各自拥有独立功能开关；头像画面分析作为首次锐评的子开关。`live_enabled` 仍只由控制台底部的开始/停止直播动作管理 | 保持功能开关与真实 runtime gate 一一对应，禁止只做 UI 假开关 |
+| 观众 | `viewers` | 本场/档案 | 内部固定分为「本场直播 / 观众档案」：前者展示互动观众、弹幕、支持事件、NEKO 发言和最多 30 位最近互动观众；后者用精简摘要表 + 详情弹窗承载安全画像。链路解释与最近 pipeline 结果只在开发者工具出现 | 在 provider-neutral 数据可信后再评估观看时长/贡献能力；不伪装在线人数 |
+| ⚙设置 | `settings` | 平台 | 内部固定分为「安全与性能 / 数据与隐私 / 帮助与高级」：安全暂停默认开启且关闭前二次确认；队列只暴露“谨慎 3 / 标准 5 / 宽松 8”三档并即时保存；档案页只显示本机存储状态，完整路径按需弹窗；新手教程与开发者开关集中在帮助页。冷却/说话频率留在控制台“节奏设置”，`dry_run` 不向普通用户展示 | 自定义目录待配置持久化修复后再评估入口 |
+| 开发者工具 | `dev` | 调试 | **仅开发者模式开启时出现**；内部固定分为「身份与头像查询 / 模拟直播事件 / 运行结果」三个子页。链路解释、最近 pipeline 结果、高级安全状态、审计摘要、模块总览和沙盒结果统一放在“运行结果”，不占用普通设置页 | — |
 
-> 当前实现的 tab id 顺序：`console / interaction / viewers / dm / automation / settings`（+ `dev` 按 `developer_tools_enabled` 条件追加）。生命周期-域命名**已收敛到位**，契约测试 `test_panel_uses_six_top_level_tabs_in_order` 锁住 id / 顺序。原 `live-room` 页已折入 `console`、`data`→`viewers`、`advanced`→`settings`。
+> 当前实现的常规 tab id 顺序：`console / interaction / viewers / settings`（+ `dev` 按 `developer_tools_enabled` 条件追加）。`viewers` 内部固定使用 `session / profiles` 两个子页；`settings` 内部固定使用 `safety / privacy / help` 三个子页；开发者工具内部固定使用 `identity / event / results` 三个子页；原 `live-room` 页已折入 `console`、`data`→`viewers`，原 `advanced` 的运行信息已迁入开发者 `results`。
 
 ## 2. 模块贡献模型（多人开发 / 扩展的核心）
 
@@ -56,7 +54,7 @@ N.E.K.O 是一只**桌面 AI 猫娘**；neko_roast 让她去给主播**当直播
 
 **「一张嘴」切分**——猫只有一张嘴，参数分两类：
 - **功能级**（跟功能走，进功能卡）：开关、强度、致谢门槛、欢迎对象… —「这个功能开不开、触发时怎么表现」。
-- **平台级**（留「设置」）：dry_run、节奏 rate_limit、队列、急停阈值、co/solo 模式… —「猫整体怎么说话 / 安不安全」，因为它们协调**共享的那张嘴**。
+- **平台级**：安全暂停与队列策略留在「设置」；节奏 `rate_limit` / `activity_level` 和 co/solo 模式贴近日常开播动作，分别放在控制台的“节奏设置”和“直播主题”弹窗。普通设置不暴露原始队列数字、内部安全阈值或 `dry_run`；`dry_run` 默认关闭并仅保留为内部测试能力。
 
 配置存储：锐评是核心切片，其参数沿用 `RoastConfig` 顶层字段；**未来功能模块用 `config.<module_id>.*` 命名空间**，避免全局扁平 config 膨胀。
 
@@ -75,7 +73,7 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 - **P0 外壳 + 兜底**（部分已落地）：生命周期导航 ✓、`registry` 隔离 ✓、`config_schema` 契约 + 面板 mini 渲染器 ✓、弹幕锐评功能卡样例 ✓。
 - **P1 随 P3 落地**：P3 handler 注册为模块 + 声明各自 schema（礼物/SC/进场），白嫖渲染器；~~EventBus 订阅隔离（兜底②）~~ ✅（已落地，见 §4 层②，handler 只差订阅 + 产出端）；integer/`show_if` 渲染补全。
-- **P2 回迁/演进**：tab 命名收敛到生命周期 ✓（6 项 `console/interaction/viewers/dm/automation/settings` + 条件 `dev`；原 live-room 折入 console、data→viewers、advanced→settings）；UI error boundary ✓（`ModuleRenderBoundary`，见 §4）；模块 `on_enable/on_disable` 生命周期钩子 ✓（隔离调用，地基，待接 per-module 启停真实调用方）；**剩** config 命名空间化、`show_if` 真实接逻辑。
+- **P2 回迁/演进**：tab 命名收敛到生命周期 ✓（4 项 `console/interaction/viewers/settings` + 条件 `dev`；原 live-room 折入 console、data→viewers、advanced→settings）；UI error boundary ✓（`ModuleRenderBoundary`，见 §4）；模块 `on_enable/on_disable` 生命周期钩子 ✓（隔离调用，地基，待接 per-module 启停真实调用方）；**剩** config 命名空间化、`show_if` 真实接逻辑。
 
 ## 6. 约束（宿主 hosted-ui，写 UI 前必读）
 
