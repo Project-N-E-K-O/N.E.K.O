@@ -59,6 +59,7 @@ match the current text + service ``model_id()`` — same pattern as the
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import logging
 import os
@@ -1249,10 +1250,10 @@ class EmbeddingService:
                 except Exception:
                     break
             if worker.done() and not worker.cancelled():
-                try:
+                # Preserve the caller's cancellation; the worker failure is
+                # secondary and has already been observed by the await above.
+                with contextlib.suppress(Exception):
                     worker.result()
-                except Exception:
-                    pass
             raise
 
     # ── internal: session load / inference ───────────────────────────
