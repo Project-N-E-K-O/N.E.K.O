@@ -535,6 +535,34 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
 
 
 @pytest.mark.unit
+async def test_minimax_design_endpoint_rejects_missing_base_url(monkeypatch):
+    from main_routers.characters_router import voice_cloning as cr
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "minimax"
+            return "minimax-key"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "get_minimax_base_url", lambda _provider: "")
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": "minimax",
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body == {
+        "error": "MINIMAX_BASE_URL_MISSING",
+        "code": "MINIMAX_BASE_URL_MISSING",
+        "provider": "minimax",
+    }
+
+
+@pytest.mark.unit
 async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
     from main_routers.characters_router import voice_cloning as cr
 

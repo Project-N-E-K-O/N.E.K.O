@@ -1004,6 +1004,12 @@ async def voice_design(request: Request):
                     'provider': provider,
                 }, status_code=400)
             base_url = get_minimax_base_url(provider)
+            if not base_url:
+                return JSONResponse({
+                    'error': 'MINIMAX_BASE_URL_MISSING',
+                    'code': 'MINIMAX_BASE_URL_MISSING',
+                    'provider': provider,
+                }, status_code=400)
             provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
             storage_key = f'{get_minimax_storage_prefix(provider)}{api_key[-8:]}'
             original_prefix, requested_voice_id = _build_minimax_request_prefix(prefix, provider_label)
