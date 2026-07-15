@@ -548,9 +548,11 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
         the export aborts with HTTP 413 the moment it crosses
         :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES`, *before* the file is read into
         memory.
-      * **Stay in tree** — symlinks are skipped and any entry whose resolved
-        path escapes the resolved ``memory_dir/<name>`` root is skipped, so
-        ``rglob`` can never follow a link out to unrelated host files.
+      * **Stay in tree** — a character dir that is itself a symlink escaping the
+        resolved ``memory_dir`` root is rejected outright (HTTP 500
+        ``UnsafeCharacterDir``); within it, symlinks are skipped and any entry
+        whose resolved path escapes the root is skipped, so ``rglob`` can never
+        follow a link out to unrelated host files.
       * **No partial backup** — an in-tree file we cannot stat/read aborts the
         whole export with HTTP 500 instead of silently shipping an incomplete
         "faithful" archive.
@@ -620,10 +622,31 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
             # A faithful dump must stay inside ``memory_dir/<name>``. ``rglob``
             # would happily follow a symlinked character dir (or a symlinked
             # file inside it) into unrelated readable host directories and pack
-            # them into this UN-redacted export. Resolve the root once and, for
-            # every entry, skip symlinks and anything whose real path escapes
-            # the resolved root (defence in depth; keeps the docstring promise).
+            # them into this UN-redacted export.
+            #
+            # First reject a character dir that is itself a symlink escaping the
+            # memory root: ``is_dir()`` follows the link and ``char_mem.resolve()``
+            # would make the external target look "in-tree", so the per-entry
+            # ``relative_to(mem_root)`` check below would pass and dump unrelated
+            # host files. A legitimately relocated memory dir (the WHOLE
+            # ``memory_dir`` symlinked elsewhere) still passes, because both
+            # roots then resolve under the same target.
             mem_root = char_mem.resolve()
+            try:
+                mem_root.relative_to(memory_dir.resolve())
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error_type": "UnsafeCharacterDir",
+                        "message": (
+                            f"角色 {name!r} 的记忆目录解析到记忆根目录之外 "
+                            "(疑似符号链接逃逸), 已中止导出。"
+                        ),
+                    },
+                ) from exc
+            # Then, per entry, skip symlinks and anything whose real path escapes
+            # the resolved root (defence in depth; keeps the docstring promise).
             for item in sorted(char_mem.rglob("*")):
                 if item.is_symlink() or not item.is_file():
                     continue
@@ -656,6 +679,7 @@ async def export_real_character(name: str) -> Response:
 
     Errors: 404 ``NoActiveSession`` / ``NoSuchRealCharacter``; 422
     ``UnsafeCharacterName``; 413 ``ArchiveTooLarge``; 500 ``SandboxNotApplied`` /
+    ``UnsafeCharacterDir`` (memory dir symlink-escapes the memory root) /
     ``ExportReadFailed`` (an in-tree memory file could not be read — abort rather
     than ship a partial backup).
 

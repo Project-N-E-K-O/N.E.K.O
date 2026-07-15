@@ -23,7 +23,7 @@ export function parseDownloadFilename(cd, fallbackName) {
     try { return decodeURIComponent(star[1].trim()); } catch { /* fall through */ }
   }
   const plain = /filename="?([^";]+)"?/i.exec(header);
-  if (plain && plain[1]) return plain[1].trim().replace(/"$/, '');
+  if (plain && plain[1]) return plain[1].trim();
   return fallbackName;
 }
 

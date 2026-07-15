@@ -16,6 +16,9 @@ Pure packer:
        cannot create symlinks).
   X10 — unreadable in-tree file is FATAL: an OSError on a regular member aborts
         with 500 ``ExportReadFailed`` instead of a silent partial backup.
+  X11 — symlinked character ROOT is FATAL: a ``memory_dir/<name>`` that is itself
+        a symlink escaping the memory root aborts with 500 ``UnsafeCharacterDir``
+        (skipped if the OS/account cannot create symlinks).
 
 Endpoint (TestClient + monkeypatched ``session.sandbox.real_paths``):
   X5 — happy: 200 / application/zip / Content-Disposition carries the CJK
@@ -232,6 +235,31 @@ def check_packer() -> list[str]:
                    "X10.type", f"{exc.detail}")
         finally:
             Path.read_bytes = real_read_bytes  # type: ignore[assignment]
+
+        # X11 symlinked character ROOT is FATAL: if memory_dir/<name> is itself
+        # a symlink escaping the memory root, is_dir() follows it and every
+        # in-target entry would look "in-tree" — so the whole dir must be
+        # rejected (HTTP 500 UnsafeCharacterDir), not silently packed.
+        cfg_r, mem_r = _build_real_dir()
+        outside_r = Path(tempfile.mkdtemp(prefix="p43_outroot_"))
+        (outside_r / "host_secret.txt").write_text(
+            "ROOT-ESCAPE-CANARY", encoding="utf-8")
+        alt_char = "影武者"
+        alt_root = mem_r / alt_char
+        root_symlink_ok = True
+        try:
+            os.symlink(outside_r, alt_root, target_is_directory=True)
+        except (OSError, NotImplementedError, AttributeError):
+            root_symlink_ok = False
+        if root_symlink_ok:
+            try:
+                pr._zip_character_memory(cfg_r, mem_r, alt_char)
+                _check(False, "X11.raise",
+                       "expected UnsafeCharacterDir, none raised")
+            except HTTPException as exc:
+                _check(exc.status_code == 500, "X11.status", f"{exc.status_code}")
+                _check((exc.detail or {}).get("error_type") == "UnsafeCharacterDir",
+                       "X11.type", f"{exc.detail}")
     except _AssertFail as exc:
         errors.append(str(exc))
     except Exception as exc:  # noqa: BLE001
@@ -347,8 +375,9 @@ def main() -> int:
     client = TestClient(create_app())
 
     total = 0
-    total += _report("X1-X4/X9/X10 — pure packer (structure / faithful / missing / "
-                     "cap / symlink-escape / unreadable-fatal)",
+    total += _report("X1-X4/X9/X10/X11 — pure packer (structure / faithful / "
+                     "missing / cap / symlink-escape / unreadable-fatal / "
+                     "root-symlink-fatal)",
                      check_packer())
     total += _report("X5-X8 — endpoint (happy / no-session / unknown / round-trip)",
                      check_endpoint(client))
