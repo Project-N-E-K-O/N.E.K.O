@@ -80,6 +80,7 @@ def test_desktop_pin_failures_never_trigger_a_second_screenshot_fallback():
     )[1].split("async function recaptureWithoutNeko()", 1)[0]
 
     assert "message.indexOf('unsupported')" not in unavailable_block
+    assert ".toLowerCase().trim()" in unavailable_block
     assert "message === 'unsupported'" in unavailable_block
     assert "terminalError.capability = normalized.capability || null" in direct_capture_block
     assert direct_capture_block.index("if (isDesktopRegionCaptureUnavailable(normalized))") < direct_capture_block.index(

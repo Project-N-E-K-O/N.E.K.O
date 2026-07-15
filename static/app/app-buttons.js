@@ -3147,7 +3147,7 @@
                 }
             }
             if (code === 'ENOSYS' || code === 'UNSUPPORTED_API' || code === 'SCREEN_CAPTURE_UNAVAILABLE') return true;
-            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase();
+            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase().trim();
             // 仅保留旧壳曾经返回的完整短语。能力级错误（例如
             // SCREENSHOT_PIN_*）即使包含 unsupported，也必须终止本次操作，
             // 不能回退到第二轮截图并把编辑器本身抓进画面。
