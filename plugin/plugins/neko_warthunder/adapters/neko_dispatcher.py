@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..core.contracts import BattleEvent
+from ..core.contracts import BattleEvent, broadcast_frequency_multiplier
 from .runtime_timeline import RuntimeTimeline
 from .text_safety import sanitize_event_payload
 
@@ -166,9 +166,10 @@ _RECOVERY_INTENT = "刚才的危险解除了，跟 {MASTER_NAME} 说句'好险�
 def _output_backpressure_seconds(plugin: Any) -> float:
     cfg = getattr(plugin, "cfg", None)
     try:
-        return max(0.0, float(getattr(cfg, "output_backpressure_seconds", 20.0)))
+        configured = max(0.0, float(getattr(cfg, "output_backpressure_seconds", 20.0)))
     except (TypeError, ValueError):
         return 20.0
+    return configured * broadcast_frequency_multiplier(getattr(cfg, "broadcast_frequency", "standard"))
 
 
 def _output_event_max_age_seconds(plugin: Any, event: BattleEvent | None = None) -> float:
@@ -238,7 +239,7 @@ def _plugin_owned_battle_output_enabled(plugin: Any) -> bool:
 
 def _plugin_owned_urgent_output_enabled(plugin: Any) -> bool:
     cfg = getattr(plugin, "cfg", None)
-    return bool(getattr(cfg, "plugin_owned_urgent_output_enabled", True))
+    return bool(getattr(cfg, "plugin_owned_urgent_output_enabled", False))
 
 
 def _should_use_plugin_owned_output(plugin: Any, event: BattleEvent, recommended_reply: str) -> bool:

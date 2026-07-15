@@ -33,7 +33,15 @@ from .adapters.neko_dispatcher import NekoDispatcher
 from .adapters.runtime_timeline import RuntimeTimeline, arbiter_chain_to_observe_records
 from .adapters.telemetry_client import TelemetryClient
 from .core.arbiter import Arbiter
-from .core.contracts import BattleEvent, BattleState, WtConfig
+from .core.contracts import (
+    BROADCAST_CATEGORY_DEFAULTS,
+    BROADCAST_FREQUENCIES,
+    BattleEvent,
+    BattleState,
+    WtConfig,
+    normalize_broadcast_categories,
+    normalize_broadcast_frequency,
+)
 from .core.instructions import WT_CONTEXT_INSTRUCTIONS, WT_RESTORE_INSTRUCTIONS
 from .core.safety_guard import SafetyGuard
 from .core.scenario import ScenarioResolver
@@ -124,6 +132,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
             data["dialogue_intrusion_mode"] = saved_dialogue_mode
             data["user_chat_quiet_window_seconds"] = user_window
             data["battle_output_quiet_window_seconds"] = battle_window
+        if "broadcast_frequency" in runtime_state:
+            data["broadcast_frequency"] = normalize_broadcast_frequency(runtime_state.get("broadcast_frequency"))
+        if "broadcast_categories" in runtime_state:
+            data["broadcast_categories"] = normalize_broadcast_categories(runtime_state.get("broadcast_categories"))
         self._apply_config(WtConfig.from_mapping(data))
 
     def _apply_config(self, cfg: WtConfig) -> None:
@@ -774,6 +786,9 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 "user_chat_quiet_window_seconds": self.cfg.user_chat_quiet_window_seconds,
                 "battle_output_quiet_window_seconds": self.cfg.battle_output_quiet_window_seconds,
                 "critical_bypass_quiet_window": self._dialogue_intrusion_mode() != "no_interrupt",
+                "broadcast_frequency": self.cfg.broadcast_frequency,
+                "broadcast_categories": dict(self.cfg.broadcast_categories),
+                "critical_safety_always_enabled": True,
             },
             "awareness": self._awareness_snapshot(s),
             "safety": self.safety.snapshot(),
@@ -836,6 +851,88 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 "user_chat_quiet_window_seconds": user_window,
                 "battle_output_quiet_window_seconds": battle_window,
                 "critical_bypass_quiet_window": selected != "no_interrupt",
+            }
+        )
+
+    @ui.action(id="set_broadcast_frequency", label="设置播报频率", tone="primary", group="runtime", order=16, refresh_context=True)
+    @plugin_entry(
+        id="set_broadcast_frequency",
+        name="设置播报频率",
+        description="设置非危急战斗播报的节奏；危急提醒不受影响。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "frequency": {
+                    "type": "string",
+                    "enum": ["quiet", "standard", "active"],
+                    "default": "standard",
+                }
+            },
+        },
+    )
+    async def set_broadcast_frequency(self, frequency: str = "standard", **_):
+        requested = str(frequency or "").strip().lower()
+        if requested not in BROADCAST_FREQUENCIES:
+            return Err(SdkError("unknown broadcast frequency"))
+        selected = normalize_broadcast_frequency(requested)
+        self.cfg.broadcast_frequency = selected
+        self._save_runtime_state({"broadcast_frequency": selected})
+        return Ok({"broadcast_frequency": selected})
+
+    @ui.action(id="set_broadcast_category", label="设置播报类别", tone="primary", group="runtime", order=17, refresh_context=True)
+    @plugin_entry(
+        id="set_broadcast_category",
+        name="设置播报类别",
+        description="开关一般安全、战果、固定无线电、态势感知或开场收尾播报；危急提醒始终保留。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["safety", "combat", "radio", "awareness", "lifecycle"],
+                },
+                "enabled": {"type": "boolean", "default": True},
+            },
+            "required": ["category", "enabled"],
+        },
+    )
+    async def set_broadcast_category(self, category: str, enabled: bool = True, **_):
+        selected = str(category or "").strip().lower()
+        if selected not in BROADCAST_CATEGORY_DEFAULTS:
+            return Err(SdkError("unknown broadcast category"))
+        categories = normalize_broadcast_categories(self.cfg.broadcast_categories)
+        categories[selected] = bool(enabled)
+        self.cfg.broadcast_categories = categories
+        self._save_runtime_state({"broadcast_categories": categories})
+        return Ok(
+            {
+                "broadcast_categories": dict(categories),
+                "critical_safety_always_enabled": True,
+            }
+        )
+
+    @ui.action(id="reset_broadcast_preferences", label="恢复推荐播报设置", tone="info", group="runtime", order=18, refresh_context=True)
+    @plugin_entry(
+        id="reset_broadcast_preferences",
+        name="恢复推荐播报设置",
+        description="把播报频率恢复为标准，并重新开启全部普通播报类别；不修改 dry_run、插话规则或昵称。",
+    )
+    async def reset_broadcast_preferences(self, **_):
+        frequency = "standard"
+        categories = dict(BROADCAST_CATEGORY_DEFAULTS)
+        self.cfg.broadcast_frequency = frequency
+        self.cfg.broadcast_categories = categories
+        self._save_runtime_state(
+            {
+                "broadcast_frequency": frequency,
+                "broadcast_categories": categories,
+            }
+        )
+        return Ok(
+            {
+                "broadcast_frequency": frequency,
+                "broadcast_categories": dict(categories),
+                "critical_safety_always_enabled": True,
             }
         )
 

@@ -14,6 +14,7 @@ import {
   Tip,
   Warning,
   useEffect,
+  useClipboard,
   useState,
   useToast,
 } from "@neko/plugin-ui"
@@ -69,6 +70,7 @@ type TakeoffProtectionState = {
 }
 
 type ObserveRecord = {
+  seq?: number | null
   ts?: number | string | null
   trace_id?: string | null
   event_id?: string | null
@@ -85,6 +87,7 @@ type ObserveState = {
   last_event?: ObserveRecord | null
   last_decision?: ObserveRecord | null
   last_output_status?: ObserveRecord | null
+  recent_activity?: ObserveRecord[]
   recent_timeline?: ObserveRecord[]
   observability_enabled?: boolean
 }
@@ -120,6 +123,9 @@ type OutputPolicyState = {
   user_chat_quiet_window_seconds?: number | null
   battle_output_quiet_window_seconds?: number | null
   critical_bypass_quiet_window?: boolean | null
+  broadcast_frequency?: string | null
+  broadcast_categories?: Record<string, boolean>
+  critical_safety_always_enabled?: boolean
 }
 
 type OnboardingState = {
@@ -170,7 +176,10 @@ type ActivityItem = {
   detail: string
   status: string
   tone: PanelTone
+  kind: ActivityKind
 }
+
+type ActivityKind = "delivered" | "recorded" | "suppressed" | "failed"
 
 const DOMAIN_LABELS: Record<string, string> = {
   air: "空战",
@@ -226,6 +235,20 @@ const DIALOGUE_OPTIONS = [
 const DIALOGUE_LABELS: Record<string, string> = Object.fromEntries(
   DIALOGUE_OPTIONS.map((item) => [item.value, item.label]),
 )
+
+const BROADCAST_FREQUENCY_OPTIONS = [
+  { value: "quiet", label: "安静" },
+  { value: "standard", label: "标准" },
+  { value: "active", label: "活跃" },
+]
+
+const BROADCAST_CATEGORY_OPTIONS = [
+  { value: "safety", label: "一般安全提醒", detail: "过热、低燃油等；危急提醒始终保留" },
+  { value: "combat", label: "战果播报", detail: "确认击毁等个人战果" },
+  { value: "radio", label: "固定无线电互动", detail: "回应你自己发送的固定无线电消息" },
+  { value: "awareness", label: "态势感知", detail: "附近威胁和目标方位" },
+  { value: "lifecycle", label: "开场与收尾", detail: "进入战斗和战斗结束" },
+]
 
 const EVENT_LABELS: Record<string, string> = {
   spawn: "进入战斗",
@@ -347,6 +370,16 @@ const PANEL_STYLES = `
   .wt-activity-title { margin: 0; font-size: 18px; font-weight: 700; }
   .wt-activity-detail { margin: 6px 0 0; color: var(--wt-muted-soft); font-size: 15px; line-height: 1.45; }
   .wt-empty { padding: 32px 0; color: var(--wt-muted-soft); text-align: center; }
+  .wt-activity-page { display: grid; gap: 24px; }
+  .wt-activity-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+  .wt-activity-page-head h2 { margin: 0 0 6px; font-size: 21px; }
+  .wt-activity-page-head p { margin: 0; color: var(--wt-muted-soft); font-size: 14px; line-height: 1.5; }
+  .wt-activity-filter { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 3px; border: 1px solid var(--wt-control-border); border-radius: 7px; background: var(--wt-surface); }
+  .wt-activity-filter-button { min-height: 34px; border: 0; border-radius: 5px; padding: 6px 13px; background: transparent; color: var(--wt-muted); font: inherit; font-size: 13px; cursor: pointer; }
+  .wt-activity-filter-button:hover { background: var(--wt-surface-hover); color: var(--wt-text); }
+  .wt-activity-filter-button.is-active { background: #2589f5; color: #ffffff; font-weight: 700; }
+  .wt-activity-page-note { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 0; border-block: 1px solid var(--wt-border); color: var(--wt-muted-soft); font-size: 13px; }
+  .wt-activity-page-list { max-width: 1120px; }
   .wt-bottom { z-index: 20; display: grid; grid-template-columns: minmax(440px, 1.25fr) minmax(320px, 1fr); gap: 28px; align-items: center; min-height: 76px; padding: 12px 32px; border-top: 1px solid var(--wt-border); background: var(--wt-bottom-bg); }
   .wt-bottom-mode { display: flex; align-items: center; gap: 12px; min-width: 0; }
   .wt-emergency-control { display: inline-flex; flex: 0 0 auto; }
@@ -416,7 +449,13 @@ const PANEL_STYLES = `
   .wt-settings-copy h3 { margin: 0 0 6px; font-size: 16px; }
   .wt-settings-copy p { margin: 0; color: var(--wt-muted-soft); font-size: 14px; line-height: 1.5; }
   .wt-settings-control { display: flex; justify-content: flex-end; }
-  .wt-settings-select { min-width: 220px; }
+  .wt-settings-control.is-wide { width: min(100%, 430px); }
+  .wt-frequency-control { display: grid; grid-template-columns: repeat(3, minmax(72px, 1fr)); width: 100%; }
+  .wt-category-list { display: grid; width: 100%; border-top: 1px solid var(--wt-border); }
+  .wt-category-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; min-height: 58px; border-bottom: 1px solid var(--wt-border); }
+  .wt-category-row strong { display: block; margin-bottom: 3px; font-size: 14px; }
+  .wt-category-row span { color: var(--wt-muted-soft); font-size: 13px; line-height: 1.4; }
+  .wt-toggle-button { min-width: 70px; }
   .wt-onboarding { display: grid; gap: 22px; }
   .wt-onboarding-copy h3 { margin: 0 0 10px; font-size: 20px; line-height: 1.4; }
   .wt-onboarding-copy > p { margin: 0; color: var(--wt-muted); font-size: 15px; line-height: 1.65; }
@@ -475,6 +514,8 @@ const PANEL_STYLES = `
     .wt-activity-row { grid-template-columns: 50px 18px minmax(0, 1fr); }
     .wt-activity-row::before { left: 67px; }
     .wt-activity-row .neko-badge { grid-column: 3; margin-bottom: 8px; }
+    .wt-activity-page-head { align-items: flex-start; flex-direction: column; gap: 14px; }
+    .wt-activity-page-note { align-items: flex-start; flex-direction: column; gap: 4px; }
     .wt-bottom { grid-template-columns: 1fr; gap: 8px; padding: 10px 18px; }
     .wt-bottom-mode { align-items: flex-start; flex-wrap: wrap; }
     .wt-mode-detail { flex-basis: 100%; }
@@ -491,7 +532,7 @@ const PANEL_STYLES = `
     .wt-advanced-group { padding-inline: 14px; }
     .wt-settings-row { grid-template-columns: 1fr; gap: 10px; }
     .wt-settings-control { justify-content: flex-start; }
-    .wt-settings-select { width: 100%; min-width: 0; }
+    .wt-settings-control.is-wide { width: 100%; }
     .wt-onboarding-task-head { display: grid; }
     .wt-control-guide-row { grid-template-columns: 1fr; gap: 6px; }
   }
@@ -530,6 +571,36 @@ function listText(values: string[] | undefined): string {
 function mappedText(value: unknown, labels: Record<string, string> = {}): string {
   const raw = text(value)
   return labels[raw] || raw
+}
+
+function diagnosticCode(value: unknown): string {
+  const raw = text(value)
+  return raw !== "-" && /^[A-Za-z0-9_.:/-]{1,96}$/.test(raw) ? raw : "-"
+}
+
+function buildSafeDiagnosticSummary(state: DashboardState): string {
+  const safety = state.safety || {}
+  const dataLayer = state.data_layer || {}
+  const outputPolicy = state.output_policy || {}
+  const decision = state.observe?.last_decision
+  const output = state.observe?.last_output_status
+  const enabledCategories = ["safety", "combat", "radio", "awareness", "lifecycle"]
+    .filter((category) => outputPolicy.broadcast_categories?.[category] !== false)
+    .join(",")
+
+  return [
+    "N.E.K.O 战雷副驾驶安全诊断摘要",
+    "format=neko_warthunder.safe_diagnostics.v1",
+    `generated_at=${new Date().toISOString()}`,
+    `plugin enabled=${text(state.enabled)} connected=${text(state.connected)} game_context=${text(state.game_context_active)}`,
+    `battle in_battle=${text(state.in_battle)} dead=${text(state.dead)} domain=${diagnosticCode(state.domain)} scenario=${diagnosticCode(state.scenario)} level=${diagnosticCode(state.level)}`,
+    `data health=${text(dataLayer.health)} mode=${diagnosticCode(dataLayer.mode)}`,
+    `policy dry_run=${text(state.dry_run)} safety=${diagnosticCode(safety.status)} manual_paused=${text(safety.manual_paused)} auto_paused=${text(safety.auto_paused)}`,
+    `speech dialogue=${diagnosticCode(outputPolicy.dialogue_intrusion_mode)} frequency=${diagnosticCode(outputPolicy.broadcast_frequency)} categories=${enabledCategories || "none"}`,
+    `decision event=${diagnosticCode(decision?.event_id)} stage=${diagnosticCode(decision?.stage)} outcome=${diagnosticCode(decision?.outcome)} reason=${diagnosticCode(decision?.reason)}`,
+    `output event=${diagnosticCode(output?.event_id)} stage=${diagnosticCode(output?.stage)} outcome=${diagnosticCode(output?.outcome)} reason=${diagnosticCode(output?.reason)} pushed=${text(output?.pushed)}`,
+    "privacy=不含昵称、聊天、HUD、目标、载具、URL、PID、错误原文或 prompt/payload 原文",
+  ].join("\n")
 }
 
 type AdvancedDetailItem = {
@@ -686,74 +757,129 @@ function eventAllowedForDomain(eventId: string, domain: string | undefined): boo
   return true
 }
 
-function activityStatus(record: ObserveRecord): { status: string; tone: PanelTone; detail: string } {
+function activityStatus(record: ObserveRecord): { status: string; tone: PanelTone; detail: string; kind: ActivityKind } {
   const stage = String(record.stage || "")
   const outcome = String(record.outcome || "")
   const reason = String(record.reason || "")
 
+  if (stage === "game_context_entered") {
+    return { status: "已连接", tone: "success", kind: "recorded", detail: "插件已连接战雷数据，开始等待或识别战局。" }
+  }
+  if (stage === "game_context_exited") {
+    return { status: "已断开", tone: "warning", kind: "suppressed", detail: "战雷数据已离线，插件会等待下次连接。" }
+  }
   if (outputWasPushed(record)) {
-    return { status: "已交给猫娘", tone: "success", detail: "请求已经提交给猫娘，等待宿主继续处理。" }
+    return { status: "已交给猫娘", tone: "success", kind: "delivered", detail: "请求已经提交给猫娘，等待宿主继续处理。" }
   }
   if (stage === "dispatcher_dry_run" || record.dry_run === true || outcome === "dry_run") {
-    return { status: "仅记录", tone: "info", detail: "插件已识别该事件，当前不会提交语音。" }
+    return { status: "仅记录", tone: "info", kind: "recorded", detail: "插件已识别该事件，当前不会提交语音。" }
   }
   if (outputFailed(record)) {
-    return { status: "提交失败", tone: "danger", detail: "本次请求没有成功提交，可以前往诊断页查看。" }
+    return { status: "提交失败", tone: "danger", kind: "failed", detail: "本次请求没有成功提交，可以前往诊断页查看。" }
+  }
+  if (reason.startsWith("broadcast_category_disabled")) {
+    return { status: "已按偏好关闭", tone: "default", kind: "suppressed", detail: "你在设置中关闭了这类普通播报；危急安全提醒仍会保留。" }
+  }
+  if (reason === "user_chat_quiet_window") {
+    return { status: "对话保护中", tone: "warning", kind: "suppressed", detail: "你正在和猫娘对话，本次普通战场提醒没有插话。" }
+  }
+  if (reason === "battle_output_quiet_window" || reason === "output_backpressure") {
+    return { status: "等待输出间隔", tone: "warning", kind: "suppressed", detail: "上一条请求仍在处理，本次普通提醒没有继续排队。" }
+  }
+  if (reason === "repeated_event_collapsed") {
+    return { status: "重复提醒已合并", tone: "default", kind: "suppressed", detail: "相同提醒刚刚出现过，本次只保留一条。" }
+  }
+  if (reason.startsWith("takeoff_")) {
+    return { status: "起飞保护中", tone: "info", kind: "suppressed", detail: "刚出生或起飞阶段的临时数据没有触发播报。" }
+  }
+  if (reason === "replay") {
+    return { status: "回放静默", tone: "info", kind: "suppressed", detail: "当前数据来自回放，战斗事件不会提交给猫娘。" }
+  }
+  if (reason === "free_text_dry_run_only" || reason === "free_text_blocked") {
+    return { status: "仅安全观察", tone: "info", kind: "recorded", detail: "检测到自由文本来源，但不会读取或播报原文。" }
+  }
+  if (reason === "v2_live_evidence_pending") {
+    return { status: "等待真机验证", tone: "info", kind: "suppressed", detail: "该提醒仍处于验证阶段，本次只保留安全记录。" }
+  }
+  if (reason === "deferred_hud_notice") {
+    return { status: "暂不播报", tone: "info", kind: "recorded", detail: "该状态目前只记录，不根据未确认字段生成语音。" }
   }
   if (stage.includes("safety") || stage === "test_say_blocked" || reason.includes("paused")) {
-    return { status: "已被安全保护阻止", tone: "warning", detail: "事件已记录，但安全保护阻止了本次输出。" }
+    return { status: "已被安全保护阻止", tone: "warning", kind: "suppressed", detail: "事件已记录，但安全保护阻止了本次输出。" }
   }
   if (stage.includes("cooldown") || reason === "cooldown_active") {
-    return { status: "冷却中", tone: "warning", detail: "相同提醒刚刚出现过，本次没有重复提交。" }
+    return { status: "冷却中", tone: "warning", kind: "suppressed", detail: "相同提醒刚刚出现过，本次没有重复提交。" }
   }
   if (stage.includes("preempted") || outcome === "preempted") {
-    return { status: "被更重要提醒替代", tone: "warning", detail: "更重要的战场事件获得了优先处理。" }
+    return { status: "被更重要提醒替代", tone: "warning", kind: "suppressed", detail: "更重要的战场事件获得了优先处理。" }
   }
   if (reason.includes("expired") || outcome === "expired") {
-    return { status: "已过时", tone: "default", detail: "事件在提交前已经失去时效。" }
+    return { status: "已过时", tone: "default", kind: "suppressed", detail: "事件在提交前已经失去时效。" }
   }
   if (stage.includes("scenario_gated") || outcome === "suppressed" || outcome === "dropped") {
-    return { status: "当前场景未输出", tone: "default", detail: "事件已识别，但当前战场状态不适合播报。" }
+    return { status: "当前场景未输出", tone: "default", kind: "suppressed", detail: "事件已识别，但当前战场状态不适合播报。" }
   }
   if (outcome === "allowed" || outcome === "selected") {
-    return { status: "已进入输出判断", tone: "info", detail: "事件已通过识别，正在等待后续输出判断。" }
+    return { status: "已进入输出判断", tone: "info", kind: "recorded", detail: "事件已通过识别，正在等待后续输出判断。" }
   }
-  return { status: "已识别", tone: "default", detail: "插件已经识别到这项战场活动。" }
+  return { status: "已识别", tone: "default", kind: "recorded", detail: "插件已经识别到这项战场活动。" }
 }
 
-function buildActivityItems(state: DashboardState): ActivityItem[] {
+function activityTitle(record: ObserveRecord): string {
+  const eventId = String(record.event_id || "")
+  const stage = String(record.stage || "")
+  if (eventId) return EVENT_LABELS[eventId] || "战场事件"
+  if (stage === "game_context_entered") return "战雷数据已连接"
+  if (stage === "game_context_exited") return "战雷数据已断开"
+  if (String(record.reason || "") === "replay") return "回放保护"
+  if (stage.startsWith("test_say")) return "输出链路测试"
+  return "运行状态"
+}
+
+function buildActivityItems(state: DashboardState, limit = 5): ActivityItem[] {
   const observe = state.observe || {}
   const records: ObserveRecord[] = []
   const seen = new Set<string>()
+  const history = observe.recent_activity?.length ? observe.recent_activity : observe.recent_timeline || []
   const candidates = [
-    ...(observe.recent_timeline || []).slice().reverse(),
-    observe.last_output_status,
-    observe.last_decision,
-    observe.last_event,
+    ...history.slice().reverse(),
   ].filter(Boolean) as ObserveRecord[]
+
+  for (const fallback of [observe.last_output_status, observe.last_decision, observe.last_event]) {
+    if (!fallback) continue
+    const duplicate = candidates.some((record) =>
+      record.event_id === fallback.event_id
+      && record.stage === fallback.stage
+      && record.outcome === fallback.outcome
+      && record.reason === fallback.reason
+    )
+    if (!duplicate) candidates.push(fallback)
+  }
 
   for (const record of candidates) {
     const eventId = String(record.event_id || "")
     const stage = String(record.stage || "")
-    if (!eventId && !stage.startsWith("test_say")) continue
+    if (!eventId && !stage.startsWith("test_say") && !stage.startsWith("game_context_") && record.reason !== "replay") continue
     if (eventId && !eventAllowedForDomain(eventId, state.domain)) continue
-    const key = `${eventId}:${stage}:${record.outcome || ""}:${record.reason || ""}`
+    const key = record.seq !== null && record.seq !== undefined
+      ? `seq:${record.seq}`
+      : `${eventId}:${stage}:${record.outcome || ""}:${record.reason || ""}`
     if (seen.has(key)) continue
     seen.add(key)
     records.push(record)
-    if (records.length >= 5) break
+    if (records.length >= limit) break
   }
 
   return records.map((record, index) => {
-    const eventId = String(record.event_id || "")
     const status = activityStatus(record)
     return {
-      key: `${eventId || record.stage || "activity"}-${index}`,
+      key: `${record.seq || record.event_id || record.stage || "activity"}-${index}`,
       time: formatTime(record.ts),
-      title: eventId ? EVENT_LABELS[eventId] || "战场事件" : "输出链路测试",
+      title: activityTitle(record),
       detail: status.detail,
       status: status.status,
       tone: status.tone,
+      kind: status.kind,
     }
   })
 }
@@ -876,14 +1002,19 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   const actions = Array.isArray(props.actions) ? props.actions : []
   const setDryRunAction = actionById(actions, "set_dry_run")
   const setDialogueIntrusionModeAction = actionById(actions, "set_dialogue_intrusion_mode")
+  const setBroadcastFrequencyAction = actionById(actions, "set_broadcast_frequency")
+  const setBroadcastCategoryAction = actionById(actions, "set_broadcast_category")
+  const resetBroadcastPreferencesAction = actionById(actions, "reset_broadcast_preferences")
   const setIdentityAction = actionById(actions, "set_identity")
   const completeOnboardingAction = actionById(actions, "complete_onboarding")
   const pauseAction = actionById(actions, "pause")
   const resumeAction = actionById(actions, "resume")
   const testSayAction = actionById(actions, "test_say")
   const toast = useToast()
+  const clipboard = useClipboard()
   const onboardingRequired = state.onboarding?.required === true
   const [activeTab, setActiveTab] = useState("overview")
+  const [activityFilter, setActivityFilter] = useState("all")
   const [onboardingOpen, setOnboardingOpen] = useState(onboardingRequired)
   const [onboardingAutoOpened, setOnboardingAutoOpened] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
@@ -893,12 +1024,19 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
   const [identityError, setIdentityError] = useState("")
   const [dryRunError, setDryRunError] = useState("")
   const [dialoguePolicyError, setDialoguePolicyError] = useState("")
+  const [broadcastPreferenceError, setBroadcastPreferenceError] = useState("")
   const summary = derivePanelSummary(state)
   const playerName = currentPlayerName(identity)
   const activityItems = buildActivityItems(state)
+  const allActivityItems = buildActivityItems(state, 20)
+  const filteredActivityItems = activityFilter === "all"
+    ? allActivityItems
+    : allActivityItems.filter((item) => item.kind === activityFilter || (activityFilter === "suppressed" && item.kind === "failed"))
   const currentBattleStatus = battleStatus(state)
   const detectOnly = state.dry_run !== false
   const broadcastPaused = summary.kind === "paused" || summary.kind === "safety"
+  const broadcastFrequency = outputPolicy.broadcast_frequency || "standard"
+  const broadcastCategories = outputPolicy.broadcast_categories || {}
 
   useEffect(() => {
     if (!onboardingRequired || onboardingAutoOpened) return
@@ -939,6 +1077,54 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
       const message = error instanceof Error ? error.message : String(error)
       setDialoguePolicyError(message)
       toast.error("插话规则更新失败")
+    }
+  }
+
+  async function setBroadcastFrequency(frequency: string) {
+    if (!setBroadcastFrequencyAction) {
+      setBroadcastPreferenceError("播报频率设置暂时不可用")
+      return
+    }
+    try {
+      setBroadcastPreferenceError("")
+      await props.api.call("set_broadcast_frequency", { frequency })
+      toast.success("播报频率已更新")
+      await props.api.refresh()
+    } catch (error) {
+      setBroadcastPreferenceError(error instanceof Error ? error.message : String(error))
+      toast.error("播报频率更新失败")
+    }
+  }
+
+  async function setBroadcastCategory(category: string, enabled: boolean) {
+    if (!setBroadcastCategoryAction) {
+      setBroadcastPreferenceError("播报类别设置暂时不可用")
+      return
+    }
+    try {
+      setBroadcastPreferenceError("")
+      await props.api.call("set_broadcast_category", { category, enabled })
+      toast.success(enabled ? "该类播报已开启" : "该类播报已关闭")
+      await props.api.refresh()
+    } catch (error) {
+      setBroadcastPreferenceError(error instanceof Error ? error.message : String(error))
+      toast.error("播报类别更新失败")
+    }
+  }
+
+  async function resetBroadcastPreferences() {
+    if (!resetBroadcastPreferencesAction) {
+      setBroadcastPreferenceError("恢复推荐设置暂时不可用")
+      return
+    }
+    try {
+      setBroadcastPreferenceError("")
+      await props.api.call("reset_broadcast_preferences", {})
+      toast.success("已恢复推荐播报设置")
+      await props.api.refresh()
+    } catch (error) {
+      setBroadcastPreferenceError(error instanceof Error ? error.message : String(error))
+      toast.error("恢复推荐设置失败")
     }
   }
 
@@ -1020,6 +1206,12 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
       return
     }
     toast.info("测试请求已完成")
+  }
+
+  async function copyDiagnosticSummary() {
+    const copied = await clipboard.write(buildSafeDiagnosticSummary(state))
+    if (copied) toast.success("安全诊断摘要已复制")
+    else toast.error("复制失败，请检查系统剪贴板权限")
   }
 
   const statusActions = (
@@ -1132,7 +1324,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
           {activityItems.length ? (
             <div className="wt-activity-list">
               {activityItems.map((item) => (
-                <div className="wt-activity-row" data-tone={item.tone}>
+                <div key={item.key} className="wt-activity-row" data-tone={item.tone}>
                   <span className="wt-activity-time">{item.time}</span>
                   <span className="wt-activity-mark" />
                   <div>
@@ -1176,6 +1368,9 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
         </div>
         <div className="wt-diagnostics-actions">
           <RefreshButton label="重新检查" />
+          <Button onClick={() => { void copyDiagnosticSummary() }}>
+            {clipboard.copied ? "已复制" : "复制诊断摘要"}
+          </Button>
           <ActionButton
             className="wt-test-sound-action"
             action={testSayAction}
@@ -1357,6 +1552,57 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
     </div>
   )
 
+  const activityFilters = [
+    { value: "all", label: "全部" },
+    { value: "delivered", label: "已提交" },
+    { value: "recorded", label: "仅记录" },
+    { value: "suppressed", label: "未输出" },
+  ]
+  const activity = (
+    <div className="wt-activity-page">
+      <header className="wt-activity-page-head">
+        <div>
+          <h2>活动记录</h2>
+          <p>查看插件识别了什么，以及它为什么提交、仅记录或没有输出。</p>
+        </div>
+        <div className="wt-activity-filter" role="group" aria-label="筛选活动记录">
+          {activityFilters.map((filter) => (
+            <button
+              key={filter.value}
+              type="button"
+              className={`wt-activity-filter-button ${activityFilter === filter.value ? "is-active" : ""}`}
+              aria-pressed={activityFilter === filter.value}
+              onClick={() => { setActivityFilter(filter.value) }}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="wt-activity-page-note">
+        <span>只保留最近 20 条安全摘要，不保存玩家昵称、聊天或 HUD 原文。</span>
+        <span>当前显示 {filteredActivityItems.length} 条</span>
+      </div>
+      {filteredActivityItems.length ? (
+        <div className="wt-activity-list wt-activity-page-list">
+          {filteredActivityItems.map((item) => (
+            <div key={item.key} className="wt-activity-row" data-tone={item.tone}>
+              <span className="wt-activity-time">{item.time}</span>
+              <span className="wt-activity-mark" />
+              <div>
+                <p className="wt-activity-title">{item.title}</p>
+                <p className="wt-activity-detail">{item.detail}</p>
+              </div>
+              <StatusBadge tone={item.tone} label={item.status} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="wt-empty">当前筛选下还没有活动记录。</div>
+      )}
+    </div>
+  )
+
   const onboardingTitles = ["设置昵称", "认识按钮"]
   const onboardingFooter = (
     <ButtonGroup>
@@ -1426,11 +1672,12 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
       <style>{PANEL_STYLES}</style>
       <nav className="wt-tabs" aria-label="副驾驶面板">
         <button className={`wt-tab ${activeTab === "overview" ? "is-active" : ""}`} onClick={() => { setActiveTab("overview") }}>概览</button>
+        <button className={`wt-tab ${activeTab === "activity" ? "is-active" : ""}`} onClick={() => { setActiveTab("activity") }}>活动</button>
         <button className={`wt-tab ${activeTab === "diagnostics" ? "is-active" : ""}`} onClick={() => { setActiveTab("diagnostics") }}>诊断</button>
         <button type="button" className="wt-settings-trigger" aria-label="设置" title="设置" onClick={() => { setSettingsOpen(true) }}>⚙︎</button>
       </nav>
       <main className="wt-content">
-        {activeTab === "overview" ? overview : diagnostics}
+        {activeTab === "overview" ? overview : activeTab === "activity" ? activity : diagnostics}
       </main>
       {activeTab === "overview" ? bottomBar : null}
 
@@ -1452,29 +1699,69 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
         <div className="wt-settings">
           <div className="wt-settings-row">
             <div className="wt-settings-copy">
+              <h3>播报频率</h3>
+              <p>调整非危急提醒的间隔；危急提醒不会被延迟。</p>
+            </div>
+            <div className="wt-settings-control is-wide">
+              <ButtonGroup className="wt-frequency-control">
+                {BROADCAST_FREQUENCY_OPTIONS.map((option) => (
+                  <Button
+                    key={option.value}
+                    tone={broadcastFrequency === option.value ? "primary" : "default"}
+                    aria-pressed={broadcastFrequency === option.value}
+                    onClick={() => { void setBroadcastFrequency(option.value) }}
+                  >
+                    {option.label}
+                  </Button>
+                ))}
+              </ButtonGroup>
+            </div>
+          </div>
+          <div className="wt-settings-row">
+            <div className="wt-settings-copy">
+              <h3>播报内容</h3>
+              <p>只保留你想听的内容。危急安全提醒和阵亡提醒始终开启。</p>
+            </div>
+            <div className="wt-settings-control is-wide">
+              <div className="wt-category-list">
+                {BROADCAST_CATEGORY_OPTIONS.map((option) => {
+                  const enabled = broadcastCategories[option.value] !== false
+                  return (
+                    <div className="wt-category-row" key={option.value}>
+                      <div>
+                        <strong>{option.label}</strong>
+                        <span>{option.detail}</span>
+                      </div>
+                      <Button
+                        className="wt-toggle-button"
+                        tone={enabled ? "primary" : "default"}
+                        aria-pressed={enabled}
+                        onClick={() => { void setBroadcastCategory(option.value, !enabled) }}
+                      >
+                        {enabled ? "已开启" : "已关闭"}
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="wt-settings-row">
+            <div className="wt-settings-copy">
+              <h3>恢复推荐播报设置</h3>
+              <p>恢复标准频率并开启全部普通播报类别，不影响昵称、插话规则和播报开关。</p>
+            </div>
+            <div className="wt-settings-control">
+              <Button onClick={() => { void resetBroadcastPreferences() }}>恢复推荐设置</Button>
+            </div>
+          </div>
+          <div className="wt-settings-row">
+            <div className="wt-settings-copy">
               <h3>战雷游戏昵称</h3>
               <p>{playerName ? `当前为 ${playerName}` : "用于识别你自己发送的固定无线电消息和本局归属。"}</p>
             </div>
             <div className="wt-settings-control">
               <Button onClick={() => { setSettingsOpen(false); setIdentityOpen(true) }}>{playerName ? "修改昵称" : "设置昵称"}</Button>
-            </div>
-          </div>
-          <div className="wt-settings-row">
-            <div className="wt-settings-copy">
-              <h3>播报插话规则</h3>
-              <p>决定战斗提醒是否可以打断你正在进行的对话。</p>
-            </div>
-            <div className="wt-settings-control">
-              <select
-                className="wt-policy-select wt-settings-select"
-                aria-label="播报插话规则"
-                value={outputPolicy.dialogue_intrusion_mode || "critical_only"}
-                onChange={(event: any) => setDialogueIntrusionMode(event.target.value)}
-              >
-                {DIALOGUE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
             </div>
           </div>
           <div className="wt-settings-row">
@@ -1486,7 +1773,7 @@ export default function NekoWarthunderPanel(props: PluginSurfaceProps<DashboardS
               <Button onClick={() => { setSettingsOpen(false); openOnboarding() }}>重新查看教程</Button>
             </div>
           </div>
-          {dialoguePolicyError ? <Alert tone="danger">{dialoguePolicyError}</Alert> : null}
+          {broadcastPreferenceError ? <Alert tone="danger">{broadcastPreferenceError}</Alert> : null}
         </div>
       </Modal>
 

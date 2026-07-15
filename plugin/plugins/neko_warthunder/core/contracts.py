@@ -46,6 +46,20 @@ CAT_MAP_AWARENESS = "map_awareness"          # proximity / situation awareness�
 CAT_PLAYER_COMMAND = "player_command"        # 玩家主动固定无线电指令
 CAT_CHATTER = "chatter"                      # 陪伴闲聊（v1 暂不主动产）
 
+BROADCAST_FREQUENCIES = frozenset({"quiet", "standard", "active"})
+BROADCAST_FREQUENCY_MULTIPLIERS = {
+    "quiet": 1.6,
+    "standard": 1.0,
+    "active": 0.65,
+}
+BROADCAST_CATEGORY_DEFAULTS = {
+    "safety": True,
+    "combat": True,
+    "radio": True,
+    "awareness": True,
+    "lifecycle": True,
+}
+
 SEV_WARNING = 2
 SEV_IMPORTANT = 6
 SEV_CRITICAL = 8
@@ -148,6 +162,49 @@ def _dialogue_intrusion_mode(value: Any) -> str:
     return mode if mode in {"no_interrupt", "critical_only", "allow_interrupt"} else "critical_only"
 
 
+def normalize_broadcast_frequency(value: Any) -> str:
+    frequency = str(value or "").strip().lower()
+    return frequency if frequency in BROADCAST_FREQUENCIES else "standard"
+
+
+def normalize_broadcast_categories(value: Any) -> dict[str, bool]:
+    categories = dict(BROADCAST_CATEGORY_DEFAULTS)
+    if isinstance(value, dict):
+        for key in categories:
+            if key in value:
+                categories[key] = bool(value[key])
+    return categories
+
+
+def broadcast_frequency_multiplier(value: Any) -> float:
+    return BROADCAST_FREQUENCY_MULTIPLIERS[normalize_broadcast_frequency(value)]
+
+
+def broadcast_category_key(event_id: str, category: str) -> str | None:
+    if event_id in {"spawn", "battle_end"}:
+        return "lifecycle"
+    if category in {CAT_SAFETY_CRITICAL, CAT_SAFETY_IMPORTANT, CAT_SAFETY_MINOR}:
+        return "safety"
+    if category == CAT_COMBAT_KILL:
+        return "combat"
+    if category == CAT_PLAYER_COMMAND:
+        return "radio"
+    if category == CAT_MAP_AWARENESS:
+        return "awareness"
+    return None
+
+
+def broadcast_category_enabled(config: Any, event_id: str, category: str, level: str) -> bool:
+    # 危急安全事件和阵亡提醒属于安全底线，不受偏好静音影响。
+    if (event_id in CRITICAL_EVENT_IDS and level == "critical") or event_id == "you_died":
+        return True
+    key = broadcast_category_key(event_id, category)
+    if key is None:
+        return True
+    categories = normalize_broadcast_categories(getattr(config, "broadcast_categories", None))
+    return categories[key]
+
+
 @dataclass
 class WtConfig:
     enabled: bool = True
@@ -165,6 +222,8 @@ class WtConfig:
     dialogue_intrusion_mode: str = "critical_only"
     user_chat_quiet_window_seconds: float = 60.0
     battle_output_quiet_window_seconds: float = 30.0
+    broadcast_frequency: str = "standard"
+    broadcast_categories: dict[str, bool] = field(default_factory=lambda: dict(BROADCAST_CATEGORY_DEFAULTS))
     kill_coalesce_window_seconds: float = 6.0
     spawn_grace_seconds: float = 6.0
     takeoff_low_alt_grace_seconds: float = 45.0
@@ -178,7 +237,7 @@ class WtConfig:
     target_lanlan: str = ""
     plugin_reply_hint_enabled: bool = True
     plugin_owned_battle_output_enabled: bool = False
-    plugin_owned_urgent_output_enabled: bool = True
+    plugin_owned_urgent_output_enabled: bool = False
     plugin_owned_blind_output_enabled: bool = False
     observability_enabled: bool = False
     observability_max_events: int = 100
@@ -204,6 +263,8 @@ class WtConfig:
             dialogue_intrusion_mode=_dialogue_intrusion_mode(raw.get("dialogue_intrusion_mode")),
             user_chat_quiet_window_seconds=_clamp(raw.get("user_chat_quiet_window_seconds"), 60.0, 0.0, 300.0),
             battle_output_quiet_window_seconds=_clamp(raw.get("battle_output_quiet_window_seconds"), 30.0, 0.0, 300.0),
+            broadcast_frequency=normalize_broadcast_frequency(raw.get("broadcast_frequency")),
+            broadcast_categories=normalize_broadcast_categories(raw.get("broadcast_categories")),
             kill_coalesce_window_seconds=_clamp(raw.get("kill_coalesce_window_seconds"), 6.0, 0.0, 30.0),
             spawn_grace_seconds=_clamp(raw.get("spawn_grace_seconds"), 6.0, 0.0, 60.0),
             takeoff_low_alt_grace_seconds=_clamp(raw.get("takeoff_low_alt_grace_seconds"), 45.0, 0.0, 120.0),
@@ -217,7 +278,7 @@ class WtConfig:
             target_lanlan=str(raw.get("target_lanlan") or raw.get("lanlan_name") or "").strip(),
             plugin_reply_hint_enabled=bool(raw.get("plugin_reply_hint_enabled", True)),
             plugin_owned_battle_output_enabled=bool(raw.get("plugin_owned_battle_output_enabled", False)),
-            plugin_owned_urgent_output_enabled=bool(raw.get("plugin_owned_urgent_output_enabled", True)),
+            plugin_owned_urgent_output_enabled=bool(raw.get("plugin_owned_urgent_output_enabled", False)),
             plugin_owned_blind_output_enabled=bool(raw.get("plugin_owned_blind_output_enabled", False)),
             observability_enabled=bool(raw.get("observability_enabled", False)),
             observability_max_events=int(_clamp(raw.get("observability_max_events"), 100, 1, 1000)),
