@@ -313,6 +313,40 @@ class _ProviderFailure(RuntimeError):
         self.status_code = status_code
 
 
+class _GoogleProviderFailure(RuntimeError):
+    def __init__(
+        self,
+        *,
+        code: int | None,
+        status: str | None,
+        details: object,
+    ) -> None:
+        super().__init__("google provider failure with sensitive details")
+        self.code = code
+        self.status = status
+        self.details = details
+
+
+def _google_error_info(
+    reason: str,
+    *,
+    domain: str = "googleapis.com",
+    wrapped: bool = True,
+) -> dict[str, object]:
+    error = {
+        "code": 400,
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": reason,
+                "domain": domain,
+            }
+        ],
+    }
+    return {"error": error} if wrapped else error
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_code"),
     [
@@ -344,6 +378,114 @@ async def test_provider_failure_is_sanitized_and_scoped(
     assert error.error_code == expected_code
     assert "sensitive" not in error.error_message
     assert (error.generation, error.buffer_epoch, error.utterance_id) == (0, 0, 4)
+    await _shutdown(task, requests, responses)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (
+            _GoogleProviderFailure(
+                code=400,
+                status="INVALID_ARGUMENT",
+                details=_google_error_info("API_KEY_INVALID"),
+            ),
+            "ASR_CREDENTIALS_REJECTED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=400,
+                status="INVALID_ARGUMENT",
+                details=_google_error_info(
+                    "API_KEY_SERVICE_BLOCKED",
+                    wrapped=False,
+                ),
+            ),
+            "ASR_CREDENTIALS_REJECTED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=403,
+                status="PERMISSION_DENIED",
+                details={},
+            ),
+            "ASR_CREDENTIALS_REJECTED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=400,
+                status="INVALID_ARGUMENT",
+                details=_google_error_info(
+                    "API_KEY_INVALID",
+                    domain="example.invalid",
+                ),
+            ),
+            "ASR_GEMINI_REQUEST_FAILED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=400,
+                status="INVALID_ARGUMENT",
+                details={
+                    "error": {
+                        "details": [
+                            {
+                                "@type": "type.googleapis.com/google.rpc.BadRequest",
+                                "fieldViolations": [],
+                            }
+                        ]
+                    }
+                },
+            ),
+            "ASR_GEMINI_REQUEST_FAILED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=400,
+                status="INVALID_ARGUMENT",
+                details={"error": {"details": "malformed"}},
+            ),
+            "ASR_GEMINI_REQUEST_FAILED",
+        ),
+        (
+            _GoogleProviderFailure(
+                code=429,
+                status="RESOURCE_EXHAUSTED",
+                details={},
+            ),
+            "ASR_GEMINI_REQUEST_FAILED",
+        ),
+        (
+            _GoogleProviderFailure(code=None, status=None, details={}),
+            "ASR_GEMINI_REQUEST_FAILED",
+        ),
+    ],
+)
+async def test_google_provider_failure_classification_is_structural_and_sanitized(
+    failure: BaseException,
+    expected_code: str,
+) -> None:
+    client = _FakeClient(failure)
+    task, requests, responses = await _start_worker(client)
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=5,
+            audio=b"\x01\x00" * 160,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=5)
+    )
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == expected_code
+    assert "sensitive" not in error.error_message
+    assert "API_KEY" not in error.error_message
+    assert (error.generation, error.buffer_epoch, error.utterance_id) == (0, 0, 5)
     await _shutdown(task, requests, responses)
 
 
