@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import base64
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,6 +11,12 @@ from utils.web_scraper.trending_content import (
     format_xhh_feed,
     normalize_xhh_feed,
 )
+from utils.web_scraper.personal_dynamics import (
+    fetch_personal_dynamics,
+    fetch_xhh_personal_dynamic,
+    format_personal_dynamics,
+)
+from main_routers.system_router.proactive_parsing import _extract_links_from_raw
 from utils.web_scraper.platform_helpers import (
     build_xhh_cookie_header,
     build_xhh_request_keys,
@@ -40,10 +47,11 @@ SAMPLE_PAYLOAD = {
 }
 
 
-def test_proactive_controller_allows_xhh_source_updates():
-    from plugin.plugins.proactive_controller import _PROACTIVE_BOOL_FIELDS
+def test_proactive_presets_route_xhh_through_personal_updates():
+    from main_routers.proactive_router import PROACTIVE_PRESETS
 
-    assert "proactiveXhhChatEnabled" in _PROACTIVE_BOOL_FIELDS
+    for mode in ("normal", "frequent"):
+        assert PROACTIVE_PRESETS[mode]["proactivePersonalChatEnabled"] is True
 
 
 def test_build_xhh_request_keys_matches_openxhh_vector():
@@ -123,9 +131,6 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
     with patch(
         "utils.web_scraper.trending_content.get_external_http_client",
         return_value=client,
-    ), patch(
-        "utils.web_scraper.trending_content.load_cookies_from_file",
-        return_value={},
     ):
         result = await fetch_xhh_feed_content(limit=1)
 
@@ -140,16 +145,16 @@ async def test_fetch_xhh_feed_uses_read_only_public_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_fetch_xhh_feed_injects_saved_credentials():
+async def test_fetch_xhh_personal_dynamic_injects_saved_credentials():
     client = _FakeClient()
     with patch(
-        "utils.web_scraper.trending_content.get_external_http_client",
+        "utils.web_scraper.personal_dynamics.get_external_http_client",
         return_value=client,
     ), patch(
-        "utils.web_scraper.trending_content.load_cookies_from_file",
+        "utils.web_scraper.personal_dynamics.load_cookies_from_file",
         return_value={"user_heybox_id": "123", "user_pkey": "secret"},
     ):
-        result = await fetch_xhh_feed_content(limit=1)
+        result = await fetch_xhh_personal_dynamic(limit=1)
 
     assert result["success"] is True
     _, kwargs = client.call
@@ -173,12 +178,98 @@ async def test_fetch_xhh_feed_reports_empty_payload_as_source_failure():
     with patch(
         "utils.web_scraper.trending_content.get_external_http_client",
         return_value=EmptyClient(),
-    ), patch(
-        "utils.web_scraper.trending_content.load_cookies_from_file",
-        return_value={},
     ):
         result = await fetch_xhh_feed_content()
 
     assert result["success"] is False
     assert result["posts"] == []
     assert "未返回可用帖子" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_personal_xhh_source_requires_saved_credentials():
+    client = _FakeClient()
+    with patch(
+        "utils.web_scraper.personal_dynamics.get_external_http_client",
+        return_value=client,
+    ), patch(
+        "utils.web_scraper.personal_dynamics.load_cookies_from_file",
+        return_value={},
+    ):
+        result = await fetch_xhh_personal_dynamic(limit=1)
+
+    assert result == {
+        "success": False,
+        "error": "未提供小黑盒认证信息",
+        "posts": [],
+    }
+    assert client.call is None
+
+
+@pytest.mark.asyncio
+async def test_personal_dynamics_aggregates_xhh_account_homepage():
+    failed = {"success": False, "error": "not connected"}
+    xhh = {
+        "success": True,
+        "posts": SAMPLE_PAYLOAD["result"]["links"][:1],
+    }
+    with patch(
+        "utils.web_scraper.personal_dynamics.is_china_region",
+        return_value=True,
+    ), patch(
+        "utils.web_scraper.personal_dynamics.fetch_bilibili_personal_dynamic",
+        new=AsyncMock(return_value=failed),
+    ), patch(
+        "utils.web_scraper.personal_dynamics.fetch_weibo_personal_dynamic",
+        new=AsyncMock(return_value=failed),
+    ), patch(
+        "utils.web_scraper.personal_dynamics.fetch_douyin_personal_dynamic",
+        new=AsyncMock(return_value=failed),
+    ), patch(
+        "utils.web_scraper.personal_dynamics.fetch_kuaishou_personal_dynamic",
+        new=AsyncMock(return_value=failed),
+    ), patch(
+        "utils.web_scraper.personal_dynamics.fetch_xhh_personal_dynamic",
+        new=AsyncMock(return_value=xhh),
+    ) as fetch_xhh:
+        result = await fetch_personal_dynamics(limit=3)
+
+    assert result["success"] is True
+    assert result["xhh_dynamic"] is xhh
+    fetch_xhh.assert_awaited_once_with(limit=3)
+    assert "小黑盒账号首页" in format_personal_dynamics(result)
+    assert "今天玩什么游戏" in format_personal_dynamics(result)
+
+
+def test_personal_links_round_robin_xhh_into_shared_candidate_pool():
+    def items(prefix: str, count: int, key: str = "content"):
+        return [
+            {key: f"{prefix}-{index}", "url": f"https://example.com/{prefix}/{index}"}
+            for index in range(count)
+        ]
+
+    raw = {
+        "region": "china",
+        "bilibili_dynamic": {"dynamics": items("bili", 10)},
+        "weibo_dynamic": {"statuses": items("weibo", 10)},
+        "douyin_dynamic": {"dynamics": items("douyin", 10)},
+        "kuaishou_dynamic": {"dynamics": items("kuaishou", 10)},
+        "xhh_dynamic": {"posts": items("xhh", 10, key="title")},
+    }
+
+    links = _extract_links_from_raw("personal", raw)
+
+    assert [link["source"] for link in links[:5]] == [
+        "B站", "微博", "抖音", "快手", "小黑盒"
+    ]
+    assert any(link["source"] == "小黑盒" for link in links[:12])
+
+
+def test_xhh_is_hidden_as_a_standalone_menu_mode():
+    root = Path(__file__).resolve().parents[2]
+    menu_source = (root / "static/avatar/avatar-ui-drag.js").read_text(encoding="utf-8")
+    proactive_source = (root / "static/app/app-proactive.js").read_text(encoding="utf-8")
+
+    assert "mode: 'xhh'" not in menu_source
+    assert "availableModes.push('xhh')" not in proactive_source
+    assert "availableModes.push('personal')" in proactive_source

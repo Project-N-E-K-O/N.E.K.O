@@ -9,7 +9,6 @@
         'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled',
         'proactiveVideoChatEnabled',
-        'proactiveXhhChatEnabled',
         'proactivePersonalChatEnabled',
         'proactiveMusicEnabled',
         'proactiveMemeEnabled',

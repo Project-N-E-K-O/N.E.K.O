@@ -502,7 +502,7 @@
      */
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
-            S.proactiveVideoChatEnabled || S.proactiveXhhChatEnabled || S.proactivePersonalChatEnabled ||
+            S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
             S.proactiveMiniGameInviteEnabled;
     }
@@ -611,7 +611,7 @@
 
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
-            !S.proactiveVideoChatEnabled && !S.proactiveXhhChatEnabled && !S.proactivePersonalChatEnabled &&
+            !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return false;
@@ -619,7 +619,7 @@
 
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
-            !S.proactiveVideoChatEnabled && !S.proactiveXhhChatEnabled && !S.proactivePersonalChatEnabled &&
+            !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return isProactiveVisionEnabledNow();
@@ -627,7 +627,7 @@
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
-            !S.proactiveVideoChatEnabled && !S.proactiveXhhChatEnabled && S.proactivePersonalChatEnabled &&
+            !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return S.proactivePersonalChatEnabled;
@@ -1078,12 +1078,7 @@
                 availableModes.push('video');
             }
 
-            // 小黑盒社区搭话：读取公开 feeds，不需要登录或插件。
-            if (S.proactiveXhhChatEnabled && S.proactiveChatEnabled) {
-                availableModes.push('xhh');
-            }
-
-            // 个人动态搭话：使用B站和微博个人动态
+            // 个人动态搭话：聚合已登录平台的账号信息流（含小黑盒首页）。
             if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                 // 检查是否有可用的 Cookie 凭证
                 var platforms = await getAvailablePersonalPlatforms();
@@ -1216,9 +1211,6 @@
                 }
                 if (S.proactiveVideoChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('video');
-                }
-                if (S.proactiveXhhChatEnabled && S.proactiveChatEnabled) {
-                    latestModes.push('xhh');
                 }
                 // 个人动态搭话：需要同时开启个人动态
                 if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {

@@ -87,49 +87,40 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
 
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
-            if region == 'china':
+            # 每个平台先规范化为独立队列，再轮询交错。Phase 1 总候选只有
+            # 12 条，若按平台整段追加，排在末尾的小黑盒等来源会长期进不了候选池。
+            platform_specs = (
+                [
+                    ('bilibili_dynamic', 'dynamics', ('content',), 'B站'),
+                    ('weibo_dynamic', 'statuses', ('content',), '微博'),
+                    ('douyin_dynamic', 'dynamics', ('content',), '抖音'),
+                    ('kuaishou_dynamic', 'dynamics', ('content',), '快手'),
+                    ('xhh_dynamic', 'posts', ('title',), '小黑盒'),
+                ]
+                if region == 'china'
+                else [
+                    ('reddit_dynamic', 'posts', ('title', 'content'), 'Reddit'),
+                    ('twitter_dynamic', 'tweets', ('content',), 'Twitter'),
+                    ('xhh_dynamic', 'posts', ('title',), '小黑盒'),
+                ]
+            )
+            platform_links: list[list[dict]] = []
+            for data_key, items_key, title_keys, source_name in platform_specs:
+                group: list[dict] = []
+                for item in (raw_data.get(data_key, {}).get(items_key, []) or []):
+                    title = next((item.get(key, '') for key in title_keys if item.get(key)), '')
+                    url = item.get('url', '')
+                    if title and url:
+                        group.append({'title': title, 'url': url, 'source': source_name})
+                if group:
+                    platform_links.append(group)
 
-                b_dyn = raw_data.get('bilibili_dynamic', {})
-                for d in (b_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'B站'})
-                
-                w_dyn = raw_data.get('weibo_dynamic', {})
-                for d in (w_dyn.get('statuses', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '微博'})
-                        
-                d_dyn = raw_data.get('douyin_dynamic', {})
-                for d in (d_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '抖音'})
-
-                k_dyn = raw_data.get('kuaishou_dynamic', {})
-                for d in (k_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '快手'})
-            else:
-                r_dyn = raw_data.get('reddit_dynamic', {})
-                for d in (r_dyn.get('posts', []) or []):
-                    title = d.get('title', '') or d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Reddit'})
-                
-                t_dyn = raw_data.get('twitter_dynamic', {})
-                for d in (t_dyn.get('tweets', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Twitter'})
+            row = 0
+            while any(row < len(group) for group in platform_links):
+                for group in platform_links:
+                    if row < len(group):
+                        links.append(group[row])
+                row += 1
 
         elif mode == 'music':
             items = raw_data.get('data', [])

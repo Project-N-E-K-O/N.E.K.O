@@ -340,7 +340,7 @@ def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
         case 'CHAT':
             primary_channel = 'chat'
         case 'WEB':
-            # 使用细粒度 web 子通道（news/video/home/personal），fallback 到 'web'
+            # 使用细粒度 web 子通道（news/video/xhh/home/personal），fallback 到 'web'
             web_link = ctx.get('selected_web_link')
             primary_channel = web_link.get('mode', 'web') if web_link else 'web'
             if web_link:

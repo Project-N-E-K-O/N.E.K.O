@@ -323,7 +323,7 @@ GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 # 全局对话设置允许的字段（白名单）
 _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-    'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactiveXhhChatEnabled', 'proactivePersonalChatEnabled',
+    'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
     'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
     'avatarReactionBubbleEnabled',
@@ -456,7 +456,7 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         # 值级别验证：确保字段类型和范围正确
         _BOOL_FIELDS = {
             'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-            'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactiveXhhChatEnabled', 'proactivePersonalChatEnabled',
+            'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
             'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
             'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
             'avatarReactionBubbleEnabled', 'subtitleEnabled', 'noiseReductionEnabled'

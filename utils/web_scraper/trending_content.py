@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import httpx
-from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 import random
 import re
@@ -33,15 +32,14 @@ from ._shared import get_random_user_agent, is_china_region, logger
 from .platform_helpers import (
     _get_bilibili_credential,
     _get_platform_cookies,
-    build_xhh_cookie_header,
     build_xhh_request_params,
 )
 
 
-_XHH_API_BASE = "https://api.xiaoheihe.cn"
-_XHH_FEEDS_PATH = "/bbs/app/feeds"
-_XHH_WEB_LINK = "https://www.xiaoheihe.cn/app/bbs/link/{link_id}"
-_XHH_USER_AGENT = (
+XHH_API_BASE = "https://api.xiaoheihe.cn"
+XHH_FEEDS_PATH = "/bbs/app/feeds"
+XHH_WEB_LINK = "https://www.xiaoheihe.cn/app/bbs/link/{link_id}"
+XHH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0.0.0 Safari/537.36"
@@ -996,7 +994,7 @@ def normalize_xhh_feed(payload: dict[str, Any], *, limit: int = 10) -> list[dict
                 "author": _plain_xhh_text(user.get("username")),
                 "topics": _xhh_label_values(raw.get("topics")),
                 "tags": _xhh_label_values(raw.get("hashtags")),
-                "url": _XHH_WEB_LINK.format(link_id=link_id),
+                "url": XHH_WEB_LINK.format(link_id=link_id),
                 "create_at": raw.get("create_at"),
             }
         )
@@ -1024,18 +1022,15 @@ def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
 
 
 async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
-    """Fetch the feed, optionally using credentials saved in the credential center."""
+    """Fetch the public Xiaoheihe feed without account credentials."""
     try:
-        cookies = await asyncio.to_thread(load_cookies_from_file, "xhh")
         headers = {
             "Referer": "https://www.xiaoheihe.cn/",
-            "User-Agent": _XHH_USER_AGENT,
+            "User-Agent": XHH_USER_AGENT,
         }
-        if cookies:
-            headers["Cookie"] = build_xhh_cookie_header(cookies)
         response = await get_external_http_client().get(
-            f"{_XHH_API_BASE}{_XHH_FEEDS_PATH}",
-            params=build_xhh_request_params(_XHH_FEEDS_PATH, extra={"pull": "1"}),
+            f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
+            params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
             headers=headers,
             timeout=10.0,
         )
