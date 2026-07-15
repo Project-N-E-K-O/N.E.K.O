@@ -1,8 +1,9 @@
 /**
  * app-cat-mind-debug.js - opt-in visual inspector for Cat Mind.
  *
- * The debug-panel setting resolves from window.__NEKO_CAT_MIND_DEBUG__, then
- * same-origin localStorage, then its safe default. It only controls inspector
+ * The debug-panel setting resolves from the cat_mind_debug query parameter,
+ * window.__NEKO_CAT_MIND_DEBUG__, same-origin localStorage key
+ * neko.catMind.debug, then its safe default. It only controls inspector
  * visibility; it never changes Cat Mind state, selection, or NEKO-PC behavior.
  */
 (function () {
@@ -98,7 +99,7 @@
             contract.isDebugEnabled());
     }
 
-    function createPanel() {
+    function createPanel(onHide) {
         var panel = document.createElement('aside');
         panel.id = 'neko-cat-mind-debug-panel';
         panel.setAttribute('aria-live', 'off');
@@ -106,23 +107,32 @@
         var title = document.createElement('div');
         title.className = 'neko-cat-mind-debug-title';
         title.textContent = '猫咪状态机调试';
+        var hideButton = document.createElement('button');
+        hideButton.type = 'button';
+        hideButton.className = 'neko-cat-mind-debug-hide';
+        hideButton.textContent = '隐藏';
+        hideButton.setAttribute('aria-label', '隐藏猫咪状态机调试面板');
+        hideButton.addEventListener('click', onHide);
+        title.appendChild(hideButton);
         var hint = document.createElement('div');
         hint.className = 'neko-cat-mind-debug-hint';
-        hint.textContent = '调试开关：localStorage.neko.catMind.debug = true';
+        hint.textContent = '入口：?cat_mind_debug=1；关闭：?cat_mind_debug=0';
         var body = document.createElement('pre');
         body.className = 'neko-cat-mind-debug-body';
         panel.appendChild(title);
         panel.appendChild(hint);
         panel.appendChild(body);
         document.body.appendChild(panel);
-        return body;
+        return { panel: panel, body: body };
     }
 
     function addStyle() {
         var style = document.createElement('style');
         style.textContent = [
             '#neko-cat-mind-debug-panel{position:fixed;top:12px;right:12px;z-index:2147483000;width:min(360px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;padding:12px;border:1px solid rgba(112,211,255,.65);border-radius:10px;background:rgba(8,18,31,.92);color:#e9f6ff;box-shadow:0 12px 40px rgba(0,0,0,.35);font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;pointer-events:auto}',
-            '#neko-cat-mind-debug-panel .neko-cat-mind-debug-title{font-weight:700;letter-spacing:.08em;color:#8de4ff}',
+            '#neko-cat-mind-debug-panel .neko-cat-mind-debug-title{display:flex;align-items:center;justify-content:space-between;gap:12px;font-weight:700;letter-spacing:.08em;color:#8de4ff}',
+            '#neko-cat-mind-debug-panel .neko-cat-mind-debug-hide{appearance:none;border:1px solid rgba(141,228,255,.55);border-radius:6px;padding:2px 8px;background:transparent;color:#d9f5ff;font:inherit;letter-spacing:0;cursor:pointer}',
+            '#neko-cat-mind-debug-panel .neko-cat-mind-debug-hide:hover{background:rgba(141,228,255,.12)}',
             '#neko-cat-mind-debug-panel .neko-cat-mind-debug-hint{margin-top:4px;color:#adc0cd;font-size:11px}',
             '#neko-cat-mind-debug-panel .neko-cat-mind-debug-body{margin:10px 0 0;white-space:pre-wrap;word-break:break-word}'
         ].join('');
@@ -344,7 +354,7 @@
                 lines.push('触发事实：' + decision.triggerTypes.join(', '));
             }
         }
-        lines.push('', '动作评分（每个动作独立计算）');
+        lines.push('', '动作评分（统一需求余量＋节奏－本动作冷却）');
         ACTION_DEFINITIONS.forEach(function (action) {
             var score = scoresByAction[action.id] || candidatesByAction[action.id] || {};
             var candidate = candidatesByAction[action.id];
@@ -356,9 +366,18 @@
                 : null;
             lines.push('【' + action.label + '】');
             lines.push('  理论基础分：' + formatNumber(score.baseScore) + ' ｜ 阈值：' + formatNumber(score.threshold));
+            lines.push('  需求余量：' + formatNumber(score.needSurplus) +
+                ' ｜ 计入余量：' + formatNumber(score.needContribution));
+            lines.push('  统一节奏分：' + formatNumber(score.cadenceAdjustment) +
+                ' ｜ 距上次真实开始：' + Math.round((Number(score.cadenceElapsedMs) || 0) / 1000) + ' 秒');
+            lines.push('  节奏曲线：进度 ' + Math.round((Number(score.cadenceCurveProgress) || 0) * 100) + '%' +
+                ' ｜ S 曲线值：' + formatNumber(score.cadenceCurveFactor));
             lines.push('  冷却扣分：' + formatNumber(score.cooldownPenalty) +
                 (score.cooldownApplied ? ' ｜ 剩余：' + Math.ceil((Number(score.cooldownRemainingMs) || 0) / 1000) + ' 秒' : ' ｜ 未冷却'));
-            lines.push('  理论分（基础分－冷却）：' + (currentScore === null ? '-' : formatNumber(currentScore)));
+            lines.push('  冷却曲线：剩余比例 ' + Math.round((Number(score.cooldownRecoveryFactor) || 0) * 100) + '%' +
+                ' ｜ S 曲线值：' + formatNumber(score.cooldownCurveFactor));
+            lines.push('  可比效用：' + formatNumber(score.utilityScore) +
+                ' ｜ 最终分：' + (currentScore === null ? '-' : formatNumber(currentScore)));
             lines.push('  本轮可用分（仅 provider 允许后计算）：' +
                 (candidateScore === null ? '尚未通过动作条件' : formatNumber(candidateScore)));
             lines.push('  本轮候选：' + formatCandidateStatus(candidate));
@@ -373,8 +392,19 @@
             return;
         }
         addStyle();
-        var body = createPanel();
+        var hidden = false;
+        var refreshTimer = null;
+        var panelParts = createPanel(function () {
+            hidden = true;
+            panelParts.panel.style.display = 'none';
+            if (refreshTimer !== null && typeof window.clearInterval === 'function') {
+                window.clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+        });
+        var body = panelParts.body;
         var render = function (event) {
+            if (hidden) return;
             var snapshot = event && event.detail && event.detail.snapshot;
             renderSnapshot(body, snapshot || window.nekoCatMind.getDebugSnapshot());
         };
@@ -422,7 +452,7 @@
         // action's cooldown/score visibly advance between state transitions. The
         // snapshot path is read-only and never schedules a selector decision.
         if (typeof window.setInterval === 'function') {
-            var refreshTimer = window.setInterval(function () {
+            refreshTimer = window.setInterval(function () {
                 render();
             }, 500);
             window.addEventListener('pagehide', function () {

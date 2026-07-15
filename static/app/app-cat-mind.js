@@ -23,6 +23,7 @@
     // Debug visibility is deliberately separate from Cat Mind operation:
     // Cat Mind always owns its scheduler while the inspector remains opt-in.
     var DEBUG_SETTING_KEY = 'neko.catMind.debug';
+    var DEBUG_QUERY_PARAM = 'cat_mind_debug';
 
     var OBSERVATION_PAYLOAD_FIELDS = Object.freeze([
         'type',
@@ -121,13 +122,28 @@
         cat2: Object.freeze({ appetite: 0.0045, sleepiness: 0.0135, energy: -0.008, social_need: 0.01, stimulation_need: 0.0065 }),
         cat3: Object.freeze({ appetite: 0.003, sleepiness: 0.0085, energy: -0.0035, social_need: 0.0055, stimulation_need: 0.003 }),
     });
+    // Every registered action uses the same scoring layers and monotonic
+    // response curves. Positive need surplus rises quickly enough to answer a
+    // dense interaction burst, while the deeper cadence floor and the action's
+    // own power-recovery cooldown keep ordinary idle and repeats restrained.
+    var ACTION_SCORE_POLICY = Object.freeze({
+        negativeNeedCurveRange: 14,
+        positiveNeedCurveRange: 4,
+        positiveNeedCurveCeiling: 42,
+        cadenceFloor: -52,
+        cadenceCeiling: 18,
+        cadenceRecoveryMs: 4.85 * 60 * 1000,
+        cooldownPenaltyPoints: 36,
+        cooldownMultiplier: 2.4,
+        cooldownRecoveryExponent: 2,
+    });
     var ACTION_SCORE_CONFIG = Object.freeze({
-        cat1_social_ping: Object.freeze({ threshold: 45, cooldownMs: 3 * 60 * 1000, minPenalty: 2, maxPenalty: 16 }),
-        cat1_eat_snack: Object.freeze({ threshold: 52, cooldownMs: 180 * 1000, minPenalty: 8, maxPenalty: 20 }),
-        cat1_small_move: Object.freeze({ threshold: 54, cooldownMs: 70 * 1000, minPenalty: 6, maxPenalty: 20 }),
-        cat1_play_yarn: Object.freeze({ threshold: 54, cooldownMs: 240 * 1000, minPenalty: 12, maxPenalty: 28 }),
-        cat2_nap_feedback: Object.freeze({ threshold: 50, cooldownMs: 240 * 1000, minPenalty: 10, maxPenalty: 24 }),
-        cat3_sleep_feedback: Object.freeze({ threshold: 45, cooldownMs: 300 * 1000, minPenalty: 12, maxPenalty: 26 }),
+        cat1_social_ping: Object.freeze({ threshold: 48, cooldownMs: 8 * 60 * 1000 }),
+        cat1_eat_snack: Object.freeze({ threshold: 52, cooldownMs: 8 * 60 * 1000 }),
+        cat1_small_move: Object.freeze({ threshold: 51, cooldownMs: 8 * 60 * 1000 }),
+        cat1_play_yarn: Object.freeze({ threshold: 52, cooldownMs: 10 * 60 * 1000 }),
+        cat2_nap_feedback: Object.freeze({ threshold: 54, cooldownMs: 10 * 60 * 1000 }),
+        cat3_sleep_feedback: Object.freeze({ threshold: 50, cooldownMs: 12 * 60 * 1000 }),
     });
     var ACTION_TIE_BREAK = Object.freeze([
         ACTION_IDS.CAT1_SOCIAL_PING,
@@ -161,7 +177,29 @@
         return fallback;
     }
 
+    function getDebugQueryOverride() {
+        try {
+            var search = window.location && typeof window.location.search === 'string'
+                ? window.location.search.replace(/^\?/, '')
+                : '';
+            if (!search) return null;
+            var pairs = search.split('&');
+            for (var index = 0; index < pairs.length; index += 1) {
+                var parts = pairs[index].split('=');
+                var key = decodeURIComponent(parts.shift() || '');
+                if (key !== DEBUG_QUERY_PARAM) continue;
+                var value = decodeURIComponent(parts.join('=').replace(/\+/g, ' '));
+                return coerceBoolean(value, null);
+            }
+        } catch (_) {}
+        return null;
+    }
+
     function isDebugEnabled() {
+        var queryOverride = getDebugQueryOverride();
+        if (queryOverride !== null) {
+            return queryOverride;
+        }
         if (hasOwn(window, '__NEKO_CAT_MIND_DEBUG__')) {
             return coerceBoolean(window.__NEKO_CAT_MIND_DEBUG__, false);
         }
@@ -482,6 +520,18 @@
                 var score = item.score === null || item.score === undefined ? null : Number(item.score);
                 var baseScore = item.baseScore === null || item.baseScore === undefined ? null : Number(item.baseScore);
                 var threshold = item.threshold === null || item.threshold === undefined ? null : Number(item.threshold);
+                var needSurplus = item.needSurplus === null || item.needSurplus === undefined
+                    ? null
+                    : Number(item.needSurplus);
+                var needContribution = item.needContribution === null || item.needContribution === undefined
+                    ? null
+                    : Number(item.needContribution);
+                var cadenceAdjustment = item.cadenceAdjustment === null || item.cadenceAdjustment === undefined
+                    ? null
+                    : Number(item.cadenceAdjustment);
+                var utilityScore = item.utilityScore === null || item.utilityScore === undefined
+                    ? null
+                    : Number(item.utilityScore);
                 var cooldownPenalty = item.cooldownPenalty === null || item.cooldownPenalty === undefined
                     ? null
                     : Number(item.cooldownPenalty);
@@ -491,15 +541,31 @@
                 var cooldownRecoveryFactor = item.cooldownRecoveryFactor === null || item.cooldownRecoveryFactor === undefined
                     ? null
                     : Number(item.cooldownRecoveryFactor);
+                var cadenceCurveProgress = item.cadenceCurveProgress === null || item.cadenceCurveProgress === undefined
+                    ? null
+                    : Number(item.cadenceCurveProgress);
+                var cadenceCurveFactor = item.cadenceCurveFactor === null || item.cadenceCurveFactor === undefined
+                    ? null
+                    : Number(item.cadenceCurveFactor);
+                var cooldownCurveFactor = item.cooldownCurveFactor === null || item.cooldownCurveFactor === undefined
+                    ? null
+                    : Number(item.cooldownCurveFactor);
                 return {
                     actionId: typeof item.actionId === 'string' ? item.actionId : '',
                     score: Number.isFinite(score) ? score : null,
                     baseScore: Number.isFinite(baseScore) ? baseScore : null,
                     threshold: Number.isFinite(threshold) ? threshold : null,
+                    needSurplus: Number.isFinite(needSurplus) ? needSurplus : null,
+                    needContribution: Number.isFinite(needContribution) ? needContribution : null,
+                    cadenceAdjustment: Number.isFinite(cadenceAdjustment) ? cadenceAdjustment : null,
+                    cadenceCurveProgress: Number.isFinite(cadenceCurveProgress) ? cadenceCurveProgress : null,
+                    cadenceCurveFactor: Number.isFinite(cadenceCurveFactor) ? cadenceCurveFactor : null,
+                    utilityScore: Number.isFinite(utilityScore) ? utilityScore : null,
                     cooldownApplied: item.cooldownApplied === true,
                     cooldownPenalty: Number.isFinite(cooldownPenalty) ? cooldownPenalty : null,
                     cooldownRemainingMs: Number.isFinite(cooldownRemainingMs) ? cooldownRemainingMs : null,
                     cooldownRecoveryFactor: Number.isFinite(cooldownRecoveryFactor) ? cooldownRecoveryFactor : null,
+                    cooldownCurveFactor: Number.isFinite(cooldownCurveFactor) ? cooldownCurveFactor : null,
                     allowed: item.allowed === true,
                     reason: typeof item.reason === 'string' ? item.reason : '',
                     providerDetail: sanitizeDetail(item.providerDetail),
@@ -718,31 +784,51 @@
         return index === -1 ? ACTION_TIE_BREAK.length : index;
     }
 
+    function smoothstep01(value) {
+        var normalized = Math.max(0, Math.min(1, Number(value) || 0));
+        return normalized * normalized * (3 - 2 * normalized);
+    }
+
+    function getNeedContribution(needSurplus) {
+        var negativeRange = ACTION_SCORE_POLICY.negativeNeedCurveRange;
+        if (needSurplus < 0) {
+            if (needSurplus <= -negativeRange) return needSurplus;
+            return -negativeRange * smoothstep01(Math.abs(needSurplus) / negativeRange);
+        }
+        return ACTION_SCORE_POLICY.positiveNeedCurveCeiling * smoothstep01(
+            needSurplus / ACTION_SCORE_POLICY.positiveNeedCurveRange
+        );
+    }
+
     function getActionCooldown(actionId, timestamp, options) {
         var shouldPrune = !(options && options.prune === false);
         var config = getActionScoreConfig(actionId);
         var cooldown = runtimeState.scheduler.actionCooldowns[actionId];
         if (!config || !cooldown) {
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0 };
+            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var startedAt = Number(cooldown.startedAt);
         var fullCooldownMs = Number(cooldown.fullCooldownMs) || config.cooldownMs;
         if (!Number.isFinite(startedAt) || !Number.isFinite(fullCooldownMs) || fullCooldownMs <= 0) {
             if (shouldPrune) delete runtimeState.scheduler.actionCooldowns[actionId];
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0 };
+            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var elapsedMs = Math.max(0, (Number(timestamp) || nowMs()) - startedAt);
         var remainingMs = Math.max(0, fullCooldownMs - elapsedMs);
         if (!remainingMs) {
             if (shouldPrune) delete runtimeState.scheduler.actionCooldowns[actionId];
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0 };
+            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var recoveryFactor = Math.min(1, remainingMs / fullCooldownMs);
+        var elapsedProgress = 1 - recoveryFactor;
+        var curveFactor = 1 - Math.pow(elapsedProgress, ACTION_SCORE_POLICY.cooldownRecoveryExponent);
         return {
             active: true,
-            penalty: config.minPenalty + recoveryFactor * (config.maxPenalty - config.minPenalty),
+            penalty: ACTION_SCORE_POLICY.cooldownPenaltyPoints *
+                ACTION_SCORE_POLICY.cooldownMultiplier * curveFactor,
             remainingMs: remainingMs,
             recoveryFactor: recoveryFactor,
+            curveFactor: curveFactor,
         };
     }
 
@@ -778,6 +864,22 @@
         return '';
     }
 
+    function getCadenceScore(timestamp) {
+        var scoreAt = Number(timestamp) || nowMs();
+        var anchor = Number(runtimeState.clock.lastActionStartedAt) || runtimeState.enteredAt || scoreAt;
+        var elapsedMs = Math.max(0, scoreAt - anchor);
+        var progress = Math.min(1, elapsedMs / ACTION_SCORE_POLICY.cadenceRecoveryMs);
+        var curveFactor = smoothstep01(progress);
+        var adjustment = ACTION_SCORE_POLICY.cadenceFloor +
+            (ACTION_SCORE_POLICY.cadenceCeiling - ACTION_SCORE_POLICY.cadenceFloor) * curveFactor;
+        return {
+            elapsedMs: elapsedMs,
+            progress: progress,
+            curveFactor: curveFactor,
+            adjustment: adjustment,
+        };
+    }
+
     function directionalActionScore(actionId, timestamp, cooldownOptions) {
         var fields = runtimeState.fields;
         var config = getActionScoreConfig(actionId);
@@ -788,11 +890,11 @@
             // selecting the same vocal response again.
             baseScore = 12 + fields.social_need * 55 + fields.stimulation_need * 8 + (1 - fields.sleepiness) * 4;
         } else if (actionId === ACTION_IDS.CAT1_SMALL_MOVE) {
-            baseScore = 18 + fields.stimulation_need * 40 + fields.energy * 24 + fields.social_need * 6 -
-                fields.sleepiness * 10 - fields.appetite * 5;
+            baseScore = 10 + fields.stimulation_need * 40 + fields.energy * 34 + fields.social_need * 6 -
+                fields.sleepiness * 12 - fields.appetite * 5;
         } else if (actionId === ACTION_IDS.CAT1_PLAY_YARN) {
-            baseScore = 12 + fields.stimulation_need * 48 + fields.energy * 24 + fields.social_need * 12 -
-                fields.sleepiness * 12 - fields.appetite * 8;
+            baseScore = 5 + fields.stimulation_need * 48 + fields.energy * 36 + fields.social_need * 12 -
+                fields.sleepiness * 18 - fields.appetite * 8;
         } else if (actionId === ACTION_IDS.CAT1_EAT_SNACK) {
             baseScore = 18 + fields.appetite * 55 + (1 - fields.energy) * 6 + fields.sleepiness * 4 +
                 fields.social_need * 6 - fields.stimulation_need * 5;
@@ -801,15 +903,28 @@
                 fields.appetite * 3 - fields.social_need * 4;
             baseScore += actionId === ACTION_IDS.CAT3_SLEEP_FEEDBACK ? 20 : 8;
         }
+        var threshold = config ? config.threshold : Infinity;
+        var needSurplus = baseScore - threshold;
+        var needContribution = getNeedContribution(needSurplus);
+        var cadence = getCadenceScore(timestamp);
         var cooldown = getActionCooldown(actionId, timestamp, cooldownOptions);
+        var utilityScore = needContribution + cadence.adjustment - cooldown.penalty;
         return {
             baseScore: baseScore,
-            score: baseScore - cooldown.penalty,
-            threshold: config ? config.threshold : Infinity,
+            score: threshold + utilityScore,
+            threshold: threshold,
+            needSurplus: needSurplus,
+            needContribution: needContribution,
+            cadenceAdjustment: cadence.adjustment,
+            cadenceElapsedMs: cadence.elapsedMs,
+            cadenceCurveProgress: cadence.progress,
+            cadenceCurveFactor: cadence.curveFactor,
+            utilityScore: utilityScore,
             cooldownApplied: cooldown.active,
             cooldownPenalty: cooldown.penalty,
             cooldownRemainingMs: cooldown.remainingMs,
             cooldownRecoveryFactor: cooldown.recoveryFactor,
+            cooldownCurveFactor: cooldown.curveFactor,
         };
     }
 
@@ -829,10 +944,18 @@
                 baseScore: Math.round(scoring.baseScore * 100) / 100,
                 score: Math.round(scoring.score * 100) / 100,
                 threshold: scoring.threshold,
+                needSurplus: Math.round(scoring.needSurplus * 100) / 100,
+                needContribution: Math.round(scoring.needContribution * 100) / 100,
+                cadenceAdjustment: Math.round(scoring.cadenceAdjustment * 100) / 100,
+                cadenceElapsedMs: Math.round(scoring.cadenceElapsedMs),
+                cadenceCurveProgress: Math.round(scoring.cadenceCurveProgress * 10000) / 10000,
+                cadenceCurveFactor: Math.round(scoring.cadenceCurveFactor * 10000) / 10000,
+                utilityScore: Math.round(scoring.utilityScore * 100) / 100,
                 cooldownApplied: scoring.cooldownApplied,
                 cooldownPenalty: Math.round(scoring.cooldownPenalty * 100) / 100,
                 cooldownRemainingMs: Math.round(scoring.cooldownRemainingMs),
                 cooldownRecoveryFactor: Math.round(scoring.cooldownRecoveryFactor * 10000) / 10000,
+                cooldownCurveFactor: Math.round(scoring.cooldownCurveFactor * 10000) / 10000,
             };
         });
     }
@@ -921,10 +1044,17 @@
                 score: null,
                 baseScore: null,
                 threshold: null,
+                needSurplus: null,
+                needContribution: null,
+                cadenceAdjustment: null,
+                cadenceCurveProgress: null,
+                cadenceCurveFactor: null,
+                utilityScore: null,
                 cooldownApplied: false,
                 cooldownPenalty: 0,
                 cooldownRemainingMs: 0,
                 cooldownRecoveryFactor: 0,
+                cooldownCurveFactor: 0,
                 allowed: false,
                 reason: '',
                 providerDetail: {},
@@ -944,12 +1074,19 @@
                     var scoring = directionalActionScore(actionId, scheduler.lastEvaluatedAt);
                     candidate.baseScore = Math.round(scoring.baseScore * 100) / 100;
                     candidate.threshold = scoring.threshold;
+                    candidate.needSurplus = Math.round(scoring.needSurplus * 100) / 100;
+                    candidate.needContribution = Math.round(scoring.needContribution * 100) / 100;
+                    candidate.cadenceAdjustment = Math.round(scoring.cadenceAdjustment * 100) / 100;
+                    candidate.cadenceCurveProgress = Math.round(scoring.cadenceCurveProgress * 10000) / 10000;
+                    candidate.cadenceCurveFactor = Math.round(scoring.cadenceCurveFactor * 10000) / 10000;
+                    candidate.utilityScore = Math.round(scoring.utilityScore * 100) / 100;
                     candidate.cooldownApplied = scoring.cooldownApplied;
                     candidate.cooldownPenalty = Math.round(scoring.cooldownPenalty * 100) / 100;
                     candidate.cooldownRemainingMs = Math.round(scoring.cooldownRemainingMs);
                     candidate.cooldownRecoveryFactor = Math.round(scoring.cooldownRecoveryFactor * 10000) / 10000;
+                    candidate.cooldownCurveFactor = Math.round(scoring.cooldownCurveFactor * 10000) / 10000;
                     candidate.score = Math.round(scoring.score * 100) / 100;
-                    if (candidate.score >= candidate.threshold) {
+                    if (candidate.utilityScore >= 0) {
                         candidate.allowed = true;
                         candidate.reason = 'allowed';
                     } else {
@@ -962,7 +1099,7 @@
         var allowed = base.candidates.filter(function (candidate) { return candidate.allowed; });
         if (allowed.length) {
             allowed.sort(function (left, right) {
-                if (right.score !== left.score) return right.score - left.score;
+                if (right.utilityScore !== left.utilityScore) return right.utilityScore - left.utilityScore;
                 return getActionTieBreakIndex(left.actionId) - getActionTieBreakIndex(right.actionId);
             });
             base.outcome = allowed[0].actionId;
@@ -1329,32 +1466,31 @@
             return;
         }
         if (type === OBSERVATION_TYPES.DRAG_START) {
-            adjustMind({ social_need: 0.04, stimulation_need: 0.05, energy: -0.02 });
+            adjustMind({ appetite: 0.005, social_need: 0.015, stimulation_need: 0.02, energy: -0.005 });
         } else if (type === OBSERVATION_TYPES.DRAG_END) {
-            adjustMind({ social_need: 0.08, stimulation_need: 0.08, energy: -0.04 });
+            adjustMind({ appetite: 0.008, social_need: 0.025, stimulation_need: 0.03, energy: -0.01 });
         } else if (type === OBSERVATION_TYPES.DRAG_CANCELLED) {
-            adjustMind({ social_need: 0.03, stimulation_need: 0.02 });
+            adjustMind({ social_need: 0.01, stimulation_need: 0.01 });
         } else if (type === OBSERVATION_TYPES.RAPID_DRAG) {
-            adjustMind({ social_need: 0.12, stimulation_need: 0.12, energy: -0.1, sleepiness: 0.05 });
+            adjustMind({ appetite: 0.02, social_need: 0.035, stimulation_need: 0.04, energy: -0.02, sleepiness: 0.02 });
         } else if (type === OBSERVATION_TYPES.CAT_HOVER_REACTION) {
-            // Repeated voluntary contact means the user is still available to
-            // engage. The light energy cost keeps this distinct from drag.
-            adjustMind({ social_need: 0.05, stimulation_need: 0.03, energy: -0.01 });
+            // Hover is a light but direct invitation to react. It mainly raises
+            // stimulation; the shared scoring curve decides which legal action
+            // can answer, without mapping this event to a particular runner.
+            adjustMind({ social_need: 0.02, stimulation_need: 0.05, energy: -0.003 });
         } else if (type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP) {
-            // A popped bubble is an explicit reply. It raises the existing
-            // social/stimulation drivers, but the action's own cooldown and
-            // short recent-bubble adjustment still prevent a reflex repeat.
-            adjustMind({ social_need: 0.06, appetite: 0.04, stimulation_need: 0.04 });
-        } else if (type === OBSERVATION_TYPES.CHAT_MINIMIZED_VISIBLE) {
-            adjustMind({ social_need: 0.03, stimulation_need: 0.07 });
-        } else if (type === OBSERVATION_TYPES.CHAT_MINIMIZED_MOVED_FAR) {
-            adjustMind({ social_need: 0.04, stimulation_need: 0.1 });
-        } else if (type === OBSERVATION_TYPES.CHAT_COMPACT_SURFACE_VISIBLE) {
-            adjustMind({ social_need: 0.03, stimulation_need: 0.08 });
-        } else if (type === OBSERVATION_TYPES.CHAT_IDLE_DOCKED_NEAR_CAT) {
-            adjustMind({ social_need: 0.03, stimulation_need: 0.04 });
-        } else if (type === OBSERVATION_TYPES.CHAT_EXPANDED) {
-            adjustMind({ social_need: 0.06, stimulation_need: -0.02 });
+            // Popping the bubble is a completed moment of contact, so it
+            // satisfies social/stimulation need instead of feeding another
+            // bubble-producing action loop.
+            adjustMind({ social_need: -0.06, stimulation_need: -0.04 });
+        } else if (type === OBSERVATION_TYPES.CHAT_MINIMIZED_VISIBLE ||
+            type === OBSERVATION_TYPES.CHAT_MINIMIZED_MOVED_FAR ||
+            type === OBSERVATION_TYPES.CHAT_COMPACT_SURFACE_VISIBLE ||
+            type === OBSERVATION_TYPES.CHAT_IDLE_DOCKED_NEAR_CAT ||
+            type === OBSERVATION_TYPES.CHAT_EXPANDED) {
+            // Window geometry is an execution/provider fact, not a user need.
+            // It still enters recent events and schedules the next decision.
+            return;
         } else if (type === OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT) {
             adjustMind({ social_need: 0.05, stimulation_need: -0.04, energy: -0.04 });
         } else if (type === OBSERVATION_TYPES.CAT1_STRETCH_DONE_NEAR_CHAT) {
@@ -1365,18 +1501,18 @@
             type === OBSERVATION_TYPES.EDGE_PEEK_AFTER_DRAG) {
             adjustMind({ stimulation_need: 0.04, energy: -0.02 });
         } else if (type === OBSERVATION_TYPES.SOCIAL_PING_DONE) {
-            adjustMind({ social_need: -0.18, energy: -0.01 });
+            adjustMind({ social_need: -0.28, energy: -0.01 });
         } else if (type === OBSERVATION_TYPES.SMALL_MOVE_DONE) {
-            adjustMind({ stimulation_need: -0.08, energy: -0.03, sleepiness: 0.01 });
+            adjustMind({ stimulation_need: -0.14, energy: -0.03, sleepiness: 0.01 });
         } else if (type === OBSERVATION_TYPES.EAT_DONE) {
-            adjustMind({ appetite: -0.24, energy: 0.08, stimulation_need: 0.03, sleepiness: -0.01 });
+            adjustMind({ appetite: -0.28, energy: 0.08, stimulation_need: 0.02, sleepiness: -0.01 });
         } else if (type === OBSERVATION_TYPES.PLAY_DONE) {
-            adjustMind({ stimulation_need: -0.24, energy: -0.1, appetite: 0.12, sleepiness: 0.06 });
+            adjustMind({ stimulation_need: -0.28, energy: -0.1, appetite: 0.1, sleepiness: 0.05 });
         } else if (type === OBSERVATION_TYPES.SLEEP_FEEDBACK_DONE) {
             if (observation.tier === TIERS.CAT3) {
-                adjustMind({ sleepiness: -0.34, energy: 0.18, stimulation_need: 0.02, appetite: 0.02 });
+                adjustMind({ sleepiness: -0.38, energy: 0.2, stimulation_need: 0.02, appetite: 0.02 });
             } else {
-                adjustMind({ sleepiness: -0.26, energy: 0.14, stimulation_need: 0.02, appetite: 0.02 });
+                adjustMind({ sleepiness: -0.3, energy: 0.16, stimulation_need: 0.02, appetite: 0.02 });
             }
         } else if (type === OBSERVATION_TYPES.ACTION_INTERRUPTED_BY_DRAG) {
             adjustMind({ social_need: 0.06, stimulation_need: 0.06, energy: -0.04, sleepiness: 0.02 });
@@ -1904,6 +2040,7 @@
     window.NekoCatMindContract = Object.freeze({
         EVENT_NAMES: EVENT_NAMES,
         DEBUG_SETTING_KEY: DEBUG_SETTING_KEY,
+        DEBUG_QUERY_PARAM: DEBUG_QUERY_PARAM,
         OBSERVATION_PAYLOAD_FIELDS: OBSERVATION_PAYLOAD_FIELDS,
         OBSERVATION_TYPES: OBSERVATION_TYPES,
         TIERS: TIERS,

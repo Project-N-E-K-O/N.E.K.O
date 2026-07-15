@@ -151,7 +151,7 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
     assert "FEATURE_FLAGS" not in source
     assert "getFeatureFlag" not in source
     assert "selectAction" not in source
-    assert "utility" not in source.lower()
+    assert "utilityScore" in source
     assert "scoreAction" not in source
 
 
@@ -525,15 +525,15 @@ def test_cat_mind_walk_journey_tail_observations_reduce_without_waking_selector(
         assert.equal(timers.length, 0);
         assert.equal(requests.length, 0);
 
-        // Ordinary interaction remains a later asynchronous decision source.
-        for (let index = 0; index < 16; index += 1) {{
-          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-            detail: {{ type: 'thought_bubble_pop', source: 'journey-test', tier: 'cat1', timestamp: 1100 + index, detail: {{}} }}
-          }}));
-        }}
+        // Ordinary interaction remains a later asynchronous decision source,
+        // but a popped bubble now satisfies need and must not force an action.
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'thought_bubble_pop', source: 'journey-test', tier: 'cat1', timestamp: 1100, detail: {{}} }}
+        }}));
         assert.equal(timers.length, 1);
         timers.shift()();
-        assert.equal(requests.length, 1);
+        assert.equal(requests.length, 0);
+        assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'below_action_threshold');
         """
     )
 
@@ -1275,9 +1275,11 @@ def test_cat_mind_debug_overlay_is_opt_in_and_selector_ready():
     assert "neko.catMind.debug" in source
     assert "getDebugSnapshot" in source
     assert "lastDecision" in source
-    assert "动作评分（每个动作独立计算）" in source
+    assert "动作评分（统一需求余量＋节奏－本动作冷却）" in source
     assert "理论基础分：" in source
-    assert "理论分（基础分－冷却）：" in source
+    assert "需求余量：" in source
+    assert "统一节奏分：" in source
+    assert "可比效用：" in source
     assert "本轮可用分（仅 provider 允许后计算）：" in source
     assert "动作条件依据：" in source
     assert "现场还不满足：" in source
@@ -1296,7 +1298,7 @@ def test_cat_mind_debug_overlay_is_opt_in_and_selector_ready():
     assert "neko:cat-mind:action-request" not in source
 
 
-def test_cat_mind_debug_setting_can_use_local_storage_or_explicit_global():
+def test_cat_mind_debug_setting_can_use_query_local_storage_or_explicit_global():
     script = textwrap.dedent(
         f"""
         const fs = require('node:fs');
@@ -1308,13 +1310,19 @@ def test_cat_mind_debug_setting_can_use_local_storage_or_explicit_global():
           dispatchEvent() {{ return true; }}
         }}
         const win = new EventTargetLike();
+        win.location = {{ search: '' }};
         win.localStorage = {{ getItem(name) {{ return name === 'neko.catMind.debug' ? 'true' : null; }} }};
         const context = {{ window: win, CustomEvent: class {{}}, Date, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
         assert.equal(win.NekoCatMindContract.DEBUG_SETTING_KEY, 'neko.catMind.debug');
+        assert.equal(win.NekoCatMindContract.DEBUG_QUERY_PARAM, 'cat_mind_debug');
         assert.equal(win.NekoCatMindContract.isDebugEnabled(), true);
         win.__NEKO_CAT_MIND_DEBUG__ = false;
+        assert.equal(win.NekoCatMindContract.isDebugEnabled(), false);
+        win.location.search = '?cat_mind_debug=1';
+        assert.equal(win.NekoCatMindContract.isDebugEnabled(), true);
+        win.location.search = '?cat_mind_debug=0';
         assert.equal(win.NekoCatMindContract.isDebugEnabled(), false);
         """
     )
@@ -1347,6 +1355,7 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
           constructor(tag) {{ this.tagName = tag; this.children = []; this.style = {{}}; this.textContent = ''; this.id = ''; }}
           appendChild(child) {{ this.children.push(child); return child; }}
           setAttribute() {{}}
+          addEventListener(type, handler) {{ this['on' + type] = handler; }}
         }}
         class DocumentLike extends EventTargetLike {{
           constructor() {{ super(); this.readyState = 'complete'; this.head = new ElementLike('head'); this.body = new ElementLike('body'); }}
@@ -1355,7 +1364,10 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
         function run(debugEnabled) {{
           const win = new EventTargetLike();
           const document = new DocumentLike();
+          win.location = {{ search: '' }};
           win.localStorage = {{ getItem(name) {{ return name === 'neko.catMind.debug' && debugEnabled ? 'true' : null; }} }};
+          win.setInterval = () => 7;
+          win.clearInterval = () => {{}};
           const context = {{ window: win, document, CustomEvent: CustomEventLike, Date, console }};
           vm.createContext(context);
           vm.runInContext(mindSource, context);
@@ -1373,12 +1385,18 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
         assert.match(panelBody.textContent, /五维状态/);
         assert.match(panelBody.textContent, /状态：猫形态运行中/);
         assert.match(panelBody.textContent, /调度状态：/);
-        assert.match(panelBody.textContent, /动作评分（每个动作独立计算）/);
+        assert.match(panelBody.textContent, /动作评分（统一需求余量＋节奏－本动作冷却）/);
         assert.match(panelBody.textContent, /【CAT1 吃零食】/);
-        assert.match(panelBody.textContent, /理论分（基础分－冷却）/);
+        assert.match(panelBody.textContent, /需求余量：/);
+        assert.match(panelBody.textContent, /统一节奏分：/);
+        assert.match(panelBody.textContent, /可比效用：/);
         assert.match(panelBody.textContent, /动作条件依据/);
         assert.match(panelBody.textContent, /回归经历归并/);
         assert.match(panelBody.textContent, /返回预览：当前没有可带回的经历/);
+        const hideButton = panel.children[0].children[0];
+        assert.equal(hideButton.textContent, '隐藏');
+        hideButton.onclick();
+        assert.equal(panel.style.display, 'none');
         """
     )
 
@@ -1405,10 +1423,11 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           }}
         }}
         class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail; }} }}
+        let now = 1000;
         const timers = [];
-            const win = new EventTargetLike();
+        const win = new EventTargetLike();
         win.setTimeout = (callback) => {{ timers.push(callback); return timers.length; }};
-        const context = {{ window: win, CustomEvent: CustomEventLike, Date, console }};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
         let providerCalls = 0;
@@ -1437,11 +1456,11 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
               : {{ allowed: true, reason: 'allowed' }};
             }}
         }};
-        for (let index = 0; index < 16; index += 1) {{
-          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-            detail: {{ type: 'thought_bubble_pop', source: 'unit-score-prime', tier: 'cat1', timestamp: 1010 + index, detail: {{}} }}
-          }}));
-        }}
+        now += 60 * 60 * 1000;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'cat_elapsed', source: 'cat-mind-clock', tier: 'cat1', timestamp: now,
+            detail: {{ elapsedMs: 60 * 60 * 1000 }} }}
+        }}));
         timers.shift()();
         const decision = win.nekoCatMind.getDebugSnapshot().lastDecision;
         assert.equal(providerCalls, 4);
@@ -1462,7 +1481,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
               actionId: firstRequest.actionId,
               status: 'rejected',
               reason: 'unit-no-adapter',
-              timestamp: Date.now()
+              timestamp: now
             }}), true);
         for (const [gate, reason] of [
           ['returnPending', 'return_pending'],
@@ -1478,7 +1497,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           activeHardGate = gate;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
             detail: {{ type: gate === 'edgePeekActive' ? 'edge_peek_after_drag' : 'cat_hover_reaction',
-              source: 'unit-test', tier: 'cat1', timestamp: Date.now() + providerCalls, detail: {{ reason: gate }} }}
+              source: 'unit-test', tier: 'cat1', timestamp: ++now, detail: {{ reason: gate }} }}
           }}));
           assert.equal(timers.length, 1);
           timers.shift()();
@@ -1826,12 +1845,11 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(actionResults, 0);
 
         providerAllowsEat = true;
-        now = 1050;
-        for (let index = 0; index < 16; index += 1) {{
-          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-            detail: {{ type: 'thought_bubble_pop', source: 'unit-score-prime', tier: 'cat1', timestamp: now + index, detail: {{}} }}
-          }}));
-        }}
+        now += 60 * 60 * 1000;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'cat_elapsed', source: 'cat-mind-clock', tier: 'cat1', timestamp: now,
+            detail: {{ elapsedMs: 60 * 60 * 1000 }} }}
+        }}));
         assert.equal(requests.length, 0);
         assert.equal(timers.length, 1);
         timers.shift()();
@@ -1845,7 +1863,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(win.nekoCatMind.getState().pendingActionRequest.requestId, first.requestId);
         assert.equal(Object.keys(win.nekoCatMind.getState().actionCooldowns).length, 0);
 
-        now = 1100;
+        now += 50;
         assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
           requestId: first.requestId,
           actionId: first.actionId,
@@ -1858,7 +1876,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(actionResults, 0);
         assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.execution.state, 'rejected');
 
-        now = 1200;
+        now += 100;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
           detail: {{ type: 'thought_bubble_pop', source: 'unit-test', tier: 'cat1', timestamp: now, detail: {{}} }}
         }}));
@@ -1868,7 +1886,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(requests.length, 2);
         const second = requests[1];
 
-        now = 1300;
+        now += 100;
         assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
           requestId: second.requestId,
           actionId: second.actionId,
@@ -1909,7 +1927,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(started.activeAction.requestId, second.requestId);
         assert.equal(started.actionCooldowns.cat1_eat_snack.startedAt, now);
 
-        now = 1350;
+        now += 50;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
           detail: {{ type: 'cat_hover_reaction', source: 'unit-test', tier: 'cat1', timestamp: now, detail: {{}} }}
         }}));
@@ -1919,7 +1937,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(requests.length, 2);
         assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'active_action_pending');
 
-        now = 1400;
+        now += 50;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
           detail: {{
             actionId: second.actionId,
@@ -1934,7 +1952,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(win.nekoCatMind.getState().activeAction.requestId, second.requestId);
         assert.equal(win.nekoCatMind.getRecentEvents().some((item) => item.type === 'eat_done'), false);
         assert.equal(win.nekoCatMind.getDebugSnapshot().scheduler.lastIgnoredActionResult.reason, 'unmatched_or_nonterminal_result');
-        now = 1450;
+        now += 50;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
           detail: {{
             actionId: second.actionId,
@@ -1949,7 +1967,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(win.nekoCatMind.getState().activeAction.requestId, second.requestId);
         assert.equal(win.nekoCatMind.getRecentEvents().some((item) => item.type === 'eat_done'), false);
 
-        now = 1500;
+        now += 50;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:action-result', {{
           detail: {{
             actionId: second.actionId,
@@ -1968,7 +1986,7 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         assert.equal(timers.length, 1);
         timers.shift()();
         assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'post_action_settle');
-        now = 1600;
+        now += 100;
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
           detail: {{ type: 'cat_hover_reaction', source: 'unit-test', tier: 'cat1', timestamp: now, detail: {{}} }}
         }}));
@@ -1980,16 +1998,18 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         );
         assert.equal(cooledCandidate.cooldownApplied, true);
         assert.ok(cooledCandidate.cooldownPenalty > 0);
-        assert.equal(cooledCandidate.score, Math.round((
-          cooledCandidate.baseScore - cooledCandidate.cooldownPenalty
-        ) * 100) / 100);
+        assert.ok(Math.abs(cooledCandidate.utilityScore - (
+          cooledCandidate.needContribution + cooledCandidate.cadenceAdjustment - cooledCandidate.cooldownPenalty
+        )) < 0.02);
+        assert.ok(Math.abs(cooledCandidate.score - (
+          cooledCandidate.threshold + cooledCandidate.utilityScore
+        )) < 0.02);
 
-        now = 181400;
-        for (let index = 0; index < 10; index += 1) {{
-          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-            detail: {{ type: 'thought_bubble_pop', source: 'unit-score-recover', tier: 'cat1', timestamp: now + index, detail: {{}} }}
-          }}));
-        }}
+        now += 60 * 60 * 1000;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'cat_elapsed', source: 'cat-mind-clock', tier: 'cat1', timestamp: now,
+            detail: {{ elapsedMs: 60 * 60 * 1000 }} }}
+        }}));
         assert.equal(timers.length, 1);
         timers.shift()();
         assert.equal(requests.length, 3);
@@ -2099,7 +2119,7 @@ def test_cat_mind_small_move_uses_started_lifecycle_and_completion_feedback():
         assert.equal(finished.activeAction, null);
         assert.ok(finished.actionCooldowns.cat1_small_move);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((item) => item.type === 'small_move_done').length, 1);
-        assert.ok(Math.abs(finished.fields.stimulation_need - Math.max(0, beforeDone.stimulation_need - 0.08)) < 1e-9);
+        assert.ok(Math.abs(finished.fields.stimulation_need - Math.max(0, beforeDone.stimulation_need - 0.14)) < 1e-9);
         assert.ok(Math.abs(finished.fields.energy - Math.max(0, beforeDone.energy - 0.03)) < 1e-9);
         assert.ok(Math.abs(finished.fields.sleepiness - Math.min(1, beforeDone.sleepiness + 0.01)) < 1e-9);
         assert.equal(finished.fields.social_need, beforeDone.social_need);
@@ -2193,22 +2213,16 @@ def test_cat_mind_autonomous_clock_uses_elapsed_time_thresholds_and_stops_on_ret
         assert.equal(requests.length, 0);
         assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'below_action_threshold');
 
-        // A clicked bubble is now a satisfied social beat, so the following
-        // seven minutes remain intentionally quiet instead of re-triggering.
+        // A clicked bubble satisfies need instead of boosting another response.
+        // With every other provider disabled, the shared cadence score can
+        // still make the remaining legal action eligible after real idle time.
         now = 421100;
-        clock.callback();
-        assert.equal(timers.length, 1);
-        timers.shift()();
-        assert.equal(requests.length, 0);
-        assert.equal(win.nekoCatMind.getDebugSnapshot().lastDecision.reason, 'below_action_threshold');
-
-        now = 1001100;
         clock.callback();
         assert.equal(timers.length, 1);
         timers.shift()();
         assert.equal(requests.length, 1);
         const state = win.nekoCatMind.getState();
-        assert.ok(state.fields.social_need > 0.5);
+        assert.ok(state.fields.social_need < 0.5);
         assert.equal(win.nekoCatMind.getRecentEvents().some((item) => item.type === 'cat_elapsed'), false);
         const decision = win.nekoCatMind.getDebugSnapshot().lastDecision;
         assert.ok(decision.triggerTypes.includes('cat_elapsed'));
@@ -2234,7 +2248,7 @@ def test_cat_mind_autonomous_clock_uses_elapsed_time_thresholds_and_stops_on_ret
         assert.equal(timers.length, 1);
         timers.shift()();
         assert.equal(requests.length, 1);
-        now += 10 * 60 * 1000;
+        now += 12 * 60 * 1000;
         secondClock.callback();
         assert.equal(timers.length, 1);
         timers.shift()();
@@ -2266,7 +2280,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         }}
         class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
 
-        function simulate(nearChat) {{
+        function simulate(nearChat, profile = {{}}) {{
           let now = 1000;
           const timers = [];
           const intervals = [];
@@ -2289,10 +2303,15 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             }},
           }};
           const counts = {{}};
+          const starts = [];
           let runNumber = 0;
+          const observe = (type) => win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+            detail: {{ type, source: 'interaction-matrix', tier: 'cat1', timestamp: now, detail: {{}} }},
+          }}));
           win.addEventListener('neko:cat-mind:action-request', (event) => {{
             const request = event.detail;
             counts[request.actionId] = (counts[request.actionId] || 0) + 1;
+            starts.push({{ actionId: request.actionId, minute: (now - 1000) / (60 * 1000) }});
             runNumber += 1;
             const runId = 'simulation-' + runNumber;
             assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
@@ -2305,10 +2324,16 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
               detail: {{ actionId: request.actionId, result: 'done', source: 'cat_mind', tier: 'cat1',
                 timestamp: now + 100, detail: {{ requestId: request.requestId, runId }} }},
             }}));
+            const requestMinute = (now - 1000) / (60 * 1000);
+            const popActive = (!profile.activeFromMinute || requestMinute >= profile.activeFromMinute) &&
+              (!profile.activeUntilMinute || requestMinute <= profile.activeUntilMinute);
+            if (profile.popAfterAudio && popActive && request.actionId === 'cat1_social_ping') {{
+              observe('thought_bubble_pop');
+            }}
           }});
           const flush = () => {{
             let remaining = 1000;
-            while (timers.length && remaining > 0) timers.shift()();
+            while (timers.length && remaining-- > 0) timers.shift()();
             assert.ok(remaining > 0, 'scheduler must not synchronously loop');
           }};
           win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
@@ -2319,11 +2344,45 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           let stayIdleCount = 0;
           for (let index = 0; index < 120; index += 1) {{
             now += 30 * 1000;
+            const step = index + 1;
+            const minute = step / 2;
+            const interactionActive = (!profile.activeFromMinute || minute >= profile.activeFromMinute) &&
+              (!profile.activeUntilMinute || minute <= profile.activeUntilMinute);
+            if (interactionActive && profile.hoverEveryMinutes && step % (profile.hoverEveryMinutes * 2) === 0) {{
+              observe('cat_hover_reaction');
+            }}
+            if (interactionActive && profile.chatEveryMinutes && step % (profile.chatEveryMinutes * 2) === 0) {{
+              const phase = Math.floor(minute / profile.chatEveryMinutes) % 4;
+              observe(['chat_minimized_visible', 'chat_minimized_moved_far',
+                'chat_idle_docked_near_cat', 'chat_expanded'][phase]);
+            }}
+            if (interactionActive && profile.dragEveryMinutes && step % (profile.dragEveryMinutes * 2) === 0) {{
+              observe('drag_start');
+              if (profile.rapidEveryMinutes && step % (profile.rapidEveryMinutes * 2) === 0) {{
+                observe('rapid_drag');
+              }}
+              observe('drag_end');
+            }}
             clock.callback();
             flush();
             if (win.nekoCatMind.getDebugSnapshot().lastDecision.outcome === 'stay_idle') stayIdleCount += 1;
           }}
-          return {{ counts, stayIdleCount }};
+          const fields = win.nekoCatMind.getState().fields;
+          const scores = Object.fromEntries(win.nekoCatMind.getDebugSnapshot().actionScores.map(
+            (item) => [item.actionId, item]
+          ));
+          win.dispatchEvent(new CustomEventLike('live2d-return-click', {{
+            detail: {{ source: 'live2d-return-click', timestamp: now }},
+          }}));
+          const returnSummary = win.nekoCatMind.getReturnSummaryDraft();
+          return {{
+            counts,
+            starts,
+            stayIdleCount,
+            fields,
+            scores,
+            returnSummary,
+          }};
         }}
 
         const far = simulate(false);
@@ -2335,10 +2394,120 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
 
         const near = simulate(true);
         assert.ok((near.counts.cat1_play_yarn || 0) >= 2, 'near-chat cycle should reach play');
-        assert.ok((near.counts.cat1_eat_snack || 0) >= 2, 'play feedback should later make eating possible');
+        assert.ok((near.counts.cat1_eat_snack || 0) >= 1, 'play feedback should later make eating possible');
         assert.ok((near.counts.cat1_small_move || 0) >= 1, 'small move remains an occasional candidate');
         const nearNonSocial = (near.counts.cat1_play_yarn || 0) + (near.counts.cat1_eat_snack || 0) + (near.counts.cat1_small_move || 0);
         assert.ok((near.counts.cat1_social_ping || 0) < nearNonSocial, 'social ping must not dominate a near-chat cycle');
+
+        // Stress the selector with the same production observation types at
+        // four interaction intensities. These are deterministic envelopes,
+        // not a claim that one cadence represents every real user.
+        const profiles = {{
+          none: {{}},
+          low: {{ hoverEveryMinutes: 10, dragEveryMinutes: 20, chatEveryMinutes: 15 }},
+          normal: {{ hoverEveryMinutes: 2, dragEveryMinutes: 6, rapidEveryMinutes: 18,
+            chatEveryMinutes: 6, popAfterAudio: true }},
+          high: {{ hoverEveryMinutes: 0.5, dragEveryMinutes: 1, rapidEveryMinutes: 2,
+            chatEveryMinutes: 2, popAfterAudio: true, activeUntilMinute: 12 }},
+          highNoPop: {{ hoverEveryMinutes: 0.5, dragEveryMinutes: 1, rapidEveryMinutes: 2,
+            chatEveryMinutes: 2, activeUntilMinute: 12 }},
+        }};
+        const total = (result) => Object.values(result.counts).reduce((sum, count) => sum + count, 0);
+        const startsInWindow = (result, startMinute) => result.starts.filter(
+          (item) => item.minute > startMinute && item.minute <= startMinute + 15
+        );
+        const startsByMinute = (result, endMinute) => result.starts.filter(
+          (item) => item.minute <= endMinute
+        );
+        const gaps = (result) => result.starts.slice(1).map(
+          (item, index) => item.minute - result.starts[index].minute
+        );
+        const average = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+        const maxRun = (result) => {{
+          let longest = 0;
+          let current = 0;
+          let previous = '';
+          for (const item of result.starts) {{
+            current = item.actionId === previous ? current + 1 : 1;
+            previous = item.actionId;
+            longest = Math.max(longest, current);
+          }}
+          return longest;
+        }};
+        const none = simulate(true, profiles.none);
+        const low = simulate(true, profiles.low);
+        const normal = simulate(true, profiles.normal);
+        const high = simulate(true, profiles.high);
+        const highNoPop = simulate(true, profiles.highNoPop);
+        assert.equal(total(none), total(near));
+
+        // No, low, normal, and dense user interaction all return through the
+        // same bounded completed-action episode. Raw observations, five-field
+        // values, and event text never enter the model-facing draft.
+        for (const result of [none, low, normal, high, highNoPop]) {{
+          assert.equal(result.returnSummary.duration_seconds, 60 * 60);
+          assert.equal(result.returnSummary.entry, 'manual');
+          assert.equal(result.returnSummary.final_tier, 'cat1');
+          assert.equal(result.returnSummary.has_started_autonomous_action, true);
+          assert.deepEqual(JSON.parse(JSON.stringify(result.returnSummary.episode)), {{ kind: 'activity' }});
+          assert.equal(Object.prototype.hasOwnProperty.call(result.returnSummary, 'events'), false);
+          assert.equal(Object.prototype.hasOwnProperty.call(result.returnSummary, 'fields'), false);
+          assert.equal(Object.prototype.hasOwnProperty.call(result.returnSummary, 'text'), false);
+        }}
+
+        // With gates/providers continuously available, no/low interaction keeps
+        // the pre-state-machine product rhythm without a quota or timed action:
+        // every sampled rolling 15-minute window has 3-5 real starts. A single
+        // 30-second sampling boundary may put an adjacent gap at 2.5 minutes,
+        // while the sustained average remains inside the 3-5 minute rhythm.
+        for (const result of [none, low]) {{
+          for (let startMinute = 0; startMinute <= 45; startMinute += 5) {{
+            const count = startsInWindow(result, startMinute).length;
+            assert.ok(count >= 3 && count <= 5, 'no/low rolling 15 minutes must contain 3-5 actions');
+          }}
+          assert.ok(gaps(result).every((gap) => gap >= 2.5 && gap <= 5));
+          assert.ok(average(gaps(result)) >= 3 && average(gaps(result)) <= 5);
+          assert.ok(new Set(startsInWindow(result, 0).map((item) => item.actionId)).size >= 3);
+          assert.ok(maxRun(result) <= 2, 'score competition, not a hard ban, must prevent long same-action runs');
+          const nonSocial = total(result) - (result.counts.cat1_social_ping || 0);
+          assert.ok((result.counts.cat1_social_ping || 0) < nonSocial, 'low/no interaction must not become a bubble loop');
+        }}
+
+        // A short high-interaction burst must receive more autonomous answers
+        // during that burst. The score surplus creates this response; there is
+        // no event-to-action mapping or special burst branch in the runtime.
+        assert.ok(startsInWindow(normal, 0).length >= 4 && startsInWindow(normal, 0).length <= 5);
+        assert.ok(startsByMinute(high, 12).length >= 5 && startsByMinute(high, 12).length <= 6);
+        assert.ok(high.starts[0].minute - 0.5 <= 1.5,
+          'a dense interaction burst must receive a scored response within 90 seconds');
+        assert.ok(startsByMinute(high, 12).length > startsByMinute(none, 12).length);
+        assert.ok(startsByMinute(high, 12).length > startsByMinute(low, 12).length);
+        assert.ok(startsByMinute(high, 12).length > startsByMinute(normal, 12).length);
+        assert.ok(new Set(startsByMinute(high, 12).map((item) => item.actionId)).size >= 4,
+          'the burst response must rotate across multiple actions');
+        assert.ok(startsByMinute(highNoPop, 12).length > startsByMinute(normal, 12).length,
+          'the response increase must not depend on the user popping every bubble');
+        const highNoPopNonSocial = total(highNoPop) - (highNoPop.counts.cat1_social_ping || 0);
+        assert.ok((highNoPop.counts.cat1_social_ping || 0) < highNoPopNonSocial,
+          'the shared cooldown curve must suppress bubble repetition even without pop feedback');
+        assert.ok(total(none) < total(low) && total(low) < total(normal));
+        assert.ok(total(normal) <= 22);
+        assert.ok(total(high) <= 22, 'a short burst must not turn every observation into an action');
+        assert.ok(total(highNoPop) <= 22);
+        assert.ok(new Set(normal.starts.map((item) => item.actionId)).size >= 3);
+        assert.ok(new Set(high.starts.map((item) => item.actionId)).size >= 4);
+        assert.ok(maxRun(normal) <= 2);
+        assert.ok(maxRun(high) <= 2);
+        assert.ok(maxRun(highNoPop) <= 2);
+        assert.ok(high.fields.energy < none.fields.energy, 'the interaction burst must consume real energy');
+        assert.ok(high.scores.cat1_play_yarn.score < high.scores.cat1_play_yarn.threshold,
+          'low energy must eventually suppress more yarn play even when stimulation is high');
+
+        for (const profile of Object.values(profiles)) {{
+          const farProfile = simulate(false, profile);
+          assert.equal(farProfile.counts.cat1_play_yarn || 0, 0);
+          assert.equal(farProfile.counts.cat1_small_move || 0, 0);
+        }}
         """
     )
 
@@ -2346,12 +2515,226 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_cat_mind_scores_only_use_five_dimensions_and_own_action_cooldown():
+def test_cat_mind_all_registered_actions_use_the_same_soft_cooldown_curve():
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const source = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        function verify(actionId, tier, cooldownMinutes) {{
+          let now = 1000;
+          const timers = [];
+          const requests = [];
+          const win = new EventTargetLike();
+          win.setTimeout = (callback) => {{ timers.push(callback); return timers.length; }};
+          win.setInterval = () => 1;
+          win.clearInterval = () => {{}};
+          const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
+          vm.createContext(context);
+          vm.runInContext(source, context);
+          win.NekoCatMindActionProviders = {{
+            getRuntimeGateSnapshot() {{
+              return {{ returnPending: false, dragPending: false, dragging: false, transitionActive: false,
+                activeIndependentAction: false, returnBallVisible: true, validCatRuntime: true,
+                chatSurfaceDragging: false }};
+            }},
+            dryRun(candidateId) {{
+              return candidateId === actionId
+                ? {{ allowed: true, reason: 'allowed' }}
+                : {{ allowed: false, reason: 'not_for_soft_cooldown_test' }};
+            }}
+          }};
+          win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
+          const flush = () => {{
+            let remaining = 100;
+            while (timers.length && remaining-- > 0) timers.shift()();
+            assert.ok(remaining > 0);
+          }};
+          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+            detail: {{ source: 'manual-goodbye', timestamp: now }}
+          }}));
+          flush();
+          if (tier !== 'cat1') {{
+            now += 1;
+            win.dispatchEvent(new CustomEventLike('neko:auto-goodbye:state-change', {{
+              detail: {{ type: 'visual-tier', tier, source: 'soft-cooldown-test', timestamp: now }}
+            }}));
+            flush();
+          }}
+          now += 15 * 60 * 1000;
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{ detail: {{
+            type: 'cat_elapsed', source: 'cat-mind-clock', tier, timestamp: now,
+            detail: {{ elapsedMs: 15 * 60 * 1000 }}
+          }} }}));
+          flush();
+          assert.equal(requests.length, 1, actionId + ' must become eligible through the shared score');
+          const request = requests[0];
+          const runId = 'soft-cooldown-' + actionId;
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId, status: 'accepted', runId, timestamp: now
+          }}), true);
+          assert.equal(win.nekoCatMind.acknowledgeActionRequest({{
+            requestId: request.requestId, actionId, status: 'started', runId, timestamp: now
+          }}), true);
+          const score = () => win.nekoCatMind.getDebugSnapshot().actionScores.find(
+            (item) => item.actionId === actionId
+          );
+          const started = score();
+          assert.equal(started.cooldownApplied, true);
+          assert.equal(started.cooldownPenalty, 86.4);
+          assert.equal(started.cooldownCurveFactor, 1);
+          assert.equal(started.cadenceAdjustment, -52);
+          now += cooldownMinutes * 60 * 1000 / 4;
+          const quarter = score();
+          assert.equal(quarter.cooldownPenalty, 81);
+          assert.equal(quarter.cooldownRecoveryFactor, 0.75);
+          assert.equal(quarter.cooldownCurveFactor, 0.9375);
+          now += cooldownMinutes * 60 * 1000 / 4;
+          const halfway = score();
+          assert.equal(halfway.cooldownApplied, true);
+          assert.equal(halfway.cooldownPenalty, 64.8);
+          assert.equal(halfway.cooldownRecoveryFactor, 0.5);
+          assert.equal(halfway.cooldownCurveFactor, 0.75);
+          now += cooldownMinutes * 60 * 1000 / 4;
+          const threeQuarters = score();
+          assert.equal(threeQuarters.cooldownPenalty, 37.8);
+          assert.equal(threeQuarters.cooldownRecoveryFactor, 0.25);
+          assert.equal(threeQuarters.cooldownCurveFactor, 0.4375);
+          now += cooldownMinutes * 60 * 1000 / 4 + 1;
+          const recovered = score();
+          assert.equal(recovered.cooldownApplied, false);
+          assert.equal(recovered.cooldownPenalty, 0);
+        }}
+
+        verify('cat1_social_ping', 'cat1', 8);
+        verify('cat1_eat_snack', 'cat1', 8);
+        verify('cat1_small_move', 'cat1', 8);
+        verify('cat1_play_yarn', 'cat1', 10);
+        verify('cat2_nap_feedback', 'cat2', 10);
+        verify('cat3_sleep_feedback', 'cat3', 12);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_own_soft_cooldown():
     source = _read(CAT_MIND_PATH)
 
     assert "RECENT_SCORE_WINDOWS_MS" not in source
     assert "contextAdjustment" not in source
-    assert "score: baseScore - cooldown.penalty" in source
+    assert "var ACTION_SCORE_POLICY = Object.freeze({" in source
+    assert "var needSurplus = baseScore - threshold;" in source
+    assert "var needContribution = getNeedContribution(needSurplus);" in source
+    assert "return normalized * normalized * (3 - 2 * normalized);" in source
+    assert "cadenceRecoveryMs: 4.85 * 60 * 1000" in source
+    assert "cooldownRecoveryExponent: 2" in source
+    assert "var utilityScore = needContribution + cadence.adjustment - cooldown.penalty;" in source
+    assert "score: threshold + utilityScore" in source
+    assert "right.utilityScore - left.utilityScore" in source
+    assert "negativeNeedCurveRange: 14" in source
+    assert "positiveNeedCurveRange: 4" in source
+    assert "positiveNeedCurveCeiling: 42" in source
+    assert "cadenceFloor: -52" in source
+    assert "cadenceCeiling: 18" in source
+    assert "cooldownMultiplier: 2.4" in source
+    assert "hardCooldown" not in source
+    assert "hard_cooldown_active" not in source
+    assert "cat1_social_ping: Object.freeze({ threshold: 48, cooldownMs: 8 * 60 * 1000 })" in source
+    assert "cat2_nap_feedback: Object.freeze({ threshold: 54, cooldownMs: 10 * 60 * 1000 })" in source
+    assert "cat3_sleep_feedback: Object.freeze({ threshold: 50, cooldownMs: 12 * 60 * 1000 })" in source
+
+
+def test_cat_mind_need_and_cadence_use_the_shared_monotonic_response_curve():
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const sourceText = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        const closeIndex = sourceText.lastIndexOf('}})();');
+        assert.ok(closeIndex > 0);
+        const source = sourceText.slice(0, closeIndex) +
+          'window.__testCatMindNeedContribution = getNeedContribution;' +
+          sourceText.slice(closeIndex);
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        let now = 1000;
+        const win = new EventTargetLike();
+        win.setInterval = () => 1;
+        win.clearInterval = () => {{}};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
+        vm.createContext(context);
+        vm.runInContext(source, context);
+        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
+          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        }}));
+        const scoreSnapshot = () => win.nekoCatMind.getDebugSnapshot().actionScores;
+        const smoothstep = (value) => value * value * (3 - 2 * value);
+        const expectedNeed = (surplus) => {{
+          if (surplus < 0) {{
+            if (surplus <= -14) return surplus;
+            return -14 * smoothstep(Math.abs(surplus) / 14);
+          }}
+          return 42 * smoothstep(Math.min(1, surplus / 4));
+        }};
+        for (const [surplus, expected] of [[0, 0], [1, 6.5625], [2, 21], [3, 35.4375], [4, 42], [12, 42]]) {{
+          assert.equal(win.__testCatMindNeedContribution(surplus), expected);
+        }}
+        const start = scoreSnapshot();
+        for (const score of start) {{
+          assert.ok(Math.abs(score.needContribution - expectedNeed(score.needSurplus)) <= 0.011);
+          assert.equal(score.cadenceAdjustment, -52);
+          assert.equal(score.cadenceCurveProgress, 0);
+          assert.equal(score.cadenceCurveFactor, 0);
+        }}
+        now += 4.85 * 60 * 1000 / 2;
+        const halfway = scoreSnapshot()[0];
+        assert.equal(halfway.cadenceAdjustment, -17);
+        assert.equal(halfway.cadenceCurveProgress, 0.5);
+        assert.equal(halfway.cadenceCurveFactor, 0.5);
+        now += 4.85 * 60 * 1000 / 2;
+        const recovered = scoreSnapshot()[0];
+        assert.equal(recovered.cadenceAdjustment, 18);
+        assert.equal(recovered.cadenceCurveProgress, 1);
+        assert.equal(recovered.cadenceCurveFactor, 1);
+
+        now += 1;
+        win.dispatchEvent(new CustomEventLike('neko:auto-goodbye:state-change', {{ detail: {{
+          type: 'visual-tier', tier: 'cat3', source: 'curve-test', timestamp: now
+        }} }}));
+        const saturated = scoreSnapshot().find((score) => score.actionId === 'cat3_sleep_feedback');
+        assert.ok(saturated.needSurplus > 4);
+        assert.equal(saturated.needContribution, 42);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
 
 
 def test_cat_mind_user_and_completed_action_feedback_updates_only_its_defined_fields():
@@ -2388,31 +2771,46 @@ def test_cat_mind_user_and_completed_action_feedback_updates_only_its_defined_fi
         }};
         observe('thought_bubble_pop');
         let fields = win.nekoCatMind.getState().fields;
-        equal(fields.social_need, 0.28);
-        equal(fields.stimulation_need, 0.32);
-        equal(fields.appetite, 0.26);
+        equal(fields.social_need, 0.16);
+        equal(fields.stimulation_need, 0.24);
+        equal(fields.appetite, 0.22);
         observe('cat_hover_reaction');
         fields = win.nekoCatMind.getState().fields;
-        equal(fields.social_need, 0.33);
-        equal(fields.stimulation_need, 0.35);
-        equal(fields.energy, 0.74);
+        equal(fields.social_need, 0.18);
+        equal(fields.stimulation_need, 0.29);
+        equal(fields.energy, 0.747);
+        observe('drag_start');
+        observe('drag_end');
+        observe('rapid_drag');
+        fields = win.nekoCatMind.getState().fields;
+        equal(fields.appetite, 0.253);
+        equal(fields.sleepiness, 0.14);
+        equal(fields.energy, 0.712);
+        equal(fields.social_need, 0.255);
+        equal(fields.stimulation_need, 0.38);
+        const beforeWindowFact = fields;
+        observe('chat_minimized_visible');
+        fields = win.nekoCatMind.getState().fields;
+        assert.deepEqual(fields, beforeWindowFact);
         observe('play_done');
         fields = win.nekoCatMind.getState().fields;
-        equal(fields.social_need, 0.33);
-        equal(fields.stimulation_need, 0.11);
-        equal(fields.energy, 0.64);
-        equal(fields.appetite, 0.38);
+        equal(fields.social_need, 0.255);
+        equal(fields.stimulation_need, 0.1);
+        equal(fields.energy, 0.612);
+        equal(fields.appetite, 0.353);
         observe('eat_done');
         fields = win.nekoCatMind.getState().fields;
-        equal(fields.social_need, 0.33);
-        equal(fields.appetite, 0.14);
-        equal(fields.energy, 0.72);
+        equal(fields.social_need, 0.255);
+        equal(fields.appetite, 0.073);
+        equal(fields.energy, 0.692);
         observe('tier_changed', 'cat2');
         observe('sleep_feedback_done', 'cat2');
         fields = win.nekoCatMind.getState().fields;
-        equal(fields.social_need, 0.33);
-        equal(fields.sleepiness, 0.29);
-        equal(fields.energy, 0.59);
+        equal(fields.social_need, 0.255);
+        equal(fields.sleepiness, 0.25);
+        equal(fields.energy, 0.61);
+        equal(fields.appetite, 0.093);
+        equal(fields.stimulation_need, 0.14);
         """
     )
 
@@ -2420,7 +2818,7 @@ def test_cat_mind_user_and_completed_action_feedback_updates_only_its_defined_fi
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_cat_mind_mixed_user_interaction_raises_existing_cat1_action_scores():
+def test_cat_mind_bubble_pop_satisfies_need_instead_of_feeding_an_action_loop():
     script = textwrap.dedent(
         f"""
         const fs = require('node:fs');
@@ -2446,21 +2844,27 @@ def test_cat_mind_mixed_user_interaction_raises_existing_cat1_action_scores():
         vm.runInContext(source, context);
         win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{ detail: {{ source: 'manual-goodbye', timestamp: now }} }}));
         const scores = () => Object.fromEntries(win.nekoCatMind.getDebugSnapshot().actionScores.map((item) => [item.actionId, item.score]));
-        const before = scores();
-        for (const type of ['cat_hover_reaction', 'thought_bubble_pop', 'drag_end']) {{
+        for (const type of ['cat_hover_reaction', 'drag_end']) {{
           now += 1;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
             detail: {{ type, source: 'unit-mixed-user-interaction', tier: 'cat1', timestamp: now, detail: {{}} }},
           }}));
         }}
-        const after = scores();
-        for (const actionId of ['cat1_social_ping', 'cat1_small_move', 'cat1_play_yarn', 'cat1_eat_snack']) {{
-          assert.ok(after[actionId] > before[actionId], actionId + ' should reflect repeated user interaction through existing fields');
-        }}
-        const fields = win.nekoCatMind.getState().fields;
-        assert.ok(fields.social_need > 0.22);
-        assert.ok(fields.stimulation_need > 0.28);
-        assert.ok(fields.energy < 0.75);
+        const beforePopFields = win.nekoCatMind.getState().fields;
+        const beforePopScores = scores();
+        now += 1;
+        win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+          detail: {{ type: 'thought_bubble_pop', source: 'unit-mixed-user-interaction', tier: 'cat1', timestamp: now, detail: {{}} }},
+        }}));
+        const afterPopFields = win.nekoCatMind.getState().fields;
+        const afterPopScores = scores();
+        assert.ok(afterPopFields.social_need < beforePopFields.social_need);
+        assert.ok(afterPopFields.stimulation_need < beforePopFields.stimulation_need);
+        assert.equal(afterPopFields.appetite, beforePopFields.appetite);
+        assert.equal(afterPopFields.energy, beforePopFields.energy);
+        assert.ok(afterPopScores.cat1_social_ping < beforePopScores.cat1_social_ping);
+        assert.ok(afterPopScores.cat1_small_move < beforePopScores.cat1_small_move);
+        assert.ok(afterPopScores.cat1_play_yarn < beforePopScores.cat1_play_yarn);
         """
     )
 
@@ -2541,7 +2945,12 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         }}
         function beginAction(actionId) {{
           allowedAction = actionId;
-          observe('cat_elapsed');
+          now += 15 * 60 * 1000;
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{ detail: {{
+            type: 'cat_elapsed', source: 'cat-mind-clock', tier: win.nekoCatMind.getState().tier,
+            timestamp: now, detail: {{ elapsedMs: 15 * 60 * 1000 }}
+          }} }}));
+          flushDecision();
           const request = requests[requests.length - 1];
           assert.ok(request, 'expected action request');
           assert.equal(request.actionId, actionId);
@@ -2556,7 +2965,12 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         }}
         function acceptOnly(actionId) {{
           allowedAction = actionId;
-          observe('cat_elapsed');
+          now += 15 * 60 * 1000;
+          win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{ detail: {{
+            type: 'cat_elapsed', source: 'cat-mind-clock', tier: win.nekoCatMind.getState().tier,
+            timestamp: now, detail: {{ elapsedMs: 15 * 60 * 1000 }}
+          }} }}));
+          flushDecision();
           const request = requests[requests.length - 1];
           assert.ok(request, 'expected action request');
           assert.equal(request.actionId, actionId);
@@ -2624,7 +3038,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // Adapter acceptance alone is not a real action entry and cannot
         // open the short-return delivery gate.
         start();
-        primeInteraction(10);
+        primeInteraction(16);
         acceptOnly('cat1_small_move');
         const acceptedOnlySummary = returnSummary();
         assert.equal(Object.prototype.hasOwnProperty.call(acceptedOnlySummary, 'episode'), false);
@@ -2635,7 +3049,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // delivery gate. This covers all non-done terminal outcomes.
         for (const result of ['failed', 'cancelled', 'interrupted']) {{
           restart();
-          primeInteraction(10);
+          primeInteraction(16);
           const lifecycle = beginAction('cat1_small_move');
           finishAction('cat1_small_move', lifecycle, result, 'phase4-' + result);
           episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
@@ -2649,10 +3063,10 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // Repeated successful kinds stay bounded; mixed kinds deliberately
         // remove the highlight rather than inventing a dominant action.
         restart();
-        primeInteraction(10);
+        primeInteraction(16);
         complete('cat1_small_move');
         now += 80 * 1000;
-        primeInteraction(5);
+        primeInteraction(16);
         complete('cat1_small_move');
         episodeDebug = win.nekoCatMind.getDebugSnapshot().returnEpisode;
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter.activityKinds)), ['cat1_small_move']);
@@ -2672,7 +3086,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // Window noise can push old entries out of recentEvents, but it is not
         // part of the episode and cannot change a real completed activity.
         start();
-        primeInteraction(10);
+        primeInteraction(16);
         complete('cat1_small_move');
         for (let index = 0; index < 45; index += 1) {{
           now += 10;
@@ -2691,7 +3105,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // CAT2 then CAT3 feedback keeps one rest-after-activity chapter even
         // when a presentation-only drag demotion happens afterwards.
         start();
-        primeInteraction(10);
+        primeInteraction(16);
         complete('cat1_small_move');
         setTier('cat2');
         complete('cat2_nap_feedback');
@@ -2727,7 +3141,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // A new activity/rest pair replaces an older pair, so only the final
         // trustworthy natural chapter is carried back.
         start();
-        primeInteraction(10);
+        primeInteraction(16);
         complete('cat1_small_move');
         setTier('cat2');
         complete('cat2_nap_feedback');
@@ -2742,7 +3156,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         // A new completed activity after rest wins immediately, even if no
         // later sleep feedback arrives to close another rest chapter.
         start();
-        primeInteraction(10);
+        primeInteraction(16);
         complete('cat1_small_move');
         setTier('cat2');
         complete('cat2_nap_feedback');
@@ -2958,12 +3372,11 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
           // lifecycle before returning without a terminal result.
           win.setTimeout = (callback) => {{ selectorTimers.push(callback); return selectorTimers.length; }};
           allowStartedAction = true;
-          for (let index = 0; index < 10; index += 1) {{
-            now += 1;
-            win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
-              detail: {{ type: 'thought_bubble_pop', source: 'return-listener-test', tier: 'cat1', timestamp: now, detail: {{}} }}
-            }}));
-          }}
+              now += 15 * 60 * 1000;
+              win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
+                detail: {{ type: 'cat_elapsed', source: 'cat-mind-clock', tier: 'cat1', timestamp: now,
+              detail: {{ elapsedMs: 15 * 60 * 1000 }} }}
+          }}));
           assert.equal(selectorTimers.length, 1);
           selectorTimers.shift()();
           assert.ok(win.nekoCatMind.getState().activeAction);
