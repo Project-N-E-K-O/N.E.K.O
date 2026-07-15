@@ -81,7 +81,6 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _ensure_browser_use_adapter,
-    _wait_for_browser_use_adapter_close,
     _extract_tool_intent_as_text,
     _fire_agent_llm_connectivity_check,
     _fire_user_plugin_capability_check,
@@ -543,6 +542,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
     old_flags = dict(Modules.agent_flags)
     old_analyzer_enabled = bool(Modules.analyzer_enabled)
     browser_use_close_reason: Optional[str] = None
+    browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
+    if isinstance(bf, bool):
+        Modules.browser_use_lifecycle_seq += 1
+        browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
     of = (payload or {}).get("openfang_enabled")
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
     # four LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
@@ -554,6 +557,9 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
     if gate.get("ready") is not True and any(x is True for x in (cf, bf, nf, of)):
+        if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
+            Modules.browser_use_lifecycle_seq += 1
+            browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
         _cancel_openclaw_enable_probe()
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
@@ -608,7 +614,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     # 2.5. Handle Browser Use Flag with Capability Check
     if isinstance(bf, bool):
         if bf:
-            await _wait_for_browser_use_adapter_close()
             dependency_ready, dependency_error = _browser_use_dependency_status()
             if not dependency_ready:
                 Modules.agent_flags["browser_use_enabled"] = False
@@ -629,17 +634,12 @@ async def set_agent_flags(payload: Dict[str, Any]):
         old_flags.get("browser_use_enabled", False)
         and not Modules.agent_flags.get("browser_use_enabled", False)
     ):
-        close_task = _create_tracked_task(
-            _close_browser_use_adapter(capability_reason=browser_use_close_reason)
+        _create_tracked_task(
+            _close_browser_use_adapter(
+                capability_reason=browser_use_close_reason,
+                expected_lifecycle_seq=browser_use_lifecycle_seq,
+            )
         )
-        if close_task is not None:
-            Modules.browser_use_close_task = close_task
-
-            def _clear_browser_use_close_task(done_task):
-                if Modules.browser_use_close_task is done_task:
-                    Modules.browser_use_close_task = None
-
-            close_task.add_done_callback(_clear_browser_use_close_task)
 
     if isinstance(uf, bool):
         if uf:  # Attempting to enable UserPlugin — non-blocking (like CUA)
@@ -1255,9 +1255,6 @@ async def computer_use_run(payload: Dict[str, Any]):
 
 @app.post("/browser_use/run")
 async def browser_use_run(payload: Dict[str, Any]):
-    adapter = await _ensure_browser_use_adapter()
-    if adapter is None:
-        raise HTTPException(503, "BrowserUse not ready")
     instruction = (payload or {}).get("instruction", "").strip()
     if not instruction:
         raise HTTPException(400, "instruction required")
@@ -1269,6 +1266,9 @@ async def browser_use_run(payload: Dict[str, Any]):
 
     async def _locked_run():
         async with Modules.browser_use_dispatch_lock:
+            adapter = await _ensure_browser_use_adapter()
+            if adapter is None:
+                raise HTTPException(503, "BrowserUse not ready")
             return await adapter.run_instruction(instruction)
 
     # Run as a tracked background task so end_all can cancel a wedged direct
@@ -1285,6 +1285,8 @@ async def browser_use_run(payload: Dict[str, Any]):
             return JSONResponse(content={"success": False, "error": "cancelled by end_all"}, status_code=500)
         # The HTTP request itself was cancelled — don't leak the inner task.
         run_task.cancel()
+        raise
+    except HTTPException:
         raise
     except Exception as e:
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
@@ -1469,6 +1471,10 @@ async def admin_control(payload: Dict[str, Any]):
                     pass
         except Exception as e:
             logger.warning(f"[Agent] Error cleaning browser-use agents during end_all: {e}")
+        # A disable-triggered close is itself tracked above and may have been
+        # cancelled by this drain. Retry teardown after dispatches quiesce so
+        # keep-alive Chromium cannot survive end_all.
+        await _close_browser_use_adapter(update_capability=False)
         Modules.active_browser_use_task_id = None
         # Cancel any in-flight openfang tasks
         try:

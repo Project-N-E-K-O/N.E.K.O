@@ -127,6 +127,57 @@ async def test_audio_close_waits_for_executor_chunk_processing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_audio_processing_drops_frame_after_processor_close() -> None:
+    client = object.__new__(OmniRealtimeClient)
+    client._audio_processor = None
+    client._audio_processing_lock = asyncio.Lock()
+
+    assert await client.process_audio_chunk_async(b"48khz-frame") == b""
+
+
+@pytest.mark.asyncio
+async def test_cancelled_audio_processing_keeps_lock_until_worker_finishes() -> None:
+    processing_started = threading.Event()
+    release_processing = threading.Event()
+
+    class _Processor:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def process_chunk(self, audio_chunk: bytes) -> bytes:
+            processing_started.set()
+            assert release_processing.wait(timeout=2.0)
+            return audio_chunk
+
+        def save_debug_audio(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = object.__new__(OmniRealtimeClient)
+    processor = _Processor()
+    client._audio_processor = processor
+    client._audio_processing_lock = asyncio.Lock()
+
+    process_task = asyncio.create_task(client.process_audio_chunk_async(b"chunk"))
+    assert await asyncio.to_thread(processing_started.wait, 2.0)
+    process_task.cancel()
+    close_task = asyncio.create_task(client._close_audio_processor())
+    await asyncio.sleep(0)
+
+    assert processor.close_calls == 0
+    assert not close_task.done()
+
+    release_processing.set()
+    with pytest.raises(asyncio.CancelledError):
+        await process_task
+    assert await close_task is None
+    assert processor.close_calls == 1
+    assert client._audio_processor is None
+
+
+@pytest.mark.asyncio
 async def test_live_noise_reduction_toggle_waits_for_chunk_processing() -> None:
     processing_started = threading.Event()
     release_processing = threading.Event()

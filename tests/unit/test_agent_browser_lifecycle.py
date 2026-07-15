@@ -216,14 +216,53 @@ async def test_browser_use_normal_close_preserves_dependency_capability(
 
 
 @pytest.mark.asyncio
+async def test_browser_use_close_waits_for_active_dispatch() -> None:
+    modules = capabilities._shared.Modules
+    original_adapter = modules.browser_use
+    original_dispatch_lock = modules.browser_use_dispatch_lock
+    original_init_lock = modules.browser_use_init_lock
+    original_capability = dict(modules.capability_cache["browser_use"])
+    close_called = asyncio.Event()
+
+    class _Adapter:
+        async def close(self) -> None:
+            close_called.set()
+
+    dispatch_lock = asyncio.Lock()
+    await dispatch_lock.acquire()
+    modules.browser_use = _Adapter()
+    modules.browser_use_dispatch_lock = dispatch_lock
+    modules.browser_use_init_lock = None
+    try:
+        close_task = asyncio.create_task(capabilities._close_browser_use_adapter())
+        await asyncio.sleep(0)
+
+        assert not close_called.is_set()
+        assert not close_task.done()
+
+        dispatch_lock.release()
+        assert await close_task is None
+        assert close_called.is_set()
+        assert modules.browser_use is None
+    finally:
+        if dispatch_lock.locked():
+            dispatch_lock.release()
+        modules.browser_use = original_adapter
+        modules.browser_use_dispatch_lock = original_dispatch_lock
+        modules.browser_use_init_lock = original_init_lock
+        modules.capability_cache["browser_use"] = original_capability
+
+
+@pytest.mark.asyncio
 async def test_browser_use_reenable_stays_ready_after_pending_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     modules = capabilities._shared.Modules
     original_adapter = modules.browser_use
     original_computer_use = modules.computer_use
-    original_lock = modules.browser_use_init_lock
-    original_close_task = modules.browser_use_close_task
+    original_init_lock = modules.browser_use_init_lock
+    original_dispatch_lock = modules.browser_use_dispatch_lock
+    original_lifecycle_seq = modules.browser_use_lifecycle_seq
     original_flags = dict(modules.agent_flags)
     original_notification = modules.notification
     original_capability = dict(modules.capability_cache["browser_use"])
@@ -254,6 +293,7 @@ async def test_browser_use_reenable_stays_ready_after_pending_close(
     modules.browser_use = _Adapter()
     modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
     modules.browser_use_init_lock = None
+    modules.browser_use_dispatch_lock = None
     modules.agent_flags["browser_use_enabled"] = True
     try:
         await api_routes.set_agent_flags(
@@ -266,11 +306,12 @@ async def test_browser_use_reenable_stays_ready_after_pending_close(
                 {"browser_use_enabled": True, "_persist_intent": False}
             )
         )
-        await asyncio.sleep(0)
-        assert not enable_task.done()
+        result = await asyncio.wait_for(enable_task, timeout=0.2)
+        assert result["success"] is True
+        assert modules.agent_flags["browser_use_enabled"] is True
+        assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
 
         release_close.set()
-        await enable_task
         await asyncio.gather(*tasks)
 
         assert modules.browser_use is None
@@ -282,8 +323,9 @@ async def test_browser_use_reenable_stays_ready_after_pending_close(
             await asyncio.gather(*tasks, return_exceptions=True)
         modules.browser_use = original_adapter
         modules.computer_use = original_computer_use
-        modules.browser_use_init_lock = original_lock
-        modules.browser_use_close_task = original_close_task
+        modules.browser_use_init_lock = original_init_lock
+        modules.browser_use_dispatch_lock = original_dispatch_lock
+        modules.browser_use_lifecycle_seq = original_lifecycle_seq
         modules.agent_flags.clear()
         modules.agent_flags.update(original_flags)
         modules.notification = original_notification

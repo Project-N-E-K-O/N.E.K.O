@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+
 from ._shared import (
     asyncio,
     logger,
@@ -65,15 +67,30 @@ class _AudioMixin:
         async with self._audio_processing_lock:
             processor = self._audio_processor
             if processor is None:
-                return audio_chunk
-            # Use run_in_executor to offload heavy processing
-            # None = use default ThreadPoolExecutor
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                processor.process_chunk,
-                audio_chunk,
+                # The caller selected the 48 kHz RNNoise path before awaiting
+                # this lock. Returning that original frame would make it look
+                # like processed 16 kHz PCM after a concurrent close.
+                return b""
+            worker = asyncio.create_task(
+                asyncio.to_thread(processor.process_chunk, audio_chunk)
             )
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # A native RNNoise call keeps running after cancellation. Keep
+                # the lifecycle lock until it exits so close/toggle cannot
+                # destroy or mutate the processor underneath that call.
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if worker.done() and not worker.cancelled():
+                    with contextlib.suppress(Exception):
+                        worker.result()
+                raise
 
     async def set_audio_noise_reduction_enabled(self, enabled: bool) -> None:
         """Apply a live denoiser toggle after active processing quiesces."""

@@ -150,7 +150,6 @@ from .capabilities import (  # noqa: F401
     _browser_use_dependency_status,
     _close_browser_use_adapter,
     _ensure_browser_use_adapter,
-    _wait_for_browser_use_adapter_close,
     _rewire_browser_use_dependents,
     _rewire_computer_use_dependents,
     _try_refresh_computer_use_adapter,

@@ -90,18 +90,6 @@ async def _ensure_browser_use_adapter():
         return current
 
 
-async def _wait_for_browser_use_adapter_close() -> None:
-    """Wait for a disable-triggered close without cancelling it with the caller."""
-    task = _shared.Modules.browser_use_close_task
-    if task is None:
-        return
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        if not task.cancelled():
-            raise
-
-
 def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> None:
     if capability_reason is not None:
         _set_capability("browser_use", False, capability_reason)
@@ -113,30 +101,51 @@ def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> No
 async def _close_browser_use_adapter(
     *,
     capability_reason: Optional[str] = None,
+    expected_lifecycle_seq: Optional[int] = None,
+    update_capability: bool = True,
 ) -> None:
     """Close Chromium/browser-use resources and detach the singleton adapter."""
+    if _shared.Modules.browser_use_dispatch_lock is None:
+        _shared.Modules.browser_use_dispatch_lock = asyncio.Lock()
     if _shared.Modules.browser_use_init_lock is None:
         _shared.Modules.browser_use_init_lock = asyncio.Lock()
 
-    async with _shared.Modules.browser_use_init_lock:
-        current = _shared.Modules.browser_use
-        if current is None:
-            _rewire_browser_use_dependents()
-            _set_unloaded_browser_use_capability(capability_reason)
-            return
-        cancelled = False
-        try:
-            await current.close()
-        except asyncio.CancelledError:
-            cancelled = True
-            raise
-        except Exception as exc:
-            logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
-        finally:
-            if not cancelled:
-                _shared.Modules.browser_use = None
+    # Lock order is dispatch -> init everywhere that needs both. This drains
+    # an active run before releasing the shared BrowserSession/Chromium graph.
+    async with _shared.Modules.browser_use_dispatch_lock:
+        async with _shared.Modules.browser_use_init_lock:
+            current = _shared.Modules.browser_use
+            if current is None:
                 _rewire_browser_use_dependents()
-                _set_unloaded_browser_use_capability(capability_reason)
+                if (
+                    update_capability
+                    and (
+                        expected_lifecycle_seq is None
+                        or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+                    )
+                ):
+                    _set_unloaded_browser_use_capability(capability_reason)
+                return
+            cancelled = False
+            try:
+                await current.close()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            except Exception as exc:
+                logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
+            finally:
+                if not cancelled:
+                    _shared.Modules.browser_use = None
+                    _rewire_browser_use_dependents()
+                    if (
+                        update_capability
+                        and (
+                            expected_lifecycle_seq is None
+                            or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+                        )
+                    ):
+                        _set_unloaded_browser_use_capability(capability_reason)
 
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
