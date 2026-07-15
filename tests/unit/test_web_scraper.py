@@ -267,8 +267,12 @@ def test_format_tieba_content_respects_topic_display_budget():
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_uses_aiotieba_bars_and_hot_topics(monkeypatch):
     calls = []
+    client_kwargs = []
 
     class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.append(kwargs)
+
         async def __aenter__(self):
             return self
 
@@ -324,6 +328,8 @@ async def test_fetch_tieba_content_uses_aiotieba_bars_and_hot_topics(monkeypatch
     result = await web_scraper.fetch_tieba_content("\u6e38\u620f\u653b\u7565", limit=3)
 
     assert calls[0][0] == "\u6e38\u620f\u653b\u7565"
+    assert client_kwargs
+    assert all(kwargs == {"proxy": True} for kwargs in client_kwargs)
     assert any(call[0] == "\u539f\u795e" for call in calls)
     assert result["success"] is True
     assert len(result["posts"]) == 3
@@ -341,6 +347,9 @@ async def test_fetch_tieba_content_uses_aiotieba_bars_and_hot_topics(monkeypatch
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_allows_partial_bar_failure(monkeypatch):
     class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs == {"proxy": True}
+
         async def __aenter__(self):
             return self
 
@@ -375,6 +384,9 @@ async def test_fetch_tieba_content_allows_partial_bar_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_candidate_pool_is_larger_than_display(monkeypatch):
     class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs == {"proxy": True}
+
         async def __aenter__(self):
             return self
 
@@ -467,6 +479,7 @@ async def test_fetch_tieba_content_reuses_recent_candidates_when_pool_is_static(
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_enriches_top_three_posts_with_hot_replies(monkeypatch):
     detail_calls = []
+    client_kwargs = []
 
     async def fake_bar_posts(bar_name, *, rn):
         if bar_name != "\u539f\u795e":
@@ -494,6 +507,9 @@ async def test_fetch_tieba_content_enriches_top_three_posts_with_hot_replies(mon
         return []
 
     class FakeClient:
+        def __init__(self, **kwargs):
+            client_kwargs.append(kwargs)
+
         async def __aenter__(self):
             return self
 
@@ -540,6 +556,7 @@ async def test_fetch_tieba_content_enriches_top_three_posts_with_hot_replies(mon
     result = await web_scraper.fetch_tieba_content(limit=2, candidate_limit=4)
 
     assert [call[0] for call in detail_calls] == [1, 2, 3]
+    assert client_kwargs == [{"proxy": True}]
     assert "hot_replies" in result["posts"][0]
     assert "hot_replies" not in result["posts"][3]
     first_replies = result["posts"][0]["hot_replies"]
@@ -578,6 +595,9 @@ async def test_fetch_tieba_content_keeps_posts_when_hot_reply_fetch_fails(monkey
         return []
 
     class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs == {"proxy": True}
+
         async def __aenter__(self):
             return self
 
@@ -605,6 +625,9 @@ async def test_fetch_tieba_content_keeps_posts_when_hot_reply_fetch_fails(monkey
 @pytest.mark.asyncio
 async def test_fetch_tieba_content_reports_all_source_failure(monkeypatch):
     class FakeClient:
+        def __init__(self, **kwargs):
+            assert kwargs == {"proxy": True}
+
         async def __aenter__(self):
             return self
 

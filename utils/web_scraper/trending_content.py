@@ -1057,7 +1057,6 @@ async def _enrich_tieba_posts_with_hot_replies(posts: list[dict[str, Any]], erro
     if not targets:
         return
 
-    Client = _get_aiotieba_client_class()
     try:
         from aiotieba.enums import PostSortType
     except Exception as exc:
@@ -1065,7 +1064,7 @@ async def _enrich_tieba_posts_with_hot_replies(posts: list[dict[str, Any]], erro
         logger.debug(f"Tieba hot replies enum import failed: {exc}")
         return
 
-    async with Client() as client:
+    async with _create_aiotieba_client() as client:
         for post in targets:
             tid_raw = _clean_tieba_text(post.get("tid"))
             try:
@@ -1133,6 +1132,11 @@ def _get_aiotieba_client_class():
     return aiotieba.Client
 
 
+def _create_aiotieba_client():
+    Client = _get_aiotieba_client_class()
+    return Client(proxy=True)
+
+
 def _tieba_thread_to_post(thread: Any, bar_name: str) -> dict[str, Any] | None:
     tid = _clean_tieba_text(getattr(thread, "tid", ""))
     title = _clean_tieba_text(getattr(thread, "title", ""))
@@ -1158,8 +1162,7 @@ def _tieba_thread_to_post(thread: Any, bar_name: str) -> dict[str, Any] | None:
 
 
 async def _fetch_tieba_bar_posts(bar_name: str, *, rn: int) -> list[dict[str, Any]]:
-    Client = _get_aiotieba_client_class()
-    async with Client() as client:
+    async with _create_aiotieba_client() as client:
         threads = await client.get_threads(bar_name, pn=1, rn=rn)
     err = getattr(threads, "err", None)
     if err:
