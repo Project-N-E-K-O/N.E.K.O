@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.meme_knowledge import render_meme_knowledge_block, retrieve_meme_knowledge
+from ..core.viewer_preferences import viewer_preference_prompt_block
 from ._prompt_context_compaction import compact_context_line
 
 
@@ -78,6 +79,15 @@ def viewer_session_context_block(ctx: Any, uid: str, *, limit: int = 2) -> str:
         + "Do not repeat avatar, ID, or first-appearance comments for this viewer.\n"
         + "If the current danmaku changes topic, follow the current danmaku instead of forcing continuity.\n"
     )
+
+
+def viewer_preference_context_block(ctx: Any, profile: Any) -> str:
+    """Render durable personalization only when the streamer enabled it."""
+
+    config = getattr(ctx, "config", None)
+    if getattr(config, "viewer_memory_enabled", True) is False:
+        return ""
+    return viewer_preference_prompt_block(profile)
 
 
 def room_danmaku_context_block(

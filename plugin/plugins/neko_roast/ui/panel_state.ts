@@ -15,6 +15,7 @@ export type RoastConfig = {
   activity_level?: string
   roast_strength?: string
   roast_once_per_uid?: boolean
+  viewer_memory_enabled?: boolean
   rate_limit_seconds?: number
   queue_limit?: number
   safety_auto_stop_enabled?: boolean
@@ -69,6 +70,7 @@ export const configDefaults = {
   activity_level: "standard",
   roast_strength: "normal",
   roast_once_per_uid: true,
+  viewer_memory_enabled: true,
   rate_limit_seconds: "20",
   queue_limit: "5",
   safety_auto_stop_enabled: true,

@@ -132,6 +132,7 @@ class NekoRoastPlugin(NekoPluginBase):
                 "roast_strength": {"type": "string"},
                 "activity_level": {"type": "string"},
                 "roast_once_per_uid": {"type": "boolean"},
+                "viewer_memory_enabled": {"type": "boolean"},
                 "stream_theme": {"type": "string"},
                 "stream_goal": {"type": "string"},
                 "stream_columns": {"type": "string"},
@@ -250,11 +251,24 @@ class NekoRoastPlugin(NekoPluginBase):
         id="connect_live_room",
         name=tr("entries.connect_live_room.name", default="开始监听直播间"),
         description=tr("entries.connect_live_room.description", default="开启 NEKO Live 直播接收状态。v0.1 不复制旧弹幕插件的 WebSocket 实现。"),
-        input_schema={"type": "object", "properties": {"room_id": {"type": "string", "description": "直播间目标或链接（留空用已配置房间）"}}},
+        input_schema={
+            "type": "object",
+            "properties": {
+                "room_id": {"type": "string", "description": "直播间目标或链接（留空用已配置房间）"},
+                "allow_accountless": {
+                    "type": "boolean",
+                    "description": "仅 B 站：为本次连接显式启用受限无账号兜底",
+                    "default": False,
+                },
+            },
+        },
     )
-    async def connect_live_room(self, room_id="", **_):
+    async def connect_live_room(self, room_id="", allow_accountless=False, **_):
         try:
-            connection = await self._runtime().connect_live_room(room_id)
+            connection = await self._runtime().connect_live_room(
+                room_id,
+                allow_accountless=allow_accountless,
+            )
             return Ok({"connection": connection})
         except (TypeError, ValueError) as exc:
             return Err(SdkError(str(exc)))
@@ -506,11 +520,9 @@ class NekoRoastPlugin(NekoPluginBase):
     @plugin_entry(id="clear_viewer_profiles", name=tr("entries.clear_viewer_profiles.name", default="清空观众档案"), description=tr("entries.clear_viewer_profiles.description", default="清空观众档案，用于下一场受控直播测试前重置首评状态。"))
     async def clear_viewer_profiles(self, **_):
         runtime = self._runtime()
-        if not runtime.config.developer_tools_enabled:
-            return Err(SdkError("developer mode is disabled"))
         try:
             return Ok({"cleared": await runtime.clear_viewer_profiles()})
-        except PermissionError as exc:
+        except OSError as exc:
             return Err(SdkError(str(exc)))
 
     @plugin_entry(
@@ -525,11 +537,9 @@ class NekoRoastPlugin(NekoPluginBase):
     )
     async def delete_viewer_profile(self, uid="", **_):
         runtime = self._runtime()
-        if not runtime.config.developer_tools_enabled:
-            return Err(SdkError("developer mode is disabled"))
         try:
             return Ok({"result": await runtime.delete_viewer_profile(uid)})
-        except (PermissionError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             return Err(SdkError(str(exc)))
 
     @plugin_entry(
@@ -544,11 +554,9 @@ class NekoRoastPlugin(NekoPluginBase):
     )
     async def reset_viewer_impression(self, uid="", **_):
         runtime = self._runtime()
-        if not runtime.config.developer_tools_enabled:
-            return Err(SdkError("developer mode is disabled"))
         try:
             return Ok({"result": await runtime.reset_viewer_impression(uid)})
-        except (PermissionError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             return Err(SdkError(str(exc)))
 
     async def developer_lookup_bili_user(self, **kwargs):

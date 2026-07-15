@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,13 +28,22 @@ from ..core.viewer_preferences import (
 
 _STORE_FILE = "viewer_profiles.json"
 _MAX_PROFILE_TEXT = 240
+_PROFILE_RETENTION_DAYS = 90
 
 
 class ViewerStore:
-    def __init__(self, plugin: Any, audit: Any, dir_provider: Callable[[], str] | None = None) -> None:
+    def __init__(
+        self,
+        plugin: Any,
+        audit: Any,
+        dir_provider: Callable[[], str] | None = None,
+        *,
+        memory_enabled_provider: Callable[[], bool] | None = None,
+    ) -> None:
         self.plugin = plugin
         self.audit = audit
         self._dir_provider = dir_provider
+        self._memory_enabled_provider = memory_enabled_provider
         # 串行化读改写，避免并发 upsert/mark_roasted 互相覆盖（lost update）。
         self._lock = asyncio.Lock()
         self._fallback_warned = False
@@ -67,6 +77,14 @@ class ViewerStore:
         except Exception:  # noqa: BLE001
             return ""
 
+    def _memory_enabled(self) -> bool:
+        if not self._memory_enabled_provider:
+            return True
+        try:
+            return self._memory_enabled_provider() is not False
+        except Exception:  # noqa: BLE001
+            return True
+
     def _resolve_file(self) -> tuple[Path, bool]:
         """返回 (档案文件路径, 是否用了自定义目录)。纯解析、无副作用（不建目录）。"""
         configured = self._configured_dir()
@@ -76,33 +94,41 @@ class ViewerStore:
 
     def storage_status(self) -> dict[str, Any]:
         """给面板看的存储状态：当前文件路径 + 目录能否写 + 是否自定义。"""
-        file, custom = self._resolve_file()
+        configured_file, custom = self._resolve_file()
+        fallback_active = self._active_fallback_file is not None
+        file = self._active_fallback_file or configured_file
         directory = file.parent
-        probe = directory if directory.exists() else directory.parent
-        try:
-            writable = probe.exists() and os.access(str(probe), os.W_OK)
-        except Exception:  # noqa: BLE001
-            writable = False
         return {
             "path": str(file),
             "dir": str(directory),
-            "writable": bool(writable),
+            "writable": _path_is_writable(file),
             "exists": file.exists(),
-            "using_custom": custom,
+            "using_custom": bool(custom and not fallback_active),
+            "fallback_active": fallback_active,
+            "memory_enabled": self._memory_enabled(),
+            "retention_days": _PROFILE_RETENTION_DAYS,
         }
 
     def _write_json(self, file: Path, profiles: dict[str, dict[str, Any]]) -> bool:
         """原子写（tmp + os.replace）；成功 True，失败 False（不抛）。"""
+        tmp = file.with_suffix(file.suffix + ".tmp")
         try:
             file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = file.with_suffix(file.suffix + ".tmp")
             tmp.write_text(json.dumps(profiles, ensure_ascii=False, indent=2), encoding="utf-8")
             os.replace(str(tmp), str(file))
             return True
         except Exception:  # noqa: BLE001
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001 — cleanup failure must not mask the write result
+                pass
             return False
 
-    async def _load_all(self) -> dict[str, dict[str, Any]]:
+    async def _load_all(
+        self,
+        *,
+        include_expired: bool = False,
+    ) -> dict[str, dict[str, Any]]:
         file, custom = self._resolve_file()
         candidates: list[Path] = []
         if self._active_fallback_file is not None:
@@ -131,9 +157,39 @@ class ViewerStore:
                     uid = _safe_profile_uid(value.get("uid")) or _safe_profile_uid(key)
                     if not uid:
                         continue
-                    profiles[uid] = _safe_profile_item(value, fallback_uid=uid)
+                    item = _safe_profile_item(value, fallback_uid=uid)
+                    if item and (
+                        include_expired or not _profile_is_expired(item)
+                    ):
+                        profiles[uid] = item
                 return profiles
         return {}
+
+    async def prune_expired_profiles(self) -> dict[str, Any]:
+        """Delete profiles inactive for the fixed retention window."""
+
+        async with self._lock:
+            profiles = await self._load_all(include_expired=True)
+            active = {
+                uid: item
+                for uid, item in profiles.items()
+                if not _profile_is_expired(item)
+            }
+            pruned = len(profiles) - len(active)
+            applied = True
+            if pruned:
+                applied = await self._save_all(active, allow_fallback=False)
+                if applied:
+                    self._audit(
+                        "viewer_profiles_retention_prune",
+                        "expired viewer profiles pruned",
+                        level="info",
+                    )
+            return {
+                "pruned": pruned if applied else 0,
+                "applied": applied,
+                "retention_days": _PROFILE_RETENTION_DAYS,
+            }
 
     async def _save_all(
         self,
@@ -209,6 +265,8 @@ class ViewerStore:
         self,
         identity: ViewerIdentity,
         danmaku_text: str,
+        *,
+        remember_preferences: bool | None = None,
     ) -> ViewerProfile:
         async with self._lock:
             profiles = await self._load_all()
@@ -219,7 +277,12 @@ class ViewerStore:
             if not uid:
                 return ViewerProfile(uid="", nickname=nickname, avatar_url=avatar_url)
             item = _safe_profile_item(profiles.get(uid) or {"uid": uid}, fallback_uid=uid)
-            inference = infer_viewer_preferences(danmaku_text)
+            memory_enabled = (
+                self._memory_enabled()
+                if remember_preferences is None
+                else bool(remember_preferences)
+            )
+            inference = infer_viewer_preferences(danmaku_text) if memory_enabled else {}
             profile = ViewerProfile(
                 uid=uid,
                 nickname=nickname or _safe_profile_text(item.get("nickname")) or uid,
@@ -230,17 +293,29 @@ class ViewerStore:
                 last_roast_at=_safe_profile_text(item.get("last_roast_at")),
                 last_result=_safe_profile_text(item.get("last_result")),
                 danmaku_count=public_int(item.get("danmaku_count"), default=0, minimum=0) + 1,
-                preference_tags=merge_preference_counts(
-                    item.get("preference_tags"),
-                    [str(tag) for tag in inference.get("tags", []) if str(tag).strip()],
+                preference_tags=(
+                    merge_preference_counts(
+                        item.get("preference_tags"),
+                        [str(tag) for tag in inference.get("tags", []) if str(tag).strip()],
+                    )
+                    if memory_enabled
+                    else safe_preference_counts(item.get("preference_tags"))
                 ),
-                favorite_topics=merge_preference_counts(
-                    item.get("favorite_topics"),
-                    [str(tag) for tag in inference.get("favorite_topics", []) if str(tag).strip()],
+                favorite_topics=(
+                    merge_preference_counts(
+                        item.get("favorite_topics"),
+                        [str(tag) for tag in inference.get("favorite_topics", []) if str(tag).strip()],
+                    )
+                    if memory_enabled
+                    else safe_preference_counts(item.get("favorite_topics"))
                 ),
-                running_jokes=merge_preference_counts(
-                    item.get("running_jokes"),
-                    [str(tag) for tag in inference.get("running_jokes", []) if str(tag).strip()],
+                running_jokes=(
+                    merge_preference_counts(
+                        item.get("running_jokes"),
+                        [str(tag) for tag in inference.get("running_jokes", []) if str(tag).strip()],
+                    )
+                    if memory_enabled
+                    else safe_preference_counts(item.get("running_jokes"))
                 ),
                 interaction_style=_safe_profile_text(inference.get("interaction_style"))
                 or _safe_profile_text(item.get("interaction_style")),
@@ -356,6 +431,7 @@ class ViewerStore:
                 file = self._active_fallback_file
             return {
                 "uid": key,
+                "found": found,
                 "reset": bool(found and persisted),
                 "applied": persisted,
                 "path": str(file),
@@ -376,6 +452,41 @@ def _safe_profile_uid(value: Any) -> str:
 
 def _safe_profile_text(value: Any) -> str:
     return public_text(value, max_len=_MAX_PROFILE_TEXT)
+
+
+def _path_is_writable(file: Path) -> bool:
+    """Best-effort status probe without creating directories or files."""
+
+    try:
+        if file.exists() and (not file.is_file() or not os.access(str(file), os.W_OK)):
+            return False
+        directory = file.parent
+        probe = directory
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        return probe.is_dir() and os.access(str(probe), os.W_OK)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _profile_is_expired(item: dict[str, Any]) -> bool:
+    observed_at: list[datetime] = []
+    for value in (item.get("last_interaction_at"), item.get("last_seen_at")):
+        raw = _safe_profile_text(value)
+        if not raw:
+            continue
+        try:
+            seen_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if seen_at.tzinfo is None:
+            seen_at = seen_at.replace(tzinfo=timezone.utc)
+        observed_at.append(seen_at)
+    if not observed_at:
+        return False
+    return datetime.now(timezone.utc) - max(observed_at) > timedelta(
+        days=_PROFILE_RETENTION_DAYS
+    )
 
 
 def _safe_profile_item(value: dict[str, Any], *, fallback_uid: Any) -> dict[str, Any]:

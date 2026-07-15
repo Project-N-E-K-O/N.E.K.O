@@ -39,7 +39,7 @@ NEKO Live may also borrow the health rows observation model from the Warthunder 
 
 Updated: 2026-07-07
 
-Phase 2C is intentionally paused at a stable backend-observability checkpoint:
+Phase 2C has reached a stable backend-observability checkpoint. The implementation below is complete enough for offline review; packaged UI and real-stream evidence remain part of the deferred release validation rather than unfinished observability architecture:
 
 - Completed: Dispatcher Outcome standardization distinguishes `dispatcher.dry_run`, `dispatcher.pushed`, `dispatcher.failed`, and `dispatcher.skipped`.
 - Completed: Selection Decision Chain records the selected candidate and privacy-safe dropped candidates with skip reasons.
@@ -322,7 +322,7 @@ Expected outcomes: `pushed`, `dry_run`, `skipped`, `failed`, `degraded`.
 
 ### Runtime
 
-`core/runtime.py` owns lifecycle, hosted-ui context, and public runtime API compatibility. It keeps those APIs stable, but delegates mutable runtime cache initialization to `core/runtime_state.py`, module instantiation / ReservedModule registration / pipeline assembly to `core/runtime_modules.py`, and legacy runtime action/helper compatibility to focused `core/runtime_*_api.py` mixins. The implementation owners remain `core/runtime_bili_auth.py`, `core/runtime_config.py`, `core/runtime_live_controls.py`, `core/runtime_instructions.py`, `core/runtime_live_input.py`, `core/runtime_developer_tools.py`, `core/runtime_dashboard.py`, `core/live_hosting_director.py`, and `core/runtime_active_engagement.py`.
+`core/runtime.py` owns lifecycle, hosted-ui context, and public runtime API compatibility. It keeps those APIs stable, but delegates mutable runtime cache initialization to `core/runtime_state.py`, real module instantiation / registration plus import-failure `ReservedModule` fallback / pipeline assembly to `core/runtime_modules.py`, and legacy runtime action/helper compatibility to focused `core/runtime_*_api.py` mixins. The implementation owners remain `core/runtime_bili_auth.py`, `core/runtime_config.py`, `core/runtime_live_controls.py`, `core/runtime_instructions.py`, `core/runtime_live_input.py`, `core/runtime_developer_tools.py`, `core/runtime_dashboard.py`, `core/live_hosting_director.py`, and `core/runtime_active_engagement.py`.
 
 Expected outcomes: `received`, `skipped`, `failed`, `degraded`.
 

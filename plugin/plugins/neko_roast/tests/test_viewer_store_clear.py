@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 
 import pytest
@@ -112,3 +113,100 @@ async def test_reset_profile_impression_reports_missing_uid_without_creating_pro
     assert result["reset"] is False
     assert result["preserved_first_appearance"] is False
     assert await store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_disabled_viewer_memory_keeps_basic_profile_without_learning_preferences(tmp_path):
+    memory_enabled = False
+    store = ViewerStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        memory_enabled_provider=lambda: memory_enabled,
+    )
+    identity = ViewerIdentity(uid="1001", nickname="viewer")
+
+    profile = await store.record_live_danmaku(identity, "AI plugin config?")
+    await store.mark_roasted("1001", "first roast")
+
+    assert profile.danmaku_count == 1
+    assert profile.preference_tags == {}
+    assert profile.favorite_topics == {}
+    assert profile.running_jokes == {}
+    assert profile.impression_summary == ""
+    assert await store.has_roasted("1001") is True
+
+
+@pytest.mark.asyncio
+async def test_disabling_viewer_memory_preserves_existing_impression_without_extending_it(tmp_path):
+    memory_enabled = True
+    store = ViewerStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        memory_enabled_provider=lambda: memory_enabled,
+    )
+    identity = ViewerIdentity(uid="1001", nickname="viewer")
+    learned = await store.record_live_danmaku(identity, "AI plugin config?")
+    memory_enabled = False
+
+    unchanged = await store.record_live_danmaku(identity, "bgm sounds good")
+
+    assert unchanged.danmaku_count == learned.danmaku_count + 1
+    assert unchanged.preference_tags == learned.preference_tags
+    assert unchanged.favorite_topics == learned.favorite_topics
+    assert unchanged.running_jokes == learned.running_jokes
+    assert unchanged.impression_summary == learned.impression_summary
+
+
+@pytest.mark.asyncio
+async def test_prune_expired_profiles_deletes_only_profiles_older_than_ninety_days(tmp_path):
+    old_at = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+    recent_at = (datetime.now(timezone.utc) - timedelta(days=89)).isoformat()
+    profile_file = tmp_path / "viewer_profiles.json"
+    profile_file.write_text(
+        json.dumps(
+            {
+                "old": {"uid": "old", "nickname": "old", "last_seen_at": old_at},
+                "recent": {
+                    "uid": "recent",
+                    "nickname": "recent",
+                    "last_seen_at": recent_at,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+
+    assert [item["uid"] for item in await store.recent_profiles()] == ["recent"]
+
+    result = await store.prune_expired_profiles()
+
+    assert result == {"pruned": 1, "applied": True, "retention_days": 90}
+    persisted = json.loads(profile_file.read_text(encoding="utf-8"))
+    assert list(persisted) == ["recent"]
+
+
+@pytest.mark.asyncio
+async def test_retention_uses_most_recent_valid_activity_timestamp(tmp_path):
+    old_at = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+    recent_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    profile_file = tmp_path / "viewer_profiles.json"
+    profile_file.write_text(
+        json.dumps(
+            {
+                "1001": {
+                    "uid": "1001",
+                    "nickname": "viewer",
+                    "last_interaction_at": old_at,
+                    "last_seen_at": recent_at,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+
+    result = await store.prune_expired_profiles()
+
+    assert result["pruned"] == 0
+    assert [item["uid"] for item in await store.recent_profiles()] == ["1001"]

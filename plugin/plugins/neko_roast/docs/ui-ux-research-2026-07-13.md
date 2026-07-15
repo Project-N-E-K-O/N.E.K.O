@@ -6,6 +6,30 @@ Audience: product, UI, runtime, privacy, and test maintainers
 
 This document records confirmed product and UX problems before the UI refactor. It separates code-backed facts from product recommendations so that later implementation does not silently change runtime behavior.
 
+> Implementation sync — 2026-07-15: this file preserves the original audit evidence and external research. Findings below describe the pre-refactor panel unless a later section says otherwise; they must not be read as the current UI specification. The current implemented structure is canonical in `ui-architecture.md`.
+
+## Implementation status after the dashboard refactor
+
+The 2026-07-14 dashboard work resolved the largest information-architecture and first-use problems identified in this audit:
+
+- the normal panel now has four stable areas: Console, Interaction, Viewers, and Settings; empty Private Message and Automation destinations are gone;
+- account management and room confirmation use host-provided modals, room selection is explicitly two-step, and editing the target invalidates the previous lookup result;
+- Console owns the complete normal live path, with one centered bottom Start/End action gated by setup readiness;
+- interaction modules keep stable card geometry and open detailed controls in modals;
+- Viewers separates current-session information from persistent profiles, and profile details no longer require a 14-column ordinary table;
+- Settings separates safety/performance, data/privacy, and help/advanced; developer mode conditionally reveals a dedicated developer subview;
+- onboarding exists and can be reset from Settings; `dry_run` remains a developer/test capability rather than a beginner-facing primary control.
+
+The remaining high-value work is narrower than the original audit:
+
+1. ~~enforce explicit Bilibili accountless-fallback intent at the runtime connection boundary, not only in React state~~ — completed on 2026-07-15;
+2. finish the consolidated connection/auth state model, including reconnect and credential-validation failure semantics;
+3. ~~decide familiar-viewer memory enablement, retention, deletion, and reset semantics before adding ordinary-user controls~~ — completed on 2026-07-15 with a default-on preference, fixed 90-day lazy retention, clear-all, per-viewer reset, and per-viewer deletion;
+4. continue splitting read-only sections out of `panel.tsx` only where it reduces measured maintenance or rendering cost; do not redesign navigation again;
+5. run rendered narrow-width, keyboard, focus-return, status-announcement, contrast, and idle-CPU verification on the packaged Hosted UI. This release evidence is intentionally deferred until real-device testing resumes.
+
+The memory findings `MEM-003`, `MEM-004`, `MEM-006`, `MEM-007`, and `MEM-008` below are resolved by the 2026-07-15 implementation. They remain in the ledger as historical evidence rather than open requirements.
+
 ## Product principles
 
 1. The default screen is for a first-time streamer, not for a plugin developer.

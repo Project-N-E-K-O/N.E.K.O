@@ -12,6 +12,7 @@ import json
 
 from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
 from plugin.plugins.neko_roast.modules._base import BaseModule, ReservedModule
+from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
 
 
 class _BoomSetup(BaseModule):
@@ -45,6 +46,14 @@ class _AuditSpy:
 
     def record(self, op, message, level="info", detail=None):
         self.records.append((op, message, level, detail))
+
+
+def test_production_config_schema_uses_only_rendered_field_contract():
+    schema = AvatarRoastModule().config_schema()
+
+    assert schema
+    assert {field["type"] for field in schema} <= {"boolean", "select", "text", "string"}
+    assert all("show_if" not in field for field in schema)
 
 
 class _Ctx:

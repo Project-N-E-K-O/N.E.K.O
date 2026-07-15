@@ -11,6 +11,9 @@ from plugin.plugins.neko_roast.core.viewer_preferences import (
     viewer_preference_prompt_block,
     viewer_profile_projection,
 )
+from plugin.plugins.neko_roast.modules._prompt_context_blocks import (
+    viewer_preference_context_block,
+)
 from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
 
 
@@ -102,6 +105,21 @@ def test_viewer_preference_prompt_block_marks_memory_as_private_and_cautious():
     assert "memory_use_rule: cautious:" in block
     assert "evidence_rule: treat one-off topics or jokes as weak evidence" in block
     assert "do not announce stored viewer data or say you remember the profile" in block
+
+
+def test_viewer_preference_context_respects_streamer_memory_toggle():
+    profile = ViewerProfile(
+        uid="1001",
+        nickname="viewer",
+        danmaku_count=4,
+        favorite_topics={"tech_ai": 2},
+        last_interaction_at=utc_now_iso(),
+    )
+    enabled = type("Context", (), {"config": type("Config", (), {"viewer_memory_enabled": True})()})()
+    disabled = type("Context", (), {"config": type("Config", (), {"viewer_memory_enabled": False})()})()
+
+    assert "Viewer impression memory" in viewer_preference_context_block(enabled, profile)
+    assert viewer_preference_context_block(disabled, profile) == ""
 
 
 @pytest.mark.asyncio

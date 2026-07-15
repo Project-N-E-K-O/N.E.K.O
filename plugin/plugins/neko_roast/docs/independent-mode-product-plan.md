@@ -1,6 +1,6 @@
 # NEKO Live Independent Mode Product Plan
 
-> Updated: 2026-06-28
+> Updated: 2026-07-15
 >
 > This document is the canonical product plan for Independent Mode. It describes product priorities, MVP scope, validation sequence, and non-goals. It does not define internal architecture, runtime observability, or implementation details.
 
@@ -23,32 +23,32 @@ Product success is not measured by the number of supported event types. It is me
 
 ## Current Priority
 
-Independent Mode is the current product priority.
+Independent Mode remains the product target, but the current delivery task is offline release cleanup rather than another live-room run.
 
-Companion Mode remains part of NEKO Live, but it is not the current stage target. Gift, Super Chat, and Guard-specific behavior are enhancements; they are not prerequisites for proving Independent Mode.
+Companion Mode remains part of NEKO Live, but it is not the current stage target. Short Gift, Super Chat, and Guard thanks are already implemented; more elaborate reading, welcome, ranking, privilege, or reward flows are optional later enhancements rather than prerequisites for proving Independent Mode.
 
-The next phase should validate two promises first:
+The release gate must eventually validate two promises:
 
 1. The streamer can safely hand the room to NEKO.
 2. NEKO does not let a low-danmaku room fall into dead air.
 
 ## Current Implementation Status
 
-Independent Mode is now past the first implementation and acceptance check and should move into controlled live-effect validation.
+Independent Mode is now past the first implementation and offline acceptance checks. Controlled live-effect validation is still required before release, but the maintainer explicitly paused real-device testing on 2026-07-15. Until that pause is lifted, work should stay on documentation consistency, the legacy `bilibili_danmaku` capability migration matrix, and bounded offline architecture cleanup.
 
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
 - Slice 4 base is landed: activity level gives the streamer a small quiet / standard / active pacing control instead of many parameters. It now controls both quiet/idle state thresholds and Idle Hosting minimum intervals.
 - Danmaku Response transition slice is implemented in the current development branch: first appearance still uses `avatar_roast`; later ordinary danmaku from the same UID uses `danmaku_response` instead of being blocked by the first-appearance once gate.
-- Active Engagement v0 is implemented as a solo-stream quiet-moment trigger with both automatic and manual paths. It is meant for controlled live-effect validation only: one small replyable topic, standard pacing around a 90-second minimum interval, active pacing around a 60-second minimum interval, and no Gift / SC / Guard coupling.
+- Active Engagement is implemented as a solo-stream quiet-moment trigger with both automatic and manual paths: one small replyable topic, standard pacing around a 90-second minimum interval, active pacing around a 60-second minimum interval, and no direct Gift / SC / Guard coupling.
 - Active Engagement v1 topic material now avoids stale or single-viewer-biased material: when recent useful danmaku material is older than the live-topic freshness window, or all comes from the same UID repeatedly, NEKO should fall back to neutral topics instead of turning old or single-viewer message streams into the whole room's topic.
 - Next-test tuning now treats only real danmaku as viewer reply activity for idle detection, so entry / gift / SC / Guard health rows do not block cold-room hosting. Active Engagement fallback topics now bias toward concrete reply handles such as A/B choices, one-word answers, tiny stances, or small playful challenges.
 - Active Engagement v1.15 adds lightweight topic profiling for recent danmaku and Bilibili public material. Obvious choice, challenge, tease, or mood titles now carry a preferred shape, fun axis, and reply affordance into the prompt instead of arriving as a raw title only.
 - Live Director status is exposed in the dashboard to explain the next automatic speaking action: none, active engagement, or idle hosting, including whether it is eligible and how long it must wait.
 - Solo stream readiness is exposed in the dashboard as a streamer-facing checklist. It aggregates preflight, test isolation, warmup, first-viewer roast, follow-up danmaku reply, light active topic, idle hosting, and pacing control into one readiness conclusion; it is not a separate output path or test backend.
 - Warmup Hosting is implemented for solo-stream opening moments before any recent room activity exists. It gives NEKO an opening host beat so the first autonomous line does not sound like cold-room filler.
-- The current validation target is not another event type. It is a controlled solo-stream validation with low danmaku, occasional danmaku, and no-danmaku moments.
-- The next product decision should be based on controlled validation:
+- The eventual validation target is not another event type. It is a controlled solo-stream validation with low danmaku, occasional danmaku, and no-danmaku moments.
+- The next live-effect product decision should be based on that controlled validation after real-device testing resumes:
   - if NEKO is too quiet or too noisy, tune the quiet / standard / active pacing thresholds next;
   - if NEKO sounds generic or awkward, tune Idle Hosting wording first;
   - if the streamer cannot tell why NEKO is silent, refine Live Status before adding more behavior.
@@ -57,6 +57,8 @@ Independent Mode is now past the first implementation and acceptance check and s
 ## Current UI Direction
 
 The UI should keep the existing plugin-panel visual language: light gray page background, white cards, blue capsule tabs, status badges, and compact dashboard cards. Do not introduce a separate product shell, OBS dock layout, or a new visual system until the Independent Mode behavior is stable.
+
+As of 2026-07-14, the streamer-dashboard refactor is implemented: normal navigation is Console / Interaction / Viewers / Settings, Developer Tools appears only when enabled, account and room setup use focused modals, room confirmation is a two-step lookup/confirm flow, and the Console keeps one readiness-gated Start/End action at the bottom. The next UI work is verification and decomposition, not another navigation redesign.
 
 Live-time assumption: during a real stream, the streamer will not keep watching the plugin panel. The panel is a preflight, remote-control, emergency, and after-action review surface. It should not become the primary live experience or a dense operator dashboard that expects constant attention.
 
@@ -90,14 +92,14 @@ This track decides why NEKO speaks, when NEKO speaks, how often NEKO speaks, and
 
 ### Event Module Track
 
-The Event Module Track owns future extension modules:
+The Event Module Track owns provider-neutral event extensions and their focused tests. The base Gift / Super Chat / Guard short-thanks path is already implemented by `live_support_events`; future work, if separately approved, may include:
 
-- Gift signal slices;
-- Super Chat signal slices;
-- Guard signal slices;
+- richer Super Chat reading policy;
+- Guard welcome or membership lifecycle behavior;
+- additional provider event families;
 - private-message slices;
 - viewer profile extensions;
-- contribution / watch-time signals;
+- contribution or watch-time signals only after product, trust, and privacy review;
 - dashboard sub-status cards;
 - fixtures, samples, module docs, and focused tests.
 
@@ -347,6 +349,8 @@ Validated:
 - `cooldown`, `recently_spoke`, `quiet`, and `manual_paused` states were observable during the run.
 
 Gift / fan-club / guard signal note:
+
+> Historical state from this 2026-06-24 run. The current implementation now routes selected Gift / SC / Guard events through `live_support_events`; the bullets below explain what was true during this validation, not the present feature boundary.
 
 - A fan-club medal event was observed as text similar to "sent 1 fan-club medal" and was pushed through the current `live_danmaku` path.
 - Gift, fan-club, and guard events should be observable as signal labels before full Gift / SC / Guard behavior exists.
@@ -604,9 +608,9 @@ Hold external testing if:
 - Idle windows remain silent or turn into generic interaction begging.
 - The maintainer must explain terminal logs live for the tester to know what is happening.
 
-## Next Live Test Checklist
+## Release Validation Acceptance Checklist
 
-This is the canonical checklist for the next controlled solo-stream validation. Quickstart may link to it, but should not duplicate the full decision criteria.
+This section defines product pass/fail criteria for the next controlled solo-stream validation after real-device testing resumes. The executable startup, connection, monitor, and shutdown runbook belongs in `solo-stream-test-guide.md`; runtime field names, stages, outcomes, skip reasons, and alerts belong in `runtime-observability.md`.
 
 Goal: verify whether the follow-up fixes after the 2026-06-26 run improve live feel. The test should answer whether NEKO can run a 30-minute `solo_stream` without awkward silence, noisy repetition, mistaken `@` replies, over-reliance on recent emotes, avatar re-roast pollution, or playback stalls.
 
@@ -656,29 +660,20 @@ Goal: verify whether the follow-up fixes after the 2026-06-26 run improve live f
 - Live-state review should distinguish viewer silence from NEKO's own recent output when judging whether the room is `quiet` or `idle`.
 - Active Engagement should not overuse recent danmaku as topic material. If recent-danmaku source repeats too much, the next topic should come from Bilibili trend material or NEKO-owned fallback hooks.
 - Active Engagement should not repeat the same topic shape / intent several times in a row; the review should be able to see whether a shape guard changed the next proactive topic.
-- For earlier slices or packages that do not include monitor tooling, capture the Dashboard, recent results, `live_explain`, and backend log during a quiet or idle window; do not block testing while looking for `monitor_live.ps1`.
-- This monitor-tooling slice ships `monitor_live.ps1`, so the monitor-specific capture checklist below now applies alongside those primary evidence sources.
-- `monitor_live.ps1` should be captured at least once during quiet / idle windows; record `director_action`, `director_reason`, `director_eligible`, `director_wait`, `viewer_age`, `output_age`, `entrance_pacing_window`, `active_min_interval`, `active_min_wait`, `active_danmaku_wait`, `active_idle_wait`, `latest_status`, `latest_route`, `latest_uid`, `latest_source`, `latest_text`, `latest_reason`, `latest_age`, `latest_age_status`, `latest_output_len`, `latest_output_length_status`, `recent_long_reply_count`, `recent_long_reply_avatar_roast`, `recent_long_reply_danmaku_response`, `recent_long_reply_live_support_events`, `recent_long_reply_idle_hosting`, `recent_long_reply_active_engagement`, `recent_long_reply_warmup_hosting`, `recent_total`, `recent_avatar_roast`, `recent_danmaku_response`, `recent_live_support_events`, `recent_warmup_hosting`, `recent_idle_hosting`, `recent_active_engagement`, `recent_actual_avatar_roast`, `recent_actual_danmaku_response`, `recent_actual_live_support_events`, `recent_actual_warmup_hosting`, `recent_actual_idle_hosting`, `recent_actual_active_engagement`, `recent_signal_danmaku_signal`, `recent_signal_gift_signal`, `recent_signal_super_chat_signal`, `recent_pushed`, `recent_dry_run`, `recent_skipped`, `recent_failed`, `latest_topic_source`, `latest_topic_shape`, `latest_topic_key`, `latest_topic_hook`, `latest_topic_pattern`, `latest_topic_intent`, `latest_topic_fun_axis`, `latest_topic_reply_affordance`, `recent_topic_reply_affordance_top`, `recent_topic_reply_affordance_bias`, `recent_topic_source_fallback`, `recent_topic_source_bili_trending`, `recent_topic_source_recent_danmaku`, `recent_topic_shape_either_or`, `recent_topic_shape_light_stance`, `recent_topic_shape_tiny_tease`, `recent_topic_shape_small_challenge`, `recent_topic_axis_choice`, `recent_topic_axis_tease`, `recent_topic_axis_mood`, `recent_topic_axis_micro_challenge`, `recent_topic_axis_viewer_callback`, `recent_topic_intent_quick_vote`, `recent_topic_intent_tiny_answer`, `recent_topic_intent_tease_back`, `recent_topic_intent_agree_or_pushback`, `latest_topic_repeat`, `latest_host_beat_key`, `latest_host_beat_shape`, `latest_host_beat_fun_axis`, `latest_host_beat_title`, `latest_host_beat_reply_affordance`, `recent_host_beat_reply_affordance_top`, `recent_host_beat_reply_affordance_bias`, `latest_host_beat_repeat`, `recent_host_beat_axis_choice`, `recent_host_beat_axis_tease`, `recent_host_beat_axis_mood`, `recent_host_beat_axis_micro_challenge`, `recent_host_beat_axis_viewer_callback`, `avatar_repeat_uid`, and `avatar_repeat_count` so the review can tell whether pacing, routing, topic material source, topic shape, topic quality, active topic axis variety, active reply-path variety, idle host beat replyability, host beat axis variety, idle reply-path variety, latest input, repeated topic material, repeated avatar roast, overlong replies, support-event thanks, repeated or missing warmup hosting, proactive output in an engaged room, missing idle hosting, missing active engagement, or a stalled result stream failed. Use the recent status counts, recent actual route counts, recent signal counts, recent topic source counts, recent topic shape counts, recent topic axis counts, recent topic intent counts, topic / host beat reply-affordance fields, host beat fun-axis fields, and per-route long-reply counts to distinguish actual output from skipped / failed attempts, spot overreliance on fallback / Bili / recent danmaku material, spot one-note proactive topics or one-note idle host beats, confirm gift / SC / guard uses `live_support_events` without polluting ordinary danmaku routes, and locate which speaking path is producing overlong replies. `alerts` should flag `live_disabled`, `test_isolation`, `topic_repeat`, `topic_reply_missing`, `host_beat_reply_missing`, `topic_axis_bias`, `host_beat_axis_bias`, `topic_reply_affordance_bias`, `host_beat_reply_affordance_bias`, `topic_source_bias`, `topic_shape_bias`, `topic_intent_bias`, `topic_filter_direct_request`, `topic_filter_reaction`, `topic_filter_runtime_feedback`, `avatar_repeat`, `avatar_bias`, `long_reply`, `generic_host_prompt`, `recent_failed`, `host_beat_repeat`, `proactive_in_engaged`, `active_blocks_idle`, `warmup_repeat`, `warmup_missing`, `idle_missing`, or `active_missing` when those risks appear.
-- Monitor captures must remain privacy-safe: `latest_text` is always `[redacted]`, and `latest_topic_title` / `latest_topic_key` are redacted when `latest_topic_source=recent_danmaku`. Use source, route, profile, shape, intent, and timing metadata for diagnosis instead of raw viewer text.
-- For Live Feel Pack v1.5, also record `recent_topic_skip_viewer_to_viewer_mention`, `recent_topic_skip_recent_danmaku_source_streak`, and `latest_topic_shape_guard_reason`; `alerts` should flag `topic_viewer_mention`, `topic_source_streak`, and `topic_shape_guard` when mention filtering, recent-danmaku source throttling, or shape / intent guards affect Active Engagement.
-- For support-event validation, verify Gift / Guard / SC route to `live_support_events`, expose support-event metadata, stay short, do not ask for more support, and keep host routes (`warmup_hosting`, `idle_hosting`, `active_engagement`) on their own pacing checks.
-- For Live Feel Pack v1.6, also verify `profile_count` follows solo readiness even when `recent_profiles` is empty, and host routes (`warmup_hosting`, `idle_hosting`, `active_engagement`) warn on 60+ character outputs even if the global long-reply threshold is higher.
-- For Live Feel Pack v1.7, verify that cold-room lines rotate through more than one hosting beat shape and fun axis, and Active Engagement topics expose a clear `fun_axis` plus `reply_affordance` so reviewers can tell whether the topic gives viewers a low-effort way to answer. The prompt should treat the reply path as the only hook, not add a second question, and the fallback material should avoid template-hosting bait such as "everyone interact", "send danmaku", "what should we talk about", or "get the chat moving" even inside negative instructions. If `topic_axis_bias` or `host_beat_axis_bias` appears, treat the issue as content variety first, not as a need to raise frequency.
-- For Live Feel Pack v1.9, also verify cross-module content-family variety: after an `idle_hosting` beat uses a family such as `choice_vote`, `short_callback`, `room_mood`, `object_scene`, `host_self_test`, `tease`, or `micro_challenge`, the next `active_engagement` should prefer a different family, and vice versa. This catches the live-feel problem where NEKO does not repeat the exact same key, but still sounds like she is reusing the same hosting trick.
-- For Live Feel Pack v1.11, also verify long-run anti-repeat: after 30+ minutes, NEKO should not circle back to the same high-signal hosting families such as reward / snack, room mood / tiny radio, host self-test, one-word callback, either-or choice, or micro-challenge just because the exact wording changed. If fallback Active Engagement topics are constrained by family / axis / title guards, the next candidate should still prefer an unused key before reusing the first fallback topic.
-- For Live Feel Pack v1.13, also verify host memory isolation: NEKO Live short replies should still be available to anti-repeat and voice-echo protection, but should not enter the ordinary AI turn text that normal chat memory uses. A later danmaku should answer the current input, not continue or paraphrase the previous live reply.
-- For Live Feel Pack v1.14, treat cross-server and hot-swap memory isolation as host-side risk boundaries outside the current plugin scope: `live_reply_contract=short_tts_line` outputs and turn ends may still enter ordinary chat history through `cross_server` or `message_cache_for_new_session`. The plugin provides metadata, recent-output constraints, and monitor clues only; if replies still feel like they continue the previous live line, inspect the live recent-output window first, then check ordinary memory/analyzer logs and new-session cache as host-side follow-up evidence.
-- Record `latest_topic_family`, `latest_host_beat_family`, `recent_topic_family_*`, `recent_host_beat_family_*`, `topic_family_bias`, and `host_beat_family_bias` in the next real-output review. These fields are the acceptance signal for "NEKO keeps repeating the same kind of thing" even when exact text, topic key, or host beat key is different.
-- `topic_source_bias` means recent Active Engagement topics overuse one material source; use it together with `recent_topic_source_*` to decide whether to adjust fallback topics, Bili trending filtering, or recent-danmaku topic reuse. `topic_shape_bias` means the material may be varied but the interaction shape is still one-note; use it with `recent_topic_shape_*` before changing broader pacing.
-- Also record `avatar_roast_share`, `avatar_roast_bias`, `recent_long_reply_count`, and `recent_generic_host_prompt_count` during solo-stream tests. `avatar_bias` means recent ordinary danmaku routes are still dominated by first-appearance roast, `recent_long_reply_count` catches overlong replies even after a later short reply becomes the latest result, and `generic_host_prompt` means NEKO slipped into template-like "please interact / send danmaku / anyone here" hosting.
-- With the monitor tooling available, run `monitor_live.ps1 -ExpectRealOutput -BackendLogPath <backend-log>` during real-output tests. Use its `alerts` and `log_*` fields together with the Dashboard, recent results, and `live_explain`; record the latest route, output status, watchdog evidence, unrelated proactive output, and reply length so playback stalls or contamination are not mistaken for NEKO Live pacing failures.
+- Capture the Dashboard, recent results, `live_explain`, backend log, and at least one privacy-safe `monitor_live.ps1` snapshot during quiet or idle windows. Use `solo-stream-test-guide.md` for the command and capture sequence.
+- Interpret evidence using the canonical stages, outcomes, skip reasons, signal fields, freshness rules, and alerts in `runtime-observability.md`; do not duplicate the monitor schema in this product plan.
+- Verify route balance and real outcomes rather than attempt counts: first appearance, ordinary danmaku, support thanks, warmup, idle hosting, and active engagement must be distinguishable as pushed, dry-run, skipped, or failed.
+- Verify live-feel variety across topic source, shape, intent, family, fun axis, and reply affordance. Repetition alerts are a content-quality signal first, not permission to increase speaking frequency.
+- Verify support events route to `live_support_events`, remain short, never ask for more support, and do not pollute ordinary danmaku or hosting pacing.
+- Verify host-memory isolation: a later danmaku answers the current viewer input rather than continuing or paraphrasing the previous live reply. Cross-server or hot-swap leakage remains a host-side follow-up boundary.
+- Monitor and dashboard evidence must remain privacy-safe: raw viewer text, credentials, tokens, avatar bytes, and private payloads are never acceptable validation artifacts.
 - If NEKO feels too quiet or too noisy, tune pacing before adding event types.
 
 ### Signal observation
 
-- Recent results should distinguish `avatar_roast`, `danmaku_response`, `warmup_hosting`, `idle_hosting`, `active_engagement`, and gift/fan-club/guard signal capture.
-- If a gift, fan-club medal, or guard event appears, record whether it is captured as `gift_signal`.
-- Do not treat gift/fan-club/guard observation as full Gift / SC / Guard behavior.
+- Recent results should distinguish `avatar_roast`, `danmaku_response`, `live_support_events`, `warmup_hosting`, `idle_hosting`, and `active_engagement`.
+- If a Gift, Super Chat, or Guard event appears, verify both its provider-neutral signal and the selected `live_support_events` short-thanks outcome. Signal capture alone is no longer the full implemented behavior.
+- Entry, follow, contribution ranking, reward logic, privileged treatment, and elaborate support ceremonies remain outside the current behavior.
 
 ### Pass / fail decision
 
@@ -702,11 +697,11 @@ Fail or retest if:
 
 Out of scope before the next live test:
 
-- full Gift / SC / Guard behavior;
+- elaborate Gift / SC / Guard reading, welcome, ranking, privilege, reward, or ceremony behavior beyond the implemented short thanks;
 - private messages;
 - automation;
 - major UI redesign;
-- long-term memory;
+- additional long-term profile expansion beyond the approved safe Viewer Memory v1;
 - multi-persona configuration.
 
 ### 2. One Friendly Streamer Shadow Test

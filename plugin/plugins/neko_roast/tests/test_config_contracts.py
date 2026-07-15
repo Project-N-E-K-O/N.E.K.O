@@ -312,6 +312,16 @@ def test_roast_config_module_controls_default_on_and_parse_explicit_false():
     assert all(disabled.to_public_dict()[key] is False for key in keys)
 
 
+def test_roast_config_viewer_memory_defaults_on_and_respects_explicit_false():
+    defaults = RoastConfig.from_mapping({})
+    disabled = RoastConfig.from_mapping({"viewer_memory_enabled": False})
+
+    assert defaults.viewer_memory_enabled is True
+    assert defaults.to_public_dict()["viewer_memory_enabled"] is True
+    assert disabled.viewer_memory_enabled is False
+    assert disabled.to_public_dict()["viewer_memory_enabled"] is False
+
+
 def test_roast_config_keeps_bilibili_room_id_and_room_ref_compatible():
     config = RoastConfig.from_mapping(
         {"live_platform": "bili", "live_room_ref": "https://live.bilibili.com/12345"}

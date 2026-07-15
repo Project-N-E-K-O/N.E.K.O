@@ -62,6 +62,7 @@ type RoastConfig = {
   activity_level?: string
   roast_strength?: string
   roast_once_per_uid?: boolean
+  viewer_memory_enabled?: boolean
   rate_limit_seconds?: number
   queue_limit?: number
   safety_auto_stop_enabled?: boolean
@@ -116,6 +117,7 @@ const configDefaults = {
   activity_level: "standard",
   roast_strength: "normal",
   roast_once_per_uid: true,
+  viewer_memory_enabled: true,
   rate_limit_seconds: "20",
   queue_limit: "5",
   safety_auto_stop_enabled: true,
@@ -980,12 +982,18 @@ function RecentResultsTable({ t, results }: { t: PanelTranslator; results: any[]
 function ViewerProfilesTable({
   t,
   profiles,
+  onResetImpression,
+  onDeleteProfile,
 }: {
   t: PanelTranslator
   profiles: any[]
+  onResetImpression: (uid: string) => Promise<void>
+  onDeleteProfile: (uid: string) => Promise<void>
 }) {
   const [query, setQuery] = useState("")
   const [selectedProfile, setSelectedProfile] = useState<any>(null)
+  const [pendingAction, setPendingAction] = useState<"reset" | "delete" | "">("")
+  const [actionPending, setActionPending] = useState(false)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProfiles = profiles.filter((profile: any) => {
     if (!normalizedQuery) return true
@@ -1031,7 +1039,13 @@ function ViewerProfilesTable({
         title={t("panel.audience.profileDetailTitle")}
         size="lg"
         onClose={() => setSelectedProfile(null)}
-        footer={<Button tone="default" onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>}
+        footer={
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+            <Button tone="default" disabled={actionPending} onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>
+            <Button tone="info" disabled={actionPending} onClick={() => setPendingAction("reset")}>{t("panel.actions.resetViewerImpression")}</Button>
+            <Button tone="danger" disabled={actionPending} onClick={() => setPendingAction("delete")}>{t("panel.actions.deleteViewerProfile")}</Button>
+          </div>
+        }
       >
         {selectedProfile ? (
           <Stack>
@@ -1055,6 +1069,27 @@ function ViewerProfilesTable({
           </Stack>
         ) : null}
       </Modal>
+      <ConfirmDialog
+        open={!!pendingAction && !!selectedProfile}
+        title={t(pendingAction === "delete" ? "panel.actions.deleteViewerProfile" : "panel.actions.resetViewerImpression")}
+        message={t(pendingAction === "delete" ? "panel.messages.deleteViewerProfileConfirm" : "panel.messages.resetViewerImpressionConfirm")}
+        tone={pendingAction === "delete" ? "danger" : "warning"}
+        confirmLabel={t(pendingAction === "delete" ? "panel.actions.deleteViewerProfile" : "panel.actions.resetViewerImpression")}
+        cancelLabel={t("panel.actions.cancel")}
+        onConfirm={async () => {
+          if (!selectedProfile || actionPending) return
+          setActionPending(true)
+          try {
+            if (pendingAction === "delete") await onDeleteProfile(String(selectedProfile.uid || ""))
+            else await onResetImpression(String(selectedProfile.uid || ""))
+            setPendingAction("")
+            setSelectedProfile(null)
+          } finally {
+            setActionPending(false)
+          }
+        }}
+        onCancel={() => setPendingAction("")}
+      />
     </Stack>
   )
 }
@@ -1202,6 +1237,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
   const [safetyDisableConfirmOpen, setSafetyDisableConfirmOpen] = useState(false)
+  const [clearViewerMemoryConfirmOpen, setClearViewerMemoryConfirmOpen] = useState(false)
   const [storageDetailsOpen, setStorageDetailsOpen] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const toast = useToast()
@@ -1239,6 +1275,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       activity_level: String(config.activity_level || "standard"),
       roast_strength: String(config.roast_strength || "normal"),
       roast_once_per_uid: config.roast_once_per_uid !== false,
+      viewer_memory_enabled: config.viewer_memory_enabled !== false,
       rate_limit_seconds: String(config.rate_limit_seconds ?? 20),
       queue_limit: String(config.queue_limit ?? 5),
       safety_auto_stop_enabled: config.safety_auto_stop_enabled !== false,
@@ -1266,6 +1303,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     config.activity_level,
     config.roast_strength,
     config.roast_once_per_uid,
+    config.viewer_memory_enabled,
     config.rate_limit_seconds,
     config.queue_limit,
     config.safety_auto_stop_enabled,
@@ -1287,12 +1325,53 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       state === "receiving"
     if (!shouldRefresh) return
 
-    const timer = window.setInterval(() => {
-      props.api.refresh().catch(() => {
-        /* Status polling failures should not interrupt panel actions; the next poll will retry. */
-      })
-    }, 3000)
-    return () => window.clearInterval(timer)
+    let disposed = false
+    let refreshPending = false
+    let timer: number | undefined
+
+    function clearTimer() {
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        timer = undefined
+      }
+    }
+
+    function scheduleRefresh() {
+      clearTimer()
+      if (disposed || document.visibilityState !== "visible") return
+      timer = window.setTimeout(runRefresh, 3000)
+    }
+
+    function runRefresh() {
+      clearTimer()
+      if (disposed || refreshPending || document.visibilityState !== "visible") return
+      refreshPending = true
+      props.api
+        .refresh()
+        .catch(() => {
+          /* Status polling failures should not interrupt panel actions; the next poll will retry. */
+        })
+        .finally(() => {
+          refreshPending = false
+          scheduleRefresh()
+        })
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "visible") {
+        clearTimer()
+        return
+      }
+      runRefresh()
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    scheduleRefresh()
+    return () => {
+      disposed = true
+      clearTimer()
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
   }, [config.live_enabled, connection.connected, connection.listening, connection.state])
 
   function advancedConfigPatch() {
@@ -1344,6 +1423,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       activity_level: configForm.values.activity_level,
       roast_strength: configForm.values.roast_strength,
       roast_once_per_uid: configForm.values.roast_once_per_uid,
+      viewer_memory_enabled: configForm.values.viewer_memory_enabled,
       ...advancedConfigPatch(),
     }
     const patchedPayload = hasPatchedPlatform && !hasPatchedRoomRef && !hasPatchedRoomId
@@ -1453,7 +1533,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     }
     setConnectPending(true)
     try {
-      const result = unwrapActionResult(await props.api.call("connect_live_room", { room_id: roomRef }))
+      const result = unwrapActionResult(await props.api.call("connect_live_room", {
+        room_id: roomRef,
+        allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection,
+      }))
       await props.api.refresh()
       const nextConnection = result.connection || result
       if (nextConnection.connected || nextConnection.listening) {
@@ -1600,6 +1683,30 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       toast.success(t("panel.messages.done"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function runViewerProfileAction(action: string, uid: string): Promise<void> {
+    if (!uid) return
+    try {
+      await props.api.call(action, { uid })
+      await props.api.refresh()
+      toast.success(t("panel.messages.done"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+      throw err
+    }
+  }
+
+  async function clearViewerMemory(): Promise<void> {
+    try {
+      await props.api.call("clear_viewer_profiles", {})
+      await props.api.refresh()
+      toast.success(t("panel.messages.done"))
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setClearViewerMemoryConfirmOpen(false)
     }
   }
 
@@ -1797,9 +1904,12 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   )
   const consoleState = connectPending ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : loginLoggedIn
-  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection
-  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection
-  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || allowLimitedConnection) : douyinLoggedIn) && !connectPending
+  const connectionAuthMode = String(connection.auth_mode || "unknown")
+  const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && (
+    allowLimitedConnection || connectionAuthMode === "limited_accountless"
+  )
+  const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection
+  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : douyinLoggedIn) && !connectPending
   const primaryStatusLabel = started
     ? t("panel.console.state.live")
     : connectPending
@@ -1950,10 +2060,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
           )}
         </Stack>
       </Modal>
-      <Modal open={consoleDialog === "theme"} title={t("panel.streamTheme.title")} size="lg" onClose={() => { setConsoleDialog("") }} footer={<Grid cols={2}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="success" onClick={() => saveConfig(advancedConfigPatch())}>{t("panel.actions.save")}</Button></Grid>}>
+      <Modal open={consoleDialog === "theme"} title={t("panel.streamTheme.title")} size="lg" onClose={() => { setConsoleDialog("") }} footer={<Grid cols={2}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="success" onClick={() => { void saveConfig(advancedConfigPatch()) }}>{t("panel.actions.save")}</Button></Grid>}>
         {streamThemeForm}
       </Modal>
-      <Modal open={consoleDialog === "pacing"} title={t("panel.pacing.title")} onClose={() => { setConsoleDialog("") }} footer={<Grid cols={2}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="success" onClick={() => saveConfig({ rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0 })}>{t("panel.actions.save")}</Button></Grid>}>
+      <Modal open={consoleDialog === "pacing"} title={t("panel.pacing.title")} onClose={() => { setConsoleDialog("") }} footer={<Grid cols={2}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="success" onClick={() => { void saveConfig({ rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0 }) }}>{t("panel.actions.save")}</Button></Grid>}>
         {pacingForm}
       </Modal>
       <Modal open={consoleDialog === "room"} title={t("panel.console.roomModalTitle")} onClose={() => { setConsoleDialog("") }} footer={<Grid cols={3}><Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button><Button tone="info" onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button><Button tone="success" disabled={!canConfirmLiveRoom} onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button></Grid>}>
@@ -2458,6 +2568,15 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
               <Card title={t("panel.settings.privacyTitle")}>
                 <Stack gap={10}>
                   <Text>{t("panel.settings.privacyHint")}</Text>
+                  <ToggleSwitch
+                    checked={!!configForm.values.viewer_memory_enabled}
+                    label={t("panel.settings.viewerMemoryLabel")}
+                    onChange={(value) => applySettingsPatch({ viewer_memory_enabled: value })}
+                  />
+                  <Alert tone={configForm.values.viewer_memory_enabled ? "success" : "info"}>
+                    {t(configForm.values.viewer_memory_enabled ? "panel.settings.viewerMemoryEnabledHint" : "panel.settings.viewerMemoryDisabledHint")}
+                  </Alert>
+                  <Text>{t("panel.settings.viewerMemoryRetentionHint")}</Text>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
                     <Stack gap={4}>
                       <Text>{t("panel.settings.localStorageLabel")}</Text>
@@ -2469,7 +2588,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
                     />
                   </div>
                   {viewerStore.writable === false ? <Alert tone="warning">{t("panel.storage.notWritable")}</Alert> : null}
-                  <Button tone="default" onClick={() => setStorageDetailsOpen(true)}>{t("panel.settings.viewStoragePath")}</Button>
+                  <Grid cols={2}>
+                    <Button tone="default" onClick={() => { setStorageDetailsOpen(true) }}>{t("panel.settings.viewStoragePath")}</Button>
+                    <Button tone="danger" onClick={() => { setClearViewerMemoryConfirmOpen(true) }}>{t("panel.actions.clearViewerProfiles")}</Button>
+                  </Grid>
                 </Stack>
               </Card>
             ),
@@ -2499,14 +2621,24 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       <Modal
         open={storageDetailsOpen}
         title={t("panel.settings.storagePathTitle")}
-        onClose={() => setStorageDetailsOpen(false)}
-        footer={<Button tone="default" onClick={() => setStorageDetailsOpen(false)}>{t("panel.actions.cancel")}</Button>}
+        onClose={() => { setStorageDetailsOpen(false) }}
+        footer={<Button tone="default" onClick={() => { setStorageDetailsOpen(false) }}>{t("panel.actions.cancel")}</Button>}
       >
         <Stack>
           <Text>{t("panel.settings.storagePathHint")}</Text>
           <CodeBlock>{String(viewerStore.dir || "-")}</CodeBlock>
         </Stack>
       </Modal>
+      <ConfirmDialog
+        open={clearViewerMemoryConfirmOpen}
+        title={t("panel.actions.clearViewerProfiles")}
+        message={t("panel.messages.clearViewerProfilesConfirm")}
+        tone="danger"
+        confirmLabel={t("panel.actions.clearViewerProfiles")}
+        cancelLabel={t("panel.actions.cancel")}
+        onConfirm={clearViewerMemory}
+        onCancel={() => setClearViewerMemoryConfirmOpen(false)}
+      />
       <ConfirmDialog
         open={safetyDisableConfirmOpen}
         title={t("panel.settings.disableSafetyTitle")}
@@ -2535,7 +2667,14 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         {
           id: "profiles",
           label: t("panel.audience.profilesTab"),
-          content: <ViewerProfilesTable t={t} profiles={profiles} />,
+          content: (
+            <ViewerProfilesTable
+              t={t}
+              profiles={profiles}
+              onResetImpression={(uid) => runViewerProfileAction("reset_viewer_impression", uid)}
+              onDeleteProfile={(uid) => runViewerProfileAction("delete_viewer_profile", uid)}
+            />
+          ),
         },
       ]}
     />

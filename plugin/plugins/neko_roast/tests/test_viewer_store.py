@@ -77,9 +77,57 @@ async def test_custom_write_fallback_is_used_for_followup_reads(tmp_path, monkey
     assert not (custom / "viewer_profiles.json").exists()
     assert (default / "viewer_profiles.json").exists()
     assert await store.has_roasted("8") is True
+    status = store.storage_status()
+    assert status["path"] == str(default / "viewer_profiles.json")
+    assert status["dir"] == str(default)
+    assert status["using_custom"] is False
+    assert status["fallback_active"] is True
+    assert status["writable"] is True
 
     restarted = ViewerStore(_FakePlugin(default), audit=None, dir_provider=lambda: str(custom))
     assert await restarted.has_roasted("8") is True
+    assert restarted.storage_status()["fallback_active"] is True
+
+
+def test_storage_status_accepts_creatable_nested_directory(tmp_path):
+    custom = tmp_path / "not-created" / "nested"
+    store = ViewerStore(
+        _FakePlugin(tmp_path / "default"),
+        audit=None,
+        dir_provider=lambda: str(custom),
+    )
+
+    status = store.storage_status()
+
+    assert status["writable"] is True
+    assert status["exists"] is False
+    assert not custom.exists()
+
+
+def test_storage_status_rejects_file_used_as_directory(tmp_path):
+    custom = tmp_path / "not-a-directory"
+    custom.write_text("occupied", encoding="utf-8")
+    store = ViewerStore(
+        _FakePlugin(tmp_path / "default"),
+        audit=None,
+        dir_provider=lambda: str(custom),
+    )
+
+    assert store.storage_status()["writable"] is False
+
+
+def test_failed_atomic_replace_removes_temporary_file(tmp_path, monkeypatch):
+    store = ViewerStore(_FakePlugin(tmp_path), audit=None)
+    target = tmp_path / "viewer_profiles.json"
+
+    def _fail_replace(_source, _target):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("plugin.plugins.neko_roast.stores.viewer_store.os.replace", _fail_replace)
+
+    assert store._write_json(target, {"42": {"uid": "42"}}) is False
+    assert not target.exists()
+    assert not (tmp_path / "viewer_profiles.json.tmp").exists()
 
 
 @pytest.mark.asyncio

@@ -311,7 +311,13 @@ def run(args: argparse.Namespace) -> int:
             if not initially_connected:
                 connect_response = require_action_success(
                     "connect_live_room",
-                    client.action("connect_live_room", {"room_id": room}),
+                    client.action(
+                        "connect_live_room",
+                        {
+                            "room_id": room,
+                            "allow_accountless": bool(args.allow_accountless),
+                        },
+                    ),
                 )
                 connected_by_script = True
                 write_jsonl(
@@ -463,6 +469,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rate-limit", type=float, default=1.0)
     parser.add_argument("--room", default="")
     parser.add_argument("--connect", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--allow-accountless",
+        action="store_true",
+        help="Explicitly allow Bilibili's limited accountless fallback for this connection.",
+    )
     parser.add_argument("--connect-timeout", type=float, default=15.0)
     parser.add_argument(
         "--fake-signal-at",

@@ -33,8 +33,17 @@ class RuntimeControlApiMixin:
     async def set_live_room(self, room_id: Any) -> RoastConfig:
         return await runtime_live_controls.set_live_room(self, room_id)
 
-    async def connect_live_room(self, room_id: Any = 0) -> dict[str, Any]:
-        return await runtime_live_controls.connect_live_room(self, room_id)
+    async def connect_live_room(
+        self,
+        room_id: Any = 0,
+        *,
+        allow_accountless: bool = False,
+    ) -> dict[str, Any]:
+        return await runtime_live_controls.connect_live_room(
+            self,
+            room_id,
+            allow_accountless=allow_accountless,
+        )
 
     async def disconnect_live_room(self) -> dict[str, Any]:
         return await runtime_live_controls.disconnect_live_room(self)

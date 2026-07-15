@@ -56,12 +56,6 @@ def registered_modules(runtime: Any) -> tuple[Any, ...]:
         runtime.warmup_hosting,
         runtime.developer_sandbox,
         runtime.live_events,
-        ReservedModule("bili_dm_ingest", "B站私信输入"),
-        ReservedModule("contribution_rank", "贡献值"),
-        ReservedModule("watch_time", "观看时长"),
-        ReservedModule("bili_read_tools", "B站读取工具"),
-        ReservedModule("bili_write_tools", "B站写入工具"),
-        ReservedModule("automation_ops", "自动化操作"),
     )
 
 

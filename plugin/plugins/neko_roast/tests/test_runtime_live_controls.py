@@ -156,10 +156,27 @@ class FakeLiveProvider:
     async def stop_listening(self) -> None:
         self.stopped += 1
 
+
+class FakeBiliAuth:
+    def __init__(self, *, logged_in: object = True, error: Exception | None = None) -> None:
+        self.logged_in = logged_in
+        self.error = error
+        self.checks = 0
+
+    async def check_credential(self) -> dict[str, object]:
+        self.checks += 1
+        if self.error is not None:
+            raise self.error
+        return {
+            "logged_in": self.logged_in,
+            "message": "credential valid" if self.logged_in is True else "not logged in",
+        }
+
 @pytest.fixture
 def runtime(tmp_path: Path) -> RoastRuntime:
     rt = RoastRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
+    rt.bili_auth = FakeBiliAuth()
     rt.avatar_roast.ctx = rt
     rt.danmaku_response.ctx = rt
     rt.active_engagement.ctx = rt
@@ -207,6 +224,7 @@ async def test_connect_live_room_refreshes_room_title_context(runtime: RoastRunt
 
     snapshot = await runtime.connect_live_room()
 
+    assert snapshot["auth_mode"] == "authenticated"
     assert snapshot["title"] == "战雷陆战练车：今晚只打轻松局"
     assert runtime.live_room_context["title"] == "战雷陆战练车：今晚只打轻松局"
 
@@ -222,6 +240,130 @@ async def test_connect_live_room_refreshes_room_title_context(runtime: RoastRunt
         ViewerProfile(uid="42", nickname="viewer", roast_count=1),
     )
     assert "live_room_title_theme: 战雷陆战练车：今晚只打轻松局" in request.prompt_text
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_requires_login_without_explicit_fallback(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_auth = FakeBiliAuth(logged_in=False)
+
+    with pytest.raises(ValueError, match="Bilibili login is required"):
+        await runtime.connect_live_room()
+
+    snapshot = runtime.live_connection_snapshot()
+    assert snapshot["state"] == "auth_required"
+    assert snapshot["auth_mode"] == "unknown"
+    assert snapshot["connected"] is False
+    assert runtime.config.live_enabled is False
+    assert runtime.bili_live_ingest.started == []
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_accepts_explicit_session_only_accountless_fallback(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_auth = FakeBiliAuth(logged_in=False)
+
+    connected = await runtime.connect_live_room(allow_accountless=True)
+
+    assert connected["connected"] is True
+    assert connected["auth_mode"] == "limited_accountless"
+    assert "allow_accountless" not in runtime.config.to_public_dict()
+
+    disconnected = await runtime.disconnect_live_room()
+    assert disconnected["auth_mode"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_direct_connect_preserves_accountless_mode_after_configuring_room(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.bili_auth = FakeBiliAuth(logged_in=False)
+
+    snapshot = await runtime.connect_live_room("123", allow_accountless=True)
+
+    assert snapshot["room_id"] == 123
+    assert snapshot["auth_mode"] == "limited_accountless"
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_prefers_valid_login_over_requested_fallback(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+
+    snapshot = await runtime.connect_live_room(allow_accountless=True)
+
+    assert snapshot["auth_mode"] == "authenticated"
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_fails_closed_when_login_status_cannot_be_verified(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_auth = FakeBiliAuth(error=RuntimeError("credential store unavailable"))
+
+    with pytest.raises(ValueError, match="Bilibili login is required"):
+        await runtime.connect_live_room()
+
+    assert runtime.live_connection_snapshot()["state"] == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_does_not_trust_truthy_login_status_values(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.bili_auth = FakeBiliAuth(logged_in="true")
+
+    with pytest.raises(ValueError, match="Bilibili login is required"):
+        await runtime.connect_live_room()
+
+    assert runtime.bili_live_ingest.started == []
+
+
+@pytest.mark.asyncio
+async def test_room_switch_checks_login_before_restarting_listener(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 100
+    runtime.config.live_enabled = True
+    await runtime.bili_live_ingest.start_listening(100)
+    runtime.bili_auth = FakeBiliAuth(logged_in=False)
+
+    with pytest.raises(ValueError, match="Bilibili login is required"):
+        await runtime.connect_live_room(200)
+
+    assert runtime.config.live_room_id == 100
+    assert runtime.bili_live_ingest.started == [100]
+    assert runtime.bili_live_ingest.stopped == 1
+    assert runtime.live_connection_snapshot()["state"] == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_rejects_non_boolean_fallback_intent(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+
+    with pytest.raises(TypeError, match="allow_accountless must be a boolean"):
+        await runtime.connect_live_room(allow_accountless="true")  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_connect_live_room_rejects_accountless_flag_for_douyin(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_platform = "douyin"
+    runtime.config.live_room_ref = "room-42"
+    runtime.live_provider = FakeLiveProvider("room-42")
+
+    with pytest.raises(ValueError, match="only supported for Bilibili"):
+        await runtime.connect_live_room(allow_accountless=True)
 
 
 @pytest.mark.asyncio
@@ -432,6 +574,7 @@ def test_live_connection_snapshot_does_not_stringify_listener_state_objects(runt
         "connected": False,
         "listening": False,
         "viewer_count": 0,
+        "auth_mode": "unknown",
     }
     assert "connected-secret" not in str(snapshot)
 
@@ -529,14 +672,52 @@ async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_clear_viewer_profiles_requires_developer_mode(runtime: RoastRuntime) -> None:
+async def test_clear_viewer_profiles_is_available_without_developer_mode(runtime: RoastRuntime) -> None:
     runtime.config.developer_tools_enabled = False
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
 
-    with pytest.raises(PermissionError):
+    result = await runtime.clear_viewer_profiles()
+
+    assert result["cleared"] == 1
+    assert await runtime.viewer_store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_failed_clear_does_not_reset_pipeline_session_state(runtime: RoastRuntime) -> None:
+    calls = 0
+
+    async def fail_clear() -> dict[str, object]:
+        return {"cleared": 0, "applied": False, "path": "blocked"}
+
+    def clear_marker() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.viewer_store.clear_profiles = fail_clear
+    runtime.pipeline.clear_dry_run_session_state = clear_marker
+
+    with pytest.raises(OSError, match="could not be cleared"):
         await runtime.clear_viewer_profiles()
 
-    assert [profile["uid"] for profile in await runtime.viewer_store.recent_profiles()] == ["1001"]
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_profile_reset_and_delete_are_available_without_developer_mode(runtime: RoastRuntime) -> None:
+    runtime.config.developer_tools_enabled = False
+    identity = ViewerIdentity(uid="1001", nickname="viewer")
+    await runtime.viewer_store.record_live_danmaku(identity, "AI plugin config?")
+    await runtime.viewer_store.mark_roasted("1001", "first roast")
+
+    reset = await runtime.reset_viewer_impression("1001")
+
+    assert reset["reset"] is True
+    assert await runtime.viewer_store.has_roasted("1001") is True
+
+    deleted = await runtime.delete_viewer_profile("1001")
+
+    assert deleted["deleted"] is True
+    assert await runtime.viewer_store.recent_profiles() == []
 
 
 @pytest.mark.asyncio

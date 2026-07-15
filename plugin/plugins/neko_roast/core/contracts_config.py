@@ -64,6 +64,7 @@ class RoastConfig:
     developer_tools_enabled: bool = False
     dry_run: bool = False  # Run the full pipeline without pushing output to NEKO.
     roast_once_per_uid: bool = True
+    viewer_memory_enabled: bool = True
     roast_strength: RoastStrength = "normal"
     activity_level: ActivityLevel = "standard"
     co_stream_output_policy: str = "auto_low_interrupt"
@@ -123,6 +124,9 @@ class RoastConfig:
             developer_tools_enabled=_safe_bool(raw.get("developer_tools_enabled"), default=False),
             dry_run=_safe_bool(raw.get("dry_run"), default=False),
             roast_once_per_uid=_safe_bool(raw.get("roast_once_per_uid"), default=True),
+            viewer_memory_enabled=_safe_bool(
+                raw.get("viewer_memory_enabled"), default=True
+            ),
             roast_strength=roast_strength,  # type: ignore[arg-type]
             activity_level=activity_level,  # type: ignore[arg-type]
             co_stream_output_policy=_safe_text(
@@ -212,6 +216,9 @@ class RoastConfig:
             "developer_tools_enabled": public_bool(self.developer_tools_enabled),
             "dry_run": public_bool(self.dry_run, default=False),
             "roast_once_per_uid": public_bool(self.roast_once_per_uid, default=True),
+            "viewer_memory_enabled": public_bool(
+                self.viewer_memory_enabled, default=True
+            ),
             "roast_strength": self.roast_strength if isinstance(self.roast_strength, str) and self.roast_strength in {"gentle", "normal", "sharp"} else "normal",
             "activity_level": self.activity_level if isinstance(self.activity_level, str) and self.activity_level in {"quiet", "standard", "active"} else "standard",
             "co_stream_output_policy": public_text(self.co_stream_output_policy) or "auto_low_interrupt",

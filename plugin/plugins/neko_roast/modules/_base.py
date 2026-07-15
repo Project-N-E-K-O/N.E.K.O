@@ -39,8 +39,10 @@ class BaseModule:
     def config_schema(self) -> list[dict[str, Any]]:
         """声明本功能自己的配置字段（声明式，面板自动渲染成设置卡）。
 
-        缺省无配置项。字段形状见 docs/ui-architecture.md（name/type/label/default/
-        options/show_if）。type ∈ {boolean, select, integer, float, text, string}。
+        缺省无配置项。当前面板契约见 docs/ui-architecture.md：字段包含
+        name/type/label/default，select 可额外提供 options，boolean 可提供 hint；
+        type ∈ {boolean, select, text, string}。新增字段类型或条件显示能力前，必须先
+        有真实模块消费者，并同时补齐 hosted-ui 渲染、保存清洗和契约测试。
         """
         return []
 

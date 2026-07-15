@@ -19,7 +19,7 @@
 - 但插件运行时数据走 SDK 的 `resolve_runtime_data_root`（`sdk/shared/core/base_runtime.py:79`），实测落到 `%LOCALAPPDATA%\N.E.K.O\plugins\…`，**没跟随 selected_root**（插件子进程读不到该策略 → 回退默认锚点）。
 - 现象：猫记忆在 `D:\Documents\N.E.K.O\memory\{角色}`，插件数据却在 `C:\AppData\Local\N.E.K.O\plugins\` —— 两套根、分家。
 - 设计意图本是二者都跟随 selected_root（`resolve_runtime_data_root` 本就 `return policy_root or anchor_root`），属 **宿主侧不一致 / bug**。
-- **对 neko_roast 的影响**：观众档案默认落点曾在 AppData\Local 侧。`Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支，host 会在插件子进程启动前刷新 storage layout env，使插件运行时数据跟随当前 storage layout。neko_roast 当前仍固定使用插件默认目录；`viewer_store_dir` 自定义目录入口暂时屏蔽，待插件侧重新回归后再恢复。
+- **对 neko_roast 的影响**：观众档案默认落点曾在 AppData\Local 侧。`Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支，host 会在插件子进程启动前刷新 storage layout env，使插件运行时数据跟随当前 storage layout。neko_roast 当前仍固定使用插件默认目录；插件侧已回归默认目录、自定义目录失败回退、实际路径状态和失败 tmp 清理，`viewer_store_dir` UI 入口按当前产品范围继续隐藏。
 - **core / host 修复**：已合并到当前分支；验证切片见 `plugin/tests/unit/core/test_host_storage_layout_env.py` 与 `plugin/tests/unit/sdk/plugin/test_sdk_v2_plugin_base.py`。
 
 ### 3. 插件面板无「选择文件夹」能力 → 已用插件后端 tkinter 自解

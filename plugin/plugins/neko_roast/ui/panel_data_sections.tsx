@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  ConfirmDialog,
   DataTable,
   Field,
   Grid,
@@ -241,12 +242,18 @@ export function RecentResultsTable({ t, results }: { t: PanelTranslator; results
 export function ViewerProfilesTable({
   t,
   profiles,
+  onResetImpression,
+  onDeleteProfile,
 }: {
   t: PanelTranslator
   profiles: any[]
+  onResetImpression: (uid: string) => Promise<void>
+  onDeleteProfile: (uid: string) => Promise<void>
 }) {
   const [query, setQuery] = useState("")
   const [selectedProfile, setSelectedProfile] = useState<any>(null)
+  const [pendingAction, setPendingAction] = useState<"reset" | "delete" | "">("")
+  const [actionPending, setActionPending] = useState(false)
   const normalizedQuery = query.trim().toLowerCase()
   const filteredProfiles = profiles.filter((profile: any) => {
     if (!normalizedQuery) return true
@@ -292,7 +299,13 @@ export function ViewerProfilesTable({
         title={t("panel.audience.profileDetailTitle")}
         size="lg"
         onClose={() => setSelectedProfile(null)}
-        footer={<Button tone="default" onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>}
+        footer={
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
+            <Button tone="default" disabled={actionPending} onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>
+            <Button tone="info" disabled={actionPending} onClick={() => setPendingAction("reset")}>{t("panel.actions.resetViewerImpression")}</Button>
+            <Button tone="danger" disabled={actionPending} onClick={() => setPendingAction("delete")}>{t("panel.actions.deleteViewerProfile")}</Button>
+          </div>
+        }
       >
         {selectedProfile ? (
           <Stack>
@@ -316,6 +329,27 @@ export function ViewerProfilesTable({
           </Stack>
         ) : null}
       </Modal>
+      <ConfirmDialog
+        open={!!pendingAction && !!selectedProfile}
+        title={t(pendingAction === "delete" ? "panel.actions.deleteViewerProfile" : "panel.actions.resetViewerImpression")}
+        message={t(pendingAction === "delete" ? "panel.messages.deleteViewerProfileConfirm" : "panel.messages.resetViewerImpressionConfirm")}
+        tone={pendingAction === "delete" ? "danger" : "warning"}
+        confirmLabel={t(pendingAction === "delete" ? "panel.actions.deleteViewerProfile" : "panel.actions.resetViewerImpression")}
+        cancelLabel={t("panel.actions.cancel")}
+        onConfirm={async () => {
+          if (!selectedProfile || actionPending) return
+          setActionPending(true)
+          try {
+            if (pendingAction === "delete") await onDeleteProfile(String(selectedProfile.uid || ""))
+            else await onResetImpression(String(selectedProfile.uid || ""))
+            setPendingAction("")
+            setSelectedProfile(null)
+          } finally {
+            setActionPending(false)
+          }
+        }}
+        onCancel={() => setPendingAction("")}
+      />
     </Stack>
   )
 }

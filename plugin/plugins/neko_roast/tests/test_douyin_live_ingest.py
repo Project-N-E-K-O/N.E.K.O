@@ -153,7 +153,9 @@ def test_douyin_ingest_module_documentation_tracks_safety_boundary():
     assert "Direct Douyin WebSocket/protobuf/ack/heartbeat transport is intentionally not kept" in source
     assert "Router-facing configured room references are public projections too" in source
     assert "`DouyinRoomRef.to_dict()` is also a public projection" in source
-    assert "Gift events publish only safe gift summary fields and stay signal-only" in source
+    assert "Gift events publish only safe gift summary fields" in source
+    assert "The provider remains signal-only in the sense that it never creates a reply itself" in source
+    assert "`live_support_events` may produce a short thanks line" in source
     assert "cookie, authorization header, token, signature" in source
     assert "Events without a safe room target are dropped before EventBus publish" in source
     assert "`normalize()` must derive `ViewerEvent` fields only from `safe_payload()` output" in source

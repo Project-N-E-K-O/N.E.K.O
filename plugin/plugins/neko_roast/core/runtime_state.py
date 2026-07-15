@@ -15,6 +15,7 @@ def initialize_runtime_state(runtime: Any) -> None:
     runtime.recent_sandbox_results = deque(maxlen=runtime.config.recent_limit)
     runtime.runtime_timeline = deque(maxlen=200)
     runtime.live_connection_state = "disconnected"
+    runtime.live_connection_auth_mode = "unknown"
     runtime.live_room_context = {}
     runtime.instructions_injected = False
     runtime.instructions_signature = ""

@@ -16,7 +16,6 @@ from ...core.live_text_guards import (
 )
 from ...core.meme_knowledge import meme_knowledge_metadata, retrieve_meme_knowledge
 from ...core.viewer_addressing import viewer_address_name
-from ...core.viewer_preferences import viewer_preference_prompt_block
 from .._prompt_context import (
     anti_repeat_rules,
     live_events_context_block,
@@ -26,6 +25,7 @@ from .._prompt_context import (
     room_danmaku_context_block,
     short_reply_rules,
     sustained_charm_rules,
+    viewer_preference_context_block,
     viewer_session_context_block,
 )
 from .._base import BaseModule
@@ -59,7 +59,7 @@ class DanmakuResponseModule(BaseModule):
                 live_host_theme_block(self.ctx, kind="reply"),
                 recent_context,
                 viewer_context,
-                viewer_preference_prompt_block(profile),
+                viewer_preference_context_block(self.ctx, profile),
                 room_context,
                 live_events_context_block(self.ctx, event),
                 meme_context,

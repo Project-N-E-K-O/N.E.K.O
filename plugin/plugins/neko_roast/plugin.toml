@@ -93,6 +93,7 @@ active_engagement_enabled = true
 developer_tools_enabled = false
 dry_run = false
 roast_once_per_uid = true
+viewer_memory_enabled = true
 roast_strength = "normal"
 co_stream_output_policy = "auto_low_interrupt"
 solo_output_policy = "auto_rate_limited"

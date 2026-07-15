@@ -39,12 +39,14 @@ async def reconcile_live_listener_after_config(
         runtime.live_events.reset()
         runtime.config.live_enabled = False
         runtime.live_connection_state = "disconnected"
+        runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
         _clear_connected_room_status(runtime)
         await runtime.restore_instructions(force=True)
         return
     if not runtime.config.live_enabled:
         runtime.live_connection_state = "disconnected"
+        runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
         return
     started = await start_live_listener(runtime, room_ref)
@@ -77,6 +79,8 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
         runtime._live_listener_started_at = float(runtime._live_state_now())
         runtime._idle_hosting_consecutive_failures = 0
     runtime.live_connection_state = "connected" if started else "disconnected"
+    if not started:
+        runtime.live_connection_auth_mode = "unknown"
     runtime.config.live_enabled = bool(started)
     runtime.safety_guard.set_connected(started)
     runtime._accepting_live_events = bool(started)
@@ -93,6 +97,7 @@ async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> Non
         _clear_connected_room_status(runtime)
         await runtime.restore_instructions(force=True)
     runtime.live_connection_state = "disconnected"
+    runtime.live_connection_auth_mode = "unknown"
     runtime._live_listener_started_at = 0.0
     runtime.safety_guard.set_connected(False)
 
@@ -112,6 +117,7 @@ def sync_douyin_listener_state(runtime: Any, state: Any) -> None:
     runtime.safety_guard.set_connected(connected)
     if not connected:
         runtime._live_listener_started_at = 0.0
+        runtime.live_connection_auth_mode = "unknown"
 
 
 def _clear_connected_room_status(runtime: Any) -> None:

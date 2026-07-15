@@ -43,5 +43,6 @@ def activate_config(runtime: Any, config: RoastConfig) -> RoastConfig:
     runtime.safety_guard.update(runtime.config)
     if not _has_configured_live_target(runtime.config):
         runtime.live_connection_state = "disconnected"
+        runtime.live_connection_auth_mode = "unknown"
     runtime.safety_guard.set_connected(runtime.live_connection_state == "connected")
     return runtime.config

@@ -12,6 +12,7 @@ from ._prompt_context_blocks import (
     meme_knowledge_context_block,
     recent_context_block,
     room_danmaku_context_block,
+    viewer_preference_context_block,
     viewer_session_context_block,
 )
 from ._prompt_context_compaction import (
@@ -56,5 +57,6 @@ __all__ = [
     "room_danmaku_context_block",
     "short_reply_rules",
     "sustained_charm_rules",
+    "viewer_preference_context_block",
     "viewer_session_context_block",
 ]

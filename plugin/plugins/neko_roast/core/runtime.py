@@ -56,7 +56,12 @@ class RoastRuntime(
         self.config = RoastConfig()
         self.audit = AuditStore(limit=100)
         self.avatar_cache = AvatarCache()
-        self.viewer_store = ViewerStore(plugin, self.audit, lambda: self.config.viewer_store_dir)
+        self.viewer_store = ViewerStore(
+            plugin,
+            self.audit,
+            lambda: self.config.viewer_store_dir,
+            memory_enabled_provider=lambda: self.config.viewer_memory_enabled,
+        )
         self.permission_gate = PermissionGate(self.config)
         self.safety_guard = SafetyGuard(self.config, self.audit)
         self.dispatcher = NekoDispatcher(plugin)
@@ -77,6 +82,7 @@ class RoastRuntime(
     async def start(self) -> None:
         self._stopping = False
         await self.reload_config()
+        await self.viewer_store.prune_expired_profiles()
         await self.reload_credential()
         await self.reload_douyin_credential()
         await self.registry.setup_all(self)

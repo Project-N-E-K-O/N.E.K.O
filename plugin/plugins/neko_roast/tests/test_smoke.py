@@ -126,8 +126,10 @@ def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -
         assert '!/^\\d+$/.test(roomRef)' not in source
         assert 't("panel.console.roomNumeric")' in source
         assert 'const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)' in source
-        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection' in source
-        assert 'loginLoggedIn || allowLimitedConnection' in source
+        assert 'connectionAuthMode === "limited_accountless"' in source
+        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection' in source
+        assert 'loginLoggedIn || limitedConnection' in source
+        assert 'allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection' in source
         assert 'onClick={enableLimitedConnection}' in source
 
 
@@ -164,6 +166,21 @@ def test_live_room_selection_requires_lookup_then_explicit_confirmation() -> Non
         assert "lookupLiveRoom()" not in confirm_source
         assert "props.api.refresh()" not in lookup_source
         assert 'setLiveRoomResult(null);setQueriedRoomRef("")' in compact_source or 'setLiveRoomResult(null)setQueriedRoomRef("")' in compact_source
+
+
+def test_live_panel_polling_pauses_when_hidden_and_cleans_up() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+
+        assert "window.setInterval" not in source
+        assert "let refreshPending = false" in source
+        assert 'document.visibilityState !== "visible"' in source
+        assert 'document.addEventListener("visibilitychange", handleVisibilityChange)' in source
+        assert 'document.removeEventListener("visibilitychange", handleVisibilityChange)' in source
+        assert "timer = window.setTimeout(runRefresh, 3000)" in source
+        assert "window.clearTimeout(timer)" in source
 
 
 def test_console_opens_stream_theme_modal_in_place_of_duplicate_diagnostics_action() -> None:
@@ -592,8 +609,8 @@ def test_panel_renders_solo_stream_test_readiness():
     assert "panel.soloTestReadiness.summary" in source
     assert "panel.soloTestReadiness.item" in source
     assert "panel.soloTestReadiness.profileCount" in source
-    assert "clearViewerProfiles" not in source
-    assert "panel.actions.confirmClearViewerProfiles" not in source
+    assert "clearViewerMemory" in source
+    assert "panel.messages.clearViewerProfilesConfirm" in source
 
 
 def test_panel_renders_platform_switch_and_douyin_cookie_controls():
@@ -683,22 +700,25 @@ def test_panel_advanced_save_resubmits_current_room_with_patch():
     assert "onClick={()=>saveConfig()}" not in compact_source
 
 
-def test_panel_does_not_render_viewer_profile_destructive_buttons():
+def test_panel_renders_guarded_viewer_memory_controls():
     root = Path(__file__).resolve().parents[1]
     source = _panel_ui_source(root)
     compat_source = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
     assert "ViewerProfilesTable" in source
     for panel_source in (source, compat_source):
-        assert "async function clearViewerProfiles()" not in panel_source
-        assert "clearViewerProfilesArmed" not in panel_source
-        assert "profileActionArmed" not in panel_source
-        assert "async function runViewerProfileAction" not in panel_source
-        assert 'callSimple("clear_viewer_profiles")' not in panel_source
-        assert 'props.api.call(action, { uid: safeUid })' not in panel_source
-        assert 'runViewerProfileAction("reset_viewer_impression", uid)' not in panel_source
-        assert 'runViewerProfileAction("delete_viewer_profile", uid)' not in panel_source
-        assert "panel.columns.profileActions" not in panel_source
+        assert "viewer_memory_enabled" in panel_source
+        assert "async function clearViewerMemory()" in panel_source
+        assert "async function runViewerProfileAction" in panel_source
+        assert 'props.api.call("clear_viewer_profiles", {})' in panel_source
+        assert 'props.api.call(action, { uid })' in panel_source
+        assert 'runViewerProfileAction("reset_viewer_impression", uid)' in panel_source
+        assert 'runViewerProfileAction("delete_viewer_profile", uid)' in panel_source
+        assert "clearViewerMemoryConfirmOpen" in panel_source
+        assert "panel.messages.clearViewerProfilesConfirm" in panel_source
+
+    assert "panel.messages.resetViewerImpressionConfirm" in source
+    assert "panel.messages.deleteViewerProfileConfirm" in source
 
 
 def test_once_per_uid_copy_scopes_to_first_appearance_roast():
@@ -1038,6 +1058,12 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.columns.profileActions",
         "panel.messages.viewerUidRequired",
         "panel.messages.clearViewerProfilesConfirm",
+        "panel.messages.resetViewerImpressionConfirm",
+        "panel.messages.deleteViewerProfileConfirm",
+        "panel.settings.viewerMemoryLabel",
+        "panel.settings.viewerMemoryEnabledHint",
+        "panel.settings.viewerMemoryDisabledHint",
+        "panel.settings.viewerMemoryRetentionHint",
         "actions.clear_viewer_profiles.label",
         "actions.delete_viewer_profile.label",
         "actions.reset_viewer_impression.label",

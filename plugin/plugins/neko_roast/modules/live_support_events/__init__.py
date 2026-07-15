@@ -8,7 +8,7 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from ...core.runtime_timeline import record_payload_timeline
-from ...core.viewer_preferences import safe_int, safe_text, viewer_preference_prompt_block
+from ...core.viewer_preferences import safe_int, safe_text
 from .._base import BaseModule
 from .._prompt_context import (
     anti_repeat_rules,
@@ -17,6 +17,7 @@ from .._prompt_context import (
     recent_context_block,
     short_reply_rules,
     sustained_charm_rules,
+    viewer_preference_context_block,
     viewer_session_context_block,
 )
 from ..live_events.provider_event import (
@@ -148,7 +149,7 @@ class LiveSupportEventsModule(BaseModule):
                 support,
                 recent_context_block(self.ctx),
                 viewer_session_context_block(self.ctx, identity.uid),
-                viewer_preference_prompt_block(profile),
+                viewer_preference_context_block(self.ctx, profile),
                 live_events_context_block(self.ctx, event),
             ),
             live_mode=event.live_mode,
