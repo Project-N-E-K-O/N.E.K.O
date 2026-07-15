@@ -557,7 +557,6 @@
                 'proactiveNewsChatEnabled',
                 'proactiveVideoChatEnabled',
                 'proactivePersonalChatEnabled',
-                'proactiveTiebaChatEnabled',
                 'proactiveMusicEnabled',
                 'proactiveMemeEnabled',
                 'proactiveMiniGameInviteEnabled'

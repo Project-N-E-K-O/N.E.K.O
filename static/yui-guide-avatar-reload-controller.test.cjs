@@ -18,7 +18,6 @@ function loadReloadControllerWindow() {
             proactiveNewsChatEnabled: false,
             proactiveVideoChatEnabled: true,
             proactivePersonalChatEnabled: false,
-            proactiveTiebaChatEnabled: false,
             proactiveMusicEnabled: true,
             proactiveMemeEnabled: false,
             proactiveMiniGameInviteEnabled: true
@@ -29,7 +28,6 @@ function loadReloadControllerWindow() {
         proactiveNewsChatEnabled: false,
         proactiveVideoChatEnabled: true,
         proactivePersonalChatEnabled: false,
-        proactiveTiebaChatEnabled: false,
         proactiveMusicEnabled: true,
         proactiveMemeEnabled: false,
         proactiveMiniGameInviteEnabled: true,

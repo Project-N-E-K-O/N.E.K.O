@@ -3262,7 +3262,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "首页推荐",
         "window": "窗口上下文",
         "personal": "个人动态",
-        "tieba": "贴吧热门帖子",
         "music": "音乐推荐",
         "mini_game": "小游戏邀请",
     },
@@ -3272,7 +3271,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "Home Recommendations",
         "window": "Window Context",
         "personal": "Personal Updates",
-        "tieba": "Tieba Hot Posts",
         "music": "Music Recommendations",
         "mini_game": "Mini-game Invitation",
     },
@@ -3282,7 +3280,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "ホームおすすめ",
         "window": "ウィンドウコンテキスト",
         "personal": "個人の動向",
-        "tieba": "Tieba Hot Posts",
         "music": "音楽のおすすめ",
         "mini_game": "ミニゲームのお誘い",
     },
@@ -3292,7 +3289,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "홈 추천",
         "window": "창 컨텍스트",
         "personal": "개인 소식",
-        "tieba": "Tieba Hot Posts",
         "music": "음악 추천",
         "mini_game": "미니게임 초대",
     },
@@ -3302,7 +3298,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "Рекомендации на главной",
         "window": "Контекст окна",
         "personal": "Личные новости",
-        "tieba": "Tieba Hot Posts",
         "music": "Музыкальные рекомендации",
         "mini_game": "Приглашение в мини-игру",
     },
@@ -3312,7 +3307,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "Recomendaciones de inicio",
         "window": "Contexto de ventana",
         "personal": "Actualizaciones personales",
-        "tieba": "Tieba Hot Posts",
         "music": "Recomendaciones musicales",
         "mini_game": "Invitación a minijuego",
     },
@@ -3322,7 +3316,6 @@ PROACTIVE_SOURCE_LABELS = {
         "home": "Recomendações iniciais",
         "window": "Contexto da janela",
         "personal": "Atualizações pessoais",
-        "tieba": "Tieba Hot Posts",
         "music": "Recomendações musicais",
         "mini_game": "Convite para minijogo",
     },
@@ -4786,7 +4779,7 @@ def build_proactive_action_note(
     Priority is music > meme > web, matching the frontend's usual material display
     importance.
 
-    The web sub-channel set ``{'web', 'news', 'video', 'home', 'personal', 'window', 'tieba'}``
+    The web sub-channel set ``{'web', 'news', 'video', 'home', 'personal', 'window'}``
     is kept in sync with the mode set produced by ``web_link.get('mode', 'web')`` in
     ``main_routers/system_router.py:build_proactive_response`` — missing any one of
     them sends that channel to the trailing chat fallback, where the music-first
@@ -4892,7 +4885,7 @@ def build_proactive_action_note(
         return _try_music()
     if channel == "meme":
         return _try_meme(allow_typeless_fallback=True)
-    if channel in {"web", "news", "video", "home", "personal", "window", "tieba"}:
+    if channel in {"web", "news", "video", "home", "personal", "window"}:
         return _try_web()
 
     # chat / unknown / 空 / 其它未识别通道 —— 回退探测 source_links 实际素材，

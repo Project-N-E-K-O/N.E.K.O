@@ -756,7 +756,7 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
     
-    Chinese region: trending Weibo topics
+    Chinese region: trending Weibo topics plus Tieba community discussions
     non-Chinese region: Twitter trends
     
     Args:
@@ -765,14 +765,58 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with success status and news content
     """
-    return await _fetch_content_by_region(
-        china_fetch_func=fetch_weibo_trending,
-        non_china_fetch_func=fetch_twitter_trending,
-        limit=limit,
-        content_key='news',
-        china_log_msg="检测到中文区域，获取微博热议话题",
-        non_china_log_msg="检测到非中文区域，获取Twitter热门话题"
-    )
+    china_region = is_china_region()
+    region = 'china' if china_region else 'non-china'
+    try:
+        if china_region:
+            logger.info("检测到中文区域，获取微博热议话题与贴吧社区讨论")
+            weibo_result, tieba_result = await asyncio.gather(
+                fetch_weibo_trending(limit),
+                fetch_tieba_content(
+                    limit=limit,
+                    candidate_limit=max(_tieba_limit(limit) * 4, 20),
+                ),
+                return_exceptions=True,
+            )
+            if isinstance(weibo_result, Exception):
+                logger.warning(f"微博热议话题获取失败: {weibo_result}")
+                weibo_result = {'success': False, 'error': str(weibo_result)}
+            if isinstance(tieba_result, Exception):
+                logger.warning(f"贴吧社区讨论获取失败: {tieba_result}")
+                tieba_result = {'success': False, 'error': str(tieba_result)}
+
+            success = bool(weibo_result.get('success') or tieba_result.get('success'))
+            response: Dict[str, Any] = {
+                'success': success,
+                'region': region,
+                'news': weibo_result,
+                'tieba': tieba_result,
+            }
+            if not success:
+                errors = [
+                    str(item.get('error'))
+                    for item in (weibo_result, tieba_result)
+                    if item.get('error')
+                ]
+                response['error'] = '; '.join(errors) if errors else '暂时无法获取热议话题'
+            return response
+
+        logger.info("检测到非中文区域，获取Twitter热门话题")
+        twitter_result = await fetch_twitter_trending(limit)
+        response = {
+            'success': twitter_result.get('success', False),
+            'region': region,
+            'news': twitter_result,
+        }
+        if not twitter_result.get('success') and twitter_result.get('error'):
+            response['error'] = twitter_result.get('error')
+        return response
+    except Exception as e:
+        logger.error(f"获取热议内容失败: region={region} error={e}")
+        return {
+            'success': False,
+            'error': str(e),
+        }
 
 _TIEBA_DEFAULT_BARS = ("原神", "明日方舟", "崩坏星穹铁道", "steam", "minecraft")
 _TIEBA_HOT_TOPIC_URL = "https://tieba.baidu.com/hottopic/browse/topicList"
@@ -1273,7 +1317,7 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     Format news content into a readable string
     
     Formats automatically by region:
-    - Chinese region: trending Weibo topics
+    - Chinese region: trending Weibo topics and Tieba community discussions
     - non-Chinese region: Twitter trends
     
     Args:
@@ -1286,10 +1330,16 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     news_data = news_content.get('news', {})
     
     if region == 'china':
+        output_lines = []
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
-            output_lines = _format_weibo_trending(trending_list)
-            return "\n".join(output_lines)
+            output_lines.extend(_format_weibo_trending(trending_list))
+        tieba_data = news_content.get('tieba', {})
+        if tieba_data.get('success'):
+            output_lines.append(format_tieba_content(tieba_data))
+            output_lines.append("")
+        if output_lines:
+            return "\n".join(output_lines).strip()
         return "暂时无法获取热议话题"
     else:
         if news_data.get('success'):

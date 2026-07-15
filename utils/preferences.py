@@ -324,7 +324,6 @@ GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 _ALLOWED_CONVERSATION_SETTINGS = {
     'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
     'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-    'proactiveTiebaChatEnabled',
     'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
     'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
     'avatarReactionBubbleEnabled',
@@ -458,7 +457,6 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
         _BOOL_FIELDS = {
             'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
             'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-            'proactiveTiebaChatEnabled',
             'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
             'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
             'avatarReactionBubbleEnabled', 'subtitleEnabled', 'noiseReductionEnabled'

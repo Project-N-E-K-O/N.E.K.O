@@ -207,38 +207,52 @@ def test_action_note_web_subchannels_all_route_to_web_template():
     误识别成"放歌"。
     """
     link = {'title': 'foo', 'source': 'bar'}
-    for ch in ('web', 'news', 'video', 'home', 'personal', 'window', 'tieba'):
+    for ch in ('web', 'news', 'video', 'home', 'personal', 'window'):
         note = build_proactive_action_note(ch, [link], 'zh', master_name=MASTER)
         assert note != '', f'channel={ch} 漏到 fallback'
         assert 'foo' in note and 'bar' in note
 
 
-def test_extract_links_from_tieba_raw_data():
+def test_extract_links_from_news_raw_data_includes_tieba_material():
     raw = {
-        'posts': [
-            {
-                'title': '\u8d34\u5427\u70ed\u95e8\u5e16\u5b50',
-                'url': 'https://tieba.baidu.com/p/1',
-                'abstract': '\u793e\u533a\u8ba8\u8bba',
-            },
-            {
-                'title': '\u8d34\u5427\u5019\u8865\u5e16\u5b50',
-                'url': 'https://tieba.baidu.com/p/2',
-                'abstract': '\u6269\u5927\u5019\u9009\u6c60\u540e\u4f9b\u73b0\u6709\u53bb\u91cd\u9009\u7528',
-            },
-            {'title': '\u7f3a\u94fe\u63a5', 'url': ''},
-        ],
-        'topics': [
-            {
-                'title': '\u8d34\u5427\u70ed\u699c\u8bdd\u9898',
-                'url': 'https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=1',
-            },
-        ],
+        'region': 'china',
+        'news': {
+            'success': True,
+            'trending': [
+                {'word': '\u5fae\u535a\u70ed\u641c', 'url': 'https://s.weibo.com/weibo?q=x'},
+            ],
+        },
+        'tieba': {
+            'posts': [
+                {
+                    'title': '\u8d34\u5427\u70ed\u95e8\u5e16\u5b50',
+                    'url': 'https://tieba.baidu.com/p/1',
+                    'abstract': '\u793e\u533a\u8ba8\u8bba',
+                },
+                {
+                    'title': '\u8d34\u5427\u5019\u8865\u5e16\u5b50',
+                    'url': 'https://tieba.baidu.com/p/2',
+                    'abstract': '\u6269\u5927\u5019\u9009\u6c60\u540e\u4f9b\u73b0\u6709\u53bb\u91cd\u9009\u7528',
+                },
+                {'title': '\u7f3a\u94fe\u63a5', 'url': ''},
+            ],
+            'topics': [
+                {
+                    'title': '\u8d34\u5427\u70ed\u699c\u8bdd\u9898',
+                    'url': 'https://tieba.baidu.com/hottopic/browse/hottopic?topic_id=1',
+                },
+            ],
+        },
     }
 
-    links = _extract_links_from_raw('tieba', raw)
+    links = _extract_links_from_raw('news', raw)
 
     assert links == [
+        {
+            'title': '\u5fae\u535a\u70ed\u641c',
+            'url': 'https://s.weibo.com/weibo?q=x',
+            'source': '\u5fae\u535a',
+        },
         {
             'title': '\u8d34\u5427\u70ed\u95e8\u5e16\u5b50',
             'url': 'https://tieba.baidu.com/p/1',

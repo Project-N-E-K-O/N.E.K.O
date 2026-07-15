@@ -503,7 +503,6 @@
     function hasAnyChatModeEnabled() {
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
-            S.proactiveTiebaChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
             S.proactiveMiniGameInviteEnabled;
     }
@@ -613,7 +612,6 @@
         // 必须选择至少一种搭话方式
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveTiebaChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return false;
@@ -622,7 +620,6 @@
         // 如果只选择了视觉搭话，需要同时开启自主视觉
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
-            !S.proactiveTiebaChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return isProactiveVisionEnabledNow();
@@ -631,7 +628,6 @@
         // 如果只选择了个人动态搭话，需要同时开启个人动态
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
-            !S.proactiveTiebaChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
             return S.proactivePersonalChatEnabled;
@@ -1094,10 +1090,6 @@
                     console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
                 }
             }
-            if (S.proactiveTiebaChatEnabled && S.proactiveChatEnabled) {
-                availableModes.push('tieba');
-            }
-
             // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
@@ -1222,9 +1214,6 @@
                 // 个人动态搭话：需要同时开启个人动态
                 if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                     latestModes.push('personal');
-                }
-                if (S.proactiveTiebaChatEnabled && S.proactiveChatEnabled) {
-                    latestModes.push('tieba');
                 }
                 // 音乐搭话（重新检查冷却状态，await 期间可能变化）
                 if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {

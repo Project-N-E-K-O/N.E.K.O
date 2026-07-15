@@ -429,12 +429,6 @@ window.CHAT_MODE_CONFIG = [
         globalVarName: 'proactivePersonalChatEnabled'
     },
     {
-        mode: 'tieba',
-        labelKey: 'settings.toggles.proactiveTiebaChat',
-        tooltipKey: 'settings.toggles.proactiveTiebaChatTooltip',
-        globalVarName: 'proactiveTiebaChatEnabled'
-    },
-    {
         mode: 'music',
         labelKey: 'settings.toggles.proactiveMusicChat',
         tooltipKey: 'settings.toggles.proactiveMusicChatTooltip',

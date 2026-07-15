@@ -78,6 +78,92 @@ class _FakeTiebaThread:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fetch_news_content_merges_weibo_and_tieba_in_china(monkeypatch):
+    async def fake_weibo(limit):
+        return {
+            "success": True,
+            "trending": [{"word": "微博热搜", "url": "https://s.weibo.com/weibo?q=x"}],
+        }
+
+    async def fake_tieba(keyword="", limit=5, candidate_limit=None):
+        return {
+            "success": True,
+            "posts": [{"title": "贴吧热门帖子", "url": "https://tieba.baidu.com/p/1"}],
+            "topics": [],
+            "tieba": {"success": True, "posts": [], "topics": []},
+            "formatted_content": "【贴吧热门帖子（社区讨论，非权威信息）】\n1. 贴吧热门帖子",
+        }
+
+    monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
+    monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
+    monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+
+    result = await web_scraper.fetch_news_content(limit=3)
+    formatted = web_scraper.format_news_content(result)
+
+    assert result["success"] is True
+    assert result["region"] == "china"
+    assert result["news"]["trending"][0]["word"] == "微博热搜"
+    assert result["tieba"]["posts"][0]["title"] == "贴吧热门帖子"
+    assert "微博热搜" in formatted
+    assert "贴吧热门帖子" in formatted
+    assert "社区讨论" in formatted
+    assert "非权威" in formatted
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_news_content_succeeds_when_weibo_fails_but_tieba_succeeds(monkeypatch):
+    async def fake_weibo(limit):
+        return {"success": False, "error": "weibo blocked"}
+
+    async def fake_tieba(keyword="", limit=5, candidate_limit=None):
+        return {
+            "success": True,
+            "posts": [{"title": "贴吧候补", "url": "https://tieba.baidu.com/p/2"}],
+            "topics": [],
+            "tieba": {"success": True, "posts": [], "topics": []},
+            "formatted_content": "【贴吧热门帖子（社区讨论，非权威信息）】\n1. 贴吧候补",
+        }
+
+    monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
+    monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
+    monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+
+    result = await web_scraper.fetch_news_content(limit=3)
+
+    assert result["success"] is True
+    assert result["news"]["success"] is False
+    assert result["tieba"]["success"] is True
+    assert "贴吧候补" in web_scraper.format_news_content(result)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_news_content_succeeds_when_tieba_fails_but_weibo_succeeds(monkeypatch):
+    async def fake_weibo(limit):
+        return {
+            "success": True,
+            "trending": [{"word": "微博仍可用", "url": "https://s.weibo.com/weibo?q=y"}],
+        }
+
+    async def fake_tieba(keyword="", limit=5, candidate_limit=None):
+        return {"success": False, "error": "tieba blocked", "posts": [], "topics": []}
+
+    monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
+    monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
+    monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+
+    result = await web_scraper.fetch_news_content(limit=3)
+
+    assert result["success"] is True
+    assert result["news"]["success"] is True
+    assert result["tieba"]["success"] is False
+    assert "微博仍可用" in web_scraper.format_news_content(result)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fetch_tieba_content_uses_aiotieba_bars_and_hot_topics(monkeypatch):
     calls = []
 
