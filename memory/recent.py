@@ -28,7 +28,7 @@ from config.prompts.prompts_memory import (
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import get_global_language
-from utils.tokenize import acount_tokens, count_tokens
+from utils.tokenize import acount_tokens
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
@@ -56,8 +56,8 @@ REVIEW_FINGERPRINT_K = 3
 REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
 
 
-def review_context_token_count(messages: list) -> int:
-    """Return a stable token-size metric for the review circuit breaker."""
+async def review_context_token_count(messages: list) -> int:
+    """Return a stable token-size metric without blocking the event loop."""
     rows = []
     for message in messages:
         role = getattr(message, 'type', '') or ''
@@ -76,7 +76,7 @@ def review_context_token_count(messages: list) -> int:
         elif not isinstance(content, str):
             content = str(content)
         rows.append(f"{role}: {content}")
-    return count_tokens('\n\n'.join(rows))
+    return await acount_tokens('\n\n'.join(rows))
 
 
 def _review_response_hit_output_limit(response) -> bool:

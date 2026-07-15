@@ -155,7 +155,7 @@ async def maybe_spawn_review(name: str) -> None:
                 failed_min_tokens = int(failed_min_tokens or 0)
             except (TypeError, ValueError):
                 failed_min_tokens = 0
-            current_tokens = review_context_token_count(history)
+            current_tokens = await review_context_token_count(history)
             if failed_min_tokens > 0 and current_tokens >= failed_min_tokens:
                 logger.debug(
                     f"[Review/spawn] {name}: 输出耗尽断路器已开启 "
@@ -232,7 +232,7 @@ async def _record_review_output_exhaustion(
     from memory.recent import review_context_token_count
 
     state = gates._maint_state.setdefault(lanlan_name, {})
-    current_tokens = review_context_token_count(snapshot)
+    current_tokens = await review_context_token_count(snapshot)
     previous_min = state.get('review_output_exhaustion_min_context_tokens')
     try:
         previous_min = int(previous_min or 0)

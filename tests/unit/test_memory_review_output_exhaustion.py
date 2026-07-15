@@ -77,6 +77,17 @@ def test_review_llm_leaves_thinking_on_model_default():
     assert factory.call_args.kwargs["extra_body"] is None
 
 
+@pytest.mark.asyncio
+async def test_review_context_token_count_uses_async_counter():
+    from memory.recent import review_context_token_count
+
+    with patch("memory.recent.acount_tokens", AsyncMock(return_value=123)) as counter:
+        result = await review_context_token_count(_history(8))
+
+    assert result == 123
+    counter.assert_awaited_once()
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_three_output_exhaustions_block_across_growing_contexts():
