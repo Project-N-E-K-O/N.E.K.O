@@ -1,4 +1,4 @@
-const PLUGIN_ID = 'study_companion';
+﻿const PLUGIN_ID = 'study_companion';
 const RUNS_URL = '/runs';
 const RUN_TIMEOUT_MS = 60000;
 const RUN_EXPORT_RETRY_COUNT = 3;
@@ -8,7 +8,8 @@ const TARGET_DATA_URL_LENGTH = 1000000;
 const DEFAULT_VISION_MAX_IMAGE_PX = 768;
 const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg']);
 const LEARNING_PROFILE_STORAGE_KEY = 'study_companion.learning_profile.v1';
-const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'postgraduate', 'custom'];
+const LEARNING_STAGE_OPTIONS = ['primary', 'junior_high', 'senior_high', 'college', 'cross_stage', 'postgraduate', 'custom'];
+const KNOWLEDGE_SUBJECT_OPTIONS = ['math', 'english', 'chinese', 'physics', 'chemistry', 'biology', 'history', 'geography', 'politics', 'computer_science', 'economics'];
 const ENTRY_TIMEOUT_MS = {
   study_status: 15000,
   study_ocr_snapshot: 60000,
@@ -1344,197 +1345,8 @@ function knowledgeStageLabel(stage) {
   return normalized ? learningStageLabel(normalized) : t('ui.profile.stage_uncategorized', 'Uncategorized');
 }
 
-function knowledgeMapActiveStage() {
-  return knowledgeMapStage || normalizeLearningStage(learningProfile.stage) || 'all';
-}
+// Knowledge-map fallback rendering is kept in knowledge-map.js to keep this bootstrap bundle small.
 
-function knowledgeMapRangeLabel(stage = knowledgeMapActiveStage()) {
-  return stage === 'all'
-    ? t('ui.knowledge.scope_all', 'All stages')
-    : knowledgeStageLabel(stage);
-}
-
-function visibleKnowledgeNodes(nodes = [], stage = knowledgeMapActiveStage()) {
-  if (stage === 'all') return nodes;
-  return nodes.filter((node) => {
-    const nodeStage = stageValueFromNode(node);
-    return nodeStage === stage || !nodeStage;
-  });
-}
-
-function visibleKnowledgeEdges(edges = [], nodes = [], stage = knowledgeMapActiveStage()) {
-  if (stage === 'all') return edges;
-  const visibleIds = new Set(nodes.map((node) => String(node.id || '')));
-  return edges.filter((edge) => visibleIds.has(String(edge.from || '')) && visibleIds.has(String(edge.to || '')));
-}
-
-function renderKnowledgeStageSelector(nodes = []) {
-  const root = drawerElement('section', 'knowledge-stage-selector');
-  root.appendChild(drawerElement('span', '', t('ui.knowledge.scope_label', 'Graph range')));
-  const actions = drawerElement('div', 'knowledge-stage-selector__actions');
-  const stages = [...LEARNING_STAGE_OPTIONS.filter((stage) => stage !== 'custom'), 'all'];
-  const activeStage = knowledgeMapActiveStage();
-  const counts = new Map();
-  nodes.forEach((node) => {
-    const stage = stageValueFromNode(node) || '';
-    counts.set(stage, (counts.get(stage) || 0) + 1);
-  });
-  stages.forEach((stage) => {
-    const label = stage === 'all' ? t('ui.knowledge.scope_all', 'All stages') : learningStageLabel(stage);
-    const count = stage === 'all' ? nodes.length : (counts.get(stage) || 0);
-    const button = drawerElement('button', 'knowledge-stage-option', count ? `${label} ${count}` : label);
-    button.type = 'button';
-    button.dataset.stage = stage;
-    button.setAttribute('aria-pressed', stage === activeStage ? 'true' : 'false');
-    button.addEventListener('click', () => {
-      knowledgeMapStage = stage === normalizeLearningStage(learningProfile.stage) ? '' : stage;
-      if (surfaceDrawerBody) {
-        surfaceDrawerBody.replaceChildren(renderKnowledgePanel(lastKnowledgeMapPayload || lastStatusPayload));
-      }
-    });
-    actions.appendChild(button);
-  });
-  root.appendChild(actions);
-  return root;
-}
-
-function renderKnowledgeNodes(nodes = []) {
-  const root = drawerElement('div', 'knowledge-stage-groups');
-  const groups = new Map();
-  nodes.slice(0, 80).forEach((node) => {
-    const stage = stageValueFromNode(node);
-    groups.set(stage, [...(groups.get(stage) || []), node]);
-  });
-  const selectedStage = normalizeLearningStage(learningProfile.stage);
-  [...groups.entries()].sort(([stageA], [stageB]) => (
-    stageA === selectedStage ? -1 : stageB === selectedStage ? 1 : [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageA) - [...LEARNING_STAGE_OPTIONS, ''].indexOf(stageB)
-  )).forEach(([stage, items]) => {
-    const section = drawerElement('section', 'knowledge-stage-group');
-    section.dataset.stage = stage || 'uncategorized';
-    if (stage === selectedStage) section.dataset.selected = 'true';
-    const list = drawerElement('div', 'study-panel__actions');
-    items.slice(0, 24).forEach((node) => {
-      const item = drawerElement('button', 'knowledge-node');
-      item.type = 'button';
-      item.dataset.mastery = masteryLevelForPanel(node);
-      const mastery = Number(node.mastery);
-      const masteryText = Number.isFinite(mastery) ? ` ${Math.round(mastery * 100)}%` : '';
-      const subject = node.subject ? ` · ${node.subject}` : '';
-      item.textContent = `${node.label || node.name || node.topic_name || node.topic_id || node.id || '-'}${subject}${masteryText}`;
-      list.appendChild(item);
-    });
-    if (items.length > 24) {
-      list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: items.length - 24 })));
-    }
-    section.append(drawerElement('h3', '', `${knowledgeStageLabel(stage)} · ${items.length}`), list);
-    root.appendChild(section);
-  });
-  return root;
-}
-
-function knowledgeNodeLabel(node) {
-  return String(node?.label || node?.name || node?.topic_name || node?.topic_id || node?.id || '-');
-}
-
-function knowledgeRelationLabel(relation) {
-  const normalized = String(relation || 'related').trim().toLowerCase();
-  if (normalized === 'prerequisite') return t('ui.knowledge.edge_relation.prerequisite', 'Prerequisite');
-  if (normalized === 'related') return t('ui.knowledge.edge_relation.related', 'Related');
-  if (normalized === 'similar') return t('ui.knowledge.edge_relation.similar', 'Similar');
-  if (normalized === 'extends') return t('ui.knowledge.edge_relation.extends', 'Extends');
-  if (normalized === 'next') return t('ui.knowledge.edge_relation.next', 'Next');
-  if (normalized === 'nearby') return t('ui.knowledge.edge_relation.nearby', 'Nearby');
-  return normalized || t('ui.knowledge.edge_relation.related', 'Related');
-}
-
-function renderKnowledgeEdges(nodes = [], edges = [], edgeCount = 0, topicCount = 0) {
-  const labelById = new Map(nodes.map((node) => [String(node.id || ''), knowledgeNodeLabel(node)]));
-  const groups = new Map();
-  edges.slice(0, 80).forEach((edge) => {
-    const fromId = String(edge.from || '').trim();
-    const toId = String(edge.to || '').trim();
-    if (!fromId && !toId) return;
-    const groupKey = fromId || '-';
-    const group = groups.get(groupKey) || {
-      from: labelById.get(groupKey) || groupKey,
-      items: [],
-    };
-    group.items.push({
-      to: labelById.get(toId) || toId || '-',
-      relation: knowledgeRelationLabel(edge.relation),
-      rawRelation: String(edge.relation || 'related').trim().toLowerCase(),
-    });
-    groups.set(groupKey, group);
-  });
-
-  const root = drawerElement('div', 'knowledge-edge-list');
-  if (!groups.size) {
-    root.appendChild(drawerElement(
-      'pre',
-      '',
-      topicCount
-        ? tf('ui.settings.knowledge.loaded_summary', '{topics} topics and {edges} edges loaded.', { topics: topicCount, edges: edgeCount })
-        : t('ui.settings.knowledge.empty_summary', 'Knowledge map has no loaded topics yet.'),
-    ));
-    return root;
-  }
-
-  Array.from(groups.values()).slice(0, 12).forEach((group) => {
-    const card = drawerElement('article', 'knowledge-edge-card');
-    card.appendChild(drawerElement('h3', '', group.from));
-    const list = drawerElement('div', 'knowledge-edge-card__items');
-    group.items.slice(0, 6).forEach((item) => {
-      const row = drawerElement('div', 'knowledge-edge-row');
-      row.dataset.relation = item.rawRelation || 'related';
-      row.appendChild(drawerElement('span', 'knowledge-edge-row__relation', item.relation));
-      row.appendChild(drawerElement('span', 'knowledge-edge-row__target', item.to));
-      list.appendChild(row);
-    });
-    if (group.items.length > 6) {
-      list.appendChild(drawerElement('span', 'knowledge-edge-more', tf('ui.knowledge.edge_more', '+ {count} more', { count: group.items.length - 6 })));
-    }
-    card.appendChild(list);
-    root.appendChild(card);
-  });
-  if (edges.length > 80 || groups.size > 12) {
-    const hidden = Math.max(0, edgeCount - Math.min(edgeCount, 80));
-    root.appendChild(drawerElement('span', 'knowledge-edge-more', hidden
-      ? tf('ui.knowledge.edge_more', '+ {count} more', { count: hidden })
-      : t('ui.knowledge.edge_more_groups', 'More relationship groups are hidden.')));
-  }
-  return root;
-}
-
-function renderKnowledgePanel(payload = null) {
-  const data = payload && typeof payload === 'object' ? payload : (lastStatusPayload || {});
-  const summary = data.summary || data.knowledge_summary || {};
-  const nodes=Array.isArray(data.nodes) ? data.nodes : [];
-  const edges=Array.isArray(data.edges) ? data.edges : [];
-  const activeStage = knowledgeMapActiveStage();
-  const shownNodes = visibleKnowledgeNodes(nodes, activeStage);
-  const shownEdges = visibleKnowledgeEdges(edges, shownNodes, activeStage);
-  const topicCount = countFromSummary(summary, ['topic_count', 'topics', 'node_count', 'nodes']) || nodes.length;
-  const edgeCount = countFromSummary(summary, ['edge_count', 'edges']) || edges.length;
-  const weakTopics = shownNodes.filter((node) => masteryLevelForPanel(node) === 'weak').length;
-  const root = surfacePanel('knowledge-map', `${shownNodes.length}/${topicCount}`);
-  const state = drawerElement('section', 'study-panel__state');
-  appendPanelState(state, t('ui.profile.stage_label', 'Stage'), learningStageLabel());
-  appendPanelState(state, t('ui.knowledge.scope_label', 'Graph range'), knowledgeMapRangeLabel(activeStage));
-  appendPanelState(state, t('ui.label.topics', 'Topics'), `${shownNodes.length}/${topicCount}`);
-  appendPanelState(state, t('ui.label.edges', 'Edges'), `${shownEdges.length}/${edgeCount}`);
-  appendPanelState(state, t('ui.label.weak_topics', 'Weak Topics'), String(weakTopics));
-  root.appendChild(state);
-  root.appendChild(renderKnowledgeStageSelector(nodes));
-
-  if (shownNodes.length) {
-    root.appendChild(renderKnowledgeNodes(shownNodes));
-  } else {
-    root.appendChild(drawerElement('pre', '', t('ui.knowledge.scope_empty', 'No topics in this graph range yet. Switch to all stages or keep studying to build it.')));
-  }
-  root.appendChild(drawerElement('div', 'study-panel__reply-label', t('ui.knowledge.edge_section', 'Relationships')));
-  root.appendChild(renderKnowledgeEdges(shownNodes, shownEdges, shownEdges.length, shownNodes.length));
-  return root;
-}
 
 function renderGenericLocalPanel(surfaceId) {
   const root = surfacePanel(surfaceId, hostedSurfaceLabel(surfaceId));
@@ -1558,12 +1370,21 @@ function renderSurfaceDrawerBody(surfaceId) {
 }
 
 async function loadKnowledgeMapIntoDrawer(surfaceId, requestId) {
-  const payload = await callPlugin('study_knowledge_map', { limit: 200 });
-  if (requestId !== mapRequestId || surfaceDrawer.dataset.open !== 'true' || (surfaceDrawer.dataset.surfaceId || surfaceId) !== 'knowledge-map') {
-    return;
+  try {
+    const payload = await callPlugin('study_knowledge_map', { limit: 1000 });
+    if (requestId !== mapRequestId || surfaceDrawer.dataset.open !== 'true' || (surfaceDrawer.dataset.surfaceId || surfaceId) !== 'knowledge-map') {
+      return;
+    }
+    lastKnowledgeMapPayload = payload;
+    surfaceDrawerBody.replaceChildren(renderKnowledgePanel(payload));
+  } catch (error) {
+    if (requestId !== mapRequestId || surfaceDrawer.dataset.open !== 'true' || (surfaceDrawer.dataset.surfaceId || surfaceId) !== 'knowledge-map') {
+      return;
+    }
+    const root = surfacePanel('knowledge-map', t('status.state.error', 'Error'));
+    root.appendChild(drawerElement('pre', '', error instanceof Error ? error.message : String(error)));
+    surfaceDrawerBody.replaceChildren(root);
   }
-  lastKnowledgeMapPayload = payload;
-  surfaceDrawerBody.replaceChildren(renderKnowledgePanel(payload));
 }
 
 function openSurfaceDrawer(surfaceId) {
@@ -1579,6 +1400,7 @@ function openSurfaceDrawer(surfaceId) {
   surfaceDrawer.setAttribute('aria-hidden', 'false');
   if (surfaceId === 'knowledge-map') {
     const requestId=mapRequestId += 1;
+    surfaceDrawerBody.replaceChildren(renderKnowledgeLoadingPanel(knowledgeMapSubject));
     loadKnowledgeMapIntoDrawer(surfaceId, requestId);
   }
   surfaceDrawerCloseBtn?.focus?.();

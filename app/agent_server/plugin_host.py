@@ -167,6 +167,8 @@ async def _start_embedded_user_plugin_server() -> None:
         log_config=None,
         backlog=4096,
         timeout_keep_alive=30,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
     )
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None

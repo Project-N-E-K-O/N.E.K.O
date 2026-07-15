@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import platform
 from pathlib import Path
 
@@ -135,6 +136,7 @@ def test_data_layer_cors_uses_electron_port_config(
     monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(os.path, "expanduser", lambda _path: str(tmp_path / "ignored-home"))
     config_dir = tmp_path / "Library" / "Application Support" / "N.E.K.O"
     config_dir.mkdir(parents=True)
     (config_dir / "port_config.json").write_text(

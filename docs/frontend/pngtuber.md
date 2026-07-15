@@ -35,7 +35,7 @@ A PNGTuber model is a folder containing a `model.json` file with `model_type` se
 | `talking_image` | Shown while the assistant is speaking. |
 | `drag_image` | Shown while the avatar is being dragged. |
 | `click_image` | Shown briefly when the avatar is clicked. |
-| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | Emotion frames (see [Emotion states](#emotion-states-not-yet-driven-by-emotion-analysis)). |
+| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | Emotion frames (see [Emotion states](#emotion-states)). |
 
 Relative paths resolve inside the package folder; absolute paths (`/…`) and `http(s)://` URLs are kept as-is. Image references are normalized server-side to `/user_pngtuber/<folder>/<file>`.
 
@@ -49,38 +49,69 @@ Relative paths resolve inside the package folder; absolute paths (`/…`) and `h
 
 The server validates that `idle_image` is present and that every `*_image` reference points to an existing file with an allowed extension before the package is accepted.
 
-## Emotion states (not yet driven by emotion analysis)
+## Emotion states
 
-::: warning Honest status
-The `happy_image` / `sad_image` / `angry_image` / `surprised_image` keys are part of the package schema and are **server-validated** (path and extension are checked on upload), but the PNGTuber runtime does **not** yet switch to them based on emotion analysis.
+`window.applyEmotion('happy')` drives PNGTuber emotions at runtime. `applyEmotion` (in `static/app-buttons.js`) routes to `window.pngtuberManager.setEmotion(emotion)` whenever the active `model_type` is `pngtuber`, before it would otherwise fall back to the Live2D path.
 
-`PNGTuberManager` only drives:
+- **Simple packages** — `setEmotion('happy')` swaps to `happy_image` / `sad_image` / `angry_image` / `surprised_image` for a default of 5 seconds, then reverts to idle. Neutral values (`neutral`, `idle`, `default`, `none`, `clear`, or empty) clear the emotion immediately.
+- **Layered packages** — `setEmotion` maps the emotion onto a layered state via `setLayeredEmotion`. Remix `emotion_mappings` take precedence; otherwise a fallback order of happy → 1, sad → 2, angry → 3, surprised → 4 applies when the model exposes at least five states.
 
-- `idle` ↔ `talking`, toggled by assistant **speech** start/end events.
-- `drag` and `click`, toggled by pointer **interaction**.
-
-There is no `setEmotion`-style hook equivalent to Live2D / MMD / VRM, and there is no dedicated PNGTuber emotion-manager page. The four emotion image keys are stored and shipped with the package so they are ready for a future emotion-driven path, but supplying them today has no visible effect beyond passing validation.
-:::
+`idle` ↔ `talking` is still toggled by assistant **speech** start/end events, and `drag` / `click` by pointer **interaction**. If no matching emotion image or state exists, `setEmotion` returns without changing the frame and logs `[PNGTuber] emotion unavailable`.
 
 ## Import formats
 
 The upload endpoint detects the package type and normalizes it in place. The detected type is reported back as `source_format`.
 
-| Source | Detection | Result |
-|--------|-----------|--------|
-| Native simple package | `model.json` in the folder root | `source_format: simple_package` — used directly. |
-| **PNGTuber-Plus** | a `.save` project file | Converted to the `layered_canvas_v1` adapter. |
-| **PNGTube-Remix** | a `.pngremix` project file | Converted to the `layered_canvas_v1` adapter. |
-| veadotube | a `.veadomini` / `.veado` file | **Recognized but unsupported** — upload is rejected with an explanatory error. |
+| Source | Detection | `source_format` |
+|--------|-----------|-----------------|
+| Native simple package | `model.json` in the folder root | `source_format: "simple_package"` |
+| PNGTuber-Plus | a `.save` project file | `source_format: "pngtuber_plus_save"` |
+| PNGTube-Remix | a `.pngRemix` project file | `source_format: "pngtube_remix_pngremix"` |
+| veadotube | a `.veadomini` / `.veado` file | `source_format: "veadotube"` |
+| Images only, no project file | image files with no `model.json` | `source_format: "image_pair_candidate"` |
 
 ### Layered adapter (`layered_canvas_v1`)
 
-When a PNGTuber-Plus or PNGTube-Remix project is imported, the converter emits a layered-metadata file and sets `adapter` to `layered_canvas_v1`. At runtime, `PNGTuberManager` draws the layers onto a `<canvas>` instead of swapping a single `<img>`, and adds:
+When a PNGTuber-Plus or PNGTube-Remix project is imported, the converter emits a layered-metadata file (`adapter_version: 2`) and sets `adapter` to `layered_canvas_v1`. At runtime, `PNGTuberManager` draws the layers onto a `<canvas>` instead of swapping a single `<img>`. Plus and Remix are dispatched by `source_format` so their runtimes never contaminate each other. Both add randomized blink timers and a speech bounce; if the metadata fails to load, the runtime falls back to plain single-image mode.
 
-- **Blink** — eye layers blink on a randomized timer.
-- **Speech bounce** — the avatar bounces/squishes while talking.
+## Capability matrix
 
-Hotkeys, physics, and multi-frame animation from the source project are preserved in the metadata for later runtime support but are not all driven yet. If the metadata fails to load, the runtime falls back to plain single-image mode.
+`window.pngtuberManager.getDebugState()` reports which capabilities are live for the loaded model.
+
+| Capability | `simple_package` | `pngtuber_plus_save` | `pngtube_remix_pngremix` |
+|------------|:----------------:|:--------------------:|:------------------------:|
+| idle / talking swap | ✅ | ✅ | ✅ |
+| Emotion via `window.applyEmotion('happy')` | ✅ image swap | ✅ layered state | ✅ layered state |
+| Blink + speech bounce | — | ✅ | ✅ |
+| Costume hotkeys / toggles | — | ✅ | — |
+| Sprite-sheet frames | — | ✅ | ✅ |
+| `physics_v2` | — | approximate | ✅ |
+| Mesh deformation | — | — | ✅ when real geometry ships |
+
+Mesh deformation only flips `meshRuntime` to `true` in the debug state when the Remix project ships real vertices / triangles / UVs. Otherwise `meshMetadata` stays `true`, `meshRuntime` stays `false`, and the reason is listed under `unsupportedFeatures`.
+
+### Failure prompts
+
+- **veadotube** (`.veadomini` / `.veado`) → `source_format: "veadotube"`; the upload is rejected with a request for a real sample to adapt against.
+- **Images only** → `source_format: "image_pair_candidate"`; the upload is rejected and points at the two-image importer or adding a `model.json`.
+- **Multiple `.save` files** that can't be disambiguated → HTTP 400 with `source_format: "pngtuber_plus_save"` and the candidate list in `warnings`.
+- **Unparseable `.pngRemix`** → classified as a PNGTube-Remix conversion failure (`source_format: "pngtube_remix_pngremix"`), never a missing-`model.json` error.
+
+## Acceptance checklist
+
+Static contracts (run from the repo root):
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_maker_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
+
+Manual checks:
+
+- Import a PNGTuber-Plus `.save` and confirm costumes, toggles, talk/blink, sprite-sheet frames, parent/child transforms and rectangular clip render.
+- Import a multi-state PNGTube-Remix `.pngRemix` and confirm `window.applyEmotion('happy')` maps to the right state.
+- Inspect `window.pngtuberManager.getDebugState()` for `sourceFormat`, `adapterVersion`, `runtimeFeatures`, `meshRuntime` and `physicsVersion`.
 
 ## Static serving
 

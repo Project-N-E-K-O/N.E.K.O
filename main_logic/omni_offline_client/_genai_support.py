@@ -29,6 +29,7 @@ from ._shared import (
     logger,
     strip_thinking_segments,
 )
+from ._lifecycle import _slop_reduced_for_genai, _suspend_dialog_slop
 
 _genai = None
 
@@ -318,7 +319,9 @@ class _GenaiMixin:
             gen_config_kw["tools"] = tools_payload
 
         for tool_iter in range(self.max_tool_iterations):
-            system_instruction, contents = _genai_messages_to_contents(messages)
+            system_instruction, contents = _genai_messages_to_contents(
+                _slop_reduced_for_genai(messages)
+            )
             cfg_kw = dict(gen_config_kw)
             if system_instruction:
                 cfg_kw["system_instruction"] = system_instruction
@@ -528,7 +531,8 @@ class _GenaiMixin:
                         raw_arguments=tc_raw,
                     )
                     try:
-                        result = await self.on_tool_call(tool_call)
+                        with _suspend_dialog_slop():
+                            result = await self.on_tool_call(tool_call)
                     except Exception as e:
                         logger.exception("OmniOfflineClient(genai): on_tool_call '%s' raised", tc_name)
                         result = ToolResult(
@@ -565,7 +569,9 @@ class _GenaiMixin:
         # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
         # 超限后反而可能重回静音态，与本兜底目标冲突。
         final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
-        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        final_system_instruction, final_contents = _genai_messages_to_contents(
+            _slop_reduced_for_genai(messages)
+        )
         if final_system_instruction:
             final_cfg_kw["system_instruction"] = final_system_instruction
         final_config = types.GenerateContentConfig(**final_cfg_kw)

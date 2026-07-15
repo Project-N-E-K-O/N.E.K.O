@@ -15,6 +15,8 @@ async def trigger_active_engagement(runtime: Any) -> InteractionResult:
     active_status = runtime.active_engagement_status(live_status, live_state)
     skip_event = active_engagement_basic_event(runtime, live_state)
 
+    if not bool(getattr(runtime.config, "active_engagement_enabled", True)):
+        return record_active_engagement_skip(runtime, skip_event, "active_engagement.disabled")
     if runtime.config.live_mode != "solo_stream":
         return record_active_engagement_skip(runtime, skip_event, "active_engagement.not_solo_stream")
     state = str(live_state.get("state") or "")
@@ -37,6 +39,8 @@ async def trigger_active_engagement(runtime: Any) -> InteractionResult:
 
 
 async def maybe_trigger_active_engagement(runtime: Any) -> InteractionResult | None:
+    if not bool(getattr(runtime.config, "active_engagement_enabled", True)):
+        return None
     now = float(runtime._active_engagement_now())
     if now - runtime._active_engagement_last_attempt_at < runtime._active_engagement_min_interval_seconds():
         return None

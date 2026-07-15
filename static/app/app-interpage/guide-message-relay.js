@@ -269,6 +269,18 @@
                         I.applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);
                         break;
                     }
+                    case 'yui_guide_prepare_compact_chat': {
+                        if (!I.isStandaloneChatPage()) break;
+                        // 固定教程布局前先完成原生毛球到胶囊的展开，并把启动前形态回传给主页。
+                        I.prepareYuiGuideCompactChatSurface(event.data);
+                        break;
+                    }
+                    case 'yui_guide_restore_compact_chat': {
+                        if (!I.isStandaloneChatPage()) break;
+                        // 教程结束后的形态恢复必须由胶囊窗口执行，主页没有原生窗口状态。
+                        I.restoreYuiGuideCompactChatSurface(event.data);
+                        break;
+                    }
                     case 'yui_guide_set_chat_cursor':
                     case 'yui_guide_drag_chat_cursor':
                     case 'yui_guide_arc_chat_cursor': {
@@ -322,6 +334,14 @@
                             detail: {
                                 timestamp: event.data.timestamp || Date.now()
                             }
+                        }));
+                        break;
+                    }
+                    case 'yui_guide_compact_chat_ready': {
+                        if (I.isStandaloneChatPage()) break;
+                        // requestId 由本轮教程生成，主页据此忽略上一轮迟到的展开回执。
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:compact-chat-ready', {
+                            detail: event.data
                         }));
                         break;
                     }
@@ -578,6 +598,10 @@
         return window.reactChatWindowHost || null;
     }
 
+    var YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_DELAY_MS = 50;
+    // 主页面等待 ready 的上限是 4.5 秒；最多重试 4 秒，为明确失败回执预留传输时间。
+    var YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_LIMIT = 80;
+
     I.ensureYuiGuideExternalChatExpanded = function ensureYuiGuideExternalChatExpanded() {
         var host = getReactChatWindowHost();
         if (!host || typeof host.openWindow !== 'function') {
@@ -591,6 +615,166 @@
             return false;
         }
     }
+
+    I.prepareYuiGuideCompactChatSurface = function prepareYuiGuideCompactChatSurface(message, hostRetryAttempt) {
+        var requestId = message && message.requestId ? String(message.requestId) : '';
+        if (!requestId) return false;
+
+        var retryAttempt = Number.isFinite(Number(hostRetryAttempt))
+            ? Math.max(0, Number(hostRetryAttempt))
+            : 0;
+        if (retryAttempt > 0) {
+            if (
+                I.yuiGuideCompactChatPrepareRequestId !== requestId
+                || I.yuiGuidePcOverlayLifecycleClosed
+                || !I.isYuiGuideMessageForCurrentLifecycle(message)
+            ) {
+                // 新教程、结束消息或新 requestId 已接管时，旧 host 重试不得再展开聊天窗。
+                return false;
+            }
+        } else if (I.yuiGuideCompactChatPrepareRequestId === requestId) {
+            // 同一请求可能同时经 BroadcastChannel 与原生 relay 到达；只保留一条准备/重试链。
+            return true;
+        } else {
+            I.yuiGuideCompactChatPrepareRequestId = requestId;
+            // host 尚未安装时无法读取折叠态；先清空旧请求快照，准备成功后再记录真实状态。
+            I.yuiGuideCompactChatPrepareWasCollapsed = false;
+        }
+
+        var host = getReactChatWindowHost();
+        var nativeBridge = window.nekoChatWindow || null;
+        var hasNativePreparation = !!(
+            nativeBridge
+            && (
+                typeof nativeBridge.prepareExpandedForTutorial === 'function'
+                || typeof nativeBridge.ensureExpandedForTutorial === 'function'
+            )
+        );
+        var hasReadyHost = !!(
+            host
+            && typeof host.openWindow === 'function'
+            && typeof host.getChatSurfaceMode === 'function'
+        );
+        if (!hasNativePreparation && !hasReadyHost) {
+            if (retryAttempt < YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_LIMIT) {
+                // /chat 会先加载 interpage relay、后安装 React host；在主页面握手超时内等待，
+                // 不能把“host 尚未安装”当成胶囊已经展开。
+                I.yuiGuideInterpageResources.setTimeout(function () {
+                    I.prepareYuiGuideCompactChatSurface(message, retryAttempt + 1);
+                }, YUI_GUIDE_COMPACT_CHAT_HOST_RETRY_DELAY_MS);
+                return true;
+            }
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: false,
+                wasCollapsed: false,
+                timestamp: Date.now()
+            });
+            return false;
+        }
+
+        var hostMode = host && typeof host.getChatSurfaceMode === 'function'
+            ? host.getChatSurfaceMode()
+            : '';
+        var wasCollapsed = hostMode === 'minimized'
+            || !!(nativeBridge && typeof nativeBridge.isCollapsed === 'function' && nativeBridge.isCollapsed());
+
+        // 主页超时后已无法收到 ready 回执；按 request 保存真实初始形态，后续取消请求
+        // 才能只恢复原本的毛球，而不把原本展开的胶囊错误折叠。
+        I.yuiGuideCompactChatPrepareWasCollapsed = wasCollapsed;
+
+        var nativePreparation = null;
+        if (nativeBridge && typeof nativeBridge.prepareExpandedForTutorial === 'function') {
+            try {
+                nativePreparation = nativeBridge.prepareExpandedForTutorial();
+            } catch (error) {
+                // 同步调用失败与 Promise reject 语义一致，必须显式回执失败，
+                // 否则 null 会被后续 Promise.resolve 当成成功准备完成。
+                nativePreparation = { ready: false };
+                console.warn('[YuiGuide] Failed to prepare native compact chat surface:', error);
+            }
+        } else if (nativeBridge && typeof nativeBridge.ensureExpandedForTutorial === 'function') {
+            try {
+                nativeBridge.ensureExpandedForTutorial();
+            } catch (_) {
+                // 旧桥接同步失败时同样不能向教程误报胶囊已经准备完成。
+                nativePreparation = { ready: false };
+            }
+        }
+
+        // 浏览器和旧版桌面桥仍需同步 React 自己的 minimized 状态；新版桌面桥会在
+        // 原生展开完成后再次把 host 对齐到 compact，因此这一步是幂等的。
+        var hostExpanded = I.ensureYuiGuideExternalChatExpanded();
+        if (!hasNativePreparation && !hostExpanded) {
+            // host 已安装但同步展开失败时必须明确回执失败，不能让 null 被当成成功。
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: false,
+                wasCollapsed: wasCollapsed,
+                timestamp: Date.now()
+            });
+            return false;
+        }
+
+        Promise.resolve(nativePreparation).then(function (result) {
+            var nativeResult = result && typeof result === 'object' ? result : {};
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: nativeResult.ready !== false,
+                wasCollapsed: nativeResult.wasCollapsed === true || wasCollapsed,
+                timestamp: Date.now()
+            });
+        }).catch(function (error) {
+            console.warn('[YuiGuide] Native compact chat preparation failed:', error);
+            I.postYuiGuideMessageToPet('yui_guide_compact_chat_ready', {
+                requestId: requestId,
+                ready: false,
+                wasCollapsed: wasCollapsed,
+                timestamp: Date.now()
+            });
+        });
+        return true;
+    };
+
+    I.restoreYuiGuideCompactChatSurface = function restoreYuiGuideCompactChatSurface(message) {
+        if (!message) return false;
+        var requestId = message.requestId ? String(message.requestId) : '';
+        // restore 必须属于当前最近一次 prepare；快速重启教程时，旧 run 的迟到恢复
+        // 不能把新教程刚展开的胶囊重新折叠。新版恢复消息始终携带 requestId。
+        if (!requestId || I.yuiGuideCompactChatPrepareRequestId !== requestId) {
+            return false;
+        }
+        var shouldRestoreCollapsed = message.wasCollapsed === true;
+        if (message.restoreFromPrepareSnapshot === true) {
+            // 超时恢复只信任当前 prepare 在聊天窗捕获的真实状态；主页的未知状态不能
+            // 保守地当成毛球，否则原本展开的胶囊也会被错误折叠。
+            shouldRestoreCollapsed = I.yuiGuideCompactChatPrepareWasCollapsed === true;
+        }
+        if (!shouldRestoreCollapsed) return false;
+        if (requestId && I.yuiGuideCompactChatRestoreRequestId === requestId) {
+            return true;
+        }
+        // BroadcastChannel 与原生 relay 可能各送一次；恢复动画同样只允许启动一次。
+        I.yuiGuideCompactChatRestoreRequestId = requestId;
+
+        var nativeBridge = window.nekoChatWindow || null;
+        if (nativeBridge && typeof nativeBridge.restoreCollapsedAfterTutorial === 'function') {
+            try {
+                nativeBridge.restoreCollapsedAfterTutorial();
+                return true;
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to restore native collapsed chat surface:', error);
+            }
+        }
+
+        var host = getReactChatWindowHost();
+        if (host && typeof host.setChatSurfaceMode === 'function') {
+            // 旧版桌面桥及浏览器环境没有原生恢复 API，仍通过现有 surface 状态机折叠。
+            host.setChatSurfaceMode('minimized');
+            return true;
+        }
+        return false;
+    };
 
     function relayYuiGuideChatCommand(data) {
         var detail = data && typeof data === 'object' ? Object.assign({}, data) : {};

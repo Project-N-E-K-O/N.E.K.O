@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from .cache_control import _inject_cache_control
 from .lifecycle import (
-    _active_character, _close_async_openai_client_from_sync_best_effort,
+    _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_openai_clients_best_effort, _get_default_ssl_context,
     _substitute_character_placeholders,
 )
@@ -173,6 +173,15 @@ class ChatOpenAI:
                 p["messages"] = _substitute_character_placeholders(
                     p["messages"], master, lanlan
                 )
+
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                p["messages"] = apply_slop_reduction(p["messages"], slop_lang)
+            except Exception:
+                # Prompt-only rewriting is best effort and must not break an LLM call.
+                pass
 
         # Body-level cache flag: stamp an Anthropic-style cache_control marker
         # onto the cache breakpoint. Gated on the provider opting in via

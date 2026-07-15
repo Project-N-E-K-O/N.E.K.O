@@ -8,7 +8,7 @@ from typing import Any
 from .contracts import InteractionResult, PipelineStep, ViewerEvent
 from .pipeline_dispatch import dispatch_routed_request
 from .pipeline_requests import build_request_for_route
-from .pipeline_results import fail_pipeline, skip_already_roasted
+from .pipeline_results import fail_pipeline, skip_already_roasted, skip_module_disabled
 from .pipeline_viewers import resolve_viewer_context
 from .runtime_timeline import record_timeline
 
@@ -55,6 +55,31 @@ async def run_event_flow(
                 has_uid_lock=has_uid_lock,
                 already_roasted=already_roasted,
             )
+            module_flag = {
+                "avatar_roast": "avatar_roast_enabled",
+                "danmaku_response": "danmaku_response_enabled",
+                "live_support_events": "live_support_events_enabled",
+                "warmup_hosting": "warmup_hosting_enabled",
+                "idle_hosting": "idle_hosting_enabled",
+                "active_engagement": "active_engagement_enabled",
+            }.get(route.response_module_id)
+            if module_flag and not bool(getattr(ctx.config, module_flag, True)):
+                record_timeline(
+                    ctx,
+                    event,
+                    stage="module_gate",
+                    status="skipped",
+                    reason=f"{route.response_module_id}.disabled",
+                    route=route.response_module_id,
+                )
+                return skip_module_disabled(
+                    ctx,
+                    event,
+                    identity,
+                    profile,
+                    steps,
+                    route.response_module_id,
+                )
             record_timeline(
                 ctx,
                 event,

@@ -1,6 +1,6 @@
 # Pipeline Split
 
-This slice keeps `RoastPipeline` as the public entrypoint and moves route,
+The completed pipeline split keeps `RoastPipeline` as the public entrypoint and moves route,
 request, viewer, session, dispatch, and result helpers into focused
 `pipeline_*` modules.
 
@@ -20,6 +20,7 @@ request, viewer, session, dispatch, and result helpers into focused
 
 ## Tests
 
-This slice must remain importable before later provider, hosting, or UI slices
-are merged. Later slices may extend the helper modules, but must keep the
-pipeline facade compatible.
+The pipeline facade and its focused helpers must remain importable without
+requiring provider, hosting, or UI modules to initialize first. Future changes
+may extend the helper modules, but must keep the public pipeline facade
+compatible.

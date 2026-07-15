@@ -862,6 +862,7 @@
             window.mmdManager.cursorFollow.setEnabled(false);
         }
         const pngtuberMgr = window.cardMakerPNGTuberManager;
+        pngtuberMgr?.setMouseTrackingEnabled?.(false);
         pngtuberMgr?.detachSpeechListeners?.();
         pngtuberMgr?.detachDragListeners?.();
         pngtuberMgr?.setSpeaking?.(false);

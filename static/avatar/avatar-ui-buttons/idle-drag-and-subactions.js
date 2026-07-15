@@ -1289,6 +1289,23 @@ function _setNekoIdleCat1Classes(button, state) {
     } else {
         button.removeAttribute(profile.dataAttributes.targetKind);
     }
+    const nativeYarnRect = targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE
+        ? _getNekoIdleChatMinimizedRect()
+        : null;
+    const nativeYarnVisualAnchor = _usesNekoIdleCat1NativeYarnVisualAnchor(nativeYarnRect);
+    const nativeYarnSide = nativeYarnVisualAnchor
+        ? _getNekoIdleCat1NativeYarnSide(container, nativeYarnRect)
+        : '';
+    if (nativeYarnVisualAnchor) {
+        button.setAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR, 'true');
+    } else {
+        button.removeAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_VISUAL_ANCHOR_ATTR);
+    }
+    if (nativeYarnSide) {
+        button.setAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR, nativeYarnSide);
+    } else {
+        button.removeAttribute(_NEKO_IDLE_CAT1_NATIVE_YARN_SIDE_ATTR);
+    }
     const speedRate = substate === profile.walkingSubstate
         ? _formatNekoIdleCat1WalkSpeedRate(state && state.walkSpeedRate)
         : '';

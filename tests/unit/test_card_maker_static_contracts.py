@@ -243,7 +243,10 @@ def test_model_manager_pngtuber_upload_supports_project_file_without_removing_fo
     assert ".veado" not in template
     assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in script
     assert "showPNGTuberUploadChoice()" in script
-    assert "uploadPNGTuberFiles(Array.from(e.target.files));" in script
+    assert "async function uploadPNGTuberFiles(files, inputElement = null)" in script
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);" in script
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);" in script
+    assert "inputElement.value = '';" in script
     assert "menu.addEventListener('keydown', handlePNGTuberUploadChoiceKeydown);" in script
     assert "menu.addEventListener('focusout', handlePNGTuberUploadChoiceFocusout);" in script
     assert "let pngtuberUploadChoiceOpeningPicker = false;" in script

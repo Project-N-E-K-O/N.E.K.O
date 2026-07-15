@@ -91,18 +91,17 @@ def _read_port_config() -> dict[str, Any]:
     """Read the Electron port overrides without importing the main application."""
     try:
         system = platform.system()
+        home = os.environ.get("HOME") or os.path.expanduser("~")
         if system == "Windows":
             appdata = os.environ.get("APPDATA") or os.path.join(
-                os.path.expanduser("~"), "AppData", "Roaming"
+                home, "AppData", "Roaming"
             )
             base = os.path.join(appdata, "N.E.K.O")
         elif system == "Darwin":
-            base = os.path.join(
-                os.path.expanduser("~"), "Library", "Application Support", "N.E.K.O"
-            )
+            base = os.path.join(home, "Library", "Application Support", "N.E.K.O")
         else:
             base = os.path.join(
-                os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+                os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config")),
                 "N.E.K.O",
             )
         with open(os.path.join(base, "port_config.json"), encoding="utf-8") as config_file:

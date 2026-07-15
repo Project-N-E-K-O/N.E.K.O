@@ -1379,6 +1379,8 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
     assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
+    # prepare 会建立本轮教程的胶囊恢复快照，也必须拒绝旧 run 的迟到消息。
+    assert "case 'yui_guide_prepare_compact_chat':" in scoped_block
     assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
 
 

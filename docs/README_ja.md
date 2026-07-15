@@ -119,9 +119,9 @@ services:
       - "48911:80"   # HTTPポート
       - "48912:443"  # HTTPSポート
     volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
       - ./logs:/app/logs
-      - ./ssl:/root/ssl
+      - ./ssl:/home/neko/ssl
     networks:
       - neko-network
 networks:
@@ -154,9 +154,9 @@ docker run -d \
   --restart unless-stopped \
   -p 48911:80 \
   -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/N.E.K.O:/home/neko/.local/share/N.E.K.O" \
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-  -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
+  -v "${NEKO_BASE_PATH}/ssl:/home/neko/ssl" \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
@@ -216,7 +216,7 @@ docker-compose up -d
 
 ##### 証明書情報の確認
 ```bash
-docker exec neko openssl x509 -in /root/ssl/N.E.K.O.crt -noout -text
+docker exec neko openssl x509 -in /home/neko/ssl/N.E.K.O.crt -noout -text
 ```
 </details>
 

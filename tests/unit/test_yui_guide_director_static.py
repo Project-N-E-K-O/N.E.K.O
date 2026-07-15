@@ -466,7 +466,7 @@ def test_avatar_floating_guides_hide_real_cursor_during_takeover_and_show_banner
         "this.ensurePcTutorialGlobalOverlayStarted('tutorial-lifecycle-started')"
     ) < lifecycle_started_block.index("const startedMessage = {")
     emit_started_block = manager_source.split(
-        "    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource) {",
+        "    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {",
         1,
     )[1].split(
         "    showSkipButton() {",

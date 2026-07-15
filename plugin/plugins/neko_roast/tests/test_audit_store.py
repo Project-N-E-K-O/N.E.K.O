@@ -91,6 +91,64 @@ def test_audit_store_redacts_text_and_structured_secrets() -> None:
     assert event["detail"]["nested"]["uid"] == "42"
 
 
+def test_audit_store_recursively_redacts_extended_sensitive_keys() -> None:
+    store = AuditStore()
+
+    store.record(
+        "nested_credentials",
+        "safe",
+        detail={
+            "items": [
+                {
+                    "client_secret": "client-secret",
+                    "service_token": "service-token",
+                    "password": "password-secret",
+                    "safe": "visible",
+                }
+            ],
+            "credentials": {"arbitrary": "must-not-leak"},
+        },
+    )
+
+    detail = store.recent()[0]["detail"]
+    assert detail["items"][0] == {
+        "client_secret": "[redacted]",
+        "service_token": "[redacted]",
+        "password": "[redacted]",
+        "safe": "visible",
+    }
+    assert detail["credentials"] == "[redacted]"
+
+
+def test_audit_store_hides_viewer_derived_topic_content() -> None:
+    store = AuditStore()
+
+    store.record(
+        "active_topic",
+        "selected",
+        detail={
+            "topic_material": {
+                "source": "live_thread",
+                "privacy_classification": "viewer_derived",
+                "title": "private viewer words",
+                "key": "thread:private-viewer-words",
+                "hook": "repeat private viewer words",
+                "interest": "private viewer words",
+                "keywords": ["private"],
+                "evidence": ["private viewer evidence"],
+                "shape": "light_stance",
+            }
+        },
+    )
+
+    topic = store.recent()[0]["detail"]["topic_material"]
+    assert topic == {
+        "source": "live_thread",
+        "privacy_classification": "viewer_derived",
+        "shape": "light_stance",
+    }
+
+
 def test_audit_store_normalizes_known_level_case() -> None:
     store = AuditStore()
 
