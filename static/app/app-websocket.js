@@ -1846,8 +1846,36 @@
                         }
                     }
 
+                // -------- user_transcript_preview (independent ASR only) --------
+                } else if (response.type === 'user_transcript_preview') {
+                    var preview = S.externalAsrPreviewMessage;
+                    if (!preview || !preview.isConnected) {
+                        if (typeof window.appendMessage === 'function') {
+                            window.appendMessage(response.text || '', 'user', true);
+                        }
+                        var previewContainer = chatContainer();
+                        if (previewContainer) {
+                            var previewMessages = previewContainer.querySelectorAll('.message.user');
+                            preview = previewMessages[previewMessages.length - 1] || null;
+                            S.externalAsrPreviewMessage = preview;
+                        }
+                    } else {
+                        preview.textContent = response.text || '';
+                    }
+
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    // The preview is display-only. Remove it before appending the
+                    // single authoritative Smart Turn transcript so history/UI
+                    // never contain both partials and the completed utterance.
+                    if (S.externalAsrPreviewMessage && S.externalAsrPreviewMessage.isConnected) {
+                        S.externalAsrPreviewMessage.remove();
+                    }
+                    if (S.lastVoiceUserMessage === S.externalAsrPreviewMessage) {
+                        S.lastVoiceUserMessage = null;
+                        S.lastVoiceUserMessageTime = 0;
+                    }
+                    S.externalAsrPreviewMessage = null;
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();

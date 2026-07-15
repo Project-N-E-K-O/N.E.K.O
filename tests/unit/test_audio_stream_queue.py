@@ -142,3 +142,42 @@ async def test_inflight_audio_is_dropped_when_epoch_changes():
     )
 
     session.stream_audio.assert_not_awaited()
+
+
+async def test_independent_asr_audio_never_falls_through_to_qwen():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.session_ready = True
+    mgr._starting_session_count = 0
+    mgr.is_active = True
+    mgr.session_start_failure_count = 0
+    mgr.session_start_max_failures = 3
+    mgr._session_start_circuit_open = False
+    mgr._audio_stream_epoch = 0
+    mgr.session_closed_by_server = False
+    mgr.last_audio_send_error_time = 0.0
+    mgr.audio_error_log_interval = 2.0
+    mgr.is_hot_swap_imminent = False
+    mgr.is_flushing_hot_swap_cache = False
+    mgr.hot_swap_cache_lock = asyncio.Lock()
+    mgr._stream_to_independent_asr = AsyncMock(return_value=True)
+
+    class _RealtimeSession(OmniRealtimeClient):
+        def __init__(self):
+            self.ws = object()
+            self._fatal_error_occurred = False
+            self._audio_processor = object()
+            self.stream_audio = AsyncMock()
+
+        async def process_audio_chunk_async(self, audio_bytes):
+            return audio_bytes
+
+    session = _RealtimeSession()
+    mgr.session = session
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._stream_to_independent_asr.assert_awaited_once()
+    session.stream_audio.assert_not_awaited()

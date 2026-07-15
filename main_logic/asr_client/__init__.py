@@ -22,6 +22,7 @@ from functools import partial
 
 from ._infra import (
     AsrSessionConfig,
+    AsrTranscriptEvent,
     RealtimeAsrSession,
     AsrWorkerFn as _AsrWorkerFn,
     _RealtimeAsrSessionImpl,
@@ -40,6 +41,7 @@ from .workers.step import step_asr_worker as _step_asr_worker
 
 __all__ = [
     "AsrSessionConfig",
+    "AsrTranscriptEvent",
     "RealtimeAsrSession",
     "create_asr_session",
 ]
@@ -120,6 +122,7 @@ def create_asr_session(
     config: AsrSessionConfig | None = None,
     on_input_transcript: Callable[[str], Awaitable[None]],
     on_connection_error: Callable[[str], Awaitable[None]],
+    on_transcript_event: Callable[[AsrTranscriptEvent], Awaitable[None]] | None = None,
     on_status_message: Callable[[str], Awaitable[None]] | None = None,
 ) -> RealtimeAsrSession:
     """Create an isolated ASR session or fail fast for unsupported routes."""
@@ -137,6 +140,7 @@ def create_asr_session(
         api_key=api_key_override or "",
         config=session_config,
         on_input_transcript=on_input_transcript,
+        on_transcript_event=on_transcript_event,
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
     )

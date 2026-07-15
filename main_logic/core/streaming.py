@@ -599,6 +599,12 @@ class StreamingMixin:
                             or self._audio_stream_epoch != audio_epoch
                         ):
                             return
+
+                        # Independent-ASR mode has a hard audio boundary: the
+                        # processed microphone frame is consumed locally/ASR
+                        # and must never fall through to Qwen's audio buffer.
+                        if await self._stream_to_independent_asr(processed_audio):
+                            return
                         
                         # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
                         if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:

@@ -127,6 +127,7 @@ async def _wrong_generation_ready_worker(
 def test_public_exports_are_frozen():
     assert asr_client.__all__ == [
         "AsrSessionConfig",
+        "AsrTranscriptEvent",
         "RealtimeAsrSession",
         "create_asr_session",
     ]
@@ -648,16 +649,23 @@ async def test_server_vad_started_is_idempotent_and_finals_can_arrive_out_of_ord
 
 async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     transcripts: asyncio.Queue[str] = asyncio.Queue()
+    events: asyncio.Queue[asr_client.AsrTranscriptEvent] = asyncio.Queue()
     session = _RealtimeAsrSessionImpl(
         worker_fn=_scripted_worker,
         api_key="events",
         config=AsrSessionConfig(),
         on_input_transcript=transcripts.put,
+        on_transcript_event=events.put,
         on_connection_error=AsyncMock(),
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
     await session.signal_user_activity_end()
+    partial = await asyncio.wait_for(events.get(), 1)
+    final = await asyncio.wait_for(events.get(), 1)
+    assert (partial.kind, partial.text) == ("partial", "draft")
+    assert (final.kind, final.text) == ("final", "first")
+    assert (final.generation, final.buffer_epoch, final.utterance_id) == (0, 0, 1)
     assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     await asyncio.sleep(0.05)
     assert transcripts.empty()

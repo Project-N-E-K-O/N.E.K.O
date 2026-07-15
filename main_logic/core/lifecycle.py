@@ -25,7 +25,7 @@ import time
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket
-from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY
 from utils.gptsovits_config import is_gsv_disabled_voice_id
@@ -1262,6 +1262,11 @@ class LifecycleMixin:
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
                 noise_reduction_enabled=nr_enabled,
+                turn_detection_mode=(
+                    TurnDetectionMode.MANUAL
+                    if self._independent_asr_requested(core_config_snapshot)
+                    else TurnDetectionMode.SERVER_VAD
+                ),
             )
             # Apply user's noise reduction preference to the AudioProcessor
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
@@ -1316,6 +1321,8 @@ class LifecycleMixin:
             await self._sync_tools_to_active_session()
         except Exception as _sync_err:
             logger.warning("⚠️ start_llm_session: post-connect tool sync failed: %s", _sync_err)
+
+        await self._start_independent_asr_if_needed(core_config_snapshot)
 
         logger.info("✅ LLM Session 已连接")
         logger.info(f"[语音会话诊断] LLM 连接并 connect 完成 (耗时: {time.time() - _llm_create_start:.2f}秒)")
@@ -1515,6 +1522,11 @@ class LifecycleMixin:
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
                     noise_reduction_enabled=nr_enabled,
+                    turn_detection_mode=(
+                        TurnDetectionMode.MANUAL
+                        if self._independent_asr_requested(core_config_snapshot)
+                        else TurnDetectionMode.SERVER_VAD
+                    ),
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
                 if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
@@ -2143,6 +2155,7 @@ class LifecycleMixin:
             await self._teardown_tts_runtime(
                 _orphan_tts_handler, _orphan_tts_thread,
                 _orphan_tts_rq, _orphan_tts_rsq)
+            await self._stop_independent_asr()
             return
 
         await self._init_renew_status()
@@ -2186,6 +2199,7 @@ class LifecycleMixin:
             tts_response_queue_ref = self.tts_response_queue
 
         logger.info("End Session: Starting cleanup...")
+        await self._stop_independent_asr()
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
 
         if message_handler_task_ref:

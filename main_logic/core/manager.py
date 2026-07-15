@@ -42,6 +42,7 @@ from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
+from .asr_orchestration import AsrOrchestrationMixin
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -56,6 +57,7 @@ class LLMSessionManager(
     GreetingMixin,
     StreamingMixin,
     NotifyMixin,
+    AsrOrchestrationMixin,
 ):
     # Ceiling for a missing voice_play_end before the playback gate self-heals:
     # above a normal single reply, but recovers a dropped end-signal reasonably
@@ -108,6 +110,8 @@ class LLMSessionManager(
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
         self._audio_stream_epoch = 0
+        self._external_asr_runtime = None
+        self._independent_asr_enabled = False
         # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
         # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
         # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——

@@ -76,6 +76,17 @@ _UtteranceKey: TypeAlias = tuple[int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
+class AsrTranscriptEvent:
+    """Provider-neutral transcript update with stale-result metadata."""
+
+    kind: Literal["partial", "final"]
+    generation: int
+    buffer_epoch: int
+    utterance_id: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class AsrSessionConfig:
     """Provider-neutral ASR settings frozen when the worker connects."""
 
@@ -187,7 +198,7 @@ class _SessionState(Enum):
 
 @dataclass(frozen=True, slots=True)
 class _CallbackItem:
-    text: str
+    event: AsrTranscriptEvent
 
 
 class _RealtimeAsrSessionImpl:
@@ -201,6 +212,7 @@ class _RealtimeAsrSessionImpl:
         config: AsrSessionConfig,
         on_input_transcript: Callable[[str], Awaitable[None]],
         on_connection_error: Callable[[str], Awaitable[None]],
+        on_transcript_event: Callable[[AsrTranscriptEvent], Awaitable[None]] | None = None,
         on_status_message: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         if not isinstance(config, AsrSessionConfig):
@@ -209,6 +221,10 @@ class _RealtimeAsrSessionImpl:
             raise TypeError("ASR_INVALID_CONFIG: worker_fn must be callable")
         if not callable(on_input_transcript) or not callable(on_connection_error):
             raise TypeError("ASR_INVALID_CONFIG: callbacks must be callable")
+        if on_transcript_event is not None and not callable(on_transcript_event):
+            raise TypeError(
+                "ASR_INVALID_CONFIG: transcript event callback must be callable"
+            )
         if on_status_message is not None and not callable(on_status_message):
             raise TypeError("ASR_INVALID_CONFIG: status callback must be callable")
 
@@ -216,6 +232,7 @@ class _RealtimeAsrSessionImpl:
         self._api_key = api_key
         self._config = config
         self._on_input_transcript = on_input_transcript
+        self._on_transcript_event = on_transcript_event
         self._on_connection_error = on_connection_error
         self._on_status_message = on_status_message
 
@@ -588,7 +605,15 @@ class _RealtimeAsrSessionImpl:
         while True:
             item = await self._callback_queue.get()
             try:
-                await self._on_input_transcript(item.text)
+                if self._on_transcript_event is not None:
+                    try:
+                        await self._on_transcript_event(item.event)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("ASR transcript event callback failed")
+                if item.event.kind == "final":
+                    await self._on_input_transcript(item.event.text)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -637,6 +662,30 @@ class _RealtimeAsrSessionImpl:
                 self._active_utterance_keys.add(key)
             return False
         if event.kind == "partial":
+            if event.utterance_id is None:
+                return False
+            text = event.text.strip()
+            if not text:
+                return False
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.generation != self._generation
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+            assert self._callback_queue is not None
+            await self._callback_queue.put(
+                _CallbackItem(
+                    event=AsrTranscriptEvent(
+                        kind="partial",
+                        generation=event.generation,
+                        buffer_epoch=event.buffer_epoch,
+                        utterance_id=event.utterance_id,
+                        text=text,
+                    )
+                )
+            )
             return False
         if event.kind == "final":
             if event.utterance_id is None:
@@ -671,7 +720,17 @@ class _RealtimeAsrSessionImpl:
                 self._active_utterance_keys.discard(key)
                 self._committed_utterance_keys.discard(key)
             assert self._callback_queue is not None
-            await self._callback_queue.put(_CallbackItem(text=text))
+            await self._callback_queue.put(
+                _CallbackItem(
+                    event=AsrTranscriptEvent(
+                        kind="final",
+                        generation=event.generation,
+                        buffer_epoch=event.buffer_epoch,
+                        utterance_id=event.utterance_id,
+                        text=text,
+                    )
+                )
+            )
             return False
         if event.kind == "error":
             if (
