@@ -1622,9 +1622,9 @@ def format_tieba_content(tieba_content: Dict[str, Any]) -> str:
         url = str(post.get("url") or "").strip()
         if url:
             output_lines.append(f"   {url}")
-    if topics:
+    topic_limit = max(0, display_limit - min(len(posts), display_limit))
+    if topics and topic_limit:
         output_lines.append("【贴吧热榜话题补充】")
-        topic_limit = max(0, display_limit - min(len(posts), display_limit)) or min(2, display_limit)
         for i, topic in enumerate(topics[:topic_limit], 1):
             title = str(topic.get("title") or "").strip()
             url = str(topic.get("url") or "").strip()
