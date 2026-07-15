@@ -11,12 +11,13 @@
 > 覆盖率 smoke 派生 + P26 Commit 1 版本号落档/公共文档端点/4 象限分层派生 +
 > P26 C3 hotfix markdown pipeline + USER_MANUAL 深度事实对齐 +
 > **上游同步 2026-06 (testbench 对齐主程序 `main` 至 7 月): 记忆子系统语义合约覆盖派生**的
-> 候选元教训 (L28-L61, 登记于 §7.A 候选区, 未计入主编号 29 条;
+> 候选元教训 (L28-L62, 登记于 §7.A 候选区, 未计入主编号 29 条;
 > **L50 / L51 已升格为 §7.28 / §7.29**, 其余候选待 P27+ 二次复现后升格.
 > **上游同步派生 L56 (合约 smoke 单因子隔离) / L57 (按 import 副作用画像选 直接import vs copy+drift);
 > P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58 (别用隐藏数据治布局抱怨) /
 > L59 (分层布局须叶→根用已定稿子坐标重算重心) / L60 (抓运行进程状态喂纯函数离线复现 + 数值化不变量);
-> P29 收尾 v1.9.3 派生 L61 (LLM 失败回退一律不静默 + 一处反馈先做全族差集审计)**).
+> P29 收尾 v1.9.3 派生 L61 (LLM 失败回退一律不静默 + 一处反馈先做全族差集审计);
+> 上游同步 2026-07 派生 L62 (drift smoke 解析上游派生值时锚定"包"而非"单文件")**).
 >
 > **§7.25 特别说明**: 一周内已连续 **6** 次同族实锤 (字段名漂移 / envelope 漂移 /
 > LLM wire role 三次漂移 / **Prompt Preview "重建视图 ≠ 真实 stream" 架构级
@@ -658,7 +659,7 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
         - §1.4 "覆盖度 RAG 灯" 的**文档版本** — 文档起草也可做 RAG 自检: 章节覆盖 UI 区域的比例 / 章节实锤的代码引用行数 / 章节手测通过的 pass 轮次. 绿黄红三灯对齐.
     - **对应 Cursor skill**: `docs-code-reality-grep-before-draft` (2026-04-24 post-push 整理期同批抽出, `~/.cursor/skills/docs-code-reality-grep-before-draft/SKILL.md`, 四层防御全量落纸; 与 §7.28 `server-boot-id-for-ui-state` 同为"升格条目 → 可机械化 skill"第二个实证).
 
-### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)** + **上游同步 2026-06 记忆子系统覆盖派生 L56/L57** + **P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58/L59/L60** + **P29 收尾 v1.9.3 LLM 回退可见性派生 L61**, 待二次复现后并入主编号)
+### §7.A 候选追加 (P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理 UTF-8 事件 + P25 Day 1 subagent 并行开发 + P25 Day 1 fixup mirror shape + P25 Day 2 前端面板派生 + P25 Day 2 polish r1-r6 手测派生 + P26 Commit 1 版本号落档 / 公共文档端点 / 4 象限文档分层派生 + **P26 Commit 3 USER_MANUAL + C3 hotfix 链接锚点图片 pipeline 派生 (L50/L51 已于 post-push 整理期升格为 §7.28/§7.29)** + **上游同步 2026-06 记忆子系统覆盖派生 L56/L57** + **P27 Memory Trace 记忆分析子页 lineage 图 UI 打磨派生 L58/L59/L60** + **P29 收尾 v1.9.3 LLM 回退可见性派生 L61** + **上游同步 2026-07 drift smoke 锚点粒度派生 L62**, 待二次复现后并入主编号)
 
 > 纪律: 本文档 §7 只记录 "**已经踩过 ≥ 2 次**的同族教训". 下列候选 (L28-L52)
 > 多数仍为**单次派生** (源自 P24 Day 12 欠账清返 + P25 §A 八轮设计审查 + §A 收工整理
@@ -1375,6 +1376,19 @@ diagnostics (用户可能手动改过 archive, 硬拒是 UX 灾难); 在**跨端
     - `audit-chokepoint-invariant` skill —— 把"一处反馈 → 全族差集审计"固化为反射动作, 防"打地鼠式只修被点名那处"。
     - §7.A L58/L59 家族("先怀疑算法本身") —— 同属"别用治标手段(藏数据 / 静默降级)掩盖应当透明暴露的事实"。
 - **进入主编号条件**: 需要在后续任一阶段再命中一次"某处降级/失败被静默, 收到反馈后做同族差集审计统一补透出"同族, 才升级为主编号。
+
+**L62 (新候选) "drift smoke 解析上游派生值时, 锚定'包'而非'单文件' —— 上游把常量的字面定义在包内搬家(定义处 → re-export 处), 硬编码单文件的解析器会失锚"** (上游同步 2026-07 `p25_avatar_dedupe_drift` 二次失锚派生, 详见 `UPSTREAM_SYNC_2026-07.md`):
+
+- **场景**: L30 "copy + drift smoke" 对照里, 上游侧常量已从字面量演化为**别名到 config 包**(`AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS`), smoke 需把别名**解析回整数**才能与副本的字面量 8000 比对(见 §7.A L56 家族 / 2026-06 sync 的 R2/R3 解析值改造)。
+- **失败模式**: 2026-06 的修法把"去哪里取整数"**硬编码成 `config/__init__.py`**。2026-07 上游把真正的 `= 8000` 字面量迁到 `config/session_settings.py`, `config/__init__.py` 退化为 `from .session_settings import ...` 的纯 re-export。解析器只认 `NAME = <int>` 赋值行、遇 import 行返回 None → R2/R3 拿不到上游值、R5 合成 exec 因缺别名绑定 `NameError`。**值(8000)与函数体全程没变, 纯粹是"定义位置在包内搬家"击穿了单文件锚点。**
+- **修法 / 归纳**:
+    1. **锚定包不锚定文件**: 解析器改为按 `__init__.py` → 各 `config/*.py` 顺序**扫描整个 config 包**定位字面量(`_resolve_config_int`), 容忍常量在包内任意子模块间迁移。凡"跨包取某个上游单一真相值"的静态解析, 默认锚定**包/命名空间**, 而非它此刻恰好所在的那个文件。
+    2. **re-export ≠ 定义处**: 一个符号能 `from pkg import X` 不代表 `pkg/__init__.py` 里有它的字面定义; 静态(非 import)解析必须追到真正的赋值语句所在模块。
+    3. **上游同步后跑全套 drift smoke 就是为了逮这类"锚点失效"**: 这类红不是功能 bug, 是 testbench 与上游结构演化脱锚的**预期信号**, 修 testbench 侧解析器即可, 主程序不动。
+- **关联**:
+    - §7.A L56/L57 家族(上游同步 2026-06 派生) —— L62 是同一 drift smoke 在**下一次**上游同步中因"同类改造留了硬编码单文件锚点"再度失锚, 属"锚点粒度选错"的具体复现。
+    - §1.1 Intent≠Reality —— "副本应等价于上游"是 Intent, "上游常量搬家后解析器失锚"是 Reality; drift smoke 正是把这个 gap 变红的机制。
+- **进入主编号条件**: 需再命中一次"drift/对照类校验因锚定单文件而非包/命名空间, 在上游结构迁移后失锚", 才升级为主编号。
 
 ---
 
