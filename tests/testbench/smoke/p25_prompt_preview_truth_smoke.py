@@ -305,6 +305,7 @@ def check_pp2_avatar_event(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
             "text_context": "(tester draft in composer)",
             "reward_drop": True,
@@ -470,6 +471,7 @@ def check_pp5_source_flips_back(client, mock_ext) -> list[str]:
             "tool_id": "fist",
             "action_id": "poke",
             "intensity": "normal",
+            "touch_zone": "head",
             "target": "avatar",
         })
 

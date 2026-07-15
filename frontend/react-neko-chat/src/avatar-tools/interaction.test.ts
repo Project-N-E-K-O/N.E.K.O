@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  getAvatarToolRegistration,
+  type AvatarToolDefinition,
+} from './catalog';
+import {
   AVATAR_TOOL_RANGE_EXIT_PADDING,
   AVATAR_TOOL_RANGE_PADDING,
   AVATAR_TOOL_RUNTIME_POLICY,
@@ -15,6 +19,7 @@ import {
   type AvatarToolRuleContext,
   type AvatarToolRuntimePolicy,
 } from './interaction';
+import { createAvatarToolProfileHandlers } from './profileInterpreter';
 
 describe('avatar tool runtime policy', () => {
   it('serializes the explicit range, press, release, and forced-exit contract', () => {
@@ -157,6 +162,41 @@ function context(overrides: Partial<AvatarToolRuleContext> = {}): AvatarToolRule
 }
 
 describe('avatar tool runtime rules', () => {
+  it('interprets profile-declared actions, chance fields and zone subsets without tool-specific rules', () => {
+    const source = getAvatarToolRegistration('fist').definition;
+    if (source.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    const definition = {
+      ...source,
+      interaction: {
+        ...source.interaction,
+        actionId: 'future_poke',
+        burst: { ...source.interaction.burst, rapidThreshold: 2 },
+        touchZones: ['head'],
+        chance: { ...source.interaction.chance, field: 'bonusDrop', probability: 1 },
+      },
+    } as AvatarToolDefinition;
+    const handlers = createAvatarToolProfileHandlers(definition);
+    const command = handlers.commit(context({
+      toolId: 'fist',
+      hit: {
+        bounds: { left: 100, right: 200, top: 100, bottom: 200, width: 100, height: 100 },
+        touchZone: 'head',
+      },
+      recordBurst: () => 2,
+      random: () => 0.5,
+    }));
+
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'fist',
+      actionId: 'future_poke',
+      intensity: 'rapid',
+      touchZone: 'head',
+      bonusDrop: true,
+    }));
+    expect(command.commit).not.toHaveProperty('rewardDrop');
+    expect(handlers.commit(context({ toolId: 'fist' }))).toEqual({});
+  });
+
   it('keeps lollipop semantics isolated from touch-zone and reward fields', () => {
     expect(resolveAvatarToolPointerDown(context())).toEqual({});
     const command = resolveAvatarToolCommit(context());
@@ -176,7 +216,7 @@ describe('avatar tool runtime rules', () => {
     }))).toEqual({});
   });
 
-  it('keeps fist reward and touch-zone facts in the fist module', () => {
+  it('keeps fist reward and touch-zone facts in the fist profile', () => {
     expect(resolveAvatarToolPointerDown(context({ toolId: 'fist' }))).toEqual({
       rangeVariant: 'secondary',
       outsideVariant: 'secondary',

@@ -4,6 +4,10 @@ from config.prompts.avatar_interaction_contract import (
     AVATAR_INTERACTION_TOOL_CONTRACT,
     normalize_avatar_interaction_payload,
 )
+from config.prompts.prompts_avatar_interaction import (
+    _build_avatar_interaction_instruction,
+    _build_avatar_interaction_memory_meta,
+)
 
 
 @pytest.mark.unit
@@ -24,29 +28,48 @@ def test_avatar_interaction_contract_is_limited_to_the_three_established_tools()
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("tool_id", "action_id"),
+    ("tool_id", "action_id", "touch_zone"),
     [
-        ("lollipop", "offer"),
-        ("lollipop", "tease"),
-        ("lollipop", "tap_soft"),
-        ("fist", "poke"),
-        ("hammer", "bonk"),
+        ("lollipop", "offer", None),
+        ("lollipop", "tease", None),
+        ("lollipop", "tap_soft", None),
+        ("fist", "poke", "head"),
+        ("hammer", "bonk", "head"),
     ],
 )
-def test_every_established_action_falls_back_from_invalid_intensity(tool_id, action_id):
-    normalized = normalize_avatar_interaction_payload(
-        {
-            "interactionId": f"{tool_id}-{action_id}",
+def test_every_established_action_rejects_missing_or_invalid_intensity(
+    tool_id, action_id, touch_zone
+):
+    for intensity in (None, "unsupported-intensity"):
+        payload = {
+            "interactionId": f"{tool_id}-{action_id}-{intensity}",
             "toolId": tool_id,
             "actionId": action_id,
             "target": "avatar",
             "timestamp": 1,
-            "intensity": "unsupported-intensity",
         }
-    )
+        if intensity is not None:
+            payload["intensity"] = intensity
+        if touch_zone is not None:
+            payload["touchZone"] = touch_zone
 
-    assert normalized is not None
-    assert normalized["intensity"] == "normal"
+        assert normalize_avatar_interaction_payload(payload) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("intensity", [None, "unsupported-intensity"])
+def test_prompt_and_memory_builders_reject_missing_or_invalid_intensity(intensity):
+    payload = {
+        "tool_id": "lollipop",
+        "action_id": "tap_soft",
+    }
+    if intensity is not None:
+        payload["intensity"] = intensity
+
+    with pytest.raises(ValueError, match="intensity"):
+        _build_avatar_interaction_instruction("en", "Neko", "User", payload)
+    with pytest.raises(ValueError, match="intensity"):
+        _build_avatar_interaction_memory_meta("en", payload, "User")
 
 
 @pytest.mark.unit
@@ -79,22 +102,21 @@ def test_avatar_interaction_payload_normalizer_rejects_invalid_identity(payload)
 
 @pytest.mark.unit
 def test_avatar_interaction_payload_normalizer_isolates_special_fields():
-    base = {
+    common = {
         "interactionId": "interaction-1",
         "target": "avatar",
         "pointer": {"clientX": 12, "clientY": 34},
         "timestamp": 1234,
-        "intensity": "rapid",
-        "touchZone": "head",
         "rewardDrop": True,
         "easterEgg": True,
     }
 
     lollipop = normalize_avatar_interaction_payload(
         {
-            **base,
+            **common,
             "toolId": "lollipop",
             "actionId": "offer",
+            "intensity": "normal",
         }
     )
     assert lollipop is not None
@@ -105,9 +127,11 @@ def test_avatar_interaction_payload_normalizer_isolates_special_fields():
 
     fist = normalize_avatar_interaction_payload(
         {
-            **base,
+            **common,
             "toolId": "fist",
             "actionId": "poke",
+            "intensity": "rapid",
+            "touchZone": "head",
         }
     )
     assert fist is not None
@@ -118,10 +142,11 @@ def test_avatar_interaction_payload_normalizer_isolates_special_fields():
 
     hammer = normalize_avatar_interaction_payload(
         {
-            **base,
+            **common,
             "toolId": "hammer",
             "actionId": "bonk",
-            "intensity": "normal",
+            "intensity": "easter_egg",
+            "touchZone": "head",
         }
     )
     assert hammer is not None
@@ -165,6 +190,7 @@ def test_snake_case_values_take_precedence_over_camel_case_aliases():
             "rewardDrop": True,
             "touch_zone": "ear",
             "touchZone": "head",
+            "intensity": "normal",
         }
     )
 
@@ -187,6 +213,8 @@ def test_payload_normalizer_accepts_established_true_boolean_encodings(value):
             "actionId": "poke",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
             "rewardDrop": value,
         }
     )
@@ -197,6 +225,8 @@ def test_payload_normalizer_accepts_established_true_boolean_encodings(value):
             "actionId": "bonk",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "easter_egg",
+            "touchZone": "head",
             "easterEgg": value,
         }
     )
@@ -209,6 +239,28 @@ def test_payload_normalizer_accepts_established_true_boolean_encodings(value):
 
 
 @pytest.mark.unit
+def test_hammer_payload_and_builders_reject_contradictory_easter_egg_facts():
+    wire = {
+        "interactionId": "hammer-contradiction",
+        "toolId": "hammer", "actionId": "bonk", "target": "avatar",
+        "timestamp": 1, "touchZone": "head",
+    }
+    for facts in (
+        {"intensity": "normal", "easterEgg": True},
+        {"intensity": "easter_egg"},
+    ):
+        assert normalize_avatar_interaction_payload({**wire, **facts}) is None
+    internal = {
+        "tool_id": "hammer", "action_id": "bonk", "intensity": "normal",
+        "easter_egg": True, "touch_zone": "head",
+    }
+    with pytest.raises(ValueError, match="easter_egg"):
+        _build_avatar_interaction_instruction("en", "Neko", "User", internal)
+    with pytest.raises(ValueError, match="easter_egg"):
+        _build_avatar_interaction_memory_meta("en", internal, "User")
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("value", [False, 0, 0.0, "false", "FALSE", "0", 2, "yes"])
 def test_payload_normalizer_rejects_false_or_unsupported_boolean_encodings(value):
     normalized = normalize_avatar_interaction_payload(
@@ -218,6 +270,8 @@ def test_payload_normalizer_rejects_false_or_unsupported_boolean_encodings(value
             "actionId": "poke",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
             "rewardDrop": value,
         }
     )
@@ -235,6 +289,8 @@ def test_payload_normalizer_handles_pointer_aliases_and_invalid_coordinates():
             "actionId": "poke",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
             "pointer": {
                 "client_x": None,
                 "clientX": "12.5",
@@ -250,6 +306,8 @@ def test_payload_normalizer_handles_pointer_aliases_and_invalid_coordinates():
             "actionId": "poke",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
             "pointer": {"clientX": 12},
         }
     )
@@ -260,6 +318,8 @@ def test_payload_normalizer_handles_pointer_aliases_and_invalid_coordinates():
             "actionId": "poke",
             "target": "avatar",
             "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": "head",
             "pointer": {"clientX": float("inf"), "clientY": 34},
         }
     )
@@ -280,6 +340,7 @@ def test_payload_normalizer_uses_supplied_clock_for_invalid_timestamp(timestamp)
             "actionId": "offer",
             "target": "avatar",
             "timestamp": timestamp,
+            "intensity": "normal",
         },
         now_ms=4321,
     )
@@ -289,23 +350,41 @@ def test_payload_normalizer_uses_supplied_clock_for_invalid_timestamp(timestamp)
 
 
 @pytest.mark.unit
-def test_payload_normalizer_accepts_touch_zone_only_for_declared_tools():
+def test_payload_normalizer_requires_touch_zone_only_for_declared_tools():
     def normalize(tool_id, action_id, touch_zone):
-        return normalize_avatar_interaction_payload(
-            {
-                "interactionId": f"{tool_id}-touch-zone",
-                "toolId": tool_id,
-                "actionId": action_id,
-                "target": "avatar",
-                "timestamp": 1,
-                "touchZone": touch_zone,
-            }
-        )
+        payload = {
+            "interactionId": f"{tool_id}-touch-zone-{touch_zone}",
+            "toolId": tool_id,
+            "actionId": action_id,
+            "target": "avatar",
+            "timestamp": 1,
+            "intensity": "normal",
+        }
+        if touch_zone is not None:
+            payload["touchZone"] = touch_zone
+        return normalize_avatar_interaction_payload(payload)
 
     lollipop = normalize("lollipop", "offer", "head")
     fist = normalize("fist", "poke", " FACE ")
     hammer = normalize("hammer", "bonk", "tail")
+    fist_without_zone = normalize("fist", "poke", None)
+    lollipop_without_zone = normalize("lollipop", "offer", None)
+    lollipop_with_null_zone = normalize_avatar_interaction_payload(
+        {
+            "interactionId": "lollipop-null-touch-zone",
+            "toolId": "lollipop",
+            "actionId": "offer",
+            "target": "avatar",
+            "timestamp": 1,
+            "intensity": "normal",
+            "touchZone": None,
+        }
+    )
 
-    assert lollipop is not None and lollipop["touch_zone"] == ""
+    assert lollipop is None
     assert fist is not None and fist["touch_zone"] == "face"
-    assert hammer is not None and hammer["touch_zone"] == ""
+    assert hammer is None
+    assert fist_without_zone is None
+    assert lollipop_without_zone is not None
+    assert lollipop_without_zone["touch_zone"] == ""
+    assert lollipop_with_null_zone is None

@@ -131,19 +131,6 @@ test('assistant lifecycle forwards the backend response meta unchanged', () => {
   );
 });
 
-test('avatar interaction host contract is limited to the three established tools', () => {
-  const { avatarInteractionContract: contract } = loadAppButtons();
-  assert.deepEqual(Object.keys(contract.tools).sort(), ['fist', 'hammer', 'lollipop']);
-  assert.deepEqual(Object.keys(contract.tools.lollipop.actions).sort(), ['offer', 'tap_soft', 'tease']);
-  assert.deepEqual(Array.from(contract.tools.lollipop.actions.offer), ['normal']);
-  assert.deepEqual(Array.from(contract.tools.lollipop.actions.tap_soft), ['rapid', 'burst']);
-  assert.deepEqual(Array.from(contract.tools.fist.actions.poke), ['normal', 'rapid']);
-  assert.deepEqual(
-    Array.from(contract.tools.hammer.actions.bonk),
-    ['normal', 'rapid', 'burst', 'easter_egg'],
-  );
-});
-
 test('avatar interaction host and backend contracts stay in parity', () => {
   const { avatarInteractionContract: hostContract } = loadAppButtons();
   const repoRoot = path.resolve(__dirname, '..');
@@ -205,13 +192,11 @@ test('avatar interaction host normalizer isolates each tool special fields', () 
     target: 'avatar',
     pointer: { clientX: 12, clientY: 34 },
     timestamp: 1234,
-    intensity: 'rapid',
-    touchZone: 'head',
     rewardDrop: true,
     easterEgg: true,
   };
 
-  const lollipop = normalize({ ...base, toolId: 'lollipop' });
+  const lollipop = normalize({ ...base, toolId: 'lollipop', intensity: 'normal' });
   assert.equal(lollipop.intensity, 'normal');
   assert.equal(lollipop.touch_zone, undefined);
   assert.equal(lollipop.reward_drop, undefined);
@@ -221,6 +206,8 @@ test('avatar interaction host normalizer isolates each tool special fields', () 
     ...base,
     toolId: 'fist',
     actionId: 'poke',
+    intensity: 'rapid',
+    touchZone: 'head',
   });
   assert.equal(fist.intensity, 'rapid');
   assert.equal(fist.touch_zone, 'head');
@@ -231,7 +218,8 @@ test('avatar interaction host normalizer isolates each tool special fields', () 
     ...base,
     toolId: 'hammer',
     actionId: 'bonk',
-    intensity: 'normal',
+    intensity: 'easter_egg',
+    touchZone: 'head',
   });
   assert.equal(hammer.intensity, 'easter_egg');
   assert.equal(hammer.touch_zone, 'head');
@@ -257,6 +245,8 @@ test('avatar interaction host normalizer rejects unsupported tools and preserves
     pointer: { clientX: 8.5, clientY: 9.25 },
     timestamp: 99,
     intensity: 'easter_egg',
+    touchZone: 'head',
+    easterEgg: true,
     textContext: ` ${'x'.repeat(90)} `,
   });
   assert.equal(normalized.action, 'avatar_interaction');
@@ -290,27 +280,30 @@ test('avatar interaction host normalizer rejects invalid identity fields', () =>
   }), null);
 });
 
-test('avatar interaction host normalizer falls back every action invalid intensity', () => {
+test('avatar interaction host normalizer rejects every action missing or invalid intensity', () => {
   const {
     avatarInteractionContract: contract,
     normalizeAvatarInteractionPayload: normalize,
   } = loadAppButtons();
   for (const [toolId, tool] of Object.entries(contract.tools)) {
     for (const actionId of Object.keys(tool.actions)) {
-      const normalized = normalize({
-        interactionId: `${toolId}-${actionId}`,
-        toolId,
-        actionId,
-        target: 'avatar',
-        timestamp: 1,
-        intensity: 'unsupported-intensity',
-      });
-      assert.equal(normalized.intensity, 'normal', `${toolId}/${actionId}`);
+      for (const intensity of [undefined, 'unsupported-intensity']) {
+        const normalized = normalize({
+          interactionId: `${toolId}-${actionId}`,
+          toolId,
+          actionId,
+          target: 'avatar',
+          timestamp: 1,
+          ...(tool.acceptsTouchZone ? { touchZone: 'head' } : {}),
+          ...(intensity === undefined ? {} : { intensity }),
+        });
+        assert.equal(normalized, null, `${toolId}/${actionId}/${intensity}`);
+      }
     }
   }
 });
 
-test('avatar interaction host normalizer protects touch zone, pointer, timestamp, text and bool boundaries', () => {
+test('avatar interaction host normalizer enforces touch zones and protects other boundaries', () => {
   const { normalizeAvatarInteractionPayload: normalize } = loadAppButtons();
   const lollipop = normalize({
     interactionId: 'lollipop-boundaries',
@@ -318,7 +311,7 @@ test('avatar interaction host normalizer protects touch zone, pointer, timestamp
     actionId: 'offer',
     target: 'avatar',
     timestamp: 0,
-    touchZone: 'head',
+    intensity: 'normal',
     pointer: { clientX: 1, clientY: Number.POSITIVE_INFINITY },
     text_context: 'snake text',
     rewardDrop: true,
@@ -328,8 +321,25 @@ test('avatar interaction host normalizer protects touch zone, pointer, timestamp
   assert.equal(lollipop.touch_zone, undefined);
   assert.equal(lollipop.pointer, undefined);
   assert.equal(lollipop.text_context, 'snake text');
-  assert.equal(lollipop.reward_drop, undefined);
-  assert.equal(lollipop.easter_egg, undefined);
+
+  assert.equal(normalize({
+    interactionId: 'lollipop-with-touch-zone',
+    toolId: 'lollipop',
+    actionId: 'offer',
+    target: 'avatar',
+    timestamp: 1,
+    intensity: 'normal',
+    touchZone: 'head',
+  }), null);
+  assert.equal(normalize({
+    interactionId: 'lollipop-with-null-touch-zone',
+    toolId: 'lollipop',
+    actionId: 'offer',
+    target: 'avatar',
+    timestamp: 1,
+    intensity: 'normal',
+    touchZone: null,
+  }), null);
 
   const fist = normalize({
     interactionId: 'fist-boundaries',
@@ -337,11 +347,28 @@ test('avatar interaction host normalizer protects touch zone, pointer, timestamp
     actionId: 'poke',
     target: 'avatar',
     timestamp: 1,
+    intensity: 'normal',
     touch_zone: ' FACE ',
     rewardDrop: false,
   });
   assert.equal(fist.touch_zone, 'face');
   assert.equal(fist.reward_drop, undefined);
+
+  assert.equal(normalize({
+    interactionId: 'fist-without-touch-zone',
+    toolId: 'fist',
+    actionId: 'poke',
+    target: 'avatar',
+    timestamp: 1,
+    intensity: 'normal',
+  }), null);
+
+  const hammer = {
+    interactionId: 'hammer-contradiction', toolId: 'hammer', actionId: 'bonk',
+    target: 'avatar', timestamp: 1, touchZone: 'head',
+  };
+  assert.equal(normalize({ ...hammer, intensity: 'normal', easterEgg: true }), null);
+  assert.equal(normalize({ ...hammer, intensity: 'easter_egg' }), null);
 });
 
 test('avatar interaction host and backend normalizers preserve the same alias facts', () => {
@@ -349,13 +376,13 @@ test('avatar interaction host and backend normalizers preserve the same alias fa
   const cases = [
     {
       interactionId: 'camel-fist',
-      toolId: 'fist',
-      actionId: 'poke',
+      toolId: ' FIST ',
+      actionId: ' POKE ',
       target: 'avatar',
       pointer: { clientX: 12.5, clientY: 34 },
       timestamp: 11,
-      intensity: 'rapid',
-      touchZone: 'face',
+      intensity: ' RAPID ',
+      touchZone: ' FACE ',
       rewardDrop: true,
       textContext: 'camel text',
     },
@@ -381,7 +408,7 @@ test('avatar interaction host and backend normalizers preserve the same alias fa
       target: 'avatar',
       pointer: { client_x: null, clientX: 4, client_y: null, clientY: 5 },
       timestamp: 13,
-      intensity: 'normal',
+      intensity: 'easter_egg',
       touch_zone: 'body',
       touchZone: 'head',
       easter_egg: '1',

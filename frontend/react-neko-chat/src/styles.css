@@ -5233,12 +5233,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: 44px;
 }
 
-.avatar-tool-manager-tool-image.avatar-tool-icon-hammer,
-.avatar-tool-manager-drag-ghost .avatar-tool-icon-hammer {
-  transform: scale(1.38) translate(-14%, 10%);
-  transform-origin: center center;
-}
-
 @media (max-width: 640px) {
   .compact-input-tool-fan .avatar-tool-quickbar {
     left: calc(var(--compact-tool-wheel-center-x) - 105px);

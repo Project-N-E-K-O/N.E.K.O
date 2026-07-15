@@ -232,6 +232,13 @@ describe('desktop avatar tool contract', () => {
       }));
     }
     expect(() => desktopAvatarToolContractSchema.parse(oversizedEffects)).toThrow();
+
+    const unsafeThreshold = cloneJson(valid);
+    const unsafeProfile = unsafeThreshold.definition?.interaction?.profile;
+    if (unsafeProfile?.kind === 'locked-impact-v1') {
+      unsafeProfile.burst.rapidThreshold = Number.MAX_SAFE_INTEGER + 1;
+    }
+    expect(() => desktopAvatarToolContractSchema.parse(unsafeThreshold)).toThrow();
   });
 
   it('keeps desktop contract states strict without breaking page visual state payloads', () => {

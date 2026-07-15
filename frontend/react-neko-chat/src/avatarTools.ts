@@ -2,6 +2,7 @@ import type {
   AvatarToolVariantId as CatalogAvatarToolVariantId,
   AvatarToolDefinitionId,
   AvatarToolDefinition,
+  AvatarToolManagerIconVisual,
 } from './avatar-tools/catalog';
 import {
   AVATAR_TOOL_DEFINITIONS,
@@ -28,6 +29,7 @@ export type AvatarToolItem = {
   menuIconOffsetYAlt?: number;
   menuIconOffsetXAlt2?: number;
   menuIconOffsetYAlt2?: number;
+  managerIconVisual?: AvatarToolManagerIconVisual;
   pointerImagePath: string;
   pointerImagePathAlt?: string;
   pointerImagePathAlt2?: string;
@@ -87,6 +89,7 @@ function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): Av
     ...(secondaryOffsetY !== undefined ? { menuIconOffsetYAlt: secondaryOffsetY } : {}),
     ...(tertiaryOffsetX !== undefined ? { menuIconOffsetXAlt2: tertiaryOffsetX } : {}),
     ...(tertiaryOffsetY !== undefined ? { menuIconOffsetYAlt2: tertiaryOffsetY } : {}),
+    ...(definition.visual.managerIcon ? { managerIconVisual: definition.visual.managerIcon } : {}),
     pointerHotspotX: definition.visual.hotspotX,
     pointerHotspotY: definition.visual.hotspotY,
     pointerNaturalWidth: definition.visual.naturalWidth,

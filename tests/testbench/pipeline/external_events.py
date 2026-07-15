@@ -132,11 +132,9 @@ ReasonCode = Literal[
 class CoerceInfo:
     """Payload-level coercion surfacing (LESSONS_LEARNED §7.14).
 
-    When ``_normalize_avatar_interaction_intensity`` silently corrects a
-    bad ``intensity``, or ``_normalize_prompt_language`` falls back to
-    English for unsupported languages, we return the before/after pair
-    here so the UI can show "you asked for intensity=crazy, we used
-    intensity=normal" rather than drop the fact on the floor.
+    Supported non-avatar normalizations, such as prompt-language fallback,
+    return the before/after pair here rather than hiding the applied value.
+    Avatar payload contract violations are rejected as ``invalid_payload``.
     """
 
     field: str
@@ -1221,7 +1219,6 @@ def _build_avatar_instruction_bundle(
         _sanitize_avatar_interaction_text_context,
     )
 
-    coerce_info: list[CoerceInfo] = []
     full_lang, _short_lang = _resolve_language(session)
     lanlan_name, master_name = _resolve_names(session)
 
@@ -1231,18 +1228,6 @@ def _build_avatar_instruction_bundle(
     )
     if normalized is None:
         return None
-
-    raw_intensity = str(payload.get("intensity") or "").strip().lower()
-    if raw_intensity and raw_intensity != normalized["intensity"]:
-        coerce_info.append(CoerceInfo(
-            field="intensity",
-            requested=raw_intensity,
-            applied=normalized["intensity"],
-            note=(
-                "intensity 被 _normalize_avatar_interaction_intensity 归一 — "
-                "原值不在 tool/action 允许集合中, 已回退到 'normal' 或合法子集."
-            ),
-        ))
 
     meta = _build_avatar_interaction_memory_meta(full_lang, normalized, master_name)
     memory_note = str(meta.get("memory_note") or "")
@@ -1258,7 +1243,7 @@ def _build_avatar_instruction_bundle(
     return _InstructionBundle(
         template_raw=instruction,
         instruction_final=instruction,
-        coerce_info=coerce_info,
+        coerce_info=[],
         avatar_normalized=normalized,
         avatar_memory_note=memory_note,
         avatar_dedupe_key=dedupe_key,

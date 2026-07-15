@@ -32,6 +32,7 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
       })),
       touchZones: [] as ReadonlyArray<string>,
       chanceField: null,
+      chanceIntensity: null,
     };
   }
   if (profile.kind === 'press-release-v1') {
@@ -42,6 +43,7 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
       }],
       touchZones: profile.touchZones,
       chanceField: profile.chance.field,
+      chanceIntensity: null,
     };
   }
   return {
@@ -56,67 +58,61 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
     }],
     touchZones: profile.touchZones,
     chanceField: profile.chance.field,
+    chanceIntensity: profile.chance.intensity,
   };
 }
 
 describe('avatar interaction payload contract', () => {
-  it('accepts the canonical payload shape for all three tools', () => {
-    expect(avatarInteractionPayloadSchema.parse({
-      ...BASE_PAYLOAD,
-      toolId: 'lollipop',
-      actionId: 'tap_soft',
-      intensity: 'burst',
-    })).toMatchObject({ toolId: 'lollipop', actionId: 'tap_soft', intensity: 'burst' });
-    expect(avatarInteractionPayloadSchema.parse({
-      ...BASE_PAYLOAD,
-      toolId: 'fist',
-      actionId: 'poke',
-      intensity: 'rapid',
-      touchZone: 'face',
-      rewardDrop: true,
-    })).toMatchObject({ toolId: 'fist', rewardDrop: true });
-    expect(avatarInteractionPayloadSchema.parse({
-      ...BASE_PAYLOAD,
-      toolId: 'hammer',
-      actionId: 'bonk',
-      intensity: 'easter_egg',
-      touchZone: 'head',
-      easterEgg: true,
-    })).toMatchObject({ toolId: 'hammer', easterEgg: true });
-  });
-
   it('derives every accepted action, intensity, touch zone and chance field from registrations', () => {
     AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
       const facts = declaredFacts(definition.interaction);
       facts.actions.forEach(({ actionId, intensities }) => {
+        const touchZone = facts.touchZones[0];
         expect(avatarInteractionPayloadSchema.safeParse({
           ...BASE_PAYLOAD,
           toolId: definition.id,
           actionId,
-        }).success).toBe(true);
+          ...(touchZone ? { touchZone } : {}),
+        }).success).toBe(false);
         intensities.forEach((intensity) => {
           expect(avatarInteractionPayloadSchema.safeParse({
             ...BASE_PAYLOAD,
             toolId: definition.id,
             actionId,
             intensity,
+            ...(touchZone ? { touchZone } : {}),
+            ...(facts.chanceField && intensity === facts.chanceIntensity
+              ? { [facts.chanceField]: true }
+              : {}),
           }).success).toBe(true);
         });
       });
       const firstActionId = facts.actions[0].actionId;
+      const firstIntensity = facts.actions[0].intensities[0];
       facts.touchZones.forEach((touchZone) => {
         expect(avatarInteractionPayloadSchema.safeParse({
           ...BASE_PAYLOAD,
           toolId: definition.id,
           actionId: firstActionId,
+          intensity: firstIntensity,
           touchZone,
         }).success).toBe(true);
       });
+      if (facts.touchZones.length > 0) {
+        expect(avatarInteractionPayloadSchema.safeParse({
+          ...BASE_PAYLOAD,
+          toolId: definition.id,
+          actionId: firstActionId,
+          intensity: firstIntensity,
+        }).success).toBe(false);
+      }
       if (facts.chanceField) {
         expect(avatarInteractionPayloadSchema.safeParse({
           ...BASE_PAYLOAD,
           toolId: definition.id,
           actionId: firstActionId,
+          intensity: facts.chanceIntensity ?? firstIntensity,
+          touchZone: facts.touchZones[0],
           [facts.chanceField]: true,
         }).success).toBe(true);
       }
@@ -125,13 +121,15 @@ describe('avatar interaction payload contract', () => {
 
   it('rejects undeclared actions, intensities and cross-tool facts', () => {
     const invalidPayloads = [
-      { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'bonk' },
+      { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'bonk', intensity: 'normal' },
       { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'offer', intensity: 'burst' },
-      { ...BASE_PAYLOAD, toolId: 'fist', actionId: 'poke', intensity: 'burst' },
-      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', intensity: 'unknown' },
-      { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'offer', touchZone: 'face' },
-      { ...BASE_PAYLOAD, toolId: 'fist', actionId: 'poke', easterEgg: true },
-      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', rewardDrop: true },
+      { ...BASE_PAYLOAD, toolId: 'fist', actionId: 'poke', intensity: 'burst', touchZone: 'head' },
+      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', intensity: 'unknown', touchZone: 'head' },
+      { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'offer', intensity: 'normal', touchZone: 'face' },
+      { ...BASE_PAYLOAD, toolId: 'fist', actionId: 'poke', intensity: 'normal', touchZone: 'head', easterEgg: true },
+      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', intensity: 'normal', touchZone: 'head', rewardDrop: true },
+      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', intensity: 'normal', touchZone: 'head', easterEgg: true },
+      { ...BASE_PAYLOAD, toolId: 'hammer', actionId: 'bonk', intensity: 'easter_egg', touchZone: 'head' },
     ];
     invalidPayloads.forEach((payload) => {
       expect(avatarInteractionPayloadSchema.safeParse(payload).success).toBe(false);
@@ -148,25 +146,33 @@ describe('avatar interaction payload contract', () => {
     type LollipopTapPayload = Extract<LollipopPayload, { actionId: 'tap_soft' }>;
     type FistPayload = Extract<AvatarInteractionPayload, { toolId: 'fist' }>;
     type HammerPayload = Extract<AvatarInteractionPayload, { toolId: 'hammer' }>;
+    type HammerEasterPayload = Extract<HammerPayload, { intensity: 'easter_egg' }>;
+    type HammerRegularPayload = Extract<HammerPayload, { easterEgg?: false }>;
 
     expectTypeOf<LollipopPayload['actionId']>().toEqualTypeOf<'offer' | 'tease' | 'tap_soft'>();
-    expectTypeOf<LollipopPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid' | 'burst' | undefined>();
-    expectTypeOf<LollipopOfferPayload['intensity']>().toEqualTypeOf<'normal' | undefined>();
-    expectTypeOf<LollipopTapPayload['intensity']>().toEqualTypeOf<'rapid' | 'burst' | undefined>();
+    expectTypeOf<LollipopPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid' | 'burst'>();
+    expectTypeOf<LollipopOfferPayload['intensity']>().toEqualTypeOf<'normal'>();
+    expectTypeOf<LollipopTapPayload['intensity']>().toEqualTypeOf<'rapid' | 'burst'>();
     expectTypeOf<FistPayload['actionId']>().toEqualTypeOf<'poke'>();
-    expectTypeOf<FistPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid' | undefined>();
+    expectTypeOf<FistPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid'>();
+    expectTypeOf<FistPayload['touchZone']>().toEqualTypeOf<'ear' | 'head' | 'face' | 'body'>();
     expectTypeOf<HammerPayload['actionId']>().toEqualTypeOf<'bonk'>();
     expectTypeOf<HammerPayload['intensity']>()
-      .toEqualTypeOf<'normal' | 'rapid' | 'burst' | 'easter_egg' | undefined>();
+      .toEqualTypeOf<'normal' | 'rapid' | 'burst' | 'easter_egg'>();
+    expectTypeOf<HammerPayload['touchZone']>().toEqualTypeOf<'ear' | 'head' | 'face' | 'body'>();
+    expectTypeOf<HammerEasterPayload['easterEgg']>().toEqualTypeOf<true>();
+    expectTypeOf<HammerRegularPayload['easterEgg']>().toEqualTypeOf<false | undefined>();
   });
 });
 describe('avatar tool payload builders', () => {
   it('keeps tool-specific facts on their owning payload', () => {
     const fist = buildAvatarInteractionPayload({
-      toolId: 'fist', actionId: 'poke', clientX: 1, clientY: 2, touchZone: 'head', rewardDrop: true,
+      toolId: 'fist', actionId: 'poke', intensity: 'normal', clientX: 1, clientY: 2,
+      touchZone: 'head', rewardDrop: true,
     });
     const hammer = buildAvatarInteractionPayload({
-      toolId: 'hammer', actionId: 'bonk', clientX: 3, clientY: 4, easterEgg: true,
+      toolId: 'hammer', actionId: 'bonk', intensity: 'easter_egg', clientX: 3, clientY: 4,
+      touchZone: 'face', easterEgg: true,
     });
     expect(fist).toEqual(expect.objectContaining({ touchZone: 'head', rewardDrop: true }));
     expect(fist).not.toHaveProperty('easterEgg');
@@ -178,9 +184,10 @@ describe('avatar tool payload builders', () => {
     const invalidCommit = {
       toolId: 'hammer',
       actionId: 'poke',
+      intensity: 'normal',
+      touchZone: 'head',
       clientX: 3,
       clientY: 4,
-      rewardDrop: true,
     } as unknown as Parameters<typeof buildAvatarInteractionPayload>[0];
 
     expect(() => buildAvatarInteractionPayload(invalidCommit)).toThrow();

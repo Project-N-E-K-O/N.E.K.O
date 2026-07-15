@@ -31,8 +31,8 @@ Matrix (strictly per the Day-1 subagent-C spec):
 - B1..B5         — avatar dedupe matrix (hit, rank upgrade, distinct
                    keys, reset, info shape, cap-overflow LRU +
                    AVATAR_DEDUPE_CACHE_FULL once-per-cycle).
-- C1..C4         — coerce_info surfacing (intensity, kind, language
-                   fallback + zh-TW stays native).
+- C1..C4         — strict avatar payload rejection plus coerce_info surfacing
+                   for proactive kind/language fallback; zh-TW stays native.
 - D1..D3         — mirror_to_recent applied / fallback_reason paths
                    (incl. proactive [PASS]).
 - E1..E7         — error branches (invalid_payload / empty_callbacks /
@@ -273,11 +273,16 @@ def _avatar_payload(
         "tool_id": tool_id,
         "action_id": action_id,
         "target": "avatar",
+        "intensity": intensity if intensity is not None else "normal",
     }
-    if intensity is not None:
-        p["intensity"] = intensity
     if extra:
         p.update(extra)
+    if (
+        tool_id in {"fist", "hammer"}
+        and "touch_zone" not in p
+        and "touchZone" not in p
+    ):
+        p["touch_zone"] = "head"
     return p
 
 
@@ -345,7 +350,7 @@ def check_a_happy_paths(client, mock) -> list[str]:
         # Matrix:
         #   - fist + reward_drop + text_context → 事件事实包含"奖励"，
         #     不包含 text_context 原文或"输入框草稿"字段。
-        #   - hammer + easter_egg (+ intensity 自动归一成 easter_egg) →
+        #   - hammer + easter_egg（强度与彩蛋标记为同一事实）→
         #     事件事实包含"彩蛋"。
         # (persona.language 默认 zh-CN, 检 zh 文案 key.)
         #
@@ -398,6 +403,7 @@ def check_a_happy_paths(client, mock) -> list[str]:
             _avatar_payload(
                 interaction_id="i1-easter",
                 tool_id="hammer", action_id="bonk",
+                intensity="easter_egg",
                 extra={"easter_egg": True},
             ),
         )
@@ -719,27 +725,23 @@ def check_c_coerce(client, mock) -> list[str]:
         mock.reset()
         mock.set_reply("Mocked reply")
 
-        # C1 — illegal avatar intensity is normalised, and the diff is surfaced.
-        status, body = _post_event(
-            client, "avatar",
-            _avatar_payload(interaction_id="c1-bad-intensity",
-                            tool_id="fist", action_id="poke",
-                            intensity="crazy"),
-        )
-        r = _extract_result(body)
-        _check(r.get("accepted") is True, "C1.accepted",
-               f"reason={r.get('reason')}")
-        coerce_list = r.get("coerce_info") or []
-        intensity_entries = [c for c in coerce_list if c.get("field") == "intensity"]
-        _check(len(intensity_entries) >= 1, "C1.coerce_present",
-               f"coerce_info={coerce_list}")
-        if intensity_entries:
-            c = intensity_entries[0]
-            _check(c.get("requested") == "crazy", "C1.coerce_requested",
-                   f"requested={c.get('requested')}")
-            _check(c.get("applied") in {"normal", "rapid", "burst", "easter_egg"},
-                   "C1.coerce_applied",
-                   f"applied={c.get('applied')}")
+        # C1 — avatar contract violations reject instead of coercing facts.
+        missing_intensity = _avatar_payload(interaction_id="c1-missing-intensity")
+        missing_intensity.pop("intensity")
+        missing_touch_zone = _avatar_payload(interaction_id="c1-missing-touch-zone")
+        missing_touch_zone.pop("touch_zone")
+        invalid_payloads = [
+            ("missing-intensity", missing_intensity),
+            ("missing-touch-zone", missing_touch_zone),
+        ]
+        for label, payload in invalid_payloads:
+            status, body = _post_event(client, "avatar", payload)
+            r = _extract_result(body)
+            _check(status == 200, f"C1.{label}.status", f"{status}: {body}")
+            _check(r.get("accepted") is False, f"C1.{label}.accepted", str(r))
+            _check(r.get("reason") == "invalid_payload", f"C1.{label}.reason", str(r))
+            _check(not (r.get("coerce_info") or []), f"C1.{label}.no_coerce", str(r))
+        _check(mock.calls == 0, "C1.no_llm_call", f"calls={mock.calls}")
 
         # C2 — bogus proactive kind coerces to home.
         _reset_dedupe(client)
@@ -1592,7 +1594,7 @@ def main() -> int:
     total += _report("A | three kinds happy path", check_a_happy_paths(client, mock))
     total += _report("B | dedupe matrix (hit / upgrade / reset / info / cap overflow)",
                      check_b_dedupe_matrix(client, mock))
-    total += _report("C | coerce_info surfacing (intensity / kind / language)",
+    total += _report("C | strict avatar rejection + kind/language coerce_info",
                      check_c_coerce(client, mock))
     total += _report("D | mirror_to_recent applied / fallback / [PASS]",
                      check_d_mirror(client, mock))

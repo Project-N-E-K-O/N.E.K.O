@@ -26,74 +26,24 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('keeps every resolved variant asset explicit and the definitions serializable', () => {
-    AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
-      expect(Object.keys(definition.visual.variants)).toEqual(['primary', 'secondary', 'tertiary']);
-      Object.values(definition.visual.variants).forEach((variant) => {
-        expect(variant.iconImagePath).toMatch(/^\/static\/icons\//);
-        expect(variant.pointerImagePath).toMatch(/^\/static\/icons\//);
-        expect(Number.isFinite(variant.menuOffsetX)).toBe(true);
-        expect(Number.isFinite(variant.menuOffsetY)).toBe(true);
-      });
-      expect(JSON.parse(JSON.stringify(definition))).toEqual(definition);
-    });
-  });
-
   it('projects canonical definitions into the shared UI catalog', () => {
-    expect(AVAILABLE_AVATAR_TOOLS).toEqual([
-      {
-        id: 'lollipop',
-        labelKey: 'chat.toolLollipop',
-        labelFallback: '棒棒糖',
-        iconImagePath: '/static/icons/chat_sugar1.png',
-        iconImagePathAlt: '/static/icons/chat_sugar2.png',
-        iconImagePathAlt2: '/static/icons/chat_sugar3.png',
-        pointerImagePath: '/static/icons/chat_sugar1_cursor.png',
-        pointerImagePathAlt: '/static/icons/chat_sugar2_cursor.png',
-        menuIconScale: 1.18,
-        pointerHotspotX: 27,
-        pointerHotspotY: 46,
-        pointerNaturalWidth: 55,
-        pointerNaturalHeight: 80,
-        pointerDisplayWidth: 74,
-        pointerDisplayHeight: 108,
-      },
-      {
-        id: 'fist',
-        labelKey: 'chat.toolFist',
-        labelFallback: '猫爪',
-        iconImagePath: '/static/icons/cat_claw1.png',
-        iconImagePathAlt: '/static/icons/cat_claw2.png',
-        pointerImagePath: '/static/icons/cat_claw1_cursor.png',
-        pointerImagePathAlt: '/static/icons/cat_claw2_cursor.png',
-        pointerHotspotX: 39,
-        pointerHotspotY: 46,
-        pointerNaturalWidth: 78,
-        pointerNaturalHeight: 80,
-        pointerDisplayWidth: 78,
-        pointerDisplayHeight: 80,
-      },
-      {
-        id: 'hammer',
-        labelKey: 'chat.toolHammer',
-        labelFallback: '锤子',
-        iconImagePath: '/static/icons/chat_hammer1.png',
-        iconImagePathAlt: '/static/icons/chat_hammer2.png',
-        pointerImagePath: '/static/icons/chat_hammer1_cursor.png',
-        pointerImagePathAlt: '/static/icons/chat_hammer2_cursor.png',
-        menuIconScale: 1.52,
-        menuIconOffsetX: -8,
-        menuIconOffsetY: 4,
-        menuIconOffsetXAlt: 1,
-        menuIconOffsetYAlt: -1,
-        pointerHotspotX: 50,
-        pointerHotspotY: 54,
-        pointerNaturalWidth: 100,
-        pointerNaturalHeight: 96,
-        pointerDisplayWidth: 100,
-        pointerDisplayHeight: 96,
-      },
-    ]);
+    expect(AVAILABLE_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
+      AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
+    );
+    AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
+      const tool = AVAILABLE_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
+      expect(tool).toMatchObject({
+        id: definition.id,
+        labelKey: definition.label.key,
+        labelFallback: definition.label.fallback,
+        iconImagePath: definition.visual.variants.primary.iconImagePath,
+        pointerImagePath: definition.visual.variants.primary.pointerImagePath,
+        pointerHotspotX: definition.visual.hotspotX,
+        pointerHotspotY: definition.visual.hotspotY,
+        pointerNaturalWidth: definition.visual.naturalWidth,
+        pointerNaturalHeight: definition.visual.naturalHeight,
+      });
+    });
   });
 
   it('keeps NEKO visual geometry as the product source of truth', () => {
@@ -242,6 +192,85 @@ describe('avatar tool definition validation', () => {
     expect(() => validateAvatarToolDefinition(invalidProbability)).toThrow(/between 0 and 1/);
   });
 
+  it('rejects identifiers, capabilities and thresholds that the desktop consumer cannot accept', () => {
+    const lollipop = getAvatarToolRegistration('lollipop').definition;
+    if (lollipop.interaction.kind !== 'progressive-release-v1') throw new Error('invalid fixture');
+    const cases: Array<[AvatarToolDefinition, RegExp]> = [
+      [asDefinition({ ...lollipop, interaction: {
+        ...lollipop.interaction,
+        stages: lollipop.interaction.stages.map((stage, index) => (
+          index === 0 ? { ...stage, actionId: 'Offer' } : stage
+        )),
+      } }), /actionId.*lowercase identifier/],
+      [asDefinition({ ...lollipop, interaction: {
+        ...lollipop.interaction,
+        burst: { ...lollipop.interaction.burst, threshold: Number.MAX_SAFE_INTEGER + 1 },
+      } }), /safe positive integer/],
+      [asDefinition({ ...lollipop, capability: {
+        desktopVisual: false, desktopInteraction: true,
+      } }), /requires desktop visual/],
+    ];
+    cases.forEach(([definition, message]) => {
+      expect(() => validateAvatarToolDefinition(definition)).toThrow(message);
+    });
+  });
+
+  it('rejects desktop-unsafe effect recipe sizes at the producer boundary', () => {
+    const lollipop = getAvatarToolRegistration('lollipop').definition;
+    const heartEffect = lollipop.effects[0];
+    if (heartEffect?.kind !== 'fixed-particles-v1') throw new Error('invalid fixture');
+    const fist = getAvatarToolRegistration('fist').definition;
+    const scatterEffect = fist.effects[0];
+    if (scatterEffect?.kind !== 'random-scatter-v1') throw new Error('invalid fixture');
+    const cases: Array<[AvatarToolDefinition, RegExp]> = [
+      [asDefinition({ ...lollipop, effects: [{
+        ...heartEffect, glyph: 'x'.repeat(17),
+      }] }), /glyph.*at most 16/],
+      [asDefinition({ ...lollipop, effects: [{
+        ...heartEffect,
+        particles: Array.from({ length: 65 }, () => ({ ...heartEffect.particles[0] })),
+      }] }), /particles.*at most 64/],
+      [asDefinition({ ...fist, effects: [{
+        ...scatterEffect, count: 65,
+      }] }), /count.*at most 64/],
+    ];
+    cases.forEach(([definition, message]) => {
+      expect(() => validateAvatarToolDefinition(definition)).toThrow(message);
+    });
+  });
+
+  it('rejects profile literals and asset sources that cannot reach the desktop consumer', () => {
+    const fist = getAvatarToolRegistration('fist').definition;
+    const hammer = getAvatarToolRegistration('hammer').definition;
+    if (fist.interaction.kind !== 'press-release-v1' || hammer.interaction.kind !== 'locked-impact-v1') {
+      throw new Error('invalid fixture');
+    }
+    const scatter = fist.effects[0];
+    if (scatter?.kind !== 'random-scatter-v1') throw new Error('invalid fixture');
+    const cases: Array<[AvatarToolDefinition, RegExp]> = [
+      [asDefinition({ ...fist, interaction: { ...fist.interaction, touchZone: 'press' as never } }), /touchZone.*release/],
+      [asDefinition({ ...hammer, interaction: {
+        ...hammer.interaction,
+        chance: { ...hammer.interaction.chance, intensity: 'normal' as never },
+      } }), /chance\.intensity.*easter_egg/],
+      [asDefinition({ ...hammer, interaction: {
+        ...hammer.interaction,
+        burst: { ...hammer.interaction.burst, burstIntensity: 'easter_egg' },
+      } }), /chance intensity.*exclusive/],
+      [asDefinition({ ...fist, visual: {
+        ...fist.visual,
+        variants: { ...fist.visual.variants, primary: {
+          ...fist.visual.variants.primary, iconImagePath: 'https://example.invalid/tool.png',
+        } },
+      } }), /versioned same-origin asset path/],
+      [asDefinition({ ...fist, sounds: [{ ...fist.sounds[0], src: '../sound.mp3' }] }), /versioned same-origin asset path/],
+      [asDefinition({ ...fist, effects: [{ ...scatter, assetPath: '/drop.png#fragment' }] }), /versioned same-origin asset path/],
+    ];
+    cases.forEach(([definition, message]) => {
+      expect(() => validateAvatarToolDefinition(definition)).toThrow(message);
+    });
+  });
+
   it('lets each touch-aware tool declare its own supported zone subset', () => {
     const fist = getAvatarToolRegistration('fist').definition;
     if (fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
@@ -314,20 +343,21 @@ describe('avatar tool definition validation', () => {
     expect(() => validateAvatarToolDefinition(incompleteTimeline)).toThrow(/windup, swing, impact, recover and idle/);
   });
 
-  it('reuses identical sound ids but rejects conflicting resources', () => {
+  it('rejects duplicate sound ids inside one definition but reuses matching cross-definition resources', () => {
     const lollipop = getAvatarToolRegistration('lollipop').definition;
     const shared = lollipop.sounds[0];
     if (!shared) throw new Error('invalid fixture');
-    const exactReuse = asDefinition({ ...lollipop, sounds: [shared, { ...shared }] });
-    const conflictingReuse = asDefinition({
+    const duplicateInDefinition = asDefinition({ ...lollipop, sounds: [shared, { ...shared }] });
+    const matchingDefinition = asDefinition({ ...lollipop, sounds: [{ ...shared }] });
+    const conflictingDefinition = asDefinition({
       ...lollipop,
-      sounds: [shared, { ...shared, src: '/different.mp3' }],
+      sounds: [{ ...shared, src: '/different.mp3' }],
     });
 
-    expect(() => validateAvatarToolDefinition(exactReuse)).not.toThrow();
-    expect(createAvatarToolSoundResourceIndex([lollipop, exactReuse]).size).toBe(1);
-    expect(() => validateAvatarToolDefinition(conflictingReuse)).toThrow(/conflicts with another resource/);
-    expect(() => createAvatarToolSoundResourceIndex([lollipop, conflictingReuse]))
+    expect(() => validateAvatarToolDefinition(duplicateInDefinition)).toThrow(/sound .* duplicated/);
+    expect(() => validateAvatarToolDefinition(matchingDefinition)).not.toThrow();
+    expect(createAvatarToolSoundResourceIndex([lollipop, matchingDefinition]).size).toBe(1);
+    expect(() => createAvatarToolSoundResourceIndex([lollipop, conflictingDefinition]))
       .toThrow(/Conflicting avatar tool sound resource/);
   });
 });

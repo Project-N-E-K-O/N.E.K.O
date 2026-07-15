@@ -100,7 +100,7 @@
 | `hammer` | `bonk` | `normal` | 锤子敲中一次 |
 | `hammer` | `bonk` | `rapid` | 短时间内又敲中一次 |
 | `hammer` | `bonk` | `burst` | 锤子连续快速敲中好几次 |
-| `hammer` | `bonk` | `easter_egg=True` 或 `easter_egg` | 放大彩蛋锤敲中一次 |
+| `hammer` | `bonk` | `easter_egg=True` 且 `intensity=easter_egg` | 放大彩蛋锤敲中一次 |
 
 修改事件时，先确认前端 payload 和 `normalize_avatar_interaction_payload` 的归一逻辑。不要只改文案导致 action、intensity、flag 与事件事实互相打架。
 
@@ -286,8 +286,8 @@ node --test static/avatar-interaction-contract.test.cjs
 如果新增了 tool、action、intensity、flag 或 locale 覆盖，优先补对应单元测试，至少覆盖：
 
 1. payload 归一后事件进入正确 profile。
-2. 非法 intensity 会回落到允许值。
-3. flag 与 intensity 冲突时归一结果一致。
+2. 缺失或非法 intensity 会被直接拒绝，不会回落到其它事件事实。
+3. flag 与 intensity 冲突时直接拒绝，不改写事件事实。
 4. 8 个 locale 都能生成非空 prompt。
 5. 生成结果不包含运行时不应暴露的字段。
 

@@ -150,11 +150,9 @@ export function getAvatarToolTransientEffectLifetimeMs(effect: AvatarToolTransie
 
 
 export type AvatarToolDisposer = {
-  readonly generation: number;
   isCurrent(): boolean;
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(timeoutId: number): void;
-  requestAnimationFrame(callback: FrameRequestCallback): number;
   add(dispose: () => void): () => void;
   destroy(): void;
 };
@@ -169,7 +167,6 @@ export function createAvatarToolDisposer(
   const isCurrent = () => !destroyed && isGenerationCurrent(generation);
 
   return {
-    generation,
     isCurrent,
     setTimeout(callback, delayMs) {
       const timeoutId = window.setTimeout(() => {
@@ -188,15 +185,6 @@ export function createAvatarToolDisposer(
     },
     clearTimeout(timeoutId) {
       timeoutCleanup.get(timeoutId)?.();
-    },
-    requestAnimationFrame(callback) {
-      const frameId = window.requestAnimationFrame((timestamp) => {
-        cleanup.delete(cancel);
-        if (isCurrent()) callback(timestamp);
-      });
-      const cancel = () => window.cancelAnimationFrame(frameId);
-      cleanup.add(cancel);
-      return frameId;
     },
     add(dispose) {
       if (destroyed) {

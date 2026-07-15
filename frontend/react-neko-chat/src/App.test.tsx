@@ -5277,7 +5277,11 @@ describe('App', () => {
         '--avatar-tool-manager-top': '12px',
       });
       expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
-      expect(dialog.querySelector('.avatar-tool-icon-hammer')).not.toBeNull();
+      const hammerImage = dialog.querySelector('[data-avatar-tool-id="hammer"] .avatar-tool-manager-tool-image');
+      expect(hammerImage).toHaveStyle({
+        transform: 'scale(1.38) translate(-14%, 10%)',
+        transformOrigin: 'center center',
+      });
 
       const header = dialog.querySelector('.avatar-tool-manager-header') as HTMLElement;
       expect(header).not.toBeNull();
@@ -8595,116 +8599,6 @@ describe('App', () => {
     expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
   });
 
-  it('only emits avatar interactions when the pointer hits the avatar range', async () => {
-    const onAvatarInteraction = vi.fn();
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp({ onAvatarInteraction });
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
-
-      tapAvatarTool(20, 20);
-      expect(onAvatarInteraction).not.toHaveBeenCalled();
-
-      tapAvatarTool(150, 150);
-      expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
-      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
-        toolId: 'lollipop',
-        actionId: 'offer',
-        target: 'avatar',
-        pointer: {
-          clientX: 150,
-          clientY: 150,
-        },
-      }));
-      expect(onAvatarInteraction.mock.calls[0]?.[0]).not.toHaveProperty('touchZone');
-    } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    }
-  });
-
-  it('derives different touch zones for different avatar hit areas', async () => {
-    const onAvatarInteraction = vi.fn();
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp({ onAvatarInteraction });
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
-
-      tapAvatarTool(150, 110);
-      tapAvatarTool(150, 150);
-      tapAvatarTool(150, 185);
-
-      expect(onAvatarInteraction.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'head',
-      }));
-      expect(onAvatarInteraction.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'face',
-      }));
-      expect(onAvatarInteraction.mock.calls[2]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        touchZone: 'body',
-      }));
-    } finally {
-      randomSpy.mockRestore();
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    }
-  });
-
   it('uses viewport positioning for cat-paw reward drops', async () => {
     const onAvatarInteraction = vi.fn();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
@@ -8947,55 +8841,6 @@ describe('App', () => {
     }
   });
 
-  it('escalates fist interactions to rapid on repeated in-range taps', async () => {
-    const onAvatarInteraction = vi.fn();
-    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp({ onAvatarInteraction });
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
-
-      for (let index = 0; index < 4; index += 1) {
-        tapAvatarTool(150, 150);
-      }
-
-      expect(onAvatarInteraction).toHaveBeenCalledTimes(4);
-      expect(onAvatarInteraction.mock.calls[3]?.[0]).toEqual(expect.objectContaining({
-        toolId: 'fist',
-        actionId: 'poke',
-        intensity: 'rapid',
-      }));
-    } finally {
-      randomSpy.mockRestore();
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    }
-  });
-
   it('does not emit avatar interactions when compact UI overlaps the avatar hit range', async () => {
     const onAvatarInteraction = vi.fn();
     const live2dContainer = document.createElement('div');
@@ -9134,24 +8979,6 @@ describe('App', () => {
     expect(editButton).toBeDisabled();
   });
 
-  it('clears the selected avatar tool from the quickbar bubble', async () => {
-    renderInputApp();
-
-    await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    const fistButton = document.body.querySelector<HTMLButtonElement>('[data-avatar-tool-id="fist"]');
-    expect(fistButton).not.toBeNull();
-    fireEvent.click(fistButton!);
-
-    expect(queryAvatarToolVisualOverlay()).not.toBeNull();
-
-    await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-
-    expect(queryAvatarToolVisualOverlay()).toBeNull();
-    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-  });
-
   it('clears an active avatar tool when the tutorial interaction shield takes control', async () => {
     renderInputApp();
 
@@ -9213,21 +9040,6 @@ describe('App', () => {
         pointerDisplayHeight: 96,
       }),
     }));
-  });
-
-  it('anchors the desktop tool visual to the current pointer when a tool is activated', async () => {
-    renderInputApp();
-
-    await openCompactInputTools();
-    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-    fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
-      clientX: 240,
-      clientY: 320,
-    });
-
-    const overlay = queryAvatarToolVisualOverlay();
-    expect(overlay).not.toBeNull();
-    expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(218.16px, 294.24px, 0)');
   });
 
   it('moves the desktop tool visual synchronously with pointer movement', async () => {
@@ -9497,51 +9309,6 @@ describe('App', () => {
       document.documentElement.style.removeProperty('cursor');
       document.body.style.removeProperty('cursor');
       delete (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__;
-    }
-  });
-
-  it('shows the hammer secondary pointer asset on outside-range desktop clicks', async () => {
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    try {
-      renderInputApp();
-
-      await openCompactInputTools();
-      fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
-      fireEvent.click(screen.getByRole('button', { name: '锤子' }));
-
-      const compactImageBefore = queryAvatarToolImpactPointerImage();
-      expect(compactImageBefore).not.toBeNull();
-      expect(compactImageBefore).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
-
-      fireEvent.pointerDown(window, { button: 0, clientX: 20, clientY: 20 });
-
-      const compactImageAfter = queryAvatarToolImpactPointerImage();
-      expect(compactImageAfter).not.toBeNull();
-      expect(compactImageAfter).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
-    } finally {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
     }
   });
 

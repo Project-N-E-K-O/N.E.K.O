@@ -55,14 +55,15 @@
 |---|---|
 | `frontend/react-neko-chat/src/App.tsx`、`FullChatSurface.tsx` | Full/Compact 的界面适配、选择状态接线、调用共享 runtime 和渲染共享视觉层；只保留布局与入口差异。 |
 | `frontend/react-neko-chat/src/avatarTools.ts` | 从共享定义投影 UI 目录、资源路径、热点、默认槽位和持久化。 |
-| `frontend/react-neko-chat/src/avatar-tools/catalog.ts` | 唯一道具注册与规则层；棒棒糖、猫爪、锤子在同一层内分区维护各自的 definition、handlers、资源和 interaction profile，功能边界互不回退。 |
+| `frontend/react-neko-chat/src/avatar-tools/catalog.ts` | 唯一道具注册与定义层；棒棒糖、猫爪、锤子在同一层内分区维护各自的 definition、资源和 interaction profile，功能边界互不回退。 |
+| `frontend/react-neko-chat/src/avatar-tools/profileInterpreter.ts` | 通用 profile 解释器；网页与 PC 按相同声明语义执行现有 profile，只有真正特殊的玩法才注册 custom handler。 |
 | `frontend/react-neko-chat/src/avatar-tools/interaction.ts` | 共享交互内核；集中维护范围策略、bounds/UI exclusion、touch zone、press/release guard 和通用规则分发。 |
 | `frontend/react-neko-chat/src/avatar-tools/protocol.ts`、`message-schema.ts` | 从注册表派生 interaction/state payload、运行时校验与构建器；`message-schema.ts` 只重导出道具协议。 |
 | `frontend/react-neko-chat/src/avatar-tools/desktopContract.ts` | 桌面契约层；集中维护严格 schema、definition/runtime policy 投影与 PC 契约构建。 |
 | `frontend/react-neko-chat/src/avatar-tools/presentation.tsx` | 本地表现层；集中维护 disposer、sound/effect execution、视觉状态派生和稳定 React 展示，不重新定义命中或提交规则。 |
 | `frontend/react-neko-chat/src/avatar-tools/runtime.ts` | 唯一活动 session 与页面适配层；负责 pointer 周期、范围状态、命令/commit 分发、Host 发布和统一销毁。 |
 
-`catalog.ts` 是 React 道具注册的单一事实源；三个道具可以位于同一文件，但 definition、handler 和概率字段必须按道具分区，禁止跨道具 fallback。`avatarTools.ts`、protocol、runtime、表现层和桌面 contract 都消费它。`App.tsx`、`FullChatSurface.tsx`、quickbar 和 manager 不维护道具 timer、burst、press、声音或 tool-id 业务分支。
+`catalog.ts` 是 React 道具注册的单一事实源；三个道具可以位于同一文件，但 definition 和概率字段必须按道具分区，禁止跨道具 fallback。普通玩法由 `profileInterpreter.ts` 通用解释 profile；新增复用现有 profile 的道具不得再复制 tool-id handler。`avatarTools.ts`、protocol、runtime、表现层和桌面 contract 都消费注册表。`App.tsx`、`FullChatSurface.tsx`、quickbar 和 manager 不维护道具 timer、burst、press、声音或 tool-id 业务分支。
 
 Runtime 依赖可替换 provider：
 
@@ -88,6 +89,8 @@ Runtime 依赖可替换 provider：
 | `main_logic/cross_server.py` | avatar interaction memory 隔离、去重与持久化。 |
 
 Host 与 Python 都接受顶层 snake_case / camelCase 输入。Host 的 websocket wire 顶层字段使用 snake_case，但嵌套 `pointer` 仍使用 `{clientX, clientY}`；Python 同时接受嵌套 camelCase / snake_case，并归一为 `{client_x, client_y}`。两端必须用完整行为 parity 测试约束，不能只比较允许值表。
+
+每次 commit 必须携带该 action 声明的 `intensity`；猫爪和锤子还必须携带声明范围内的真实 `touchZone`。缺失、越权或非法值直接拒绝，不得回退为 `normal` 或默认位置。
 
 Python 调用方直接使用 `normalize_avatar_interaction_payload`，并显式注入 `_sanitize_avatar_interaction_text_context`；不保留第二个 normalizer facade。Host 不维护 tool/action/intensity 到模型 emotion 的 seed 表，也不直接调用模型 emotion API；即时反馈属于 React/PC 的道具视觉、声音和效果，模型情绪与动作继续由既有 assistant 响应链路决定。
 
@@ -262,7 +265,7 @@ interaction sent
 2. `static/app/app-buttons.js` Host contract。
 3. `config/prompts/avatar_interaction_contract.py` Python contract。
 4. `config/prompts/prompts_avatar_interaction.py` prompt/memory。
-5. PC desktop capability、纯 tool rule 和测试。
+5. PC desktop contract、通用 profile runtime 和测试。
 6. 8 locale 用户可见文案与静态资源预加载。
 
 不要：

@@ -1,9 +1,12 @@
 import { z } from 'zod';
 import {
+  AVATAR_TOOL_ASSET_PATH_MAX_LENGTH,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
   AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   getAvatarToolRegistration,
+  hasValidAvatarToolAssetVersion,
+  isAvatarToolSameOriginAssetPath,
   withAvatarToolAssetVersion,
   type AvatarToolDefinitionId,
   type AvatarToolDefinition,
@@ -21,10 +24,9 @@ import {
 const finiteNumberSchema = z.number().finite();
 const nonNegativeNumberSchema = finiteNumberSchema.nonnegative();
 const positiveNumberSchema = finiteNumberSchema.positive();
-const positiveIntegerSchema = z.number().int().positive();
+const positiveIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const probabilitySchema = finiteNumberSchema.min(0).max(1);
 const identifierSchema = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/);
-const actionIdentifierSchema = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/);
 const payloadFieldSchema = z.string().min(1).max(64).regex(/^[a-z][a-zA-Z0-9]*$/)
   .refine(field => ![
     'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
@@ -42,22 +44,13 @@ const touchZonesSchema = z.array(touchZoneSchema).min(1).max(AVATAR_TOOL_TOUCH_Z
   }
 });
 
-export const desktopAvatarToolAssetPathSchema = z.string().min(1).max(2048)
-  .refine(path => path.startsWith('/') && !path.startsWith('//') && !path.includes('\\'), {
+export const desktopAvatarToolAssetPathSchema = z.string().min(1).max(AVATAR_TOOL_ASSET_PATH_MAX_LENGTH)
+  .refine(isAvatarToolSameOriginAssetPath, {
     message: 'asset path must be a same-origin absolute path',
   })
-  .refine((path) => {
-    try {
-      const parsed = new URL(path, 'https://neko.invalid');
-      const versions = parsed.searchParams.getAll('v');
-      return parsed.origin === 'https://neko.invalid'
-        && parsed.hash === ''
-        && versions.length === 1
-        && versions[0].trim() !== '';
-    } catch {
-      return false;
-    }
-  }, { message: 'asset path must contain exactly one non-empty version parameter and no fragment' });
+  .refine(hasValidAvatarToolAssetVersion, {
+    message: 'asset path must contain exactly one non-empty version parameter and no fragment',
+  });
 
 const renderedAnchorSchema = z.object({
   x: finiteNumberSchema,
@@ -218,7 +211,7 @@ const progressiveReleaseProfileSchema = z.object({
   kind: z.literal('progressive-release-v1'),
   stages: z.array(z.object({
     variant: avatarToolVariantIdSchema,
-    actionId: actionIdentifierSchema,
+    actionId: identifierSchema,
     intensity: intensitySchema,
     nextVariant: avatarToolVariantIdSchema.nullable(),
   }).strict()).min(1).max(8),
@@ -247,7 +240,7 @@ const progressiveReleaseProfileSchema = z.object({
 
 const pressReleaseProfileSchema = z.object({
   kind: z.literal('press-release-v1'),
-  actionId: actionIdentifierSchema,
+  actionId: identifierSchema,
   pointerDown: z.object({
     rangeVariant: avatarToolVariantIdSchema,
     outsideVariant: avatarToolVariantIdSchema,
@@ -274,7 +267,7 @@ const pressReleaseProfileSchema = z.object({
 
 const lockedImpactProfileSchema = z.object({
   kind: z.literal('locked-impact-v1'),
-  actionId: actionIdentifierSchema,
+  actionId: identifierSchema,
   touchZone: z.literal('release'),
   outsideFeedback: z.object({
     variant: avatarToolVariantIdSchema,
@@ -305,6 +298,17 @@ const lockedImpactProfileSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['burst'],
       message: 'rapidThreshold must not exceed burstThreshold',
+    });
+  }
+  if ([
+    profile.burst.normalIntensity,
+    profile.burst.rapidIntensity,
+    profile.burst.burstIntensity,
+  ].includes(profile.chance.intensity)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['chance', 'intensity'],
+      message: 'chance intensity must be exclusive to the chance result',
     });
   }
 });

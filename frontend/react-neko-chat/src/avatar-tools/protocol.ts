@@ -30,7 +30,7 @@ type ProgressiveStageFacts<
 }
   ? {
     actionId: ActionId;
-    intensity?: StageIntensity | (
+    intensity: StageIntensity | (
       Variant extends Profile['burst']['variant']
         ? Profile['burst']['belowThresholdIntensity'] | Profile['burst']['thresholdIntensity']
         : never
@@ -61,7 +61,7 @@ type SingleActionIntensityFor<Profile extends AvatarToolInteractionProfile> =
 
 type TouchZoneFactsFor<Profile extends AvatarToolInteractionProfile> =
   Profile extends { touchZones: ReadonlyArray<infer TouchZone extends string> }
-    ? { touchZone?: TouchZone }
+    ? { touchZone: TouchZone }
     : Record<never, never>;
 
 type ChanceFactFor<Profile extends AvatarToolInteractionProfile> =
@@ -69,13 +69,28 @@ type ChanceFactFor<Profile extends AvatarToolInteractionProfile> =
     ? { [Key in Field]?: boolean }
     : Record<never, never>;
 
+type LockedImpactFactsFor<
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact-v1' }>,
+> = {
+  actionId: Profile['actionId'];
+} & TouchZoneFactsFor<Profile> & (
+  | {
+    intensity: Profile['chance']['intensity'];
+  } & { [Key in Profile['chance']['field']]: true }
+  | {
+    intensity: Exclude<SingleActionIntensityFor<Profile>, Profile['chance']['intensity']>;
+  } & { [Key in Profile['chance']['field']]?: false }
+);
+
 type InteractionFactsFor<Profile extends AvatarToolInteractionProfile> =
   Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release-v1' }>
     ? ProgressiveStageFacts<Profile>
+    : Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact-v1' }>
+      ? LockedImpactFactsFor<Profile>
     : Profile extends { actionId: infer ActionId extends string }
       ? {
         actionId: ActionId;
-        intensity?: SingleActionIntensityFor<Profile>;
+        intensity: SingleActionIntensityFor<Profile>;
       }
         & TouchZoneFactsFor<Profile>
         & ChanceFactFor<Profile>
@@ -180,27 +195,44 @@ function oneOfDeclaredValues(values: ReadonlyArray<string>, field: string) {
 
 function createRuntimePayloadSchema(definition: AvatarToolDefinition) {
   const facts = deriveRuntimeInteractionFacts(definition.interaction);
-  const toolSpecificShape: z.ZodRawShape = {
+  const intensitiesByActionId = new Map(
+    facts.actions.map(action => [action.actionId, new Set(action.intensities)]),
+  );
+  const toolSpecificShape = {
     toolId: z.literal(definition.id),
     actionId: oneOfDeclaredValues(facts.actions.map(action => action.actionId), 'actionId'),
-    intensity: z.string().optional(),
+    intensity: z.string(),
   };
+  const conditionalShape: z.ZodRawShape = {};
   if (facts.touchZones.length > 0) {
-    toolSpecificShape.touchZone = oneOfDeclaredValues(facts.touchZones, 'touchZone').optional();
+    conditionalShape.touchZone = oneOfDeclaredValues(facts.touchZones, 'touchZone');
   }
   if (facts.chanceField) {
-    toolSpecificShape[facts.chanceField] = z.boolean().optional();
+    conditionalShape[facts.chanceField] = z.boolean().optional();
   }
-  const shapeSchema = z.object({
+  return z.object({
     ...avatarInteractionPayloadBaseShape,
     ...toolSpecificShape,
-  }).strict();
-  return {
-    shapeSchema,
-    intensitiesByActionId: new Map(
-      facts.actions.map(action => [action.actionId, new Set(action.intensities)]),
-    ),
-  };
+    ...conditionalShape,
+  }).strict().superRefine((payload, context) => {
+    if (!intensitiesByActionId.get(payload.actionId)?.has(payload.intensity)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['intensity'],
+        message: 'intensity is not declared by the selected action',
+      });
+    }
+    if (definition.interaction.kind === 'locked-impact-v1' && facts.chanceField) {
+      const chanceHit = (payload as Record<string, unknown>)[facts.chanceField] === true;
+      if (chanceHit !== (payload.intensity === definition.interaction.chance.intensity)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [facts.chanceField],
+          message: 'chance result must match its declared intensity',
+        });
+      }
+    }
+  });
 }
 
 const runtimeContractByToolId = new Map<string, ReturnType<typeof createRuntimePayloadSchema>>(
@@ -211,22 +243,11 @@ const runtimeContractByToolId = new Map<string, ReturnType<typeof createRuntimeP
 );
 
 const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
-const actionIntensityProbeSchema = z.object({
-  actionId: z.string(),
-  intensity: z.string().optional(),
-}).passthrough();
-
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
   const probe = toolIdProbeSchema.safeParse(value);
   if (!probe.success) return false;
   const contract = runtimeContractByToolId.get(probe.data.toolId);
-  if (!contract || !contract.shapeSchema.safeParse(value).success) return false;
-  const actionIntensity = actionIntensityProbeSchema.safeParse(value);
-  if (!actionIntensity.success) return false;
-  const allowedIntensities = contract.intensitiesByActionId.get(actionIntensity.data.actionId);
-  if (!allowedIntensities) return false;
-  return actionIntensity.data.intensity === undefined
-    || allowedIntensities.has(actionIntensity.data.intensity);
+  return contract?.safeParse(value).success === true;
 }
 
 export const avatarInteractionPayloadSchema = z.custom<AvatarInteractionPayload>(

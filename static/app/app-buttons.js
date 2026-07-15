@@ -1569,16 +1569,29 @@
             }
         }
 
-        var touchZone = String(payload.touch_zone || payload.touchZone || '').trim().toLowerCase();
-        if (toolContract.acceptsTouchZone
-                && AVATAR_INTERACTION_CONTRACT.touchZones.indexOf(touchZone) !== -1) {
+        var rawTouchZone = getAvatarInteractionPayloadValue(
+            payload, 'touch_zone', 'touchZone', null
+        );
+        var carriesTouchZone = Object.prototype.hasOwnProperty.call(payload, 'touch_zone')
+            || Object.prototype.hasOwnProperty.call(payload, 'touchZone');
+        var touchZone = String(rawTouchZone || '').trim().toLowerCase();
+        if (toolContract.acceptsTouchZone) {
+            if (AVATAR_INTERACTION_CONTRACT.touchZones.indexOf(touchZone) === -1) {
+                console.warn('[AvatarInteraction] ignored missing or unsupported touch zone:', toolId, touchZone);
+                return null;
+            }
             normalized.touch_zone = touchZone;
+        } else if (carriesTouchZone) {
+            console.warn('[AvatarInteraction] ignored undeclared touch zone:', toolId);
+            return null;
         }
 
         var intensity = String(payload.intensity || '').trim().toLowerCase();
-        normalized.intensity = allowedIntensities.indexOf(intensity) !== -1
-            ? intensity
-            : 'normal';
+        if (allowedIntensities.indexOf(intensity) === -1) {
+            console.warn('[AvatarInteraction] ignored missing or unsupported intensity:', toolId, actionId, intensity);
+            return null;
+        }
+        normalized.intensity = intensity;
 
         var textContext = sanitizeAvatarInteractionTextContext(getAvatarInteractionPayloadValue(
             payload, 'text_context', 'textContext', ''
@@ -1595,9 +1608,9 @@
         }
 
         if (toolId === 'hammer'
-                && (normalized.intensity === 'easter_egg' || normalized.easter_egg === true)) {
-            normalized.intensity = 'easter_egg';
-            normalized.easter_egg = true;
+                && (normalized.intensity === 'easter_egg') !== (normalized.easter_egg === true)) {
+            console.warn('[AvatarInteraction] ignored contradictory hammer easter-egg facts');
+            return null;
         }
 
         return normalized;

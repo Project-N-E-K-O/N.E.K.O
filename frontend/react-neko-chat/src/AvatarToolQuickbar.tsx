@@ -64,7 +64,7 @@ export default function AvatarToolQuickbar({
               onClick={(event) => onToolClick(tool, event)}
             >
               <img
-                className={`composer-icon-button-image avatar-tool-quickbar-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                className="composer-icon-button-image avatar-tool-quickbar-image"
                 src={visual.imagePath}
                 style={{
                   transform: `translate(${visual.offsetX}px, ${visual.offsetY}px) scale(${tool.menuIconScale ?? 1})`,

@@ -50,13 +50,13 @@ AVATAR_INTERACTION_TOUCH_ZONE_TOOLS = frozenset(
 
 
 def normalize_avatar_interaction_intensity(
-    tool_id: str, action_id: str, intensity: str | None
-) -> str:
+    tool_id: str, action_id: str, intensity: Any
+) -> Optional[str]:
     normalized = str(intensity or "").strip().lower()
     tool_contract = AVATAR_INTERACTION_TOOL_CONTRACT.get(tool_id)
     allowed = tool_contract and tool_contract["actions"].get(action_id)
     if not allowed or normalized not in allowed:
-        return "normal"
+        return None
     return normalized
 
 
@@ -113,10 +113,10 @@ def normalize_avatar_interaction_payload(
         return None
 
     intensity = normalize_avatar_interaction_intensity(
-        tool_id,
-        action_id,
-        str(payload.get("intensity") or "").strip().lower(),
+        tool_id, action_id, payload.get("intensity")
     )
+    if intensity is None:
+        return None
     reward_drop = (
         parse_avatar_interaction_bool(
             get_avatar_interaction_payload_value(
@@ -135,19 +135,22 @@ def normalize_avatar_interaction_payload(
         if tool_contract["boolean_field"] == "easter_egg"
         else False
     )
-    if tool_id == "hammer" and (easter_egg or intensity == "easter_egg"):
-        easter_egg = True
-        intensity = "easter_egg"
+    if tool_id == "hammer" and easter_egg != (intensity == "easter_egg"):
+        return None
 
-    raw_touch_zone = (
-        str(payload.get("touch_zone") or payload.get("touchZone") or "").strip().lower()
+    raw_touch_zone_value = get_avatar_interaction_payload_value(
+        payload, "touch_zone", "touchZone", None
     )
-    touch_zone = (
-        raw_touch_zone
-        if tool_contract["touch_zone"]
-        and raw_touch_zone in AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES
-        else ""
-    )
+    carries_touch_zone = "touch_zone" in payload or "touchZone" in payload
+    raw_touch_zone = str(raw_touch_zone_value or "").strip().lower()
+    if tool_contract["touch_zone"]:
+        if raw_touch_zone not in AVATAR_INTERACTION_ALLOWED_TOUCH_ZONES:
+            return None
+        touch_zone = raw_touch_zone
+    else:
+        if carries_touch_zone:
+            return None
+        touch_zone = ""
 
     pointer_payload = payload.get("pointer")
     pointer: Optional[dict[str, float]] = None

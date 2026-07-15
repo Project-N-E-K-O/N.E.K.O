@@ -525,6 +525,23 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
         },
     },
 }
+
+
+def _require_avatar_interaction_facts(tool_id: str, action_id: str, payload: dict) -> str:
+    intensity = _normalize_avatar_interaction_intensity(
+        tool_id, action_id, payload.get("intensity")
+    )
+    if intensity is None:
+        raise ValueError(
+            f"Invalid avatar interaction intensity for {tool_id}/{action_id}"
+        )
+    if tool_id == "hammer" and (payload.get("easter_egg") is True) != (
+        intensity == "easter_egg"
+    ):
+        raise ValueError("Hammer easter_egg flag must match intensity")
+    return intensity
+
+
 # Memory-note 模板里对人的称呼一律用 {master} 占位符，由 _build_avatar_interaction_memory_meta
 # 在格式化时展开成调用方传入的 master_name。禁止在模板里出现 "主人 / Your master /
 # ご主人さま / 주인 / Хозяин" 等附属称呼字面量；这是项目核心价值观，反 AI 物化。
@@ -795,13 +812,7 @@ def _build_avatar_interaction_instruction(
     locale = _avatar_interaction_locale(language)
     tool_id = payload["tool_id"]
     action_id = str(payload.get("action_id") or "").strip().lower()
-    intensity = _normalize_avatar_interaction_intensity(
-        tool_id, action_id, payload.get("intensity")
-    )
-    if tool_id == "hammer" and payload.get("easter_egg"):
-        intensity = _normalize_avatar_interaction_intensity(
-            tool_id, action_id, "easter_egg"
-        )
+    intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 
     action_profiles = (
         _AVATAR_INTERACTION_REACTION_PROFILES.get(
@@ -816,9 +827,7 @@ def _build_avatar_interaction_instruction(
             action_profiles.get(reward_key) or action_profiles["reward_drop"]
         )
     else:
-        reaction_profile = (
-            action_profiles.get(intensity) or action_profiles.get("normal")
-        )
+        reaction_profile = action_profiles.get(intensity)
     if reaction_profile is None:
         raise ValueError(
             "Missing avatar interaction profile for "
@@ -843,14 +852,6 @@ def _build_avatar_interaction_instruction(
     return reaction_focus
 
 
-def _build_avatar_interaction_memory_note(
-    language: str | None, payload: dict, master_name: str
-) -> str:
-    return _build_avatar_interaction_memory_meta(language, payload, master_name)[
-        "memory_note"
-    ]
-
-
 def _build_avatar_interaction_memory_meta(
     language: str | None, payload: dict, master_name: str
 ) -> dict:
@@ -869,13 +870,7 @@ def _build_avatar_interaction_memory_meta(
     master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
     action_id = str(payload.get("action_id") or "").strip().lower()
-    intensity = _normalize_avatar_interaction_intensity(
-        tool_id, action_id, payload.get("intensity") or "normal"
-    )
-    if tool_id == "hammer" and payload.get("easter_egg"):
-        intensity = _normalize_avatar_interaction_intensity(
-            tool_id, action_id, "easter_egg"
-        )
+    intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 
     memory_note = ""
     dedupe_key = tool_id or "avatar_interaction"
@@ -884,10 +879,6 @@ def _build_avatar_interaction_memory_meta(
     if tool_id == "lollipop":
         dedupe_key = "lollipop_feed"
         if action_id == "tap_soft":
-            # 前端设计上 tap_soft 只会发 rapid/burst；但 intensity normalizer 在拿到
-            # 非法值时会降级成 "normal"，之前的代码会把这种异常路径落到 offer 分支，
-            # 和真正的第一口 offer 互相覆盖 dedupe rank。此处按 action_id 先分，
-            # 保证"连续投喂"语义始终走 tap_soft 模板。
             memory_note = templates.get("lollipop", {}).get("tap_soft", "")
             dedupe_rank = 4 if intensity == "burst" else 3
         elif action_id == "tease":

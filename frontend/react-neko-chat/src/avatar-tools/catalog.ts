@@ -1,13 +1,15 @@
-import type {
-  AvatarToolCommand,
-  AvatarToolRuleContext,
-  AvatarToolRuleHandlers,
-} from './interaction';
+import type { AvatarToolRuleHandlers } from './interaction';
+import { createAvatarToolProfileHandlers } from './profileInterpreter';
 
 export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer'] as const;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
+const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
+const AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH = 64;
+const AVATAR_TOOL_RESOURCE_MAX_COUNT = 16;
+const AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT = 64;
+export const AVATAR_TOOL_ASSET_PATH_MAX_LENGTH = 2048;
 
 declare global {
   interface Window {
@@ -39,6 +41,23 @@ export function withAvatarToolAssetVersion(path: string, fallbackVersion = ''): 
   });
   params.push(`v=${encodeURIComponent(version)}`);
   return `${pathname}?${params.join('&')}${hash}`;
+}
+
+export function isAvatarToolSameOriginAssetPath(path: string): boolean {
+  return path.startsWith('/') && !path.startsWith('//') && !path.includes('\\');
+}
+
+export function hasValidAvatarToolAssetVersion(path: string): boolean {
+  try {
+    const parsed = new URL(path, 'https://neko.invalid');
+    const versions = parsed.searchParams.getAll('v');
+    return parsed.origin === 'https://neko.invalid'
+      && parsed.hash === ''
+      && versions.length === 1
+      && versions[0].trim() !== '';
+  } catch {
+    return false;
+  }
 }
 
 export type AvatarToolDefinitionId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
@@ -136,6 +155,12 @@ export type AvatarToolVisualVariant = {
   menuOffsetY: number;
 };
 
+export type AvatarToolManagerIconVisual = {
+  scale: number;
+  translateXPercent: number;
+  translateYPercent: number;
+};
+
 export type AvatarToolVariantSource = 'range' | 'outside' | 'primary';
 
 export type AvatarToolVisualDefinition = {
@@ -147,6 +172,7 @@ export type AvatarToolVisualDefinition = {
     effectActiveImageKind: 'pointer' | 'icon';
   };
   menuScale: number;
+  managerIcon?: AvatarToolManagerIconVisual;
   hotspotX: number;
   hotspotY: number;
   naturalWidth: number;
@@ -275,6 +301,15 @@ export type AvatarToolRegistration = {
   handlers: AvatarToolRuleHandlers;
 };
 
+function registerAvatarTool<const Definition extends AvatarToolDefinition>(
+  definition: Definition,
+) {
+  return {
+    definition,
+    handlers: createAvatarToolProfileHandlers(definition),
+  };
+}
+
 function fail(definition: AvatarToolDefinition, reason: string): never {
   throw new Error(`Invalid avatar tool definition "${String(definition?.id)}": ${reason}`);
 }
@@ -292,7 +327,9 @@ function assertPositive(definition: AvatarToolDefinition, value: unknown, field:
 }
 
 function assertPositiveInteger(definition: AvatarToolDefinition, value: unknown, field: string) {
-  if (!Number.isInteger(value) || Number(value) <= 0) fail(definition, `${field} must be a positive integer`);
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    fail(definition, `${field} must be a safe positive integer`);
+  }
 }
 
 function assertProbability(definition: AvatarToolDefinition, value: unknown, field: string) {
@@ -303,6 +340,27 @@ function assertProbability(definition: AvatarToolDefinition, value: unknown, fie
 
 function assertNonEmpty(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (typeof value !== 'string' || value.trim() === '') fail(definition, `${field} must be non-empty`);
+}
+
+function assertDesktopAssetSource(definition: AvatarToolDefinition, value: unknown, field: string) {
+  const projected = typeof value === 'string' ? withAvatarToolAssetVersion(value, '0') : '';
+  if (
+    projected.length > AVATAR_TOOL_ASSET_PATH_MAX_LENGTH
+    || !isAvatarToolSameOriginAssetPath(projected)
+    || !hasValidAvatarToolAssetVersion(projected)
+  ) {
+    fail(definition, `${field} must project to a versioned same-origin asset path`);
+  }
+}
+
+function assertWireIdentifier(definition: AvatarToolDefinition, value: unknown, field: string) {
+  if (
+    typeof value !== 'string'
+    || value.length > AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH
+    || !AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN.test(value)
+  ) {
+    fail(definition, `${field} must be a lowercase identifier of at most 64 characters`);
+  }
 }
 
 function assertVariant(definition: AvatarToolDefinition, value: unknown, field: string) {
@@ -348,6 +406,10 @@ function validateVisual(definition: AvatarToolDefinition) {
     const asset = visual.variants[variant];
     assertNonEmpty(definition, asset?.iconImagePath, `visual.variants.${variant}.iconImagePath`);
     assertNonEmpty(definition, asset?.pointerImagePath, `visual.variants.${variant}.pointerImagePath`);
+    if (definition.capability.desktopVisual) {
+      assertDesktopAssetSource(definition, asset.iconImagePath, `visual.variants.${variant}.iconImagePath`);
+      assertDesktopAssetSource(definition, asset.pointerImagePath, `visual.variants.${variant}.pointerImagePath`);
+    }
     assertFinite(definition, asset?.menuOffsetX, `visual.variants.${variant}.menuOffsetX`);
     assertFinite(definition, asset?.menuOffsetY, `visual.variants.${variant}.menuOffsetY`);
   });
@@ -363,6 +425,11 @@ function validateVisual(definition: AvatarToolDefinition) {
     fail(definition, 'visual.presentation.effectActiveImageKind is invalid');
   }
   assertPositive(definition, visual.menuScale, 'visual.menuScale');
+  if (visual.managerIcon) {
+    assertPositive(definition, visual.managerIcon.scale, 'visual.managerIcon.scale');
+    assertFinite(definition, visual.managerIcon.translateXPercent, 'visual.managerIcon.translateXPercent');
+    assertFinite(definition, visual.managerIcon.translateYPercent, 'visual.managerIcon.translateYPercent');
+  }
   assertFinite(definition, visual.hotspotX, 'visual.hotspotX');
   assertFinite(definition, visual.hotspotY, 'visual.hotspotY');
   assertPositive(definition, visual.naturalWidth, 'visual.naturalWidth');
@@ -383,19 +450,23 @@ function validateVisual(definition: AvatarToolDefinition) {
 }
 
 function validateSounds(definition: AvatarToolDefinition) {
-  if (!Array.isArray(definition.sounds) || definition.sounds.length === 0) {
-    fail(definition, 'sounds must contain at least one resource');
+  if (
+    !Array.isArray(definition.sounds)
+    || definition.sounds.length === 0
+    || definition.sounds.length > AVATAR_TOOL_RESOURCE_MAX_COUNT
+  ) {
+    fail(definition, 'sounds must contain between 1 and 16 resources');
   }
-  const resourcesById = new Map<string, AvatarToolSoundResource>();
+  const ids = new Set<string>();
   definition.sounds.forEach((sound, index) => {
-    assertNonEmpty(definition, sound?.id, `sounds[${index}].id`);
+    assertWireIdentifier(definition, sound?.id, `sounds[${index}].id`);
     assertNonEmpty(definition, sound.src, `sounds[${index}].src`);
-    assertProbability(definition, sound.volume, `sounds[${index}].volume`);
-    const existing = resourcesById.get(sound.id);
-    if (existing && (existing.src !== sound.src || existing.volume !== sound.volume)) {
-      fail(definition, `sound ${sound.id} conflicts with another resource`);
+    if (definition.capability.desktopInteraction) {
+      assertDesktopAssetSource(definition, sound.src, `sounds[${index}].src`);
     }
-    resourcesById.set(sound.id, sound);
+    assertProbability(definition, sound.volume, `sounds[${index}].volume`);
+    if (ids.has(sound.id)) fail(definition, `sound ${sound.id} is duplicated`);
+    ids.add(sound.id);
   });
 }
 
@@ -410,18 +481,27 @@ function validateRange(
 }
 
 function validateEffects(definition: AvatarToolDefinition) {
-  if (!Array.isArray(definition.effects)) fail(definition, 'effects must be an array');
+  if (!Array.isArray(definition.effects) || definition.effects.length > AVATAR_TOOL_RESOURCE_MAX_COUNT) {
+    fail(definition, 'effects must contain at most 16 resources');
+  }
   const ids = new Set<string>();
   definition.effects.forEach((effect: AvatarToolEffectRecipe, index: number) => {
-    assertNonEmpty(definition, effect?.id, `effects[${index}].id`);
+    assertWireIdentifier(definition, effect?.id, `effects[${index}].id`);
     if (ids.has(effect.id)) fail(definition, `effect ${effect.id} is duplicated`);
     ids.add(effect.id);
     if (effect.kind === 'fixed-particles-v1') {
       if (effect.interactionLock !== 'none') fail(definition, 'fixed-particles-v1 must not lock interaction');
       assertPositive(definition, effect.lifetimeMs, 'effects.hearts.lifetimeMs');
       assertNonEmpty(definition, effect.glyph, 'effects.hearts.glyph');
-      if (!Array.isArray(effect.particles) || effect.particles.length === 0) {
-        fail(definition, 'effects.hearts.particles must not be empty');
+      if (effect.glyph.length > 16) {
+        fail(definition, 'effects.hearts.glyph must contain at most 16 characters');
+      }
+      if (
+        !Array.isArray(effect.particles)
+        || effect.particles.length === 0
+        || effect.particles.length > AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT
+      ) {
+        fail(definition, 'effects.hearts.particles must contain between 1 and at most 64 items');
       }
       effect.particles.forEach((
         particle: FixedParticleEffectRecipe['particles'][number],
@@ -437,7 +517,13 @@ function validateEffects(definition: AvatarToolDefinition) {
     if (effect.kind === 'random-scatter-v1') {
       if (effect.interactionLock !== 'none') fail(definition, 'random-scatter-v1 must not lock interaction');
       assertNonEmpty(definition, effect.assetPath, 'effects.reward-drops.assetPath');
+      if (definition.capability.desktopInteraction) {
+        assertDesktopAssetSource(definition, effect.assetPath, 'effects.reward-drops.assetPath');
+      }
       assertPositiveInteger(definition, effect.count, 'effects.reward-drops.count');
+      if (effect.count > AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT) {
+        fail(definition, 'effects.reward-drops.count must be at most 64');
+      }
       assertPositive(definition, effect.lifetimeMs, 'effects.reward-drops.lifetimeMs');
       validateRange(definition, effect.angleDeg, 'effects.reward-drops.angleDeg');
       validateRange(definition, effect.distance, 'effects.reward-drops.distance');
@@ -546,7 +632,7 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     }
     stages.forEach((stage, index) => {
       assertVariant(definition, stage.variant, `interaction.stages[${index}].variant`);
-      assertNonEmpty(definition, stage.actionId, `interaction.stages[${index}].actionId`);
+      assertWireIdentifier(definition, stage.actionId, `interaction.stages[${index}].actionId`);
       assertIntensity(definition, stage.intensity, `interaction.stages[${index}].intensity`);
       if (stage.nextVariant !== null) {
         assertVariant(definition, stage.nextVariant, `interaction.stages[${index}].nextVariant`);
@@ -571,7 +657,10 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     assertVariant(definition, interaction.feedback.effectVariant, 'interaction.feedback.effectVariant');
     return;
   }
-  assertNonEmpty(definition, interaction.actionId, 'interaction.actionId');
+  assertWireIdentifier(definition, interaction.actionId, 'interaction.actionId');
+  if (interaction.touchZone !== 'release') {
+    fail(definition, 'interaction.touchZone must be release');
+  }
   assertNonEmpty(definition, interaction.burst.key, 'interaction.burst.key');
   assertPositive(definition, interaction.burst.windowMs, 'interaction.burst.windowMs');
   assertPositiveInteger(definition, interaction.burst.rapidThreshold, 'interaction.burst.rapidThreshold');
@@ -602,7 +691,16 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
   if (interaction.kind === 'locked-impact-v1') {
     assertPositiveInteger(definition, interaction.burst.burstThreshold, 'interaction.burst.burstThreshold');
     assertIntensity(definition, interaction.burst.burstIntensity, 'interaction.burst.burstIntensity');
-    assertIntensity(definition, interaction.chance.intensity, 'interaction.chance.intensity');
+    if (interaction.chance.intensity !== 'easter_egg') {
+      fail(definition, 'interaction.chance.intensity must be easter_egg');
+    }
+    if ([
+      interaction.burst.normalIntensity,
+      interaction.burst.rapidIntensity,
+      interaction.burst.burstIntensity,
+    ].includes(interaction.chance.intensity)) {
+      fail(definition, 'interaction chance intensity must be exclusive to the chance result');
+    }
     if (interaction.burst.rapidThreshold > interaction.burst.burstThreshold) {
       fail(definition, 'interaction burst thresholds are out of order');
     }
@@ -627,6 +725,9 @@ export function validateAvatarToolDefinition(definition: AvatarToolDefinition): 
     || typeof definition.capability?.desktopInteraction !== 'boolean'
   ) {
     fail(definition, 'capability flags must be boolean');
+  }
+  if (!definition.capability.desktopVisual && definition.capability.desktopInteraction) {
+    fail(definition, 'desktop interaction requires desktop visual capability');
   }
   validateVisual(definition);
   validateSounds(definition);
@@ -745,99 +846,6 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
     },
   },
 } as const satisfies AvatarToolDefinition;
-
-const LOLLIPOP_INTERACTION = LOLLIPOP_AVATAR_TOOL_DEFINITION.interaction;
-
-export const LOLLIPOP_BURST_WINDOW_MS = LOLLIPOP_INTERACTION.burst.windowMs;
-
-function isLollipopFeedbackVariant(variant: AvatarToolVariantId): boolean {
-  return variant === LOLLIPOP_INTERACTION.feedback.effectVariant;
-}
-
-export function resolveLollipopInteraction(currentVariant: AvatarToolVariantId, tapCount: number) {
-  const stage = LOLLIPOP_INTERACTION.stages.find(candidate => candidate.variant === currentVariant);
-  if (!stage) return null;
-  switch (stage.variant) {
-    case 'primary':
-      return {
-        actionId: stage.actionId,
-        intensity: stage.intensity,
-        nextVariant: stage.nextVariant,
-        hearts: isLollipopFeedbackVariant(stage.variant),
-      };
-    case 'secondary':
-      return {
-        actionId: stage.actionId,
-        intensity: stage.intensity,
-        nextVariant: stage.nextVariant,
-        hearts: isLollipopFeedbackVariant(stage.variant),
-      };
-    case 'tertiary':
-      return {
-        actionId: stage.actionId,
-        intensity: tapCount >= LOLLIPOP_INTERACTION.burst.threshold
-          ? LOLLIPOP_INTERACTION.burst.thresholdIntensity
-          : LOLLIPOP_INTERACTION.burst.belowThresholdIntensity,
-        nextVariant: stage.nextVariant,
-        hearts: isLollipopFeedbackVariant(stage.variant),
-      };
-  }
-}
-
-export function resolveLollipopCommit(context: AvatarToolRuleContext): AvatarToolCommand {
-  if (!context.hit) return {};
-  const tapCount = context.rangeVariant === LOLLIPOP_INTERACTION.burst.variant
-    ? context.recordBurst(LOLLIPOP_INTERACTION.burst.key, LOLLIPOP_BURST_WINDOW_MS)
-    : 0;
-  const decision = resolveLollipopInteraction(context.rangeVariant, tapCount);
-  if (!decision) return {};
-  const feedback: Omit<AvatarToolCommand, 'commit'> = {
-    ...(decision.nextVariant ? { rangeVariant: decision.nextVariant } : {}),
-    sound: LOLLIPOP_INTERACTION.feedback.sound,
-    ...(decision.hearts ? { effect: LOLLIPOP_INTERACTION.feedback.effect } : {}),
-  };
-  switch (decision.actionId) {
-    case LOLLIPOP_INTERACTION.stages[0].actionId:
-      return {
-        ...feedback,
-        commit: {
-          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
-          actionId: decision.actionId,
-          intensity: decision.intensity,
-          clientX: context.clientX,
-          clientY: context.clientY,
-        },
-      };
-    case LOLLIPOP_INTERACTION.stages[1].actionId:
-      return {
-        ...feedback,
-        commit: {
-          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
-          actionId: decision.actionId,
-          intensity: decision.intensity,
-          clientX: context.clientX,
-          clientY: context.clientY,
-        },
-      };
-    case LOLLIPOP_INTERACTION.stages[2].actionId:
-      return {
-        ...feedback,
-        commit: {
-          toolId: LOLLIPOP_AVATAR_TOOL_DEFINITION.id,
-          actionId: decision.actionId,
-          intensity: decision.intensity,
-          clientX: context.clientX,
-          clientY: context.clientY,
-        },
-      };
-  }
-}
-
-export const LOLLIPOP_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
-  pointerDown: () => ({}),
-  commit: resolveLollipopCommit,
-  pointerRelease: () => ({}),
-};
 
 // Fist -----------------------------------------------------------------------
 
@@ -960,57 +968,6 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
   },
 } as const satisfies AvatarToolDefinition;
 
-const FIST_INTERACTION = FIST_AVATAR_TOOL_DEFINITION.interaction;
-
-export const FIST_BURST_WINDOW_MS = FIST_INTERACTION.burst.windowMs;
-
-export function resolveFistInteraction(tapCount: number, rewardRoll: number) {
-  return {
-    actionId: FIST_INTERACTION.actionId,
-    intensity: tapCount >= FIST_INTERACTION.burst.rapidThreshold
-      ? FIST_INTERACTION.burst.rapidIntensity
-      : FIST_INTERACTION.burst.normalIntensity,
-    rewardDrop: rewardRoll < FIST_INTERACTION.chance.probability,
-  };
-}
-
-export function resolveFistPointerDown(): AvatarToolCommand {
-  return { ...FIST_INTERACTION.pointerDown, pressFeedback: 'until-pointer-release' };
-}
-
-export function resolveFistCommit(context: AvatarToolRuleContext): AvatarToolCommand {
-  if (!context.hit) return {};
-  const decision = resolveFistInteraction(
-    context.recordBurst(FIST_INTERACTION.burst.key, FIST_BURST_WINDOW_MS),
-    context.random(),
-  );
-  return {
-    commit: {
-      toolId: FIST_AVATAR_TOOL_DEFINITION.id,
-      actionId: FIST_INTERACTION.actionId,
-      intensity: decision.intensity,
-      touchZone: context.hit.touchZone,
-      rewardDrop: decision.rewardDrop,
-      clientX: context.clientX,
-      clientY: context.clientY,
-    },
-    ...(decision.rewardDrop ? {
-      sound: FIST_INTERACTION.chance.sound,
-      effect: FIST_INTERACTION.chance.effect,
-    } : {}),
-  };
-}
-
-export function resolveFistPointerRelease(): AvatarToolCommand {
-  return { ...FIST_INTERACTION.pointerRelease };
-}
-
-export const FIST_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
-  pointerDown: resolveFistPointerDown,
-  commit: resolveFistCommit,
-  pointerRelease: resolveFistPointerRelease,
-};
-
 // Hammer ---------------------------------------------------------------------
 
 export const HAMMER_SWING_EFFECT_RECIPE = {
@@ -1085,6 +1042,11 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
       effectActiveImageKind: 'icon',
     },
     menuScale: 1.52,
+    managerIcon: {
+      scale: 1.38,
+      translateXPercent: -14,
+      translateYPercent: 10,
+    },
     hotspotX: 50,
     hotspotY: 54,
     naturalWidth: 100,
@@ -1156,69 +1118,12 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
   },
 } as const satisfies AvatarToolDefinition;
 
-const HAMMER_INTERACTION = HAMMER_AVATAR_TOOL_DEFINITION.interaction;
-
-export const HAMMER_BURST_WINDOW_MS = HAMMER_INTERACTION.burst.windowMs;
-
-export function resolveHammerInteraction(tapCount: number, easterEggRoll: number) {
-  const easterEgg = easterEggRoll < HAMMER_INTERACTION.chance.probability;
-  return {
-    actionId: HAMMER_INTERACTION.actionId,
-    intensity: easterEgg
-      ? HAMMER_INTERACTION.chance.intensity
-      : tapCount >= HAMMER_INTERACTION.burst.burstThreshold
-        ? HAMMER_INTERACTION.burst.burstIntensity
-        : tapCount >= HAMMER_INTERACTION.burst.rapidThreshold
-          ? HAMMER_INTERACTION.burst.rapidIntensity
-          : HAMMER_INTERACTION.burst.normalIntensity,
-    easterEgg,
-  };
-}
-
-export function resolveHammerPointerDown(context: AvatarToolRuleContext): AvatarToolCommand {
-  if (!context.hit) {
-    return {
-      outsideVariant: HAMMER_INTERACTION.outsideFeedback.variant,
-      resetOutsideVariantAfterMs: HAMMER_INTERACTION.outsideFeedback.resetAfterMs,
-    };
-  }
-  return {};
-}
-
-export function resolveHammerCommit(context: AvatarToolRuleContext): AvatarToolCommand {
-  if (!context.hit) return {};
-  const decision = resolveHammerInteraction(
-    context.recordBurst(HAMMER_INTERACTION.burst.key, HAMMER_BURST_WINDOW_MS),
-    context.random(),
-  );
-  return {
-    commit: {
-      toolId: HAMMER_AVATAR_TOOL_DEFINITION.id,
-      actionId: HAMMER_INTERACTION.actionId,
-      intensity: decision.intensity,
-      touchZone: context.hit.touchZone,
-      easterEgg: decision.easterEgg,
-      clientX: context.clientX,
-      clientY: context.clientY,
-    },
-    sound: decision.easterEgg ? HAMMER_INTERACTION.chance.sound : HAMMER_INTERACTION.feedback.sound,
-    effect: HAMMER_INTERACTION.feedback.effect,
-    ...(decision.easterEgg ? { effectMode: HAMMER_SWING_EFFECT_RECIPE.easterEgg.mode } : {}),
-  };
-}
-
-export const HAMMER_AVATAR_TOOL_HANDLERS: AvatarToolRuleHandlers = {
-  pointerDown: resolveHammerPointerDown,
-  commit: resolveHammerCommit,
-  pointerRelease: () => ({}),
-};
-
 // Registry -------------------------------------------------------------------
 
 export const AVATAR_TOOL_REGISTRY = [
-  { definition: LOLLIPOP_AVATAR_TOOL_DEFINITION, handlers: LOLLIPOP_AVATAR_TOOL_HANDLERS },
-  { definition: FIST_AVATAR_TOOL_DEFINITION, handlers: FIST_AVATAR_TOOL_HANDLERS },
-  { definition: HAMMER_AVATAR_TOOL_DEFINITION, handlers: HAMMER_AVATAR_TOOL_HANDLERS },
+  registerAvatarTool(LOLLIPOP_AVATAR_TOOL_DEFINITION),
+  registerAvatarTool(FIST_AVATAR_TOOL_DEFINITION),
+  registerAvatarTool(HAMMER_AVATAR_TOOL_DEFINITION),
 ] as const satisfies ReadonlyArray<AvatarToolRegistration>;
 
 const registrationById = new Map<AvatarToolDefinitionId, AvatarToolRegistration>();
