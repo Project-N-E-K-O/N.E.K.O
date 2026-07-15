@@ -7,6 +7,22 @@ APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-s
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
+def test_independent_asr_injection_failure_does_not_show_fallback_toast():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    injection_branch = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')",
+        1,
+    )[1].split("S.independentAsrActive = false;", 1)[0]
+
+    assert "return;" in injection_branch
+    assert "independentAsrFallback" not in injection_branch
+
+
 def test_response_discarded_visible_in_react_chat():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 

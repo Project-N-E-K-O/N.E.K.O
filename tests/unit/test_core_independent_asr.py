@@ -204,6 +204,7 @@ async def test_hot_swap_reuses_matching_asr_provider() -> None:
     runtime.input_mode = "audio"
     runtime._asr_route_mode = "independent"
     runtime._asr_provider = "gemini"
+    runtime._asr_core_type = "gemini"
     runtime._start_independent_asr_if_enabled = AsyncMock()
 
     await runtime._reconcile_independent_asr_after_core_change()
@@ -217,11 +218,44 @@ async def test_hot_swap_replaces_asr_before_cached_audio_for_new_core() -> None:
     runtime.input_mode = "audio"
     runtime._asr_route_mode = "independent"
     runtime._asr_provider = "gemini"
+    runtime._asr_core_type = "gemini"
     runtime._start_independent_asr_if_enabled = AsyncMock()
 
     await runtime._reconcile_independent_asr_after_core_change()
 
     runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
+
+
+@pytest.mark.parametrize("core_type", ["openai", "glm", "gemini"])
+async def test_hot_swap_starts_independent_asr_after_core_route_change(
+    core_type: str,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = core_type
+    runtime.input_mode = "audio"
+    runtime._asr_route_mode = "native"
+    runtime._asr_core_type = "free"
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
+
+
+@pytest.mark.parametrize("route_mode", ["native", "fallback_pending"])
+async def test_hot_swap_does_not_retry_failed_same_core_route(
+    route_mode: str,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    runtime._asr_route_mode = route_mode
+    runtime._asr_core_type = "gemini"
+    runtime._start_independent_asr_if_enabled = AsyncMock()
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    runtime._start_independent_asr_if_enabled.assert_not_awaited()
 
 
 async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
@@ -338,6 +372,24 @@ async def test_fallback_pending_switches_to_native_only_after_silence(monkeypatc
 
     assert runtime._asr_route_mode == "native"
     assert runtime._asr_fallback_pending is False
+
+
+async def test_continuous_silent_pcm_does_not_reset_native_fallback(monkeypatch) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime._asr_route_mode = "fallback_pending"
+    runtime._asr_fallback_pending = True
+    monkeypatch.setattr(runtime_module, "_FALLBACK_SILENCE_SECONDS", 0.02)
+
+    await runtime._route_microphone_audio(b"\x00\x00", sample_rate_hz=16_000)
+    fallback_task = runtime._asr_fallback_task
+    for _ in range(5):
+        await asyncio.sleep(0.005)
+        await runtime._route_microphone_audio(b"\x00\x00", sample_rate_hz=16_000)
+
+    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_fallback_task is fallback_task
 
 
 async def test_injection_failure_is_reported_once_without_provider_body() -> None:

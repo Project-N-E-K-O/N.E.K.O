@@ -2099,9 +2099,10 @@
                             }
                             return;
                         }
-                        if (statusCode !== 'ASR_INDEPENDENT_INJECTION_FAILED') {
-                            S.independentAsrActive = false;
+                        if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
+                            return;
                         }
+                        S.independentAsrActive = false;
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
                                 window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable; using Omni native recognition',
