@@ -44,7 +44,7 @@ jobs:
   # Step 0: Calculate version
   # ──────────────────────────────────────────────
   version:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.calc.outputs.VERSION }}
@@ -72,7 +72,7 @@ jobs:
   # Step 1: Build Python backend with Nuitka
   # ──────────────────────────────────────────────
   build-python:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
     needs: version
     strategy:
       fail-fast: false
@@ -635,7 +635,7 @@ jobs:
   # Step 2: Build Electron desktop app
   # ──────────────────────────────────────────────
   build-electron:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O'
     needs: [version, build-python]
     strategy:
       fail-fast: false
@@ -668,7 +668,7 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.electron_repo || 'Project-N-E-K-O/N.E.K.O.-PC' }}
+          repository: ${{ github.event.inputs.electron_repo || format('{0}/N.E.K.O.-PC', github.repository_owner) }}
           ref: ${{ github.event.inputs.electron_ref || 'main' }}
           token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           path: electron-app
@@ -799,7 +799,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p previous-portable
-          PREVIOUS_URL="$(gh api repos/Project-N-E-K-O/N.E.K.O/releases/latest \
+          PREVIOUS_URL="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
             --jq '[.assets[] | select(.name | endswith("_win_manifest.json"))][0].browser_download_url // empty' \
             2>/dev/null || true)"
           if [[ -n "$PREVIOUS_URL" ]]; then
@@ -855,7 +855,7 @@ jobs:
   # Step 3: Publish Nightly Release
   # ──────────────────────────────────────────────
   nightly:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O') && github.event_name != 'push' && always() && !cancelled() && needs.build-python.result == 'success' && needs.build-electron.result != 'failure'
     needs: [version, build-python, build-electron]
     runs-on: ubuntu-latest
     permissions:
@@ -942,7 +942,7 @@ jobs:
   # Stable tags publish the ZIP Portable update channel. If a release was
   # created manually first, upload --clobber updates its assets in place.
   publish-stable-portable:
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
+    if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O') && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
     needs: [version, build-electron]
     runs-on: ubuntu-latest
     permissions:
