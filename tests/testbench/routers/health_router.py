@@ -774,6 +774,7 @@ _PUBLIC_DOCS: dict[str, str] = {
     "testbench_USER_MANUAL": "testbench_USER_MANUAL.md",
     "testbench_ARCHITECTURE_OVERVIEW": "testbench_ARCHITECTURE_OVERVIEW.md",
     "external_events_guide": "external_events_guide.md",
+    "memory_export_guide": "memory_export_guide.md",
     "CHANGELOG": "CHANGELOG.md",
 }
 
@@ -845,6 +846,10 @@ def _rewrite_internal_doc_links(html: str) -> str:
         "P24_BLUEPRINT.md",
         "P25_BLUEPRINT.md",
         "P26_BLUEPRINT.md",
+        "P30_BLUEPRINT.md",
+        "P30_BLUEPRINT",
+        "MEMORY_CODE_INFERENCE_FEASIBILITY.md",
+        "MEMORY_CODE_INFERENCE_FEASIBILITY",
     }
 
     def _rewrite(match: _re.Match) -> str:

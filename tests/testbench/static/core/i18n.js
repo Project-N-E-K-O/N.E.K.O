@@ -245,6 +245,40 @@ export const I18N = {
         loading: '加载中…',
         reload: '刷新',
         load_failed: '加载失败',
+        export: {
+          button: '导出记忆分析',
+          button_hint: '一键导出脱敏后的记忆数据与分析结论 (ZIP), 便于离线分析与共享',
+          modal_title: '导出记忆分析 (脱敏 ZIP)',
+          tier_heading: '脱敏档位',
+          tier: {
+            minimal: '最小 (仅去凭据)',
+            standard: '标准 (默认, 假名化身份)',
+            strict: '严格 (额外撤除原始转录)',
+          },
+          tier_desc: {
+            minimal: '仅移除 api_key/token/cookie 等凭据; 保留真实姓名与全部正文。',
+            standard: '在最小基础上, 对主人名/角色名做一致假名化 (全包同一映射), 其余正文保留。',
+            strict: '在标准基础上, 整层撤除最原始的逐轮对话正文 (替换为结构占位); 事实/反思等抽象记忆正文仍保留。',
+          },
+          include_corpus: '包含对话语料 (conversation_corpus)',
+          include_corpus_hint: '关闭后不导出原始对话 turns, 只导出记忆四文件与分析结论。',
+          notice_head: '记忆脱敏说明 (务必阅读)',
+          notice_body:
+            '· 三档行为: minimal 只去凭据; standard 一致假名化身份并保留正文; strict 额外整层撤除原始逐轮转录、保留抽象记忆。\n'
+            + '· 跨层一致性: 身份标识在对话与事实/反思中使用同一映射, 绝不会出现"对话里是 A、记忆里是 B"。\n'
+            + '· 诚实限制: 只有身份标识被一致假名化; 自由正文里的其它个人披露不做自动清洗 (不可靠), 对外分享前请自行复核。\n'
+            + '· standard 档仍包含对话与记忆正文; 若要对外分享建议用 strict。凭据在所有档位均被移除。',
+          export_btn: '导出',
+          exporting: '导出中…',
+          ok_toast_fmt: (name) => `已导出: ${name}`,
+          err: {
+            no_session: '尚未创建会话或未选择角色, 无法导出。',
+            busy: '会话正忙 (有其它操作占用), 稍后再试。',
+            network: '网络错误, 导出请求未送达。',
+            backend_fmt: (msg) => `导出失败: ${msg}`,
+            download_fmt: (msg) => `下载失败: ${msg}`,
+          },
+        },
         no_session: {
           heading: '尚未创建会话',
           body: '先在顶栏新建会话并选择角色, 再来看记忆系统概况。',
@@ -2712,6 +2746,7 @@ export const I18N = {
         docs_list: [
           { name: '测试用户使用手册 (中文)',  href: '/docs/testbench_USER_MANUAL' },
           { name: '外部事件注入详细说明',      href: '/docs/external_events_guide' },
+          { name: '记忆分析导出使用说明',      href: '/docs/memory_export_guide' },
           { name: '版本更新记录 (CHANGELOG)',  href: '/docs/CHANGELOG' },
           { name: '代码与设计总体概述 (给开发者)', href: '/docs/testbench_ARCHITECTURE_OVERVIEW' },
         ],

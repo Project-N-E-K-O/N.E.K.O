@@ -44,8 +44,9 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from utils.config_manager import get_config_manager
@@ -78,6 +79,11 @@ from tests.testbench.pipeline.memory_overview import (
     build_ai_report,
     build_overview,
     judge_contradictions,
+)
+from tests.testbench.pipeline.memory_export import (
+    MEMORY_EXPORT_DEFAULT_TIER,
+    MEMORY_EXPORT_TIERS,
+    export_memory_analysis,
 )
 from tests.testbench.pipeline.snapshot_store import capture_safe as _snapshot_capture
 from tests.testbench.session_store import (
@@ -551,6 +557,83 @@ async def post_memory_overview_contradictions() -> dict[str, Any]:
             return await judge_contradictions(session, character)
     except SessionConflictError as exc:
         raise _wrap_conflict(exc) from exc
+
+
+def _content_disposition(filename: str) -> str:
+    """Build a ``Content-Disposition`` that survives a non-ASCII (Chinese) name.
+
+    The friendly download name (``NEKO testbench_记忆导出_...``) contains CJK,
+    which a bare ``filename="..."`` cannot carry (header is latin-1). Emit both:
+    an ASCII fallback (``filename=``, for ancient clients) plus the RFC 5987
+    ``filename*=UTF-8''<percent-encoded>`` that every modern browser prefers.
+    """
+    ascii_fallback = filename.encode("ascii", "ignore").decode("ascii").strip()
+    if not ascii_fallback or ascii_fallback in {".zip", "_.zip"}:
+        ascii_fallback = "NEKO_testbench_memory_export.zip"
+    quoted = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quoted}"
+
+
+@router.get("/export")
+async def export_memory_analysis_zip(
+    redaction: str = MEMORY_EXPORT_DEFAULT_TIER,
+    include_corpus: bool = True,
+) -> Response:
+    """P30 — one-click 脱敏记忆分析导出 (可分享 ZIP).
+
+    Packs the character's redacted raw memory (``raw_data/``) plus the derived
+    analysis conclusions (``analysis/``) into a single ZIP. Read-only, no LLM,
+    no temp file on disk. CPU-bound (reuses the vector views) so it runs off
+    the event loop (P28.5 阻塞教训). Declared before ``/{kind}`` so the static
+    path wins route resolution.
+
+    Query:
+        * ``redaction`` ∈ {minimal, standard, strict} (default standard).
+        * ``include_corpus`` — include the conversation corpus (default true).
+
+    Errors: 400 ``UnknownRedactionTier``; 404 ``NoActiveSession``;
+    409 ``NoCharacterSelected``.
+
+    Pure read — takes NO session lock (mirrors ``/overview`` / ``/lineage``,
+    which read the same aggregators concurrently with chat.send). Deliberately
+    avoids ``session_operation`` so the export triggers no autosave / no write
+    side-effect (blueprint §1.3 "read only, no writes"). No temp file on disk;
+    the ZIP is streamed straight from memory.
+    """  # noqa: DOCSTRING_CJK
+    if redaction not in MEMORY_EXPORT_TIERS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "UnknownRedactionTier",
+                "message": (
+                    f"未知脱敏档位 {redaction!r}; 合法值: {sorted(MEMORY_EXPORT_TIERS)}"
+                ),
+            },
+        )
+    session = _require_session()
+    character = _require_character(session)
+    persona = session.persona or {}
+    identity_names = {
+        "character_name": persona.get("character_name"),
+        "master_name": persona.get("master_name"),
+    }
+    zip_bytes, filename = await asyncio.to_thread(
+        export_memory_analysis,
+        character,
+        tier=redaction,
+        include_corpus=include_corpus,
+        identity_names=identity_names,
+    )
+    python_logger().info(
+        "memory_router: exported memory analysis "
+        "(character=%s, tier=%s, corpus=%s, bytes=%d) → %s",
+        character, redaction, include_corpus, len(zip_bytes), filename,
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": _content_disposition(filename)},
+    )
 
 
 @router.get("/{kind}")

@@ -1477,6 +1477,71 @@ code, .mono {
 }
 
 /* =====================================================================
+ * Memory export modal (P30 一键脱敏导出)
+ * ===================================================================== */
+
+.memory-export-modal .modal {
+  min-width: 520px;
+  max-width: 640px;
+}
+.memory-export-modal__body h4 {
+  margin: 0 0 6px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.memory-export-modal__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--density-sm);
+}
+.memory-export-modal__radio {
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.memory-export-modal__radio:hover {
+  background: var(--bg-raised);
+}
+.memory-export-modal__radio-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.memory-export-modal__radio-desc {
+  margin-left: 4px;
+}
+
+/* Redaction explanation: fixed, always-visible yellow callout — this is
+ * "务必阅读" content, so it must never be collapsed. */
+.memory-export-modal__notice {
+  margin: var(--density-sm) 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn, #ffc268);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn, #ffc268) 12%, transparent);
+}
+.memory-export-modal__notice-head {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--warn, #b58900);
+  margin-bottom: 4px;
+}
+.memory-export-modal__notice-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.memory-export-modal__notice-body p {
+  margin: 2px 0;
+}
+.memory-export-modal__err:empty {
+  display: none;
+}
+
+/* =====================================================================
  * Form helpers
  * ===================================================================== */
 

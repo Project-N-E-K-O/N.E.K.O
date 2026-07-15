@@ -349,10 +349,11 @@ server.py::create_app()             # FastAPI 工厂 (模块级 app = create_app
 | `autosave.py` | 滚动 3 份自动保存 | `AutosaveScheduler` | 5s debounce + 60s force. |
 | `persistence.py` | 人工保存 / 加载 (单个 .json + memory.tar.gz) | `save_session_to_file(...)` / `load_session_from_file(...)` | 也做 import roundtrip. |
 | `session_export.py` | 导出报告 (4 scope × 3 format = 11 组合) | `export_session(scope, format, ...)` | api_key 自动脱敏. |
+| `memory_export.py` | 记忆分析一键脱敏导出 (ZIP: `raw_data/` + `analysis/`) | `export_memory_analysis(...)` / `build_export_bundle(...)` / `pack_export_zip(...)` | P30. 纯读聚合原始记忆 + 非 LLM 分析结论, 末步统一走 `redact.redact_export_bundle`. 无会话锁、不触 LLM. |
 | `reset_runner.py` | Diagnostics → Reset 页的硬重置 | `reset_runtime_state(...)` | 清沙盒 + 清持久化 + 清日志. |
 | `boot_cleanup.py` | 启动时清临时文件 (`.tmp`, `.locked_*`, 孤儿 SQLite 旁车) | `run_boot_cleanup()` | P-B 延期加固. |
 | `boot_self_check.py` | 启动时扫孤儿沙盒 | `scan_orphan_sandboxes()` | P-A 延期加固. 只扫不删. |
-| `redact.py` | 脱敏工具 (api_key / 长文) | `redact_dict(...)` | export 路径 + diagnostics 展示都用. |
+| `redact.py` | 脱敏工具 (api_key / 长文) + 记忆导出三档脱敏 chokepoint | `redact_dict(...)` / `redact_export_bundle(bundle, tier, identity_names)` / `build_identity_map(...)` + `apply_identity_map(...)` | export 路径 + diagnostics 展示都用. P30 加 minimal/standard/strict 三档: minimal 去凭据; standard 一致假名化身份 (对 dict **键与值**都替换, 覆盖 persona.json 以名作键的结构); strict 额外整层撤原始转录. |
 | `request_helpers.py` | FastAPI 请求处理共享 | 当前 session id 等 | |
 | `sse_events.py` | SSE 帧格式 helper | `sse_error_frame(...)` | 顶层必须先 yield 一条 error 帧再 raise. |
 
