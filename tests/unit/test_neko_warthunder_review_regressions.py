@@ -72,6 +72,7 @@ def test_data_layer_cors_only_echoes_approved_neko_origins(
     monkeypatch.delenv("NEKO_MAIN_SERVER_PORT", raising=False)
     monkeypatch.delenv("MAIN_SERVER_PORT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     wt_server_module = _load_wt_server_module(monkeypatch)
     handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
     emitted: list[tuple[str, str]] = []
