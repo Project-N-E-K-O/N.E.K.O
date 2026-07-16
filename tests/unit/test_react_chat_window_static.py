@@ -271,6 +271,10 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
         "function createResizeEdges",
         1,
     )[0]
+    effective_composer_hidden_block = source.split("function getEffectiveComposerHidden()", 1)[1].split(
+        "function getNekoGoodbyeModeActive",
+        1,
+    )[0]
 
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
@@ -280,7 +284,8 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "&& window.isNekoGoodbyeModeActive()" in source
     assert "function getEffectiveComposerAttachmentsVisible()" in source
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
-    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
+    assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
