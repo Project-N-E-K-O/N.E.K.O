@@ -797,13 +797,19 @@ async def preview_external_memory_import(request: Request):
             "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
         }
         # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
-        # (neko / master) 分组，每组一次 LLM 往返；facts 走纯写盘、不调 LLM。空
-        # persona → 0 次调用（前端回退到无预估文案）。
+        # (neko / master) 分组，每组一次 LLM 往返；daily 日记按天（=source_file）
+        # 各一次 LLM 抽取；MEMORY.md facts 走纯写盘、不调 LLM。0 次调用 → 前端
+        # 回退到无预估文案。
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
+        daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
+        daily_extraction_calls = len({str(item.get("source_file") or "") for item in daily_cands})
         # count_tokens 逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件循环，
         # 与上面 _prepare_external_import 一致 offload 到线程池（Codex/CodeRabbit）。
-        persona_candidate_tokens = await asyncio.to_thread(
-            lambda: sum(count_tokens(item["text"]) for item in persona_cands)
+        persona_candidate_tokens, daily_candidate_tokens = await asyncio.to_thread(
+            lambda: (
+                sum(count_tokens(item["text"]) for item in persona_cands),
+                sum(count_tokens(item["text"]) for item in daily_cands),
+            )
         )
         return {
             "success": True,
@@ -814,6 +820,8 @@ async def preview_external_memory_import(request: Request):
             "candidate_count": len(analysis["candidates"]),
             "persona_fusion_calls": persona_fusion_calls,
             "persona_candidate_tokens": persona_candidate_tokens,
+            "daily_extraction_calls": daily_extraction_calls,
+            "daily_candidate_tokens": daily_candidate_tokens,
             "warning_count": len(analysis["warnings"]),
             "warnings": analysis["warnings"][:20],
             "candidates": analysis["candidates"][:100],

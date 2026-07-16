@@ -37,6 +37,7 @@ from config import (
     EVIDENCE_DETECT_SIGNALS_MODEL_TIER,
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
     EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
+    EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     MEMORY_SCHEMA_VERSION_CURRENT,
 )
 from memory.temporal import (
@@ -1204,9 +1205,12 @@ class FactStore:
         file (one file == one day); each day's fragments are joined into a single
         user turn (input capped to ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS``) and
         extracted independently so the day's ``event_date`` can be stamped onto
-        every fact it yields. One LLM call per day, sequential. Best-effort per
-        day: a day whose Stage-1 call fails (None) or yields nothing is logged and
-        skipped so one bad day never aborts the whole import.
+        every fact it yields. One LLM call per day, run concurrently under
+        ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
+        sequentially would blow past the upstream 240s forwarding window);
+        persistence stays serialized by the per-character persist lock. Best-
+        effort per day: a day whose Stage-1 call fails (None) or crashes is
+        logged and skipped so one bad day never aborts the whole import.
 
         Returns ``{'added': int, 'days': int, 'failed_days': int}``.
         """
@@ -1219,9 +1223,10 @@ class FactStore:
                 continue
             by_file.setdefault(str(cand.get("source_file") or ""), []).append(cand)
 
-        added = 0
-        failed_days = 0
-        for source_file, group in by_file.items():
+        llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
+
+        async def _extract_one_day(source_file: str, group: list[dict]) -> int | None:
+            """One day's extraction+persist; returns added count, None on LLM failure."""
             event_date = next(
                 (str(g["event_date"]) for g in group if g.get("event_date")), None
             )
@@ -1231,20 +1236,22 @@ class FactStore:
                 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
             )
             if not journal_text:
-                continue
+                return 0
             messages = convert_to_messages(
                 [{"role": "user", "content": journal_text}]
             )
-            extracted = await self._allm_extract_facts(lanlan_name, messages)
+            # 只有 LLM 往返占并发槽；写盘走 _apersist_new_facts 的 per-character
+            # 锁自行互斥，放在槽外让下一天的 LLM 调用尽早起跑。
+            async with llm_slots:
+                extracted = await self._allm_extract_facts(lanlan_name, messages)
             if extracted is None:
                 # Stage-1 terminal failure for this day → skip it, keep the rest.
-                failed_days += 1
                 logger.warning(
                     f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，跳过 {source_file}"
                 )
-                continue
+                return None
             if not extracted:
-                continue
+                return 0
             for fact in extracted:
                 if isinstance(fact, dict):
                     # Stamp provenance; _apersist_new_facts_locked turns event_date
@@ -1259,7 +1266,21 @@ class FactStore:
             new_facts = await self._apersist_new_facts(
                 lanlan_name, extracted, semantic_dedup=True,
             )
-            added += len(new_facts)
+            return len(new_facts)
+
+        outcomes = await asyncio.gather(
+            *(_extract_one_day(f, g) for f, g in by_file.items()),
+            return_exceptions=True,
+        )
+        for exc in (o for o in outcomes if isinstance(o, BaseException)):
+            logger.error(
+                f"[FactStore] {lanlan_name}: 外部 daily 抽取单日崩溃，已跳过该日",
+                exc_info=exc,
+            )
+        added = sum(o for o in outcomes if isinstance(o, int))
+        failed_days = sum(
+            1 for o in outcomes if o is None or isinstance(o, BaseException)
+        )
         return {"added": added, "days": len(by_file), "failed_days": failed_days}
 
     async def aextract_facts_with_known_pool(

@@ -424,6 +424,10 @@ EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 # daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
 # 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
 EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
+# daily 抽取的并发上限：每天一次 LLM 调用，串行跑 30 天日记 ≈ 300-900s，必撞
+# 上游 commit 转发的 240s 墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。
+# 不设太高：抽取 LLM 共享 provider 配额，且写盘侧由 per-character 锁天然串行。
+EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。

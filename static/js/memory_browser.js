@@ -1706,13 +1706,20 @@
                 return;
             }
             payload.acknowledge_warnings = true;
-            // 预估融合耗时：persona 融合按 entity(neko/master)分组，每组一次 LLM
-            // 往返，facts 不调 LLM。据「调用次数 × 常数 + 候选 token」保守估时（宁可
-            // 高估），并固定标注 240s 后端上限。纯 facts 导入(0 次调用)不显示预估。
+            // 预估融合耗时：persona 融合按 entity(neko/master)分组每组一次 LLM 往返，
+            // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
+            // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
+            // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
+            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
-            const etaSeconds = fusionCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(fusionCalls * 10 + personaTokens / 300)))
+            const dailyCalls = Number(preview.daily_extraction_calls) || 0;
+            const dailyTokens = Number(preview.daily_candidate_tokens) || 0;
+            const llmCalls = fusionCalls + dailyCalls;
+            const llmTokens = personaTokens + dailyTokens;
+            const etaSeconds = llmCalls > 0
+                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
