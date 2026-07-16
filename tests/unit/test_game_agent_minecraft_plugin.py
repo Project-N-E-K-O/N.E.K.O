@@ -1403,6 +1403,16 @@ def test_task_tool_description_preserves_master_words_and_coordinates():
     assert "different coordinates" not in prompts.t(
         "COMPLETION_FOLLOWUP_BLOCKED", lang="en"
     )
+    for key in (
+        "COMPLETION_FOLLOWUP_BLOCKED",
+        "COMPLETION_FOLLOWUP_SUCCESS",
+        "COMPLETION_FOLLOWUP_FAILED",
+        "RETROACTIVE_FOLLOWUP",
+        "SYSTEM_PROMPT_IDLE_BODY",
+    ):
+        cue = prompts.t(key, lang="en")
+        assert "unfinished explicit instruction" not in cue
+        assert "next step" not in cue
 
 
 def test_prompts_have_all_seven_locales():
