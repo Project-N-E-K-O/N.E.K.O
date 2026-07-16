@@ -7,6 +7,7 @@ The agent server speaks a small JSON protocol:
 * **server → client** ``{"type": "screenshot", "image": "<base64>", "encoding": "png"|"jpeg"}``
 * **server → client** ``{"type": "task_finished", "status": "ok", "text": "..."}``
 * **server → client** ``{"type": "agent_status", ...}``  # informational, ignored by callbacks
+* **server → client** ``{"type": "ingame_chat", "messages": [{"player": "...", "text": "..."}]}``
 
 Why a long-lived WebSocket instead of polling HTTP: screenshot frames can
 arrive at >1Hz, and the handshake cost of HTTP per frame would dominate
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import websockets
@@ -30,6 +32,17 @@ OnTaskFinished = Callable[[dict[str, Any]], Awaitable[None]]
 OnAlert = Callable[[dict[str, Any]], Awaitable[None]]
 OnInventory = Callable[[dict[str, Any]], Awaitable[None]]
 OnBotStatus = Callable[[dict[str, Any]], Awaitable[None]]  # bot_status_nl frame
+
+
+@dataclass(frozen=True, slots=True)
+class IngameChatMessage:
+    """One validated ordinary-player chat item from an ``ingame_chat`` batch."""
+
+    player: str
+    text: str
+
+
+OnIngameChat = Callable[[tuple[IngameChatMessage, ...]], Awaitable[None]]
 
 
 class GameAgentClient:
@@ -51,6 +64,7 @@ class GameAgentClient:
         on_alert: Optional[OnAlert] = None,
         on_inventory: Optional[OnInventory] = None,
         on_bot_status: Optional[OnBotStatus] = None,
+        on_ingame_chat: Optional[OnIngameChat] = None,
         reconnect_interval: float = 5.0,
         logger: Any = None,
     ):
@@ -61,6 +75,7 @@ class GameAgentClient:
         self.on_alert = on_alert
         self.on_inventory = on_inventory
         self.on_bot_status = on_bot_status
+        self.on_ingame_chat = on_ingame_chat
         self.reconnect_interval = reconnect_interval
         # Plugin SDK injects a per-plugin loguru logger; fall back to a
         # noop when running outside that environment (unit tests).
@@ -259,6 +274,11 @@ class GameAgentClient:
                         # while the agent is already mid-action.
                         await self.on_bot_status(data)
 
+                    elif msg_type == "ingame_chat" and self.on_ingame_chat is not None:
+                        messages = self._parse_ingame_chat_messages(data)
+                        if messages:
+                            await self.on_ingame_chat(messages)
+
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
                         # logged this at debug. Keep parity.
@@ -278,6 +298,35 @@ class GameAgentClient:
         except Exception as exc:
             self.is_connected = False
             self._log_error("listen error: {}: {}", type(exc).__name__, exc)
+
+    @staticmethod
+    def _parse_ingame_chat_messages(
+        data: dict[str, Any],
+    ) -> tuple[IngameChatMessage, ...]:
+        """Validate the structured batch and discard malformed or empty items.
+
+        The frame's aggregate ``text`` field intentionally is not consumed: the
+        structured ``messages`` list is authoritative, and reading both would
+        inject the same player chat into the dialog context twice.
+        """
+        raw_messages = data.get("messages")
+        if not isinstance(raw_messages, list):
+            return ()
+
+        messages: list[IngameChatMessage] = []
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            player = item.get("player")
+            text = item.get("text")
+            if not isinstance(player, str) or not isinstance(text, str):
+                continue
+            player = player.strip()
+            text = text.strip()
+            if not player or not text:
+                continue
+            messages.append(IngameChatMessage(player=player, text=text))
+        return tuple(messages)
 
     # ------------------------------------------------------------------
     # Logging helpers — silently no-op when no logger is supplied.
@@ -324,4 +373,6 @@ __all__ = [
     "OnAlert",
     "OnInventory",
     "OnBotStatus",
+    "IngameChatMessage",
+    "OnIngameChat",
 ]
