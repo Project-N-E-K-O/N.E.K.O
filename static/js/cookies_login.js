@@ -29,6 +29,16 @@ const PLATFORM_CONFIG_DATA = {
             { key: 'buvid3', labelKey: 'cookiesLogin.fields.buvid3.label', descKey: 'cookiesLogin.fields.buvid3.desc', required: false }
         ]
     },
+    'youtube': {
+        name: 'YouTube',
+        nameKey: 'cookiesLogin.youtube',
+        theme: '#ff0000',
+        instructionKey: 'cookiesLogin.instructions.youtube',
+        fields: [
+            { key: 'SAPISID', labelKey: 'cookiesLogin.fields.SAPISID.label', descKey: 'cookiesLogin.fields.SAPISID.desc', required: false },
+            { key: '__Secure-3PAPISID', labelKey: 'cookiesLogin.fields.secure3PAPISID.label', descKey: 'cookiesLogin.fields.secure3PAPISID.desc', required: false }
+        ]
+    },
     'douyin': {
         name: '抖音', 
         nameKey: 'cookiesLogin.douyin', 

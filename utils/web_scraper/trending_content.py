@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from ._shared import get_random_user_agent, is_china_region, logger
 from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .youtube_feed import fetch_youtube_home_feed
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
@@ -719,8 +720,9 @@ async def _fetch_content_by_region(
                 content_key: result
             }
         
-        if not result.get('success') and result.get('error'):
-            response['error'] = result.get('error')
+        if not result.get('success'):
+            source = result.get('source') or content_key
+            response['error'] = result.get('error') or f'{source} 获取失败（无错误详情）'
         return response
             
     except Exception as e:
@@ -735,7 +737,7 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Fetch video content based on the user's region
     
     Chinese region: Bilibili homepage videos
-    non-Chinese region: Reddit hot posts
+    non-Chinese region: YouTube Home Feed
     
     Args:
         limit: maximum amount of content
@@ -745,11 +747,11 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     """
     return await _fetch_content_by_region(
         china_fetch_func=fetch_bilibili_trending,
-        non_china_fetch_func=fetch_reddit_popular,
+        non_china_fetch_func=fetch_youtube_home_feed,
         limit=limit,
         content_key='video',
         china_log_msg="检测到中文区域，获取B站视频内容",
-        non_china_log_msg="检测到非中文区域，获取Reddit热门内容"
+        non_china_log_msg="检测到非中文区域，获取 YouTube 首页 Feed"
     )
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
@@ -786,6 +788,22 @@ def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
         output_lines.append(f"   UP主: {author}")
         if rcmd_reason:
             output_lines.append(f"   推荐理由: {rcmd_reason}")
+    output_lines.append("")
+    return output_lines
+
+def _format_youtube_videos(videos: List[Dict], limit: int = 5) -> List[str]:
+    """Format YouTube Home Feed videos."""
+    output_lines = ["【YouTube 推荐】"]
+    for i, video in enumerate(videos[:limit], 1):
+        title = video.get('title', '')
+        author = video.get('author', '')
+        view_count = video.get('view_count', '')
+        published_text = video.get('published_text', '')
+
+        output_lines.append(f"{i}. {title}")
+        details = [detail for detail in (author, view_count, published_text) if detail]
+        if details:
+            output_lines.append(f"   {' | '.join(details)}")
     output_lines.append("")
     return output_lines
 
@@ -883,7 +901,7 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
     
     Formats automatically by region:
     - Chinese region: Bilibili video content
-    - non-Chinese region: Reddit post content
+    - non-Chinese region: YouTube Home Feed
     
     Args:
         video_content: result returned by fetch_video_content
@@ -902,10 +920,10 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
         return "暂时无法获取视频推荐内容"
     else:
         if video_data.get('success'):
-            posts = video_data.get('posts', [])
-            output_lines = _format_reddit_posts(posts)
+            videos = video_data.get('videos', [])
+            output_lines = _format_youtube_videos(videos)
             return "\n".join(output_lines)
-        return "Unable to fetch trending posts at the moment"
+        return "Unable to fetch YouTube recommendations at the moment"
 
 def format_news_content(news_content: Dict[str, Any]) -> str:
     """

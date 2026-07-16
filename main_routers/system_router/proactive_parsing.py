@@ -52,7 +52,8 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
+                    default_source = 'B站' if raw_data.get('region', 'china') == 'china' else 'YouTube'
+                    links.append({'title': title, 'url': url, 'source': item.get('source') or default_source})
         
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})

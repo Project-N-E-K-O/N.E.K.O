@@ -96,6 +96,14 @@ class CookieSubmit(BaseModel):
 
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     """Unified sanity validation of core fields for each platform."""
+    if platform == "youtube":
+        if not (cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="格式错误：未检测到核心字段 SAPISID 或 __Secure-3PAPISID"
+            )
+        return
+
     platform_validations = {
         "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],

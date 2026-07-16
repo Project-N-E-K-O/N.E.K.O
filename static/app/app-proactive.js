@@ -933,12 +933,13 @@
 
             var result = await response.json();
             var availablePlatforms = [];
+            var personalFeedPlatforms = new Set(['bilibili', 'douyin', 'kuaishou', 'weibo', 'reddit', 'twitter']);
 
             if (result.success && result.data) {
                 for (var _ref of Object.entries(result.data)) {
                     var platform = _ref[0];
                     var info = _ref[1];
-                    if (platform !== 'platforms' && info.has_cookies) {
+                    if (personalFeedPlatforms.has(platform) && info.has_cookies) {
                         availablePlatforms.push(platform);
                     }
                 }
@@ -1073,7 +1074,7 @@
                 availableModes.push('news');
             }
 
-            // 视频搭话：使用B站首页视频
+            // 视频搭话：中文地区使用 B站，非中文地区使用 YouTube 首页 Feed
             if (S.proactiveVideoChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('video');
             }
