@@ -91,12 +91,8 @@ async def transcribe_file(
     trailing_silence_ms: int,
     timeout_s: float,
 ) -> SmokeResult:
-    audio, sample_rate, channels, duration_s = await asyncio.to_thread(
-        _read_pcm_wav, path
-    )
-    frame_bytes = sample_rate * channels * 2 * chunk_ms // 1000
-    silence = b"\0" * (sample_rate * channels * 2 * trailing_silence_ms // 1000)
     started = time.perf_counter()
+    duration_s = 0.0
     eos_at: float | None = None
     first_token_ms: float | None = None
     endpoint_after_eos_ms: float | None = None
@@ -108,6 +104,13 @@ async def transcribe_file(
     provider_request_id: str | None = None
 
     try:
+        audio, sample_rate, channels, duration_s = await asyncio.to_thread(
+            _read_pcm_wav, path
+        )
+        frame_bytes = sample_rate * channels * 2 * chunk_ms // 1000
+        silence = b"\0" * (
+            sample_rate * channels * 2 * trailing_silence_ms // 1000
+        )
         async with websockets.connect(
             REGION_URLS[region],
             open_timeout=timeout_s,

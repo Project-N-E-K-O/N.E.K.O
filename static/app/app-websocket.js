@@ -1915,10 +1915,6 @@
                     // single authoritative Smart Turn transcript so history/UI
                     // never contain both partials and the completed utterance.
                     removeExternalAsrPreview();
-                    if (S.lastVoiceUserMessage === S.externalAsrPreviewMessage) {
-                        S.lastVoiceUserMessage = null;
-                        S.lastVoiceUserMessageTime = 0;
-                    }
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();
@@ -3017,6 +3013,7 @@
                 } else if (response.type === 'session_ended_by_server') {
                     console.log('[App] Session ended by server, input_mode:', response.input_mode);
                     window.dispatchEvent(new CustomEvent('neko:session-ended-by-server', { detail: response }));
+                    removeExternalAsrPreview();
                     S.isTextSessionActive = false;
                     S.voiceChatActive = false;
                     S.voiceStartPending = false;
@@ -3298,6 +3295,7 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
+            removeExternalAsrPreview();
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat

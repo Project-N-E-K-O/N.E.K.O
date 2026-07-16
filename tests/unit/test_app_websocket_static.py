@@ -55,6 +55,34 @@ def test_external_asr_preview_uses_owned_react_message_id():
     assert "removeExternalAsrPreview();" in final_block
 
 
+def test_external_asr_preview_clears_only_on_current_session_terminals():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    final_block = source.split("// -------- user_transcript --------", 1)[1].split(
+        "// --------", 1
+    )[0]
+    session_ended_block = source.split(
+        "// -------- session_ended_by_server --------", 1
+    )[1].split("// -------- reload_page --------", 1)[0]
+    onclose_block = source.split("// ---- onclose ----", 1)[1].split(
+        "// ---- onerror ----", 1
+    )[0]
+    stale_guard, current_close = onclose_block.split(
+        "console.log(window.t('console.websocketClosed'));", 1
+    )
+    onerror_block = source.split("// ---- onerror ----", 1)[1].split(
+        "mod.connectWebSocket = connectWebSocket;", 1
+    )[0]
+
+    assert "removeExternalAsrPreview();" in final_block
+    assert "S.lastVoiceUserMessage === S.externalAsrPreviewMessage" not in final_block
+    assert "removeExternalAsrPreview();" in session_ended_block
+    assert "if (S.socket !== _thisSocket)" in stale_guard
+    assert "removeExternalAsrPreview();" not in stale_guard
+    assert "removeExternalAsrPreview();" in current_close
+    assert "removeExternalAsrPreview();" not in onerror_block
+
+
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
