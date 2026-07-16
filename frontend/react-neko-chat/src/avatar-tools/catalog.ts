@@ -64,12 +64,12 @@ export function hasValidAvatarToolAssetVersion(path: string): boolean {
   }
 }
 
-export type AvatarToolDefinitionId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
+export type AvatarToolId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
 export type AvatarToolVariantId = typeof AVATAR_TOOL_VARIANT_IDS[number];
-export type AvatarToolDefinitionIntensity = typeof AVATAR_TOOL_INTERACTION_INTENSITIES[number];
+export type AvatarToolInteractionIntensity = typeof AVATAR_TOOL_INTERACTION_INTENSITIES[number];
 export type AvatarToolTouchZone = typeof AVATAR_TOOL_TOUCH_ZONES[number];
-export type AvatarToolDefinitionSound = string;
-export type AvatarToolDefinitionEffect = string;
+export type AvatarToolSoundId = string;
+export type AvatarToolEffectId = string;
 
 export type AvatarToolRenderedAnchor = {
   x: number;
@@ -78,14 +78,14 @@ export type AvatarToolRenderedAnchor = {
 };
 
 export type AvatarToolSoundResource = {
-  id: AvatarToolDefinitionSound;
+  id: AvatarToolSoundId;
   src: string;
   volume: number;
 };
 
 export type FixedParticleEffectRecipe = {
   id: string;
-  kind: 'fixed-particles-v1';
+  kind: 'fixed-particles';
   interactionLock: 'none';
   lifetimeMs: number;
   glyph: string;
@@ -101,7 +101,7 @@ export type FixedParticleEffectRecipe = {
 
 export type RandomScatterEffectRecipe = {
   id: string;
-  kind: 'random-scatter-v1';
+  kind: 'random-scatter';
   interactionLock: 'none';
   assetPath: string;
   count: number;
@@ -119,7 +119,7 @@ export type HammerSwingPhase = 'idle' | 'windup' | 'swing' | 'impact' | 'recover
 
 export type HammerSwingEffectRecipe = {
   id: string;
-  kind: 'hammer-swing-v1';
+  kind: 'hammer-swing';
   interactionLock: 'effect-lifetime';
   anchor: {
     source: 'live-pointer';
@@ -198,11 +198,11 @@ export type AvatarToolVisualDefinition = {
 };
 
 export type ProgressiveReleaseProfile = {
-  kind: 'progressive-release-v1';
+  kind: 'progressive-release';
   stages: ReadonlyArray<{
     variant: AvatarToolVariantId;
     actionId: string;
-    intensity: AvatarToolDefinitionIntensity;
+    intensity: AvatarToolInteractionIntensity;
     nextVariant: AvatarToolVariantId | null;
   }>;
   burst: {
@@ -210,18 +210,18 @@ export type ProgressiveReleaseProfile = {
     variant: AvatarToolVariantId;
     windowMs: number;
     threshold: number;
-    belowThresholdIntensity: AvatarToolDefinitionIntensity;
-    thresholdIntensity: AvatarToolDefinitionIntensity;
+    belowThresholdIntensity: AvatarToolInteractionIntensity;
+    thresholdIntensity: AvatarToolInteractionIntensity;
   };
   feedback: {
-    sound: AvatarToolDefinitionSound;
-    effect: AvatarToolDefinitionEffect;
+    sound: AvatarToolSoundId;
+    effect: AvatarToolEffectId;
     effectVariant: AvatarToolVariantId;
   };
 };
 
 export type PressReleaseProfile = {
-  kind: 'press-release-v1';
+  kind: 'press-release';
   actionId: string;
   pointerDown: {
     rangeVariant: AvatarToolVariantId;
@@ -235,21 +235,21 @@ export type PressReleaseProfile = {
     key: string;
     windowMs: number;
     rapidThreshold: number;
-    normalIntensity: AvatarToolDefinitionIntensity;
-    rapidIntensity: AvatarToolDefinitionIntensity;
+    normalIntensity: AvatarToolInteractionIntensity;
+    rapidIntensity: AvatarToolInteractionIntensity;
   };
   touchZone: 'release';
   touchZones: ReadonlyArray<AvatarToolTouchZone>;
   chance: {
     field: string;
     probability: number;
-    sound: AvatarToolDefinitionSound;
-    effect: AvatarToolDefinitionEffect;
+    sound: AvatarToolSoundId;
+    effect: AvatarToolEffectId;
   };
 };
 
 export type LockedImpactProfile = {
-  kind: 'locked-impact-v1';
+  kind: 'locked-impact';
   actionId: string;
   touchZone: 'release';
   outsideFeedback: {
@@ -261,20 +261,20 @@ export type LockedImpactProfile = {
     windowMs: number;
     rapidThreshold: number;
     burstThreshold: number;
-    normalIntensity: AvatarToolDefinitionIntensity;
-    rapidIntensity: AvatarToolDefinitionIntensity;
-    burstIntensity: AvatarToolDefinitionIntensity;
+    normalIntensity: AvatarToolInteractionIntensity;
+    rapidIntensity: AvatarToolInteractionIntensity;
+    burstIntensity: AvatarToolInteractionIntensity;
   };
   touchZones: ReadonlyArray<AvatarToolTouchZone>;
   chance: {
     field: string;
     probability: number;
     intensity: 'easter_egg';
-    sound: AvatarToolDefinitionSound;
+    sound: AvatarToolSoundId;
   };
   feedback: {
-    sound: AvatarToolDefinitionSound;
-    effect: AvatarToolDefinitionEffect;
+    sound: AvatarToolSoundId;
+    effect: AvatarToolEffectId;
   };
 };
 
@@ -285,7 +285,7 @@ export type AvatarToolInteractionProfile =
 
 export type AvatarToolDefinition = {
   definitionVersion: 1;
-  id: AvatarToolDefinitionId;
+  id: AvatarToolId;
   label: {
     key: string;
     fallback: string;
@@ -490,101 +490,104 @@ function validateEffects(definition: AvatarToolDefinition) {
   }
   const ids = new Set<string>();
   definition.effects.forEach((effect: AvatarToolEffectRecipe, index: number) => {
-    assertWireIdentifier(definition, effect?.id, `effects[${index}].id`);
+    const effectPath = `effects[${index}]`;
+    assertWireIdentifier(definition, effect?.id, `${effectPath}.id`);
     if (ids.has(effect.id)) fail(definition, `effect ${effect.id} is duplicated`);
     ids.add(effect.id);
-    if (effect.kind === 'fixed-particles-v1') {
-      if (effect.interactionLock !== 'none') fail(definition, 'fixed-particles-v1 must not lock interaction');
-      assertPositive(definition, effect.lifetimeMs, 'effects.hearts.lifetimeMs');
-      assertNonEmpty(definition, effect.glyph, 'effects.hearts.glyph');
+    if (effect.kind === 'fixed-particles') {
+      if (effect.interactionLock !== 'none') fail(definition, `${effectPath} must not lock interaction`);
+      assertPositive(definition, effect.lifetimeMs, `${effectPath}.lifetimeMs`);
+      assertNonEmpty(definition, effect.glyph, `${effectPath}.glyph`);
       if (effect.glyph.length > 16) {
-        fail(definition, 'effects.hearts.glyph must contain at most 16 characters');
+        fail(definition, `${effectPath}.glyph must contain at most 16 characters`);
       }
       if (
         !Array.isArray(effect.particles)
         || effect.particles.length === 0
         || effect.particles.length > AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT
       ) {
-        fail(definition, 'effects.hearts.particles must contain between 1 and at most 64 items');
+        fail(definition, `${effectPath}.particles must contain between 1 and at most 64 items`);
       }
       effect.particles.forEach((
         particle: FixedParticleEffectRecipe['particles'][number],
         particleIndex: number,
       ) => {
         ['offsetX', 'offsetY', 'driftX', 'driftY', 'delayMs'].forEach(field =>
-          assertFinite(definition, particle?.[field as keyof typeof particle], `effects.hearts.particles[${particleIndex}].${field}`));
-        assertPositive(definition, particle?.scale, `effects.hearts.particles[${particleIndex}].scale`);
-        if (particle.delayMs < 0) fail(definition, 'heart particle delayMs must not be negative');
+          assertFinite(definition, particle?.[field as keyof typeof particle], `${effectPath}.particles[${particleIndex}].${field}`));
+        assertPositive(definition, particle?.scale, `${effectPath}.particles[${particleIndex}].scale`);
+        if (particle.delayMs < 0) {
+          fail(definition, `${effectPath}.particles[${particleIndex}].delayMs must not be negative`);
+        }
       });
       return;
     }
-    if (effect.kind === 'random-scatter-v1') {
-      if (effect.interactionLock !== 'none') fail(definition, 'random-scatter-v1 must not lock interaction');
-      assertNonEmpty(definition, effect.assetPath, 'effects.reward-drops.assetPath');
+    if (effect.kind === 'random-scatter') {
+      if (effect.interactionLock !== 'none') fail(definition, `${effectPath} must not lock interaction`);
+      assertNonEmpty(definition, effect.assetPath, `${effectPath}.assetPath`);
       if (definition.capability.desktopInteraction) {
-        assertDesktopAssetSource(definition, effect.assetPath, 'effects.reward-drops.assetPath');
+        assertDesktopAssetSource(definition, effect.assetPath, `${effectPath}.assetPath`);
       }
-      assertPositiveInteger(definition, effect.count, 'effects.reward-drops.count');
+      assertPositiveInteger(definition, effect.count, `${effectPath}.count`);
       if (effect.count > AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT) {
-        fail(definition, 'effects.reward-drops.count must be at most 64');
+        fail(definition, `${effectPath}.count must be at most 64`);
       }
-      assertPositive(definition, effect.lifetimeMs, 'effects.reward-drops.lifetimeMs');
-      validateRange(definition, effect.angleDeg, 'effects.reward-drops.angleDeg');
-      validateRange(definition, effect.distance, 'effects.reward-drops.distance');
-      validateRange(definition, effect.offsetX, 'effects.reward-drops.offsetX');
-      validateRange(definition, effect.offsetY, 'effects.reward-drops.offsetY');
-      validateRange(definition, effect.rotation, 'effects.reward-drops.rotation');
-      validateRange(definition, effect.scale, 'effects.reward-drops.scale');
-      validateRange(definition, effect.delayMs, 'effects.reward-drops.delayMs');
-      if (effect.scale.min <= 0) fail(definition, 'effects.reward-drops.scale.min must be positive');
-      if (effect.distance.min <= 0) fail(definition, 'effects.reward-drops.distance.min must be positive');
-      if (effect.delayMs.min < 0) fail(definition, 'effects.reward-drops.delayMs.min must not be negative');
+      assertPositive(definition, effect.lifetimeMs, `${effectPath}.lifetimeMs`);
+      validateRange(definition, effect.angleDeg, `${effectPath}.angleDeg`);
+      validateRange(definition, effect.distance, `${effectPath}.distance`);
+      validateRange(definition, effect.offsetX, `${effectPath}.offsetX`);
+      validateRange(definition, effect.offsetY, `${effectPath}.offsetY`);
+      validateRange(definition, effect.rotation, `${effectPath}.rotation`);
+      validateRange(definition, effect.scale, `${effectPath}.scale`);
+      validateRange(definition, effect.delayMs, `${effectPath}.delayMs`);
+      if (effect.scale.min <= 0) fail(definition, `${effectPath}.scale.min must be positive`);
+      if (effect.distance.min <= 0) fail(definition, `${effectPath}.distance.min must be positive`);
+      if (effect.delayMs.min < 0) fail(definition, `${effectPath}.delayMs.min must not be negative`);
       return;
     }
-    if (effect.kind === 'hammer-swing-v1') {
+    if (effect.kind === 'hammer-swing') {
       if (effect.interactionLock !== 'effect-lifetime') {
-        fail(definition, 'hammer-swing-v1 must lock interaction for its effect lifetime');
+        fail(definition, `${effectPath} must lock interaction for its effect lifetime`);
       }
       if (effect.anchor?.source !== 'live-pointer') {
-        fail(definition, 'effects.hammer-swing.anchor.source must be live-pointer');
+        fail(definition, `${effectPath}.anchor.source must be live-pointer`);
       }
       if (effect.anchor?.visualMode !== 'inRange') {
-        fail(definition, 'effects.hammer-swing.anchor.visualMode must be inRange');
+        fail(definition, `${effectPath}.anchor.visualMode must be inRange`);
       }
-      assertFinite(definition, effect.transformOrigin?.x, 'effects.hammer-swing.transformOrigin.x');
-      assertFinite(definition, effect.transformOrigin?.y, 'effects.hammer-swing.transformOrigin.y');
+      assertFinite(definition, effect.transformOrigin?.x, `${effectPath}.transformOrigin.x`);
+      assertFinite(definition, effect.transformOrigin?.y, `${effectPath}.transformOrigin.y`);
       assertFinite(
         definition,
         effect.impactRegistration?.transformOrigin?.x,
-        'effects.hammer-swing.impactRegistration.transformOrigin.x',
+        `${effectPath}.impactRegistration.transformOrigin.x`,
       );
       assertFinite(
         definition,
         effect.impactRegistration?.transformOrigin?.y,
-        'effects.hammer-swing.impactRegistration.transformOrigin.y',
+        `${effectPath}.impactRegistration.transformOrigin.y`,
       );
       assertFinite(
         definition,
         effect.impactRegistration?.translate?.x,
-        'effects.hammer-swing.impactRegistration.translate.x',
+        `${effectPath}.impactRegistration.translate.x`,
       );
       assertFinite(
         definition,
         effect.impactRegistration?.translate?.y,
-        'effects.hammer-swing.impactRegistration.translate.y',
+        `${effectPath}.impactRegistration.translate.y`,
       );
       assertFinite(
         definition,
         effect.impactRegistration?.rotationDeg,
-        'effects.hammer-swing.impactRegistration.rotationDeg',
+        `${effectPath}.impactRegistration.rotationDeg`,
       );
       assertPositive(
         definition,
         effect.impactRegistration?.scale,
-        'effects.hammer-swing.impactRegistration.scale',
+        `${effectPath}.impactRegistration.scale`,
       );
-      assertVariant(definition, effect.variants?.idle, 'effects.hammer-swing.variants.idle');
-      assertVariant(definition, effect.variants?.impact, 'effects.hammer-swing.variants.impact');
+      assertVariant(definition, effect.variants?.idle, `${effectPath}.variants.idle`);
+      assertVariant(definition, effect.variants?.impact, `${effectPath}.variants.impact`);
       const expectedPhases = ['windup', 'swing', 'impact', 'recover', 'idle'];
       const timeline: HammerSwingEffectRecipe['timeline'] = effect.timeline ?? [];
       if (
@@ -594,7 +597,7 @@ function validateEffects(definition: AvatarToolDefinition) {
         fail(definition, 'hammer timeline must contain windup, swing, impact, recover and idle in order');
       }
       timeline.forEach((entry, timelineIndex) => {
-        assertFinite(definition, entry.delayMs, `effects.hammer-swing.timeline[${timelineIndex}].delayMs`);
+        assertFinite(definition, entry.delayMs, `${effectPath}.timeline[${timelineIndex}].delayMs`);
         if (entry.delayMs < 0) fail(definition, 'hammer timeline delays must not be negative');
         if (timelineIndex === 0 && entry.delayMs !== 0) fail(definition, 'hammer windup must start at 0ms');
         if (timelineIndex > 0 && entry.delayMs <= timeline[timelineIndex - 1].delayMs) {
@@ -602,11 +605,11 @@ function validateEffects(definition: AvatarToolDefinition) {
         }
       });
       if (effect.easterEgg?.mode !== 'easter-egg') {
-        fail(definition, 'effects.hammer-swing.easterEgg.mode must be easter-egg');
+        fail(definition, `${effectPath}.easterEgg.mode must be easter-egg`);
       }
-      assertPositive(definition, effect.easterEgg?.scale, 'effects.hammer-swing.easterEgg.scale');
-      assertFinite(definition, effect.easterEgg?.anchorOffset?.x, 'effects.hammer-swing.easterEgg.anchorOffset.x');
-      assertFinite(definition, effect.easterEgg?.anchorOffset?.y, 'effects.hammer-swing.easterEgg.anchorOffset.y');
+      assertPositive(definition, effect.easterEgg?.scale, `${effectPath}.easterEgg.scale`);
+      assertFinite(definition, effect.easterEgg?.anchorOffset?.x, `${effectPath}.easterEgg.anchorOffset.x`);
+      assertFinite(definition, effect.easterEgg?.anchorOffset?.y, `${effectPath}.easterEgg.anchorOffset.y`);
       return;
     }
     fail(definition, `effects[${index}].kind is unsupported`);
@@ -616,15 +619,15 @@ function validateEffects(definition: AvatarToolDefinition) {
 function validateInteractionReferences(definition: AvatarToolDefinition) {
   const soundIds = new Set(definition.sounds.map(sound => sound.id));
   const effectIds = new Set(definition.effects.map(effect => effect.id));
-  const requireSound = (sound: AvatarToolDefinitionSound) => {
+  const requireSound = (sound: AvatarToolSoundId) => {
     if (!soundIds.has(sound)) fail(definition, `interaction references missing sound ${sound}`);
   };
-  const requireEffect = (effect: AvatarToolDefinitionEffect) => {
+  const requireEffect = (effect: AvatarToolEffectId) => {
     if (!effectIds.has(effect)) fail(definition, `interaction references missing effect ${effect}`);
   };
   const interaction = definition.interaction;
   assertNonEmpty(definition, interaction?.kind, 'interaction.kind');
-  if (interaction.kind === 'progressive-release-v1') {
+  if (interaction.kind === 'progressive-release') {
     const stages = interaction.stages ?? [];
     const variants = stages.map(stage => stage.variant);
     if (
@@ -682,7 +685,7 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
   }
   assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
-  if (interaction.kind === 'press-release-v1') {
+  if (interaction.kind === 'press-release') {
     assertVariant(definition, interaction.pointerDown.rangeVariant, 'interaction.pointerDown.rangeVariant');
     assertVariant(definition, interaction.pointerDown.outsideVariant, 'interaction.pointerDown.outsideVariant');
     assertVariant(definition, interaction.pointerRelease.rangeVariant, 'interaction.pointerRelease.rangeVariant');
@@ -691,7 +694,7 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     requireEffect(interaction.chance.effect);
     return;
   }
-  if (interaction.kind === 'locked-impact-v1') {
+  if (interaction.kind === 'locked-impact') {
     assertPositiveInteger(definition, interaction.burst.burstThreshold, 'interaction.burst.burstThreshold');
     assertIntensity(definition, interaction.burst.burstIntensity, 'interaction.burst.burstIntensity');
     if (interaction.chance.intensity !== 'easter_egg') {
@@ -741,8 +744,8 @@ export function validateAvatarToolDefinition(definition: AvatarToolDefinition): 
 // Lollipop -------------------------------------------------------------------
 
 export const LOLLIPOP_HEART_EFFECT_RECIPE = {
-  id: 'hearts',
-  kind: 'fixed-particles-v1',
+  id: 'lollipop-hearts',
+  kind: 'fixed-particles',
   interactionLock: 'none',
   lifetimeMs: 2100,
   glyph: '*',
@@ -768,20 +771,20 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
     initialVariant: 'primary',
     variants: {
       primary: {
-        iconImagePath: '/static/assets/avatar-tools/sugar/chat_sugar1.png',
-        pointerImagePath: '/static/assets/avatar-tools/sugar/chat_sugar1_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/lollipop/primary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/lollipop/primary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
       secondary: {
-        iconImagePath: '/static/assets/avatar-tools/sugar/chat_sugar2.png',
-        pointerImagePath: '/static/assets/avatar-tools/sugar/chat_sugar2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/lollipop/secondary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/lollipop/secondary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
       tertiary: {
-        iconImagePath: '/static/assets/avatar-tools/sugar/chat_sugar3.png',
-        pointerImagePath: '/static/assets/avatar-tools/sugar/chat_sugar2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/lollipop/tertiary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/lollipop/secondary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
@@ -822,13 +825,13 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
   sounds: [
     {
       id: 'lollipop-bite',
-      src: '/static/sounds/avatar-tools/lollipop-bite.mp3',
+      src: '/static/sounds/avatar-tools/lollipop/bite.mp3',
       volume: 0.9,
     },
   ],
   effects: [LOLLIPOP_HEART_EFFECT_RECIPE],
   interaction: {
-    kind: 'progressive-release-v1',
+    kind: 'progressive-release',
     stages: [
       { variant: 'primary', actionId: 'offer', intensity: 'normal', nextVariant: 'secondary' },
       { variant: 'secondary', actionId: 'tease', intensity: 'normal', nextVariant: 'tertiary' },
@@ -844,7 +847,7 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
     },
     feedback: {
       sound: 'lollipop-bite',
-      effect: 'hearts',
+      effect: 'lollipop-hearts',
       effectVariant: 'tertiary',
     },
   },
@@ -853,10 +856,10 @@ export const LOLLIPOP_AVATAR_TOOL_DEFINITION = {
 // Fist -----------------------------------------------------------------------
 
 export const FIST_REWARD_DROP_EFFECT_RECIPE = {
-  id: 'reward-drops',
-  kind: 'random-scatter-v1',
+  id: 'fist-reward-drops',
+  kind: 'random-scatter',
   interactionLock: 'none',
-  assetPath: '/static/icons/cat_moneny.png',
+  assetPath: '/static/assets/avatar-tools/fist/reward-drop.png',
   count: 3,
   lifetimeMs: 920,
   angleDeg: { min: -140, range: 100 },
@@ -883,20 +886,20 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
     initialVariant: 'primary',
     variants: {
       primary: {
-        iconImagePath: '/static/assets/avatar-tools/claw/cat_claw1.png',
-        pointerImagePath: '/static/assets/avatar-tools/claw/cat_claw1_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/fist/primary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/fist/primary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
       secondary: {
-        iconImagePath: '/static/assets/avatar-tools/claw/cat_claw2.png',
-        pointerImagePath: '/static/assets/avatar-tools/claw/cat_claw2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/fist/secondary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/fist/secondary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
       tertiary: {
-        iconImagePath: '/static/assets/avatar-tools/claw/cat_claw1.png',
-        pointerImagePath: '/static/assets/avatar-tools/claw/cat_claw2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/fist/primary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/fist/secondary-pointer.png',
         menuOffsetX: 0,
         menuOffsetY: 0,
       },
@@ -936,14 +939,14 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
   },
   sounds: [
     {
-      id: 'coin-drop',
-      src: '/static/sounds/avatar-tools/coin-drop.mp3',
+      id: 'fist-reward-drop',
+      src: '/static/sounds/avatar-tools/fist/reward-drop.mp3',
       volume: 0.9,
     },
   ],
   effects: [FIST_REWARD_DROP_EFFECT_RECIPE],
   interaction: {
-    kind: 'press-release-v1',
+    kind: 'press-release',
     actionId: 'poke',
     pointerDown: {
       rangeVariant: 'secondary',
@@ -965,8 +968,8 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
     chance: {
       field: 'rewardDrop',
       probability: 0.25,
-      sound: 'coin-drop',
-      effect: 'reward-drops',
+      sound: 'fist-reward-drop',
+      effect: 'fist-reward-drops',
     },
   },
 } as const satisfies AvatarToolDefinition;
@@ -975,7 +978,7 @@ export const FIST_AVATAR_TOOL_DEFINITION = {
 
 export const HAMMER_SWING_EFFECT_RECIPE = {
   id: 'hammer-swing',
-  kind: 'hammer-swing-v1',
+  kind: 'hammer-swing',
   interactionLock: 'effect-lifetime',
   anchor: {
     source: 'live-pointer',
@@ -1021,20 +1024,20 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
     initialVariant: 'primary',
     variants: {
       primary: {
-        iconImagePath: '/static/assets/avatar-tools/hammer/chat_hammer1.png',
-        pointerImagePath: '/static/assets/avatar-tools/hammer/chat_hammer1_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/hammer/primary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/hammer/primary-pointer.png',
         menuOffsetX: -8,
         menuOffsetY: 4,
       },
       secondary: {
-        iconImagePath: '/static/assets/avatar-tools/hammer/chat_hammer2.png',
-        pointerImagePath: '/static/assets/avatar-tools/hammer/chat_hammer2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/hammer/secondary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/hammer/secondary-pointer.png',
         menuOffsetX: 1,
         menuOffsetY: -1,
       },
       tertiary: {
-        iconImagePath: '/static/assets/avatar-tools/hammer/chat_hammer1.png',
-        pointerImagePath: '/static/assets/avatar-tools/hammer/chat_hammer2_cursor.png',
+        iconImagePath: '/static/assets/avatar-tools/hammer/primary-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/hammer/secondary-pointer.png',
         menuOffsetX: 1,
         menuOffsetY: -1,
       },
@@ -1079,19 +1082,19 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
   },
   sounds: [
     {
-      id: 'hammer-small',
-      src: '/static/sounds/avatar-tools/hammer-small.mp3',
+      id: 'hammer-impact',
+      src: '/static/sounds/avatar-tools/hammer/impact.mp3',
       volume: 0.9,
     },
     {
-      id: 'hammer-big',
-      src: '/static/sounds/avatar-tools/hammer-big.mp3',
+      id: 'hammer-easter-egg',
+      src: '/static/sounds/avatar-tools/hammer/easter-egg.mp3',
       volume: 0.9,
     },
   ],
   effects: [HAMMER_SWING_EFFECT_RECIPE],
   interaction: {
-    kind: 'locked-impact-v1',
+    kind: 'locked-impact',
     actionId: 'bonk',
     touchZone: 'release',
     outsideFeedback: {
@@ -1112,10 +1115,10 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
       field: 'easterEgg',
       probability: 0.05,
       intensity: 'easter_egg',
-      sound: 'hammer-big',
+      sound: 'hammer-easter-egg',
     },
     feedback: {
-      sound: 'hammer-small',
+      sound: 'hammer-impact',
       effect: 'hammer-swing',
     },
   },
@@ -1129,7 +1132,7 @@ export const AVATAR_TOOL_REGISTRY = [
   registerAvatarTool(HAMMER_AVATAR_TOOL_DEFINITION),
 ] as const satisfies ReadonlyArray<AvatarToolRegistration>;
 
-const registrationById = new Map<AvatarToolDefinitionId, AvatarToolRegistration>();
+const registrationById = new Map<AvatarToolId, AvatarToolRegistration>();
 AVATAR_TOOL_REGISTRY.forEach((registration) => {
   validateAvatarToolDefinition(registration.definition);
   const { id } = registration.definition;
@@ -1142,8 +1145,8 @@ export const AVATAR_TOOL_DEFINITIONS: ReadonlyArray<AvatarToolDefinition> =
 
 export function createAvatarToolSoundResourceIndex(
   definitions: ReadonlyArray<AvatarToolDefinition>,
-): ReadonlyMap<AvatarToolDefinitionSound, AvatarToolSoundResource> {
-  const resources = new Map<AvatarToolDefinitionSound, AvatarToolSoundResource>();
+): ReadonlyMap<AvatarToolSoundId, AvatarToolSoundResource> {
+  const resources = new Map<AvatarToolSoundId, AvatarToolSoundResource>();
   definitions.forEach((definition) => definition.sounds.forEach((sound) => {
     const existing = resources.get(sound.id);
     if (existing && (existing.src !== sound.src || existing.volume !== sound.volume)) {
@@ -1156,21 +1159,21 @@ export function createAvatarToolSoundResourceIndex(
 
 const soundById = createAvatarToolSoundResourceIndex(AVATAR_TOOL_DEFINITIONS);
 
-export function getAvatarToolRegistration(toolId: AvatarToolDefinitionId): AvatarToolRegistration {
+export function getAvatarToolRegistration(toolId: AvatarToolId): AvatarToolRegistration {
   const registration = registrationById.get(toolId);
   if (!registration) throw new Error(`Unsupported avatar tool: ${toolId}`);
   return registration;
 }
 
-export function getAvatarToolSoundResource(soundId: AvatarToolDefinitionSound): AvatarToolSoundResource {
+export function getAvatarToolSoundResource(soundId: AvatarToolSoundId): AvatarToolSoundResource {
   const resource = soundById.get(soundId);
   if (!resource) throw new Error(`Unsupported avatar tool sound: ${soundId}`);
   return resource;
 }
 
 export function getAvatarToolEffectRecipe(
-  toolId: AvatarToolDefinitionId,
-  effectId: AvatarToolDefinitionEffect,
+  toolId: AvatarToolId,
+  effectId: AvatarToolEffectId,
 ): AvatarToolEffectRecipe {
   const effect = getAvatarToolRegistration(toolId).definition.effects.find(recipe => recipe.id === effectId);
   if (!effect) throw new Error(`Unsupported avatar tool effect: ${toolId}/${effectId}`);

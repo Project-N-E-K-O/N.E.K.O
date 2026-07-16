@@ -65,23 +65,24 @@
         'exclamation.png', 'happy_cat.png', 'icon_systray.ico',
         'paw_ui.png', 'reminder_icon.png', 'sad_cat.png',
         'send_icon.png', 'send_new_icon.png', 'surprise_cat.png',
-        { file: 'chat_sugar1.png', variants: ['chat_sugar1.png', 'chat_sugar3.png'] },
-        { file: 'chat_hammer1.png', variants: ['chat_hammer1.png', 'chat_hammer2.png'] },
-        'cat_moneny.png',
-        { file: 'cat_claw1.png', variants: ['cat_claw1.png', 'cat_claw2.png'] }
+        { file: 'lollipop-primary-icon.png', variants: ['lollipop-primary-icon.png', 'lollipop-tertiary-icon.png'] },
+        { file: 'hammer-primary-icon.png', variants: ['hammer-primary-icon.png', 'hammer-secondary-icon.png'] },
+        'fist-reward-drop.png',
+        { file: 'fist-primary-icon.png', variants: ['fist-primary-icon.png', 'fist-secondary-icon.png'] }
     ];
     const AVATAR_TOOL_STICKER_PATH_BY_FILE = {
-        'chat_sugar1.png': '/static/assets/avatar-tools/sugar/chat_sugar1.png',
-        'chat_sugar3.png': '/static/assets/avatar-tools/sugar/chat_sugar3.png',
-        'chat_hammer1.png': '/static/assets/avatar-tools/hammer/chat_hammer1.png',
-        'chat_hammer2.png': '/static/assets/avatar-tools/hammer/chat_hammer2.png',
-        'cat_claw1.png': '/static/assets/avatar-tools/claw/cat_claw1.png',
-        'cat_claw2.png': '/static/assets/avatar-tools/claw/cat_claw2.png',
+        'lollipop-primary-icon.png': '/static/assets/avatar-tools/lollipop/primary-icon.png',
+        'lollipop-tertiary-icon.png': '/static/assets/avatar-tools/lollipop/tertiary-icon.png',
+        'hammer-primary-icon.png': '/static/assets/avatar-tools/hammer/primary-icon.png',
+        'hammer-secondary-icon.png': '/static/assets/avatar-tools/hammer/secondary-icon.png',
+        'fist-reward-drop.png': '/static/assets/avatar-tools/fist/reward-drop.png',
+        'fist-primary-icon.png': '/static/assets/avatar-tools/fist/primary-icon.png',
+        'fist-secondary-icon.png': '/static/assets/avatar-tools/fist/secondary-icon.png',
     };
     const STICKER_VARIANT_GROUPS = [
-        ['chat_sugar1.png', 'chat_sugar3.png'],
-        ['chat_hammer1.png', 'chat_hammer2.png'],
-        ['cat_claw1.png', 'cat_claw2.png']
+        ['lollipop-primary-icon.png', 'lollipop-tertiary-icon.png'],
+        ['hammer-primary-icon.png', 'hammer-secondary-icon.png'],
+        ['fist-primary-icon.png', 'fist-secondary-icon.png']
     ].map(group => group.map(iconStickerPath));
 
     const STICKER_VARIANT_ICON = [

@@ -5254,7 +5254,7 @@ describe('App', () => {
       expect(editButton.querySelectorAll('img')).toHaveLength(1);
       expect(editButton.querySelector('img')).toHaveAttribute(
         'src',
-        '/static/assets/avatar-tools/ui/edit_tool_unified.png',
+        '/static/assets/avatar-tools/ui/edit.png',
       );
       Object.defineProperty(editButton, 'getBoundingClientRect', {
         configurable: true,
@@ -5423,11 +5423,11 @@ describe('App', () => {
     expect(editButton).not.toBeNull();
     expect(editImage).toHaveAttribute(
       'src',
-      '/static/assets/avatar-tools/ui/edit_tool_unified.png?v=asset%201',
+      '/static/assets/avatar-tools/ui/edit.png?v=asset%201',
     );
     expect(quickbarImage).toHaveAttribute(
       'src',
-      '/static/assets/avatar-tools/sugar/chat_sugar1.png?v=asset%201',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
     );
 
     fireEvent.click(editButton);
@@ -5435,7 +5435,7 @@ describe('App', () => {
     const managerImage = dialog.querySelector('.avatar-tool-manager-tool-image') as HTMLImageElement;
     expect(managerImage).toHaveAttribute(
       'src',
-      '/static/assets/avatar-tools/sugar/chat_sugar1.png?v=asset%201',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
     );
   });
 
@@ -8783,7 +8783,7 @@ describe('App', () => {
       });
 
       const avatarImage = () => document.body.querySelector('.avatar-tool-visual-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/sugar/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
       expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
         active: true,
         toolId: 'lollipop',
@@ -8798,7 +8798,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/sugar/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -8809,7 +8809,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/sugar/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
     } finally {
       vi.useRealTimers();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
@@ -9056,7 +9056,7 @@ describe('App', () => {
       cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
-        pointerImagePath: '/static/assets/avatar-tools/hammer/chat_hammer1_cursor.png',
+        pointerImagePath: '/static/assets/avatar-tools/hammer/primary-pointer.png',
         pointerHotspotX: 50,
         pointerHotspotY: 54,
         pointerNaturalWidth: 100,
@@ -9111,7 +9111,7 @@ describe('App', () => {
       expect(overlay).toHaveClass('is-compact');
       expect(overlay?.querySelector('img')).toHaveAttribute(
         'src',
-        '/static/assets/avatar-tools/claw/cat_claw1_cursor.png',
+        '/static/assets/avatar-tools/fist/primary-pointer.png',
       );
 
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -9120,7 +9120,7 @@ describe('App', () => {
         expect(overlay).not.toHaveClass('is-compact');
         expect(overlay?.querySelector('img')).toHaveAttribute(
           'src',
-          '/static/assets/avatar-tools/claw/cat_claw1.png',
+          '/static/assets/avatar-tools/fist/primary-icon.png',
         );
         expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
           active: true,
@@ -9371,7 +9371,7 @@ describe('App', () => {
 
       expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
         'src',
-        '/static/assets/avatar-tools/hammer/chat_hammer2_cursor.png',
+        '/static/assets/avatar-tools/hammer/secondary-pointer.png',
       );
 
       await act(async () => {
@@ -9379,7 +9379,7 @@ describe('App', () => {
       });
       expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
         'src',
-        '/static/assets/avatar-tools/hammer/chat_hammer1_cursor.png',
+        '/static/assets/avatar-tools/hammer/primary-pointer.png',
       );
     } finally {
       vi.useRealTimers();

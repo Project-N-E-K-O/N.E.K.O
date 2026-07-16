@@ -5,7 +5,7 @@ import {
   AVATAR_TOOL_VARIANT_IDS,
   withAvatarToolAssetVersion,
   type AvatarToolDefinition,
-  type AvatarToolDefinitionId,
+  type AvatarToolId,
   type AvatarToolInteractionProfile,
   type AvatarToolVariantId,
 } from './catalog';
@@ -21,7 +21,7 @@ type RegistryRegistration = typeof AVATAR_TOOL_REGISTRY[number];
 type RegistryDefinition = RegistryRegistration['definition'];
 
 type ProgressiveStageFacts<
-  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release-v1' }>,
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>,
   Stage = Profile['stages'][number],
 > = Stage extends {
   variant: infer Variant extends string;
@@ -40,7 +40,7 @@ type ProgressiveStageFacts<
 
 type SingleActionIntensityFor<Profile extends AvatarToolInteractionProfile> =
   Profile extends {
-      kind: 'press-release-v1';
+      kind: 'press-release';
       burst: {
         normalIntensity: infer NormalIntensity extends string;
         rapidIntensity: infer RapidIntensity extends string;
@@ -48,7 +48,7 @@ type SingleActionIntensityFor<Profile extends AvatarToolInteractionProfile> =
     }
       ? NormalIntensity | RapidIntensity
       : Profile extends {
-        kind: 'locked-impact-v1';
+        kind: 'locked-impact';
         burst: {
           normalIntensity: infer NormalIntensity extends string;
           rapidIntensity: infer RapidIntensity extends string;
@@ -70,7 +70,7 @@ type ChanceFactFor<Profile extends AvatarToolInteractionProfile> =
     : Record<never, never>;
 
 type LockedImpactFactsFor<
-  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact-v1' }>,
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact' }>,
 > = {
   actionId: Profile['actionId'];
 } & TouchZoneFactsFor<Profile> & (
@@ -83,9 +83,9 @@ type LockedImpactFactsFor<
 );
 
 type InteractionFactsFor<Profile extends AvatarToolInteractionProfile> =
-  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release-v1' }>
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>
     ? ProgressiveStageFacts<Profile>
-    : Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact-v1' }>
+    : Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact' }>
       ? LockedImpactFactsFor<Profile>
     : Profile extends { actionId: infer ActionId extends string }
       ? {
@@ -121,7 +121,7 @@ export type AvatarInteractionPayload =
       : never
     : never;
 
-type RuntimeInteractionFacts = {
+type AvatarInteractionContractFacts = {
   actions: ReadonlyArray<{
     actionId: string;
     intensities: ReadonlyArray<string>;
@@ -141,8 +141,10 @@ const avatarInteractionPayloadBaseShape = {
   timestamp: z.number().finite(),
 };
 
-function deriveRuntimeInteractionFacts(profile: AvatarToolInteractionProfile): RuntimeInteractionFacts {
-  if (profile.kind === 'progressive-release-v1') {
+function deriveAvatarInteractionContractFacts(
+  profile: AvatarToolInteractionProfile,
+): AvatarInteractionContractFacts {
+  if (profile.kind === 'progressive-release') {
     const intensitiesByActionId = new Map<string, Set<string>>();
     profile.stages.forEach((stage) => {
       const intensities = intensitiesByActionId.get(stage.actionId) ?? new Set<string>();
@@ -162,7 +164,7 @@ function deriveRuntimeInteractionFacts(profile: AvatarToolInteractionProfile): R
       chanceField: null,
     };
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return {
       actions: [{
         actionId: profile.actionId,
@@ -193,8 +195,8 @@ function oneOfDeclaredValues(values: ReadonlyArray<string>, field: string) {
   });
 }
 
-function createRuntimePayloadSchema(definition: AvatarToolDefinition) {
-  const facts = deriveRuntimeInteractionFacts(definition.interaction);
+function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) {
+  const facts = deriveAvatarInteractionContractFacts(definition.interaction);
   const intensitiesByActionId = new Map(
     facts.actions.map(action => [action.actionId, new Set(action.intensities)]),
   );
@@ -222,7 +224,7 @@ function createRuntimePayloadSchema(definition: AvatarToolDefinition) {
         message: 'intensity is not declared by the selected action',
       });
     }
-    if (definition.interaction.kind === 'locked-impact-v1' && facts.chanceField) {
+    if (definition.interaction.kind === 'locked-impact' && facts.chanceField) {
       const chanceHit = (payload as Record<string, unknown>)[facts.chanceField] === true;
       if (chanceHit !== (payload.intensity === definition.interaction.chance.intensity)) {
         context.addIssue({
@@ -235,10 +237,13 @@ function createRuntimePayloadSchema(definition: AvatarToolDefinition) {
   });
 }
 
-const runtimeContractByToolId = new Map<string, ReturnType<typeof createRuntimePayloadSchema>>(
+const avatarInteractionPayloadSchemaByToolId = new Map<
+  string,
+  ReturnType<typeof createAvatarInteractionPayloadSchema>
+>(
   AVATAR_TOOL_REGISTRY.map(({ definition }) => [
     definition.id,
-    createRuntimePayloadSchema(definition),
+    createAvatarInteractionPayloadSchema(definition),
   ]),
 );
 
@@ -246,7 +251,7 @@ const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
   const probe = toolIdProbeSchema.safeParse(value);
   if (!probe.success) return false;
-  const contract = runtimeContractByToolId.get(probe.data.toolId);
+  const contract = avatarInteractionPayloadSchemaByToolId.get(probe.data.toolId);
   return contract?.safeParse(value).success === true;
 }
 
@@ -354,7 +359,7 @@ export type AvatarToolPointer = {
 };
 
 export type AvatarToolDescriptorSource = {
-  id: AvatarToolDefinitionId;
+  id: AvatarToolId;
   iconImagePath: string;
   iconImagePathAlt?: string;
   iconImagePathAlt2?: string;
@@ -413,7 +418,7 @@ function buildAvatarToolDescriptor(activeTool: AvatarToolDescriptorSource | null
   } : null;
 }
 
-export function buildAvatarToolDescriptorStatePayload({
+export function buildAvatarToolSelectionStatePayload({
   activeTool,
   avatarRangeVariant,
   outsideRangeVariant,
@@ -434,7 +439,7 @@ export function buildAvatarToolDescriptorStatePayload({
   };
 }
 
-export function buildAvatarToolStatePayload({
+export function buildAvatarToolPointerStatePayload({
   activeTool,
   variant,
   avatarRangeVariant,

@@ -79,12 +79,12 @@ describe('avatar tool definitions', () => {
     const hammer = getAvatarToolRegistration('hammer').definition.interaction;
 
     expect(lollipop).toMatchObject({
-      kind: 'progressive-release-v1',
+      kind: 'progressive-release',
       burst: { windowMs: 1800, threshold: 4 },
-      feedback: { sound: 'lollipop-bite', effect: 'hearts' },
+      feedback: { sound: 'lollipop-bite', effect: 'lollipop-hearts' },
     });
     expect(fist).toMatchObject({
-      kind: 'press-release-v1',
+      kind: 'press-release',
       actionId: 'poke',
       burst: {
         windowMs: 1400,
@@ -97,7 +97,7 @@ describe('avatar tool definitions', () => {
       touchZones: ['ear', 'head', 'face', 'body'],
     });
     expect(hammer).toMatchObject({
-      kind: 'locked-impact-v1',
+      kind: 'locked-impact',
       actionId: 'bonk',
       burst: {
         windowMs: 3200,
@@ -165,7 +165,7 @@ describe('avatar tool definition validation', () => {
 
   it('rejects incomplete progressive stages and out-of-range chance probabilities', () => {
     const lollipop = getAvatarToolRegistration('lollipop').definition;
-    if (lollipop.interaction.kind !== 'progressive-release-v1') throw new Error('invalid fixture');
+    if (lollipop.interaction.kind !== 'progressive-release') throw new Error('invalid fixture');
     const incompleteStages = asDefinition({
       ...lollipop,
       interaction: {
@@ -179,7 +179,7 @@ describe('avatar tool definition validation', () => {
     });
 
     const fist = getAvatarToolRegistration('fist').definition;
-    if (fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    if (fist.interaction.kind !== 'press-release') throw new Error('invalid fixture');
     const invalidProbability = asDefinition({
       ...fist,
       interaction: {
@@ -194,7 +194,7 @@ describe('avatar tool definition validation', () => {
 
   it('rejects identifiers, capabilities and thresholds that the desktop consumer cannot accept', () => {
     const lollipop = getAvatarToolRegistration('lollipop').definition;
-    if (lollipop.interaction.kind !== 'progressive-release-v1') throw new Error('invalid fixture');
+    if (lollipop.interaction.kind !== 'progressive-release') throw new Error('invalid fixture');
     const cases: Array<[AvatarToolDefinition, RegExp]> = [
       [asDefinition({ ...lollipop, interaction: {
         ...lollipop.interaction,
@@ -218,10 +218,10 @@ describe('avatar tool definition validation', () => {
   it('rejects desktop-unsafe effect recipe sizes at the producer boundary', () => {
     const lollipop = getAvatarToolRegistration('lollipop').definition;
     const heartEffect = lollipop.effects[0];
-    if (heartEffect?.kind !== 'fixed-particles-v1') throw new Error('invalid fixture');
+    if (heartEffect?.kind !== 'fixed-particles') throw new Error('invalid fixture');
     const fist = getAvatarToolRegistration('fist').definition;
     const scatterEffect = fist.effects[0];
-    if (scatterEffect?.kind !== 'random-scatter-v1') throw new Error('invalid fixture');
+    if (scatterEffect?.kind !== 'random-scatter') throw new Error('invalid fixture');
     const cases: Array<[AvatarToolDefinition, RegExp]> = [
       [asDefinition({ ...lollipop, effects: [{
         ...heartEffect, glyph: 'x'.repeat(17),
@@ -239,14 +239,30 @@ describe('avatar tool definition validation', () => {
     });
   });
 
+  it('reports effect validation failures at the actual recipe index', () => {
+    const lollipop = getAvatarToolRegistration('lollipop').definition;
+    const heartEffect = lollipop.effects[0];
+    if (heartEffect?.kind !== 'fixed-particles') throw new Error('invalid fixture');
+    const invalidSecondEffect = asDefinition({
+      ...lollipop,
+      effects: [
+        { ...heartEffect, id: 'decoy-hearts' },
+        { ...heartEffect, glyph: 'x'.repeat(17) },
+      ],
+    });
+
+    expect(() => validateAvatarToolDefinition(invalidSecondEffect))
+      .toThrow(/effects\[1\]\.glyph must contain at most 16 characters/);
+  });
+
   it('rejects profile literals and asset sources that cannot reach the desktop consumer', () => {
     const fist = getAvatarToolRegistration('fist').definition;
     const hammer = getAvatarToolRegistration('hammer').definition;
-    if (fist.interaction.kind !== 'press-release-v1' || hammer.interaction.kind !== 'locked-impact-v1') {
+    if (fist.interaction.kind !== 'press-release' || hammer.interaction.kind !== 'locked-impact') {
       throw new Error('invalid fixture');
     }
     const scatter = fist.effects[0];
-    if (scatter?.kind !== 'random-scatter-v1') throw new Error('invalid fixture');
+    if (scatter?.kind !== 'random-scatter') throw new Error('invalid fixture');
     const cases: Array<[AvatarToolDefinition, RegExp]> = [
       [asDefinition({ ...fist, interaction: { ...fist.interaction, touchZone: 'press' as never } }), /touchZone.*release/],
       [asDefinition({ ...hammer, interaction: {
@@ -273,7 +289,7 @@ describe('avatar tool definition validation', () => {
 
   it('lets each touch-aware tool declare its own supported zone subset', () => {
     const fist = getAvatarToolRegistration('fist').definition;
-    if (fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    if (fist.interaction.kind !== 'press-release') throw new Error('invalid fixture');
     const withHeadOnly = asDefinition({
       ...fist,
       interaction: { ...fist.interaction, touchZones: ['head'] },
@@ -299,7 +315,7 @@ describe('avatar tool definition validation', () => {
 
   it('allows a tool-owned chance field without allowing reserved or oversized payload keys', () => {
     const fist = getAvatarToolRegistration('fist').definition;
-    if (fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    if (fist.interaction.kind !== 'press-release') throw new Error('invalid fixture');
     const interaction = fist.interaction;
     const withFutureField = asDefinition({
       ...fist,
@@ -336,7 +352,7 @@ describe('avatar tool definition validation', () => {
 
     const hammer = getAvatarToolRegistration('hammer').definition;
     const hammerEffect = getAvatarToolEffectRecipe('hammer', 'hammer-swing');
-    if (hammerEffect?.kind !== 'hammer-swing-v1') throw new Error('invalid fixture');
+    if (hammerEffect?.kind !== 'hammer-swing') throw new Error('invalid fixture');
     const incompleteTimeline = asDefinition({
       ...hammer,
       effects: [{ ...hammerEffect, timeline: hammerEffect.timeline.slice(1) }],
