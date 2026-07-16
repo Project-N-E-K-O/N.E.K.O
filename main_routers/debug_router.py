@@ -388,10 +388,11 @@ def _collect_snapshot(include_deep: bool = False, channel: str = "watchdog") -> 
     snap["ack_waiters"] = _safe_ack_waiters_size()
     snap["proactive_history"] = _safe_proactive_history_size()
     try:
-        from main_logic.game_mode_resource_protection import protector
-        snap["game_mode_beta"] = protector.snapshot()
+        from main_logic.widget_mode_runtime import widget_mode_coordinator
+
+        snap["widget_mode"] = widget_mode_coordinator.snapshot()
     except Exception as exc:
-        snap["game_mode_beta"] = {"error": str(exc)[:160]}
+        snap["widget_mode"] = {"error": str(exc)[:160]}
     if include_deep:
         # Deep 字段——~50 ms 阻塞但有 30 min 间隔，长跑曲线仍能画时序。
         snap["gc_object_top"] = _safe_gc_object_top()

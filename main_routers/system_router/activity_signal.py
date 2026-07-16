@@ -316,10 +316,9 @@ async def push_activity_signal(request: Request):
 
     try:
         # Activity Tracker remains the sole owner of app/game
-        # classification. Game Mode receives only the final exact-game
-        # boolean, never titles, process names, canonical game names, or
-        # the tracker's GPU-fallback gaming state.
-        from main_logic.game_mode_resource_protection import protector as game_mode_protector
+        # classification. Widget Mode receives only the boundary-adapted
+        # activity boolean and availability bit, never titles or process names.
+        from main_logic.widget_mode_runtime import widget_mode_coordinator
 
         activity_snapshot = tracker.get_snapshot_sync(now=now)
         observation = activity_snapshot.active_window
@@ -329,18 +328,19 @@ async def push_activity_signal(request: Request):
             and observation.category == "gaming"
             and observation.subcategory == "game"
         )
-        await game_mode_protector.ingest_game_snapshot(
-            exact_game=exact_game,
-            valid=semantic_valid,
+        await widget_mode_coordinator.ingest_activity_signal(
+            active=exact_game,
+            available=semantic_valid,
             observed_at=now,
         )
     except Exception:
-        logger.debug("Game Mode semantic classification failed", exc_info=True)
+        logger.debug("[WidgetMode] activity boundary classification failed", exc_info=True)
         try:
-            from main_logic.game_mode_resource_protection import protector as game_mode_protector
-            await game_mode_protector.record_semantic_error()
+            from main_logic.widget_mode_runtime import widget_mode_coordinator
+
+            await widget_mode_coordinator.record_activity_signal_error()
         except Exception:
-            logger.debug("Game Mode semantic fuse update failed", exc_info=True)
+            logger.debug("[WidgetMode] activity signal error update failed", exc_info=True)
 
     _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
     # Bound the dict: in practice lanlan_names are 1-3, but if an

@@ -90,7 +90,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
-    _PROJECT_ROOT / "static/app/app-game-mode-beta.js",
+    _PROJECT_ROOT / "static/app/app-widget-mode.js",
     *_PROJECT_ROOT.glob("static/app/app-interpage/*.js"),
     *_PROJECT_ROOT.glob("static/app/app-ui/*.js"),
     _PROJECT_ROOT / "static/common_ui.js",

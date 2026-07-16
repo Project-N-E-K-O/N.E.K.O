@@ -5,11 +5,11 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""Probe helper for Game Mode Beta Phase 2 manual acceptance.
+"""Probe helper for Widget Mode manual acceptance.
 
 The script is intentionally read-only by default. It queries the running
 desktop backend and prints a compact report that can be pasted into the
-Phase 2 acceptance record.
+Widget Mode acceptance record.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def candidate_base_urls(base_url: str) -> tuple[str, ...]:
         return (base_url.strip(),)
 
     candidates: list[str] = []
-    for env_name in ("NEKO_GAME_MODE_PROBE_URL", "NEKO_BACKEND_URL", "NEKO_ORIGINAL_URL"):
+    for env_name in ("NEKO_WIDGET_MODE_PROBE_URL", "NEKO_BACKEND_URL", "NEKO_ORIGINAL_URL"):
         value = os.environ.get(env_name, "").strip()
         if value:
             candidates.append(value)
@@ -85,7 +85,7 @@ def fetch_json(base_url: str, path: str, timeout: float) -> FetchResult:
         return {"ok": False, "status": None, "error": str(exc), "url": url}
 
 
-def normalize_game_mode_state(payload: Any) -> dict[str, Any] | None:
+def normalize_widget_mode_state(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     state = payload.get("state") if payload.get("success") is True else payload
@@ -95,7 +95,7 @@ def normalize_game_mode_state(payload: Any) -> dict[str, Any] | None:
 def summarize_state(state: dict[str, Any] | None) -> str:
     if not state:
         return "state unavailable"
-    reason = state.get("trigger_reason")
+    reason = state.get("last_resource_reason")
     reason_text = "none"
     if isinstance(reason, dict):
         metric = reason.get("metric") or reason.get("reason") or "?"
@@ -104,32 +104,34 @@ def summarize_state(state: dict[str, Any] | None) -> str:
         reason_text = f"{metric} {percent}% / {duration}s"
     return (
         f"enabled={state.get('enabled')}, "
-        f"pressure_state={state.get('pressure_state')}, "
-        f"auto_switch_active={state.get('auto_switch_active')}, "
-        f"manual_override={state.get('manual_override')}, "
+        f"resource_pressure_state={state.get('resource_pressure_state')}, "
+        f"compaction_phase={state.get('compaction_phase')}, "
+        f"activity_response={state.get('settings', {}).get('activity_response')}, "
         f"suppressed_until={state.get('suppressed_until')}, "
-        f"trigger_reason={reason_text}"
+        f"last_resource_reason={reason_text}"
     )
 
 
 def _check_default_off(state: dict[str, Any] | None) -> list[str]:
     failures: list[str] = []
     if state is None:
-        return ["game mode state endpoint did not return a state object"]
+        return ["widget mode state endpoint did not return a state object"]
     if state.get("enabled") is not False:
         failures.append("expected enabled=false after restart")
-    if state.get("pressure_state") != "normal":
-        failures.append("expected pressure_state=normal after restart")
-    if state.get("trigger_reason") is not None:
-        failures.append("expected trigger_reason=null after restart")
+    if state.get("resource_pressure_state") != "normal":
+        failures.append("expected resource_pressure_state=normal after restart")
+    if state.get("compaction_phase") != "idle":
+        failures.append("expected compaction_phase=idle after restart")
+    if state.get("last_resource_reason") is not None:
+        failures.append("expected last_resource_reason=null after restart")
     return failures
 
 
-def _debug_health_game_mode(payload: Any) -> dict[str, Any] | None:
+def _debug_health_widget_mode(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
-    game_mode = payload.get("game_mode_beta")
-    return game_mode if isinstance(game_mode, dict) else None
+    widget_mode = payload.get("widget_mode")
+    return widget_mode if isinstance(widget_mode, dict) else None
 
 
 def inspect_debug_health_log(path_text: str) -> dict[str, Any]:
@@ -140,7 +142,7 @@ def inspect_debug_health_log(path_text: str) -> dict[str, Any]:
         "exists": path.exists(),
         "size_bytes": None,
         "line_count": 0,
-        "latest_has_game_mode_beta": False,
+        "latest_has_widget_mode": False,
         "rotated_path": str(rotated),
         "rotated_exists": rotated.exists(),
         "rotated_size_bytes": None,
@@ -166,8 +168,8 @@ def inspect_debug_health_log(path_text: str) -> dict[str, Any]:
             payload = json.loads(raw_line)
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and isinstance(payload.get("game_mode_beta"), dict):
-            result["latest_has_game_mode_beta"] = True
+        if isinstance(payload, dict) and isinstance(payload.get("widget_mode"), dict):
+            result["latest_has_widget_mode"] = True
             break
     return result
 
@@ -180,9 +182,9 @@ def resolve_backend(
     candidates = candidate_base_urls(options.base_url)
     last_response: FetchResult | None = None
     for candidate in candidates:
-        response = fetcher(candidate, "/api/game-mode-beta/state", options.timeout)
+        response = fetcher(candidate, "/api/widget-mode/state", options.timeout)
         last_response = response
-        state = normalize_game_mode_state(response.get("data")) if response.get("ok") else None
+        state = normalize_widget_mode_state(response.get("data")) if response.get("ok") else None
         if response.get("ok") and state is not None:
             return candidate, response, failures
         status = response.get("status") or response.get("error") or "no state"
@@ -208,42 +210,42 @@ def run_probe(
     selected_base_url, state_response, discovery_failures = resolve_backend(options, fetcher)
     observations["selected_base_url"] = selected_base_url
     observations["discovery_failures"] = discovery_failures
-    observations["game_mode_state_response"] = state_response
-    state = normalize_game_mode_state(state_response.get("data")) if state_response.get("ok") else None
-    observations["game_mode_state"] = state
+    observations["widget_mode_state_response"] = state_response
+    state = normalize_widget_mode_state(state_response.get("data")) if state_response.get("ok") else None
+    observations["widget_mode_state"] = state
     if not state_response.get("ok"):
-        failures.append(f"game mode state request failed: {state_response.get('status') or state_response.get('error')}")
+        failures.append(f"widget mode state request failed: {state_response.get('status') or state_response.get('error')}")
     elif state is None:
-        failures.append("game mode state endpoint did not return a state object")
+        failures.append("widget mode state endpoint did not return a state object")
     if options.expect_default_off and state is not None:
         failures.extend(_check_default_off(state))
 
     if options.check_debug_health or options.monitor_seconds > 0:
         health_response = fetcher(selected_base_url, "/api/debug/health", options.timeout)
         observations["debug_health_response"] = health_response
-        game_mode = _debug_health_game_mode(health_response.get("data")) if health_response.get("ok") else None
-        observations["debug_health_game_mode"] = game_mode
+        widget_mode = _debug_health_widget_mode(health_response.get("data")) if health_response.get("ok") else None
+        observations["debug_health_widget_mode"] = widget_mode
         if not health_response.get("ok"):
             failures.append(f"debug health request failed: {health_response.get('status') or health_response.get('error')}")
-        elif game_mode is None:
-            failures.append("debug health response missing game_mode_beta")
+        elif widget_mode is None:
+            failures.append("debug health response missing widget_mode")
 
     monitor_samples: list[dict[str, Any]] = []
     deadline = started_at + max(0.0, options.monitor_seconds)
     while options.monitor_seconds > 0 and now() < deadline:
         response = fetcher(selected_base_url, "/api/debug/health", options.timeout)
         data = response.get("data") if response.get("ok") else None
-        game_mode = _debug_health_game_mode(data)
+        widget_mode = _debug_health_widget_mode(data)
         monitor_samples.append({
             "ok": response.get("ok") is True,
             "status": response.get("status"),
-            "game_mode_beta_present": game_mode is not None,
-            "enabled": game_mode.get("enabled") if game_mode else None,
-            "pressure_state": game_mode.get("pressure_state") if game_mode else None,
-            "sample_count": len(game_mode.get("last_samples") or []) if game_mode else None,
+            "widget_mode_present": widget_mode is not None,
+            "enabled": widget_mode.get("enabled") if widget_mode else None,
+            "resource_pressure_state": widget_mode.get("resource_pressure_state") if widget_mode else None,
+            "sample_count": len(widget_mode.get("last_resource_samples") or []) if widget_mode else None,
         })
-        if game_mode is None:
-            failures.append("monitor sample missing game_mode_beta")
+        if widget_mode is None:
+            failures.append("monitor sample missing widget_mode")
         if options.monitor_interval > 0 and now() < deadline:
             sleep(min(options.monitor_interval, max(0.0, deadline - now())))
     observations["monitor_samples"] = monitor_samples
@@ -256,8 +258,8 @@ def run_probe(
             failures.append(f"debug health log missing: {log_info.get('path')}")
         elif int(log_info.get("line_count") or 0) <= 0:
             failures.append(f"debug health log has no lines: {log_info.get('path')}")
-        elif not log_info.get("latest_has_game_mode_beta"):
-            failures.append("debug health log latest JSON lines missing game_mode_beta")
+        elif not log_info.get("latest_has_widget_mode"):
+            failures.append("debug health log latest JSON lines missing widget_mode")
 
     return {
         "ok": not failures,
@@ -265,9 +267,9 @@ def run_probe(
         "observations": observations,
         "summary": {
             "selected_base_url": selected_base_url,
-            "game_mode_state": summarize_state(state),
+            "widget_mode_state": summarize_state(state),
             "monitor_samples": len(monitor_samples),
-            "debug_health_game_mode_present": observations.get("debug_health_game_mode") is not None,
+            "debug_health_widget_mode_present": observations.get("debug_health_widget_mode") is not None,
             "debug_health_log": log_info,
         },
     }
@@ -275,11 +277,11 @@ def run_probe(
 
 def format_text_report(report: dict[str, Any]) -> str:
     lines = [
-        "Game Mode Beta Phase 2 probe",
+        "Widget Mode Beta probe",
         f"result: {'PASS' if report.get('ok') else 'FAIL'}",
         f"base_url: {report.get('summary', {}).get('selected_base_url')}",
-        f"state: {report.get('summary', {}).get('game_mode_state')}",
-        f"debug_health_game_mode_present: {report.get('summary', {}).get('debug_health_game_mode_present')}",
+        f"state: {report.get('summary', {}).get('widget_mode_state')}",
+        f"debug_health_widget_mode_present: {report.get('summary', {}).get('debug_health_widget_mode_present')}",
         f"monitor_samples: {report.get('summary', {}).get('monitor_samples')}",
     ]
     log_info = report.get("summary", {}).get("debug_health_log")
@@ -290,7 +292,7 @@ def format_text_report(report: dict[str, Any]) -> str:
             f"exists={log_info.get('exists')}, "
             f"lines={log_info.get('line_count')}, "
             f"size_bytes={log_info.get('size_bytes')}, "
-            f"latest_has_game_mode_beta={log_info.get('latest_has_game_mode_beta')}, "
+            f"latest_has_widget_mode={log_info.get('latest_has_widget_mode')}, "
             f"rotated_exists={log_info.get('rotated_exists')}, "
             f"rotated_size_bytes={log_info.get('rotated_size_bytes')}"
         )
@@ -302,14 +304,14 @@ def format_text_report(report: dict[str, Any]) -> str:
 
 
 def parse_args(argv: list[str]) -> ProbeOptions:
-    parser = argparse.ArgumentParser(description="Probe Game Mode Beta Phase 2 runtime acceptance state.")
+    parser = argparse.ArgumentParser(description="Probe Widget Mode Beta runtime acceptance state.")
     parser.add_argument("--base-url", default="auto", help="Running N.E.K.O backend base URL, or 'auto' to scan common local ports.")
     parser.add_argument("--timeout", type=float, default=3.0, help="HTTP timeout in seconds.")
-    parser.add_argument("--expect-default-off", action="store_true", help="Fail unless game mode is off with a clean state.")
-    parser.add_argument("--check-debug-health", action="store_true", help="Check /api/debug/health contains game_mode_beta.")
+    parser.add_argument("--expect-default-off", action="store_true", help="Fail unless Widget Mode is off with a clean state.")
+    parser.add_argument("--check-debug-health", action="store_true", help="Check /api/debug/health contains widget_mode.")
     parser.add_argument("--monitor-seconds", type=float, default=0.0, help="Poll debug health for this many seconds.")
     parser.add_argument("--monitor-interval", type=float, default=5.0, help="Seconds between monitor samples.")
-    parser.add_argument("--debug-health-log-path", default=None, help="Optional debug_health.jsonl path to inspect for game_mode_beta and rotation summary.")
+    parser.add_argument("--debug-health-log-path", default=None, help="Optional debug_health.jsonl path to inspect for widget_mode and rotation summary.")
     args = parser.parse_args(argv)
     return ProbeOptions(
         base_url=args.base_url,

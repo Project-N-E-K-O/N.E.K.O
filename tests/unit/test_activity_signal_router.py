@@ -780,8 +780,8 @@ def test_throttle_dict_bounded(monkeypatch):
 
 
 @pytest.mark.unit
-def test_activity_tracker_passes_only_exact_game_boolean_to_game_mode(monkeypatch):
-    from main_logic import game_mode_resource_protection as game_mode_module
+def test_activity_tracker_adapts_exact_game_at_widget_mode_boundary(monkeypatch):
+    from main_logic import widget_mode_runtime
 
     mgr, tracker = _build_mgr()
     tracker.get_snapshot_sync.return_value = SimpleNamespace(
@@ -790,7 +790,7 @@ def test_activity_tracker_passes_only_exact_game_boolean_to_game_mode(monkeypatc
         active_window=SimpleNamespace(category="gaming", subcategory="game"),
     )
     ingest = AsyncMock()
-    monkeypatch.setattr(game_mode_module.protector, "ingest_game_snapshot", ingest)
+    monkeypatch.setattr(widget_mode_runtime.widget_mode_coordinator, "ingest_activity_signal", ingest)
     client = _build_client(monkeypatch, {"Aria": mgr})
 
     response = client.post(
@@ -800,14 +800,14 @@ def test_activity_tracker_passes_only_exact_game_boolean_to_game_mode(monkeypatc
 
     assert response.status_code == 200
     kwargs = ingest.await_args.kwargs
-    assert kwargs["exact_game"] is True
-    assert kwargs["valid"] is True
-    assert set(kwargs) == {"exact_game", "valid", "observed_at"}
+    assert kwargs["active"] is True
+    assert kwargs["available"] is True
+    assert set(kwargs) == {"active", "available", "observed_at"}
 
 
 @pytest.mark.unit
 def test_gpu_fallback_gaming_state_is_not_an_exact_game_signal(monkeypatch):
-    from main_logic import game_mode_resource_protection as game_mode_module
+    from main_logic import widget_mode_runtime
 
     mgr, tracker = _build_mgr()
     tracker.get_snapshot_sync.return_value = SimpleNamespace(
@@ -816,7 +816,7 @@ def test_gpu_fallback_gaming_state_is_not_an_exact_game_signal(monkeypatch):
         active_window=SimpleNamespace(category="unknown", subcategory=None),
     )
     ingest = AsyncMock()
-    monkeypatch.setattr(game_mode_module.protector, "ingest_game_snapshot", ingest)
+    monkeypatch.setattr(widget_mode_runtime.widget_mode_coordinator, "ingest_activity_signal", ingest)
     client = _build_client(monkeypatch, {"Aria": mgr})
 
     response = client.post(
@@ -825,5 +825,5 @@ def test_gpu_fallback_gaming_state_is_not_an_exact_game_signal(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert ingest.await_args.kwargs["exact_game"] is False
-    assert ingest.await_args.kwargs["valid"] is True
+    assert ingest.await_args.kwargs["active"] is False
+    assert ingest.await_args.kwargs["available"] is True
