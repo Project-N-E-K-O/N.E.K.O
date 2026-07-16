@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from collections import deque
 from typing import Any
@@ -23,6 +24,10 @@ def initialize_runtime_state(runtime: Any) -> None:
     runtime._config_last_persist_at = 0.0
     runtime._config_last_error = ""
     runtime._config_lock = None
+    runtime._config_revision = 0
+    runtime._stopping = False
+    runtime._accepting_live_events = False
+    runtime._timeline_salt = secrets.token_bytes(32)
 
     runtime._idle_hosting_task: asyncio.Task[Any] | None = None
     runtime._idle_hosting_last_attempt_at = 0.0

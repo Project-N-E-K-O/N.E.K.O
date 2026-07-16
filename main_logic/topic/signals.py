@@ -134,7 +134,7 @@ def _format_age(age_s: float, labels: Mapping[str, str]) -> str:
     return labels["hours_ago"].format(value=int(age_s / 3600))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class TopicTurnSignal:
     actor: str
     text: str

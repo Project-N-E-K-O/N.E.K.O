@@ -92,7 +92,10 @@ class AvatarRoastModule(BaseModule):
             live_mode=event.live_mode,
             strength=strength,
             dry_run=bool(self.ctx.config.dry_run) if self.ctx else False,
-            allow_avatar_image=event.source != "idle_hosting",
+            allow_avatar_image=(
+                event.source != "idle_hosting"
+                and bool(getattr(self.ctx.config, "avatar_analysis_enabled", True))
+            ) if self.ctx else False,
             metadata=metadata,
         )
 

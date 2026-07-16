@@ -225,6 +225,12 @@
     }
 
     function getElectronChatMinimizedScreenRect(windowRect) {
+        // GNOME Wayland 的 Chat 是工作区大小的透明载体；真实毛球位置由 preload 发布。
+        var renderedBallRect = normalizeElectronWindowBoundsRect(
+            window.__nekoMinimizedChatBallScreenRect
+        );
+        if (renderedBallRect) return renderedBallRect;
+
         if (!windowRect) return null;
         var left = Math.round(windowRect.left + Math.max(0, (windowRect.width - I.MINIMIZED_SIZE) / 2));
         var top = Math.round(windowRect.top + Math.max(0, (windowRect.height - I.MINIMIZED_SIZE) / 2));
@@ -1702,7 +1708,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         I.pendingChatSurfaceMode = null;
         I.clearIdleDockState();
-        I.deactivateToolCursor();
+        I.deactivateAvatarTool();
         I.hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态

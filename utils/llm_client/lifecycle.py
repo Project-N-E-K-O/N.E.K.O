@@ -28,6 +28,10 @@ _active_character: "contextvars.ContextVar[tuple[str, str] | None]" = contextvar
     "_neko_active_character_master_lanlan", default=None
 )
 
+_dialog_slop_lang: "contextvars.ContextVar[str | None]" = contextvars.ContextVar(
+    "_neko_dialog_slop_lang", default=None
+)
+
 _DEFAULT_SSL_CONTEXT: ssl.SSLContext | None = None
 
 _DEFAULT_SSL_CONTEXT_LOCK = threading.Lock()
@@ -124,6 +128,17 @@ def set_active_character(master_name: str, lanlan_name: str) -> "contextvars.Tok
 
 def reset_active_character(token: "contextvars.Token") -> None:
     _active_character.reset(token)
+
+def set_dialog_slop_lang(lang: "str | None") -> "contextvars.Token":
+    """Arm prompt-only slop reduction for the current dialog turn."""
+    return _dialog_slop_lang.set(lang)
+
+def reset_dialog_slop_lang(token: "contextvars.Token") -> None:
+    _dialog_slop_lang.reset(token)
+
+def peek_dialog_slop_lang() -> "str | None":
+    """Return the slop-reduction language armed for this async context."""
+    return _dialog_slop_lang.get()
 
 def _substitute_character_placeholders(messages: list, master: str, lanlan: str) -> list:
     """Return a NEW messages list with ``{MASTER_NAME}`` / ``{LANLAN_NAME}``

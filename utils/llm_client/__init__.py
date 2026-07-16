@@ -54,6 +54,7 @@ from .lifecycle import (
     _DEFAULT_SSL_CONTEXT_LOCK,
     _PENDING_CLIENT_CLOSE_TASKS,
     _active_character,
+    _dialog_slop_lang,
     _close_async_openai_client_best_effort,
     _close_async_openai_client_from_sync_best_effort,
     _close_chat_clients_best_effort,
@@ -63,7 +64,10 @@ from .lifecycle import (
     _schedule_async_openai_client_close_best_effort,
     _substitute_character_placeholders,
     reset_active_character,
+    reset_dialog_slop_lang,
     set_active_character,
+    set_dialog_slop_lang,
+    peek_dialog_slop_lang,
 )
 from .cache_control import (
     _CACHE_CONTROL_EPHEMERAL,

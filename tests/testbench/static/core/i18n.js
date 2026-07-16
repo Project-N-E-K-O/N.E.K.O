@@ -264,7 +264,9 @@ export const I18N = {
         cards: {
           composition: {
             head: '记忆构成',
-            fmt: (c) => `事实 ${c.facts} · 反思 ${c.reflections} · 人设 ${c.persona} · `
+            fmt: (c) => `事实 ${c.facts}`
+              + (c.facts_archived ? ` (+${c.facts_archived} 归档)` : '')
+              + ` · 反思 ${c.reflections} · 人设 ${c.persona} · `
               + `纠正 ${c.corrections} · 对话 ${c.convo_turns} 回合`,
           },
           coverage: {
@@ -459,6 +461,7 @@ export const I18N = {
         message: '对话',
         recent_memo: 'recent 摘要',
         fact: '事实',
+        fact_archived: '事实(归档)',
         reflection: '反思',
         persona_entry: '人设',
         correction: '矛盾待裁决',
@@ -483,7 +486,9 @@ export const I18N = {
         dashed: '虚线 · 启发式推断',
       },
       counts_fmt: (c) =>
-        `对话 ${c.messages} · 摘要 ${c.recent_memos} · 事实 ${c.facts} · 反思 ${c.reflections} · 人设 ${c.persona} · 矛盾 ${c.corrections}`,
+        `对话 ${c.messages} · 摘要 ${c.recent_memos} · 事实 ${c.facts}`
+        + (c.facts_archived ? ` (+${c.facts_archived} 归档)` : '')
+        + ` · 反思 ${c.reflections} · 人设 ${c.persona} · 矛盾 ${c.corrections}`,
       budget_fmt: (shown, total) =>
         `已显示 ${shown} / ${total} 个节点 (其余按节点预算省略)`,
       sources: {
@@ -2430,7 +2435,7 @@ export const I18N = {
           busy: '当前会话正忙 (可能在跑 LLM / 写文件), 请稍后再点.',
         },
         avatar: {
-          instruction_integration_hint: 'Instruction preview 展示实际发送给模型的道具事件提示。当前运行时使用 compact 提示: 道具 / 动作 / 强度 / 附带奖励 / 彩蛋会体现在客观事件里，文本上下文只参与 payload 预览和归一化检查，不直接拼入提示词正文.',
+          instruction_integration_hint: 'Instruction preview 展示实际发送给模型的道具事件提示。当前运行时直接发送客观事件事实：道具 / 动作 / 强度 / 附带奖励 / 彩蛋会合并进事件描述，文本上下文只参与 payload 预览和归一化检查，不直接拼入提示词正文.',
           tool_label: '道具',
           tool_option: {
             lollipop: '棒棒糖',

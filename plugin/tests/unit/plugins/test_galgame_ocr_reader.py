@@ -5106,7 +5106,7 @@ def test_build_config_defaults_ocr_languages_to_chi_sim_jpn_eng(tmp_path: Path) 
     )
 
 
-def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
+def test_ocr_reader_manager_defers_rapidocr_until_first_ocr(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -5127,7 +5127,8 @@ def test_ocr_reader_manager_initializes_with_rapidocr_warmup_enabled(
     )
 
     assert manager._writer.bridge_root == bridge_root
-    assert warmup_calls
+    assert warmup_calls == []
+    assert manager._rapidocr_backend_cache is None
 
 
 @pytest.mark.asyncio
@@ -5343,8 +5344,50 @@ def test_rapidocr_runtime_cache_reuses_loaded_runtime(
         assert first._ensure_runtime() is runtime
         assert second._ensure_runtime() is runtime
         assert len(load_calls) == 1
+        first.close()
+        assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+        second.close()
+        assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
     finally:
         galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE.pop(cache_key, None)
+
+
+def test_rapidocr_backend_close_releases_cached_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target_dir = str(tmp_path / "RapidOCR")
+    runtime = object()
+    monkeypatch.setattr(
+        galgame_ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = galgame_ocr_reader.RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+    )
+    cache_key = (
+        install_target_dir,
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+
+    assert backend._ensure_runtime() is runtime
+    assert galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE[cache_key][0] is runtime
+
+    backend.close()
+    backend.close()
+
+    assert cache_key not in galgame_ocr_reader._RAPIDOCR_RUNTIME_CACHE
+    assert backend._runtime is None
+    with pytest.raises(RuntimeError, match="closed"):
+        backend._ensure_runtime()
 
 
 def test_rapidocr_runtime_cache_reloads_after_idle_timeout(
@@ -5642,6 +5685,11 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
         rapidocr_lang_changed_callback=persisted.append,
     )
     manager._ocr_lang_detector = _OcrLangDetector(window_size=3, confirm_streak=2)
+    backend_close_calls: list[bool] = []
+    manager._rapidocr_backend_cache_key = manager._rapidocr_cache_key()
+    manager._rapidocr_backend_cache = SimpleNamespace(
+        close=lambda: backend_close_calls.append(True)
+    )
     monkeypatch.setattr(
         galgame_ocr_reader,
         "inspect_rapidocr_installation",
@@ -5666,6 +5714,8 @@ def test_rapidocr_auto_lang_switches_when_rapidocr_active(
     assert manager._config.rapidocr_lang_type == "korean"
     assert manager._config.rapidocr_auto_detect_last_lang == "korean"
     assert persisted == ["korean"]
+    assert backend_close_calls == [True]
+    assert manager._rapidocr_backend_cache is None
 
 
 def test_rapidocr_auto_lang_does_not_override_manual_disable_during_inspection(

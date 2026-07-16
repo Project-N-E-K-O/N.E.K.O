@@ -1,6 +1,6 @@
 # 猫娘空闲状态分层 - 功能说明
 
-> 本文档描述当前已收敛的目标功能和行为边界。若文档与当前实现冲突，以可复现代码链路和测试为准；新增能力应先落到这里再继续扩展。
+> **文档状态：历史功能基线。** 本文保留 Cat Mind 接入前的猫形态功能说明，不是当前状态机或 return summary 的实施规范。当前行为以 [`cat-idle-state-machine-design.md`](cat-idle-state-machine-design.md) 和 [`cat-idle-state-machine-v1-implementation.md`](cat-idle-state-machine-v1-implementation.md) 为准；若冲突，以可复现代码链路和测试为准。
 
 ## 一、目标
 

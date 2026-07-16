@@ -95,9 +95,10 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
         onComposerSubmit: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
+        pendingAvatarInteractions: [],
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
-        _toolCursorResetKey: '',
+        _avatarToolDeactivationKey: '',
         compactChatState: 'default',
         chatSurfaceMode: 'compact',
         // Off until init() reads the persisted preference post-barrier and

@@ -33,7 +33,15 @@ from .adapters.neko_dispatcher import NekoDispatcher
 from .adapters.runtime_timeline import RuntimeTimeline, arbiter_chain_to_observe_records
 from .adapters.telemetry_client import TelemetryClient
 from .core.arbiter import Arbiter
-from .core.contracts import BattleEvent, BattleState, WtConfig
+from .core.contracts import (
+    BROADCAST_CATEGORY_DEFAULTS,
+    BROADCAST_FREQUENCIES,
+    BattleEvent,
+    BattleState,
+    WtConfig,
+    normalize_broadcast_categories,
+    normalize_broadcast_frequency,
+)
 from .core.instructions import WT_CONTEXT_INSTRUCTIONS, WT_RESTORE_INSTRUCTIONS
 from .core.safety_guard import SafetyGuard
 from .core.scenario import ScenarioResolver
@@ -43,6 +51,7 @@ from .detectors.discrete.lifecycle import build_discrete_detectors
 
 _CONFIG_SECTION = "neko_warthunder"
 _RUNTIME_STATE_FILENAME = ".runtime_state.json"
+_URGENT_OUTPUT_TTS_MIGRATION_KEY = "urgent_output_tts_default_migrated_v1"
 _DIALOGUE_INTRUSION_PRESETS: dict[str, tuple[float, float]] = {
     "no_interrupt": (60.0, 30.0),
     "critical_only": (60.0, 30.0),
@@ -102,17 +111,21 @@ class NekoWarthunderPlugin(NekoPluginBase):
         self._takeoff_radio_altitude_grace_active = False
         self._last_user_chat_at = 0.0
         self._last_battle_respond_at = 0.0
+        self._startup_completed = False
 
     # ------------------------------------------------------------------ 配置
     async def _reload_config(self) -> None:
         data: dict[str, Any] = {}
+        config_loaded = False
         try:
             dumped = await self.config.dump(timeout=5.0)
+            config_loaded = True
             if isinstance(dumped, dict) and isinstance(dumped.get(_CONFIG_SECTION), dict):
-                data = dumped[_CONFIG_SECTION]
+                data = dict(dumped[_CONFIG_SECTION])
         except Exception as exc:  # noqa: BLE001
             self.logger.warning(f"config load failed, using defaults: {type(exc).__name__}")
         runtime_state = self._load_runtime_state()
+        await self._migrate_urgent_output_tts_default(data, runtime_state, config_loaded=config_loaded)
         if not str(data.get("player_name") or "").strip():
             saved_player_name = str(runtime_state.get("player_name") or "").strip()
             if saved_player_name:
@@ -123,7 +136,40 @@ class NekoWarthunderPlugin(NekoPluginBase):
             data["dialogue_intrusion_mode"] = saved_dialogue_mode
             data["user_chat_quiet_window_seconds"] = user_window
             data["battle_output_quiet_window_seconds"] = battle_window
+        if "broadcast_frequency" in runtime_state:
+            data["broadcast_frequency"] = normalize_broadcast_frequency(runtime_state.get("broadcast_frequency"))
+        if "broadcast_categories" in runtime_state:
+            data["broadcast_categories"] = normalize_broadcast_categories(runtime_state.get("broadcast_categories"))
         self._apply_config(WtConfig.from_mapping(data))
+
+    async def _migrate_urgent_output_tts_default(
+        self,
+        data: dict[str, Any],
+        runtime_state: dict[str, Any],
+        *,
+        config_loaded: bool,
+    ) -> None:
+        if not config_loaded or runtime_state.get(_URGENT_OUTPUT_TTS_MIGRATION_KEY) is True:
+            return
+
+        if data.get("plugin_owned_urgent_output_enabled") is True:
+            data["plugin_owned_urgent_output_enabled"] = False
+            try:
+                await self.config.set(
+                    f"{_CONFIG_SECTION}.plugin_owned_urgent_output_enabled",
+                    False,
+                    timeout=5.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(f"urgent output TTS default migration failed: {type(exc).__name__}")
+                return
+
+        try:
+            self._save_runtime_state({_URGENT_OUTPUT_TTS_MIGRATION_KEY: True})
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(
+                f"urgent output TTS migration marker save failed: {type(exc).__name__}"
+            )
 
     def _apply_config(self, cfg: WtConfig) -> None:
         prev_player = self.cfg.player_name
@@ -158,6 +204,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
             f"neko_warthunder started (dry_run={self.cfg.dry_run}, url={self.cfg.data_layer_url}, "
             f"data_layer={data_layer_status.get('mode')})"
         )
+        self._startup_completed = True
         return Ok(
             {
                 "status": "running",
@@ -169,6 +216,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_):
+        self._startup_completed = False
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
@@ -181,8 +229,24 @@ class NekoWarthunderPlugin(NekoPluginBase):
 
     @lifecycle(id="config_change")
     async def on_config_change(self, **_):
+        old_connection = (self.cfg.data_layer_url, self.cfg.data_layer_auto_start)
         await self._reload_config()
-        return Ok({"status": "reloaded", "dry_run": self.cfg.dry_run})
+        new_connection = (self.cfg.data_layer_url, self.cfg.data_layer_auto_start)
+        data_layer_status = self.data_layer_manager.snapshot()
+        identity_result: dict[str, Any] | None = None
+        if old_connection != new_connection and getattr(self, "_startup_completed", False):
+            self.data_layer_manager.stop()
+            data_layer_status = self.data_layer_manager.start_if_needed()
+            if data_layer_status.get("health"):
+                identity_result = self._restore_identity_to_data_layer()
+        return Ok(
+            {
+                "status": "reloaded",
+                "dry_run": self.cfg.dry_run,
+                "data_layer": data_layer_status,
+                "identity": identity_result,
+            }
+        )
 
     @message(id="chat_quiet_window", source="chat")
     def on_chat_message(self, **_):
@@ -281,6 +345,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 self._instructions_injected = False
             return
         new_state = self.client.poll()
+        self.data_layer_manager.observe_health(new_state.connected)
         self.timeline.mark_tick()
         with self._state_lock:
             prev = self.state
@@ -734,6 +799,8 @@ class NekoWarthunderPlugin(NekoPluginBase):
     def _dashboard_payload(self, s: BattleState) -> dict[str, Any]:
         identity = identity_summary_from_combat(s.combat)
         saved_player_name = str(self.cfg.player_name or "").strip()
+        runtime_state = self._load_runtime_state()
+        onboarding_completed = bool(runtime_state.get("onboarding_completed_v1", False))
         if saved_player_name:
             identity["saved_player_name"] = saved_player_name
             identity["player_name"] = identity.get("player_name") or saved_player_name
@@ -753,6 +820,11 @@ class NekoWarthunderPlugin(NekoPluginBase):
             "profile_family": s.profile_family,
             "scenario": s.scenario,
             "level": s.level,
+            "onboarding": {
+                "completed": onboarding_completed,
+                "required": bool(getattr(self, "_startup_completed", False) and not onboarding_completed),
+                "trigger": "first_plugin_start",
+            },
             "identity": identity,
             "data_layer": self.data_layer_manager.snapshot(),
             "telemetry": self._telemetry_snapshot(s),
@@ -764,6 +836,9 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 "user_chat_quiet_window_seconds": self.cfg.user_chat_quiet_window_seconds,
                 "battle_output_quiet_window_seconds": self.cfg.battle_output_quiet_window_seconds,
                 "critical_bypass_quiet_window": self._dialogue_intrusion_mode() != "no_interrupt",
+                "broadcast_frequency": self.cfg.broadcast_frequency,
+                "broadcast_categories": dict(self.cfg.broadcast_categories),
+                "critical_safety_always_enabled": True,
             },
             "awareness": self._awareness_snapshot(s),
             "safety": self.safety.snapshot(),
@@ -829,6 +904,88 @@ class NekoWarthunderPlugin(NekoPluginBase):
             }
         )
 
+    @ui.action(id="set_broadcast_frequency", label="设置播报频率", tone="primary", group="runtime", order=16, refresh_context=True)
+    @plugin_entry(
+        id="set_broadcast_frequency",
+        name="设置播报频率",
+        description="设置非危急战斗播报的节奏；危急提醒不受影响。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "frequency": {
+                    "type": "string",
+                    "enum": ["quiet", "standard", "active"],
+                    "default": "standard",
+                }
+            },
+        },
+    )
+    async def set_broadcast_frequency(self, frequency: str = "standard", **_):
+        requested = str(frequency or "").strip().lower()
+        if requested not in BROADCAST_FREQUENCIES:
+            return Err(SdkError("unknown broadcast frequency"))
+        selected = normalize_broadcast_frequency(requested)
+        self.cfg.broadcast_frequency = selected
+        self._save_runtime_state({"broadcast_frequency": selected})
+        return Ok({"broadcast_frequency": selected})
+
+    @ui.action(id="set_broadcast_category", label="设置播报类别", tone="primary", group="runtime", order=17, refresh_context=True)
+    @plugin_entry(
+        id="set_broadcast_category",
+        name="设置播报类别",
+        description="开关一般安全、战果、固定无线电、态势感知或开场收尾播报；危急提醒始终保留。",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["safety", "combat", "radio", "awareness", "lifecycle"],
+                },
+                "enabled": {"type": "boolean", "default": True},
+            },
+            "required": ["category", "enabled"],
+        },
+    )
+    async def set_broadcast_category(self, category: str, enabled: bool = True, **_):
+        selected = str(category or "").strip().lower()
+        if selected not in BROADCAST_CATEGORY_DEFAULTS:
+            return Err(SdkError("unknown broadcast category"))
+        categories = normalize_broadcast_categories(self.cfg.broadcast_categories)
+        categories[selected] = bool(enabled)
+        self.cfg.broadcast_categories = categories
+        self._save_runtime_state({"broadcast_categories": categories})
+        return Ok(
+            {
+                "broadcast_categories": dict(categories),
+                "critical_safety_always_enabled": True,
+            }
+        )
+
+    @ui.action(id="reset_broadcast_preferences", label="恢复推荐播报设置", tone="info", group="runtime", order=18, refresh_context=True)
+    @plugin_entry(
+        id="reset_broadcast_preferences",
+        name="恢复推荐播报设置",
+        description="把播报频率恢复为标准，并重新开启全部普通播报类别；不修改 dry_run、插话规则或昵称。",
+    )
+    async def reset_broadcast_preferences(self, **_):
+        frequency = "standard"
+        categories = dict(BROADCAST_CATEGORY_DEFAULTS)
+        self.cfg.broadcast_frequency = frequency
+        self.cfg.broadcast_categories = categories
+        self._save_runtime_state(
+            {
+                "broadcast_frequency": frequency,
+                "broadcast_categories": categories,
+            }
+        )
+        return Ok(
+            {
+                "broadcast_frequency": frequency,
+                "broadcast_categories": dict(categories),
+                "critical_safety_always_enabled": True,
+            }
+        )
+
     @ui.action(id="pause", label="急停", tone="danger", group="runtime", order=20, refresh_context=True)
     @plugin_entry(id="pause", name="急停", description="暂停所有提醒输出。")
     async def pause(self, **_):
@@ -845,23 +1002,10 @@ class NekoWarthunderPlugin(NekoPluginBase):
     @plugin_entry(
         id="test_say",
         name="测试开口",
-        description="在 dry_run=false 且未暂停时推一条测试消息给猫娘，验证 push 链路。",
+        description="主动推送一条固定测试消息给猫娘，独立验证 push 链路；急停或安全保护时仍会阻止。",
         input_schema={"type": "object", "properties": {"text": {"type": "string", "default": "副驾驶测试：能听到我吗？"}}},
     )
     async def test_say(self, text: str = "副驾驶测试：能听到我吗？", **_):
-        if self.cfg.dry_run:
-            if getattr(self, "timeline", None):
-                self.timeline.record_stage(
-                    stage="test_say_blocked",
-                    outcome="blocked",
-                    reason="dry_run",
-                    kind="test_say",
-                    ai_behavior="respond",
-                    pushed=False,
-                    dry_run=True,
-                    safe_summary="test_say/dry_run",
-                )
-            return Ok({"pushed": False, "blocked": "dry_run", "text": str(text)})
         if self.safety.stopped:
             if getattr(self, "timeline", None):
                 self.timeline.record_stage(
@@ -892,7 +1036,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                     kind="test_say",
                     ai_behavior="respond",
                     pushed=True,
-                    dry_run=False,
+                    dry_run=bool(self.cfg.dry_run),
                     safe_summary="test_say/respond",
                 )
             return Ok({"pushed": True, "text": str(text)})
@@ -942,6 +1086,36 @@ class NekoWarthunderPlugin(NekoPluginBase):
                         combat[key] = result.get(key)
                 self.state.combat = combat
         return Ok({"identity": result})
+
+    @ui.action(id="complete_onboarding", label="完成新手教程", tone="primary", group="runtime", order=60, refresh_context=True)
+    @plugin_entry(
+        id="complete_onboarding",
+        name="完成新手教程",
+        description="记录首次启动教程已完成或已跳过，之后启动插件时不再自动弹出。",
+        input_schema={
+            "type": "object",
+            "properties": {"skipped": {"type": "boolean", "default": False}},
+        },
+    )
+    async def complete_onboarding(self, skipped: bool = False, **_):
+        completed_at = time.time()
+        self._save_runtime_state(
+            {
+                "onboarding_completed_v1": True,
+                "onboarding_skipped_v1": bool(skipped),
+                "onboarding_completed_at_v1": completed_at,
+            }
+        )
+        return Ok(
+            {
+                "onboarding": {
+                    "completed": True,
+                    "required": False,
+                    "skipped": bool(skipped),
+                    "completed_at": completed_at,
+                }
+            }
+        )
 
     @plugin_entry(id="status", name="状态", description="查看当前连接/场景/安全状态。")
     def status(self, **_):

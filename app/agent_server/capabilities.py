@@ -25,11 +25,13 @@ through the facade at call time.
 
 import json
 import asyncio
+import importlib.util
 from typing import Dict, Any, Optional, Tuple
 
 from . import _shared
 from ._shared import (
     logger,
+    BrowserUseAdapter,
     ComputerUseAdapter,
     ThrottledLogger,
     _set_capability,
@@ -37,6 +39,113 @@ from ._shared import (
 )
 from .registry import _cleanup_task_registry, _now_iso
 from .results import _emit_main_event
+
+
+def _rewire_browser_use_dependents() -> None:
+    """Keep task_executor in sync after BrowserUse lifecycle changes."""
+    try:
+        executor = _shared.Modules.task_executor
+        if executor is not None and hasattr(executor, "browser_use"):
+            executor.browser_use = _shared.Modules.browser_use
+    except Exception as exc:
+        logger.debug("[Agent] BrowserUse dependent rewire failed: %s", exc)
+
+
+def _browser_use_dependency_status() -> tuple[bool, str]:
+    """Check BrowserUse installation without importing its heavy module graph."""
+    current = _shared.Modules.browser_use
+    if current is not None:
+        ready = bool(getattr(current, "_ready_import", False))
+        return ready, "" if ready else str(getattr(current, "last_error", "") or "")
+    try:
+        installed = importlib.util.find_spec("browser_use") is not None
+    except Exception as exc:
+        return False, str(exc)
+    return installed, "" if installed else "browser-use package not found"
+
+
+async def _ensure_browser_use_adapter():
+    """Build the heavy BrowserUse adapter only when the feature is requested."""
+    if _shared.Modules.browser_use_init_lock is None:
+        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+
+    async with _shared.Modules.browser_use_init_lock:
+        current = _shared.Modules.browser_use
+        if current is not None:
+            return current
+        try:
+            current = await asyncio.to_thread(BrowserUseAdapter)
+        except Exception as exc:
+            logger.error("[Agent] BrowserUseAdapter on-demand init failed: %s", exc)
+            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            return None
+
+        if not getattr(current, "_ready_import", False):
+            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            return None
+
+        _shared.Modules.browser_use = current
+        _rewire_browser_use_dependents()
+        logger.info("[Agent] BrowserUseAdapter ready (on-demand init)")
+        return current
+
+
+def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> None:
+    if capability_reason is not None:
+        _set_capability("browser_use", False, capability_reason)
+        return
+    dependency_ready, dependency_error = _browser_use_dependency_status()
+    _set_capability("browser_use", dependency_ready, dependency_error)
+
+
+async def _close_browser_use_adapter(
+    *,
+    capability_reason: Optional[str] = None,
+    expected_lifecycle_seq: Optional[int] = None,
+    update_capability: bool = True,
+) -> None:
+    """Close Chromium/browser-use resources and detach the singleton adapter."""
+    if _shared.Modules.browser_use_dispatch_lock is None:
+        _shared.Modules.browser_use_dispatch_lock = asyncio.Lock()
+    if _shared.Modules.browser_use_init_lock is None:
+        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+
+    # Lock order is dispatch -> init everywhere that needs both. This drains
+    # an active run before releasing the shared BrowserSession/Chromium graph.
+    async with _shared.Modules.browser_use_dispatch_lock:
+        async with _shared.Modules.browser_use_init_lock:
+            current = _shared.Modules.browser_use
+            if current is None:
+                _rewire_browser_use_dependents()
+                if (
+                    update_capability
+                    and (
+                        expected_lifecycle_seq is None
+                        or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+                    )
+                ):
+                    _set_unloaded_browser_use_capability(capability_reason)
+                return
+            cancelled = False
+            try:
+                await current.close()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            except Exception as exc:
+                logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
+            finally:
+                if not cancelled:
+                    _shared.Modules.browser_use = None
+                    _rewire_browser_use_dependents()
+                    if (
+                        update_capability
+                        and (
+                            expected_lifecycle_seq is None
+                            or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+                        )
+                    ):
+                        _set_unloaded_browser_use_capability(capability_reason)
 
 def _rewire_computer_use_dependents() -> None:
     """Keep task_executor in sync after computer_use adapter refresh."""
@@ -144,15 +253,19 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             reason = "" if ok else (probe_reason or "AGENT_LLM_UNREACHABLE")
             _set_capability("computer_use", ok, reason)
             bu = _shared.Modules.browser_use
-            if bu is None:
-                _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
+            if not ok:
+                _set_capability("browser_use", False, reason)
+            elif bu is None:
+                dependency_ready, dependency_error = _browser_use_dependency_status()
+                _set_capability(
+                    "browser_use",
+                    dependency_ready,
+                    "" if dependency_ready else dependency_error,
+                )
+            elif not getattr(bu, "_ready_import", False):
+                _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
             else:
-                if not ok:
-                    _set_capability("browser_use", False, reason)
-                elif not getattr(bu, "_ready_import", False):
-                    _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
-                else:
-                    _set_capability("browser_use", True, "")
+                _set_capability("browser_use", True, "")
 
             if ok:
                 logger.info("[Agent] Agent-LLM connectivity check passed")
@@ -164,6 +277,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
                     _shared.Modules.agent_flags["browser_use_enabled"] = False
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
+                    await _close_browser_use_adapter(capability_reason=reason)
 
             _bump_state_revision()
             await _emit_agent_status_update()
@@ -180,6 +294,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 _shared.Modules.agent_flags["computer_use_enabled"] = False
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
                 _shared.Modules.agent_flags["browser_use_enabled"] = False
+                await _close_browser_use_adapter(capability_reason="AGENT_LLM_UNREACHABLE")
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()

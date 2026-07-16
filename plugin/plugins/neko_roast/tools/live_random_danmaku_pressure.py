@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
-import datetime as dt
 import json
 import random
 import sys
@@ -19,6 +18,21 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from plugin.plugins.neko_roast.tools.pressure_guard import (
+    EXIT_RUN,
+    PressureError,
+    compare_and_restore_config,
+    disconnect_owned_connection,
+    finalize_cleanup_failure,
+    now_iso,
+    prepare_log_path,
+    require_action_success,
+    require_real_output_confirmation,
+    require_safe_preflight,
+    wait_for_connection,
+    write_jsonl,
+)
 
 
 PLUGIN_ID = "neko_roast"
@@ -65,10 +79,6 @@ DANMAKU_SAMPLES = (
     "\u6211\u9009A",
     "\u6211\u9009B",
 )
-
-
-def now_iso() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def request_json(
@@ -201,24 +211,6 @@ def summarize_context(context: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def write_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
-
-
-def prepare_log_path(path: Path, *, append: bool, overwrite: bool) -> None:
-    if not path.exists():
-        return
-    if append:
-        return
-    if not overwrite:
-        raise FileExistsError(f"log already exists: {path}; use --append or --overwrite")
-    if not path.is_file():
-        raise IsADirectoryError(path)
-    path.write_text("", encoding="utf-8")
-
-
 def build_test_config(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "live_enabled": True,
@@ -278,16 +270,6 @@ def compact_run_result(index: int, args: dict[str, Any], response: dict[str, Any
     }
 
 
-def require_action_success(action_id: str, response: dict[str, Any]) -> dict[str, Any]:
-    result = response.get("result")
-    if not isinstance(result, dict):
-        raise RuntimeError(f"{action_id} returned no plugin-entry result")
-    if result.get("success") is False:
-        reason = result.get("error") or result.get("message") or "plugin entry reported failure"
-        raise RuntimeError(f"{action_id} failed: {reason}")
-    return response
-
-
 def submit_one(base_url: str, index: int, args: dict[str, Any]) -> dict[str, Any]:
     client = HostedClient(base_url)
     last_error = ""
@@ -335,11 +317,16 @@ def submit_one(base_url: str, index: int, args: dict[str, Any]) -> dict[str, Any
 
 
 def run(args: argparse.Namespace) -> int:
+    require_real_output_confirmation(
+        real_output=args.real_output,
+        confirmed=args.confirm_real_output,
+    )
     client = HostedClient(args.base_url)
     log_path = Path(args.log).resolve()
     prepare_log_path(log_path, append=args.append, overwrite=args.overwrite)
 
     initial_context = client.context()
+    require_safe_preflight(initial_context)
     initial_state = state_from_context(initial_context)
     initial_config = initial_state.get("config") if isinstance(initial_state.get("config"), dict) else {}
     restore_config = {key: initial_config.get(key) for key in RESTORE_KEYS if key in initial_config}
@@ -361,35 +348,25 @@ def run(args: argparse.Namespace) -> int:
     print(f"[mass] initial={json.dumps(summarize_context(initial_context), ensure_ascii=False)}")
 
     test_config = build_test_config(args)
+    room = args.room or str(initial_config.get("live_room_ref") or initial_config.get("live_room_id") or "")
+    if args.connect and not room:
+        raise PressureError("--connect requires --room or an existing configured room")
 
     connected_by_script = False
-    listener_replaced_by_script = False
     try:
         require_action_success("update_config", client.action("update_config", test_config))
-        room = args.room or str(initial_config.get("live_room_ref") or initial_config.get("live_room_id") or "")
         if args.connect:
-            if initially_connected and room != initial_room and not initial_room:
-                raise RuntimeError("cannot safely switch a connected listener without its original room reference")
-            listener_replaced_by_script = initially_connected and room != initial_room
-            connect_response = require_action_success(
-                "connect_live_room",
-                client.action("connect_live_room", {"room_id": room}),
-            )
-            connected_by_script = not initially_connected
-            write_jsonl(log_path, {"type": "connect_live_room", "time": now_iso(), "room": room, "response": connect_response})
-            deadline = time.monotonic() + args.connect_timeout
-            while time.monotonic() < deadline:
-                context = client.context()
-                state = state_from_context(context)
-                connection = state.get("live_connection") if isinstance(state.get("live_connection"), dict) else {}
-                if connection.get("connected"):
-                    write_jsonl(log_path, {"type": "connect_ready", "time": now_iso(), "summary": summarize_context(context)})
-                    break
-                time.sleep(0.5)
-            else:
-                raise RuntimeError("connect_live_room did not reach connected state before timeout")
-        require_action_success("resume_roast", client.action("resume_roast"))
-        require_action_success("clear_queue", client.action("clear_queue"))
+            if initially_connected and room and room != initial_room:
+                raise PressureError("refusing to replace a listener not owned by this pressure process")
+            if not initially_connected:
+                connect_response = require_action_success(
+                    "connect_live_room",
+                    client.action("connect_live_room", {"room_id": room}),
+                )
+                connected_by_script = True
+                write_jsonl(log_path, {"type": "connect_live_room", "time": now_iso(), "room": room, "response": connect_response})
+                context = wait_for_connection(client, room=room, timeout=args.connect_timeout)
+                write_jsonl(log_path, {"type": "connect_ready", "time": now_iso(), "summary": summarize_context(context)})
 
         rng = random.Random(args.seed)
         events = [make_event(index, rng, user_count=args.users) for index in range(1, args.events + 1)]
@@ -504,36 +481,41 @@ def run(args: argparse.Namespace) -> int:
         write_jsonl(log_path, summary)
         print(f"[mass] summary={json.dumps(summary, ensure_ascii=False)}")
     finally:
+        cleanup_error: PressureError | None = None
+        primary_exception_active = sys.exc_info()[0] is not None
         if args.restore and connected_by_script:
             try:
-                client.action("disconnect_live_room")
-                print("[mass] disconnected listener restored to initial state")
-            except Exception as exc:  # noqa: BLE001
+                if disconnect_owned_connection(client, owned_room=room):
+                    print("[mass] disconnected listener owned by this pressure process")
+            except PressureError as exc:
                 write_jsonl(log_path, {"type": "disconnect_error", "time": now_iso(), "error": f"{type(exc).__name__}: {exc}"})
+                cleanup_error = exc
         if args.restore:
-            require_action_success("update_config", client.action("update_config", restore_config))
-            print(f"[mass] restored={json.dumps(restore_config, ensure_ascii=False)}")
-            if listener_replaced_by_script:
-                reconnect_response = require_action_success(
-                    "connect_live_room",
-                    client.action("connect_live_room", {"room_id": initial_room}),
+            try:
+                restored, skipped = compare_and_restore_config(
+                    client,
+                    initial_config=restore_config,
+                    applied_config=test_config,
                 )
-                write_jsonl(
-                    log_path,
-                    {
-                        "type": "restore_live_room",
-                        "time": now_iso(),
-                        "room": initial_room,
-                        "response": reconnect_response,
-                    },
-                )
-                print(f"[mass] restored listener room={initial_room}")
+                print(f"[mass] restored={json.dumps(restored, ensure_ascii=False)} skipped={skipped}")
+            except PressureError as exc:
+                cleanup_error = cleanup_error or exc
+        finalize_cleanup_failure(
+            cleanup_error,
+            primary_exception_active=primary_exception_active,
+            record_event=lambda event: write_jsonl(log_path, event),
+            timestamp=now_iso,
+            warning_prefix="[mass]",
+        )
 
     return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Exit codes: 0 success, 2 CLI usage, 3 preflight refused, 4 connection timeout, 5 run failure, 6 restore failure.",
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1:48916")
     parser.add_argument("--events", type=int, default=2000)
     parser.add_argument("--users", type=int, default=2000)
@@ -542,12 +524,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--rate-limit", type=float, default=1.0)
     parser.add_argument("--queue-limit", type=int, default=5)
     parser.add_argument("--room", default="")
-    parser.add_argument("--connect", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--connect", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--connect-timeout", type=float, default=15.0)
     parser.add_argument(
         "--real-output",
         action="store_true",
         help="Push real output through NEKO instead of dry-run summaries.",
+    )
+    parser.add_argument(
+        "--confirm-real-output",
+        action="store_true",
+        help="Second explicit confirmation required together with --real-output.",
     )
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument(
@@ -574,5 +561,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def main(argv: list[str]) -> int:
+    try:
+        return run(parse_args(argv))
+    except PressureError as exc:
+        print(f"[mass] ERROR: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except Exception as exc:  # noqa: BLE001
+        print(f"[mass] ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_RUN
+
+
 if __name__ == "__main__":
-    raise SystemExit(run(parse_args(sys.argv[1:])))
+    raise SystemExit(main(sys.argv[1:]))

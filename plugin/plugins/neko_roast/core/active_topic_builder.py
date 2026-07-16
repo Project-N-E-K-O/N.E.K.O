@@ -5,6 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 
+def _privacy_classification(chosen: dict[str, Any]) -> str:
+    source = str(chosen.get("source") or "").strip()
+    if source in {"recent_danmaku", "live_thread"}:
+        return "viewer_derived"
+    if source not in {"fallback", "bili_trending"}:
+        return "private"
+    explicit = chosen.get("privacy_classification")
+    if explicit in {"public", "viewer_derived", "private"}:
+        return str(explicit)
+    return "public"
+
+
 def build_topic(
     selector: Any,
     chosen: dict[str, Any],
@@ -25,6 +37,7 @@ def build_topic(
         hint = selector.hint_text(shape)
     topic = {
         "source": str(chosen.get("source") or "fallback"),
+        "privacy_classification": _privacy_classification(chosen),
         "shape": shape,
         "key": key,
         "title": title,
