@@ -21,6 +21,7 @@
     I.yuiGuideChatSpotlightTimer = 0;
     I.YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence';
+    var YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
     I.yuiGuidePcOverlayActive = false;
     I.yuiGuidePcOverlayReady = false;
     I.yuiGuidePcOverlayRunIdOverride = '';
@@ -307,7 +308,7 @@
 
     function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch) {
         var isStaleResponse = !!(result && result.stale === true);
-        var alreadyRetried = retried === true;
+        var retryCount = Math.max(0, Math.floor(Number(retried) || 0));
         if (
             I.yuiGuidePcOverlayLifecycleClosed
             || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
@@ -326,7 +327,7 @@
 
         if (
             isStaleResponse
-            && !alreadyRetried
+            && retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
             && result.reason === 'stale-sequence'
             && result.activeTutorialRunId === attemptedRunId
             && (
@@ -335,29 +336,29 @@
             )
         ) {
             yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
-            I.sendYuiGuidePcOverlayPatch(patch || {}, true, {
+            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
                 tutorialRunId: attemptedRunId
             });
             return;
         }
 
-        if (!isStaleResponse || alreadyRetried || !attemptedRunId) {
+        if (!isStaleResponse || retryCount > 0 || !attemptedRunId) {
             return;
         }
         if (attemptedCanonicalRun) {
             if (syncYuiGuidePcOverlayRunIdFromStorage()) {
-                I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+                I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
                 return;
             }
         } else if (!attemptedCurrentRun || !attemptedChatOwnedRun) {
             return;
         }
         if (syncYuiGuidePcOverlayRunIdFromStorage()) {
-            I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
             return;
         }
         resetYuiGuidePcOverlayRunForRetry();
-        I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+        I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
     }
 
     function resolveYuiGuidePcOverlayRunIdForSend(requestedRunId, allowCreateRun) {
@@ -776,7 +777,7 @@
                         result,
                         patch,
                         runId,
-                        retried === true,
+                        retried,
                         sendLifecycleEpoch
                     );
                     return;

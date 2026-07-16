@@ -7790,19 +7790,111 @@ def test_pc_overlay_stale_update_retry_bypasses_ready_state_dedupe(mock_page: Pa
                 activeSequence: staleUpdate.sequence,
             });
             await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__pcOverlayUpdates[2];
+            window.__pcOverlayUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
             return {
                 updates: window.__pcOverlayUpdates.length,
                 activeSequence: staleUpdate.sequence,
-                retry: window.__pcOverlayUpdates[2],
+                firstRetry,
+                secondRetry: window.__pcOverlayUpdates[3],
             };
         }
         """
     )
 
-    assert result["updates"] == 3
-    assert result["retry"]["tutorialRunId"] == "dedupe-run"
+    assert result["updates"] == 4
+    assert result["firstRetry"]["tutorialRunId"] == "dedupe-run"
+    assert result["secondRetry"]["tutorialRunId"] == "dedupe-run"
     # Sequence also respects the persisted and wall-clock floors, so the contract is strictly newer.
-    assert result["retry"]["sequence"] > result["activeSequence"]
+    assert result["firstRetry"]["sequence"] > result["activeSequence"]
+    assert result["secondRetry"]["sequence"] > result["firstRetry"]["sequence"]
+
+
+@pytest.mark.frontend
+def test_pc_overlay_cursor_only_bounds_repeated_same_run_stale_retries(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'cursor-retry-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(240, 180, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__pcOverlayUpdates[1];
+            window.__pcOverlayUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const secondRetry = window.__pcOverlayUpdates[2];
+            window.__pcOverlayUpdateResolvers[2]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: secondRetry.tutorialRunId,
+                activeSequence: secondRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const finalRetry = window.__pcOverlayUpdates[3];
+            window.__pcOverlayUpdateResolvers[3]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: finalRetry.tutorialRunId,
+                activeSequence: finalRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 4
+    assert all(update["tutorialRunId"] == "cursor-retry-run" for update in result)
+    assert result[1]["sequence"] > result[0]["sequence"]
+    assert result[2]["sequence"] > result[1]["sequence"]
+    assert result[3]["sequence"] > result[2]["sequence"]
 
 
 @pytest.mark.frontend
@@ -7870,6 +7962,85 @@ def test_external_chat_begin_stale_response_does_not_duplicate_update(mock_page:
     )
 
     assert result == 1
+
+
+@pytest.mark.frontend
+def test_external_chat_reconciles_a_second_same_run_stale_response(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-retry-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-retry-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__externalChatOverlayUpdates[0];
+            window.__externalChatUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const firstRetry = window.__externalChatOverlayUpdates[1];
+            window.__externalChatUpdateResolvers[1]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: firstRetry.tutorialRunId,
+                activeSequence: firstRetry.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__externalChatOverlayUpdates;
+        }
+        """
+    )
+
+    assert len(result) == 3
+    assert all(update["tutorialRunId"] == "external-retry-run" for update in result)
+    assert result[1]["sequence"] > result[0]["sequence"]
+    assert result[2]["sequence"] > result[1]["sequence"]
 
 
 @pytest.mark.frontend

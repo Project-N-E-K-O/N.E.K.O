@@ -11,6 +11,7 @@
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
+    const PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
     const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
     const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
@@ -166,52 +167,54 @@
         };
 
         const handleStaleResult = (result, patch, force, retried, attemptedRunId) => {
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
             if (
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
-                && !retried
+                && retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
                 && !cleared
                 && attemptedRunId === runId
             ) {
                 sequence = nextSequence(result.activeSequence);
-                send(patch, true, true);
+                send(patch, true, retryCount + 1);
                 return;
             }
-            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+            if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
                 return;
             }
             if (syncRunIdFromStorage()) {
-                send(patch, force, true);
+                send(patch, force, retryCount + 1);
                 return;
             }
             rotateRunId();
-            send(patch, force, true);
+            send(patch, force, retryCount + 1);
         };
         const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
             if (
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
-                && !retried
+                && retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
                 && !cleared
                 && attemptedRunId === runId
             ) {
                 sequence = nextSequence(result.activeSequence);
-                sendCursorOnly(cursor, true);
+                sendCursorOnly(cursor, retryCount + 1);
                 return;
             }
-            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+            if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
                 return;
             }
             if (syncRunIdFromStorage()) {
-                sendCursorOnly(cursor, true);
+                sendCursorOnly(cursor, retryCount + 1);
                 return;
             }
             rotateRunId();
-            sendCursorOnly(cursor, true);
+            sendCursorOnly(cursor, retryCount + 1);
         };
 
         const getAssetUrl = (assetPath) => {
@@ -526,7 +529,7 @@
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleStaleResult(result, patch, force, retried === true, updateRunId);
+                        handleStaleResult(result, patch, force, retried, updateRunId);
                         return;
                     }
                     if (result && result.ok === false) {
@@ -586,7 +589,7 @@
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleCursorOnlyStaleResult(result, cursor, retried === true, updateRunId);
+                        handleCursorOnlyStaleResult(result, cursor, retried, updateRunId);
                         return;
                     }
                     if (result && result.ok === false) {
