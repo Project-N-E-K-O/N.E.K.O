@@ -72,6 +72,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.savedExpandedShellPosition = null; // last known full-surface desktop position
     I.lastRestorableChatSurfaceMode = 'compact';
     I.tutorialChatRequestSeq = 0;
+    I.homeTutorialCompactChatStateSnapshot = null;
     I._sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
@@ -310,7 +311,10 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
     I.getEffectiveComposerHidden = function getEffectiveComposerHidden() {
-        return !!(I.state.composerHidden || I.state.goodbyeComposerHidden);
+        return !!(
+            !I.state.homeTutorialInputLocked
+            && (I.state.composerHidden || I.state.goodbyeComposerHidden)
+        );
     }
 
     I.getNekoGoodbyeModeActive = function getNekoGoodbyeModeActive() {
