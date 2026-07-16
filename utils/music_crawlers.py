@@ -656,8 +656,23 @@ class SoundCloudCrawler(BaseMusicCrawler):
                         transcodings = track.get('media', {}).get('transcodings', [])
                         if not transcodings:
                             return None
-                        
-                        stream_api = transcodings[0].get('url')
+
+                        # Chromium/APlayer cannot reliably play SoundCloud HLS playlists.
+                        # Prefer a progressive MP3 endpoint, then any progressive endpoint;
+                        # only fall back to the first item for legacy API responses that do
+                        # not expose ``format.protocol``.
+                        progressive = [
+                            item for item in transcodings
+                            if (item.get('format') or {}).get('protocol') == 'progressive'
+                        ]
+                        mp3_progressive = [
+                            item for item in progressive
+                            if (item.get('format') or {}).get('mime_type') == 'audio/mpeg'
+                        ]
+                        selected_transcoding = (
+                            (mp3_progressive or progressive or transcodings)[0]
+                        )
+                        stream_api = selected_transcoding.get('url')
                         if not stream_api:
                             return None
                         

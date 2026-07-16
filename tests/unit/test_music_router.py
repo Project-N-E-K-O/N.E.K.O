@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from starlette.requests import Request
 
 from main_routers import music_router
 
@@ -91,3 +92,86 @@ async def test_play_netease_music_syncs_cookies_without_session_client(monkeypat
     assert response.status_code == 307
     assert response.headers["location"] == "https://m7.music.126.net/song.mp3"
     assert session.cookies.values == {"MUSIC_U": "token"}
+
+
+@pytest.mark.asyncio
+async def test_play_netease_music_rejects_unplayable_public_fallback(monkeypatch):
+    async def fake_probe(url):
+        assert url == "https://music.163.com/song/media/outer/url?id=123.mp3"
+        return False
+
+    monkeypatch.setattr(music_router, "_ensure_pyncm", lambda: False)
+    monkeypatch.setattr(music_router, "_probe_audio_url", fake_probe)
+
+    response = await music_router.play_netease_music("123")
+
+    assert response.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_play_netease_music_uses_verified_public_fallback(monkeypatch):
+    async def fake_probe(_url):
+        return True
+
+    monkeypatch.setattr(music_router, "_ensure_pyncm", lambda: False)
+    monkeypatch.setattr(music_router, "_probe_audio_url", fake_probe)
+
+    response = await music_router.play_netease_music("123")
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "https://music.163.com/song/media/outer/url?id=123.mp3"
+
+
+@pytest.mark.asyncio
+async def test_music_proxy_forwards_range_and_preserves_partial_response(monkeypatch):
+    sent_requests = []
+
+    class FakeResponse:
+        status_code = 206
+        headers = {
+            # Several music CDNs return generic binary media even for valid MP3s.
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "10",
+            "Content-Range": "bytes 0-9/100",
+            "Accept-Ranges": "bytes",
+        }
+
+        async def aclose(self):
+            return None
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def build_request(self, method, url, headers):
+            request = SimpleNamespace(method=method, url=url, headers=headers)
+            sent_requests.append(request)
+            return request
+
+        async def send(self, _request, stream):
+            assert stream is True
+            return FakeResponse()
+
+    monkeypatch.setattr(music_router.httpx, "AsyncClient", FakeClient)
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/music/proxy",
+        "headers": [(b"range", b"bytes=0-9")],
+    })
+
+    response = await music_router.proxy_music("https://music.163.com/example.mp3", request)
+
+    assert sent_requests[0].headers["Range"] == "bytes=0-9"
+    assert response.status_code == 206
+    assert response.headers["content-range"] == "bytes 0-9/100"
+    assert response.headers["accept-ranges"] == "bytes"
