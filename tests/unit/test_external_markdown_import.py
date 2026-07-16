@@ -273,9 +273,13 @@ def test_hermes_delimiter_inside_fence_is_not_a_delimiter():
     analysis = build_import_candidates(sources)
 
     assert analysis["source_format"] == "hermes"
-    texts = [c["text"] for c in analysis["candidates"]]
-    assert any("Real memory one" in t for t in texts)
-    assert any("Real memory two" in t for t in texts)
+    # Both memories land in a SINGLE candidate: the § inside the fence was not
+    # treated as a delimiter (which would have split them or dropped one). Asserting
+    # the count — not just any() — is what actually pins the no-split behaviour.
+    assert len(analysis["candidates"]) == 1
+    combined = analysis["candidates"][0]["text"]
+    assert "Real memory one" in combined
+    assert "Real memory two" in combined
 
 
 def test_hermes_daily_split_on_section_delimiters():
