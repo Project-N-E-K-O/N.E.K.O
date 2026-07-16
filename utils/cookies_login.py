@@ -72,8 +72,8 @@ def mask_string(s: str) -> str:
 def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     """Core credential integrity check, preventing incomplete cookies from causing account anomalies or risk control"""
     if platform == 'youtube':
-        if not (cookies.get('SAPISID') or cookies.get('__Secure-3PAPISID')):
-            logger.warning("⚠️ 安全拦截：YouTube Cookie 缺少 SAPISID 或 __Secure-3PAPISID！")
+        if not cookies.get('SAPISID'):
+            logger.warning("⚠️ 安全拦截：YouTube Cookie 缺少 SAPISID！")
             return False
         return True
 
@@ -353,7 +353,7 @@ def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
 
 def get_youtube_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
-    print("【YouTube 手动导入】(需包含 SAPISID 或 __Secure-3PAPISID 字段)")
+    print("【YouTube 手动导入】(必须包含 SAPISID 字段)")
     cookie_string = input("👉 请粘贴 Cookie: ").strip()
     print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
     cookies = parse_cookie_string(cookie_string)

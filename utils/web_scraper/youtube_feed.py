@@ -225,7 +225,7 @@ def _extract_videos(payload: dict[str, Any], limit: int) -> list[dict[str, Any]]
 
 
 def _build_sapisid_authorization(cookies: dict[str, str], now: int | None = None) -> str:
-    sapisid = cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID") or ""
+    sapisid = cookies.get("SAPISID") or ""
     if not sapisid:
         return ""
     timestamp = int(time.time()) if now is None else now
@@ -257,12 +257,39 @@ def _without_authentication(headers: dict[str, str]) -> dict[str, str]:
     return anonymous_headers
 
 
+def _youtube_confirms_authentication(
+    payload: dict[str, Any],
+    bootstrap_config: dict[str, Any],
+    *,
+    auth_sent: bool,
+) -> bool:
+    """Return true only when YouTube explicitly reports a signed-in session."""
+    if not auth_sent:
+        return False
+
+    response_context = payload.get("responseContext", {})
+    if isinstance(response_context, dict):
+        web_context = response_context.get("mainAppWebResponseContext", {})
+        if isinstance(web_context, dict):
+            logged_out = web_context.get("loggedOut")
+            if isinstance(logged_out, bool):
+                return not logged_out
+
+    logged_in = bootstrap_config.get("LOGGED_IN")
+    return logged_in if isinstance(logged_in, bool) else False
+
+
 async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
     """Fetch YouTube's anonymous or signed-in homepage recommendations."""
     client: httpx.AsyncClient | None = None
     owns_client = False
     try:
         cookies = await asyncio.to_thread(_get_platform_cookies, "youtube")
+        logger.info(
+            "YouTube 凭证状态: cookie_count=%d, sapisid_present=%s",
+            len(cookies),
+            bool(cookies.get("SAPISID")),
+        )
         cookie_header = _cookie_header(cookies)
         user_agent = get_random_user_agent()
         accept_language, discovery_query = _request_language_settings()
@@ -311,6 +338,7 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
             headers["X-Goog-Visitor-Id"] = str(visitor_data)
 
         authorization = _build_sapisid_authorization(cookies)
+        auth_requested = bool(authorization)
         if authorization:
             headers.update({
                 "Authorization": authorization,
@@ -334,7 +362,10 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
             status_code = exc.response.status_code
             if not authorization or status_code not in {401, 403}:
                 raise
-            logger.info("YouTube 登录凭证失效，回退匿名首页 Feed")
+            logger.warning(
+                "YouTube 登录认证被拒绝(status=%d)，重试匿名首页 Feed",
+                status_code,
+            )
             client.cookies.clear()
             headers = _without_authentication(headers)
             authorization = ""
@@ -346,7 +377,13 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
                 timeout=15.0,
             )
             response.raise_for_status()
-        videos = _extract_videos(response.json(), max(1, limit))
+        browse_data = response.json()
+        authenticated = _youtube_confirms_authentication(
+            browse_data,
+            config,
+            auth_sent=bool(authorization),
+        )
+        videos = _extract_videos(browse_data, max(1, limit))
         feed_kind = "home"
 
         # YouTube currently returns an intentionally empty Home tab for some
@@ -354,10 +391,17 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
         # public search keeps the non-login video source useful while preserving
         # the real Home Feed whenever YouTube supplies one.
         if not videos:
+            logger.warning(
+                "YouTube Home Feed 未返回可解析视频，切换匿名 public_discovery: "
+                "auth_requested=%s, auth_confirmed=%s",
+                auth_requested,
+                authenticated,
+            )
             if authorization:
                 client.cookies.clear()
                 headers = _without_authentication(headers)
                 authorization = ""
+            authenticated = False
             discovery_response = await client.post(
                 f"{_YOUTUBE_ORIGIN}/youtubei/v1/search",
                 params={"prettyPrint": "false", "key": api_key},
@@ -372,11 +416,20 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
         if not videos:
             raise ValueError("YouTube returned no Home Feed or public discovery videos")
 
+        logger.info(
+            "YouTube Feed 获取成功: feed_kind=%s, auth_requested=%s, "
+            "auth_confirmed=%s, videos=%d",
+            feed_kind,
+            auth_requested,
+            authenticated,
+            len(videos),
+        )
+
         return {
             "success": True,
             "source": "youtube",
             "feed_kind": feed_kind,
-            "authenticated": bool(authorization),
+            "authenticated": authenticated,
             "videos": videos,
         }
     except Exception as exc:

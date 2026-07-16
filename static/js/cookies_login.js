@@ -34,10 +34,10 @@ const PLATFORM_CONFIG_DATA = {
         nameKey: 'cookiesLogin.youtube',
         theme: '#ff0000',
         instructionKey: 'cookiesLogin.instructions.youtube',
-        fields: [
-            { key: 'SAPISID', labelKey: 'cookiesLogin.fields.SAPISID.label', descKey: 'cookiesLogin.fields.SAPISID.desc', required: false },
-            { key: '__Secure-3PAPISID', labelKey: 'cookiesLogin.fields.secure3PAPISID.label', descKey: 'cookiesLogin.fields.secure3PAPISID.desc', required: false }
-        ]
+        cookieStringMode: true,
+        cookieStringLabelKey: 'cookiesLogin.fields.youtubeCookie.label',
+        cookieStringDescKey: 'cookiesLogin.fields.youtubeCookie.desc',
+        fields: []
     },
     'douyin': {
         name: '抖音', 
@@ -186,7 +186,9 @@ function initPlatformConfig() {
             // 如果字典里有 instructionKey，直接用字典的（字典通常自带了网址）
             // 如果字典没有，则使用这里的模板，并填入 m.weibo.cn 或 翻译后的平台名
             instruction: data.instructionKey ? safeT(data.instructionKey, `<b>目标：</b> 请前往 <b>${targetDisplay}</b> 获取这些 Cookies。`) : '',
-            
+            cookieStringMode: data.cookieStringMode === true,
+            cookieStringLabel: data.cookieStringLabelKey ? safeT(data.cookieStringLabelKey, '完整 Cookie') : '',
+            cookieStringDesc: data.cookieStringDescKey ? safeT(data.cookieStringDescKey, '粘贴 Request Headers 中完整的 Cookie 值') : '',
             fields: data.fields.map(field => ({
                 key: field.key,
                 mapKey: field.mapKey,
@@ -637,11 +639,28 @@ function switchTab(platformKey, btnElement, isReRender = false) {
         }
 
         const placeholderBase = safeT('cookiesLogin.pasteHere', '在此粘贴');
-        // 渲染动态 Cookies 配置字段
-        fieldsContainer.innerHTML = config.fields.map((f, index) => {
-            const inputId = `input-${f.mapKey || f.key}`;
+        if (config.cookieStringMode) {
+            fieldsContainer.innerHTML = `
+            <div class="field-group">
+                <label for="input-cookie-string">
+                    <span>${DOMPurify.sanitize(config.cookieStringLabel)} <span class="req-star">*</span></span>
+                    <span class="desc">${DOMPurify.sanitize(config.cookieStringDesc)}</span>
+                </label>
+                <textarea id="input-cookie-string"
+                          rows="6"
+                          autocomplete="off"
+                          autocapitalize="off"
+                          spellcheck="false"
+                          class="credential-input"></textarea>
+            </div>`;
+            const cookieInput = document.getElementById('input-cookie-string');
+            if (cookieInput) cookieInput.placeholder = `${placeholderBase} Cookie...`;
+        } else {
+            // 渲染动态 Cookies 配置字段
+            fieldsContainer.innerHTML = config.fields.map((f, index) => {
+                const inputId = `input-${f.mapKey || f.key}`;
 
-            return `
+                return `
             <div class="field-group">
                 <label for="${inputId}">
                     <span>${DOMPurify.sanitize(f.label)} ${f.required ? '<span class="req-star">*</span>' : ''}</span>
@@ -652,15 +671,16 @@ function switchTab(platformKey, btnElement, isReRender = false) {
                        autocomplete="off" 
                        class="credential-input">
             </div>
-        `}).join('');
+            `}).join('');
 
-         fieldsContainer.querySelectorAll('.credential-input').forEach((inputEl) => {
-            const idx = Number(inputEl.getAttribute('data-field-index'));
-            const field = config.fields[idx];
-            if (field) {
-                inputEl.placeholder = `${placeholderBase} ${field.key}...`;
-            }
-        });
+            fieldsContainer.querySelectorAll('.credential-input').forEach((inputEl) => {
+                const idx = Number(inputEl.getAttribute('data-field-index'));
+                const field = config.fields[idx];
+                if (field) {
+                    inputEl.placeholder = `${placeholderBase} ${field.key}...`;
+                }
+            });
+        }
         
         if (isReRender) {
             Object.entries(existingValues).forEach(([id, preservedValue]) => {
@@ -681,52 +701,67 @@ function switchTab(platformKey, btnElement, isReRender = false) {
 // 提交当前平台的 Cookies 配置
 async function submitCurrentCookie() {
     const config = PLATFORM_CONFIG[currentPlatform];
-    const cookiePairs = [];
-    // 遍历配置字段，收集 Cookies 配置
-    for (const f of config.fields) {
-        const fieldId = `input-${f.mapKey || f.key}`;
-        const inputEl = document.getElementById(fieldId);
-        const rawVal = inputEl ? inputEl.value : '';
-        const val = rawVal;
-        // 检查必填项
-        if (f.required && !rawVal.trim()) {
-            const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}').replace('{{fieldName}}', f.label);
+    let cookieString = '';
+
+    if (config.cookieStringMode) {
+        const cookieInput = document.getElementById('input-cookie-string');
+        const rawCookieString = cookieInput ? cookieInput.value : '';
+        cookieString = rawCookieString.trim();
+        if (!cookieString) {
+            const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}')
+                .replace('{{fieldName}}', config.cookieStringLabel);
             showAlert(false, message);
-            inputEl?.focus();
+            cookieInput?.focus();
             return;
         }
-        // 过滤非法字符
-        if (rawVal !== '') {
-            let sanitizedVal = rawVal;
-            if (/[\r\n\t<>'";]/.test(sanitizedVal)) {
-                sanitizedVal = sanitizedVal.replace(/[\r\n\t]/g, '').replace(/[<>'"]/g, '').replace(/;/g, '');
-                const message = safeT('cookiesLogin.invalidChars', '{{fieldName}} 包含非法字符，已自动过滤').replace('{{fieldName}}', f.label);
+    } else {
+        const cookiePairs = [];
+        // 遍历配置字段，收集 Cookies 配置
+        for (const f of config.fields) {
+            const fieldId = `input-${f.mapKey || f.key}`;
+            const inputEl = document.getElementById(fieldId);
+            const rawVal = inputEl ? inputEl.value : '';
+            // 检查必填项
+            if (f.required && !rawVal.trim()) {
+                const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}').replace('{{fieldName}}', f.label);
                 showAlert(false, message);
+                inputEl?.focus();
+                return;
             }
-            // 检查是否有首尾空格
-            const prevVal = sanitizedVal;
-            sanitizedVal = sanitizedVal.trim();
-            if (sanitizedVal !== prevVal) {
-                const message = safeT('cookiesLogin.whitespaceTrimmed', '{{fieldName}} 已自动去除首尾空格').replace('{{fieldName}}', f.label);
-                showAlert(false, message);
-            }
-            if (!sanitizedVal) {
-                if (f.required) {
-                    const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}')
-                        .replace('{{fieldName}}', f.label);
+            // 过滤非法字符
+            if (rawVal !== '') {
+                let sanitizedVal = rawVal;
+                if (/[\r\n\t<>'";]/.test(sanitizedVal)) {
+                    sanitizedVal = sanitizedVal.replace(/[\r\n\t]/g, '').replace(/[<>'"]/g, '').replace(/;/g, '');
+                    const message = safeT('cookiesLogin.invalidChars', '{{fieldName}} 包含非法字符，已自动过滤').replace('{{fieldName}}', f.label);
                     showAlert(false, message);
-                    inputEl?.focus();
-                    return;
                 }
-                continue;
+                // 检查是否有首尾空格
+                const prevVal = sanitizedVal;
+                sanitizedVal = sanitizedVal.trim();
+                if (sanitizedVal !== prevVal) {
+                    const message = safeT('cookiesLogin.whitespaceTrimmed', '{{fieldName}} 已自动去除首尾空格').replace('{{fieldName}}', f.label);
+                    showAlert(false, message);
+                }
+                if (!sanitizedVal) {
+                    if (f.required) {
+                        const message = safeT('cookiesLogin.requiredField', '请填写必填项: {{fieldName}}')
+                            .replace('{{fieldName}}', f.label);
+                        showAlert(false, message);
+                        inputEl?.focus();
+                        return;
+                    }
+                    continue;
+                }
+                cookiePairs.push(`${f.key}=${sanitizedVal}`);
             }
-            cookiePairs.push(`${f.key}=${sanitizedVal}`);
         }
-    }
-    // 检查是否有 Cookies 配置
-    if (cookiePairs.length === 0) {
-        showAlert(false, safeT('cookiesLogin.noCookies', '请先配置 Cookies'));
-        return;
+        // 检查是否有 Cookies 配置
+        if (cookiePairs.length === 0) {
+            showAlert(false, safeT('cookiesLogin.noCookies', '请先配置 Cookies'));
+            return;
+        }
+        cookieString = cookiePairs.join('; ');
     }
     const submitBtn = document.getElementById('submit-btn');
     const submitText = document.getElementById('submit-text');
@@ -742,7 +777,7 @@ async function submitCurrentCookie() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 platform: currentPlatform,
-                cookie_string: cookiePairs.join('; '),
+                cookie_string: cookieString,
                 encrypt: encryptToggle ? encryptToggle.checked : false
             })
         });
