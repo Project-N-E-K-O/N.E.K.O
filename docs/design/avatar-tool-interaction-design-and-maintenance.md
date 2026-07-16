@@ -155,7 +155,7 @@ Web 切换道具时销毁旧 session，再创建新的 generation、variant、bu
 | 变化 | PC runtime 行为 |
 |---|---|
 | 只变 surface lease、desktop generation 或 timestamp | metadata update；不重建 interaction generation。 |
-| 同 tool/contract，只变 range/outside variant | 重灌 variant；保留 interaction generation 和 burst history；取消旧 press、range/outside timer 和 active effect。 |
+| 同 tool/contract，只变 descriptor 中的 range/outside variant | metadata update；descriptor variant 只作新 activation 的初始种子，replay 不覆盖 PC runtime 独占的实时 variant，并保留 interaction generation、burst history、press、timer 和 active effect。 |
 | tool id 或 contract fingerprint 变化 | 新 interaction generation；清理旧 press、history、variant、timer 和 effect owner。 |
 | inactive | 清空选择、pointer、timer、effect 和范围状态。 |
 
