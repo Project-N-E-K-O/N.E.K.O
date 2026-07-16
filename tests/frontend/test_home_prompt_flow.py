@@ -8362,7 +8362,98 @@ def test_external_chat_reconciles_a_second_same_run_stale_response(mock_page: Pa
     assert result["updates"][4]["sequence"] > result["updates"][3]["sequence"]
     assert result["updates"][5]["sequence"] > result["updates"][4]["sequence"]
     assert result["updates"][6]["sequence"] > result["updates"][5]["sequence"]
-    assert "effect" not in result["updates"][4]["payload"]["cursor"]
+    assert all(
+        "effect" not in update["payload"]["cursor"]
+        for update in result["updates"][4:]
+    )
+
+
+@pytest.mark.frontend
+def test_external_chat_bounds_repeated_different_run_stale_reconciliation(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-different-run');
+            window.__externalChatOverlayBegins = [];
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: (payload) => {
+                    window.__externalChatOverlayBegins.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => window.__externalChatUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-different-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            for (let index = 0; index < 7; index += 1) {
+                const update = window.__externalChatOverlayUpdates[index];
+                if (!update) {
+                    break;
+                }
+                window.__externalChatUpdateResolvers[index]({
+                    ok: false,
+                    stale: true,
+                    reason: 'stale-run',
+                    activeTutorialRunId: 'paired-active-run',
+                    activeSequence: update.sequence,
+                });
+                await new Promise((resolve) => setTimeout(resolve, 80));
+            }
+            return {
+                begins: window.__externalChatOverlayBegins,
+                updates: window.__externalChatOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert len(result["updates"]) == 7
+    assert result["updates"][0]["tutorialRunId"] == "external-different-run"
+    retry_run_ids = {update["tutorialRunId"] for update in result["updates"][1:]}
+    assert len(retry_run_ids) == 1
+    assert next(iter(retry_run_ids)).startswith("yui-guide-chat-")
+    assert len(result["begins"]) == 7
+    assert all(
+        "effect" not in update["payload"]["cursor"]
+        for update in result["updates"][2:]
+    )
 
 
 @pytest.mark.frontend

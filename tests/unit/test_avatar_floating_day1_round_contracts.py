@@ -581,7 +581,7 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence'" in overlay_source
     assert "YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3" in interpage_source
     assert "PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3" in overlay_source
-    assert "YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6" in interpage_source
+    assert "YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES = 6" in interpage_source
     assert "PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6" in overlay_source
     assert "YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48" in interpage_source
     assert "PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48" in overlay_source
@@ -603,7 +603,7 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "nextSequence(result.activeSequence)" in overlay_source
     assert "retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in interpage_source
     assert "retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in overlay_source
-    assert "retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES" in interpage_source
+    assert "retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES" in interpage_source
     assert "retryCount < PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES" in overlay_source
     assert "scheduleYuiGuidePcOverlayDeferredReconciliation(" in interpage_source
     assert "scheduleDeferredReconciliation(retryCount, attemptedSequence)" in overlay_source
@@ -611,6 +611,8 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "send({}, true, retryCount + 1);" in overlay_source
     assert "readStoredYuiGuidePcOverlaySequence() > attemptedSequence" in interpage_source
     assert "readStoredSequence() > attemptedSequence" in overlay_source
+    assert "isDifferentRunStale && retryCount > 0" in interpage_source
+    assert "attemptedOwnedRun && retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES" in interpage_source
     assert "attemptedSequence !== yuiGuidePcOverlaySequence" in interpage_source
     assert "attemptedSequence !== sequence" in overlay_source
     assert "activeSequence > attemptedSequence" in interpage_source

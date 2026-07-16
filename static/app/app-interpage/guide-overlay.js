@@ -22,7 +22,7 @@
     I.YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence';
     var YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
-    var YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6;
+    var YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES = 6;
     var YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     I.yuiGuidePcOverlayActive = false;
     I.yuiGuidePcOverlayReady = false;
@@ -402,7 +402,30 @@
                 I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
                     tutorialRunId: attemptedRunId
                 });
-            } else if (retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES) {
+            } else if (retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES) {
+                scheduleYuiGuidePcOverlayDeferredReconciliation(
+                    attemptedRunId,
+                    retryCount,
+                    attemptedLifecycleEpoch,
+                    attemptedSequence
+                );
+            }
+            return;
+        }
+
+        var attemptedOwnedRun = !!(
+            attemptedCanonicalRun
+            || (attemptedCurrentRun && attemptedChatOwnedRun)
+        );
+        var isDifferentRunStale = !!(
+            isStaleResponse
+            && result.activeTutorialRunId
+            && result.activeTutorialRunId !== attemptedRunId
+        );
+        if (isDifferentRunStale && retryCount > 0) {
+            if (attemptedOwnedRun && retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES) {
+                I.yuiGuidePcOverlayActive = false;
+                I.yuiGuidePcOverlayReady = false;
                 scheduleYuiGuidePcOverlayDeferredReconciliation(
                     attemptedRunId,
                     retryCount,
