@@ -34,7 +34,10 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
         # stubbed to reject any fused text placed in _reject_texts (simulating a
         # character_card conflict) so the Phase-3 filter can be tested directly.
         self.FACT_REJECTED_CARD = "rejected_card"
+        self.FACT_QUEUED_CORRECTION = "queued"
         self._reject_texts: set[str] = set()
+        self._queue_texts: set[str] = set()
+        self.queued_corrections: list[tuple] = []
 
     def _get_alock(self, _name: str) -> asyncio.Lock:
         return self.lock
@@ -51,7 +54,12 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
     def _evaluate_fact_contradiction(self, _name, text, _section_facts, _stop_names):
         if text in self._reject_texts:
             return self.FACT_REJECTED_CARD, "card"
+        if text in self._queue_texts:
+            return self.FACT_QUEUED_CORRECTION, "existing"
         return None, None
+
+    async def _aqueue_correction_locked(self, _name, old_text, new_text, _entity):
+        self.queued_corrections.append((old_text, new_text))
 
     async def _allm_call_fusion(self, _name, _entity, _candidates, _budget):
         # Deterministic stub — no real LLM. Returns whatever the test configured
@@ -404,4 +412,29 @@ async def test_fused_entries_contradicting_card_are_dropped():
     assert "contradicts the card" not in texts   # card-contradiction dropped
     assert "harmless impression" in texts
     assert "card fact" in texts                   # protected card untouched
+    assert result["added"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fused_entries_contradicting_noncard_are_queued_not_appended():
+    # A fused entry that contradicts a non-protected persona fact must go through
+    # the existing correction queue (like aadd_fact), not be appended alongside
+    # the contradictory fact (Codex P2).
+    harness = _FusionHarness(
+        {"master": {"facts": [
+            {"text": "Master lives in Osaka.", "source": "reflection", "id": "prom_x"},
+        ]}},
+        stub_fused=[
+            {"text": "Master lives in Tokyo.", "importance": 8},
+            {"text": "Master enjoys tea.", "importance": 5},
+        ],
+    )
+    harness._queue_texts = {"Master lives in Tokyo."}
+
+    result = await harness.afuse_external_facts("Neko", "master", _candidates("raw"), "openclaw")
+
+    texts = {f["text"] for f in harness.persona["master"]["facts"]}
+    assert "Master lives in Tokyo." not in texts        # contradiction queued, not appended
+    assert "Master enjoys tea." in texts
+    assert ("existing", "Master lives in Tokyo.") in harness.queued_corrections
     assert result["added"] == 1

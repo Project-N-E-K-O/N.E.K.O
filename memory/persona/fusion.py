@@ -212,10 +212,15 @@ class ExternalFusionMixin:
             stop_names = await self._aget_entity_stop_names(name)
             added = 0
             for item in fused:
-                code, _ = self._evaluate_fact_contradiction(
+                code, old_text = self._evaluate_fact_contradiction(
                     name, item["text"], section_facts, stop_names,
                 )
                 if code == self.FACT_REJECTED_CARD:
+                    continue
+                if code == self.FACT_QUEUED_CORRECTION:
+                    # 与非角色卡 persona 事实矛盾：入既有纠正队列交 LLM 裁决，不并存
+                    # 两个相反陈述（与 aadd_fact 一致，已在锁内 → 用 _locked 版）。
+                    await self._aqueue_correction_locked(name, old_text, item["text"], entity)
                     continue
                 entry = self._build_fact_entry(item["text"], "external_import", source_id)
                 entry["reinforcement"] = initial_reinforcement_from_importance(item["importance"])
