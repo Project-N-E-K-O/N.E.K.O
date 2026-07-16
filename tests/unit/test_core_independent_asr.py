@@ -81,6 +81,22 @@ async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
     assert runtime._asr_turn_prepared is True
 
 
+async def test_speech_started_pauses_and_cancels_realtime_dispatch() -> None:
+    runtime = _Runtime()
+    arbiter = type("Arbiter", (), {})()
+    arbiter.pause_dispatch = MagicMock()
+    arbiter.cancel_current = AsyncMock()
+    runtime.session._ensure_response_arbiter = MagicMock(return_value=arbiter)
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+
+    arbiter.pause_dispatch.assert_called_once_with()
+    arbiter.cancel_current.assert_awaited_once_with()
+
+
 async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime = _Runtime()
     runtime._asr_provider = "glm"
@@ -244,8 +260,81 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     assert factory.call_args.args == ("gemini",)
 
 
+async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    factory = MagicMock(return_value=asr)
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+        raising=False,
+    )
+    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    asr.connect.assert_awaited_once_with()
+    assert runtime._asr_session is asr
+    assert runtime._asr_provider == "soniox"
+    assert runtime._asr_received_audio is False
+
+
+async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatch) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    soniox_session = type("Soniox", (), {})()
+    soniox_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
+    soniox_session.close = AsyncMock()
+    core_session = type("CoreAsr", (), {})()
+    core_session.connect = AsyncMock()
+    core_session.close = AsyncMock()
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_module, "create_asr_session", MagicMock(return_value=soniox_session)
+    )
+    core_factory = MagicMock(return_value=core_session)
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_core_follow_asr_session",
+        core_factory,
+        raising=False,
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    soniox_session.close.assert_awaited_once_with()
+    core_session.connect.assert_awaited_once_with()
+    assert runtime._asr_session is core_session
+    assert runtime._asr_provider == "gemini"
+    assert runtime._asr_route_mode == "independent"
+    assert "provider detail" not in str(runtime.send_status.await_args_list)
+
+
 @pytest.mark.parametrize("core_type", ["qwen", "qwen_intl"])
-async def test_qwen_core_keeps_native_audio_when_text_injection_is_unsupported(
+async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     monkeypatch,
     core_type: str,
 ) -> None:
@@ -253,7 +342,10 @@ async def test_qwen_core_keeps_native_audio_when_text_injection_is_unsupported(
 
     runtime = _Runtime()
     runtime.core_api_type = core_type
-    factory = MagicMock()
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
         core_facade,
         "aload_global_conversation_settings",
@@ -263,15 +355,53 @@ async def test_qwen_core_keeps_native_audio_when_text_injection_is_unsupported(
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    factory.assert_not_called()
-    assert runtime._asr_route_mode == "native"
-    assert runtime._asr_session is None
-    runtime.send_status.assert_awaited_once()
-    status_payload = json.loads(runtime.send_status.await_args.args[0])
-    assert status_payload == {
-        "code": "ASR_INDEPENDENT_UNAVAILABLE",
-        "details": {"provider": core_type},
-    }
+    factory.assert_called_once()
+    asr.connect.assert_awaited_once_with()
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_session is asr
+    assert runtime._asr_provider == "qwen"
+
+
+async def test_websocket_core_submits_one_external_turn_after_local_history() -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    runtime.session.submit_external_text_turn = AsyncMock()
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_final(" hello ", epoch, "qwen")
+
+    runtime.handle_input_transcript.assert_awaited_once_with(
+        "hello",
+        is_voice_source=True,
+        source="independent_asr",
+        metadata={"provider": "qwen"},
+    )
+    runtime.session.submit_external_text_turn.assert_awaited_once()
+    call = runtime.session.submit_external_text_turn.await_args
+    assert call.args == ("hello",)
+    assert call.kwargs["turn_id"].startswith("asr-")
+    runtime.session.create_response.assert_not_awaited()
+
+
+async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
+    runtime = _Runtime()
+    websocket = type("WebSocket", (), {})()
+    websocket.send_json = AsyncMock()
+    runtime.websocket = websocket
+    runtime.current_speech_id = "speech-current"
+    epoch = runtime._asr_session_epoch
+
+    await runtime._send_independent_asr_preview(" draft ", epoch)
+    await runtime._send_independent_asr_preview("stale", epoch + 1)
+
+    websocket.send_json.assert_awaited_once_with(
+        {
+            "type": "user_transcript_preview",
+            "text": "draft",
+            "turn_id": "speech-current",
+        }
+    )
+    runtime.handle_input_transcript.assert_not_awaited()
 
 
 async def test_start_failure_keeps_native_omni_without_leaking_error(monkeypatch) -> None:
