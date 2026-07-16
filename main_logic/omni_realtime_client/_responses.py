@@ -189,6 +189,11 @@ class _ResponseMixin:
         to expose it to generation. The caller must pass only a Smart Turn
         completion, never an ASR partial or segment final.
         """
+        if getattr(self, "_is_gemini", False):
+            raise RuntimeError(
+                "external ASR text turns use the existing Gemini SDK path"
+            )
+
         import hashlib
         import json
 

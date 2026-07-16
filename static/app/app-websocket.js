@@ -2165,6 +2165,7 @@
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
+                        removeExternalAsrPreview();
                         S.independentAsrActive = false;
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(

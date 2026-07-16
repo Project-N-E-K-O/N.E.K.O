@@ -1241,6 +1241,10 @@ class _TransportMixin:
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            response_arbiter.notify_connection_lost("realtime client closed")
+
         # 取消静默检测任务
         if self._silence_check_task:
             self._silence_check_task.cancel()
