@@ -1188,6 +1188,7 @@ class VRMManager {
                 && typeof this._cursorFollow.isEnabled === 'function'
                 ? this._cursorFollow.isEnabled()
                 : null;
+            this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
         }
         this._gameModeResourcePhase = next;
         if (next !== 'idle') {
@@ -1201,8 +1202,11 @@ class VRMManager {
         } else {
             if (this._cursorFollow && typeof this._cursorFollow.setEnabled === 'function'
                 && this._gameModeResourceCursorFollowEnabled !== null) {
-                const restoreCursorFollow = window.mouseTrackingEnabled === false
-                    ? false
+                const currentMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+                const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null
+                    && currentMouseTrackingEnabled !== this._gameModeResourceMouseTrackingEnabled;
+                const restoreCursorFollow = mouseTrackingChanged
+                    ? currentMouseTrackingEnabled && window.nekoYuiGuideFaceForwardLock !== true
                     : this._gameModeResourceCursorFollowEnabled === true;
                 this._cursorFollow.setEnabled(restoreCursorFollow);
             }
@@ -1210,6 +1214,7 @@ class VRMManager {
                 document.addEventListener('mousemove', this._mouseMoveHandler, { passive: true });
             }
             this._gameModeResourceCursorFollowEnabled = null;
+            this._gameModeResourceMouseTrackingEnabled = null;
             this._gameModeResourceFallbackMouseDetached = false;
         }
         if (next === 'deep_sleep' && this._animationFrameId) {

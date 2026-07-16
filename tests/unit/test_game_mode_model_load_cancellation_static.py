@@ -46,8 +46,10 @@ def test_live2d_cancellation_releases_only_the_cancelled_load_lock():
     assert "if (this._activeLoadToken === loadToken)" in finally_body
 
 
-def test_vrm_and_mmd_restore_respects_mouse_tracking_disabled_during_protection():
+def test_vrm_and_mmd_restore_respects_mouse_tracking_changes_during_protection():
     for directory, filename in (("vrm", "vrm-manager.js"), ("mmd", "mmd-manager.js")):
         source = (ROOT / "static" / directory / filename).read_text(encoding="utf-8")
-        assert "const restoreCursorFollow = window.mouseTrackingEnabled === false" in source
+        assert "this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;" in source
+        assert "const currentMouseTrackingEnabled = window.mouseTrackingEnabled !== false;" in source
+        assert "const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null" in source
         assert "this.cursorFollow.setEnabled(restoreCursorFollow);" in source or "this._cursorFollow.setEnabled(restoreCursorFollow);" in source

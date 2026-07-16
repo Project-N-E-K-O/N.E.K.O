@@ -503,17 +503,22 @@ class MMDManager {
             this._gameModeResourceCursorFollowEnabled = this.cursorFollow
                 ? this.cursorFollow.enabled !== false
                 : null;
+            this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
         }
         this._gameModeResourcePhase = next;
         if (this.cursorFollow && typeof this.cursorFollow.setEnabled === 'function') {
             if (next !== 'idle') {
                 this.cursorFollow.setEnabled(false);
             } else if (this._gameModeResourceCursorFollowEnabled !== null) {
-                const restoreCursorFollow = window.mouseTrackingEnabled === false
-                    ? false
+                const currentMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
+                const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null
+                    && currentMouseTrackingEnabled !== this._gameModeResourceMouseTrackingEnabled;
+                const restoreCursorFollow = mouseTrackingChanged
+                    ? currentMouseTrackingEnabled
                     : this._gameModeResourceCursorFollowEnabled === true;
                 this.cursorFollow.setEnabled(restoreCursorFollow);
                 this._gameModeResourceCursorFollowEnabled = null;
+                this._gameModeResourceMouseTrackingEnabled = null;
             }
         }
         if (next === 'deep_sleep' && this._shouldRender) {

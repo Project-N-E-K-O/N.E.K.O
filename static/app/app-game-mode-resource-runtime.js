@@ -75,7 +75,9 @@
         const ids = Array.isArray(payload && payload.pet_instance_ids)
             ? payload.pet_instance_ids
             : [];
-        return !ids.length || !state.petInstanceId || ids.includes(state.petInstanceId);
+        if (!ids.length) return true;
+        if (!state.petInstanceId) return false;
+        return ids.includes(state.petInstanceId);
     }
 
     function applyManagerPhase(phase) {
@@ -212,7 +214,11 @@
 
     async function releaseCompactLease() {
         const pair = hostState();
-        if (!pair.host || typeof pair.host.releaseCompactLease !== 'function') return;
+        if (!pair.host || typeof pair.host.releaseCompactLease !== 'function') {
+            applyOriginDelta({ originDelta: { x: 0, y: 0 } });
+            state.compactAcquired = false;
+            return;
+        }
         const payload = leasePayload() || {
             sessionId: state.sessionId,
             petInstanceId: state.petInstanceId,
@@ -225,6 +231,7 @@
                 applyOriginDelta({ originDelta: { x: 0, y: 0 } });
             }
         } catch (_) {}
+        applyOriginDelta({ originDelta: { x: 0, y: 0 } });
         state.compactAcquired = false;
     }
 

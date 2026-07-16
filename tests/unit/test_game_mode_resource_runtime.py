@@ -37,7 +37,11 @@ def test_game_mode_resource_runtime_event_driven_contract():
         updateCompactLease(payload) {{ hostCalls.push(['update', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: 0, y: 0 }} }}); }},
         suspendCompactLeaseForDrag(payload) {{ hostCalls.push(['suspend', payload]); return Promise.resolve({{ ok: true }}); }},
         resumeCompactLeaseAfterDrag(payload) {{ hostCalls.push(['resume', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: 700, y: 40 }} }}); }},
-        releaseCompactLease(payload) {{ hostCalls.push(['release', payload]); return Promise.resolve({{ ok: true }}); }},
+        releaseCompactLease(payload) {{
+          hostCalls.push(['release', payload]);
+          if (host.releaseShouldFail) return Promise.reject(new Error('release failed'));
+          return Promise.resolve(host.releaseResult || {{ ok: true }});
+        }},
         onCompactLeaseInvalidated(callback) {{ host.invalidated = callback; return () => {{}}; }},
       }};
       const context = {{
@@ -79,6 +83,17 @@ def test_game_mode_resource_runtime_event_driven_contract():
       emit('neko:game-mode-beta-message', {{
         type: 'game_mode_resource_protection_enter',
         source: 'game_mode_resource_protection',
+        resource_session_id: 'wrong-session',
+        pet_instance_ids: ['pet-2'],
+        target_fps: 15,
+        deep_sleep_after_seconds: 90,
+        compact_pet_window_enabled: true,
+      }});
+      if (managerCalls.length || timers.length) throw new Error('targeted payload matched renderer without pet id');
+
+      emit('neko:game-mode-beta-message', {{
+        type: 'game_mode_resource_protection_enter',
+        source: 'game_mode_resource_protection',
         resource_session_id: 'session-1',
         pet_instance_ids: ['pet-1'],
         target_fps: 15,
@@ -87,8 +102,7 @@ def test_game_mode_resource_runtime_event_driven_contract():
       }});
 
       Promise.resolve().then(() => Promise.resolve()).then(async () => {{
-        if (!managerCalls.some(x => x[0] === 'phase' && x[1] === 'soft_protected')) throw new Error('soft phase missing');
-        if (timers.length !== 1 || timers[0].ms !== 90000) throw new Error('must use one 90s deep timer');
+        if (managerCalls.length || timers.length) throw new Error('targeted payload must wait for pet registration');
         if (hostCalls.length) throw new Error('host lease must wait for registration');
         hostContract = {{ petInstanceId: 'pet-1', hostCapabilities: {{ compactPetWindowLeaseV1: true }} }};
         emit('neko:game-mode-resource-registration', {{
@@ -100,6 +114,8 @@ def test_game_mode_resource_runtime_event_driven_contract():
           compact_pet_window_enabled: true,
         }});
         await new Promise(resolve => setImmediate(resolve));
+        if (!managerCalls.some(x => x[0] === 'phase' && x[1] === 'soft_protected')) throw new Error('soft phase missing');
+        if (timers.length !== 1 || timers[0].ms !== 90000) throw new Error('must use one 90s deep timer');
         if (hostCalls.filter(x => x[0] === 'acquire').length !== 1) throw new Error('compact acquire missing');
         if (!managerCalls.some(x => x[0] === 'translate' && x[1] === -700 && x[2] === -40)) throw new Error('origin compensation missing');
 
@@ -156,6 +172,22 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (netTranslation[0] !== 0 || netTranslation[1] !== 0) throw new Error('compact origin compensation not restored');
         if (!fetchCalls.some(x => x.url === '/api/game-mode-beta/resource/exit')) throw new Error('explicit exit API missing');
         if (fetchCalls.some(x => String(x.url).endsWith('/'))) throw new Error('API URL has trailing slash');
+
+        host.releaseShouldFail = true;
+        emit('neko:game-mode-resource-registration', {{
+          resource_session_active: true,
+          resource_session_id: 'session-2',
+          pet_instance_id: 'pet-1',
+          resource_target_fps: 15,
+          resource_deep_sleep_after_seconds: 90,
+          compact_pet_window_enabled: true,
+        }});
+        await new Promise(resolve => setImmediate(resolve));
+        await context.window.nekoGameModeResourceRuntime.exitCurrentSession();
+        const secondNetTranslation = managerCalls
+          .filter(x => x[0] === 'translate')
+          .reduce((sum, x) => [sum[0] + x[1], sum[1] + x[2]], [0, 0]);
+        if (secondNetTranslation[0] !== 0 || secondNetTranslation[1] !== 0) throw new Error('failed release left origin compensation applied');
         console.log('resource runtime contract passed');
       }}).catch(error => {{ console.error(error); process.exitCode = 1; }});
     """
@@ -187,6 +219,9 @@ def test_model_managers_expose_temporary_resource_runtime_without_persisting_pre
     assert "if (next !== 'idle' && this._idleFpsGovernorTimer)" in files["live2d"]
     assert "this._gameModeResourceIdleGovernorWasRunning = true" in files["live2d"]
     assert "_shouldRunGameModeFrame(timestamp, 'lip-sync')" in files["png"]
+    for source in (files["vrm"], files["mmd"]):
+        assert "this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;" in source
+        assert "const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null" in source
 
 
 def test_resource_runtime_is_loaded_only_on_pet_page_and_uses_no_polling_loop():
