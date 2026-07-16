@@ -331,7 +331,7 @@
             ) {
                 return;
             }
-            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
+            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount, {
                 tutorialRunId: attemptedRunId
             });
         }, YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
@@ -354,6 +354,15 @@
         ) {
             return;
         }
+        var activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+        if (
+            isStaleResponse
+            && result.reason === 'stale-sequence'
+            && result.activeTutorialRunId === attemptedRunId
+            && activeSequence > attemptedSequence
+        ) {
+            return;
+        }
         var attemptedCurrentRun = !!(attemptedRunId && attemptedRunId === I.yuiGuidePcOverlayRunIdOverride);
         var attemptedChatOwnedRun = isYuiGuideChatOwnedPcOverlayRunId(attemptedRunId);
         var storedCanonicalRunId = readStoredYuiGuidePcOverlayRunId();
@@ -367,6 +376,7 @@
             isStaleResponse
             && result.reason === 'stale-sequence'
             && result.activeTutorialRunId === attemptedRunId
+            && activeSequence === attemptedSequence
             && (
                 attemptedCanonicalRun
                 || (attemptedCurrentRun && attemptedChatOwnedRun)

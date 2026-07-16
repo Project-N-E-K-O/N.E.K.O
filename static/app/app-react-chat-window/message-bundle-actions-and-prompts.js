@@ -1837,6 +1837,7 @@
         if (I.state.homeTutorialInputLocked === next) {
             return;
         }
+        var previousAttachmentsVisible = I.getEffectiveComposerAttachmentsVisible();
         if (next && I.getCurrentCompactChatState() === 'input') {
             I.resetCompactChatState();
         }
@@ -1849,6 +1850,7 @@
             compactInputLocked: next,
             composerDisabled: !!I.state.homeTutorialInteractionLocked
         });
+        I.syncComposerAttachmentsVisibility(previousAttachmentsVisible);
         syncTutorialGalgameSuppression();
         I.renderWindow();
     }

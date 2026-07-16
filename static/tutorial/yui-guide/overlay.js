@@ -181,7 +181,7 @@
                 if (cleared) {
                     return;
                 }
-                send({}, true, retryCount + 1);
+                send({}, true, retryCount);
             }, PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
         };
 
@@ -190,11 +190,22 @@
             if (attemptedSequence !== sequence) {
                 return;
             }
+            const activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence > attemptedSequence
+            ) {
+                return;
+            }
             const isSameRunSequenceStale = !!(
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
+                && activeSequence === attemptedSequence
                 && !cleared
                 && attemptedRunId === runId
             );
@@ -222,11 +233,22 @@
             if (attemptedSequence !== sequence) {
                 return;
             }
+            const activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence > attemptedSequence
+            ) {
+                return;
+            }
             const isSameRunSequenceStale = !!(
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
+                && activeSequence === attemptedSequence
                 && !cleared
                 && attemptedRunId === runId
             );

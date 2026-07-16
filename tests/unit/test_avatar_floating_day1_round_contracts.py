@@ -605,8 +605,12 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in overlay_source
     assert "scheduleYuiGuidePcOverlayDeferredReconciliation(" in interpage_source
     assert "scheduleDeferredReconciliation(retryCount)" in overlay_source
+    assert "sendYuiGuidePcOverlayPatch(patch || {}, retryCount, {" in interpage_source
+    assert "send({}, true, retryCount);" in overlay_source
     assert "attemptedSequence !== yuiGuidePcOverlaySequence" in interpage_source
     assert "attemptedSequence !== sequence" in overlay_source
+    assert "activeSequence > attemptedSequence" in interpage_source
+    assert "activeSequence > attemptedSequence" in overlay_source
 
 
 def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():

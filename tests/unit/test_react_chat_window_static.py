@@ -584,6 +584,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
         1,
     )[0]
     assert "compactInputLocked: next" in input_lock_block
+    assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
     assert "disabled={compactCapsuleEntryLocked}" in capsule_block
     assert "if (compactCapsuleEntryLocked) return;" in capsule_block
