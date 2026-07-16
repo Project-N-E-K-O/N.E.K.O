@@ -1543,7 +1543,10 @@
         const input = document.getElementById('external-memory-files');
         const button = document.getElementById('external-memory-import-btn');
         if (button) {
-            button.disabled = !(currentCatName && input && input.files && input.files.length);
+            // 导入进行中一律保持禁用——否则切角色 / 换文件会重新启用按钮，放行第二
+            // 次导入去撞后端正在跑的 fold/CAS（Codex P2）。
+            button.disabled = !!window._memoryImportInProgress
+                || !(currentCatName && input && input.files && input.files.length);
         }
         setElementText(
             'external-memory-target',
