@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import ModuleType, SimpleNamespace
 
 import psutil
 import pytest
 
-from scripts.runtime_memory_baseline import _process_row, _series_summary
+from scripts import runtime_memory_baseline
+from scripts.runtime_memory_baseline import (
+    _embedding_scenario,
+    _process_row,
+    _series_summary,
+)
 from scripts.runtime_memory_soak import (
     _parse_features,
     _slope_per_hour,
@@ -79,6 +86,56 @@ def test_series_summary_aggregates_resource_high_water_marks() -> None:
     assert summary["total"]["max_onnx_map_count"] == 3
     assert summary["total"]["peak_onnx_mapped_rss_mib"] == 13.0
     assert summary["categories"]["python"]["max_threads"] == 5
+
+
+@pytest.mark.asyncio
+async def test_embedding_scenario_captures_model_id_before_close(monkeypatch) -> None:
+    instances = []
+
+    class _EmbeddingService:
+        def __init__(self, **_kwargs) -> None:
+            self.closed = False
+            instances.append(self)
+
+        async def request_load(self) -> bool:
+            return True
+
+        async def embed(self, _text: str) -> list[float]:
+            return [0.1, 0.2, 0.3]
+
+        def model_id(self) -> str:
+            if self.closed:
+                raise RuntimeError("model_id accessed after close")
+            return "synthetic-3d"
+
+        def disable_reason(self) -> str:
+            return ""
+
+        async def close(self) -> None:
+            self.closed = True
+
+    embeddings = ModuleType("memory.embeddings")
+    embeddings.EmbeddingService = _EmbeddingService
+    monkeypatch.setitem(sys.modules, "memory.embeddings", embeddings)
+    monkeypatch.setattr(
+        runtime_memory_baseline,
+        "_in_process_checkpoint",
+        lambda label, **_kwargs: {"label": label},
+    )
+
+    result = await _embedding_scenario(
+        SimpleNamespace(embedding_root="synthetic-model-root", window=0, interval=0)
+    )
+
+    assert result["embedding"] == {
+        "ready": True,
+        "model_id": "synthetic-3d",
+        "model_root": str(
+            runtime_memory_baseline.Path("synthetic-model-root").resolve()
+        ),
+        "vector_dimensions": 3,
+    }
+    assert instances[0].closed is True
 
 
 def test_parse_features_deduplicates_and_rejects_unknown_names() -> None:

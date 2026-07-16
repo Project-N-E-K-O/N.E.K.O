@@ -518,6 +518,7 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
             interval=args.interval,
         )
     )
+    model_id = service.model_id()
     await service.close()
     vector_dimensions = len(vector)
     del vector, service
@@ -533,7 +534,7 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
         "scenario": "embedding",
         "embedding": {
             "ready": ready,
-            "model_id": service.model_id(),
+            "model_id": model_id,
             "model_root": str(Path(args.embedding_root).resolve()),
             "vector_dimensions": vector_dimensions,
         },
