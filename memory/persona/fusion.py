@@ -312,7 +312,13 @@ class ExternalFusionMixin:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 调用失败: {exc}")
             return None
         finally:
-            await llm.aclose()
+            # aclose is cleanup: a close failure must not mask the call outcome —
+            # a finally exception would replace the return None / valid resp and
+            # propagate past ExternalMemoryFusionError into a generic 500 (Codex P2).
+            try:
+                await llm.aclose()
+            except Exception as exc:
+                logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 关闭失败: {exc}")
 
         raw = resp.content if hasattr(resp, "content") else str(resp)
         return self._parse_fusion_response(raw)

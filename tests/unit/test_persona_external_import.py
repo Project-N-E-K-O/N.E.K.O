@@ -310,6 +310,44 @@ async def test_fusion_llm_client_construction_failure_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_fusion_llm_close_failure_does_not_mask_result(monkeypatch):
+    # A failure while closing the client is cleanup noise; it must not replace the
+    # parsed result with a raw exception that propagates past
+    # ExternalMemoryFusionError into a generic 500 (Codex P2).
+    class _FakeResp:
+        content = '[{"text": "fused", "importance": 7}]'
+
+    class _FakeLLM:
+        async def ainvoke(self, _prompt):
+            return _FakeResp()
+
+        async def aclose(self):
+            raise RuntimeError("close boom")
+
+    async def _fake_create(*_a, **_k):
+        return _FakeLLM()
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", _fake_create)
+
+    class _CfgMgr:
+        async def aget_character_data(self):
+            return (None, None, None, None, {}, None, None, None, None)
+
+        def get_model_api_config(self, _tier):
+            return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}
+
+    class _CallHarness(ExternalFusionMixin):
+        def __init__(self):
+            self._config_manager = _CfgMgr()
+
+    result = await _CallHarness()._allm_call_fusion(
+        "Neko", "master", [{"text": "cand"}], 600,
+    )
+    # close failure swallowed; the parsed result survives
+    assert result == [{"text": "fused", "importance": 7}]
+
+
+@pytest.mark.asyncio
 async def test_fused_duplicate_texts_are_deduped_keeping_highest_importance():
     # An LLM that repeats a line must not mint two persona entries sharing one
     # timestamp+text-hash id (Codex P2): _trim_fused_to_budget dedups by
