@@ -2399,6 +2399,21 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
 
+    // 每帧遍历用的 [id, idx] 快照：两个索引表都是上面一次性填充、之后只读的
+    // const 闭包变量，在这里提升 Object.entries 结果，避免包装后的 update
+    // 每帧（30-60fps）重复分配 5-6 个 entries 数组带来的 GC 压力。
+    const mouthParamEntries = Object.entries(mouthParamIndices);
+    const lookAtParamEntries = Object.entries(lookAtParamIndices);
+    // 呼吸参数索引同理：参数索引对模型实例固定，安装期解析一次，
+    // 免去每帧对 Cubism core 的 getParameterIndex 字符串查询。
+    const breathParamEntries = [];
+    for (const id of runtimeBreathParams) {
+        try {
+            const idx = coreModel.getParameterIndex(id);
+            if (idx >= 0) breathParamEntries.push([id, idx]);
+        } catch (_) {}
+    }
+
     // 覆盖 1: motionManager.update
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
         // 确保在绑定之前，motionManager 和 coreModel 都已准备好
@@ -2426,7 +2441,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
+            for (const [id, idx] of mouthParamEntries) {
                 try {
                     preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
@@ -2436,14 +2451,12 @@ Live2DManager.prototype.installMouthOverride = function() {
                     try { preUpdateParams[p.id] = coreModel.getParameterValueByIndex(p.idx); } catch (_) {}
                 }
             }
-            const breathParams = runtimeBreathParams;
-            for (const id of breathParams) {
+            for (const [id, idx] of breathParamEntries) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
+                    preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
             }
-            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
+            for (const [id, idx] of lookAtParamEntries) {
                 try {
                     preUpdateParams[id] = coreModel.getParameterValueByIndex(idx);
                 } catch (_) {}
@@ -2485,7 +2498,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 this._motionDrivenBreathParamIds = new Set();
             }
             const shouldTreatEyeChangesAsAuthoritative = motionPriority > LIVE2D_MOTION_PRIORITY.IDLE;
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
+            for (const [id, idx] of mouthParamEntries) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
                     const preVal = preUpdateParams[id];
@@ -2507,20 +2520,17 @@ Live2DManager.prototype.installMouthOverride = function() {
                     } catch (_) {}
                 }
             }
-            for (const id of breathParams) {
+            for (const [id, idx] of breathParamEntries) {
                 try {
-                    const idx = coreModel.getParameterIndex(id);
-                    if (idx >= 0) {
-                        const postVal = coreModel.getParameterValueByIndex(idx);
-                        const preVal = preUpdateParams[id];
-                        if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
-                            this._motionDrivenBreathParamIds.add(id);
-                        }
+                    const postVal = coreModel.getParameterValueByIndex(idx);
+                    const preVal = preUpdateParams[id];
+                    if (preVal !== undefined && Math.abs(postVal - preVal) > 0.001) {
+                        this._motionDrivenBreathParamIds.add(id);
                     }
                 } catch (_) {}
             }
             this._isBreathDrivenByMotion = this._motionDrivenBreathParamIds.size > 0;
-            for (const [id, idx] of Object.entries(lookAtParamIndices)) {
+            for (const [id, idx] of lookAtParamEntries) {
                 try {
                     const postVal = coreModel.getParameterValueByIndex(idx);
                     const preVal = preUpdateParams[id];
@@ -2573,7 +2583,7 @@ Live2DManager.prototype.installMouthOverride = function() {
 
                     // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
                     if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                        for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        for (const [id, idx] of mouthParamEntries) {
                             try {
                                 coreModel.setParameterValueByIndex(idx, this.mouthValue);
                             } catch (_) {}
@@ -2673,7 +2683,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 这是渲染前的最后一步，强制命令，绝对优先级
             // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
             if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                for (const [id, idx] of mouthParamEntries) {
                     try {
                         currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
                     } catch (_) {}
