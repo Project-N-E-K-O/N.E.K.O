@@ -2136,7 +2136,7 @@ class LifecycleMixin:
 
         # Stale expected_session callbacks have already returned above. Invalidate
         # ASR callbacks before any remaining teardown awaits can yield.
-        await self._close_independent_asr()
+        await self._close_independent_asr(next_route_mode="blocked")
 
         if _inactive_early:
             if reset_starting_count:

@@ -3,6 +3,8 @@ import os
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager
@@ -201,6 +203,52 @@ async def test_native_route_sends_microphone_audio_to_omni_only():
     mgr._route_microphone_audio.assert_awaited_once()
     mgr.session.stream_audio.assert_awaited_once()
     mgr._record_omni_microphone_audio.assert_called_once()
+
+
+async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
+    mgr = _make_routable_audio_manager(True)
+    del mgr._route_microphone_audio
+    mgr._init_asr_runtime_state()
+    mgr._asr_route_mode = "independent"
+    mgr._asr_required = True
+    mgr._asr_provider = "dummy"
+    mgr.lock = asyncio.Lock()
+    mgr._user_session_abandon_epoch = 0
+    mgr._reset_tts_retry_state = lambda: None
+    mgr._reset_proactive_gate = lambda: None
+
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+
+    class _WaitingAsr:
+        async def close(self):
+            close_started.set()
+            await allow_close.wait()
+
+    mgr._asr_session = _WaitingAsr()
+
+    end_task = asyncio.create_task(LLMSessionManager.end_session(mgr))
+    await close_started.wait()
+    try:
+        assert mgr.is_active is True
+        assert mgr.session_ready is True
+        assert mgr._asr_route_mode == "blocked"
+        assert mgr._asr_required is True
+
+        await LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "audio", "data": [1] * 480},
+        )
+
+        mgr.session.stream_audio.assert_not_awaited()
+        mgr._record_omni_microphone_audio.assert_not_called()
+    finally:
+        end_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await end_task
+
+    assert mgr._asr_route_mode == "blocked"
+    assert mgr._asr_required is True
 
 
 async def test_hot_swap_flush_honors_consumed_audio_route():

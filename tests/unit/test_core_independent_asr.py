@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -229,13 +230,38 @@ async def test_close_invalidates_late_final_before_waiting_for_provider() -> Non
     runtime._asr_route_mode = "independent"
     old_epoch = runtime._asr_session_epoch
 
-    await runtime._close_independent_asr()
+    await runtime._close_independent_asr(next_route_mode="blocked")
     await runtime._handle_independent_asr_final("late", old_epoch, "glm")
 
     asr.close.assert_awaited_once_with()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
+
+
+async def test_close_failure_keeps_the_requested_blocked_route() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_required = True
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_required is True
+    assert await runtime._route_microphone_audio(
+        b"\x00\x00", sample_rate_hz=16_000
+    ) is True
+
+
+async def test_close_requires_callers_to_declare_the_next_route() -> None:
+    parameter = inspect.signature(
+        AsrRuntimeMixin._close_independent_asr
+    ).parameters["next_route_mode"]
+
+    assert parameter.default is inspect.Parameter.empty
 
 
 async def test_asr_stream_failure_never_replays_the_failed_frame_to_omni() -> None:
