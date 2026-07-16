@@ -538,7 +538,7 @@
         var currentDispatchId = ++_musicDispatchId;
 
         if (window.sendMusicMessage) {
-            var accepted = await window.sendMusicMessage(trackInfo);
+            var accepted = await window.sendMusicMessage(trackInfo, true, options);
             // proactive 来源成功派发后打上限流时间戳，阻止接下来 18s 内的再次 proactive 推荐
             if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
                 window.markProactiveMusicRecommended();

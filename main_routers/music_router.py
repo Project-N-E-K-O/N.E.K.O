@@ -160,6 +160,16 @@ MUSIC_PROXY_CACHE = TTLCache(
 
 STREAMING_SIZE_THRESHOLD = 10 * 1024 * 1024  # 10MB 以上流式传输
 MAX_MUSIC_SIZE = 50 * 1024 * 1024
+PLAYABLE_BINARY_CONTENT_TYPES = {'application/octet-stream', 'binary/octet-stream'}
+
+
+def _is_playable_audio_content_type(content_type: str) -> bool:
+    normalized = (content_type or '').split(';', 1)[0].strip().lower()
+    return (
+        normalized.startswith('audio/')
+        or normalized.startswith('video/')
+        or normalized in PLAYABLE_BINARY_CONTENT_TYPES
+    )
 
 
 def _is_allowed_music_url(url: str) -> bool:
@@ -200,12 +210,8 @@ async def _probe_audio_url(url: str) -> bool:
                 if response.status_code not in (200, 206):
                     await response.aclose()
                     return False
-                content_type = response.headers.get('content-type', '').split(';', 1)[0].lower()
-                playable = (
-                    content_type.startswith('audio/')
-                    or content_type.startswith('video/')
-                    or content_type == 'application/octet-stream'
-                )
+                content_type = response.headers.get('content-type', '')
+                playable = _is_playable_audio_content_type(content_type)
                 await response.aclose()
                 return playable
     except (httpx.HTTPError, ValueError):
@@ -291,11 +297,7 @@ async def proxy_music(url: str, request: Request):
             resp.raise_for_status()
 
             content_type = resp.headers.get('Content-Type', 'audio/mpeg').split(';', 1)[0].strip()
-            if (
-                'audio' not in content_type
-                and 'video' not in content_type
-                and content_type not in ('application/octet-stream', 'binary/octet-stream')
-            ):
+            if not _is_playable_audio_content_type(content_type):
                 await resp.aclose()
                 logger.warning(f"[Music Proxy] 非音频内容类型: {content_type}")
                 return JSONResponse(content={"success": False, "error": "音乐源返回了无效内容（非音频格式）"}, status_code=502)
@@ -325,7 +327,38 @@ async def proxy_music(url: str, request: Request):
                 except (TypeError, ValueError):
                     pass
 
-            if range_header or declared_size >= STREAMING_SIZE_THRESHOLD:
+            if range_header:
+                # Preserve status, range headers and bytes from the same upstream
+                # request. Re-requesting here can invalidate If-Range or return a
+                # different object while retaining the probe response's 206 headers.
+                try:
+                    range_body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                        range_body.extend(chunk)
+                        if len(range_body) > MAX_MUSIC_SIZE:
+                            return JSONResponse(
+                                content={"success": False, "error": "音乐文件超过大小限制 (50MB)"},
+                                status_code=413,
+                            )
+                finally:
+                    await resp.aclose()
+
+                headers = {
+                    'Cache-Control': 'no-cache',
+                    'X-Cache': 'RANGE',
+                    'Accept-Ranges': resp.headers.get('Accept-Ranges', 'bytes'),
+                }
+                if content_range:
+                    headers['Content-Range'] = content_range
+                headers['Content-Length'] = str(len(range_body))
+                return Response(
+                    content=bytes(range_body),
+                    media_type=content_type,
+                    headers=headers,
+                    status_code=resp.status_code,
+                )
+
+            if declared_size >= STREAMING_SIZE_THRESHOLD:
                 # 大文件：关掉探测流，交给 _stream_music 用独立 client 流式传输
                 # 传 current_url（已解析完重定向的最终地址）避免重复跟重定向
                 await resp.aclose()

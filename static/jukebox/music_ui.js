@@ -1730,7 +1730,7 @@
         catch (_) { return String(url || ''); }
     };
 
-    const waitForMusicMediaReady = (player, token, expectedUrl) => new Promise((resolve) => {
+    const waitForMusicMediaReady = (player, token, expectedUrl, enforceRecommendationLimit) => new Promise((resolve) => {
         const audio = player && player.audio;
         if (!audio) {
             resolve({ ok: false, reason: 'missing_audio' });
@@ -1763,9 +1763,16 @@
             // A reused <audio> may emit a late event for the previous source.
             if (!isExpectedSource()) return;
             const duration = Number(audio.duration);
-            if (duration === Infinity || (Number.isFinite(duration) && duration >= MAX_RECOMMENDED_TRACK_DURATION_SECONDS)) {
+            if (enforceRecommendationLimit && (
+                duration === Infinity
+                || (Number.isFinite(duration) && duration >= MAX_RECOMMENDED_TRACK_DURATION_SECONDS)
+            )) {
                 try { audio.pause(); } catch (_) { /* best effort */ }
                 finish(false, 'track_too_long');
+                return;
+            }
+            if (duration === Infinity && !enforceRecommendationLimit) {
+                finish(true, readyReason);
                 return;
             }
             if (Number.isFinite(duration) && duration > 0) {
@@ -2046,14 +2053,14 @@
     // 都拿到自己的实例后写 currentPlayingTrack/musicCardMessageId，第一份卡片
     // 会被第二份盖掉，被覆盖的实例如果 destroy 不及时还会残留 <audio>。
     // 用 executePlayChain 把所有 executePlay 排成单线，保证内部 await 不会被抢跑。
-    const executePlay = (trackInfo, currentToken, shouldAutoPlay = true) => {
-        const run = () => executePlayCore(trackInfo, currentToken, shouldAutoPlay);
+    const executePlay = (trackInfo, currentToken, shouldAutoPlay = true, playbackOptions = {}) => {
+        const run = () => executePlayCore(trackInfo, currentToken, shouldAutoPlay, playbackOptions);
         const next = executePlayChain.then(run, run); // 即使前一次 reject 也继续
         executePlayChain = next.catch(() => { /* 链路自愈，避免 rejection 阻断后续 */ });
         return next;
     };
 
-    const executePlayCore = async (trackInfo, currentToken, shouldAutoPlay = true) => {
+    const executePlayCore = async (trackInfo, currentToken, shouldAutoPlay = true, playbackOptions = {}) => {
         if (currentToken !== latestMusicRequestToken) return false;
 
         // 清除可能的自动销毁与 DOM 移除定时器
@@ -2642,7 +2649,12 @@
             // 【核心修复】同步更新实例的最新 Token，确保复用模式下事件回调中的 Token 校验依然有效
             localPlayer._latestToken = currentToken;
             localPlayer._loadError = false;
-            const mediaReadyPromise = waitForMusicMediaReady(localPlayer, currentToken, trackInfo.url);
+            const mediaReadyPromise = waitForMusicMediaReady(
+                localPlayer,
+                currentToken,
+                trackInfo.url,
+                playbackOptions.source === 'proactive'
+            );
 
             // 执行播放
             if (shouldAutoPlay) {
@@ -2690,7 +2702,7 @@
      * 向播放器发送播放请求 [Async Ready]
      * 如果 URL 暂时不在白名单中，会等待最多 500ms 以响应并行的插件注册
      */
-    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true) {
+    window.sendMusicMessage = async function (trackInfo, shouldAutoPlay = true, playbackOptions = {}) {
         if (!trackInfo) return false;
 
         // 进入 dispatch 流水线就立即 +1 —— 让并发的 dispatchMusicPlay
@@ -2812,7 +2824,7 @@
 
         try {
             await loadAPlayerLibrary();
-            const accepted = await executePlay(trackInfo, currentToken, shouldAutoPlay);
+            const accepted = await executePlay(trackInfo, currentToken, shouldAutoPlay, playbackOptions);
             if (!accepted && currentToken === latestMusicRequestToken) {
                 destroyMusicPlayer(true, false, true);
             }

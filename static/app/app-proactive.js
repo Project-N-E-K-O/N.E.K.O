@@ -1391,9 +1391,12 @@
                         var musicLinks = normalizedLinks.filter(function (link) {
                             return link && link.url && (link.artist || link.source === '音乐推荐');
                         });
-                        // 兼容仅返回一条、但未带 artist/source 标记的旧服务端响应。
-                        if (musicLinks.length === 0 && normalizedLinks.length === 1 && normalizedLinks[0].url) {
-                            musicLinks = [normalizedLinks[0]];
+                        // 兼容未带 artist/source 标记的旧服务端响应。旧版本可能
+                        // 同时返回多个普通 { title, url, cover } 候选。
+                        if (musicLinks.length === 0) {
+                            musicLinks = normalizedLinks.filter(function (link) {
+                                return link && link.url;
+                            });
                         }
 
                         if (musicLinks.length > 0) {

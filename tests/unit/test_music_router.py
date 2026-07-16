@@ -139,6 +139,10 @@ async def test_music_proxy_forwards_range_and_preserves_partial_response(monkeyp
         async def aclose(self):
             return None
 
+        async def aiter_bytes(self, chunk_size):
+            assert chunk_size == 64 * 1024
+            yield b"0123456789"
+
         def raise_for_status(self):
             return None
 
@@ -175,3 +179,12 @@ async def test_music_proxy_forwards_range_and_preserves_partial_response(monkeyp
     assert response.status_code == 206
     assert response.headers["content-range"] == "bytes 0-9/100"
     assert response.headers["accept-ranges"] == "bytes"
+    assert response.body == b"0123456789"
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    ["audio/mpeg", "video/mp4", "application/octet-stream", "binary/octet-stream"],
+)
+def test_playable_audio_content_type_is_shared_across_proxy_and_probe(content_type):
+    assert music_router._is_playable_audio_content_type(content_type) is True
