@@ -9,8 +9,9 @@ Responsibilities split off the plugin facade so it stays testable:
      (``ai_behavior="read"``)
    * task_finished → wakes the pending ``minecraft_task`` handler so it
      can return the result to the LLM
-3. Run the system-prompt loop that periodically injects passive game-state
-   awareness without forcing the LLM to respond or dispatch another task.
+3. Run the system-prompt loop that injects passive game-state awareness and,
+   after a confirmed task completion has stayed idle for 45 seconds,
+   rate-limited keep-going model turns.
 
 The original integration in ``main_logic/core.py`` (commit ``bca0c5f3``,
 later abandoned) baked all of this directly into the realtime client
@@ -260,12 +261,13 @@ class GameAgentService:
         #   ≥10s, periodically prompt the dialog LLM to narrate what it's
         #   doing in its own voice (so the user gets ongoing engagement
         #   instead of dead silence during long actions)
-        # * ``_last_keep_going_nudge_at`` — after a task finishes, if no
-        #   new task is dispatched within the grace period, inject one passive
-        #   post-completion awareness update. It never repeats for the same
-        #   completion and never forces a response/tool call.
-        # ``_last_task_finished_at`` is the anchor for the keep-going
-        # branch; comparing the two timestamps makes it once-per-completion.
+        # * ``_last_keep_going_nudge_at`` — after a correlated task_finished
+        #   frame has stayed idle for 45s, wake the dialog LLM, then keep the
+        #   original 45s cooldown while it remains idle. Startup, local send
+        #   failures/timeouts, connection bounces and stray frames never arm
+        #   this branch.
+        # ``_last_task_finished_at`` is the real-completion anchor;
+        # ``_last_keep_going_nudge_at`` paces the retained recurring mechanism.
         self._last_system_prompt_time: float = 0.0
         self._last_in_progress_nudge_at: float = 0.0
         self._last_keep_going_nudge_at: float = 0.0
@@ -464,16 +466,6 @@ class GameAgentService:
             self._system_prompt_loop(),
             name="game_agent_minecraft.system_loop",
         )
-        # Anchor the keep_going nudge clock at start time so the loop
-        # can fire its "you're idle, decide a next action" prompt even
-        # before the dialog LLM has ever dispatched a single
-        # minecraft_task. Without this, a session where the user asks
-        # for an in-game action and the dialog LLM responds with chat
-        # only (no function call) leaves the plugin in a state where
-        # nudge fires never trigger — _last_task_finished_at stays 0,
-        # keep_going's ``> 0`` guard fails, and Neko stands still with
-        # no self-prompt to push her into actually dispatching.
-        self._last_task_finished_at = time.time()
         self._log_info("started, ws_url={}", self._ws_url)
 
     async def stop(self) -> None:
@@ -580,6 +572,10 @@ class GameAgentService:
         # first task_finished frame.
         self._seen_task_id_echo = False
         self._task_finished = True
+        # Completion eligibility belongs to the old WS session. Carrying it
+        # across a restart could fire keep-going for a task from another world.
+        self._last_task_finished_at = 0.0
+        self._last_keep_going_nudge_at = 0.0
         self._log_info("stopped")
 
     # ------------------------------------------------------------------
@@ -817,6 +813,10 @@ class GameAgentService:
             )
             self._pending = my_pending
             self._task_finished = False
+            # A new dispatch supersedes any prior completion's keep-going
+            # eligibility. Only this task's own correlated task_finished frame
+            # may arm a fresh 45-second timer.
+            self._last_task_finished_at = 0.0
             return my_pending
 
     async def run_claimed_task(self, my_pending: PendingTask) -> Dict[str, Any]:
@@ -875,11 +875,6 @@ class GameAgentService:
                     self._pending = None
                     self._task_finished = True
                     self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
-                    # Send failure is functionally "task ended" from the
-                    # autonomous loop's perspective — anchor so the
-                    # keep_going nudge can prod the dialog LLM to retry
-                    # or change plans instead of going silent.
-                    self._last_task_finished_at = time.time()
             return {
                 "output": {
                     "error": "agent server is not connected",
@@ -895,14 +890,7 @@ class GameAgentService:
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
-                    # Anchor the keep-going nudge clock even on timeout —
-                    # without this the autonomous loop's keep_going branch
-                    # (gated on ``_last_task_finished_at > 0``) never fires
-                    # after a timeout, so the dialog LLM gets the timeout
-                    # cue once via the detached done-callback and then
-                    # falls completely silent until the user prods her.
                     self._task_finished = True
-                    self._last_task_finished_at = time.time()
                     self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
             self._log_info("task timed out: {}", task[:80])
             return {
@@ -915,7 +903,6 @@ class GameAgentService:
                 if self._pending is my_pending:
                     self._pending = None
                     self._task_finished = True
-                    self._last_task_finished_at = time.time()
             raise
 
         async with self._pending_lock:
@@ -1148,12 +1135,6 @@ class GameAgentService:
                     self._pending = None
                     pending.event.set()
                     self._task_finished = True
-                    # Anchor for the keep_going nudge: a bounce is a "task
-                    # ended" event from the dialog LLM's perspective, and
-                    # without this her only signal would be the
-                    # interrupted cue with no follow-up to push her into
-                    # a new dispatch.
-                    self._last_task_finished_at = time.time()
         # [ANTI-PARROT] drop internal command/telemetry lines entirely (no cache,
         # no push) so the dialog LLM never sees command syntax it would echo back
         # as a task. This is what stops the goToCoordinates/attackEntity dispatch
@@ -1471,6 +1452,7 @@ class GameAgentService:
                     "RETROACTIVE_INVENTORY_LINE", lang=self._lang, snippet=snippet,
                 ))
         sections.append(prompts.t("RETROACTIVE_FOLLOWUP", lang=self._lang))
+        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         body = prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(sections)
         try:
             self._push_message(
@@ -1608,6 +1590,9 @@ class GameAgentService:
                 pending.result = result_payload
                 pending.event.set()
                 self._task_finished = True
+                # This is a correlated terminal frame for the current task, so
+                # it is the only trustworthy completion clock. Status affects
+                # the completion cue, not whether the task has really ended.
                 self._last_task_finished_at = time.time()
                 # [BUSY] a dispatched task just reached a terminal frame — the
                 # agent is no longer mid-action on it. Clear the busy flag now so
@@ -1669,20 +1654,17 @@ class GameAgentService:
     # Autonomous system-prompt loop
     # ------------------------------------------------------------------
 
-    def _post_completion_awareness_due(
-        self, now: float, *, min_delay: float
+    def _keep_going_due(
+        self, now: float, *, min_delay: float, cooldown: float
     ) -> bool:
-        """Return whether this completion still needs its one passive update."""
+        """Return whether confirmed idle completion is due another turn."""
         finished_at = self._last_task_finished_at
         return (
             self._task_finished
             and self._pending is None
             and finished_at > 0
             and now - finished_at >= min_delay
-            # Once the awareness timestamp passes this completion anchor, this
-            # finish has already been surfaced. A later task_finished moves the
-            # anchor forward and makes exactly one new update eligible.
-            and self._last_keep_going_nudge_at < finished_at
+            and now - self._last_keep_going_nudge_at >= cooldown
             # A self-reported autonomous action means the character is not
             # actually idle; wait for its terminal state instead.
             and not self._mc_agent_busy()
@@ -1699,11 +1681,11 @@ class GameAgentService:
           repeat yourself)". Without this branch, long actions (mining,
           pathfinding) leave the user hearing nothing for 30+ seconds.
 
-        * **Post-completion awareness** (legacy keep-going name). Once per
-          task completion, after a short grace period, injects the current
-          inventory/outcome as passive context. It does not request a response
-          or a new task; completion cues and explicit master instructions remain
-          the only reasons to act.
+        * **Keep-going nudge**. After a correlated task completion has remained
+          idle for 45 seconds, wakes the dialog LLM every 45 seconds while idle.
+          The prompt may continue the conversation but may dispatch only a new
+          command from master's most recent message; old commands are never
+          recalled or replayed.
 
         * **General catch-all** — original behavior: every
           ``system_prompt_interval`` seconds (default 5s), if there's
@@ -1718,14 +1700,15 @@ class GameAgentService:
         """
         _IN_PROGRESS_AFTER = 30.0      # [THROTTLE] was 8.0
         _IN_PROGRESS_COOLDOWN = 30.0   # [THROTTLE] was 8.0
-        _POST_COMPLETION_AWARENESS_AFTER = 30.0
+        _KEEP_GOING_AFTER = 45.0
+        _KEEP_GOING_COOLDOWN = 45.0
 
         self._log_debug(
             "system_prompt_loop started (in_progress={}/{}, "
-            "post_completion_awareness_after={}, "
+            "keep_going={}/{}, "
             "general_interval={}s)",
             _IN_PROGRESS_AFTER, _IN_PROGRESS_COOLDOWN,
-            _POST_COMPLETION_AWARENESS_AFTER,
+            _KEEP_GOING_AFTER, _KEEP_GOING_COOLDOWN,
             self._system_prompt_interval,
         )
         # [ISSUE4a] Per-iteration try/except (NOT a recursive restart): a single
@@ -1755,13 +1738,15 @@ class GameAgentService:
                     # the dialog LLM's queue for the same situation.
                     continue
 
-                # ---- Branch 2: passive awareness, once per completion ----
-                if self._post_completion_awareness_due(
-                    now, min_delay=_POST_COMPLETION_AWARENESS_AFTER
+                # ---- Branch 2: retained keep-going, paced after real finish ----
+                if self._keep_going_due(
+                    now,
+                    min_delay=_KEEP_GOING_AFTER,
+                    cooldown=_KEEP_GOING_COOLDOWN,
                 ):
                     since_finish = now - self._last_task_finished_at
                     self._log_debug(
-                        "firing post-completion awareness "
+                        "firing keep_going nudge "
                         "(since_finish={:.1f}s)",
                         since_finish,
                     )
@@ -1842,34 +1827,27 @@ class GameAgentService:
             )
 
     async def _fire_keep_going_nudge(self) -> None:
-        """Inject one passive awareness update after a task finishes.
-
-        The legacy method name is retained to keep this change local. The push
-        is read-only context: it must not create a new model turn or tool call.
-        """
+        """Wake the dialog LLM after 45s of confirmed post-task idle."""
         sections: list[str] = []
         inv_line = self._inventory_section_if_changed(top_n=20)
         if inv_line:
             sections.append(inv_line)
         sections.append(prompts.t("KEEP_GOING_BODY", lang=self._lang))
+        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         body_text = prompts.t("CUE_PREFIX_IDLE", lang=self._lang) + "\n" + "\n".join(sections)
         parts: list[Dict[str, Any]] = [{"type": "text", "text": body_text}]
         try:
-            # Passive awareness only. The old respond behavior repeatedly woke
-            # the model with "pick the next action", which chained task calls
-            # and interrupted work whose busy signal arrived late or was absent.
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
-                ai_behavior="read",
+                ai_behavior="respond",
                 parts=parts,
                 priority=3,
                 coalesce_key="mc_keep_going",
             )
         except Exception as exc:
             self._log_error(
-                "post-completion awareness push failed: {}: {}",
-                type(exc).__name__, exc,
+                "keep-going nudge push failed: {}: {}", type(exc).__name__, exc,
             )
 
     async def _fire_system_prompt(self) -> None:
@@ -1908,6 +1886,7 @@ class GameAgentService:
             sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
         else:
             sections.append(prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang=self._lang))
+        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         prompt_text = prompts.t("CUE_PREFIX_STATE", lang=self._lang) + "\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM

@@ -17,8 +17,9 @@ Screenshots streamed by the agent server are forwarded into the
 realtime LLM session via :class:`push_message v2 <push_message>` with
 ``ai_behavior="read"`` so they enter the model's vision context. A
 background task periodically injects a passive "GAME_SYSTEM" awareness
-snapshot with the latest log digest and screenshot cache. It enriches
-the model's game context without forcing a response or a new task.
+snapshot with the latest log digest and screenshot cache. Separately gated,
+rate-limited keep-going turns can wake the model after a correlated task has
+been finished for 45 seconds, without authorizing it to replay an old command.
 """
 from __future__ import annotations
 
@@ -51,10 +52,12 @@ MINECRAFT_TASK_SCHEMA: Dict[str, Any] = {
         "task": {
             "type": "string",
             "description": (
-                "A plain-language Minecraft instruction. When master gives an "
-                "explicit instruction, copy the exact original wording without "
-                "adding details. Never add in-game coordinates unless master "
-                "explicitly asked for coordinates."
+                "A plain-language Minecraft instruction copied only from "
+                "master's most recent message. It must be a new explicit game "
+                "instruction that has not already been dispatched. Copy the exact "
+                "original wording without adding details. Never reuse an older "
+                "instruction or add in-game coordinates unless master explicitly "
+                "asked for coordinates in that most recent message."
             ),
         },
         "overwrite": {
@@ -83,8 +86,17 @@ MINECRAFT_TASK_DESCRIPTION = (
     "is context only and is NEVER by itself a reason to call this tool. Before "
     "dispatching, account for the current task and recent feedback. If an action "
     "may still be running, do not send another one.\n\n"
+    "LATEST MASTER MESSAGE ONLY — call this tool only when master's most recent "
+    "message itself contains a new explicit in-game instruction that has not "
+    "already been dispatched. The task must not come from an earlier master "
+    "message, an earlier tool call, task history, logs, screenshots, telemetry, "
+    "a completion cue, or a keep-going/state reminder. NEVER call back, recover, "
+    "or re-dispatch a command that was already sent, even if it later failed or "
+    "the model is reminded of it. If the most recent master message contains no "
+    "new un-dispatched command, do not call this tool.\n\n"
     "MASTER INSTRUCTION FIDELITY — when master (the user) gives an explicit "
-    "instruction, relay the exact original wording in ``task``. Do not translate, "
+    "instruction in that most recent message, relay the exact original wording "
+    "in ``task``. Do not translate, "
     "paraphrase, split, optimize, clarify on master's behalf, or add targets, "
     "quantities, steps, tools, directions, or other details. The exact request "
     "takes priority over the usual preference for a concrete single-step goal.\n\n"
@@ -97,23 +109,20 @@ MINECRAFT_TASK_DESCRIPTION = (
     "the agent's internal telemetry: function-call lines (goToCoordinates(...), "
     "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
     "picked itself. NEVER copy any of that into a task — echoing a log line back "
-    "as a task creates a dispatch loop. A task must come from the user's actual "
-    "spoken request or a genuine decision of your own, written as a plain-language "
-    "goal (e.g. 'mine straight down 3 blocks then place 1 block below you'), never "
+    "as a task creates a dispatch loop. A task must come from master's most recent "
+    "spoken request, written as a plain-language goal, never "
     "the game's raw command syntax or a coordinate you only saw in a log. If the "
     "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
-    "Use this tool when master asks the character to do something in the game, "
-    "or when master's still-unfinished instruction clearly requires another "
-    "concrete step. Do NOT use it merely because the character is idle, a task "
+    "Use this tool only when master's most recent message asks the character to "
+    "do something new in the game and that request has not already been dispatched. "
+    "Do NOT use it merely because the character is idle, a task "
     "finished, or new awareness context arrived. Do NOT use it for chat, status "
     "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
     "Parameters:\n"
-    "  task (string, required): master's exact original instruction when one was "
-    "given; otherwise one plain-language, concrete executable action with only "
-    "genuinely known targets or quantities. Never add coordinates unless master "
-    "explicitly requested them. For self-chosen actions, prefer one mine / craft / "
-    "walk over a long compound chain; each real outcome must be observed before "
-    "considering another action.\n"
+    "  task (string, required): the exact original new instruction from master's "
+    "most recent message. Never source it from an older message or repeat an "
+    "already-dispatched command. Never add coordinates unless master explicitly "
+    "requested them in that most recent message.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
     "previous task keeps running. Set true when:\n"
@@ -439,10 +448,11 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             # finished, so the dialog LLM should immediately absorb and, when
             # useful, narrate the outcome to {MASTER_NAME}. The prompt frames
             # this as awareness rather than a command to dispatch another task;
-            # only an unfinished explicit master instruction may justify more
-            # action. Importance scale is HIGHER=more important (repo-wide):
+            # only a new, un-dispatched instruction in master's most recent
+            # message may justify more action. Importance scale is HIGHER=more
+            # important (repo-wide):
             # alert=9 (most important) > completion=7 > in_progress=4 >
-            # post-completion-awareness=3.
+            # keep-going=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],
@@ -588,6 +598,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             lines.append(prompts.t("COMPLETION_FOLLOWUP_SUCCESS", lang=self._lang))
         else:
             lines.append(prompts.t("COMPLETION_FOLLOWUP_FAILED", lang=self._lang))
+        lines.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         lines.append(prompts.t("INTERNAL_STATE_GAG", lang=self._lang))
         return prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(lines)
 

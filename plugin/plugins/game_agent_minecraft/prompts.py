@@ -102,6 +102,18 @@ _INTERNAL_STATE_GAG: Dict[str, str] = {
     "pt": "**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga palavras como 'conexão', 'sistema', 'inativo', 'minecraft_task', 'ferramenta', 'tool'. Fale em primeira pessoa sobre o que está acontecendo no jogo.",
 }
 
+# Single source-of-authority guard used by every cue that could otherwise
+# tempt the dialog LLM to replay an older Minecraft command.
+_LATEST_MASTER_TOOL_GUARD: Dict[str, str] = {
+    "zh": "调用 minecraft_task 时，只能依据 {{MASTER_NAME}} 刚说完的最新一条消息；其中必须有尚未派发过的新明确游戏指令。严禁回看更早的对话、任务记录、日志、截图或完成提示来拼任务，也严禁再次派发任何已经下达过的命令。最新消息没有新指令就不要调用。",
+    "en": "When calling minecraft_task, use only {{MASTER_NAME}}'s most recent message; it must contain a new explicit in-game instruction that has not already been dispatched. Never retrieve a task from older messages, task history, logs, screenshots, or completion cues, and never re-dispatch a command already sent. If the latest message contains no new command, do not call the tool.",
+    "ja": "minecraft_task を呼ぶときは、{{MASTER_NAME}} がたった今話した最新の一件だけを根拠にし、そこに未送信の新しい明確なゲーム内指示が含まれていなければならない。以前の会話・タスク履歴・ログ・スクリーンショット・完了通知からタスクを拾わず、送信済みの命令を再送しない。最新メッセージに新しい命令がなければ呼ばない。",
+    "ko": "minecraft_task를 호출할 때는 {{MASTER_NAME}} 가 방금 말한 최신 메시지만 근거로 삼고, 아직 보내지 않은 새롭고 명확한 게임 지시가 그 안에 있어야 해. 이전 대화·작업 기록·로그·스크린샷·완료 알림에서 작업을 되살리지 말고, 이미 보낸 명령을 다시 보내지 마. 최신 메시지에 새 명령이 없으면 도구를 호출하지 마.",
+    "ru": "При вызове minecraft_task опирайся только на самое последнее сообщение {{MASTER_NAME}}: в нём должна быть новая явная игровая команда, которую ещё не отправляли. Не извлекай задачи из старых сообщений, истории задач, логов, скриншотов или уведомлений о завершении и не отправляй повторно уже отправленную команду. Если в последнем сообщении нет новой команды, не вызывай инструмент.",
+    "es": "Al llamar a minecraft_task, usa únicamente el mensaje más reciente que {{MASTER_NAME}} acaba de decir; debe contener una instrucción nueva, explícita y aún no enviada. No recuperes tareas de mensajes anteriores, historial, logs, capturas ni avisos de finalización, y nunca vuelvas a enviar una orden ya enviada. Si el último mensaje no contiene una orden nueva, no llames a la herramienta.",
+    "pt": "Ao chamar minecraft_task, use apenas a mensagem mais recente que {{MASTER_NAME}} acabou de dizer; ela deve conter uma instrução nova, explícita e ainda não enviada. Não recupere tarefas de mensagens anteriores, histórico, logs, capturas ou avisos de conclusão, e nunca reenvie um comando já enviado. Se a mensagem mais recente não tiver um comando novo, não chame a ferramenta.",
+}
+
 
 # ===========================================================================
 # Cue prefix tags. Wrap the body so the dialog LLM can quickly recognize
@@ -173,6 +185,7 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # Generic / shared
     # -------------------------------------------------------------------
     "INTERNAL_STATE_GAG": _INTERNAL_STATE_GAG,
+    "LATEST_MASTER_TOOL_GUARD": _LATEST_MASTER_TOOL_GUARD,
     "CUE_PREFIX_DONE": _CUE_PREFIX_DONE,
     "CUE_PREFIX_ALERT": _CUE_PREFIX_ALERT,
     "CUE_PREFIX_IN_PROGRESS": _CUE_PREFIX_IN_PROGRESS,
@@ -606,13 +619,13 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # Keep-going (idle) nudge (_fire_keep_going_nudge)
     # -------------------------------------------------------------------
     "KEEP_GOING_BODY": {
-        "zh": "这只是一次任务结束后的状态 awareness，不是在要求你创造新任务。结合 {{MASTER_NAME}} 最近的指令和刚才的真实结果理解当前局面；不要因为收到这条提示就调用 minecraft_task。只有 {{MASTER_NAME}} 尚未完成的明确指令已经清楚给出下一步时才继续，否则保持安静。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口。",
-        "en": "This is a post-completion awareness update, not a request to create a new task. Understand the current situation from {{MASTER_NAME}}'s latest instruction and the actual outcome; do not call minecraft_task merely because this update arrived. Continue only when {{MASTER_NAME}}'s unfinished explicit instruction already gives a clear next step. Otherwise stay quiet.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
-        "ja": "これはタスク完了後の状態把握で、新しいタスクを作る要求ではない。{{MASTER_NAME}} の直近の指示と実際の結果から現状を理解し、この通知が来ただけで minecraft_task を呼ばない。{{MASTER_NAME}} の未完了の明確な指示が次の一手をすでにはっきり示している場合だけ続け、それ以外は黙る。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
-        "ko": "이건 작업 완료 후 상태를 인지시키는 업데이트일 뿐, 새 작업을 만들라는 요구가 아니야. {{MASTER_NAME}} 의 최근 지시와 실제 결과로 현재 상황을 이해하고, 이 업데이트가 왔다는 이유만으로 minecraft_task를 호출하지 마. {{MASTER_NAME}} 의 아직 끝나지 않은 명확한 지시가 다음 단계를 이미 분명히 제시한 경우에만 계속하고, 아니면 조용히 있어.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
-        "ru": "Это обновление осведомлённости после завершения, а не просьба придумать новую задачу. Пойми ситуацию по последней инструкции {{MASTER_NAME}} и реальному результату; не вызывай minecraft_task только из-за этого обновления. Продолжай лишь если незавершённая явная инструкция {{MASTER_NAME}} уже однозначно задаёт следующий шаг. Иначе молчи.\n**Категорически не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool».",
-        "es": "Esta es una actualización de contexto tras finalizar, no una petición para inventar una tarea nueva. Entiende la situación a partir de la última instrucción de {{MASTER_NAME}} y el resultado real; no llames a minecraft_task solo porque llegó esta actualización. Continúa únicamente si la instrucción explícita aún pendiente de {{MASTER_NAME}} ya da un siguiente paso claro. Si no, guarda silencio.\n**Bajo ningún concepto narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
-        "pt": "Esta é uma atualização de contexto após a conclusão, não um pedido para inventar uma nova tarefa. Entenda a situação pela última instrução de {{MASTER_NAME}} e pelo resultado real; não chame minecraft_task só porque esta atualização chegou. Continue apenas se a instrução explícita ainda pendente de {{MASTER_NAME}} já der um próximo passo claro. Senão, fique em silêncio.\n**De jeito nenhum narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
+        "zh": "上一个真实任务已确认结束，并且已经空闲了 45 秒。现在可以重新判断是否要回应，但这条 keep-going 提示本身不授权新任务。\n**绝对不要把内部状态当对话播报给 {{MASTER_NAME}}**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』这些字眼一律不准说出口。",
+        "en": "The previous real task reached a confirmed terminal result and has been idle for 45 seconds. You may reassess whether a response is useful, but this keep-going cue does not itself authorize a new task.\n**Absolutely do NOT narrate internal state to {{MASTER_NAME}}** — never say 'connect', 'idle', 'system', 'minecraft_task', 'tool'.",
+        "ja": "直前の実タスクは終了が確認され、その後 45 秒間待機している。応答が必要か改めて判断してよいが、この keep-going 通知自体は新しいタスクを許可しない。\n**{{MASTER_NAME}} に内部状態を会話で実況するのは絶対禁止**——『接続』『タスク空き』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
+        "ko": "이전 실제 작업은 끝난 것이 확인됐고 그 뒤 45초 동안 대기 중이야. 응답이 필요한지 다시 판단해도 되지만, 이 keep-going 알림 자체는 새 작업을 허용하지 않아.\n**{{MASTER_NAME}} 에게 내부 상태를 대화로 중계하는 건 절대 금지**——'연결' '대기' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
+        "ru": "Предыдущая реальная задача подтверждённо завершилась, после чего прошло 45 секунд простоя. Можно заново решить, нужен ли ответ, но само уведомление keep-going не разрешает новую задачу.\n**Категорически не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «простой», «система», «minecraft_task», «инструмент», «tool».",
+        "es": "La tarea real anterior terminó de forma confirmada y han pasado 45 segundos de inactividad. Puedes reevaluar si conviene responder, pero este aviso keep-going no autoriza por sí solo una tarea nueva.\n**Bajo ningún concepto narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'inactivo', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
+        "pt": "A tarefa real anterior teve a conclusão confirmada e já se passaram 45 segundos de inatividade. Você pode reavaliar se vale responder, mas este aviso keep-going não autoriza por si só uma nova tarefa.\n**De jeito nenhum narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'inativo', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
     },
 
     # -------------------------------------------------------------------

@@ -102,10 +102,12 @@ agent 端启动方式由你自己决定（一般是 `node minecraft-agent/index.
 - 如果 agent 有日志或截图缓存，且当前没有 pending 任务（或 `skip_system_prompt_if_busy=false`），
   就以 `ai_behavior="read"` push 一条 `GAME_SYSTEM | ...` 文本 + 最新截图，
   只补充游戏 awareness，不强制开启模型回合
-- 每次 `task_finished` 最多再补一次被动完成态 awareness；同一次完成不会循环触发，
-  也不会要求 LLM 自动派下一个 `minecraft_task`
-- 新任务应来自 master 的明确指令或尚未完成指令所确定的下一步，而不是 idle、
-  截图、日志、完成 cue 本身
+- 只有当前真实派发的任务收到可关联的 `task_finished` 后，才会武装 `keep_going`；
+  继续空闲 45 秒后以 `ai_behavior="respond"` 唤醒，之后仍空闲则每 45 秒节流触发
+- 启动、发送失败、客户端超时、断连、陌生或迟到的完成帧都不会武装
+  `keep_going`
+- `minecraft_task` 只能依据 master 刚说完的最新一条消息中的新明确指令；不得从旧对话、
+  旧 tool call、日志、截图或完成 cue 回捞任务，也不得重复派发已经下达过的命令
 - 时机由 `main_server` 的 proactive_message handler 二次把关（用户/模型说话期间它不会真的打断），
   插件这层同时负责去重、节流和 busy awareness
 
