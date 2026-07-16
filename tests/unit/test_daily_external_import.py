@@ -311,3 +311,67 @@ async def test_reordered_journal_changes_fingerprint_and_reextracts():
     result = await harness.aimport_external_daily("Neko", day_b, "hermes", "t2")
     assert result["skipped_days"] == 0      # 重排 ≠ 未变，不能 skip
     assert len(harness.extract_inputs) == 2  # 重新走了 LLM
+
+
+@pytest.mark.asyncio
+async def test_identical_journal_text_on_new_date_is_not_skipped():
+    # 指纹掺 event_date：例行日记逐字重复出现在新的一天，不能被旧日期的
+    # 指纹 skip（Codex P2）。
+    harness = _DailyHarness(lambda j: [{"text": "routine fact", "importance": 5}])
+    await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "gym then work"),
+        "hermes", "t1",
+    )
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-13.md", "2026-07-13", "gym then work"),
+        "hermes", "t2",
+    )
+    assert result["skipped_days"] == 0
+    assert len(harness.extract_inputs) == 2  # 第二天照常抽取
+
+
+@pytest.mark.asyncio
+async def test_single_huge_day_over_batch_cap_raises_too_large(monkeypatch):
+    # cap 按「总抽取调用数」：单个超大日记文件拆出的批数超限也要确定性 413，
+    # 不能借 len(pending)==1 溜过去撞 240s 墙（Codex P2）。缩小常量免得测试
+    # 构造兆级文本。
+    from memory.persona.fusion import ExternalMemoryImportTooLargeError
+
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS", 10)
+    monkeypatch.setattr("memory.facts.EXTERNAL_IMPORT_DAILY_MAX_FILES", 3)
+
+    harness = _DailyHarness(lambda j: [])
+    long_journal = "word " * 200  # 10 token/批 → 远超 3 批
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", long_journal)
+
+    with pytest.raises(ExternalMemoryImportTooLargeError):
+        await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert harness.extract_inputs == []  # cap 在任何 LLM 调用前生效
+
+
+@pytest.mark.asyncio
+async def test_concurrent_import_detected_before_persist_is_dropped():
+    # 并发缩窗重查：本请求 LLM 期间另一请求把同指纹落盘 → persist 前重读
+    # 发现即放弃写入，避免措辞不同的重复 facts 绕过精确去重（Codex P2）。
+    harness_holder = {}
+
+    def stub(journal):
+        # 模拟「LLM 期间」并发请求已把同一天（同指纹）落盘
+        h = harness_holder["h"]
+        fp = h._daily_fingerprint(["went hiking"], event_date="2026-07-12")
+        h.store.append({
+            "text": "someone else's phrasing", "importance": 5,
+            "external_import": {"day_fingerprint": fp},
+        })
+        return [{"text": "my phrasing", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    harness_holder["h"] = harness
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "went hiking"),
+        "hermes", "t",
+    )
+
+    assert result["added"] == 0
+    assert result["failed_days"] == 0
+    assert harness.persisted == []  # 本次写入被放弃

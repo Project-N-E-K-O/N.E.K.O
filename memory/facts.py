@@ -1282,9 +1282,18 @@ class FactStore:
             if isinstance(meta, dict) and meta.get('day_fingerprint'):
                 imported_day_fps.add(str(meta['day_fingerprint']))
 
+        day_dates = {
+            source_file: next(
+                (str(g["event_date"]) for g in group if g.get("event_date")), None
+            )
+            for source_file, group in by_file.items()
+        }
+        # 指纹掺 event_date：不同日期的重复例行日记（文本逐字相同）各自是新的
+        # 一天，不能被对方的指纹 skip（Codex P2）——与 fact 去重键含日期同理。
         day_fps = {
             source_file: self._daily_fingerprint(
-                [str(g.get("text") or "") for g in group]
+                [str(g.get("text") or "") for g in group],
+                event_date=day_dates[source_file],
             )
             for source_file, group in by_file.items()
         }
@@ -1295,23 +1304,32 @@ class FactStore:
         }
         skipped_days = len(by_file) - len(pending)
 
-        if len(pending) > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+        # 分批预计算 + cap 按「总抽取调用数」而非天数：单个超大日记文件能拆出
+        # 几十批串行调用，len(pending) 拦不住它撞 240s 墙（Codex P2）。tiktoken
+        # 编码是同步 CPU，offload 线程池。
+        batches_by_file: dict[str, list[str]] = await asyncio.to_thread(
+            lambda: {
+                source_file: batch_daily_fragments(
+                    [p for p in (str(g.get("text") or "").strip() for g in group) if p],
+                    EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
+                )
+                for source_file, group in pending.items()
+            }
+        )
+        total_batches = sum(len(b) for b in batches_by_file.values())
+        if total_batches > EXTERNAL_IMPORT_DAILY_MAX_FILES:
             raise ExternalMemoryImportTooLargeError(
-                f"daily import spans {len(pending)} new journal days "
-                f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split the workspace"
+                f"daily import needs {total_batches} extraction calls across "
+                f"{len(pending)} new journal days (cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); "
+                "split the workspace"
             )
 
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
 
         async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
             """One day's extraction+persist; returns (added, day_failed)."""
-            event_date = next(
-                (str(g["event_date"]) for g in group if g.get("event_date")), None
-            )
-            parts = [str(g.get("text") or "").strip() for g in group]
-            batches = batch_daily_fragments(
-                [p for p in parts if p], EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
-            )
+            event_date = day_dates[source_file]
+            batches = batches_by_file[source_file]
             # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
             # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
             # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
@@ -1334,6 +1352,23 @@ class FactStore:
                 day_extracted.extend(f for f in extracted if isinstance(f, dict))
             if not day_extracted:
                 return 0, False
+            # 并发缩窗重查：两个同角色 commit 可能都在开头读过 imported_day_fps
+            # 才各自跑 LLM；persist 前重读一次，若对方已把同指纹落盘则放弃本次
+            # 写入（措辞不同的重复 facts 会绕过精确去重）。剩余极窄的 TOCTOU
+            # 窗口由同日期 FTS5 近似去重兜底；前端 in-flight 单飞锁已挡住单
+            # 客户端的并发导入（Codex P2）。
+            latest = await self.aload_facts(lanlan_name)
+            for existing_fact in latest:
+                meta = existing_fact.get('external_import')
+                if (
+                    isinstance(meta, dict)
+                    and str(meta.get('day_fingerprint') or '') == day_fps[source_file]
+                ):
+                    logger.info(
+                        f"[FactStore] {lanlan_name}: {source_file} 已被并发导入落盘，"
+                        "放弃本次写入"
+                    )
+                    return 0, False
             for fact in day_extracted:
                 # Stamp provenance; _apersist_new_facts_locked turns event_date
                 # into event_start_at and tags the entry as external_import.
@@ -1377,15 +1412,18 @@ class FactStore:
         }
 
     @staticmethod
-    def _daily_fingerprint(texts: list[str]) -> str:
+    def _daily_fingerprint(texts: list[str], *, event_date: str | None = None) -> str:
         """Whitespace/case-normalized, **order-preserving** fingerprint over one
-        day's fragment texts. Journals are narrative — reordering entries (e.g.
-        "stopped medication" vs "started medication" swapped) changes meaning,
-        so an edited order must re-extract instead of fingerprint-skipping
-        (Greptile P1). persona's ``_fusion_fingerprint`` stays sorted by design:
-        its candidates are an unordered set, not a narrative."""
+        day's fragment texts, salted with the day's ``event_date``. Journals are
+        narrative — reordering entries (e.g. "stopped medication" vs "started
+        medication" swapped) changes meaning, so an edited order must re-extract
+        instead of fingerprint-skipping (Greptile P1); and a routine journal
+        repeated verbatim on a different date is a **new** day, not a duplicate
+        (Codex P2). persona's ``_fusion_fingerprint`` stays sorted and unsalted
+        by design: its candidates are an unordered, date-less set."""
         norm = [" ".join((t or "").casefold().split()) for t in texts]
-        return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()
+        payload = f"{event_date or ''}\n" + "\n".join(norm)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def aextract_facts_with_known_pool(
         self,
