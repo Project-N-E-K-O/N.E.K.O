@@ -548,7 +548,13 @@ def test_voice_design_rejects_underscore_prefix_before_submit(mock_page: Page, r
 
 
 @pytest.mark.frontend
-def test_voice_design_server_prefix_error_interpolates_max(mock_page: Page, running_server: str):
+@pytest.mark.parametrize(("details", "expected_text", "unexpected_text"), [
+    ({"max": 7}, "1-7 个字符", "{{max}}"),
+    ({"max": None, "pattern": "^[A-Za-z0-9]+$"}, "前缀应为英文字母和数字", "1-10 个字符"),
+])
+def test_voice_design_server_prefix_error_renders_available_constraints(
+    mock_page: Page, running_server: str, details: dict, expected_text: str, unexpected_text: str,
+):
     try:
         route_voice_clone_region_dependencies(
             mock_page,
@@ -567,7 +573,7 @@ def test_voice_design_server_prefix_error_interpolates_max(mock_page: Page, runn
                 content_type="application/json",
                 body=json.dumps({
                     "code": "VOICE_DESIGN_PREFIX_INVALID",
-                    "details": {"max": 7},
+                    "details": details,
                 }),
             ),
         )
@@ -580,8 +586,8 @@ def test_voice_design_server_prefix_error_interpolates_max(mock_page: Page, runn
         mock_page.fill("#voiceDesignPrompt", "a warm clear voice")
         mock_page.locator(".register-voice-btn").click()
 
-        expect(mock_page.locator("#result")).to_contain_text("1-7 个字符")
-        expect(mock_page.locator("#result")).not_to_contain_text("{{max}}")
+        expect(mock_page.locator("#result")).to_contain_text(expected_text)
+        expect(mock_page.locator("#result")).not_to_contain_text(unexpected_text)
     finally:
         mock_page.unroute("**/api/config/steam_language")
         mock_page.unroute("**/api/config/api_providers")

@@ -442,10 +442,16 @@ function parseVoiceRegisterError(errorObj) {
         displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
         shouldFlash = true;
     } else if (errorCode === 'VOICE_DESIGN_PREFIX_INVALID') {
-        const prefixMax = Number(errorObj?.details?.max) || 10;
-        displayError = window.t
-            ? window.t('voice.designPrefixInvalid', { max: prefixMax })
-            : `前缀必须是 1-${prefixMax} 个字符，只能包含英文字母和数字，不能包含下划线或空格`;
+        const prefixMax = Number(errorObj?.details?.max);
+        if (prefixMax > 0) {
+            displayError = window.t
+                ? window.t('voice.designPrefixInvalid', { max: prefixMax })
+                : `前缀必须是 1-${prefixMax} 个字符，只能包含英文字母和数字，不能包含下划线或空格`;
+        } else {
+            displayError = window.t
+                ? window.t('voice.prefixShouldBeEnglishLetterAndNumber')
+                : '前缀应为英文字母和数字';
+        }
         shouldFlash = true;
     } else if (errorCode === 'INVALID_API_KEY') {
         displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
