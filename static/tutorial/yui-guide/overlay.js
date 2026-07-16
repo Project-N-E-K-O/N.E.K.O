@@ -12,6 +12,7 @@
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
+    const PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6;
     const PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
     const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
@@ -148,18 +149,21 @@
         };
         const syncRunIdFromStorage = () => adoptRunId(readStoredRunId());
 
-        const nextSequence = (minimumSequence) => {
-            const wallSequence = Date.now() * 1000;
-            const sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
-            let storedSequence = 0;
+        const readStoredSequence = () => {
             try {
-                storedSequence = Math.max(
+                return Math.max(
                     0,
                     Math.floor(Number(window.localStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY)) || 0)
                 );
             } catch (_) {
-                storedSequence = 0;
+                return 0;
             }
+        };
+
+        const nextSequence = (minimumSequence) => {
+            const wallSequence = Date.now() * 1000;
+            const sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
+            const storedSequence = readStoredSequence();
 
             sequence = Math.max(sequence + 1, storedSequence + 1, sequenceFloor + 1, wallSequence);
             try {
@@ -174,14 +178,14 @@
                 deferredReconciliationTimer = 0;
             }
         };
-        const scheduleDeferredReconciliation = (retryCount) => {
+        const scheduleDeferredReconciliation = (retryCount, attemptedSequence) => {
             clearDeferredReconciliation();
             deferredReconciliationTimer = window.setTimeout(() => {
                 deferredReconciliationTimer = 0;
-                if (cleared) {
+                if (cleared || readStoredSequence() > attemptedSequence) {
                     return;
                 }
-                send({}, true, retryCount);
+                send({}, true, retryCount + 1);
             }, PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
         };
 
@@ -213,8 +217,8 @@
                 if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
                     sequence = nextSequence(result.activeSequence);
                     send(patch, true, retryCount + 1);
-                } else if (retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
-                    scheduleDeferredReconciliation(retryCount);
+                } else if (retryCount < PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount, attemptedSequence);
                 }
                 return;
             }
@@ -256,8 +260,8 @@
                 if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
                     sequence = nextSequence(result.activeSequence);
                     sendCursorOnly(cursor, retryCount + 1);
-                } else if (retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
-                    scheduleDeferredReconciliation(retryCount);
+                } else if (retryCount < PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount, attemptedSequence);
                 }
                 return;
             }
