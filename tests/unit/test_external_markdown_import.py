@@ -248,3 +248,17 @@ def test_hermes_blocks_strip_fenced_code():
     assert analysis["source_format"] == "hermes"
     assert not any("rm -rf" in c["text"] for c in analysis["candidates"])
     assert any("dark mode" in c["text"] for c in analysis["candidates"])
+
+
+def test_candidate_text_bounds_the_breadcrumb_prefix():
+    # Even with a short item, a huge heading must not be copied in full into the
+    # candidate text; the breadcrumb prefix is bounded to MAX_SECTION_CHARS so it
+    # cannot dominate the fusion input later (Greptile P1 follow-up to bounding
+    # the stored source_section).
+    huge_heading = "H" * MAX_ENTRY_CHARS
+    sources = collect_markdown_files([
+        {"path": "MEMORY.md", "content": f"# {huge_heading}\n\n- tea"},
+    ])
+    candidates = build_import_candidates(sources)["candidates"]
+    entry = next(c for c in candidates if "tea" in c["text"])
+    assert len(entry["text"]) <= MAX_SECTION_CHARS + 10

@@ -293,6 +293,10 @@ def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list
 
 def _candidate_text(section: str, text: str) -> str:
     text = _clean_fragment(text)
+    # Bound the breadcrumb here too (source_section is bounded at storage): a huge
+    # heading must not be copied in full into the candidate text and later re-fed
+    # into fusion input (Greptile P1).
+    section = section[:MAX_SECTION_CHARS]
     if section and section.casefold() not in text.casefold():
         prefix = f"{section}: "
         # Fragments are capped before headings are attached. Preserve the full
