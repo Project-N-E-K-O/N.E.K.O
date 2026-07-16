@@ -324,6 +324,19 @@
             && !attemptedChatOwnedRun
         );
 
+        if (
+            isStaleResponse
+            && !alreadyRetried
+            && result.reason === 'stale-sequence'
+            && result.activeTutorialRunId === attemptedRunId
+        ) {
+            yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
+            I.sendYuiGuidePcOverlayPatch(patch || {}, true, {
+                tutorialRunId: attemptedRunId
+            });
+            return;
+        }
+
         if (!isStaleResponse || alreadyRetried || !attemptedRunId) {
             return;
         }
@@ -362,8 +375,9 @@
             : getYuiGuidePcOverlayRunId();
     }
 
-    function nextYuiGuidePcOverlaySequence() {
+    function nextYuiGuidePcOverlaySequence(minimumSequence) {
         var wallSequence = Date.now() * 1000;
+        var sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
         var storedSequence = 0;
         try {
             storedSequence = Math.max(
@@ -377,6 +391,7 @@
         yuiGuidePcOverlaySequence = Math.max(
             yuiGuidePcOverlaySequence + 1,
             storedSequence + 1,
+            sequenceFloor + 1,
             wallSequence
         );
         try {

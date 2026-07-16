@@ -310,7 +310,10 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
     I.getEffectiveComposerHidden = function getEffectiveComposerHidden() {
-        return !!(I.state.composerHidden || I.state.goodbyeComposerHidden);
+        return !!(
+            !I.state.homeTutorialInputLocked
+            && (I.state.composerHidden || I.state.goodbyeComposerHidden)
+        );
     }
 
     I.getNekoGoodbyeModeActive = function getNekoGoodbyeModeActive() {

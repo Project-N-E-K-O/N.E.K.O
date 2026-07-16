@@ -397,7 +397,7 @@ def test_external_chat_cursor_retry_cannot_replay_stale_wobble_after_clear():
     source = read_js_parts(INTERPAGE_PATH)
 
     assert "yuiGuideChatCursorRequestToken" in source
-    assert "var cursorRequestToken = ++yuiGuideChatCursorRequestToken;" in source
+    assert "var cursorRequestToken = yuiGuideChatCursorRequestToken;" in source
     assert "if (cursorRequestToken !== yuiGuideChatCursorRequestToken) {" in source
 
 
@@ -573,14 +573,14 @@ def test_external_chat_ready_replays_compact_fixed_layout_when_tutorial_is_activ
     assert "reason: typeof reason === 'string' ? reason : ''" in fixed_method_block
 
 
-def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
+def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     interpage_source = read_js_parts(INTERPAGE_PATH)
     overlay_source = (ROOT / "static" / "tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
 
     assert "YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence'" in interpage_source
     assert "PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence'" in overlay_source
-    assert "function nextYuiGuidePcOverlaySequence()" in interpage_source
-    assert "const nextSequence = () => {" in overlay_source
+    assert "function nextYuiGuidePcOverlaySequence(minimumSequence)" in interpage_source
+    assert "const nextSequence = (minimumSequence) => {" in overlay_source
     assert "window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY)" in interpage_source
     assert "window.localStorage.setItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY" in interpage_source
     assert "window.localStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY)" in overlay_source
@@ -589,6 +589,12 @@ def test_pc_overlay_sequence_is_shared_between_home_and_external_chat():
     assert "sequence = nextSequence();" in overlay_source
     assert "yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);" not in interpage_source
     assert "sequence = Math.max(sequence + 1, Date.now() * 1000);" not in overlay_source
+    assert "result.reason === 'stale-sequence'" in interpage_source
+    assert "result.reason === 'stale-sequence'" in overlay_source
+    assert "result.activeTutorialRunId === attemptedRunId" in interpage_source
+    assert "result.activeTutorialRunId === attemptedRunId" in overlay_source
+    assert "nextYuiGuidePcOverlaySequence(result.activeSequence)" in interpage_source
+    assert "nextSequence(result.activeSequence)" in overlay_source
 
 
 def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():

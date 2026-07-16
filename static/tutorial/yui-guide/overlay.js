@@ -145,8 +145,9 @@
         };
         const syncRunIdFromStorage = () => adoptRunId(readStoredRunId());
 
-        const nextSequence = () => {
+        const nextSequence = (minimumSequence) => {
             const wallSequence = Date.now() * 1000;
+            const sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
             let storedSequence = 0;
             try {
                 storedSequence = Math.max(
@@ -157,7 +158,7 @@
                 storedSequence = 0;
             }
 
-            sequence = Math.max(sequence + 1, storedSequence + 1, wallSequence);
+            sequence = Math.max(sequence + 1, storedSequence + 1, sequenceFloor + 1, wallSequence);
             try {
                 window.localStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY, String(sequence));
             } catch (_) {}
@@ -165,6 +166,19 @@
         };
 
         const handleStaleResult = (result, patch, force, retried, attemptedRunId) => {
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && !retried
+                && !cleared
+                && attemptedRunId === runId
+            ) {
+                sequence = nextSequence(result.activeSequence);
+                send(patch, force, true);
+                return;
+            }
             if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
                 return;
             }
@@ -176,6 +190,19 @@
             send(patch, force, true);
         };
         const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && !retried
+                && !cleared
+                && attemptedRunId === runId
+            ) {
+                sequence = nextSequence(result.activeSequence);
+                sendCursorOnly(cursor, true);
+                return;
+            }
             if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
                 return;
             }

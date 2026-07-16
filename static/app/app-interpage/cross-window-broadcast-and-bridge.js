@@ -756,7 +756,6 @@
             case 'yui_guide_set_chat_cursor': {
                 if (!I.isStandaloneChatPage() || !document.body) return true;
                 var expandedForCursor = I.ensureYuiGuideExternalChatExpanded();
-                var cursorRequestToken = ++I.yuiGuideChatCursorRequestToken;
                 var cursorKind = message.kind || '';
                 var cursorOptions = {
                     effect: message.effect || '',
@@ -775,12 +774,19 @@
                     timestamp: I.getYuiGuideBridgeMessageTimestamp(message)
                 };
                 I.applyYuiGuideChatCursor(cursorKind, cursorOptions);
+                // applyYuiGuideChatCursor owns the request generation. Capture its resulting token so
+                // the post-expansion retry remains current until a newer cursor command supersedes it.
+                var cursorRequestToken = I.yuiGuideChatCursorRequestToken;
+                var retryCursorOptions = Object.assign({}, cursorOptions, {
+                    effect: '',
+                    effectDurationMs: 0
+                });
                 if (expandedForCursor && cursorOptions.freezePoint !== true) {
                     window.setTimeout(function () {
                         if (cursorRequestToken !== I.yuiGuideChatCursorRequestToken) {
                             return;
                         }
-                        I.applyYuiGuideChatCursor(cursorKind, cursorOptions);
+                        I.applyYuiGuideChatCursor(cursorKind, retryCursorOptions);
                     }, 720);
                 }
                 return true;

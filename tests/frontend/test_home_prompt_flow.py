@@ -2600,6 +2600,78 @@ def test_home_tutorial_input_lock_suppresses_galgame_options_without_tutorial_ev
 
 
 @pytest.mark.frontend
+def test_home_tutorial_input_lock_temporarily_reveals_hidden_compact_tools(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            document.body.innerHTML = `
+                <div id="react-chat-window-overlay" hidden>
+                    <div id="react-chat-window-shell">
+                        <div id="react-chat-window-drag-handle"></div>
+                        <div id="react-chat-window-root"></div>
+                    </div>
+                </div>
+            `;
+            window.NekoChatWindow = {
+                mount: (_root, props) => {
+                    window.__lastReactChatProps = props;
+                },
+            };
+        """,
+        script_names=("app/app-react-chat-window",),
+    )
+
+    mock_page.evaluate(
+        """
+        async () => {
+            await window.reactChatWindowHost.ensureBundleLoaded();
+            window.reactChatWindowHost.openWindow();
+        }
+        """
+    )
+    mock_page.wait_for_function("() => !!window.__lastReactChatProps", timeout=5000)
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const host = window.reactChatWindowHost;
+            host.setChatSurfaceMode('compact');
+            host.setComposerHidden(true);
+            host.setGoodbyeComposerHidden(true, 'pre-tutorial-goodbye');
+
+            host.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day2');
+            const hiddenDuringTutorial = window.__lastReactChatProps.composerHidden;
+            host.setCompactToolFanOpen(true, 'avatar-floating-guide-open-tool-fan');
+            const stateDuringTutorial = host.getState();
+            const propsDuringTutorial = window.__lastReactChatProps;
+
+            host.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day2-complete');
+
+            return {
+                hiddenDuringTutorial,
+                compactChatState: stateDuringTutorial.compactChatState,
+                fanOpen: propsDuringTutorial.compactToolFanOpenRequest.open,
+                hiddenAfterTutorial: window.__lastReactChatProps.composerHidden,
+                composerHiddenRequestedAfterTutorial: host.getState().composerHiddenRequested,
+                goodbyeComposerHiddenAfterTutorial: host.getState().goodbyeComposerHidden,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "hiddenDuringTutorial": False,
+        "compactChatState": "input",
+        "fanOpen": True,
+        "hiddenAfterTutorial": True,
+        "composerHiddenRequestedAfterTutorial": True,
+        "goodbyeComposerHiddenAfterTutorial": True,
+    }
+
+
+@pytest.mark.frontend
 def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
     mock_page: Page,
 ):
@@ -6264,6 +6336,79 @@ def test_externalized_chat_cursor_explicit_duration_overrides_handoff_speed(
     assert result["y"] == 471
     assert result["effect"] == "move"
     assert result["durationMs"] == 1480
+
+
+@pytest.mark.frontend
+def test_externalized_chat_cursor_retries_position_without_replaying_click(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        id="tutorial-tool-toggle"
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+            window.reactChatWindowHost = {
+                openWindow: () => {
+                    window.setTimeout(() => {
+                        document.getElementById('tutorial-tool-toggle').style.left = '500px';
+                    }, 100);
+                },
+            };
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 850));
+            return window.__externalChatOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter((cursor) => cursor && cursor.visible === true);
+        }
+        """
+    )
+
+    assert len(result) >= 2
+    assert result[0]["x"] == 121
+    assert result[0]["effect"] == "click"
+    assert result[0]["effectDurationMs"] == 420
+    assert result[-1]["x"] == 521
+    assert result[-1]["effect"] == ""
+    assert result[-1]["effectDurationMs"] == 0
 
 
 @pytest.mark.frontend

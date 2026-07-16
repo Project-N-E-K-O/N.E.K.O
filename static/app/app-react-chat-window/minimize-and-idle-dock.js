@@ -1061,6 +1061,9 @@
     }
 
     I.setAvatarToolMenuOpen = function setAvatarToolMenuOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            I.state.compactChatState = 'input';
+        }
         I.setViewProps({
             avatarToolMenuOpenRequest: {
                 id: nextTutorialChatRequestId('avatar-tool-menu'),
@@ -1072,6 +1075,9 @@
     }
 
     I.setCompactToolFanOpen = function setCompactToolFanOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            I.state.compactChatState = 'input';
+        }
         I.setViewProps({
             compactToolFanOpenRequest: {
                 id: nextTutorialChatRequestId('compact-tool-fan'),
