@@ -16,9 +16,9 @@ and blocks the handler on an :class:`asyncio.Event` until the
 Screenshots streamed by the agent server are forwarded into the
 realtime LLM session via :class:`push_message v2 <push_message>` with
 ``ai_behavior="read"`` so they enter the model's vision context. A
-background task periodically fires a "GAME_SYSTEM" nudge prompt with
-the latest log digest and screenshot cache so the model keeps playing
-autonomously when the user is silent.
+background task periodically injects a passive "GAME_SYSTEM" awareness
+snapshot with the latest log digest and screenshot cache. It enriches
+the model's game context without forcing a response or a new task.
 """
 from __future__ import annotations
 
@@ -50,7 +50,12 @@ MINECRAFT_TASK_SCHEMA: Dict[str, Any] = {
     "properties": {
         "task": {
             "type": "string",
-            "description": "A concrete, directly executable Minecraft goal in English.",
+            "description": (
+                "A plain-language Minecraft instruction. When master gives an "
+                "explicit instruction, copy the exact original wording without "
+                "adding details. Never add in-game coordinates unless master "
+                "explicitly asked for coordinates."
+            ),
         },
         "overwrite": {
             "type": "boolean",
@@ -73,6 +78,21 @@ MINECRAFT_TASK_DESCRIPTION = (
     "(cue). "
     "Do not infer or claim results from the task text itself — only from "
     "actually-observed cues and screenshots.\n\n"
+    "CRITICAL — this tool dispatches actions; it is not an awareness or heartbeat "
+    "tool. A screenshot, log, state update, idle reminder, or task-completion cue "
+    "is context only and is NEVER by itself a reason to call this tool. Before "
+    "dispatching, account for the current task and recent feedback. If an action "
+    "may still be running, do not send another one.\n\n"
+    "MASTER INSTRUCTION FIDELITY — when master (the user) gives an explicit "
+    "instruction, relay the exact original wording in ``task``. Do not translate, "
+    "paraphrase, split, optimize, clarify on master's behalf, or add targets, "
+    "quantities, steps, tools, directions, or other details. The exact request "
+    "takes priority over the usual preference for a concrete single-step goal.\n\n"
+    "COORDINATE SAFETY — NEVER invent, infer, choose, or include in-game "
+    "coordinates unless master explicitly asked you to use or provide coordinates. "
+    "Coordinates visible in screenshots, logs, telemetry, or earlier agent output "
+    "do not count as master's request. Preserve relative wording such as 'come "
+    "here' exactly instead of turning it into coordinates.\n\n"
     "CRITICAL — never parrot the game's own logs. The Minecraft feed you see is "
     "the agent's internal telemetry: function-call lines (goToCoordinates(...), "
     "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
@@ -82,19 +102,18 @@ MINECRAFT_TASK_DESCRIPTION = (
     "goal (e.g. 'mine straight down 3 blocks then place 1 block below you'), never "
     "the game's raw command syntax or a coordinate you only saw in a log. If the "
     "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
-    "Use this tool when the user asks the character to do something in "
-    "the game, or when continuing an in-game activity that needs another "
-    "concrete step. Do NOT use it for chat, status questions, or "
-    "abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
+    "Use this tool when master asks the character to do something in the game, "
+    "or when master's still-unfinished instruction clearly requires another "
+    "concrete step. Do NOT use it merely because the character is idle, a task "
+    "finished, or new awareness context arrived. Do NOT use it for chat, status "
+    "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
     "Parameters:\n"
-    "  task (string, required): one concrete executable action in "
-    "English with specific targets — exact coordinates, specific block "
-    "or entity types, specific quantities. Vague intents ('find a good "
-    "place to build a house', 'find a blue block', 'come over here') "
-    "are not executable. Prefer single-step actions (one mine / one "
-    "craft / one walk) over long compound chains; chains complete "
-    "piece by piece and each step's real outcome must be observed "
-    "before claiming the next.\n"
+    "  task (string, required): master's exact original instruction when one was "
+    "given; otherwise one plain-language, concrete executable action with only "
+    "genuinely known targets or quantities. Never add coordinates unless master "
+    "explicitly requested them. For self-chosen actions, prefer one mine / craft / "
+    "walk over a long compound chain; each real outcome must be observed before "
+    "considering another action.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
     "previous task keeps running. Set true when:\n"
@@ -417,14 +436,13 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             return
         try:
             # ai_behavior="respond" + priority=7: the action just
-            # finished; the dialog LLM should immediately narrate the
-            # outcome to {MASTER_NAME} and (if appropriate) decide a
-            # next concrete action. Without ``respond`` the cue would
-            # only land in context as silent reading material; the
-            # human-facing report would be deferred to the next user
-            # turn, which feels unresponsive. Importance scale is
-            # HIGHER=more important (repo-wide): alert=9 (most important)
-            # > completion=7 > in_progress=4 > keep_going=3.
+            # finished, so the dialog LLM should immediately absorb and, when
+            # useful, narrate the outcome to {MASTER_NAME}. The prompt frames
+            # this as awareness rather than a command to dispatch another task;
+            # only an unfinished explicit master instruction may justify more
+            # action. Importance scale is HIGHER=more important (repo-wide):
+            # alert=9 (most important) > completion=7 > in_progress=4 >
+            # post-completion-awareness=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],

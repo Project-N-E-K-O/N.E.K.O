@@ -640,6 +640,49 @@ async def test_system_prompt_bundles_only_latest_frame_with_mime():
     assert service.get_status()["screenshot_cache_size"] == 0
 
 
+def test_post_completion_awareness_is_once_per_finish():
+    """A completion gets one delayed awareness update, never a periodic loop."""
+    service, _ = _make_service()
+    service._task_finished = True
+    service._pending = None
+    service._last_task_finished_at = 100.0
+    service._last_keep_going_nudge_at = 0.0
+
+    assert not service._post_completion_awareness_due(
+        129.9, min_delay=30.0
+    )
+    assert service._post_completion_awareness_due(
+        130.0, min_delay=30.0
+    )
+
+    service._last_keep_going_nudge_at = 130.0
+    assert not service._post_completion_awareness_due(
+        500.0, min_delay=30.0
+    )
+
+    service._last_task_finished_at = 600.0
+    assert service._post_completion_awareness_due(
+        630.0, min_delay=30.0
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_completion_awareness_is_passive_context():
+    """The delayed completion update must not force a model turn or tool call."""
+    service, push_calls = _make_service()
+
+    await service._fire_keep_going_nudge()
+
+    assert len(push_calls) == 1
+    assert push_calls[0]["ai_behavior"] == "read"
+    text_parts = [
+        part["text"] for part in push_calls[0]["parts"]
+        if part["type"] == "text"
+    ]
+    assert len(text_parts) == 1
+    assert "awareness update" in text_parts[0]
+
+
 @pytest.mark.asyncio
 async def test_log_cache_is_bounded():
     """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
@@ -1284,6 +1327,37 @@ async def test_reload_config_live_no_restart_for_pure_data_keys():
 # i18n: every prompt key is fully translated across all 7 supported locales.
 # Catches forgotten translations + drift between locale tables.
 # ---------------------------------------------------------------------------
+
+
+def test_task_tool_description_preserves_master_words_and_coordinates():
+    """The mounted tool must preserve explicit master instructions verbatim."""
+    from plugin.plugins.game_agent_minecraft import (
+        MINECRAFT_TASK_DESCRIPTION,
+        MINECRAFT_TASK_SCHEMA,
+    )
+
+    description = MINECRAFT_TASK_DESCRIPTION
+    task_schema_description = (
+        MINECRAFT_TASK_SCHEMA["properties"]["task"]["description"]
+    )
+
+    assert "relay the exact original wording" in description
+    assert "Do not translate, paraphrase" in description
+    assert "NEVER invent, infer, choose, or include in-game coordinates" in description
+    assert "unless master explicitly asked" in description
+    assert "exact original wording" in task_schema_description
+    assert "unless master explicitly asked for coordinates" in task_schema_description
+    assert "English with specific targets" not in description
+    assert "exact coordinates, specific block" not in description
+
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    assert "dispatch a fresh task" not in prompts.t(
+        "COMPLETION_FOLLOWUP_BLOCKED", lang="en"
+    )
+    assert "different coordinates" not in prompts.t(
+        "COMPLETION_FOLLOWUP_BLOCKED", lang="en"
+    )
 
 
 def test_prompts_have_all_seven_locales():
