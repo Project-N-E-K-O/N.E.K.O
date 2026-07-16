@@ -1648,6 +1648,10 @@
     async function importExternalMemory() {
         const button = document.getElementById('external-memory-import-btn');
         if (button) button.disabled = true;
+        // 从预览阶段就置 in-flight 标志：updateExternalImportButton 与 beforeunload
+        // 都据此拦截，防用户在预览 / 确认期间切角色或换文件重新启用按钮、起第二次
+        // 导入（Codex P2）。finally 统一清除。
+        window._memoryImportInProgress = true;
         try {
             const targetCharacter = currentCatName;
             setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
@@ -1686,10 +1690,8 @@
                 return;
             }
             payload.acknowledge_warnings = true;
-            // persona 融合是同步阻塞的 LLM 调用（可能数十秒）：置 in-flight 标志，
-            // beforeunload 据此拦截关闭；状态区追加「勿关闭」提示——现代 Chromium 会
-            // 忽略 beforeunload 的自定义文案，真正的中文提示只能落在这里。
-            window._memoryImportInProgress = true;
+            // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
+            // 文案，真正的中文提示只能落在这里（in-flight 标志已在预览前置好）。
             setExternalImportStatus(
                 translate('memory.externalImportWorking', 'Importing memory...')
                 + ' '
@@ -1710,6 +1712,12 @@
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {
                     const partial = result.partial_import || {};
+                    // persona.json 已写了 added_persona 个 entity → 即使整体 partial，
+                    // 也要广播 memory_edited，否则主聊天窗口继续用过期 persona 上下文
+                    // （重试延迟 / 持续失败时尤甚）(Codex P2)。
+                    if (partial.added_persona > 0 && partial.character_name) {
+                        broadcastExternalMemoryEdited(partial.character_name);
+                    }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries were saved. Retry to finish; duplicates will be skipped.',

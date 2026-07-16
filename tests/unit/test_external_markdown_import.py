@@ -262,3 +262,17 @@ def test_candidate_text_bounds_the_breadcrumb_prefix():
     candidates = build_import_candidates(sources)["candidates"]
     entry = next(c for c in candidates if "tea" in c["text"])
     assert len(entry["text"]) <= MAX_SECTION_CHARS + 10
+
+
+def test_hermes_delimiter_inside_fence_is_not_a_delimiter():
+    # A § that appears inside a ``` code block must not split the Hermes file:
+    # fenced code is stripped before delimiter detection, so real memories on
+    # both sides of the fence survive (Codex P2).
+    content = "Real memory one\n```\n§\n```\nReal memory two"
+    sources = collect_markdown_files([{"path": ".hermes/USER.md", "content": content}])
+    analysis = build_import_candidates(sources)
+
+    assert analysis["source_format"] == "hermes"
+    texts = [c["text"] for c in analysis["candidates"]]
+    assert any("Real memory one" in t for t in texts)
+    assert any("Real memory two" in t for t in texts)

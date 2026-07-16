@@ -202,27 +202,35 @@ class ExternalFusionMixin:
                 raise ExternalMemoryFusionError(
                     f"persona fusion base changed under concurrent import: {name}/{entity}"
                 )
-            # 剔旧与写新在同一临界区原子完成。只剔 external_import 桶，protected /
-            # 对话积累 / reflection 不动（旧桶内容已折叠进新 digest）。
-            section_facts[:] = [
+            # 先按守卫过滤出幸存条目，**不动**旧桶：与角色卡矛盾的丢弃、与非角色卡
+            # persona 事实矛盾的入纠正队列。对照「非外部导入」条目（旧桶待替换、不参与
+            # 判定）；复用 aadd_fact 同一道轻量守卫（Codex P2）。
+            non_external = [
                 f for f in section_facts
                 if not (isinstance(f, dict) and f.get("source") == "external_import")
             ]
-            # 与角色卡（protected character_card）矛盾的融合条目无条件丢弃——外部导入
-            # 不得架空角色卡；复用 aadd_fact 同一道轻量守卫（Codex P2）。
             stop_names = await self._aget_entity_stop_names(name)
-            added = 0
+            survivors: list[dict] = []
             for item in fused:
                 code, old_text = self._evaluate_fact_contradiction(
-                    name, item["text"], section_facts, stop_names,
+                    name, item["text"], non_external, stop_names,
                 )
                 if code == self.FACT_REJECTED_CARD:
                     continue
                 if code == self.FACT_QUEUED_CORRECTION:
-                    # 与非角色卡 persona 事实矛盾：入既有纠正队列交 LLM 裁决，不并存
-                    # 两个相反陈述（与 aadd_fact 一致，已在锁内 → 用 _locked 版）。
+                    # 已在锁内 → 用 _locked 版；交 LLM 裁决，不并存两个相反陈述。
                     await self._aqueue_correction_locked(name, old_text, item["text"], entity)
                     continue
+                survivors.append(item)
+            if not survivors:
+                # 融合结果全被角色卡拒绝 / 入了纠正队列 → 保留旧桶原样、不清空、不记
+                # 指纹（否则一次全冲突的二次导入会抹掉已导入的 digest）(Codex P2)。
+                return {"added": 0, "skipped": len(cands), "fused": False}
+            # 有幸存者才替换：剔旧桶 + 写新 digest，原子 save（旧桶内容已折叠进新
+            # digest；protected / 对话积累 / reflection 不动）。
+            section_facts[:] = non_external
+            added = 0
+            for item in survivors:
                 entry = self._build_fact_entry(item["text"], "external_import", source_id)
                 entry["reinforcement"] = initial_reinforcement_from_importance(item["importance"])
                 entry["external_import"] = dict(metadata)
@@ -294,7 +302,14 @@ class ExternalFusionMixin:
             text = str(cand.get("text") or "").strip()
             prefix = f"{section}: " if section and section.casefold() not in text.casefold() else ""
             lines.append(f"{idx}. {prefix}{text}")
-        cand_text = truncate_to_tokens("\n".join(lines), EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS)
+        cand_text = "\n".join(lines)
+        if count_tokens(cand_text) > EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS:
+            # 候选超过单次融合输入池：尾部会被截掉、但整批指纹仍会记 folded，后段记忆
+            # 永久漏掉。宁可抛可重试错误（→ external_import_partial，提示用户拆分
+            # workspace），也不静默丢数据（Greptile P1）。批量无损融合是后续方向。
+            raise ExternalMemoryFusionError(
+                f"external import too large for a single fusion pass: {name}/{entity}"
+            )
 
         prompt = get_persona_fusion_prompt(lang).format(
             AI_NAME=ai_name,

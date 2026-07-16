@@ -482,3 +482,46 @@ async def test_fusion_input_bounds_breadcrumb_prefix(monkeypatch):
     # breadcrumb is bounded (nowhere near the 5000-char heading); body survives
     assert "H" * 500 not in captured["prompt"]
     assert "user prefers tea" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_all_fused_filtered_preserves_old_bucket():
+    # If every fused entry is rejected (card conflict) or queued, the existing
+    # external_import bucket must be kept intact, not erased before a replacement
+    # was accepted (Codex P2).
+    harness = _FusionHarness(
+        {"master": {"facts": [
+            {"text": "old imported digest", "source": "external_import", "id": "ext_old",
+             "external_import": {"folded_fingerprints": ["OLD_FP"]}},
+        ]}},
+        stub_fused=[{"text": "contradicts the card", "importance": 8}],
+    )
+    harness._reject_texts = {"contradicts the card"}
+
+    result = await harness.afuse_external_facts("Neko", "master", _candidates("raw"), "hermes")
+
+    assert result["added"] == 0
+    texts = {f["text"] for f in harness.persona["master"]["facts"]}
+    assert "old imported digest" in texts   # old bucket preserved, not erased
+    assert harness.save_count == 0          # nothing written
+
+
+@pytest.mark.asyncio
+async def test_fusion_input_exceeding_budget_raises():
+    # Candidates exceeding the single-fusion input budget must raise (→ the caller
+    # returns external_import_partial), not silently truncate the tail while still
+    # marking the whole batch folded (Greptile P1).
+    class _CfgMgr:
+        async def aget_character_data(self):
+            return (None, None, None, None, {}, None, None, None, None)
+
+        def get_model_api_config(self, _tier):
+            return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}
+
+    class _CallHarness(ExternalFusionMixin):
+        def __init__(self):
+            self._config_manager = _CfgMgr()
+
+    huge = "word " * 20000  # well over EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
+    with pytest.raises(ExternalMemoryFusionError):
+        await _CallHarness()._allm_call_fusion("Neko", "master", [{"text": huge}], 600)

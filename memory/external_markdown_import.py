@@ -234,14 +234,19 @@ def _strip_fenced_code(text: str) -> str:
 
 def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list[dict[str, str]]:
     """Split free Markdown into ``{section, text}`` entries."""
-    if hermes_delimiter and _HERMES_DELIM_RE.search(text):
-        blocks = _HERMES_DELIM_RE.split(text)
-        return [
-            {"section": "", "text": piece}
-            for block in blocks
-            for piece in _split_long_fragment(_clean_fragment(_strip_fenced_code(block)))
-            if piece
-        ]
+    if hermes_delimiter:
+        # Strip fenced code BEFORE searching/splitting on §: a § that appears inside
+        # a ``` block must not be treated as a delimiter (splitting the fence would
+        # leave unmatched fences and drop legit memories after it) (Codex P2).
+        stripped = _strip_fenced_code(text)
+        if _HERMES_DELIM_RE.search(stripped):
+            blocks = _HERMES_DELIM_RE.split(stripped)
+            return [
+                {"section": "", "text": piece}
+                for block in blocks
+                for piece in _split_long_fragment(_clean_fragment(block))
+                if piece
+            ]
 
     entries: list[dict[str, str]] = []
     headings: list[str] = []
