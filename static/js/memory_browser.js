@@ -1759,22 +1759,22 @@
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {
                     const partial = result.partial_import || {};
-                    // persona.json 已写了 added_persona 个 entity → 即使整体 partial，
-                    // 也要广播 memory_edited，否则主聊天窗口继续用过期 persona 上下文
-                    // （重试延迟 / 持续失败时尤甚）(Codex P2)。
-                    if (partial.added_persona > 0 && partial.character_name) {
+                    // persona / facts 任一已落盘 → 即使整体 partial 也要广播
+                    // memory_edited，否则主聊天窗口继续用过期记忆上下文（daily
+                    // 失败但 MEMORY.md 已写入时尤甚）(Codex P2 / CodeRabbit)。
+                    if ((partial.added_persona > 0 || partial.added_facts > 0) && partial.character_name) {
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
                     throw new Error(translate(
                         'memory.externalImportPartial',
-                        'The import stopped after {{persona}} persona entries were saved. Retry to finish; duplicates will be skipped.',
-                        { persona: partial.added_persona || 0 }
+                        'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
+                        { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
                     ));
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
                     const big = result.partial_import || {};
-                    if (big.added_persona > 0 && big.character_name) {
+                    if ((big.added_persona > 0 || big.added_facts > 0) && big.character_name) {
                         broadcastExternalMemoryEdited(big.character_name);
                     }
                     throw new Error(translate(

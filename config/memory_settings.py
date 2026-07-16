@@ -428,6 +428,10 @@ EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
 # 上游 commit 转发的 240s 墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。
 # 不设太高：抽取 LLM 共享 provider 配额，且写盘侧由 per-character 锁天然串行。
 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
+# 单次导入允许的「真正要抽取」的日记天数上限（逐日指纹幂等 skip 的不计）：
+# 45 天 / 4 并发 ≈ 12 批 × 单次十几秒，稳落在 240s 窗口内；超限走 too_large
+# 引导拆分导入——已导入的天在下一次会被指纹白嫖 skip，多次导入无重复成本。
+EXTERNAL_IMPORT_DAILY_MAX_FILES = 45
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。

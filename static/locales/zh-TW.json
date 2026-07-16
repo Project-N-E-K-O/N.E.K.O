@@ -1750,7 +1750,7 @@
         "externalImportDoNotClose": "正在融合記憶，請勿關閉本視窗或退出程式，否則匯入會失敗。",
         "externalImportEta": "預計約 {{est}} 秒（最長 4 分鐘）· 已用 {{elapsed}} 秒。",
         "externalImportSuccess": "已匯入 {{persona}} 條人設和 {{facts}} 條事實，略過 {{duplicates}} 條重複內容。",
-        "externalImportPartial": "匯入在儲存 {{persona}} 條人設後中斷。請重試以完成匯入；重複內容會自動略過。",
+        "externalImportPartial": "匯入在儲存 {{persona}} 條人設、{{facts}} 條事實後中斷。請重試以完成匯入；重複內容會自動略過。",
         "externalImportTooLargeToFuse": "這次匯入的記憶太多，無法一次融合。請把 workspace 拆成更小的檔案分批匯入。",
         "chatHistory": "聊天記錄",
         "save": "保存",

@@ -15,10 +15,6 @@ import json
 import pytest
 
 import app.memory_server.routes as routes_mod
-from app.memory_server.routes import (
-    ExternalMemoryImportRequest,
-    import_external_markdown,
-)
 from memory.persona.fusion import (
     ExternalMemoryFusionError,
     ExternalMemoryImportTooLargeError,
@@ -57,30 +53,54 @@ class _FakePersonaManager:
 
 
 class _FakeFactStore:
+    """daily_outcome: dict to return from aimport_external_daily, or Exception."""
+
+    def __init__(self, daily_outcome=None):
+        self.daily_outcome = daily_outcome or {
+            "added": 0, "days": 0, "failed_days": 0, "skipped_days": 0,
+        }
+
     async def _apersist_new_facts(self, name, extracted, *, default_source, semantic_dedup):
         return []
 
     async def aimport_external_daily(self, name, candidates, source_format, imported_at):
-        return {"added": 0, "days": 0, "failed_days": 0}
+        if isinstance(self.daily_outcome, Exception):
+            raise self.daily_outcome
+        return self.daily_outcome
 
 
 @pytest.fixture
 def wire(monkeypatch):
-    def _wire(persona_manager):
+    def _wire(persona_manager, fact_store=None):
         monkeypatch.setattr(routes_mod.runtime, "persona_manager", persona_manager, raising=False)
-        monkeypatch.setattr(routes_mod.runtime, "fact_store", _FakeFactStore(), raising=False)
+        monkeypatch.setattr(routes_mod.runtime, "fact_store", fact_store or _FakeFactStore(), raising=False)
         monkeypatch.setattr(routes_mod.runtime, "_config_manager", object(), raising=False)
         monkeypatch.setattr(routes_mod, "assert_cloudsave_writable", lambda *a, **k: None)
         monkeypatch.setattr(routes_mod, "validate_lanlan_name", lambda n: n)
     return _wire
 
 
-def _request() -> ExternalMemoryImportRequest:
-    return ExternalMemoryImportRequest(
+def _daily_cand(source_file: str, event_date: str) -> dict:
+    return {
+        "target": "facts",
+        "entity": "master",
+        "text": f"journal for {event_date}",
+        "kind": "daily",
+        "source_file": source_file,
+        "source_section": "",
+        "event_date": event_date,
+    }
+
+
+def _request(extra_candidates: list | None = None) -> "routes_mod.ExternalMemoryImportRequest":
+    return routes_mod.ExternalMemoryImportRequest(
         character_name="Neko",
         source_format="openclaw",
         imported_files=["USER.md", "SOUL.md"],
-        candidates=[_persona_cand("master", "likes tea"), _persona_cand("neko", "warm but direct")],
+        candidates=[
+            _persona_cand("master", "likes tea"),
+            _persona_cand("neko", "warm but direct"),
+        ] + (extra_candidates or []),
     )
 
 
@@ -102,7 +122,7 @@ async def test_persona_entities_fuse_concurrently(wire):
 
     wire(_FakePersonaManager({"master": fuse, "neko": fuse}))
 
-    result = await asyncio.wait_for(import_external_markdown(_request()), timeout=5)
+    result = await asyncio.wait_for(routes_mod.import_external_markdown(_request()), timeout=5)
 
     assert result["status"] == "success"
     assert result["added_persona"] == 2
@@ -115,7 +135,7 @@ async def test_persona_all_too_large_returns_413(wire):
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
     }))
 
-    response = await import_external_markdown(_request())
+    response = await routes_mod.import_external_markdown(_request())
 
     assert response.status_code == 413
     body = _body(response)
@@ -133,7 +153,7 @@ async def test_persona_success_plus_too_large_returns_413_with_partial_counts(wi
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
     }))
 
-    response = await import_external_markdown(_request())
+    response = await routes_mod.import_external_markdown(_request())
 
     assert response.status_code == 413
     body = _body(response)
@@ -150,7 +170,7 @@ async def test_persona_too_large_mixed_with_retryable_failure_returns_partial(wi
         "neko": ExternalMemoryImportTooLargeError("neko too large"),
     }))
 
-    response = await import_external_markdown(_request())
+    response = await routes_mod.import_external_markdown(_request())
 
     assert response.status_code == 500
     body = _body(response)
@@ -165,11 +185,59 @@ async def test_persona_one_retryable_failure_still_counts_successful_entity(wire
         "neko": ExternalMemoryFusionError("fusion LLM failed"),
     }))
 
-    response = await import_external_markdown(_request())
+    response = await routes_mod.import_external_markdown(_request())
 
     assert response.status_code == 500
     body = _body(response)
     assert body["error_code"] == "external_import_partial"
+    assert body["partial_import"]["added_persona"] == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_failed_days_returns_retryable_partial(wire):
+    # daily 有失败天时不能回 success（用户无重试信号，Greptile P1）：返回
+    # partial，且 added_facts 带上 MEMORY.md + 成功 daily 已落盘的数量。
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 1, "skipped": 0, "fused": True},
+        }),
+        fact_store=_FakeFactStore(
+            {"added": 4, "days": 3, "failed_days": 1, "skipped_days": 0}
+        ),
+    )
+
+    response = await routes_mod.import_external_markdown(
+        _request([_daily_cand("memories/2026-07-12.md", "2026-07-12")])
+    )
+
+    assert response.status_code == 500
+    body = _body(response)
+    assert body["error_code"] == "external_import_partial"
+    assert body["partial_import"]["added_persona"] == 2
+    assert body["partial_import"]["added_facts"] == 4
+
+
+@pytest.mark.asyncio
+async def test_daily_over_cap_returns_413_too_large(wire):
+    # aimport_external_daily 抛「天数超 cap」→ 413 too_large（前端引导拆分）。
+    wire(
+        _FakePersonaManager({
+            "master": {"added": 1, "skipped": 0, "fused": True},
+            "neko": {"added": 1, "skipped": 0, "fused": True},
+        }),
+        fact_store=_FakeFactStore(
+            ExternalMemoryImportTooLargeError("daily import spans 46 new journal days")
+        ),
+    )
+
+    response = await routes_mod.import_external_markdown(
+        _request([_daily_cand("memories/2026-07-12.md", "2026-07-12")])
+    )
+
+    assert response.status_code == 413
+    body = _body(response)
+    assert body["error_code"] == "external_import_too_large"
     assert body["partial_import"]["added_persona"] == 2
 
 
@@ -182,6 +250,9 @@ class _DailyConcurrencyHarness(FactStore):
     def __init__(self, extract):
         self._extract = extract
         self.persisted: list[list[dict]] = []
+
+    async def aload_facts(self, lanlan_name):
+        return []
 
     async def _allm_extract_facts(self, lanlan_name, messages):
         text = "\n".join(getattr(m, "content", "") for m in messages)
@@ -223,7 +294,7 @@ async def test_daily_days_extract_concurrently():
         timeout=5,
     )
 
-    assert result == {"added": 2, "days": 2, "failed_days": 0}
+    assert result == {"added": 2, "days": 2, "failed_days": 0, "skipped_days": 0}
 
 
 @pytest.mark.asyncio
@@ -243,5 +314,5 @@ async def test_daily_crashing_day_is_counted_failed_and_others_survive():
         "hermes", "t",
     )
 
-    assert result == {"added": 1, "days": 2, "failed_days": 1}
+    assert result == {"added": 1, "days": 2, "failed_days": 1, "skipped_days": 0}
     assert len(harness.persisted) == 1

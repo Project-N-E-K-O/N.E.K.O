@@ -38,6 +38,7 @@ from config import (
     EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
     EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
+    EXTERNAL_IMPORT_DAILY_MAX_FILES,
     MEMORY_SCHEMA_VERSION_CURRENT,
 )
 from memory.temporal import (
@@ -581,6 +582,9 @@ class FactStore:
         hash_to_existing = {
             f.get('hash'): f for f in existing_facts if f.get('hash')
         }
+        # id → fact 快查表：Stage-2 语义命中后按 id 找到既存 fact，比较 daily
+        # event_date 决定是否豁免（跨日期重复事件不算 dup，CodeRabbit）。
+        facts_by_id = {f.get('id'): f for f in existing_facts if f.get('id')}
 
         for fact in extracted:
             if not isinstance(fact, dict):
@@ -623,8 +627,22 @@ class FactStore:
             else:
                 source = default_source
 
-            # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）
-            content_hash = hashlib.sha256(text.encode()).hexdigest()[:16]
+            # Stage 1: SHA-256 exact dedup（+ source monotonic upgrade）。
+            # daily 导入 fact 以「event_date + 文本」为精确键：同一天重试仍幂等，
+            # 不同日期的重复事件（如连着两天"去了健身房"）各自落盘、各留 provenance
+            # （CodeRabbit）。盐进 'hash' 持久字段，重试对比的是同样盐化的值。
+            external_import = fact.get('_external_import')
+            if not isinstance(external_import, dict):
+                external_import = None
+            daily_event_date = (
+                str(external_import.get('event_date'))
+                if external_import
+                and external_import.get('section') == 'daily'
+                and external_import.get('event_date')
+                else None
+            )
+            hash_input = f"{daily_event_date}\n{text}" if daily_event_date else text
+            content_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
             if content_hash in existing_hashes:
                 existing = hash_to_existing.get(content_hash)
                 if (
@@ -639,8 +657,7 @@ class FactStore:
                     # 若这条印证来自外部导入，补上 external_import provenance——否则
                     # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
                     # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
-                    external_import = fact.get('_external_import')
-                    if isinstance(external_import, dict):
+                    if external_import is not None:
                         self._apply_external_import_provenance(existing, external_import)
                     upgraded_count += 1
                 continue
@@ -650,9 +667,23 @@ class FactStore:
                 similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:
-                    if score < -5:
-                        is_dup = True
-                        break
+                    if score >= -5:
+                        continue
+                    if daily_event_date:
+                        # daily 候选：命中的既存 fact 若也是 daily 且日期不同 →
+                        # 跨日期重复事件，不算语义重复（同日期近似命中仍挡住，
+                        # 兜 LLM 重抽输出不稳定的重试幂等）。
+                        hit = facts_by_id.get(fid)
+                        hit_meta = (hit or {}).get('external_import')
+                        hit_date = (
+                            str(hit_meta.get('event_date'))
+                            if isinstance(hit_meta, dict) and hit_meta.get('event_date')
+                            else None
+                        )
+                        if hit_date and hit_date != daily_event_date:
+                            continue
+                    is_dup = True
+                    break
                 if is_dup:
                     continue
 
@@ -712,11 +743,11 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
-            external_import = fact.get('_external_import')
-            if isinstance(external_import, dict):
+            if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
+            facts_by_id[fact_entry['id']] = fact_entry
             # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact
             # 出现（如 LLM 偶发重复 / 同 batch 跨段抽到同一观察），下一轮命
             # 中 `content_hash in existing_hashes` 时能拿到本轮刚写入的
@@ -1203,19 +1234,36 @@ class FactStore:
         so rather than appending their raw fragments verbatim they are run through
         the conversation fact-extraction LLM. Candidates are grouped by source
         file (one file == one day); each day's fragments are joined into a single
-        user turn (input capped to ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS``) and
-        extracted independently so the day's ``event_date`` can be stamped onto
-        every fact it yields. One LLM call per day, run concurrently under
-        ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
+        user turn and extracted independently so the day's ``event_date`` can be
+        stamped onto every fact it yields. A day whose joined fragments exceed
+        ``EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS`` is split into multiple
+        extraction batches (``batch_daily_fragments``) rather than truncated —
+        no journal tail is silently dropped (Greptile P1). Days run concurrently
+        under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
         sequentially would blow past the upstream 240s forwarding window);
-        persistence stays serialized by the per-character persist lock. Best-
-        effort per day: a day whose Stage-1 call fails (None) or crashes is
-        logged and skipped so one bad day never aborts the whole import.
+        batches within a day run sequentially; persistence stays serialized by
+        the per-character persist lock. Best-effort per day: a day is counted in
+        ``failed_days`` when any of its batches fails (None) or crashes — facts
+        already extracted from its other batches are kept, and the caller is
+        expected to surface a retryable partial result instead of success.
 
-        Returns ``{'added': int, 'days': int, 'failed_days': int}``.
+        Idempotency mirrors persona ``folded_fingerprints``: each persisted fact
+        carries its day's content fingerprint; a re-imported day whose fragments
+        are unchanged is skipped outright — zero LLM calls (Codex P2). Changed
+        content re-extracts; near-identical re-extraction output is absorbed by
+        the same-date FTS5 dedup in ``_apersist_new_facts``.
+
+        After fingerprint filtering, more than ``EXTERNAL_IMPORT_DAILY_MAX_FILES``
+        genuinely-new days raises ``ExternalMemoryImportTooLargeError`` — an
+        unbounded workspace would mean hundreds of LLM calls and blow the 240s
+        window even under bounded concurrency; the frontend guides splitting
+        the import, and already-imported days keep skipping for free (Codex P2).
+
+        Returns ``{'added': int, 'days': int, 'failed_days': int, 'skipped_days': int}``.
         """
+        from memory.external_markdown_import import batch_daily_fragments
+        from memory.persona.fusion import ExternalMemoryImportTooLargeError
         from utils.llm_client import convert_to_messages
-        from utils.tokenize import truncate_to_tokens
 
         by_file: dict[str, list[dict]] = {}
         for cand in candidates:
@@ -1223,65 +1271,116 @@ class FactStore:
                 continue
             by_file.setdefault(str(cand.get("source_file") or ""), []).append(cand)
 
+        # 逐日指纹幂等（对偶 persona folded_fingerprints）：已导入且内容未变的
+        # 天直接 skip，不进 LLM。指纹在下方随每条 fact 的 provenance 落盘。
+        existing = await self.aload_facts(lanlan_name)
+        imported_day_fps: set[str] = set()
+        for f in existing:
+            meta = f.get('external_import')
+            if isinstance(meta, dict) and meta.get('day_fingerprint'):
+                imported_day_fps.add(str(meta['day_fingerprint']))
+
+        day_fps = {
+            source_file: self._daily_fingerprint(
+                [str(g.get("text") or "") for g in group]
+            )
+            for source_file, group in by_file.items()
+        }
+        pending = {
+            source_file: group
+            for source_file, group in by_file.items()
+            if day_fps[source_file] not in imported_day_fps
+        }
+        skipped_days = len(by_file) - len(pending)
+
+        if len(pending) > EXTERNAL_IMPORT_DAILY_MAX_FILES:
+            raise ExternalMemoryImportTooLargeError(
+                f"daily import spans {len(pending)} new journal days "
+                f"(cap {EXTERNAL_IMPORT_DAILY_MAX_FILES}); split the workspace"
+            )
+
         llm_slots = asyncio.Semaphore(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY)
 
-        async def _extract_one_day(source_file: str, group: list[dict]) -> int | None:
-            """One day's extraction+persist; returns added count, None on LLM failure."""
+        async def _extract_one_day(source_file: str, group: list[dict]) -> tuple[int, bool]:
+            """One day's extraction+persist; returns (added, day_failed)."""
             event_date = next(
                 (str(g["event_date"]) for g in group if g.get("event_date")), None
             )
             parts = [str(g.get("text") or "").strip() for g in group]
-            journal_text = truncate_to_tokens(
-                "\n".join(p for p in parts if p),
-                EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
+            batches = batch_daily_fragments(
+                [p for p in parts if p], EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
             )
-            if not journal_text:
-                return 0
-            messages = convert_to_messages(
-                [{"role": "user", "content": journal_text}]
-            )
-            # 只有 LLM 往返占并发槽；写盘走 _apersist_new_facts 的 per-character
-            # 锁自行互斥，放在槽外让下一天的 LLM 调用尽早起跑。
-            async with llm_slots:
-                extracted = await self._allm_extract_facts(lanlan_name, messages)
-            if extracted is None:
-                # Stage-1 terminal failure for this day → skip it, keep the rest.
-                logger.warning(
-                    f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，跳过 {source_file}"
+            day_added = 0
+            day_failed = False
+            for batch_text in batches:
+                messages = convert_to_messages(
+                    [{"role": "user", "content": batch_text}]
                 )
-                return None
-            if not extracted:
-                return 0
-            for fact in extracted:
-                if isinstance(fact, dict):
-                    # Stamp provenance; _apersist_new_facts_locked turns event_date
-                    # into event_start_at and tags the entry as external_import.
-                    fact["_external_import"] = {
-                        "format": source_format,
-                        "file": source_file,
-                        "section": "daily",
-                        "event_date": event_date,
-                        "imported_at": imported_at,
-                    }
-            new_facts = await self._apersist_new_facts(
-                lanlan_name, extracted, semantic_dedup=True,
-            )
-            return len(new_facts)
+                # 只有 LLM 往返占并发槽；写盘走 _apersist_new_facts 的 per-character
+                # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
+                async with llm_slots:
+                    extracted = await self._allm_extract_facts(lanlan_name, messages)
+                if extracted is None:
+                    # Stage-1 terminal failure for this batch → mark the day failed
+                    # but keep extracting its remaining batches (salvage the rest).
+                    day_failed = True
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
+                        f"跳过 {source_file} 的一个批次"
+                    )
+                    continue
+                if not extracted:
+                    continue
+                for fact in extracted:
+                    if isinstance(fact, dict):
+                        # Stamp provenance; _apersist_new_facts_locked turns event_date
+                        # into event_start_at and tags the entry as external_import.
+                        # day_fingerprint 是重导幂等的依据（见 docstring）。
+                        fact["_external_import"] = {
+                            "format": source_format,
+                            "file": source_file,
+                            "section": "daily",
+                            "event_date": event_date,
+                            "imported_at": imported_at,
+                            "day_fingerprint": day_fps[source_file],
+                        }
+                new_facts = await self._apersist_new_facts(
+                    lanlan_name, extracted, semantic_dedup=True,
+                )
+                day_added += len(new_facts)
+            return day_added, day_failed
 
         outcomes = await asyncio.gather(
-            *(_extract_one_day(f, g) for f, g in by_file.items()),
+            *(_extract_one_day(f, g) for f, g in pending.items()),
             return_exceptions=True,
         )
-        for exc in (o for o in outcomes if isinstance(o, BaseException)):
-            logger.error(
-                f"[FactStore] {lanlan_name}: 外部 daily 抽取单日崩溃，已跳过该日",
-                exc_info=exc,
-            )
-        added = sum(o for o in outcomes if isinstance(o, int))
-        failed_days = sum(
-            1 for o in outcomes if o is None or isinstance(o, BaseException)
-        )
-        return {"added": added, "days": len(by_file), "failed_days": failed_days}
+        added = 0
+        failed_days = 0
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                failed_days += 1
+                logger.error(
+                    f"[FactStore] {lanlan_name}: 外部 daily 抽取单日崩溃，已跳过该日",
+                    exc_info=outcome,
+                )
+                continue
+            day_added, day_failed = outcome
+            added += day_added
+            if day_failed:
+                failed_days += 1
+        return {
+            "added": added,
+            "days": len(by_file),
+            "failed_days": failed_days,
+            "skipped_days": skipped_days,
+        }
+
+    @staticmethod
+    def _daily_fingerprint(texts: list[str]) -> str:
+        """Stable, order-independent fingerprint over one day's fragment texts
+        (mirrors persona ``_fusion_fingerprint`` for symmetric idempotency)."""
+        norm = sorted(" ".join((t or "").casefold().split()) for t in texts)
+        return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()
 
     async def aextract_facts_with_known_pool(
         self,

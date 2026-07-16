@@ -1750,7 +1750,7 @@
         "externalImportDoNotClose": "記憶を統合しています。このウィンドウを閉じたりアプリを終了したりしないでください。中断すると取り込みに失敗します。",
         "externalImportEta": "推定約 {{est}} 秒（最長 4 分）· 経過 {{elapsed}} 秒。",
         "externalImportSuccess": "ペルソナ {{persona}} 件と事実 {{facts}} 件をインポートし、重複 {{duplicates}} 件をスキップしました。",
-        "externalImportPartial": "ペルソナ {{persona}} 件を保存した後にインポートが中断しました。再試行すると続行され、重複はスキップされます。",
+        "externalImportPartial": "ペルソナ {{persona}} 件と事実 {{facts}} 件を保存した後にインポートが中断しました。再試行すると続行され、重複はスキップされます。",
         "externalImportTooLargeToFuse": "取り込む記憶が多すぎて一度に統合できません。ワークスペースを小さなファイルに分割して個別に取り込んでください。",
         "chatHistory": "チャット履歴",
         "save": "保存",

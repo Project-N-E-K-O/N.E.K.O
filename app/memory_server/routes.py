@@ -260,6 +260,25 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             daily_result = await runtime.fact_store.aimport_external_daily(
                 name, daily_candidates, request.source_format, imported_at,
             )
+        except ExternalMemoryImportTooLargeError as exc:
+            # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →
+            # too_large 引导拆分。已导入天会被逐日指纹 skip，分次导入零重复成本。
+            logger.warning(
+                "External Markdown import: daily too large: character=%s detail=%s",
+                name, exc,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": str(exc),
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added,
+                    },
+                },
+            )
         except Exception:
             logger.exception(
                 "External Markdown import: daily extraction failed after persona+memory: "
@@ -280,9 +299,28 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             )
         daily_added = daily_result["added"]
         if daily_result["failed_days"]:
+            # 有日记天抽取失败：不能回 success（客户端会当导入完成、失败天永久
+            # 丢失且无重试信号，Greptile P1）→ 返回可重试 partial。重试收敛：
+            # persona 指纹幂等 skip、MEMORY.md 与已抽出 daily fact 被 SHA/FTS5
+            # 去重挡住，只有失败天真正重抽。
             logger.warning(
                 "External Markdown import: %s daily journal(s) failed extraction: character=%s",
                 daily_result["failed_days"], name,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": (
+                        f"{daily_result['failed_days']} daily journal(s) failed "
+                        "extraction; retry to finish"
+                    ),
+                    "error_code": "external_import_partial",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added + daily_added,
+                    },
+                },
             )
 
     added_facts = memory_added + daily_added
