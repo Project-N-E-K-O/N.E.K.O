@@ -657,21 +657,21 @@ class SoundCloudCrawler(BaseMusicCrawler):
                         if not transcodings:
                             return None
 
-                        # Chromium/APlayer cannot reliably play SoundCloud HLS playlists.
-                        # Prefer a progressive MP3 endpoint, then any progressive endpoint;
-                        # only fall back to the first item for legacy API responses that do
-                        # not expose ``format.protocol``.
+                        # Chromium/APlayer's plain <audio> path cannot play SoundCloud's
+                        # encrypted HLS/CBCS playlists. Only accept progressive endpoints;
+                        # returning no candidate lets the recommendation pipeline try the
+                        # next track instead of surfacing a guaranteed playback failure.
                         progressive = [
                             item for item in transcodings
                             if (item.get('format') or {}).get('protocol') == 'progressive'
                         ]
+                        if not progressive:
+                            return None
                         mp3_progressive = [
                             item for item in progressive
                             if (item.get('format') or {}).get('mime_type') == 'audio/mpeg'
                         ]
-                        selected_transcoding = (
-                            (mp3_progressive or progressive or transcodings)[0]
-                        )
+                        selected_transcoding = (mp3_progressive or progressive)[0]
                         stream_api = selected_transcoding.get('url')
                         if not stream_api:
                             return None
@@ -683,6 +683,12 @@ class SoundCloudCrawler(BaseMusicCrawler):
                         real_audio_url = stream_res.json().get('url')
                         
                         if not real_audio_url:
+                            return None
+                        try:
+                            resolved_path = urllib.parse.urlparse(real_audio_url).path.lower()
+                        except (TypeError, ValueError):
+                            return None
+                        if resolved_path.endswith('.m3u8'):
                             return None
                         
                         cover_url = track.get('artwork_url') or ''

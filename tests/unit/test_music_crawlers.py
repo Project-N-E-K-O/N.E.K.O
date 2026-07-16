@@ -297,6 +297,61 @@ async def test_soundcloud_crawler_prefers_progressive_mp3_over_hls():
     assert "progressive" in str(get_mock.await_args_list[1].args[0])
     await crawler.close()
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soundcloud_crawler_rejects_hls_only_candidates():
+    crawler = SoundCloudCrawler()
+    crawler.client_id = "a" * 32
+
+    mock_search = MagicMock(status_code=200)
+    mock_search.json.return_value = {
+        "collection": [{
+            "title": "Encrypted HLS Track",
+            "duration": 3 * 60 * 1000,
+            "media": {"transcodings": [{
+                "url": "https://api.soundcloud.com/hls",
+                "format": {"protocol": "hls", "mime_type": "audio/mp4"},
+            }]},
+        }]}
+    get_mock = AsyncMock(return_value=mock_search)
+
+    with patch.object(httpx.AsyncClient, 'get', new=get_mock):
+        results = await crawler.search("test", limit=1)
+
+    assert results == []
+    assert get_mock.await_count == 1
+    await crawler.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_soundcloud_crawler_rejects_progressive_endpoint_resolving_to_hls():
+    crawler = SoundCloudCrawler()
+    crawler.client_id = "a" * 32
+
+    mock_search = MagicMock(status_code=200)
+    mock_search.json.return_value = {
+        "collection": [{
+            "title": "Misreported Stream",
+            "duration": 3 * 60 * 1000,
+            "media": {"transcodings": [{
+                "url": "https://api.soundcloud.com/progressive",
+                "format": {"protocol": "progressive", "mime_type": "audio/mpeg"},
+            }]},
+        }]}
+    mock_stream = MagicMock(status_code=200)
+    mock_stream.json.return_value = {
+        "url": "https://playback.media-streaming.soundcloud.cloud/cbcs/track/playlist.m3u8?Policy=x"
+    }
+    get_mock = AsyncMock(side_effect=[mock_search, mock_stream])
+
+    with patch.object(httpx.AsyncClient, 'get', new=get_mock):
+        results = await crawler.search("test", limit=1)
+
+    assert results == []
+    await crawler.close()
+
 # ==========================================
 # 3. 调度逻辑测试
 # ==========================================

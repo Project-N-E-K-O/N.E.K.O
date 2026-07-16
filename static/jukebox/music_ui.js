@@ -1717,6 +1717,14 @@
         } catch { return false; }
     };
 
+    const isUnsupportedMusicStream = (url) => {
+        try {
+            return new URL(url, window.location.origin).pathname.toLowerCase().endsWith('.m3u8');
+        } catch (_) {
+            return true;
+        }
+    };
+
     const resolveMusicUrl = (url) => {
         try { return new URL(url, window.location.origin).href; }
         catch (_) { return String(url || ''); }
@@ -2760,6 +2768,13 @@
             } catch (e) {
                 console.warn('[Music UI] 竞态等待异常:', e);
             }
+        }
+
+        if (trackInfo.url && isUnsupportedMusicStream(trackInfo.url)) {
+            console.warn('[Music UI] 不支持直接播放 HLS 音频流:', trackInfo.url);
+            showErrorToast('music.playError', 'This audio stream is not supported');
+            releasePending();
+            return false;
         }
 
         if (!trackInfo.url || !isSafeUrl(trackInfo.url)) {

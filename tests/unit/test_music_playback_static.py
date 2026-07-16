@@ -16,6 +16,8 @@ def test_music_dispatch_waits_for_media_and_reports_real_failure():
     assert "return accepted === true" in source
     assert "MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60" in source
     assert "duration >= MAX_RECOMMENDED_TRACK_DURATION_SECONDS" in source
+    assert "isUnsupportedMusicStream" in source
+    assert "endsWith('.m3u8')" in source
 
 
 def test_proactive_music_retries_candidates_until_one_loads():
