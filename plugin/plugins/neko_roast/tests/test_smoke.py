@@ -93,7 +93,7 @@ def test_hosted_ui_compat_entry_keeps_full_live_controls():
         assert marker in source
 
 
-def test_dry_run_control_is_settings_only_and_defaults_off():
+def test_dry_run_defaults_off_and_is_hidden_from_normal_panel():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
@@ -103,9 +103,215 @@ def test_dry_run_control_is_settings_only_and_defaults_off():
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
-        assert source.count('label={t("panel.fields.dryRun")}') == 1
+        assert 'label={t("panel.fields.dryRun")}' not in source
         assert "config.dry_run === true" in source
         assert "config.dry_run !== false" not in source
+
+
+def test_developer_tools_default_off_until_explicitly_enabled():
+    root = Path(__file__).resolve().parents[1]
+    with (root / "plugin.toml").open("rb") as handle:
+        manifest = tomllib.load(handle)
+
+    assert manifest["neko_roast"]["developer_tools_enabled"] is False
+    assert "developer_tools_enabled: false" in (root / "ui" / "panel_state.ts").read_text(encoding="utf-8")
+    assert "developer_tools_enabled: false" in (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+
+
+def test_console_accepts_bilibili_links_and_requires_explicit_login_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert '!/^\\d+$/.test(roomRef)' not in source
+        assert 't("panel.console.roomNumeric")' in source
+        assert 'const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)' in source
+        assert 'const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !allowLimitedConnection' in source
+        assert 'loginLoggedIn || allowLimitedConnection' in source
+        assert 'onClick={enableLimitedConnection}' in source
+
+
+def test_first_use_guide_is_local_resettable_and_mirrored() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert 'const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"' in source
+        assert "window.localStorage.getItem(ONBOARDING_STORAGE_KEY)" in source
+        assert "window.localStorage.setItem(ONBOARDING_STORAGE_KEY, \"done\")" in source
+        assert "function resetOnboarding()" in source
+        assert 'onClick={resetOnboarding}' in source
+        assert 'open={onboardingOpen}' in source
+        assert 't("panel.onboarding.actionLabel")' in source
+        assert 't("panel.onboarding.successLabel")' in source
+
+
+def test_live_room_selection_requires_lookup_then_explicit_confirmation() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        compact_source = "".join(source.split())
+        confirm_source = source.split("async function confirmLiveRoom()", 1)[1].split("async function connectRoom()", 1)[0]
+        lookup_source = source.split("async function lookupLiveRoom()", 1)[1].split("async function confirmLiveRoom()", 1)[0]
+
+        assert 'const [queriedRoomRef, setQueriedRoomRef] = useState("")' in source
+        assert 'const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)' in source
+        assert 'onClick={lookupLiveRoom}' in source
+        assert 'disabled={!canConfirmLiveRoom}' in source
+        assert 't("panel.console.roomTwoStepHint")' in source
+        assert 't("panel.messages.roomLookupRequired")' in source
+        assert "lookupLiveRoom()" not in confirm_source
+        assert "props.api.refresh()" not in lookup_source
+        assert 'setLiveRoomResult(null);setQueriedRoomRef("")' in compact_source or 'setLiveRoomResult(null)setQueriedRoomRef("")' in compact_source
+
+
+def test_console_opens_stream_theme_modal_in_place_of_duplicate_diagnostics_action() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
+            '<Card title={t("panel.console.sessionTitle")}>', 1
+        )[0]
+        session_source = source.split('<Card title={t("panel.console.sessionTitle")}>', 1)[1].split(
+            '<Modal', 1
+        )[0]
+
+        assert "{streamThemePanel}" not in source
+        assert source.count("{streamThemeForm}") == 1
+        assert 'open={consoleDialog === "theme"}' in source
+        assert 'setConsoleDialog("theme")' in runtime_source
+        assert 't("panel.actions.showAdvanced")' not in runtime_source
+        assert 't("panel.actions.showAdvanced")' in session_source
+        assert 't("panel.fields.streamTheme")' in source
+        assert 't("panel.streamTheme.hint")' in source
+        assert 't("panel.fields.mode")' in source
+        assert 't("panel.fields.liveMode")' not in source
+        assert 'saveConfig(advancedConfigPatch())' in source
+
+
+def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
+            '<Card title={t("panel.console.sessionTitle")}>', 1
+        )[0]
+        dock_source = source.split('className="neko-roast-console-dock"', 1)[1].split("</footer>", 1)[0]
+        settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
+        toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
+
+        assert 'className="neko-roast-console-layout"' in source
+        assert 'gridTemplateRows: "auto auto"' in source
+        assert 'className="neko-roast-console-scroll"' in source
+        assert 'overflow: "visible"' in source
+        assert 'height: "calc(100vh - 190px)"' not in source
+        assert 'position: "sticky"' in dock_source
+        assert 'bottom: 0' in dock_source
+        assert 'position: "fixed"' not in dock_source
+        assert 'gridTemplateColumns: "minmax(260px, 520px)"' in dock_source
+        assert 'justifyContent: "center"' in dock_source
+        assert 'setConsoleDialog("pacing")' in runtime_source
+        assert 'onClick={connectRoom}' not in runtime_source
+        assert 'open={consoleDialog === "pacing"}' in source
+        assert source.count("{pacingForm}") == 1
+        assert 't("panel.pacing.fast")' in source
+        assert 't("panel.pacing.standard")' in source
+        assert 't("panel.pacing.slow")' in source
+        assert 'onClick={connectRoom}' in dock_source
+        assert dock_source.count("<Button") == 2
+        assert "<StatusBadge" not in dock_source
+        assert 'callSimple("clear_queue")' not in dock_source
+        assert 'callSimple("pause_roast")' not in dock_source
+        assert 'const canStart = roomConfigured' in source
+        assert "primaryStatusLabel" in toolbar_source
+        assert "primaryStatusTone" in toolbar_source
+        assert "showSafetyStatus" in toolbar_source
+        assert 't("panel.liveStatusSummary.cooldown")' in toolbar_source
+        assert 't("panel.stats.queue")' in toolbar_source
+        assert 'dynamicLabel("liveState", "panel.liveState", liveStateName)' not in toolbar_source
+        assert 'callSimple("clear_queue")' not in settings_source
+        assert 'configForm.values.safety_auto_stop_enabled' in settings_source
+        assert 'queue_limit: preset.value' in settings_source
+        assert 'id="settings-sections"' in settings_source
+        assert 'id: "safety"' in settings_source
+        assert 'id: "privacy"' in settings_source
+        assert 'id: "help"' in settings_source
+        assert 'panel.settings.queueCautious' in source
+        assert 'panel.settings.queueStandard' in source
+        assert 'panel.settings.queueRelaxed' in source
+        assert 'open={safetyDisableConfirmOpen}' in settings_source
+        assert 'open={storageDetailsOpen}' in settings_source
+        assert 'panel.fields.rateLimit' not in settings_source
+        assert 'panel.storage.disabled' not in settings_source
+        assert 'saveConfig(advancedConfigPatch())' not in settings_source
+
+        developer_results = source.split('id: "results"', 1)[1].split('id="developer-tools"', 1)[0]
+        assert 'panel.advanced.title' in developer_results
+        assert '<ModuleOverviewCard modules={modules} t={t} />' in developer_results
+
+
+def test_nested_navigation_uses_compact_accessible_pills() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+
+        assert 'function CompactTabs(' in source
+        assert 'className="neko-roast-compact-tabs"' in source
+        assert 'role="tablist"' in source
+        assert 'role="tab"' in source
+        assert 'role="tabpanel"' in source
+        assert 'aria-selected={active}' in source
+        assert 'minHeight: "26px"' in source
+        assert 'fontSize: "12px"' in source
+        assert source.count("<CompactTabs") == 3
+        assert '<CompactTabs\n        id="settings-sections"' in source
+        assert '<CompactTabs\n      id="audience-data"' in source
+        assert '<CompactTabs\n        id="developer-tools"' in source
+
+
+def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
+    root = Path(__file__).resolve().parents[1]
+    required_keys = {
+        "panel.interaction.details",
+        "panel.interaction.group.audience",
+        "panel.interaction.group.audienceHint",
+        "panel.interaction.group.hosting",
+        "panel.interaction.group.hostingHint",
+        "panel.interaction.module.avatarRoast.avatarAnalysisHint",
+        "panel.interaction.module.avatarRoast.disabledHint",
+        "panel.interaction.module.danmakuResponse.disabledHint",
+        "panel.interaction.module.liveSupportEvents.disabledHint",
+        "panel.interaction.module.warmupHosting.disabledHint",
+        "panel.interaction.module.idleHosting.disabledHint",
+        "panel.interaction.module.activeEngagement.disabledHint",
+    }
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        interaction_source = source.split("const currentDecisionCard = (", 1)[1].split(
+            "const viewerStore =", 1
+        )[0]
+
+        assert 'const [interactionDialog, setInteractionDialog]' in source
+        assert 'open={!!interactionDialog}' in interaction_source
+        assert interaction_source.count('renderInteractionDetailsButton("') == 6
+        assert 'minHeight: "190px"' in source
+        assert 'minHeight: "22px"' in source
+        assert 'fontSize: "12px"' in source
+        assert 'visibility: enabled ? "hidden" : "visible"' in source
+        assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
+            't("panel.interaction.group.audience")'
+        )
+        assert 'disabled={!configForm.values.avatar_roast_enabled}' in interaction_source
+        assert "<details" not in interaction_source
+
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        locale = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= set(locale), locale_path.name
 
 
 def test_live_room_entries_are_platform_neutral():
@@ -407,7 +613,7 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert (
         "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
         "?patch:{...patch,live_room_ref:liveRoomRef,"
-        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+        "live_room_id:liveRoomId,}"
     ) in compact_source
     assert "panel.platform.title" in source
     assert "panel.platform.bilibili" in source
@@ -423,6 +629,44 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert "panel.douyinAuth.manualHint" in source
 
 
+def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert "ConfirmDialog" in source
+        assert "consoleDialog" in source
+        assert 'setConsoleDialog("account")' in source
+        assert 'setConsoleDialog("room")' in source
+        assert 'setConsoleDialog("diagnostics")' in source
+        assert 'props.api.call("set_live_room", { room_id: roomRef })' in source
+        assert 'callSimple("disconnect_live_room")' in source
+        assert 'interactionPaused ? "resume_roast" : "pause_roast"' in source
+        assert 't("panel.room.lookupOk") + ": "' not in source
+        assert "const roastEnabled = configForm.values.avatar_roast_enabled !== false" in source
+        assert '{ id: "console", label: t("panel.tabs.console"), content: consoleSection }' in source
+        assert '{ id: "interaction", label: t("panel.tabs.interaction"), content: modulesSection }' in source
+        assert '{ id: "viewers", label: t("panel.tabs.viewers"), content: dataSection }' in source
+        assert '{ id: "settings", label: t("panel.tabs.settings"), content: advancedSection }' in source
+        assert '{ id: "dm", label: t("panel.tabs.dm")' not in source
+        assert '{ id: "automation", label: t("panel.tabs.automation")' not in source
+
+        modules_section = source.split("const modulesSection = (", 1)[1].split("const viewerStore", 1)[0]
+        assert modules_section.count("<div style={interactionCardGridStyle}>") == 2
+        assert modules_section.index("{currentDecisionCard}") < modules_section.index("renderAvatarRoastCard")
+        assert modules_section.index("{currentDecisionCard}") < modules_section.index("renderActiveEngagementCard")
+        for key in (
+            "avatar_roast_enabled",
+            "avatar_analysis_enabled",
+            "danmaku_response_enabled",
+            "live_support_events_enabled",
+            "warmup_hosting_enabled",
+            "idle_hosting_enabled",
+            "active_engagement_enabled",
+        ):
+            assert key in source
+
+
 def test_panel_advanced_save_resubmits_current_room_with_patch():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
@@ -432,7 +676,7 @@ def test_panel_advanced_save_resubmits_current_room_with_patch():
     assert (
         "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
         "?patch:{...patch,live_room_ref:liveRoomRef,"
-        'live_room_id:livePlatform==="bilibili"?liveRoomRef:0,}'
+        "live_room_id:liveRoomId,}"
     ) in compact_source
     assert "constpayload=Object.keys(patch).length?patchedPayload:fullPayload" in compact_source
     assert "saveConfig(advancedConfigPatch())" in source
@@ -832,12 +1076,15 @@ def test_patched_panel_saves_include_current_room_reference() -> None:
     expected = (
         "...patch,\n"
         "          live_room_ref: liveRoomRef,\n"
-        "          live_room_id: livePlatform === \"bilibili\" ? liveRoomRef : 0,"
+        "          live_room_id: liveRoomId,"
     )
 
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert 'const liveRoomId = livePlatform === "bilibili" ? Number(liveRoomRef) || 0 : 0' in source
         assert expected in source
+        assert source.count("live_room_id: liveRoomId,") == 2
+        assert 'live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0' not in source
 
 
 def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
@@ -897,3 +1144,41 @@ def test_compat_panel_mirrors_accessible_qr_and_result_tones() -> None:
         assert 'if (status === "skipped") return "warning"' in source
     assert '<button\n                  type="button"\n                  onClick={onLogin}' in compat
     assert 'recentResultTone(String(row.status || ""))' in compat
+
+
+def test_developer_tools_use_three_internal_subpages_in_both_panels() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        developer_source = source[source.index("const developerSandbox") : source.index("const tabItems")]
+        assert developer_source.index('id: "identity"') < developer_source.index('id: "event"')
+        assert developer_source.index('id: "event"') < developer_source.index('id: "results"')
+        assert 'label: t("panel.dev.lookup.title")' in developer_source
+        assert 'label: t("panel.dev.emitter.title")' in developer_source
+        assert 'label: t("panel.dev.runtimeResults")' in developer_source
+        assert "<CompactTabs" in developer_source
+        assert 'id="developer-tools"' in developer_source
+
+
+def test_audience_page_separates_session_data_from_viewer_profiles() -> None:
+    root = Path(__file__).resolve().parents[1]
+    authored_panel = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    data_sections = (root / "ui" / "panel_data_sections.tsx").read_text(encoding="utf-8")
+    compat_panel = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+
+    for source in (authored_panel, compat_panel):
+        audience_source = source[source.index("const dataSection") : source.index("const lookupIdentity")]
+        assert 'id="audience-data"' in audience_source
+        assert 'id: "session"' in audience_source
+        assert 'id: "profiles"' in audience_source
+        assert "LiveSessionSection" in audience_source
+        assert "ViewerProfilesTable" in audience_source
+        assert "LiveExplainSection" not in audience_source
+        assert "RecentResultsTable" not in audience_source
+
+    for source in (data_sections, compat_panel):
+        assert 'title={t("panel.audience.sessionDetailTitle")}' in source
+        assert 'title={t("panel.audience.profileDetailTitle")}' in source
+        assert 'maxRows={30}' in source
+        assert 'style={{ overflowX: "auto" }}' in source

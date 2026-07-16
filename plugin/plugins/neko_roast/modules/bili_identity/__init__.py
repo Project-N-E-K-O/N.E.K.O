@@ -83,6 +83,15 @@ class BiliIdentityModule(BaseModule):
             is_default_avatar=bool(avatar_url) and "noface" in avatar_url.lower(),
             pendant=pendant,
         )
+        if self.ctx is not None:
+            avatar_analysis_enabled = bool(
+                getattr(self.ctx.config, "avatar_analysis_enabled", True)
+            )
+            live_avatar_roast_enabled = bool(
+                getattr(self.ctx.config, "avatar_roast_enabled", True)
+            ) or event.source not in {"live_danmaku", "manual_live_simulation"}
+            if not avatar_analysis_enabled or not live_avatar_roast_enabled:
+                return identity
         if not avatar_url or identity.is_default_avatar:
             return identity
         cached = self.ctx.avatar_cache.get(avatar_url) if self.ctx else None

@@ -27,9 +27,13 @@ class LiveHostingDirector:
             live_state,
             host_beat,
         )
-        reason = live_hosting_gates.idle_hosting_skip_reason(
+        reason = (
+            "idle_hosting.disabled"
+            if not bool(getattr(self.runtime.config, "idle_hosting_enabled", True))
+            else live_hosting_gates.idle_hosting_skip_reason(
             self.runtime.config.live_mode,
             live_state,
+            )
         )
         if not reason and not host_beat:
             reason = "idle_hosting.no_material"
@@ -43,6 +47,8 @@ class LiveHostingDirector:
         return await self.runtime.pipeline.handle_event(event)
 
     async def maybe_trigger_idle_hosting(self) -> InteractionResult | None:
+        if not bool(getattr(self.runtime.config, "idle_hosting_enabled", True)):
+            return None
         now = float(self.runtime._idle_hosting_now())
         if not live_hosting_gates.idle_hosting_auto_ready(
             consecutive_failures=int(self.runtime._idle_hosting_consecutive_failures),
@@ -128,15 +134,21 @@ class LiveHostingDirector:
     async def trigger_warmup_hosting(self) -> InteractionResult:
         live_state = live_hosting_gates.hosting_live_state(self.runtime)
         event = self.warmup_hosting_event(live_state)
-        reason = live_hosting_gates.warmup_hosting_skip_reason(
+        reason = (
+            "warmup_hosting.disabled"
+            if not bool(getattr(self.runtime.config, "warmup_hosting_enabled", True))
+            else live_hosting_gates.warmup_hosting_skip_reason(
             self.runtime.config.live_mode,
             live_state,
+            )
         )
         if reason:
             return self.record_warmup_hosting_skip(event, reason)
         return await self.runtime.pipeline.handle_event(event)
 
     async def maybe_trigger_warmup_hosting(self) -> InteractionResult | None:
+        if not bool(getattr(self.runtime.config, "warmup_hosting_enabled", True)):
+            return None
         live_state = live_hosting_gates.hosting_live_state(self.runtime)
         if not live_hosting_gates.warmup_hosting_candidate(live_state):
             return None

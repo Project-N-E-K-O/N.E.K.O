@@ -61,12 +61,44 @@ Validation requires `model_type` to be `"pngtuber"` and a non-empty `idle_image`
 
 #### Import adapters
 
-When the package is not already a native `model.json`, the uploader detects the source format and converts it in place:
+When the package is not already a native `model.json`, the uploader detects the source format and converts it in place. The detected format is echoed back as `source_format`:
 
-- **`simple_package`** — native N.E.K.O package: a root `model.json` with `model_type: "pngtuber"`. Used as-is.
-- **PNGTuber-Plus** (`.save`) → `source_format: "pngtuber_plus_save"`, converted through the **`layered_canvas_v1`** adapter. Speech and blink layers are enabled first; physics and multi-frame animation are preserved as metadata for later runtime support.
-- **PNGTube-Remix** (`.pngRemix`) → `source_format: "pngtube_remix_pngremix"`, converted through the **`layered_canvas_v1`** adapter. Speech and blink layers are enabled first; hotkeys, physics, and mesh are preserved as metadata.
-- **veadotube** (`.veadomini` / `.veado`) → recognized but **not supported**; the upload is rejected with `source_format: "veadotube"` and a request for a sample to adapt against.
+- `source_format: "simple_package"` — native N.E.K.O package: a root `model.json` with `model_type: "pngtuber"`. Used as-is; drives idle/talking/drag/click plus lightweight emotion images.
+- `source_format: "pngtuber_plus_save"` — PNGTuber-Plus (`.save`), converted through the **`layered_canvas_v1`** adapter (`adapter_version: 2`): costumes, toggles, talk/blink, multi-frame sprite sheets, the Plus node tree, rectangular clip and approximate physics.
+- `source_format: "pngtube_remix_pngremix"` — PNGTube-Remix (`.pngRemix`), converted through the **`layered_canvas_v1`** adapter (`adapter_version: 2`): state switching, `emotion_mappings`, sprite sheets, `effective_z_index` ordering, `physics_v2` and usable mesh deformation.
+- `source_format: "veadotube"` — veadotube (`.veadomini` / `.veado`); recognized but **not supported**. The upload is rejected with a request for a sample to adapt against.
+- `source_format: "image_pair_candidate"` — image files with no `model.json` or project file; rejected and pointed at the two-image importer.
+
+#### Capability and failure matrix
+
+`window.pngtuberManager.getDebugState()` reports the live capabilities per `source_format`. Emotions are driven by `window.applyEmotion('happy')`, which routes to `pngtuberManager.setEmotion` for `pngtuber` models.
+
+| Capability | `simple_package` | `pngtuber_plus_save` | `pngtube_remix_pngremix` |
+|------------|:----------------:|:--------------------:|:------------------------:|
+| idle / talking swap | ✅ | ✅ | ✅ |
+| Emotion via `window.applyEmotion('happy')` | ✅ image swap | ✅ layered state | ✅ layered state |
+| Blink + speech bounce | — | ✅ | ✅ |
+| Costume hotkeys / toggles | — | ✅ | — |
+| Sprite-sheet frames | — | ✅ | ✅ |
+| `physics_v2` | — | approximate | ✅ |
+| Mesh deformation (`meshRuntime`) | — | — | ✅ when real geometry ships |
+
+`meshRuntime` only reads `true` in the debug state when the Remix project ships real vertices / triangles / UVs; otherwise `meshMetadata` stays `true`, `meshRuntime` stays `false`, and the reason is listed under `unsupportedFeatures`.
+
+Failure responses:
+
+- `source_format: "veadotube"` → recognized but rejected; awaits a real sample.
+- `source_format: "image_pair_candidate"` → rejected; use the two-image importer or add a `model.json`.
+- Multiple ambiguous `.save` files → HTTP 400 with `source_format: "pngtuber_plus_save"` and the candidate list in `warnings`.
+- Unparseable `.pngRemix` → PNGTube-Remix conversion failure (`source_format: "pngtube_remix_pngremix"`), never a missing-`model.json` error.
+
+#### Acceptance checks
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_maker_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
 
 ## List
 

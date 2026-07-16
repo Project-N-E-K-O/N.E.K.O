@@ -43,7 +43,6 @@ concurrency:
 
 env:
   REGISTRY_GHCR: ghcr.io
-  IMAGE_NAME: project-n-e-k-o/n.e.k.o
   # Embedding model pin (kept identical to .github/workflows/build-desktop.yml and
   # docker/Dockerfile{,.full} ARG defaults). The weights are pre-fetched on the
   # native runner and cached so the Docker build never hits huggingface.co — see
@@ -62,6 +61,7 @@ jobs:
       image_version: ${{ steps.version_calc.outputs.VERSION }}
       skip_dockerhub: ${{ steps.calc_skip.outputs.SKIP_DOCKERHUB }}
       is_main_commit: ${{ steps.calc_is_main.outputs.IS_MAIN_COMMIT }}
+      image_name: ${{ steps.lowercase_image.outputs.IMAGE_NAME }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -139,13 +139,21 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Compute lowercase image name
+        id: lowercase_image
+        run: |
+          IMAGE_NAME="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "✅ Image name (lowercase): $IMAGE_NAME"
+
   # ============================================================================
   # Job 2: Build and push STANDARD version (parallel with full version)
   # ============================================================================
   build-standard:
     needs: calculate-version
     # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -234,7 +242,7 @@ jobs:
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_GHCR }}/${{ needs.calculate-version.outputs.image_name }}
           flavor: |
             suffix=-${{ matrix.platform }}
           tags: |
@@ -253,7 +261,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_GHCR }}/${{ needs.calculate-version.outputs.image_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           flavor: |
             suffix=-${{ matrix.platform }}
@@ -289,8 +297,8 @@ jobs:
   # ============================================================================
   build-full:
     needs: calculate-version
-    # 仅在上游仓库运行：fork 上的 push / workflow_dispatch 用其 GITHUB_TOKEN 无法写入上游 GHCR namespace，会必然失败
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -363,7 +371,7 @@ jobs:
         id: meta_ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY_GHCR }}/${{ needs.calculate-version.outputs.image_name }}
           flavor: |
             suffix=-${{ matrix.platform }}
           tags: |
@@ -382,7 +390,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_GHCR }}/${{ needs.calculate-version.outputs.image_name }}
             ${{ secrets.DOCKERHUB_USERNAME }}/n.e.k.o
           flavor: |
             suffix=-${{ matrix.platform }}
@@ -417,7 +425,8 @@ jobs:
   # ============================================================================
   create-manifests:
     needs: [calculate-version, build-standard, build-full]
-    if: github.repository == 'Project-N-E-K-O/N.E.K.O' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
+    # 手动触发 (workflow_dispatch) 时跳过仓库检查，允许 fork 构建
+    if: (github.event_name == 'workflow_dispatch' || github.repository == 'Project-N-E-K-O/N.E.K.O') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && always() && needs.build-full.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -455,9 +464,9 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push multi-arch manifest for standard version (DockerHub)
         if: needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -474,9 +483,9 @@ jobs:
           VERSION=${{ needs.calculate-version.outputs.image_version }}
 
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-arm64
 
       - name: Create and push multi-arch manifest for full version (DockerHub)
         if: needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -495,9 +504,9 @@ jobs:
 
           # GHCR - ci-standard (without hash)
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:ci-standard \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:ci-standard \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push CI short tags - full (GHCR)
         if: needs.calculate-version.outputs.is_main_commit == 'true'
@@ -506,9 +515,9 @@ jobs:
 
           # GHCR - ci-full (without hash)
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:ci-full \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:ci-full \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-arm64
 
       - name: Create and push CI short tags - standard (DockerHub)
         if: needs.calculate-version.outputs.is_main_commit == 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'
@@ -539,9 +548,9 @@ jobs:
 
           # GHCR - pr-ci-standard (without PR number)
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-standard \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:pr-ci-standard \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push PR short tags - full (GHCR)
         if: github.event_name == 'pull_request'
@@ -550,9 +559,9 @@ jobs:
 
           # GHCR - pr-ci-full (without PR number)
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:pr-ci-full \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:pr-ci-full \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-arm64
 
       - name: Create and push latest manifests - standard (GHCR)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true'
@@ -561,15 +570,15 @@ jobs:
 
           # GHCR - latest (traditional alias pointing to standard)
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:latest \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:latest \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-arm64
 
           # GHCR - latest-standard
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:latest-standard \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-standard-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:latest-standard \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-standard-linux-arm64
 
       - name: Create and push latest manifests - full (GHCR)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true'
@@ -578,9 +587,9 @@ jobs:
 
           # GHCR - latest-full
           docker buildx imagetools create \
-            -t ghcr.io/${{ env.IMAGE_NAME }}:latest-full \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-amd64 \
-            ghcr.io/${{ env.IMAGE_NAME }}:${VERSION}-full-linux-arm64
+            -t ghcr.io/${{ needs.calculate-version.outputs.image_name }}:latest-full \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-amd64 \
+            ghcr.io/${{ needs.calculate-version.outputs.image_name }}:${VERSION}-full-linux-arm64
 
       - name: Create and push latest manifests - standard (DockerHub)
         if: github.event_name != 'pull_request' && needs.calculate-version.outputs.is_main_commit != 'true' && needs.build-standard.outputs.skipped != 'true' && needs.calculate-version.outputs.skip_dockerhub != 'true' && steps.check_dockerhub.outputs.has_credentials == 'true'

@@ -25,7 +25,7 @@ import sys
 import ipaddress
 import secrets
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlparse, urlsplit
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from ..shared_state import get_config_manager
@@ -176,6 +176,17 @@ def _validate_local_mutation_request(
 
     if has_valid_csrf and has_valid_origin:
         return None
+
+    # 端口无关的 hostname 降级匹配：Docker 端口映射下内部端口（如 48911）
+    # 与浏览器 Origin 端口（如 1081）不一致，CSRF token 有效时放宽检查
+    if has_valid_csrf and request_origin:
+        parsed_origin = urlparse(request_origin)
+        origin_host = parsed_origin.hostname
+        if origin_host:
+            for allowed in allowed_origins:
+                parsed_allowed = urlparse(allowed)
+                if parsed_allowed.hostname == origin_host:
+                    return None
 
     logger.warning(
         "Rejected local mutation request due to failed CSRF/origin validation: "

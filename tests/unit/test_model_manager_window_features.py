@@ -56,6 +56,23 @@ def test_model_manager_hide_show_cross_page_messages_are_removed():
     assert "show_main_ui" not in interpage_source
 
 
+def test_model_manager_pngtuber_import_supports_package_files_and_folders():
+    template = Path("templates/model_manager.html").read_text(encoding="utf-8")
+    source = Path("static/js/model_manager.js").read_text(encoding="utf-8")
+
+    assert 'id="pngtuber-model-upload" webkitdirectory directory multiple' in template
+    assert 'id="pngtuber-package-upload"' in template
+    assert '.pngremix,.pngRemix,.save,.veadomini,.veado' in template
+    assert "const pngtuberPackageUpload = document.getElementById('pngtuber-package-upload');" in source
+    assert "showPNGTuberUploadChoice()" in source
+    assert "let pngtuberUploadChoiceOpeningPicker = false;" in source
+    assert "if (pngtuberUploadChoiceOpeningPicker) return;" in source
+    assert "menu.parentNode.removeChild(menu);" in source
+    assert "async function uploadPNGTuberFiles(" in source
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberModelUpload);" in source
+    assert "await uploadPNGTuberFiles(e.target.files, pngtuberPackageUpload);" in source
+
+
 def test_voice_clone_api_settings_uses_shared_named_window():
     source = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
     common_source = Path("static/common_dialogs.js").read_text(encoding="utf-8")

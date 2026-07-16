@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-06-30 · 截至该日期的测试基线 432 passed / 0 error；当前 stacked PR 结果见 PR 的 Regression Report
+> 更新日期：2026-07-14 · 当前测试基线 1268 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
 
 ---
 
@@ -71,7 +71,7 @@ neko_roast/
 - **动作调用**：`POST .../hosted-ui/action/<id>`，body `{"args":{...},"kind":"panel","surface_id":"main"}`。
 - **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_roast/config/hot-update`，
   body `{"config":{"neko_roast":{...}},"mode":"temporary"}`（内存热更、不落盘）。
-- ⚠️ `dry_run` 默认开启；只有主播明确进入正式输出窗口时才关掉。`dry_run=false` 连真房间猫会**真开口**。测试房 `81004`。
+- ⚠️ 产品配置中 `dry_run` 默认关闭，连接真房间后猫会**真开口**。开发者、试播人员或压力测试脚本需要无声验链时，必须先主动切到 `dry_run=true`；测试房 `81004`。压力工具仍坚持自身默认 dry-run，不能据此推断产品开关默认值。
 
 ## 6. 核心契约：加一个事件 handler（最常见的扩展）
 
@@ -147,6 +147,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 - `developer_tools_enabled` 是开发者模式唯一总控；权限以后端检查为准，不只靠前端禁用。
 - 涉及内存 / CPU / token / 依赖 / IO / 核心逻辑复杂度的改动，先按 `development.md`「成本类改动先讨论」列 Decision Points，拍板后再实现。
 - **没有对应文档的新功能视为未完成**（见 `development.md`「文档更新要求」）。
+- 禁止堆叠式 PR；每个 PR 必须从最新目标分支独立创建并可独立 review、测试、合并和回滚。详细规则见 `development.md`「禁止堆叠式 PR」。
 
 ## 12. 文档地图
 

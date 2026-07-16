@@ -17,7 +17,7 @@ from plugin.plugins.neko_roast.core.contracts import (
     parse_room_id,
     utc_now_iso,
 )
-from plugin.plugins.neko_roast.core.contracts_public import public_text
+from plugin.plugins.neko_roast.core.contracts_public import public_dict, public_text
 from plugin.plugins.neko_roast.core.live_output_quality import needs_quality_fallback, safe_fallback_reply
 from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
 from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
@@ -83,6 +83,110 @@ def test_viewer_event_public_projection_sanitizes_trace_and_drops_raw():
     assert projected["trace_id"] == "[redacted]"
     assert projected["event_type"] == "danmaku"
     assert "token" not in projected
+
+
+def test_public_dict_recursively_redacts_sensitive_keys_and_cookie_headers():
+    projected = public_dict(
+        {
+            "nested": [
+                {
+                    "client_secret": "secret",
+                    "refresh_token": "refresh",
+                    "custom_token": "custom",
+                    "safe": "Cookie: sid=hidden; theme=dark\nstatus=ok",
+                }
+            ]
+        }
+    )
+
+    assert projected["nested"][0]["client_secret"] == "[redacted]"
+    assert projected["nested"][0]["refresh_token"] == "[redacted]"
+    assert projected["nested"][0]["custom_token"] == "[redacted]"
+    assert projected["nested"][0]["safe"] == "[redacted] status=ok"
+
+
+def test_viewer_derived_topic_content_stays_out_of_public_event_projection():
+    event = ViewerEvent(
+        uid="__neko_active__",
+        source="active_engagement",
+        raw={
+            "topic_material": {
+                "source": "recent_danmaku",
+                "privacy_classification": "viewer_derived",
+                "title": "private viewer words",
+                "key": "danmaku:private viewer words",
+                "hook": "repeat private viewer words",
+                "evidence": ["private evidence"],
+                "shape": "tiny_tease",
+            }
+        },
+    )
+
+    projected = event.to_dict()
+
+    assert projected["topic_source"] == "recent_danmaku"
+    assert projected["topic_shape"] == "tiny_tease"
+    assert projected["topic_privacy_classification"] == "viewer_derived"
+    assert "topic_title" not in projected
+    assert "topic_key" not in projected
+    assert "topic_hook" not in projected
+    assert "private viewer words" not in json.dumps(projected)
+
+
+def test_unknown_topic_privacy_fails_private_in_recursive_projection():
+    projected = public_dict(
+        {
+            "topic_material": {
+                "source": "future_source",
+                "privacy_classification": "public",
+                "title": "unknown private words",
+                "key": "future:unknown-private-words",
+                "hook": "unknown private hook",
+                "evidence": ["unknown private evidence"],
+                "shape": "light_stance",
+            }
+        }
+    )
+
+    topic = projected["topic_material"]
+    assert topic == {
+        "source": "future_source",
+        "shape": "light_stance",
+        "privacy_classification": "private",
+    }
+
+
+def test_viewer_derived_topic_key_stays_out_of_public_request_metadata():
+    event = ViewerEvent(
+        uid="__neko_active__",
+        source="active_engagement",
+        raw={
+            "topic_material": {
+                "source": "live_thread",
+                "privacy_classification": "viewer_derived",
+                "key": "thread:private-viewer-words",
+                "title": "private viewer words",
+            }
+        },
+    )
+    request = InteractionRequest(
+        event=event,
+        identity=ViewerIdentity(uid="__neko_active__", nickname="NEKO"),
+        profile=ViewerProfile(uid="__neko_active__", nickname="NEKO"),
+        prompt_text="internal prompt keeps private viewer words",
+        live_mode="solo_stream",
+        strength="normal",
+        metadata={
+            "topic_source": "live_thread",
+            "topic_key": "thread:private-viewer-words",
+        },
+    )
+
+    projected = request.to_public_dict()
+
+    assert request.prompt_text.endswith("private viewer words")
+    assert projected["metadata"] == {"topic_source": "live_thread"}
+    assert "private viewer words" not in json.dumps(projected)
 
 
 def test_roast_config_accepts_string_scalars_without_truthy_string_bool_traps():
@@ -187,6 +291,25 @@ def test_roast_config_parses_activity_level_with_standard_default():
     assert RoastConfig.from_mapping({"activity_level": "quiet"}).activity_level == "quiet"
     assert RoastConfig.from_mapping({"activity_level": "active"}).activity_level == "active"
     assert RoastConfig.from_mapping({"activity_level": "noisy"}).activity_level == "standard"
+
+
+def test_roast_config_module_controls_default_on_and_parse_explicit_false():
+    defaults = RoastConfig.from_mapping({})
+    keys = (
+        "avatar_roast_enabled",
+        "avatar_analysis_enabled",
+        "danmaku_response_enabled",
+        "live_support_events_enabled",
+        "warmup_hosting_enabled",
+        "idle_hosting_enabled",
+        "active_engagement_enabled",
+    )
+
+    assert all(getattr(defaults, key) is True for key in keys)
+
+    disabled = RoastConfig.from_mapping({key: False for key in keys})
+    assert all(getattr(disabled, key) is False for key in keys)
+    assert all(disabled.to_public_dict()[key] is False for key in keys)
 
 
 def test_roast_config_keeps_bilibili_room_id_and_room_ref_compatible():

@@ -30,6 +30,7 @@ class RuntimeConfigApiMixin:
         old_platform: str = "bilibili",
         old_room_ref: str = "",
         was_listening: bool,
+        old_provider: Any = None,
     ) -> None:
         await runtime_config.reconcile_live_listener_after_config(
             self,
@@ -38,6 +39,7 @@ class RuntimeConfigApiMixin:
             old_platform=old_platform,
             old_room_ref=old_room_ref,
             was_listening=was_listening,
+            old_provider=old_provider,
         )
 
     async def _start_live_listener(self, room_ref: Any) -> bool:

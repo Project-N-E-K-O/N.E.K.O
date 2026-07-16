@@ -199,6 +199,7 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     style_css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    knowledge_map_js = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
 
     csp_match = re.search(
         r'http-equiv="Content-Security-Policy"\s+content="([^"]+)"',
@@ -283,7 +284,8 @@ def test_study_companion_static_ui8_visual_accessibility_and_csp_contract() -> N
     assert "aria-modal', 'true'" in main_js
     assert "learning-profile-modal" in style_css
     assert "knowledge-stage-selector" in style_css
-    assert "knowledgeMapActiveStage" in main_js
+    assert "knowledgeMapActiveStage" in knowledge_map_js
+    assert '<script src="./knowledge-map.js?v=study-hotfix-20260714-review"></script>' in index_html
     assert '<span class="hero-paw" aria-hidden="true">🐾</span>' in index_html
     assert '<span class="hero-title__cat" aria-hidden="true">🐱</span>' in index_html
     assert '<span data-i18n="ui.title">Study Companion</span>' in index_html
@@ -315,6 +317,7 @@ def test_study_companion_static_ui_browser_smoke_desktop_reduced_motion() -> Non
         "style.css": ("text/css", (STATIC_DIR / "style.css").read_text(encoding="utf-8")),
         "i18n.js": ("text/javascript", (STATIC_DIR / "i18n.js").read_text(encoding="utf-8")),
         "surface-panels.js": ("text/javascript", (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")),
+        "knowledge-map.js": ("text/javascript", (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")),
         "main.js": ("text/javascript", (STATIC_DIR / "main.js").read_text(encoding="utf-8")),
         "katex.min.js": ("text/javascript", (STATIC_DIR / "katex.min.js").read_text(encoding="utf-8")),
         "katex-render.js": ("text/javascript", (STATIC_DIR / "katex-render.js").read_text(encoding="utf-8")),
@@ -598,6 +601,7 @@ def test_study_companion_neko_coach_actions_avoid_stale_ocr_and_unused_scene_cac
 def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> None:
     index_html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     main_js = (STATIC_DIR / "main.js").read_text(encoding="utf-8")
+    knowledge_map_js = (STATIC_DIR / "knowledge-map.js").read_text(encoding="utf-8")
     surface_panels_js = (STATIC_DIR / "surface-panels.js").read_text(encoding="utf-8")
 
     feature_dock = re.search(
@@ -646,7 +650,7 @@ def test_study_companion_feature_dock_and_quick_panels_open_in_page_drawer() -> 
     assert "study_knowledge_map" in main_js
     assert "loadKnowledgeMapIntoDrawer" in main_js
     assert "study-panel surface-shell" in main_js
-    assert "knowledge-node" in main_js
+    assert "knowledge-node" in knowledge_map_js
     for entry_id in (
         "study_memory_due_reviews",
         "study_memory_list_decks",

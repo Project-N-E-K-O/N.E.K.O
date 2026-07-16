@@ -13,7 +13,7 @@ class DouyinExternalBridgeTransport:
     """Thin Douyin wrapper around the generic local bridge transport."""
 
     def __init__(self, *, bridge: LiveBridgeTransport | None = None, adapter: Any = None) -> None:
-        self._bridge = bridge or LiveBridgeTransport()
+        self._bridge = bridge or LiveBridgeTransport(reconnect_attempts=3)
         self._adapter = adapter or DouyinLiveBridgeAdapter()
 
     async def start(self, request: DouyinTransportStartRequest) -> DouyinTransportState:
