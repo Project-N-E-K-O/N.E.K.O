@@ -1658,6 +1658,8 @@
         const formatSelect = document.getElementById('external-memory-format');
         if (fileInput) fileInput.disabled = true;
         if (formatSelect) formatSelect.disabled = true;
+        // 融合期间每秒刷新「已用 Ns」的计时器；try/catch 任一出口都要清（finally 兜底）。
+        let etaTimer = null;
         try {
             const targetCharacter = currentCatName;
             setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
@@ -1696,17 +1698,38 @@
                 return;
             }
             payload.acknowledge_warnings = true;
+            // 预估融合耗时：persona 融合按 entity(neko/master)分组，每组一次 LLM
+            // 往返，facts 不调 LLM。据「调用次数 × 常数 + 候选 token」保守估时（宁可
+            // 高估），并固定标注 240s 后端上限。纯 facts 导入(0 次调用)不显示预估。
+            const fusionCalls = Number(preview.persona_fusion_calls) || 0;
+            const personaTokens = Number(preview.persona_candidate_tokens) || 0;
+            const etaSeconds = fusionCalls > 0
+                ? Math.min(230, Math.max(8, Math.round(fusionCalls * 10 + personaTokens / 300)))
+                : 0;
+            const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
             // 文案，真正的中文提示只能落在这里（in-flight 标志已在预览前置好）。
-            setExternalImportStatus(
-                translate('memory.externalImportWorking', 'Importing memory...')
-                + ' '
-                + translate(
+            const renderWorkingStatus = () => {
+                const base = translate('memory.externalImportWorking', 'Importing memory...');
+                const doNotClose = translate(
                     'memory.externalImportDoNotClose',
                     'Fusing memories — do not close this window or quit the app, or the import will fail.'
-                ),
-                'working'
-            );
+                );
+                let etaText = '';
+                if (etaSeconds > 0) {
+                    const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
+                    etaText = ' ' + translate(
+                        'memory.externalImportEta',
+                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        { est: etaSeconds, elapsed }
+                    );
+                }
+                setExternalImportStatus(base + etaText + ' ' + doNotClose, 'working');
+            };
+            renderWorkingStatus();
+            if (etaSeconds > 0) {
+                etaTimer = window.setInterval(renderWorkingStatus, 1000);
+            }
             // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
             // 覆盖 persona 融合的整段耗时。
             const commitResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/commit', {
@@ -1714,6 +1737,9 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             }, 270000);
+            // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
+            // commit fetch 抛错（超时/网络）根本没走到这行的情况。
+            if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
             const result = await commitResponse.json();
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {
@@ -1762,6 +1788,7 @@
                 'error'
             );
         } finally {
+            if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
             window._memoryImportInProgress = false;
             if (fileInput) fileInput.disabled = false;
             if (formatSelect) formatSelect.disabled = false;

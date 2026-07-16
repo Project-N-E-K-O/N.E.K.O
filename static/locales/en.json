@@ -1747,6 +1747,7 @@
         "externalImportCancelled": "Import cancelled.",
         "externalImportWorking": "Importing memory…",
         "externalImportDoNotClose": "Fusing memories — do not close this window or quit the app, or the import will fail.",
+        "externalImportEta": "Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.",
         "externalImportSuccess": "Imported {{persona}} persona entries and {{facts}} facts; skipped {{duplicates}} duplicates.",
         "externalImportPartial": "The import stopped after {{persona}} persona entries were saved. Retry to finish; duplicates will be skipped.",
         "externalImportTooLargeToFuse": "This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.",

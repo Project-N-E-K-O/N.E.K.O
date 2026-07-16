@@ -31,7 +31,7 @@
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 修改原因：本分支新增外部记忆导入文案，并合并 main 的截图贴图等语言更新，
     // 递增版本让 Docker immutable 缓存重新拉取语言包。
-    const LOCALE_VERSION = '2026-07-16-external-memory-import-i18n';
+    const LOCALE_VERSION = '2026-07-17-external-import-eta-i18n';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {

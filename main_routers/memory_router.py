@@ -788,10 +788,17 @@ async def preview_external_memory_import(request: Request):
     try:
         payload = await request.json()
         character_name, analysis = await asyncio.to_thread(_prepare_external_import, payload)
+        from utils.tokenize import count_tokens
+        persona_cands = [item for item in analysis["candidates"] if item["target"] == "persona"]
         counts = {
-            "persona": sum(1 for item in analysis["candidates"] if item["target"] == "persona"),
+            "persona": len(persona_cands),
             "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
         }
+        # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
+        # (neko / master) 分组，每组一次 LLM 往返；facts 走纯写盘、不调 LLM。空
+        # persona → 0 次调用（前端回退到无预估文案）。
+        persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
+        persona_candidate_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
         return {
             "success": True,
             "character_name": character_name,
@@ -799,6 +806,8 @@ async def preview_external_memory_import(request: Request):
             "files": analysis["files"],
             "counts": counts,
             "candidate_count": len(analysis["candidates"]),
+            "persona_fusion_calls": persona_fusion_calls,
+            "persona_candidate_tokens": persona_candidate_tokens,
             "warning_count": len(analysis["warnings"]),
             "warnings": analysis["warnings"][:20],
             "candidates": analysis["candidates"][:100],
