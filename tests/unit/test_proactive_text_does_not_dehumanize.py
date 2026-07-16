@@ -247,12 +247,12 @@ def test_music_playing_hint_with_braced_track_name_survives_outer_format(lang: s
 # ─────────────────────────────────────────────────────────────────────────────
 
 from config.prompts.prompts_proactive import (  # noqa: E402
-    CAT_GREETING_ENVIRONMENT_END_MARKER,
     _CAT_GREETING_EPISODE_PROMPTS,
     _CAT_GREETING_EPISODE_RETURN_TONES,
     _CAT_GREETING_EPISODE_SCENES,
     _CAT_GREETING_SHORT_EPISODE_PROMPTS,
     _CAT_GREETING_SHORT_STARTED_PROMPTS,
+    _CAT_GREETING_TABLES,
     get_cat_greeting_episode_prompt,
     get_cat_greeting_episode_scene,
     get_cat_greeting_prompt,
@@ -455,14 +455,30 @@ def test_cat_greeting_episode_prompt_does_not_keep_a_conflicting_sleep_fact() ->
 
 
 _CAT_SHORT_RETURN_INPUT_LOCALES = ('zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt')
+_CAT_GREETING_END_MARKER = '======以上为环境提示======'
 
 
-def test_cat_greeting_environment_end_marker_is_stable_chinese_contract() -> None:
-    assert CAT_GREETING_ENVIRONMENT_END_MARKER == '======以上为环境提示======'
+def test_cat_greeting_source_templates_embed_chinese_environment_end_marker() -> None:
+    tables = (
+        *_CAT_GREETING_TABLES.values(),
+        _CAT_GREETING_EPISODE_PROMPTS,
+        _CAT_GREETING_SHORT_EPISODE_PROMPTS,
+        _CAT_GREETING_SHORT_STARTED_PROMPTS,
+    )
+    for table in tables:
+        assert set(table) == set(_CAT_EPISODE_LOCALES)
+        for prompt in table.values():
+            marker_lines = [
+                line for line in prompt.splitlines() if line.startswith('======')
+            ]
+            assert len(marker_lines) == 2
+            assert marker_lines[-1] == _CAT_GREETING_END_MARKER
+            assert prompt.endswith(_CAT_GREETING_END_MARKER)
+            assert prompt.count(_CAT_GREETING_END_MARKER) == 1
 
 
 @pytest.mark.parametrize('lang', _CAT_SHORT_RETURN_INPUT_LOCALES)
-def test_cat_greeting_all_prompt_paths_reuse_chinese_environment_end_marker(lang) -> None:
+def test_cat_greeting_all_prompt_paths_preserve_embedded_environment_end_marker(lang) -> None:
     prompts = (
         get_cat_greeting_prompt('awake', 300, lang),
         get_cat_greeting_episode_prompt('nap', 300, lang),
@@ -475,9 +491,9 @@ def test_cat_greeting_all_prompt_paths_reuse_chinese_environment_end_marker(lang
         assert prompt is not None
         marker_lines = [line for line in prompt.splitlines() if line.startswith('======')]
         assert len(marker_lines) == 2
-        assert marker_lines[-1] == CAT_GREETING_ENVIRONMENT_END_MARKER
-        assert prompt.endswith(CAT_GREETING_ENVIRONMENT_END_MARKER)
-        assert prompt.count(CAT_GREETING_ENVIRONMENT_END_MARKER) == 1
+        assert marker_lines[-1] == _CAT_GREETING_END_MARKER
+        assert prompt.endswith(_CAT_GREETING_END_MARKER)
+        assert prompt.count(_CAT_GREETING_END_MARKER) == 1
         assert '猫形态返回系统提示' not in prompt
 
 

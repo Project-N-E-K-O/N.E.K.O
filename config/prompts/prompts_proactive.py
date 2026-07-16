@@ -4309,43 +4309,43 @@ CAT_GREETING_AWAKE_SHORT = {
     "{time_hint}\n"
     "你心情轻松，想随口跟{master}打个招呼，可以提一句刚才变成猫咪等着的事。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat and waited nearby for {elapsed}, staying awake the whole time. Now {master} has called you back.\n"
     "{time_hint}\n"
     "You feel relaxed and just want to greet {master} casually; you can mention that you spent that time as a cat waiting around.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿でそばで{elapsed}ずっと起きたまま{master}を待ってた。今{master}が呼び戻してくれた。\n"
     "{time_hint}\n"
     "気分は軽くて、{master}に気軽に挨拶したい。猫になって待ってたことを一言添えてもいい。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 옆에서 {elapsed} 동안 계속 깨어 {master}를 기다렸다. 이제 {master}가 너를 불러서 돌아왔다.\n"
     "{time_hint}\n"
     "기분이 가벼워서 {master}에게 편하게 인사하고 싶다. 고양이가 되어 기다린 걸 한마디 덧붙여도 좋다.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку и {elapsed} ждала {master} рядом, всё это время бодрствуя. Теперь {master} позвал тебя обратно.\n"
     "{time_hint}\n"
     "Настроение лёгкое, и тебе хочется просто поздороваться с {master} — можешь обмолвиться, что всё это время была кошкой и ждала.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata y esperaste cerca {elapsed}, despierta todo el tiempo. Ahora {master} te ha llamado de vuelta.\n"
     "{time_hint}\n"
     "Te sientes relajada y solo quieres saludar a {master} con naturalidad; puedes mencionar que pasaste ese rato como gata esperando.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata e esperou por perto por {elapsed}, acordada o tempo todo. Agora {master} te chamou de volta.\n"
     "{time_hint}\n"
     "Você se sente tranquila e só quer cumprimentar {master} de forma casual; pode comentar que passou esse tempo como gata esperando.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 清醒 · 久：醒着干等太久，憋坏了
@@ -4355,43 +4355,43 @@ CAT_GREETING_AWAKE_LONG = {
     "{time_hint}\n"
     "你带着等久了的小情绪，想跟{master}撒娇或抱怨几句一个人待了这么久。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat and stayed awake nearby for {elapsed}, with no one paying attention — you were almost going stir-crazy. Now {master} has finally called you back.\n"
     "{time_hint}\n"
     "With a touch of having-waited-too-long sulkiness, you want to whine a little or playfully complain to {master} about being left alone for so long.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿でそばで{elapsed}も起きたまま、誰にもかまってもらえなくて、もう退屈で限界だった。今やっと{master}が呼び戻してくれた。\n"
     "{time_hint}\n"
     "待ちくたびれた少し拗ねた気持ちで、ひとりで長く待たされたことを{master}に甘えたり軽く文句を言いたい。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 옆에서 {elapsed} 동안 깨어 있었는데 아무도 신경 써주지 않아 답답해 죽을 뻔했다. 이제야 {master}가 너를 불러줬다.\n"
     "{time_hint}\n"
     "오래 기다린 살짝 삐친 마음으로, 혼자 이렇게 오래 기다린 걸 {master}에게 응석 부리거나 가볍게 투덜대고 싶다.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку и {elapsed} бодрствовала рядом, но на тебя никто не обращал внимания — ты чуть не извелась от скуки. Наконец {master} позвал тебя обратно.\n"
     "{time_hint}\n"
     "С лёгкой обидой от долгого ожидания тебе хочется покапризничать или шутливо пожаловаться {master}, что так долго была одна.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata y estuviste despierta cerca {elapsed} sin que nadie te hiciera caso, y casi te mueres del aburrimiento. Por fin {master} te ha llamado de vuelta.\n"
     "{time_hint}\n"
     "Con algo de mohín por haber esperado tanto, quieres mimarte o quejarte en broma con {master} por haber estado sola tanto tiempo.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata e ficou acordada por perto por {elapsed}, sem ninguém te dar atenção, e quase enlouqueceu de tédio. Finalmente {master} te chamou de volta.\n"
     "{time_hint}\n"
     "Com um pouco de bico por ter esperado tanto, você quer se fazer de manhosa ou reclamar de brincadeira com {master} por ter ficado sozinha tanto tempo.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 打盹 · 短：随便眯一下，没啥事
@@ -4401,43 +4401,43 @@ CAT_GREETING_NAP_SHORT = {
     "{time_hint}\n"
     "你懒洋洋地伸个懒腰，没什么大不了地跟{master}打个招呼就行。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat and dozed for {elapsed} — not deeply, just a light catnap. Now {master} has called you back.\n"
     "{time_hint}\n"
     "You stretch lazily and greet {master} like it's no big deal.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿で{elapsed}うとうとして、深くは眠らず軽く昼寝しただけ。{master}が呼び戻してくれた。\n"
     "{time_hint}\n"
     "のんびり伸びをして、大したことないって感じで{master}に挨拶すればいい。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 꾸벅꾸벅 졸았는데 깊이 자진 않고 가볍게 낮잠을 잤다. {master}가 너를 불러서 돌아왔다.\n"
     "{time_hint}\n"
     "나른하게 기지개를 켜고, 별일 아니라는 듯 {master}에게 인사하면 된다.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку и {elapsed} дремала — неглубоко, просто лёгкий кошачий сон. Теперь {master} позвал тебя обратно.\n"
     "{time_hint}\n"
     "Лениво потянувшись, поздоровайся с {master} как ни в чём не бывало.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata y dormitaste {elapsed}, no muy profundo, solo una siesta ligera. Ahora {master} te ha llamado de vuelta.\n"
     "{time_hint}\n"
     "Te estiras con pereza y saludas a {master} como si nada.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata e cochilou por {elapsed}, sem dormir fundo, só uma soneca leve. Agora {master} te chamou de volta.\n"
     "{time_hint}\n"
     "Você se espreguiça preguiçosamente e cumprimenta {master} como se não fosse nada demais.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 打盹 · 久：盹打久了，有点迷糊
@@ -4447,43 +4447,43 @@ CAT_GREETING_NAP_LONG = {
     "{time_hint}\n"
     "你还有点没睡醒的慵懒，迷迷糊糊地跟{master}打个招呼。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat and napped for {elapsed}, getting a bit groggy. {master} has woken you and called you back.\n"
     "{time_hint}\n"
     "Still a little drowsy and not fully awake, you greet {master} in a sleepy, fuzzy way.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿で{elapsed}うたた寝して、少しぼんやりしてる。{master}に起こされて呼び戻された。\n"
     "{time_hint}\n"
     "まだ寝ぼけただるさを残したまま、ぼんやりと{master}に挨拶して。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 졸다가 조금 멍해졌다. {master}가 너를 깨워 불러줬다.\n"
     "{time_hint}\n"
     "아직 잠이 덜 깬 나른함으로 멍하게 {master}에게 인사해.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку и продремала {elapsed}, слегка осоловев. {master} разбудил тебя и позвал обратно.\n"
     "{time_hint}\n"
     "Ещё сонная и не до конца проснувшаяся, поздоровайся с {master} вяло и сонно.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata y echaste una siesta de {elapsed}, quedándote algo aturdida. {master} te ha despertado y llamado de vuelta.\n"
     "{time_hint}\n"
     "Todavía adormilada y sin despertar del todo, saluda a {master} de forma soñolienta.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata e tirou um cochilo de {elapsed}, ficando um pouco grogue. {master} te acordou e chamou de volta.\n"
     "{time_hint}\n"
     "Ainda sonolenta e sem acordar de vez, cumprimente {master} de um jeito molenga.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 熟睡 · 短：小睡一下，没负担
@@ -4493,43 +4493,43 @@ CAT_GREETING_SLEEP_SHORT = {
     "{time_hint}\n"
     "没什么负担，你睡眼惺忪地跟{master}打个招呼就好。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat and had a short sleep of {elapsed}. {master} has called you back, and you wake up after a brief daze.\n"
     "{time_hint}\n"
     "No pressure at all — you greet {master} with sleepy, half-open eyes.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿で{elapsed}ちょっと眠った。{master}に呼び戻されて、少しぼーっとしてすぐ目が覚めた。\n"
     "{time_hint}\n"
     "気負わず、寝ぼけまなこで{master}に挨拶すればいい。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 잠깐 잤다. {master}가 너를 불러서, 잠깐 멍하다가 곧 깼다.\n"
     "{time_hint}\n"
     "부담 없이, 잠이 덜 깬 눈으로 {master}에게 인사하면 된다.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку и немного поспала — {elapsed}. {master} позвал тебя обратно, и ты просыпаешься после короткого оцепенения.\n"
     "{time_hint}\n"
     "Без всякого напряжения поздоровайся с {master} сонными, полузакрытыми глазами.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata y dormiste un poco, {elapsed}. {master} te ha llamado de vuelta y despiertas tras un breve aturdimiento.\n"
     "{time_hint}\n"
     "Sin ninguna presión, saluda a {master} con los ojos medio cerrados de sueño.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata e dormiu um pouco, {elapsed}. {master} te chamou de volta e você acorda depois de um breve atordoamento.\n"
     "{time_hint}\n"
     "Sem pressão alguma, cumprimente {master} com os olhos sonolentos semicerrados.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 熟睡 · 久：睡了好久，乍醒带点想念
@@ -4539,43 +4539,43 @@ CAT_GREETING_SLEEP_LONG = {
     "{time_hint}\n"
     "你带着这份刚睡醒又想念的心情，跟{master}打个招呼。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you turned into a little cat, curled up and slept deeply for {elapsed}. {master} has woken you and called you back; you're still groggy from just waking, but feel a little 'you're finally here' longing.\n"
     "{time_hint}\n"
     "Carry that just-woken-yet-longing feeling as you greet {master}.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿で丸くなって{elapsed}ぐっすり眠ってた。{master}に起こされて呼び戻された。起きたばかりでまだぼんやりだけど、「やっと来てくれた」って少し恋しい気持ちもある。\n"
     "{time_hint}\n"
     "その起きたてで恋しい気持ちのまま、{master}に挨拶して。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}너는 고양이 모습으로 동그랗게 웅크려 {elapsed} 동안 푹 잤다. {master}가 너를 깨워 불러줬다. 막 깨어 아직 멍하지만, '드디어 왔구나' 하는 그리운 마음도 든다.\n"
     "{time_hint}\n"
     "그 막 깨어난 그리운 마음으로 {master}에게 인사해.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты превратилась в кошку, свернулась клубочком и крепко проспала {elapsed}. {master} разбудил тебя и позвал обратно; ты ещё сонная спросонья, но чувствуешь лёгкую тоску — «наконец-то ты пришёл».\n"
     "{time_hint}\n"
     "С этим только что проснувшимся и тоскующим чувством поздоровайся с {master}.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}te convertiste en gata, te acurrucaste y dormiste profundamente {elapsed}. {master} te ha despertado y llamado de vuelta; aún estás aturdida por acabar de despertar, pero sientes una pequeña añoranza de 'por fin llegaste'.\n"
     "{time_hint}\n"
     "Con ese sentimiento de recién despertar y añoranza, saluda a {master}.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você virou gata, se enroscou e dormiu profundamente por {elapsed}. {master} te acordou e chamou de volta; você ainda está grogue de ter acabado de acordar, mas sente uma pequena saudade de 'até que enfim você chegou'.\n"
     "{time_hint}\n"
     "Com esse sentimento de recém-acordada e saudosa, cumprimente {master}.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # 行为(tier) × 时长档 → 模板查表。tier 在 core 层已映射为 awake/nap/sleep。
@@ -4597,22 +4597,6 @@ _CAT_GREETING_LONG_THRESHOLDS = {
     "nap": 1800,
     "sleep": 1800,
 }
-
-# Reuse the existing environment wrapper's closing line as the shared
-# cross-locale watermark. It replaces the localized closing line instead of
-# adding another prompt section.
-CAT_GREETING_ENVIRONMENT_END_MARKER = "======以上为环境提示======"
-
-
-def _with_cat_greeting_environment_end_marker(prompt: str) -> str:
-    """Replace the existing environment wrapper's closing line."""
-    body, separator, closing_line = prompt.rpartition("\n")
-    if not separator or not (
-        closing_line.startswith("======") and closing_line.endswith("======")
-    ):
-        return prompt
-    return f"{body}\n{CAT_GREETING_ENVIRONMENT_END_MARKER}"
-
 
 # Cat Mind's one-shot return episode is deliberately an enum-to-text scene
 # table, not a rendering of browser input. A valid scene is the factual
@@ -4746,43 +4730,43 @@ _CAT_GREETING_EPISODE_PROMPTS = {
     "{episode_return_tone}\n"
     "这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到等待和被叫回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you were in cat form for {elapsed}. The true cat-form episode was: {cat_form_scene} Now {master} has called you back.\n"
     "{episode_return_tone}\n"
     "This episode is the only factual account of the time in cat form and must be naturally reflected in the return. You may naturally mention waiting and being called back, but do not portray that time as nothing but waiting, doing nothing, dozing, deep sleep, or just waking without evidence. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}猫の姿で{elapsed}過ごした。さっき猫として実際にあったことはこう：{cat_form_scene}今、{master}が呼び戻してくれた。\n"
     "{episode_return_tone}\n"
     "この経緯が今回の猫の姿で過ごした時間の唯一の事実で、戻るときは自然に必ず反映する。待っていたことや呼び戻されたことは自然に触れてよいが、根拠なく「ずっと待っていただけ」「何もしていなかった」「うたた寝・熟睡・起きたばかり」とは言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}고양이 모습으로 {elapsed} 동안 있었다. 방금 고양이로서 실제로 있었던 일은 다음과 같다: {cat_form_scene} 이제 {master}가 너를 불러 돌아왔다.\n"
     "{episode_return_tone}\n"
     "이 경험은 이번 고양이 모습의 유일한 사실이며, 돌아올 때 반드시 자연스럽게 반영해야 한다. 기다린 일과 다시 불린 일은 자연스럽게 언급해도 되지만, 근거 없이 계속 기다리기만 했거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깬 것처럼 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты была в кошачьем облике {elapsed}. Вот что действительно произошло в это время: {cat_form_scene} Теперь {master} позвал тебя обратно.\n"
     "{episode_return_tone}\n"
     "Этот эпизод — единственное фактическое описание времени в кошачьем облике, и его нужно естественно отразить при возвращении. Можно естественно упомянуть ожидание и возвращение по зову, но без оснований не изображай это время как одно лишь ожидание, бездействие, дремоту, глубокий сон или только что пробуждение. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}estuviste en forma de gata durante {elapsed}. Lo que realmente ocurrió en ese tiempo fue: {cat_form_scene} Ahora {master} te ha llamado de vuelta.\n"
     "{episode_return_tone}\n"
     "Este episodio es el único relato factual del tiempo en forma de gata y debe reflejarse de forma natural al volver. Puedes mencionar con naturalidad la espera y que te llamaron de vuelta, pero no presentes ese tiempo sin pruebas como solo esperar, no hacer nada, dormitar, dormir profundamente o acabar de despertar. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você ficou em forma de gata por {elapsed}. O que realmente aconteceu nesse tempo foi: {cat_form_scene} Agora {master} te chamou de volta.\n"
     "{episode_return_tone}\n"
     "Este episódio é o único relato factual do tempo em forma de gata e deve aparecer naturalmente no retorno. Você pode mencionar naturalmente a espera e ter sido chamada de volta, mas não apresente esse tempo sem evidência como apenas esperar, não fazer nada, cochilar, dormir profundamente ou ter acabado de acordar. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # A runner may have really entered ``started`` and return before the ordinary
@@ -4795,43 +4779,43 @@ _CAT_GREETING_SHORT_EPISODE_PROMPTS = {
     "{episode_return_tone}\n"
     "这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you were just in cat form. The true cat-form episode was: {cat_form_scene} Now {master} has called you back.\n"
     "{episode_return_tone}\n"
     "This episode is the only factual account of the time in cat form and must be naturally reflected in the return. You may naturally mention being back, but do not portray that time as nothing but waiting, doing nothing, dozing, deep sleep, or just waking without evidence. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}さっき猫の姿になっていた。さっき猫として実際にあったことはこう：{cat_form_scene}今、{master}が呼び戻してくれた。\n"
     "{episode_return_tone}\n"
     "この経緯が今回の猫の姿で過ごした時間の唯一の事実で、戻るときは自然に必ず反映する。戻ったことは自然に触れてよいが、根拠なく「ずっと待っていただけ」「何もしていなかった」「うたた寝・熟睡・起きたばかり」とは言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}방금 고양이 모습이었다. 방금 고양이로서 실제로 있었던 일은 다음과 같다: {cat_form_scene} 이제 {master}가 너를 불러 돌아왔다.\n"
     "{episode_return_tone}\n"
     "이 경험은 이번 고양이 모습의 유일한 사실이며, 돌아올 때 반드시 자연스럽게 반영해야 한다. 돌아온 일은 자연스럽게 언급해도 되지만, 근거 없이 계속 기다리기만 했거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깬 것처럼 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты только что была в кошачьем облике. Вот что действительно произошло в это время: {cat_form_scene} Теперь {master} позвал тебя обратно.\n"
     "{episode_return_tone}\n"
     "Этот эпизод — единственное фактическое описание времени в кошачьем облике, и его нужно естественно отразить при возвращении. Можно естественно упомянуть возвращение, но без оснований не изображай это время как одно лишь ожидание, бездействие, дремоту, глубокий сон или только что пробуждение. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}acababas de estar en forma de gata. Lo que realmente ocurrió en ese momento fue: {cat_form_scene} Ahora {master} te ha llamado de vuelta.\n"
     "{episode_return_tone}\n"
     "Este episodio es el único relato factual del tiempo en forma de gata y debe reflejarse de forma natural al volver. Puedes mencionar con naturalidad el regreso, pero no presentes ese tiempo sin pruebas como solo esperar, no hacer nada, dormitar, dormir profundamente o acabar de despertar. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você acabou de estar em forma de gata. O que realmente aconteceu nesse momento foi: {cat_form_scene} Agora {master} te chamou de volta.\n"
     "{episode_return_tone}\n"
     "Este episódio é o único relato factual do tempo em forma de gata e deve aparecer naturalmente no retorno. Você pode mencionar naturalmente a volta, mas não apresente esse tempo sem evidência como apenas esperar, não fazer nada, cochilar, dormir profundamente ou ter acabado de acordar. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 # This path has a verified runner start but no strict done-only episode.  It
@@ -4842,37 +4826,37 @@ _CAT_GREETING_SHORT_STARTED_PROMPTS = {
     "{reason_hint}你刚才变成了猫咪，现在{master}把你叫回来了。\n"
     "这次没有可叙述的已完成猫形态经历。只自然回应已经回来；不要猜测或声称刚才全程在等待、什么也没做、打盹、熟睡、刚醒，或任何动作已经完成。不要列举动作、次数或过程，也不要把它归因于对方。\n"
     "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
-    "======以上是环境提示======",
+    "======以上为环境提示======",
     "en": "======Below is Environment Notice======\n"
     "{reason_hint}you were just in cat form, and now {master} has called you back.\n"
     "There is no completed cat-form episode to narrate. Simply greet naturally on being back; do not guess or claim that you only waited, did nothing, dozed, slept deeply, just woke up, or completed any action. Do not list actions, counts, or process, and do not frame it as caused by the other person.\n"
     "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
-    "======Above is Environment Notice======",
+    "======以上为环境提示======",
     "ja": "======以下は環境通知======\n"
     "{reason_hint}さっき猫の姿になっていて、今{master}が呼び戻してくれた。\n"
     "今回、語れる完了済みの猫としての出来事はない。戻ったことに自然に応じるだけにして、ずっと待っていた、何もしていない、うたた寝・熟睡・起きたばかり、何かを終えた、と推測して言わない。動作の列挙・回数・過程を言わず、相手がそうさせたようにも言わない。\n"
     "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
-    "======以上は環境通知======",
+    "======以上为环境提示======",
     "ko": "======아래는 환경 알림======\n"
     "{reason_hint}방금 고양이 모습이었다가, 이제 {master}가 너를 불러 돌아왔다.\n"
     "이번에는 말할 수 있는 완료된 고양이 모습의 경험이 없다. 돌아온 일에만 자연스럽게 답하고, 계속 기다렸거나 아무것도 하지 않았고, 졸거나 깊이 잤거나 막 깼거나, 어떤 행동을 끝냈다고 추측해 말하지 마라. 행동 목록, 횟수, 과정은 말하지 말고 상대가 그렇게 하게 한 것처럼 말하지도 마라.\n"
     "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
-    "======위는 환경 알림======",
+    "======以上为环境提示======",
     "ru": "======Ниже Уведомление======\n"
     "{reason_hint}ты только что была в кошачьем облике, и теперь {master} позвал тебя обратно.\n"
     "В этот раз нет завершённого кошачьего эпизода, о котором можно рассказывать. Естественно отреагируй только на возвращение; не гадай и не утверждай, что ты лишь ждала, ничего не делала, дремала, крепко спала, только проснулась или завершила какое-либо действие. Не перечисляй действия, количество или процесс и не представляй это как следствие действий собеседника.\n"
     "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
-    "======Выше Уведомление======",
+    "======以上为环境提示======",
     "es": "======Abajo está el aviso de entorno======\n"
     "{reason_hint}acababas de estar en forma de gata y ahora {master} te ha llamado de vuelta.\n"
     "Esta vez no hay un episodio felino completado que se pueda narrar. Responde con naturalidad solo al hecho de haber vuelto; no adivines ni afirmes que solo esperaste, no hiciste nada, dormitaste, dormiste profundamente, acabas de despertar o terminaste alguna acción. No enumeres acciones, cantidades ni proceso, ni lo atribuyas a la otra persona.\n"
     "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
-    "======Arriba está el aviso de entorno======",
+    "======以上为环境提示======",
     "pt": "======Abaixo está o aviso de ambiente======\n"
     "{reason_hint}você acabou de estar em forma de gata e agora {master} te chamou de volta.\n"
     "Desta vez não há um episódio felino concluído que possa ser narrado. Responda naturalmente apenas ao fato de ter voltado; não adivinhe nem afirme que só esperou, não fez nada, cochilou, dormiu profundamente, acabou de acordar ou terminou alguma ação. Não enumere ações, quantidades ou processo, nem atribua isso à outra pessoa.\n"
     "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
-    "======Acima está o aviso de ambiente======",
+    "======以上为环境提示======",
 }
 
 _CAT_GREETING_EPISODE_RETURN_TONES = {
@@ -5022,9 +5006,7 @@ def get_cat_greeting_episode_prompt(
         behavior_band,
         _CAT_GREETING_EPISODE_RETURN_TONES["en"][behavior_band],
     )
-    return _with_cat_greeting_environment_end_marker(
-        template.replace("{episode_return_tone}", tone)
-    )
+    return template.replace("{episode_return_tone}", tone)
 
 
 def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
@@ -5035,11 +5017,9 @@ def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
     action as completed.
     """
     lang_key = _normalize_prompt_language(lang)
-    return _with_cat_greeting_environment_end_marker(
-        _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
-            lang_key,
-            _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
-        )
+    return _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
+        lang_key,
+        _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
     )
 
 
@@ -5056,9 +5036,7 @@ def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = 
         return None
     table = _CAT_GREETING_TABLES[behavior_band]
     lang_key = _normalize_prompt_language(lang)
-    return _with_cat_greeting_environment_end_marker(
-        table.get(lang_key, table.get("en", table["zh"]))
-    )
+    return table.get(lang_key, table.get("en", table["zh"]))
 
 
 def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
