@@ -51,12 +51,15 @@ MINECRAFT_TASK_SCHEMA: Dict[str, Any] = {
         "task": {
             "type": "string",
             "description": (
-                "A plain-language Minecraft instruction copied only from "
-                "master's most recent message. It must be a new explicit game "
-                "instruction that has not already been dispatched. Copy the exact "
-                "original wording without adding details. Never reuse an older "
-                "instruction or add in-game coordinates unless master explicitly "
-                "asked for coordinates in that most recent message."
+                "A plain-language Minecraft instruction. For a master-directed "
+                "action, copy only master's most recent message: it must be a new "
+                "explicit game instruction that has not already been dispatched, "
+                "using the exact original wording without added details. During "
+                "keep-going, a genuinely new autonomous action may instead be "
+                "formed from the current game state, but never by recovering or "
+                "replaying an older instruction or tool call. Never add in-game "
+                "coordinates unless master explicitly asked for coordinates in "
+                "the most recent message."
             ),
         },
         "overwrite": {
@@ -82,17 +85,18 @@ MINECRAFT_TASK_DESCRIPTION = (
     "actually-observed cues and screenshots.\n\n"
     "CRITICAL — this tool dispatches actions; it is not an awareness or heartbeat "
     "tool. A screenshot, log, state update, idle reminder, or task-completion cue "
-    "is context only and is NEVER by itself a reason to call this tool. Before "
+    "is context only and is NEVER by itself a task to dispatch. Before "
     "dispatching, account for the current task and recent feedback. If an action "
     "may still be running, do not send another one.\n\n"
-    "LATEST MASTER MESSAGE ONLY — call this tool only when master's most recent "
-    "message itself contains a new explicit in-game instruction that has not "
-    "already been dispatched. The task must not come from an earlier master "
-    "message, an earlier tool call, task history, logs, screenshots, telemetry, "
-    "a completion cue, or a keep-going/state reminder. NEVER call back, recover, "
-    "or re-dispatch a command that was already sent, even if it later failed or "
-    "the model is reminded of it. If the most recent master message contains no "
-    "new un-dispatched command, do not call this tool.\n\n"
+    "TASK SOURCE AUTHORITY — for a master-directed action, use only master's most "
+    "recent message, and only when it contains a new explicit in-game instruction "
+    "that has not already been dispatched. The task must not come from an earlier "
+    "master message, an earlier tool call, task history, logs, screenshots, "
+    "telemetry, or a completion cue. During keep-going, you may instead form one "
+    "genuinely new autonomous action from the current game state when there is an "
+    "obvious next step. NEVER call back, recover, retry, or re-dispatch an older "
+    "master instruction or tool call, even if it failed or is mentioned by a "
+    "state reminder.\n\n"
     "MASTER INSTRUCTION FIDELITY — when master (the user) gives an explicit "
     "instruction in that most recent message, relay the exact original wording "
     "in ``task``. Do not translate, "
@@ -109,19 +113,22 @@ MINECRAFT_TASK_DESCRIPTION = (
     "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
     "picked itself. NEVER copy any of that into a task — echoing a log line back "
     "as a task creates a dispatch loop. A task must come from master's most recent "
-    "spoken request, written as a plain-language goal, never "
+    "spoken request or a genuinely new autonomous choice based on current game "
+    "state, written as a plain-language goal, never "
     "the game's raw command syntax or a coordinate you only saw in a log. If the "
     "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
-    "Use this tool only when master's most recent message asks the character to "
-    "do something new in the game and that request has not already been dispatched. "
-    "Do NOT use it merely because the character is idle, a task "
-    "finished, or new awareness context arrived. Do NOT use it for chat, status "
+    "Use this tool when master's most recent message asks the character to do "
+    "something new and that request has not already been dispatched, or when a "
+    "keep-going turn identifies a genuinely obvious new action from current game "
+    "state. Do NOT dispatch merely because a task finished or new awareness "
+    "context arrived. Do NOT use it for chat, status "
     "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
     "Parameters:\n"
-    "  task (string, required): the exact original new instruction from master's "
-    "most recent message. Never source it from an older message or repeat an "
-    "already-dispatched command. Never add coordinates unless master explicitly "
-    "requested them in that most recent message.\n"
+    "  task (string, required): master's exact original new instruction when "
+    "master-directed; otherwise one genuinely new autonomous action based on "
+    "current game state. Never source it from an older message or tool call, and "
+    "never repeat an already-dispatched command. Never add coordinates unless "
+    "master explicitly requested them in the most recent message.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
     "previous task keeps running. Set true when:\n"
@@ -447,8 +454,8 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             # finished, so the dialog LLM should immediately absorb and, when
             # useful, narrate the outcome to {MASTER_NAME}. The prompt frames
             # this as awareness rather than a command to dispatch another task;
-            # only a new, un-dispatched instruction in master's most recent
-            # message may justify more action. Importance scale is HIGHER=more
+            # the later keep-going turn remains responsible for any genuinely
+            # new autonomous next action. Importance scale is HIGHER=more
             # important (repo-wide):
             # alert=9 (most important) > completion=7 > in_progress=4 >
             # keep-going=3.

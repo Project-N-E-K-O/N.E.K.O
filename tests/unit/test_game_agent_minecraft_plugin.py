@@ -1287,7 +1287,7 @@ async def test_reload_config_live_no_restart_for_pure_data_keys():
 
 
 def test_task_tool_description_preserves_master_words_and_coordinates():
-    """The mounted tool must preserve explicit master instructions verbatim."""
+    """The tool preserves master words without disabling autonomous idle play."""
     from plugin.plugins.game_agent_minecraft import (
         MINECRAFT_TASK_DESCRIPTION,
         MINECRAFT_TASK_SCHEMA,
@@ -1304,9 +1304,12 @@ def test_task_tool_description_preserves_master_words_and_coordinates():
     assert "unless master explicitly asked" in description
     assert "master's most recent message" in description
     assert "must not come from an earlier master message" in description
-    assert "NEVER call back, recover, or re-dispatch" in description
+    assert "NEVER call back, recover, retry, or re-dispatch" in description
+    assert "genuinely new autonomous action from the current game state" in description
     assert "has not already been dispatched" in task_schema_description
     assert "exact original wording" in task_schema_description
+    assert "genuinely new autonomous action" in task_schema_description
+    assert "current game state" in task_schema_description
     assert "unless master explicitly asked for coordinates" in task_schema_description
     assert "English with specific targets" not in description
     assert "exact coordinates, specific block" not in description
