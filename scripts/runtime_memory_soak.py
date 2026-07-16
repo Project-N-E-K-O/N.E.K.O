@@ -14,7 +14,6 @@ import argparse
 import asyncio
 import contextlib
 import gc
-import os
 import statistics
 import time
 import tracemalloc
@@ -25,6 +24,7 @@ from scripts.runtime_memory_baseline import (
     MIB,
     _in_process_checkpoint,
     _metadata,
+    _register_embedding_service,
     _run_synthetic_chat,
     _write_json,
 )
@@ -51,12 +51,14 @@ def _checkpoint(
     label: str,
     *,
     collect: bool = False,
+    root_pids: list[int] | None = None,
 ) -> dict[str, Any]:
     checkpoint = _in_process_checkpoint(
         label,
         seconds=args.window,
         interval=args.interval,
         collect=collect,
+        root_pids=root_pids,
     )
     if not args.retain_process_rows:
         checkpoint.pop("last_processes", None)
@@ -93,6 +95,8 @@ async def _audio_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
     native_denoiser = processor._denoiser is not None
     output_bytes = 0
     try:
+        if not native_denoiser:
+            raise FeatureUnavailable("native_denoiser_unavailable")
         for _ in range(2):
             output_bytes += len(processor.process_chunk(synthetic_pcm))
             processor.set_enabled(False)
@@ -133,6 +137,7 @@ async def _embedding_cycle(args: argparse.Namespace, cycle: int) -> dict[str, An
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
     )
+    _register_embedding_service(service)
     vector: list[float] | None = None
     try:
         if not await service.request_load():
@@ -236,6 +241,8 @@ async def _plugin_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
         )
         result = await host.trigger("late_entry", {}, timeout=args.plugin_timeout)
         triggered = isinstance(result, dict) and result.get("ok") is True
+        if not triggered:
+            raise RuntimeError("synthetic_plugin_trigger_failed")
         active = _checkpoint(args, f"cycle_{cycle:04d}_plugin_reload_active")
     finally:
         with contextlib.suppress(Exception):
@@ -254,10 +261,18 @@ async def _plugin_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
 async def _chat_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
     if args.chat_port <= 0:
         raise FeatureUnavailable("verified_isolated_chat_endpoint_not_configured")
+    if args.chat_pid <= 0:
+        raise FeatureUnavailable("verified_isolated_chat_backend_pid_not_configured")
     checkpoints: list[dict[str, Any]] = []
 
     def _record_live_session() -> None:
-        checkpoints.append(_checkpoint(args, f"cycle_{cycle:04d}_chat_active"))
+        checkpoints.append(
+            _checkpoint(
+                args,
+                f"cycle_{cycle:04d}_chat_active",
+                root_pids=[args.chat_pid],
+            )
+        )
 
     result = await _run_synthetic_chat(
         port=args.chat_port,
@@ -266,8 +281,15 @@ async def _chat_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
         timeout=args.chat_timeout,
         after_turn=_record_live_session,
     )
+    if args.cooldown:
+        await asyncio.sleep(args.cooldown)
     checkpoints.append(
-        await _released_checkpoint(args, f"cycle_{cycle:04d}_chat_released")
+        _checkpoint(
+            args,
+            f"cycle_{cycle:04d}_chat_released",
+            collect=True,
+            root_pids=[args.chat_pid],
+        )
     )
     return {
         "status": "completed",
@@ -593,6 +615,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--plugin-timeout", type=float, default=5.0)
     parser.add_argument("--chat-port", type=int, default=0)
+    parser.add_argument(
+        "--chat-pid",
+        type=int,
+        default=0,
+        help="PID of the verified isolated chat backend sampled with its descendants",
+    )
     parser.add_argument("--chat-character", default="")
     parser.add_argument("--chat-timeout", type=float, default=90.0)
     parser.add_argument(

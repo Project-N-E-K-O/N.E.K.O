@@ -4,15 +4,15 @@
 
 A two-hour, 204-cycle lifecycle soak on commit
 `715cab7fa8143aaf6cce92b8645e8cbdebf7e467` did **not** find a retained
-Python owner, child process, thread, handle, ONNX mapping, or monotonically
-unrecoverable working set that establishes a product leak.
+RapidOCR owner, child process, thread, handle, growing ONNX mapping count, or
+monotonically unrecoverable working set that establishes a product leak.
 
 The run did find two distinct effects:
 
 1. Repeated ONNX/browser construction raises the process allocator/working-set
    high-water mark in steps. Large 20-50 MiB drops also occur later, while
-   Python owners are already zero. Treat the elevated RSS/USS as native
-   allocator retention, not proof of a live session leak.
+   observed RapidOCR owners are already zero. Treat the elevated RSS/USS as
+   native allocator retention, not proof of a live session leak.
 2. The merged audio lifecycle had one deterministic integration bug:
    `AudioProcessor.set_enabled(False)` closed RNNoise but retained the fixed
    frame buffer, contradicting the lifecycle regression. Releasing it without
@@ -66,8 +66,9 @@ resolved from this worktree. The run lasted 7,203.426 seconds and exited zero.
 
 ## Formal two-hour run
 
-All five executable workloads completed in all 204 cycles. Chat was explicitly
-reported as skipped in all 204 cycles.
+All five executable workloads completed in all 204 cycles. Every audio result
+recorded `native_denoiser=true`, and every plugin result recorded
+`triggered=true`. Chat was explicitly reported as skipped in all 204 cycles.
 
 | Released checkpoint | USS average (MiB) | USS min-max (MiB) | traced current average (MiB) | handles min-max | threads min-max |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -90,8 +91,6 @@ Examples of real recovery:
 
 Released resource invariants across all 204 cycles:
 
-- embedding session refs: min/max 0/0;
-- embedding tokenizer refs: min/max 0/0;
 - RapidOCR cache entries: min/max 0/0;
 - RapidOCR owners: min/max 0/0;
 - Chromium children: min/max 0/0;
@@ -100,8 +99,16 @@ Released resource invariants across all 204 cycles:
 - threads: first/last 69/65, range 62-71;
 - handles: first/last 839/843, range 835-843.
 
-The two stable ONNX mappings remain after Python owners reach zero. They are
-DLL/model residency, not evidence that an `InferenceSession` is still owned.
+The formal run's embedding session/tokenizer counters are not used as release
+evidence: that revision inspected only the application singleton while the
+probe created direct `EmbeddingService` instances. The probe now weakly
+registers direct services, so future active checkpoints observe their session
+and tokenizer while released checkpoints can verify that the objects and
+references disappeared.
+
+The two stable ONNX mappings remain after the explicit embedding close and
+RapidOCR owner release. They are DLL/model residency, not evidence that an
+`InferenceSession` is still owned.
 
 Tracemalloc current grew 96.312 -> 105.793 MiB (+9.481 MiB). This run retained
 7.66 MiB of aggregate JSON in memory so it could atomically rewrite the report
@@ -111,6 +118,14 @@ aggregates remain) and exposes `--retain-process-rows` only for investigations
 that need every PID at every checkpoint.
 
 ## Controls
+
+### Embedding owner instrumentation, post-review
+
+A fresh one-cycle embedding control using the revised weak registry recorded
+one service, one session, and one tokenizer at the active checkpoint, followed
+by 0/0/0 at both the feature-released and all-released checkpoints. The ONNX
+map count remained at two after release, directly separating released Python
+owners from stable runtime mappings.
 
 ### OCR-only, fresh process
 
@@ -174,6 +189,10 @@ Coverage includes time-index batching, topic signals, audio memory and
 lifecycle, embedding lifecycle, browser lifecycle, agent shutdown, RapidOCR,
 vision, study OCR, and the soak analyzer.
 
+The post-review lifecycle/measurement slice also passes 22 tests, including
+unknown-metric preservation, direct embedding owner tracking, workload success
+gates, and the isolated chat backend PID contract.
+
 ## Re-run
 
 From a Python 3.11 environment:
@@ -187,5 +206,6 @@ uv run python -m scripts.runtime_memory_soak `
 ```
 
 `--duration-hours` accepts values up to 8. Chat remains disabled unless an
-operator passes `--chat-port` for a separately started backend whose storage
-isolation has already been verified.
+operator passes both `--chat-port` and `--chat-pid` for a separately started
+backend whose storage isolation has already been verified. Chat checkpoints
+sample that backend PID and its descendants rather than the soak driver.

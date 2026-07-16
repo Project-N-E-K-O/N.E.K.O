@@ -31,6 +31,7 @@ import tracemalloc
 import urllib.parse
 import urllib.request
 import uuid
+import weakref
 from collections import Counter
 from contextlib import suppress
 from pathlib import Path
@@ -41,6 +42,7 @@ import psutil
 
 MIB = 1024 * 1024
 DEFAULT_SAMPLE_INTERVAL = 0.25
+_PROBED_EMBEDDING_SERVICES: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _mib(value: int | float | None) -> float | None:
@@ -94,8 +96,8 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             handle_count = None
 
-        onnx_map_count = 0
-        onnx_mapped_rss = 0
+        onnx_map_count: int | None = 0
+        onnx_mapped_rss: int | None = 0
         try:
             for memory_map in process.memory_maps(grouped=True):
                 path = str(getattr(memory_map, "path", "") or "").lower()
@@ -109,7 +111,9 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
             OSError,
             NotImplementedError,
         ):
-            pass
+            # Preserve an unknown result when maps are unsupported or inaccessible.
+            onnx_map_count = None
+            onnx_mapped_rss = None
         return {
             "pid": process.pid,
             "ppid": process.ppid(),
@@ -166,7 +170,9 @@ def _sample(
                 "handles": 0,
                 "handle_processes": 0,
                 "onnx_map_count": 0,
+                "onnx_map_processes": 0,
                 "onnx_mapped_rss_mib": 0.0,
+                "onnx_mapped_rss_processes": 0,
             },
         )
         entry["count"] = int(entry["count"]) + 1
@@ -180,12 +186,18 @@ def _sample(
         if row["handles"] is not None:
             entry["handles"] = int(entry["handles"]) + int(row["handles"])
             entry["handle_processes"] = int(entry["handle_processes"]) + 1
-        entry["onnx_map_count"] = int(entry["onnx_map_count"]) + int(
-            row["onnx_map_count"] or 0
-        )
-        entry["onnx_mapped_rss_mib"] = float(entry["onnx_mapped_rss_mib"]) + float(
-            row["onnx_mapped_rss_mib"] or 0.0
-        )
+        if row["onnx_map_count"] is not None:
+            entry["onnx_map_count"] = int(entry["onnx_map_count"]) + int(
+                row["onnx_map_count"]
+            )
+            entry["onnx_map_processes"] = int(entry["onnx_map_processes"]) + 1
+        if row["onnx_mapped_rss_mib"] is not None:
+            entry["onnx_mapped_rss_mib"] = float(entry["onnx_mapped_rss_mib"]) + float(
+                row["onnx_mapped_rss_mib"]
+            )
+            entry["onnx_mapped_rss_processes"] = (
+                int(entry["onnx_mapped_rss_processes"]) + 1
+            )
     for entry in categories.values():
         if entry["uss_processes"] == 0:
             entry["uss_mib"] = None
@@ -193,6 +205,10 @@ def _sample(
             entry["threads"] = None
         if entry["handle_processes"] == 0:
             entry["handles"] = None
+        if entry["onnx_map_processes"] == 0:
+            entry["onnx_map_count"] = None
+        if entry["onnx_mapped_rss_processes"] == 0:
+            entry["onnx_mapped_rss_mib"] = None
 
     total_rss = sum(float(row["rss_mib"] or 0.0) for row in rows)
     total_uss_values = [
@@ -200,6 +216,14 @@ def _sample(
     ]
     total_threads = [int(row["threads"]) for row in rows if row["threads"] is not None]
     total_handles = [int(row["handles"]) for row in rows if row["handles"] is not None]
+    total_onnx_maps = [
+        int(row["onnx_map_count"]) for row in rows if row["onnx_map_count"] is not None
+    ]
+    total_onnx_rss = [
+        float(row["onnx_mapped_rss_mib"])
+        for row in rows
+        if row["onnx_mapped_rss_mib"] is not None
+    ]
     return {
         "elapsed_s": round(time.perf_counter(), 6),
         "categories": categories,
@@ -212,10 +236,12 @@ def _sample(
             "thread_processes": len(total_threads),
             "handles": sum(total_handles) if total_handles else None,
             "handle_processes": len(total_handles),
-            "onnx_map_count": sum(int(row["onnx_map_count"] or 0) for row in rows),
-            "onnx_mapped_rss_mib": round(
-                sum(float(row["onnx_mapped_rss_mib"] or 0.0) for row in rows), 3
-            ),
+            "onnx_map_count": sum(total_onnx_maps) if total_onnx_maps else None,
+            "onnx_map_processes": len(total_onnx_maps),
+            "onnx_mapped_rss_mib": round(sum(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
+            "onnx_mapped_rss_processes": len(total_onnx_rss),
         },
         "processes": rows,
     }
@@ -245,20 +271,26 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             for sample in samples
         ]
         thread_values = [
-            int(sample["categories"].get(name, {}).get("threads") or 0)
+            int(value)
             for sample in samples
+            if (value := sample["categories"].get(name, {}).get("threads")) is not None
         ]
         handle_values = [
-            int(sample["categories"].get(name, {}).get("handles") or 0)
+            int(value)
             for sample in samples
+            if (value := sample["categories"].get(name, {}).get("handles")) is not None
         ]
         onnx_map_values = [
-            int(sample["categories"].get(name, {}).get("onnx_map_count") or 0)
+            int(value)
             for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_map_count"))
+            is not None
         ]
         onnx_rss_values = [
-            float(sample["categories"].get(name, {}).get("onnx_mapped_rss_mib") or 0.0)
+            float(value)
             for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_mapped_rss_mib"))
+            is not None
         ]
         categories[name] = {
             "median_count": int(statistics.median(count_values)),
@@ -269,14 +301,24 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             if uss_values
             else None,
             "peak_uss_mib": round(max(uss_values), 3) if uss_values else None,
-            "median_threads": round(statistics.median(thread_values), 3),
-            "max_threads": max(thread_values),
-            "median_handles": round(statistics.median(handle_values), 3),
-            "max_handles": max(handle_values),
-            "median_onnx_map_count": round(statistics.median(onnx_map_values), 3),
-            "max_onnx_map_count": max(onnx_map_values),
-            "median_onnx_mapped_rss_mib": round(statistics.median(onnx_rss_values), 3),
-            "peak_onnx_mapped_rss_mib": round(max(onnx_rss_values), 3),
+            "median_threads": round(statistics.median(thread_values), 3)
+            if thread_values
+            else None,
+            "max_threads": max(thread_values) if thread_values else None,
+            "median_handles": round(statistics.median(handle_values), 3)
+            if handle_values
+            else None,
+            "max_handles": max(handle_values) if handle_values else None,
+            "median_onnx_map_count": round(statistics.median(onnx_map_values), 3)
+            if onnx_map_values
+            else None,
+            "max_onnx_map_count": max(onnx_map_values) if onnx_map_values else None,
+            "median_onnx_mapped_rss_mib": round(statistics.median(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
+            "peak_onnx_mapped_rss_mib": round(max(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
         }
 
     total_rss = [float(sample["total"]["rss_mib"] or 0.0) for sample in samples]
@@ -285,13 +327,25 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample["total"]["uss_mib"] is not None
     ]
-    total_threads = [int(sample["total"].get("threads") or 0) for sample in samples]
-    total_handles = [int(sample["total"].get("handles") or 0) for sample in samples]
+    total_threads = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("threads")) is not None
+    ]
+    total_handles = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("handles")) is not None
+    ]
     total_onnx_maps = [
-        int(sample["total"].get("onnx_map_count") or 0) for sample in samples
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_map_count")) is not None
     ]
     total_onnx_rss = [
-        float(sample["total"].get("onnx_mapped_rss_mib") or 0.0) for sample in samples
+        float(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_mapped_rss_mib")) is not None
     ]
     return {
         "sample_count": len(samples),
@@ -315,14 +369,14 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "max_handles": max(total_handles) if total_handles else None,
             "median_onnx_map_count": round(statistics.median(total_onnx_maps), 3)
             if total_onnx_maps
-            else 0,
-            "max_onnx_map_count": max(total_onnx_maps) if total_onnx_maps else 0,
+            else None,
+            "max_onnx_map_count": max(total_onnx_maps) if total_onnx_maps else None,
             "median_onnx_mapped_rss_mib": round(statistics.median(total_onnx_rss), 3)
             if total_onnx_rss
-            else 0.0,
+            else None,
             "peak_onnx_mapped_rss_mib": round(max(total_onnx_rss), 3)
             if total_onnx_rss
-            else 0.0,
+            else None,
         },
         "last_processes": samples[-1]["processes"] if samples else [],
     }
@@ -367,6 +421,11 @@ def _sample_window(
     return result
 
 
+def _register_embedding_service(service: Any) -> None:
+    """Track direct probe services without extending their lifetime."""
+    _PROBED_EMBEDDING_SERVICES.add(service)
+
+
 def _runtime_resource_counts() -> dict[str, Any]:
     """Return reference counts for heavy runtimes without importing them.
 
@@ -382,17 +441,19 @@ def _runtime_resource_counts() -> dict[str, Any]:
         "rapidocr_cache_owners": 0,
     }
 
+    services = list(_PROBED_EMBEDDING_SERVICES)
     embeddings = sys.modules.get("memory.embeddings")
     if embeddings is not None:
         service = getattr(embeddings, "_SERVICE", None)
-        if service is not None:
-            result["embedding_service_instances"] = 1
-            result["embedding_session_refs"] = int(
-                getattr(service, "_session", None) is not None
-            )
-            result["embedding_tokenizer_refs"] = int(
-                getattr(service, "_tokenizer", None) is not None
-            )
+        if service is not None and all(service is not item for item in services):
+            services.append(service)
+    result["embedding_service_instances"] = len(services)
+    result["embedding_session_refs"] = sum(
+        int(getattr(service, "_session", None) is not None) for service in services
+    )
+    result["embedding_tokenizer_refs"] = sum(
+        int(getattr(service, "_tokenizer", None) is not None) for service in services
+    )
 
     seen_caches: set[int] = set()
     for module_name in (
@@ -421,15 +482,17 @@ def _in_process_checkpoint(
     seconds: float,
     interval: float,
     collect: bool = False,
+    root_pids: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     if collect:
         gc.collect()
+    sample_root_pids = list(root_pids) if root_pids is not None else [os.getpid()]
     checkpoint = _sample_window(
         label,
-        [os.getpid()],
+        sample_root_pids,
         seconds=seconds,
         interval=interval,
-        traced_python_pid=os.getpid(),
+        traced_python_pid=os.getpid() if os.getpid() in sample_root_pids else None,
     )
     checkpoint["captured_perf_counter"] = round(time.perf_counter(), 6)
     checkpoint["resources"] = _runtime_resource_counts()
@@ -494,6 +557,7 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
     )
+    _register_embedding_service(service)
     ready = await service.request_load()
     if not ready:
         raise RuntimeError(
