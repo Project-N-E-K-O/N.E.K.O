@@ -471,6 +471,60 @@ async def test_step_manual_uses_transcription_item_id_not_committed_item_id(
         await _stop_worker(task, requests, responses, utterance_id=8)
 
 
+async def test_step_manual_rejects_commit_when_previous_item_is_unbound(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "step-key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 1
+        )
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+
+    error = await _next_event(responses, "error")
+    assert (error.error_code, error.utterance_id) == (
+        "ASR_STEP_PROTOCOL_ERROR",
+        2,
+    )
+    assert (await _next_event(responses, "closed")).kind == "closed"
+    await asyncio.wait_for(task, 1)
+    assert responses.empty()
+    assert (
+        sum(
+            isinstance(payload, str)
+            and json.loads(payload).get("type") == "input_audio_buffer.commit"
+            for payload in websocket.sent
+        )
+        == 1
+    )
+
+
 async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":

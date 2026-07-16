@@ -212,6 +212,18 @@ async def _step_sender(
                         request.buffer_epoch,
                         request.utterance_id,
                     )
+                    if state.pending_manual_commits:
+                        await _emit_step_error_once(
+                            response_queue,
+                            state,
+                            "ASR_STEP_PROTOCOL_ERROR",
+                            (
+                                "Step ASR previous commit has no transcription item; "
+                                "rejecting a new commit to prevent utterance mis-correlation"
+                            ),
+                            item_key=key,
+                        )
+                        return "error", request
                     state.pending_manual_commits.append(key)
                     _step_bind_pending_manual_items(state)
                     await ws.send(
