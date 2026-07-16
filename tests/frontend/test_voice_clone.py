@@ -572,6 +572,7 @@ def test_voice_design_server_prefix_error_renders_available_constraints(
                 status=400,
                 content_type="application/json",
                 body=json.dumps({
+                    "error": "VOICE_DESIGN_PREFIX_INVALID",
                     "code": "VOICE_DESIGN_PREFIX_INVALID",
                     "details": details,
                 }),

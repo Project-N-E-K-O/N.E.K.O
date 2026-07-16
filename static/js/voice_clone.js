@@ -1948,7 +1948,11 @@ async function registerVoice() {
             if (!res.ok) {
                 if (data) {
                     // 从响应体中提取详细错误信息（优先已翻译的 errors.<code>，缺失则回退到 message/detail/error）
-                    throw new Error(resolveBackendErrorMsg(data, res.status));
+                    const error = new Error(resolveBackendErrorMsg(data, res.status));
+                    // Voice Design needs code/details to render provider-specific constraints.
+                    // Keep the user-facing message too, so Voice Clone's existing errors stay unchanged.
+                    error.voiceRegisterError = data;
+                    throw error;
                 }
                 // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
                 throw new Error(buildNonJsonError(res, text));
@@ -2034,7 +2038,10 @@ async function registerVoice() {
                     });
                 }
             } else {
-                const errorObj = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                // Keep structured API fields such as code/details for Voice Design validation errors.
+                const errorObj = data && typeof data === 'object'
+                    ? data
+                    : (window.t ? window.t('common.unknownError') : '未知错误');
                 const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
                 resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: displayError }) : '注册失败：' + displayError;
                 resultDiv.className = 'result error';
@@ -2045,7 +2052,9 @@ async function registerVoice() {
             setFormDisabled(false);
         })
         .catch(err => {
-            const errorObj = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+            const errorObj = err?.voiceRegisterError
+                ? { ...err.voiceRegisterError, message: err.message }
+                : (err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误'));
             const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
             resultDiv.textContent = window.t ? window.t('voice.requestError', { error: displayError }) : '请求出错：' + displayError;
             resultDiv.className = 'result error';
