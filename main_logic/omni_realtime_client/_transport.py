@@ -1197,13 +1197,22 @@ class _TransportMixin:
         """Fail all response tickets and atomically detach the dead socket."""
 
         self._response_arbiter.notify_connection_lost(reason)
+        await self._abort_failed_transport(reason)
+
+    async def _abort_failed_transport(self, reason: str) -> None:
+        """Atomically detach and physically close a failed raw WebSocket."""
+
         self._fatal_error_occurred = True
         ws, self.ws = self.ws, None
         if ws is not None:
             try:
                 await ws.close()
             except Exception as exc:
-                logger.debug("failed transport close also failed: %s", type(exc).__name__)
+                logger.debug(
+                    "failed transport close also failed (%s): %s",
+                    reason,
+                    type(exc).__name__,
+                )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""

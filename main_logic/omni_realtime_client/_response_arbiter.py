@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
+AbortTransport = Callable[[str], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +34,8 @@ class _QueuedResponse:
     source: str = field(compare=False)
     events_before_response: tuple[dict[str, Any], ...] = field(compare=False)
     response_event: dict[str, Any] = field(compare=False)
+    ack_expected: bool = field(compare=False)
+    expected_item_id: str | None = field(compare=False)
     expected_item_role: str | None = field(compare=False)
     item_ack_timeout: float = field(compare=False)
     response_started_timeout: float = field(compare=False)
@@ -54,8 +59,14 @@ class RealtimeResponseArbiter:
     ``response.created`` arrives.
     """
 
-    def __init__(self, send_event: SendEvent) -> None:
+    def __init__(
+        self,
+        send_event: SendEvent,
+        *,
+        abort_transport: AbortTransport | None = None,
+    ) -> None:
         self._send_event = send_event
+        self._abort_transport = abort_transport
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
@@ -85,6 +96,8 @@ class RealtimeResponseArbiter:
         source: str,
         events_before_response: tuple[dict[str, Any], ...] = (),
         response_event: dict[str, Any] | None = None,
+        ack_expected: bool = False,
+        expected_item_id: str | None = None,
         expected_item_role: str | None = None,
         priority: int = 10,
         item_ack_timeout: float = 1.5,
@@ -114,6 +127,8 @@ class RealtimeResponseArbiter:
             source=source,
             events_before_response=events_before_response,
             response_event=create_event,
+            ack_expected=ack_expected,
+            expected_item_id=expected_item_id,
             expected_item_role=expected_item_role,
             item_ack_timeout=item_ack_timeout,
             response_started_timeout=response_started_timeout,
@@ -146,7 +161,13 @@ class RealtimeResponseArbiter:
             if not self._server_response_active:
                 return
             await self._send_event({"type": "response.cancel"})
-            await self.wait_until_idle(timeout)
+            try:
+                await self.wait_until_idle(timeout)
+            except asyncio.TimeoutError as original_timeout:
+                await self._fail_closed(
+                    "response cancellation terminal event timed out"
+                )
+                raise original_timeout
             return
 
         current.interrupted = True
@@ -166,9 +187,9 @@ class RealtimeResponseArbiter:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
             if was_paused and self._connection_available:
                 self._dispatch_allowed.clear()
-        except asyncio.TimeoutError:
-            self._fail_closed("response cancellation terminal event timed out")
-            raise
+        except asyncio.TimeoutError as original_timeout:
+            await self._fail_closed("response cancellation terminal event timed out")
+            raise original_timeout
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         waiter = self._idle.wait()
@@ -183,6 +204,10 @@ class RealtimeResponseArbiter:
             return
         item = event.get("item")
         if not isinstance(item, dict):
+            return
+        if current.expected_item_id is None:
+            return
+        if item.get("id") != current.expected_item_id:
             return
         if current.expected_item_role and item.get("role") != current.expected_item_role:
             return
@@ -279,8 +304,17 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             self._queue.task_done()
 
-    def _fail_closed(self, reason: str) -> None:
+    async def _fail_closed(self, reason: str) -> None:
         self.notify_connection_lost(reason)
+        if self._abort_transport is None:
+            return
+        try:
+            await self._abort_transport(reason)
+        except Exception as exc:
+            logger.debug(
+                "response fail-close transport abort also failed: %s",
+                type(exc).__name__,
+            )
 
     async def _next_queued(self) -> _QueuedResponse:
         """Select fairly: a lower-priority item may be bypassed at most 3 times."""
@@ -323,7 +357,7 @@ class RealtimeResponseArbiter:
     async def _process(self, queued: _QueuedResponse) -> None:
         self._current = queued
         loop = asyncio.get_running_loop()
-        item_acked = queued.expected_item_role is None
+        item_acked = not queued.ack_expected
         requeued = False
 
         try:
@@ -338,7 +372,7 @@ class RealtimeResponseArbiter:
             queued.terminal = loop.create_future()
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
-            if queued.expected_item_role is not None:
+            if queued.ack_expected:
                 queued.item_ack = loop.create_future()
             for event in queued.events_before_response:
                 if queued.interrupted:
@@ -421,5 +455,7 @@ class RealtimeResponseArbiter:
                 asyncio.shield(queued.terminal), queued.cancel_timeout
             )
         except Exception:
-            self._fail_closed("response lifecycle could not reach a terminal state")
+            await self._fail_closed(
+                "response lifecycle could not reach a terminal state"
+            )
         raise original_timeout

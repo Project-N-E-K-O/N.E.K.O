@@ -131,7 +131,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # Own every client-issued response.create from queue admission through
         # response.done/error/cancelled. _is_responding remains display state;
         # it is not a concurrency primitive.
-        self._response_arbiter = RealtimeResponseArbiter(self.send_event)
+        self._response_arbiter = RealtimeResponseArbiter(
+            self.send_event,
+            abort_transport=self._abort_failed_transport,
+        )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
         self._is_first_transcript_chunk = False

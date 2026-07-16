@@ -37,7 +37,10 @@ class _ResponseMixin:
     def _ensure_response_arbiter(self) -> RealtimeResponseArbiter:
         arbiter = getattr(self, "_response_arbiter", None)
         if arbiter is None:
-            arbiter = RealtimeResponseArbiter(self.send_event)
+            arbiter = RealtimeResponseArbiter(
+                self.send_event,
+                abort_transport=getattr(self, "_abort_failed_transport", None),
+            )
             self._response_arbiter = arbiter
         return arbiter
 
@@ -143,6 +146,8 @@ class _ResponseMixin:
 
         item_event_id = f"event_user_item_{uuid.uuid4().hex}"
         response_event_id = f"event_user_response_{uuid.uuid4().hex}"
+        item_id = f"item_neko_{uuid.uuid4().hex}"
+        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
         # 通过 conversation.item.create 添加用户消息，再触发响应。两步都
         # 进入全局仲裁器，直到 response.done 才释放下一次 create 的资格。
         item_event = {
@@ -159,6 +164,8 @@ class _ResponseMixin:
                 ]
             }
         }
+        if expected_item_id is not None:
+            item_event["item"]["id"] = item_id
         logger.info("Creating response with user message")
         ticket = await self._ensure_response_arbiter().enqueue(
             source="create_response",
@@ -167,6 +174,8 @@ class _ResponseMixin:
                 "type": "response.create",
                 "event_id": response_event_id,
             },
+            ack_expected=True,
+            expected_item_id=expected_item_id,
             expected_item_role="user",
         )
         await ticket.sent
@@ -193,6 +202,8 @@ class _ResponseMixin:
             raise ValueError("external ASR turn_id must not be empty")
 
         event_suffix = uuid.uuid4().hex
+        item_id = f"item_neko_{uuid.uuid4().hex}"
+        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
         item_event = {
             "type": "conversation.item.create",
             "event_id": f"event_asr_item_{event_suffix}",
@@ -202,6 +213,8 @@ class _ResponseMixin:
                 "content": [{"type": "input_text", "text": clean}],
             },
         }
+        if expected_item_id is not None:
+            item_event["item"]["id"] = item_id
         untrusted_payload = json.dumps(
             {"external_asr_user_text": clean}, ensure_ascii=False
         ).replace("<", "\\u003c").replace(">", "\\u003e")
@@ -229,6 +242,8 @@ class _ResponseMixin:
             source="external_asr",
             events_before_response=(item_event,),
             response_event=response_event,
+            ack_expected=True,
+            expected_item_id=expected_item_id,
             expected_item_role="user",
             priority=0,
         )
@@ -339,6 +354,8 @@ class _ResponseMixin:
         # even if both event_ids somehow error, and unregisters both handlers.
         item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
         create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
+        item_id = f"item_neko_{uuid.uuid4().hex}"
+        expected_item_id = None if getattr(self, "_is_qwen", False) else item_id
         if on_rejected is not None:
             _fired = False
 
@@ -386,6 +403,8 @@ class _ResponseMixin:
                 ],
             },
         }
+        if expected_item_id is not None:
+            item_event["item"]["id"] = item_id
         item_event["event_id"] = item_event_id
 
         # send_event() silently returns when ws drops to None or fatal flag
@@ -404,6 +423,8 @@ class _ResponseMixin:
                 source="proactive",
                 events_before_response=(item_event,),
                 response_event=create_event,
+                ack_expected=True,
+                expected_item_id=expected_item_id,
                 expected_item_role="user",
                 priority=20,
             )
