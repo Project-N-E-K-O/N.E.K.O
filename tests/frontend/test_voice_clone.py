@@ -548,6 +548,48 @@ def test_voice_design_rejects_underscore_prefix_before_submit(mock_page: Page, r
 
 
 @pytest.mark.frontend
+def test_voice_design_server_prefix_error_interpolates_max(mock_page: Page, running_server: str):
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.route(
+            "**/api/characters/voice_design",
+            lambda route: route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({
+                    "code": "VOICE_DESIGN_PREFIX_INVALID",
+                    "details": {"max": 7},
+                }),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "aria")
+        mock_page.fill("#voiceDesignPrompt", "a warm clear voice")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("1-7 个字符")
+        expect(mock_page.locator("#result")).not_to_contain_text("{{max}}")
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
 def test_voice_design_non_cosy_provider_accepts_descriptive_prefix(mock_page: Page, running_server: str):
     captured = {}
     try:
