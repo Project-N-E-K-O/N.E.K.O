@@ -1,9 +1,32 @@
 import asyncio
+import json
 from types import MethodType
+from unittest.mock import AsyncMock
 import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_dispatches_non_created_events_after_stale_filter():
+    response_done = AsyncMock()
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_response_done=response_done,
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        json.dumps({"type": "response.done", "response": {"id": "resp-1"}}),
+    ]
+
+    await client.handle_messages()
+
+    response_done.assert_awaited_once()
 
 
 @pytest.mark.asyncio
