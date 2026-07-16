@@ -798,7 +798,11 @@ async def preview_external_memory_import(request: Request):
         # (neko / master) 分组，每组一次 LLM 往返；facts 走纯写盘、不调 LLM。空
         # persona → 0 次调用（前端回退到无预估文案）。
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
-        persona_candidate_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
+        # count_tokens 逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件循环，
+        # 与上面 _prepare_external_import 一致 offload 到线程池（Codex/CodeRabbit）。
+        persona_candidate_tokens = await asyncio.to_thread(
+            lambda: sum(count_tokens(item["text"]) for item in persona_cands)
+        )
         return {
             "success": True,
             "character_name": character_name,
