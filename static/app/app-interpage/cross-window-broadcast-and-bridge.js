@@ -773,14 +773,16 @@
                     pcOverlayRunId: I.getYuiGuidePcOverlayRunIdFromMessage(message),
                     timestamp: I.getYuiGuideBridgeMessageTimestamp(message)
                 };
-                I.applyYuiGuideChatCursor(cursorKind, cursorOptions);
+                var cursorApplied = I.applyYuiGuideChatCursor(cursorKind, cursorOptions);
                 // applyYuiGuideChatCursor owns the request generation. Capture its resulting token so
                 // the post-expansion retry remains current until a newer cursor command supersedes it.
                 var cursorRequestToken = I.yuiGuideChatCursorRequestToken;
-                var retryCursorOptions = Object.assign({}, cursorOptions, {
-                    effect: '',
-                    effectDurationMs: 0
-                });
+                var retryCursorOptions = cursorApplied
+                    ? Object.assign({}, cursorOptions, {
+                        effect: '',
+                        effectDurationMs: 0
+                    })
+                    : cursorOptions;
                 if (expandedForCursor && cursorOptions.freezePoint !== true) {
                     window.setTimeout(function () {
                         if (cursorRequestToken !== I.yuiGuideChatCursorRequestToken) {

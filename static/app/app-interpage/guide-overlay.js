@@ -329,6 +329,10 @@
             && !alreadyRetried
             && result.reason === 'stale-sequence'
             && result.activeTutorialRunId === attemptedRunId
+            && (
+                attemptedCanonicalRun
+                || (attemptedCurrentRun && attemptedChatOwnedRun)
+            )
         ) {
             yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
             I.sendYuiGuidePcOverlayPatch(patch || {}, true, {
@@ -736,13 +740,7 @@
                         return;
                     }
                     if (result && result.stale === true) {
-                        handleYuiGuidePcOverlayStaleResult(
-                            result,
-                            patch,
-                            runId,
-                            retried === true,
-                            sendLifecycleEpoch
-                        );
+                        // The paired update carries the state and owns stale retries.
                         return;
                     }
                     if (result && result.ok === false) {

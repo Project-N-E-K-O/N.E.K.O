@@ -6412,6 +6412,73 @@ def test_externalized_chat_cursor_retries_position_without_replaying_click(mock_
 
 
 @pytest.mark.frontend
+def test_externalized_chat_cursor_preserves_click_when_first_placement_fails(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = '<div id="react-chat-window-root"></div>';
+            window.reactChatWindowHost = {
+                openWindow: () => {
+                    window.setTimeout(() => {
+                        document.getElementById('react-chat-window-root').innerHTML = `
+                            <button
+                                class="send-button-circle compact-input-tool-toggle"
+                                style="position:fixed; left:500px; top:200px; width:42px; height:42px;"
+                            ></button>
+                        `;
+                    }, 100);
+                },
+            };
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 850));
+            return window.__externalChatOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter((cursor) => cursor && cursor.visible === true);
+        }
+        """
+    )
+
+    assert len(result) == 1
+    assert result[0]["x"] == 521
+    assert result[0]["effect"] == "click"
+    assert result[0]["effectDurationMs"] == 420
+
+
+@pytest.mark.frontend
 def test_externalized_chat_cursor_anchor_reports_after_pc_move_duration(
     mock_page: Page,
 ):
@@ -7556,6 +7623,268 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_withou
     assert spotlight["id"] == "external-chat-capsule-input"
     assert spotlight["x"] == 692
     assert spotlight["width"] == 446
+
+
+@pytest.mark.frontend
+def test_pc_overlay_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'begin-stale-run');
+            window.__pcOverlayBegins = [];
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: (payload) => {
+                    window.__pcOverlayBegins.push(payload);
+                    return new Promise((resolve) => window.__pcOverlayBeginResolvers.push(resolve));
+                },
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
+def test_pc_overlay_stale_update_retry_bypasses_ready_state_dedupe(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'dedupe-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayUpdateResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    if (window.__pcOverlayUpdates.length === 1) {
+                        return Promise.resolve({ ok: true });
+                    }
+                    return new Promise((resolve) => window.__pcOverlayUpdateResolvers.push(resolve));
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 100, top: 120, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            overlay.pcOverlayBridge.setSpotlights([{
+                kind: 'input',
+                rect: { left: 420, top: 220, width: 240, height: 56, radius: 18 },
+            }]);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const staleUpdate = window.__pcOverlayUpdates[1];
+            window.__pcOverlayUpdateResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: staleUpdate.tutorialRunId,
+                activeSequence: staleUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 3
+
+
+@pytest.mark.frontend
+def test_external_chat_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'external-begin-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => new Promise((resolve) => window.__externalChatBeginResolvers.push(resolve)),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'external-begin-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__externalChatOverlayUpdates[0];
+            window.__externalChatBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__externalChatOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
+def test_external_chat_ignores_late_stale_response_from_replaced_run(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'old-run');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatUpdateResolvers = {};
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return new Promise((resolve) => {
+                        window.__externalChatUpdateResolvers[payload.tutorialRunId] = resolve;
+                    });
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:100px; top:200px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app/app-interpage",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const relayCursor = (runId, timestamp) => window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    durationMs: 0,
+                    timestamp,
+                    tutorialRunId: runId,
+                },
+            }, '*');
+            relayCursor('old-run', Date.now());
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'new-run');
+            relayCursor('new-run', Date.now() + 1);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeLateResponse = window.__externalChatOverlayUpdates.length;
+            const oldUpdate = window.__externalChatOverlayUpdates.find(
+                (update) => update.tutorialRunId === 'old-run'
+            );
+            window.__externalChatUpdateResolvers['old-run']({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: 'old-run',
+                activeSequence: oldUpdate.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                beforeLateResponse,
+                afterLateResponse: window.__externalChatOverlayUpdates.length,
+            };
+        }
+        """
+    )
+
+    assert result["afterLateResponse"] == result["beforeLateResponse"]
 
 
 @pytest.mark.frontend
