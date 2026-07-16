@@ -65,7 +65,7 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 - 公共断句语义只有 `manual` 与 `provider`。`manual` 下 `signal_user_activity_end()` 发送 `commit`；`provider` 下不发送 `commit`，只刷新本地 48 kHz 流式重采样器尾部，最终断句由供应商决定。`server_vad`、`endpointing` 等厂商字段只存在于 worker 内部。
 - 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`openai`、`step` 使用 `manual`，`grok` 使用 `provider`。小游戏不需要按厂商选择模式。
 - `endpointing_mode` 在 Session 创建时冻结，不能通过 `update_session()` 动态切换。
-- 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 16 kHz；一个 Session 首包锁定输入采样率。
+- 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 worker 统一接收的 16 kHz；OpenAI worker 再将 16 kHz 转为其接口要求的 24 kHz。一个 Session 首包锁定输入采样率。
 - 空音频块是 no-op；非空音频必须为偶数字节，单块最多一秒。
 - 每个 utterance 只有首个有效、非空 `final` 调用 `on_input_transcript()`。即使供应商乱序返回多个 final，业务回调仍按 commit/语音开始顺序交付。`partial`、重复 final、冲突 final 以及 clear/close 后到达的旧 final 都不进入业务回调。
 - 内部事件用 `generation + buffer_epoch + utterance_id` 关联，不能按 transcript 文本去重。

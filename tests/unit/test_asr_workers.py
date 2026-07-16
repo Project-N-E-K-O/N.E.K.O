@@ -237,6 +237,73 @@ async def test_qwen_manual_regions_payload_and_final(
     await _stop_worker(task, requests, responses)
 
 
+async def test_qwen_duplicate_item_created_does_not_consume_next_commit(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "session.finish":
+            await ws.server_send({"type": "session.finished"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(qwen.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        qwen.qwen_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 1
+        )
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "qwen-1"}
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 2
+        )
+    )
+    await websocket.server_send(
+        {"type": "conversation.item.created", "item": {"id": "qwen-1"}}
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "qwen-2"}
+    )
+    for item_id, transcript in (("qwen-1", "first"), ("qwen-2", "second")):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": item_id,
+                "transcript": transcript,
+            }
+        )
+
+    first = await _next_event(responses, "final")
+    second = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "first")
+    assert (second.utterance_id, second.text) == (2, "second")
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
 async def test_qwen_server_vad_maps_items_and_reconnects_on_clear(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str):
@@ -523,6 +590,73 @@ async def test_step_manual_rejects_commit_when_previous_item_is_unbound(
         )
         == 1
     )
+
+
+async def test_step_duplicate_final_does_not_consume_next_commit(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        if json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(step.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 1
+        )
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-1",
+            "transcript": "first",
+        }
+    )
+    first = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "first")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 2
+        )
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-1",
+            "transcript": "duplicate",
+        }
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-2",
+            "transcript": "second",
+        }
+    )
+    second = await _next_event(responses, "final")
+    assert (second.utterance_id, second.text) == (2, "second")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> None:

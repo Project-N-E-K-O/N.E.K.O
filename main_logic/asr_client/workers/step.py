@@ -46,6 +46,7 @@ class _StepConnectionState:
     pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
+    completed_manual_item_ids: set[str] = field(default_factory=set)
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -68,6 +69,8 @@ def _step_manual_item_key(
     state: _StepConnectionState,
     item_id: str,
 ) -> _ItemKey | None:
+    if item_id in state.completed_manual_item_ids:
+        return None
     key = state.item_keys.get(item_id)
     if key is not None:
         return key
@@ -391,6 +394,8 @@ async def _step_receiver(
                 if key is None and item_id and config.endpointing_mode == "manual":
                     key = _step_manual_item_key(state, item_id)
                 if key is not None:
+                    if config.endpointing_mode == "manual":
+                        state.completed_manual_item_ids.add(item_id)
                     state.item_keys.pop(item_id, None)
                     await response_queue.put(
                         _AsrWorkerEvent(
