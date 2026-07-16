@@ -343,10 +343,18 @@ def build_overview(character: str) -> dict[str, Any]:
             ))
 
     # ── D. Structural orphans (stage=structure, no embeddings needed) ────────
+    # ``facts`` is active-only (type == "fact"). Facts a reflection cites that
+    # were absorbed-then-archived arrive from lineage as ``fact_archived``
+    # nodes. Referential-integrity checks (D1 orphan / D4 dangling) must treat
+    # those as *present* — an archived fact is not a deleted one — so they key
+    # on ``existing_fact_ids``. Fact-quality/count checks (D3/H1/zombie/
+    # composition) stay active-only and keep using ``fact_ids``.
     fact_ids = {f["id"] for f in facts}
+    archived_fact_ids = {n["id"] for n in nodes if n.get("type") == "fact_archived"}
+    existing_fact_ids = fact_ids | archived_fact_ids
     refl_orphans = [r for r in refls
                     if not [fid for fid in ((r.get("meta") or {}).get("source_fact_ids") or [])
-                            if fid in fact_ids]]
+                            if fid in existing_fact_ids]]
     if refl_orphans:
         findings.append(_finding(
             "D1", "structure", "structure", "warn",
@@ -398,17 +406,20 @@ def build_overview(character: str) -> dict[str, Any]:
                       for f in dangling[:MAX_EXAMPLES]],
         ))
     # D4 — dangling source references: a reflection's declared ``source_fact_ids``
-    # cite facts that no longer exist (hard-deleted, not merely ``absorbed`` —
-    # absorbed facts are kept with a flag). A referential-integrity problem:
-    # deleting a fact should also clean up reflections that reference it, so a
-    # later node never points at a vanished one. Distinct from D1 ("no valid
-    # source at all"); D4 also catches the partial case where only SOME declared
-    # sources were deleted. Purely structural — runs without embeddings.
+    # cite facts that exist in neither the active pool nor the archive, i.e. are
+    # truly hard-deleted. Absorbed facts are *moved* into facts_archive.json (not
+    # kept in facts.json with a flag), so lineage materialises the referenced
+    # archived ones as ``fact_archived`` nodes and ``existing_fact_ids`` counts
+    # them as present — only genuinely vanished ids remain "gone". A referential-
+    # integrity problem: deleting a fact should also clean up reflections that
+    # reference it, so a later node never points at a vanished one. Distinct from
+    # D1 ("no valid source at all"); D4 also catches the partial case where only
+    # SOME declared sources were deleted. Purely structural — no embeddings.
     dangling_refl: list[dict[str, Any]] = []
     total_dangling_refs = 0
     for r in refls:
         declared = [str(x) for x in ((r.get("meta") or {}).get("source_fact_ids") or []) if x]
-        gone = [fid for fid in declared if fid not in fact_ids]
+        gone = [fid for fid in declared if fid not in existing_fact_ids]
         if gone:
             total_dangling_refs += len(gone)
             dangling_refl.append({
@@ -493,7 +504,12 @@ def build_overview(character: str) -> dict[str, Any]:
         ))
     # F5 extract yield uses the TRUE conversation turn count (lineage messages
     # are node-budget-truncated — blueprint §3.1.1). Derive it from meta.
-    structural = len(facts) + total_refl + len(personas) + len(corrections)
+    # ``node_budget.total`` counts archived facts too (they are structural nodes
+    # materialised for referenced sources), so they MUST be subtracted here as
+    # well — otherwise each leaks into convo_total, inflating convo_turns and
+    # deflating extract_yield.
+    structural = (len(facts) + len(archived_fact_ids) + total_refl
+                  + len(personas) + len(corrections))
     convo_total = max(0, int((lmeta.get("node_budget", {}) or {}).get("total", 0)) - structural)
     extract_yield = _ratio(len(facts), convo_total)
 
@@ -567,6 +583,7 @@ def build_overview(character: str) -> dict[str, Any]:
             "messages": counts.get("messages", 0),
             "recent_memos": counts.get("recent_memos", 0),
             "facts": len(facts),
+            "facts_archived": len(archived_fact_ids),
             "reflections": total_refl,
             "persona": len(personas),
             "corrections": len(corrections),

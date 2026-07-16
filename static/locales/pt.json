@@ -793,7 +793,7 @@
         "toolFist": "Pata de gato",
         "toolHammer": "Martelo",
         "avatarToolsButtonAriaLabel": "Ferramentas do avatar",
-        "clearCursorToolAriaLabel": "Restaurar cursor",
+        "clearAvatarToolAriaLabel": "Desativar ferramenta",
         "avatarToolQuickbarAriaLabel": "Ferramentas rápidas do avatar",
         "avatarToolQuickbarEmpty": "Sem ferramentas rápidas",
         "avatarToolEdit": "Editar ferramentas rápidas",

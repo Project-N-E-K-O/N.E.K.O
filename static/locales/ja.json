@@ -793,7 +793,7 @@
         "toolFist": "猫の手",
         "toolHammer": "ハンマー",
         "avatarToolsButtonAriaLabel": "アバターツール",
-        "clearCursorToolAriaLabel": "カーソルを戻す",
+        "clearAvatarToolAriaLabel": "道具を解除",
         "avatarToolQuickbarAriaLabel": "アバタークイックツール",
         "avatarToolQuickbarEmpty": "クイックツールなし",
         "avatarToolEdit": "クイックツールを編集",

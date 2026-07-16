@@ -343,6 +343,15 @@ MEMORY_LIVENESS_MAX_ATTEMPTS = 5
 - 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
   跨过偶发 transient failure 够用；再多就属于真正 poison。"""
 
+MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS = 3
+"""历史审阅因输出 token 耗尽而暂停前的连续失败次数。
+
+- 只统计 provider 明确返回 ``length`` / ``max_tokens``，或空正文且输出 token
+  已触及 ``LLM_OUTPUT_GUARD_MAX_TOKENS`` 的调用；网络、429、普通 JSON 错误仍走
+  ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的通用 fingerprint 退避。
+- 达到 3 次后按角色暂停 review。新增消息不会解禁；只有当前 review 上下文 token
+  数严格低于失败期间的最小值（通常由 recent compression 造成）才清零恢复。"""
+
 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS = 5 * 60 * 60
 """dead-letter 的时间冷却自愈窗口（秒）。
 

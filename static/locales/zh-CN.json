@@ -793,7 +793,7 @@
         "toolFist": "猫爪",
         "toolHammer": "锤子",
         "avatarToolsButtonAriaLabel": "头像道具",
-        "clearCursorToolAriaLabel": "恢复鼠标",
+        "clearAvatarToolAriaLabel": "取消道具",
         "avatarToolQuickbarAriaLabel": "头像快捷道具",
         "avatarToolQuickbarEmpty": "暂无快捷道具",
         "avatarToolEdit": "编辑快捷道具",
