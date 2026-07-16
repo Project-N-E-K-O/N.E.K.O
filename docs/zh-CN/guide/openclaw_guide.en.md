@@ -1,10 +1,11 @@
-# Use NEKO to Connect to QwenPaw
 
-## QwenPaw Installation Guide
+# Connect N.E.K.O. to QwenPaw
 
-### Step 1: Install
+N.E.K.O. keeps the compatibility name **OpenClaw** for its QwenPaw integration. In this guide, the OpenClaw switch in N.E.K.O. connects to a separately running QwenPaw service.
 
-You do not need to configure Python manually. One command installs `uv`, creates a virtual environment, and installs QwenPaw with its dependencies. Note: this may not work in some network environments or under enterprise permission restrictions.
+## 1. Verify the source and install
+
+Use the current instructions from the [official QwenPaw repository](https://github.com/agentscope-ai/QwenPaw). The commands below download and execute a remote installation script. Review the script first if your security policy requires it; restricted networks or managed devices may block the installer.
 
 macOS / Linux:
 
@@ -12,82 +13,60 @@ macOS / Linux:
 curl -fsSL https://qwenpaw.agentscope.io/install.sh | bash
 ```
 
-Windows (PowerShell):
+Windows PowerShell:
 
 ```powershell
 irm https://qwenpaw.agentscope.io/install.ps1 | iex
 ```
 
-### Step 2: Initialize
+The installer prepares `uv`, an isolated environment, QwenPaw, and its dependencies. Open a new terminal after installation.
 
-After installation finishes, open a new terminal and run:
+## 2. Initialize
 
 ```bash
 qwenpaw init --defaults
 ```
 
-During initialization, QwenPaw shows a security warning explaining that the assistant runs in your local environment and that multiple users of the same instance would share access to files, commands, and secrets. Read it and type `yes` to continue.
+Read the security warning shown by QwenPaw before accepting it. One local instance can access the files, commands, and credentials available to its account; do not share it between untrusted users.
 
-![QwenPaw initialization security prompt](assets/openclaw_guide/image1.png)
+![QwenPaw initialization security notice](assets/openclaw_guide/image1.png)
 
-### Step 3: Start
-
-```bash
-qwenpaw app
-```
-
-If startup succeeds, the last line in the terminal will usually be:
-
-```text
-INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
-```
-
-After the service starts, visit `http://127.0.0.1:8088` to open the QwenPaw console.
-
-### Step 4: Replace Persona Files (Optional)
-
-After initialization, QwenPaw creates its configuration directory automatically:
-
-- Windows default: `C:\Users\YourUsername\.qwenpaw`
-- macOS default: `~/.qwenpaw`
-
-Because `.qwenpaw` is hidden:
-
-- On Windows, enable hidden items in File Explorer
-- On macOS, press `Command + Shift + .` in Finder
-
-If you want QwenPaw to behave like a clean backend executor for N.E.K.O, download this package:
-
-- [Replacement Files.zip](assets/openclaw_guide/替换文件.zip)
-
-Copy `SOUL.md`, `AGENTS.md`, and `PROFILE.md` from the archive into `.qwenpaw/workspaces/default`, overwrite the existing files, and delete `BOOTSTRAP.md` from that directory.
-
-Then stop QwenPaw with `CTRL+C` and restart it:
+## 3. Start and verify
 
 ```bash
 qwenpaw app
 ```
 
-## Basic Setup: Model Configuration
+The default console is `http://127.0.0.1:8088/`. Keep the terminal running and open that address in a browser. If it does not load, resolve the QwenPaw startup error before enabling N.E.K.O.
 
-Open the QwenPaw console, go to the Model page, and choose the provider you want to use. `DashScope` is a common beginner choice, but you can select another provider if your API key is for a different service.
+Do not expose the service outside localhost unless you understand and configure its authentication and network boundary.
 
-Open the provider settings, enter your API key, and save.
+## 4. Configure a model in QwenPaw
 
-![QwenPaw model configuration page](assets/openclaw_guide/image2.png)
+In the QwenPaw console, open the model page, choose a provider, enter the required credential, and save. Then return to chat and select the configured model. Available providers and model names belong to the installed QwenPaw version, so use its current UI rather than a copied list.
 
-After saving, return to the chat page and select the configured model.
+![QwenPaw model configuration](assets/openclaw_guide/image2.png)
 
-## Enable OpenClaw in N.E.K.O
+## 5. Optional: executor persona
 
-N.E.K.O still uses the internal name `openclaw`, so the `OpenClaw` toggle in the UI actually means QwenPaw.
+The bundled [replacement archive](/downloads/qwenpaw-executor-profile.zip) contains `SOUL.md`, `AGENTS.md`, and `PROFILE.md` for an executor-oriented profile. This step is optional and changes QwenPaw behavior.
 
-Follow this order:
+Before replacing anything:
 
-1. Open the NekoClaw panel in N.E.K.O
-2. Turn on the NekoClaw Master Switch first
-3. Make sure `openclawUrl` points to `http://127.0.0.1:8088`
-4. Turn on the `OpenClaw` sub-switch
-5. Wait for the availability check to pass
+1. stop QwenPaw and back up `.qwenpaw/workspaces/default`;
+2. inspect the archive and compare it with your current workspace;
+3. copy only the files you intend to replace.
 
-N.E.K.O will try the QwenPaw-compatible endpoint first and automatically fall back to the main `process` endpoint when needed. No custom channel setup is required for the main integration path.
+The default configuration directory is usually `%USERPROFILE%\.qwenpaw` on Windows or `~/.qwenpaw` on macOS/Linux. Removing `BOOTSTRAP.md` is only part of this optional executor-profile setup; it is not required for N.E.K.O. connectivity. Restart `qwenpaw app` after changes.
+
+## 6. Enable it in N.E.K.O.
+
+1. Start QwenPaw and keep it running.
+2. Open N.E.K.O.'s paw/Agent panel.
+3. Enable the Agent master switch.
+4. Enable the **OpenClaw** child switch.
+5. Wait for the availability check.
+
+N.E.K.O. defaults to `http://127.0.0.1:8088`. If QwenPaw uses another address, update `openclawUrl` (the adapter also accepts `qwenpawUrl`) in N.E.K.O.'s core configuration before retrying.
+
+The current adapter recognizes QwenPaw's v2 console API and legacy agent-compatible APIs. Availability checks probe `/api/version` and `/api/agent/health` as appropriate; requests then use the matching console or agent endpoint. You do not need to create a separate channel file for the default console setup.

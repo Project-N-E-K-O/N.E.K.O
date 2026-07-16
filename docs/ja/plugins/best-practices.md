@@ -66,6 +66,8 @@ class WellOrganizedPlugin(NekoPluginBase):
 | `error` | 注意が必要なエラー |
 | `exception` | スタックトレース付きエラー |
 
+raw conversation、user が入力した secret、その他 privacy-sensitive payload を persistent log に書かないでください。一時診断でどうしても表示する場合だけ明示的な `print()` path を使い、debug 後に削除します。raw private content を `self.logger` に渡してはいけません。通常の log は redacted length、ID、error type を優先します。
+
 ```python
 self.logger.debug(f"Processing item {item_id}")
 self.logger.info(f"Plugin started successfully")
@@ -185,10 +187,10 @@ async def on_shutdown(self, **_):
 プラグインをリリースする前に確認してください：
 
 - [ ] すべてのエントリーポイントが `Ok`/`Err` を返している（生の dict や例外ではなく）
-- [ ] `@lifecycle(id="startup")` と `@lifecycle(id="shutdown")` が実装されている
-- [ ] パラメーターを受け取るすべてのエントリーポイントに `input_schema` が定義されている
-- [ ] すべてのエントリーポイントのシグネチャに `**_` が含まれている
-- [ ] `print()` の代わりにロガーが使用されている
+- [ ] setup/cleanup が本当に必要な resource にだけ lifecycle hook を追加している
+- [ ] entry parameter に inferred schema、explicit `input_schema`、または Pydantic `params` model を適切に使っている
+- [ ] handler signature は消費する field だけを宣言し、追加 field を意図する場合だけ `**_` を使う
+- [ ] 通常 metadata は logger、raw privacy-sensitive content は logger に書かない
 - [ ] タイマーを使用する場合、共有状態がロックで保護されている
 - [ ] プラグイン間呼び出しが `Err` 結果を処理している
-- [ ] `plugin.toml` に正しい `entry` パスと SDK バージョン制約が設定されている
+- [ ] `plugin.toml` の host-loading `[plugin].entry` path と SDK version constraint が正しい

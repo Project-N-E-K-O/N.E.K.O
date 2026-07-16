@@ -1,10 +1,11 @@
-# 使用 NEKO 接入 QwenPaw
 
-## QwenPaw 安裝指南
+# 將 N.E.K.O. 接入 QwenPaw
 
-### 第一步：安裝
+為相容既有設定，N.E.K.O. 仍將 QwenPaw 整合稱為 **OpenClaw**。本指南中的 OpenClaw 開關會連線到另外執行的 QwenPaw 服務。
 
-無需手動配置 Python，一行指令就能自動完成安裝。腳本會自動安裝 `uv`、建立虛擬環境，並安裝 QwenPaw 與其依賴。注意：部分網路環境或企業權限管控下可能無法使用。
+## 1. 核對來源並安裝
+
+請以 [QwenPaw 官方儲存庫](https://github.com/agentscope-ai/QwenPaw)的目前說明為準。以下命令會下載並直接執行遠端安裝腳本；若安全政策有要求，請先審閱腳本。受限網路或受管裝置可能阻止安裝。
 
 macOS / Linux：
 
@@ -12,82 +13,60 @@ macOS / Linux：
 curl -fsSL https://qwenpaw.agentscope.io/install.sh | bash
 ```
 
-Windows（PowerShell）：
+Windows PowerShell：
 
 ```powershell
 irm https://qwenpaw.agentscope.io/install.ps1 | iex
 ```
 
-### 第二步：初始化
+安裝程式會準備 `uv`、隔離環境、QwenPaw 及其相依套件。完成後請開啟新的終端機。
 
-安裝完成後，請開啟新終端並執行：
+## 2. 初始化
 
 ```bash
 qwenpaw init --defaults
 ```
 
-初始化時會出現安全警告，提醒你 QwenPaw 執行於本機環境，如果多人共用同一個實例，將共享檔案、命令與金鑰權限。閱讀後輸入 `yes` 繼續即可。
+接受前請閱讀 QwenPaw 顯示的安全提示。同一個本機執行個體能存取其執行帳戶可用的檔案、命令及憑證；不要讓互不信任的使用者共用。
 
 ![QwenPaw 初始化安全提示](assets/openclaw_guide/image1.png)
 
-### 第三步：啟動
+## 3. 啟動並確認
 
 ```bash
 qwenpaw app
 ```
 
-啟動成功後，終端最後一行通常會顯示：
+預設主控台位址是 `http://127.0.0.1:8088/`。保持終端機執行，並在瀏覽器開啟該位址。若頁面無法載入，請先處理 QwenPaw 啟動錯誤，再啟用 N.E.K.O.。
 
-```text
-INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
-```
+除非已了解並設定驗證與網路邊界，否則不要將服務暴露到 localhost 之外。
 
-服務啟動後，造訪 `http://127.0.0.1:8088`，即可看到 QwenPaw 控制台。
+## 4. 在 QwenPaw 中設定模型
 
-### 第四步：替換人設檔案（非必須）
-
-初始化完成後，QwenPaw 會自動建立設定目錄：
-
-- Windows 預設為 `C:\Users\你的使用者名稱\.qwenpaw`
-- macOS 預設為 `~/.qwenpaw`
-
-因為 `.qwenpaw` 是隱藏資料夾，如有需要請先顯示隱藏檔案。
-
-- Windows：在檔案總管顯示隱藏項目
-- macOS：在 Finder 按 `Command + Shift + .`
-
-如果你希望 QwenPaw 以 N.E.K.O 的純後台執行器身份工作，可以下載以下替換包：
-
-- [替換文件.zip](assets/openclaw_guide/替换文件.zip)
-
-將壓縮檔中的 `SOUL.md`、`AGENTS.md`、`PROFILE.md` 複製到 `.qwenpaw/workspaces/default` 中覆蓋原檔，並刪除該資料夾裡的 `BOOTSTRAP.md`。
-
-完成後，先用 `CTRL+C` 停止目前的 QwenPaw，再重新執行：
-
-```bash
-qwenpaw app
-```
-
-## 基礎設定：模型設定
-
-打開 QwenPaw 控制台後，進入「模型」頁面，選擇你要使用的模型提供商。新手最常見的是 `DashScope`，也可以根據自己的 API Key 選擇其他提供商。
-
-點擊設定，填入 API Key 後儲存。
+在 QwenPaw 主控台開啟模型頁面，選擇 provider，填入所需憑證並儲存；再回到聊天頁選擇已設定的模型。可用 provider 與模型名稱由目前安裝的 QwenPaw 版本決定，請以即時介面為準，不要依賴複製的清單。
 
 ![QwenPaw 模型設定頁面](assets/openclaw_guide/image2.png)
 
-儲存後回到聊天頁面，就能選擇剛剛配置好的模型。
+## 5. 選用：執行器人設
 
-## 在 N.E.K.O 中啟用 OpenClaw
+隨文件提供的[替換檔案包](/downloads/qwenpaw-executor-profile.zip)包含 `SOUL.md`、`AGENTS.md` 與 `PROFILE.md`，可用於偏執行器的人設。此步驟不是連線 N.E.K.O. 的必要條件，而且會改變 QwenPaw 行為。
 
-N.E.K.O 內部仍沿用 `openclaw` 這個名稱，所以介面中的 `OpenClaw` 開關實際上對應的就是 QwenPaw。
+替換前：
 
-請依照以下順序操作：
+1. 停止 QwenPaw，並備份 `.qwenpaw/workspaces/default`；
+2. 檢查壓縮檔內容，與目前 workspace 比較；
+3. 只複製確認要替換的檔案。
 
-1. 打開 N.E.K.O 的貓爪面板
-2. 先開啟貓爪總開關
-3. 確認 `openclawUrl` 指向 `http://127.0.0.1:8088`
-4. 再開啟 `OpenClaw` 子開關
-5. 等待可用性檢查通過
+設定目錄通常位於 Windows 的 `%USERPROFILE%\.qwenpaw`，或 macOS/Linux 的 `~/.qwenpaw`。刪除 `BOOTSTRAP.md` 只屬於這套選用執行器人設流程，並非連線 N.E.K.O. 的要求。修改後重新執行 `qwenpaw app`。
 
-N.E.K.O 會優先嘗試 QwenPaw 的相容端點；若有需要，也會自動回退到主 `process` 端點。主接入流程不需要額外配置自訂頻道。
+## 6. 在 N.E.K.O. 中啟用
+
+1. 啟動 QwenPaw 並保持執行。
+2. 開啟 N.E.K.O. 的貓爪／Agent 面板。
+3. 開啟 Agent 總開關。
+4. 開啟 **OpenClaw** 子開關。
+5. 等待可用性檢查。
+
+N.E.K.O. 預設連線 `http://127.0.0.1:8088`。若 QwenPaw 使用其他位址，請在 N.E.K.O. 的 core 設定中更新 `openclawUrl`（adapter 也接受 `qwenpawUrl`），再重試。
+
+目前 adapter 同時識別 QwenPaw v2 主控台 API 與舊版 agent 相容 API。可用性檢查會依實際版本探測 `/api/version` 或 `/api/agent/health`，之後使用相符的主控台或 agent endpoint。預設 console 情境不需要另建 channel 檔案。

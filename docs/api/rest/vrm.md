@@ -6,6 +6,10 @@ Manages VRM (3D) models — listing, uploading, animation management, and emotio
 
 ## Models
 
+### `GET /api/model/vrm/config`
+
+Return the runtime path configuration for user VRM files, bundled VRM files, and bundled animations. This is a frontend integration response; its filesystem paths are not a portable public schema.
+
 ### `GET /api/model/vrm/models`
 
 List all available VRM models.
@@ -53,3 +57,7 @@ Get emotion-to-animation mappings for a specific VRM model.
 ### `POST /api/model/vrm/emotion_mapping/{model_name}`
 
 Update emotion mappings for a specific VRM model.
+
+### `GET /api/model/vrm/expressions/{model_name}`
+
+Return a common reference expression list. The handler does **not** parse the named VRM file; the frontend discovers the model's actual expressions after loading it. Do not use this response as model-specific capability detection.

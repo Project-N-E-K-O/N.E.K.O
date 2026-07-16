@@ -49,8 +49,8 @@ auto_start = true
 ```
 
 关键点：
-- `id` 必须和文件夹名一致（`hello_world`）
-- `entry` 告诉 N.E.K.O 加载哪个类 — 格式是 `模块路径:类名`
+- `id` 是全局唯一插件 ID。建议与文件夹名保持一致（`hello_world`），避免 profile 查找和工具处理目录不匹配。
+- `[plugin].entry` 告诉宿主加载哪个类，格式是 `模块路径:类名`；它不是下文的运行时 `entry_id`。
 - `auto_start = true` 表示 N.E.K.O 启动时自动运行这个插件
 
 ## 第三步：创建 `__init__.py`
@@ -84,6 +84,8 @@ class HelloWorldPlugin(NekoPluginBase):
 | `= "World"` | 默认值，不传参数时使用 |
 | `Ok({...})` | 返回成功结果 |
 
+这里的运行时入口 ID 是 `greet`。用户插件 Agent 路由选择它时会返回 `plugin_id="hello_world"` 和 `entry_id="greet"`，宿主会严格校验两者。这与使用 `@llm_tool` 注册对话期 LLM 工具是两套不同机制。
+
 ## 第四步：运行
 
 1. 启动（或重启）N.E.K.O
@@ -112,7 +114,8 @@ return Ok({"message": f"嘿 {name}，欢迎来到 N.E.K.O！"})
 |---|---|
 | 添加更多功能和参数 | [SDK 参考](./sdk-reference) |
 | 在启动/关闭时执行代码 | [装饰器](./decorators) |
-| 让 AI 在聊天中调用我的插件 | [LLM Tool Calling](./tool-calling) |
+| 让用户插件 Agent 路由选择入口 | [入口与参数](./entries) |
+| 注册对话期 LLM 工具 | [LLM Tool Calling](./tool-calling) |
 | 给插件做一个 UI 面板 | [Hosted UI](./hosted-ui) |
 | 看真实的插件示例 | [示例](./examples) |
 | 正确处理错误 | [最佳实践](./best-practices) |
