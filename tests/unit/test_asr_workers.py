@@ -1185,6 +1185,211 @@ async def test_soniox_manual_finalize_waits_for_fin(monkeypatch) -> None:
     await _stop_worker(task, requests, responses)
 
 
+@pytest.mark.parametrize("disconnect_at", ["before_send", "send_raises", "after_send"])
+async def test_soniox_manual_reconnect_replays_pending_finalize(
+    monkeypatch, disconnect_at: str
+) -> None:
+    finalize_started = asyncio.Event()
+
+    class FirstWebSocket(_FakeWebSocket):
+        async def send(self, payload: str | bytes) -> None:
+            is_finalize = (
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "finalize"
+            )
+            if not is_finalize:
+                await super().send(payload)
+                return
+            finalize_started.set()
+            if disconnect_at == "before_send":
+                await asyncio.Event().wait()
+            if disconnect_at == "send_raises":
+                raise RuntimeError("disconnect while sending finalize")
+            await super().send(payload)
+            await self.server_end()
+
+    async def complete_on_finalize(
+        ws: _FakeWebSocket, payload: str | bytes
+    ) -> None:
+        if isinstance(payload, str) and json.loads(payload).get("type") == "finalize":
+            await ws.server_send(
+                {
+                    "tokens": [
+                        {"text": "replayed manual", "is_final": True},
+                        {"text": "<fin>", "is_final": True},
+                    ]
+                }
+            )
+
+    first = FirstWebSocket()
+    second = _FakeWebSocket(on_send=complete_on_finalize)
+    third = _FakeWebSocket()
+    connector = _FakeConnector(first, second, third)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x30\x20" * 320
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=3,
+            buffer_epoch=4,
+            utterance_id=5,
+            audio=pcm,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit",
+            generation=3,
+            buffer_epoch=4,
+            utterance_id=5,
+        )
+    )
+    await finalize_started.wait()
+    if disconnect_at == "before_send":
+        await first.server_end()
+
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(
+        lambda: any(
+            isinstance(payload, str)
+            and json.loads(payload).get("type") == "finalize"
+            for payload in second.sent
+        )
+    )
+    second_types = [
+        "audio"
+        if isinstance(payload, bytes)
+        else json.loads(payload).get("type")
+        for payload in second.sent
+    ]
+    assert second_types[:3] == [None, "audio", "finalize"]
+    assert (await _next_event(responses, "final")).text == "replayed manual"
+
+    await second.server_end()
+    await _wait_until(lambda: len(connector.calls) == 3)
+    await asyncio.sleep(0)
+    assert not any(
+        isinstance(payload, str)
+        and json.loads(payload).get("type") == "finalize"
+        for payload in third.sent
+    )
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=3,
+        buffer_epoch=4,
+        utterance_id=6,
+    )
+
+
+async def test_soniox_manual_clear_discards_pending_finalize(monkeypatch) -> None:
+    websocket = _FakeWebSocket()
+    replacement = _FakeWebSocket()
+    connector = _FakeConnector(websocket, replacement)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio", generation=1, buffer_epoch=2, utterance_id=3, audio=b"\0\0"
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit", generation=1, buffer_epoch=2, utterance_id=3
+        )
+    )
+    await _wait_until(
+        lambda: any(
+            isinstance(payload, str)
+            and json.loads(payload).get("type") == "finalize"
+            for payload in websocket.sent
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="clear", generation=1, buffer_epoch=3, utterance_id=4
+        )
+    )
+    await _wait_until(lambda: len(connector.calls) == 2)
+    assert not any(
+        isinstance(payload, str)
+        and json.loads(payload).get("type") == "finalize"
+        for payload in replacement.sent
+    )
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=1,
+        buffer_epoch=3,
+        utterance_id=4,
+    )
+
+
+async def test_soniox_empty_fin_clears_pending_finalize(monkeypatch) -> None:
+    async def finish_empty(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload).get("type") == "finalize":
+            await ws.server_send(
+                {"tokens": [{"text": "<fin>", "is_final": True}]}
+            )
+
+    first = _FakeWebSocket(on_send=finish_empty)
+    second = _FakeWebSocket()
+    connector = _FakeConnector(first, second)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio", generation=0, buffer_epoch=0, utterance_id=1, audio=b"\0\0"
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=1)
+    )
+    await asyncio.wait_for(requests.join(), 1)
+    await asyncio.sleep(0)
+    await first.server_end()
+    await _wait_until(lambda: len(connector.calls) == 2)
+    assert not any(
+        isinstance(payload, str)
+        and json.loads(payload).get("type") == "finalize"
+        for payload in second.sent
+    )
+    await _stop_worker(task, requests, responses)
+
+
 async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> None:
     first = _FakeWebSocket()
     second = _FakeWebSocket()

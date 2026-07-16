@@ -48,6 +48,13 @@ _RETRY_BACKOFF_BASE_SECONDS = 0.5
 _ConnectionAction = Literal["shutdown", "reconnect", "reset", "rotate", "failed"]
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingFinalize:
+    generation: int
+    buffer_epoch: int
+    utterance_id: int
+
+
 @dataclass(slots=True)
 class SonioxUtteranceState:
     generation: int = 0
@@ -152,6 +159,7 @@ async def soniox_asr_worker(
     audio_frame_count = 0
     audio_bytes_sent = 0
     websocket = None
+    pending_finalize: _PendingFinalize | None = None
     worker_started_at = time.monotonic()
 
     async def emit_error(code: str, message: str) -> None:
@@ -212,12 +220,19 @@ async def soniox_asr_worker(
         )
 
     async def complete_utterance() -> None:
-        nonlocal reconnect_attempted
+        nonlocal pending_finalize, reconnect_attempted
         if state.completed:
             return
+        had_pending_finalize = pending_finalize is not None
+        pending_finalize = None
         text = "".join(state.final_tokens).strip()
         if not text:
-            if state.speech_started or state.provisional_tokens or replay_audio:
+            if (
+                had_pending_finalize
+                or state.speech_started
+                or state.provisional_tokens
+                or replay_audio
+            ):
                 replay_audio.clear()
                 reconnect_attempted = False
                 state.reset_for_next()
@@ -326,6 +341,7 @@ async def soniox_asr_worker(
 
     async def send_requests(connection, connected_at: float) -> _ConnectionAction:
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
+        nonlocal pending_finalize
         while True:
             try:
                 request = await asyncio.wait_for(
@@ -361,9 +377,15 @@ async def soniox_asr_worker(
                             "Soniox endpoint mode received an unexpected finalize",
                         )
                         return "failed"
+                    pending_finalize = _PendingFinalize(
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=request.utterance_id,
+                    )
                     await connection.send(json.dumps({"type": "finalize"}))
                     continue
                 if request.kind == "clear":
+                    pending_finalize = None
                     replay_audio.clear()
                     state.reset_transport(
                         generation=request.generation,
@@ -392,6 +414,8 @@ async def soniox_asr_worker(
             await websocket.send(json.dumps(_soniox_config(api_key, config)))
             if replay_audio:
                 await websocket.send(bytes(replay_audio))
+            if pending_finalize is not None:
+                await websocket.send(json.dumps({"type": "finalize"}))
             if not ready_sent:
                 ready_sent = True
                 await response_queue.put(

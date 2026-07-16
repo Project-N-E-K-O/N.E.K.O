@@ -140,6 +140,10 @@ def test_public_exports_are_frozen():
 
 def test_routes_fail_synchronously_without_dummy(monkeypatch):
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASSIST_API_KEY_QWEN", raising=False)
+    monkeypatch.delenv("ASSIST_API_KEY_QWEN_INTL", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
     callback = AsyncMock()
 
     with pytest.raises(RuntimeError, match="ASR_UNKNOWN_CORE"):
@@ -193,6 +197,52 @@ def test_dummy_requires_explicit_override_and_manual_mode(monkeypatch):
             on_input_transcript=callback,
             on_connection_error=callback,
         )
+
+
+def test_dummy_override_is_resolved_before_auto_soniox(monkeypatch):
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setenv("SONIOX_API_KEY", "soniox-key")
+    monkeypatch.setattr(
+        asr_client,
+        "_mapped_soniox_region",
+        lambda _region: (_ for _ in ()).throw(
+            AssertionError("dummy selection must not initialize Soniox region")
+        ),
+    )
+
+    selection = asr_client._resolve_asr_selection(
+        "qwen",
+        routing_mode="auto",
+        user_region="us",
+    )
+    assert selection.provider_key == "dummy"
+    assert selection.soniox_region is None
+    assert selection.turn_capabilities.provider_endpoint is False
+
+    forced_core = asr_client._resolve_asr_selection(
+        "qwen",
+        routing_mode="core",
+        user_region="us",
+        force_core=True,
+    )
+    assert forced_core.provider_key == "dummy"
+
+
+def test_worker_resolution_consumes_selection_not_environment(monkeypatch):
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_QWEN": "qwen-key"},
+    )
+
+    worker, key, provider = asr_client._get_asr_worker(
+        "qwen",
+        provider_key_override="qwen",
+    )
+    assert provider == "qwen"
+    assert key == "qwen-key"
+    assert worker.keywords == {"region": "cn"}
 
 
 def test_phase2_registry_routes_and_capabilities():

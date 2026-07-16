@@ -86,6 +86,7 @@ class IndependentAsrRuntime:
             core_type,
             routing_mode=routing_mode,
             user_region=user_region,
+            include_dev_override=asr_session is None,
         )
         self._provider_key = selection.provider_key
         self._selection_mode = selection.routing_mode

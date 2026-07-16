@@ -725,6 +725,83 @@ async def test_provider_endpoint_skips_smart_turn_and_commits_only_final():
 
 
 @pytest.mark.asyncio
+async def test_injected_asr_session_ignores_dummy_dev_override(monkeypatch):
+    import main_logic.asr_client as asr_client_module
+
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        asr_client_module,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "soniox-key"},
+    )
+
+    async def noop(*_args):
+        return None
+
+    runtime = IndependentAsrRuntime(
+        core_type="qwen",
+        on_caption=noop,
+        on_turn_complete=noop,
+        on_speech_started=noop,
+        on_connection_error=noop,
+        smart_turn_config=SmartTurnConfig(enabled=True),
+        asr_session=_FakeAsr(),
+        predictor=_FakePredictor(),
+        vad=_FakeVad(),
+        routing_mode="auto",
+        user_region="us",
+        provider_endpoint=True,
+    )
+
+    assert runtime.provider_key == "soniox"
+    assert runtime.turn_boundary_owner == "provider"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_dummy_runtime_and_worker_share_manual_selection(monkeypatch):
+    import main_logic.asr_client as asr_client_module
+    import main_logic.core.asr_runtime as asr_runtime_module
+
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setattr(
+        asr_client_module,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "soniox-key"},
+    )
+
+    created_configs = []
+    fake_asr = _FakeAsr()
+
+    def create_session(*_args, **kwargs):
+        created_configs.append(kwargs["config"])
+        return fake_asr
+
+    monkeypatch.setattr(asr_runtime_module, "create_asr_session", create_session)
+
+    async def noop(*_args):
+        return None
+
+    runtime = IndependentAsrRuntime(
+        core_type="qwen",
+        on_caption=noop,
+        on_turn_complete=noop,
+        on_speech_started=noop,
+        on_connection_error=noop,
+        smart_turn_config=SmartTurnConfig(enabled=True),
+        predictor=_FakePredictor(),
+        vad=_FakeVad(),
+        routing_mode="auto",
+        user_region="us",
+    )
+
+    assert runtime.provider_key == "dummy"
+    assert runtime.turn_boundary_owner == "smart_turn"
+    assert created_configs[0].endpointing_mode == "manual"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_auto_soniox_connect_failure_falls_back_before_audio(monkeypatch):
     import main_logic.core.asr_runtime as asr_runtime_module
     import utils.config_manager as config_manager

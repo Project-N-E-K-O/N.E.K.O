@@ -155,6 +155,7 @@ def _resolve_asr_selection(
     routing_mode: str | None = None,
     user_region: str | None = None,
     force_core: bool = False,
+    include_dev_override: bool = True,
 ) -> _AsrSelection:
     core_key = str(core_type or "").strip().lower()
     route = _CORE_ASR_ROUTES.get(core_key)
@@ -172,6 +173,25 @@ def _resolve_asr_selection(
     mode = str(raw_mode).strip().lower()
     if mode not in {"auto", "core", "soniox"}:
         raise RuntimeError("ASR_INVALID_CONFIG: routing mode must be auto, core, or soniox")
+
+    provider_override = (
+        os.getenv("ASR_PROVIDER", "").strip().lower()
+        if include_dev_override
+        else ""
+    )
+    if provider_override:
+        if provider_override != "dummy":
+            raise RuntimeError(
+                "ASR_INVALID_CONFIG: ASR_PROVIDER only supports the development "
+                "value 'dummy'"
+            )
+        meta = _ASR_PROVIDER_REGISTRY["dummy"]
+        return _AsrSelection(
+            provider_key="dummy",
+            routing_mode=mode,  # type: ignore[arg-type]
+            soniox_region=None,
+            turn_capabilities=meta.turn_capabilities,
+        )
 
     resolved_user_region = str(
         user_region
@@ -219,16 +239,7 @@ def _get_asr_worker(
     if route is None:
         raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
 
-    provider_override = os.getenv("ASR_PROVIDER", "").strip().lower()
-    if provider_override:
-        if provider_override != "dummy":
-            raise RuntimeError(
-                "ASR_INVALID_CONFIG: ASR_PROVIDER only supports the development "
-                "value 'dummy'"
-            )
-        provider_key = "dummy"
-    else:
-        provider_key = provider_key_override or route.provider_key
+    provider_key = provider_key_override or route.provider_key
 
     meta = _ASR_PROVIDER_REGISTRY[provider_key]
     if endpointing_mode not in meta.supported_endpointing_modes:
