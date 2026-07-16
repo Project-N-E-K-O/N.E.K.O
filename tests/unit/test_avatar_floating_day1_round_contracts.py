@@ -581,6 +581,8 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence'" in overlay_source
     assert "YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3" in interpage_source
     assert "PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3" in overlay_source
+    assert "YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48" in interpage_source
+    assert "PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48" in overlay_source
     assert "function nextYuiGuidePcOverlaySequence(minimumSequence)" in interpage_source
     assert "const nextSequence = (minimumSequence) => {" in overlay_source
     assert "window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY)" in interpage_source
@@ -599,6 +601,12 @@ def test_pc_overlay_sequence_collision_retries_without_rotating_tutorial_run():
     assert "nextSequence(result.activeSequence)" in overlay_source
     assert "retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in interpage_source
     assert "retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in overlay_source
+    assert "retryCount === YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in interpage_source
+    assert "retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES" in overlay_source
+    assert "scheduleYuiGuidePcOverlayDeferredReconciliation(" in interpage_source
+    assert "scheduleDeferredReconciliation(retryCount)" in overlay_source
+    assert "attemptedSequence !== yuiGuidePcOverlaySequence" in interpage_source
+    assert "attemptedSequence !== sequence" in overlay_source
 
 
 def test_pc_overlay_screen_coordinates_use_niri_virtual_origin_and_crop_safe_area():
@@ -792,7 +800,7 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
 
     assert "const payload = completeStateStore.applyPatch({ cursor: cursor });" in cursor_only_block
     assert "const payload = { cursor: cursor };" not in cursor_only_block
-    assert "handleCursorOnlyStaleResult(result, cursor, retried, updateRunId);" in cursor_only_block
+    assert "handleCursorOnlyStaleResult(result, cursor, retryCount, updateRunId, updateSequence);" in cursor_only_block
     assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" not in cursor_only_block
     assert "result && result.ok === false" in cursor_only_block
     assert "moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs)" in overlay_source

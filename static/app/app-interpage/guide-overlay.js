@@ -22,6 +22,7 @@
     I.YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence';
     var YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
+    var YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     I.yuiGuidePcOverlayActive = false;
     I.yuiGuidePcOverlayReady = false;
     I.yuiGuidePcOverlayRunIdOverride = '';
@@ -30,6 +31,7 @@
     I.yuiGuidePcOverlayLifecycleClosed = false;
     var yuiGuidePcOverlayLifecycleRunId = '';
     var yuiGuidePcOverlaySequence = 0;
+    var yuiGuidePcOverlayDeferredReconciliationTimer = 0;
     I.yuiGuidePcOverlaySpotlights = [];
     I.yuiGuidePcOverlayCursor = null;
     I.yuiGuideChatSpotlightLastPcKind = '';
@@ -273,6 +275,7 @@
     }
 
     I.closeYuiGuidePcOverlayLifecycle = function closeYuiGuidePcOverlayLifecycle() {
+        clearYuiGuidePcOverlayDeferredReconciliation();
         yuiGuidePcOverlayLifecycleEpoch += 1;
         I.yuiGuidePcOverlayLifecycleClosed = true;
         yuiGuidePcOverlayLifecycleRunId = '';
@@ -306,12 +309,48 @@
         } catch (_) {}
     }
 
-    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch) {
+    function clearYuiGuidePcOverlayDeferredReconciliation() {
+        if (yuiGuidePcOverlayDeferredReconciliationTimer) {
+            window.clearTimeout(yuiGuidePcOverlayDeferredReconciliationTimer);
+            yuiGuidePcOverlayDeferredReconciliationTimer = 0;
+        }
+    }
+
+    function scheduleYuiGuidePcOverlayDeferredReconciliation(
+        patch,
+        attemptedRunId,
+        retryCount,
+        attemptedLifecycleEpoch
+    ) {
+        clearYuiGuidePcOverlayDeferredReconciliation();
+        yuiGuidePcOverlayDeferredReconciliationTimer = window.setTimeout(function () {
+            yuiGuidePcOverlayDeferredReconciliationTimer = 0;
+            if (
+                I.yuiGuidePcOverlayLifecycleClosed
+                || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+            ) {
+                return;
+            }
+            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
+                tutorialRunId: attemptedRunId
+            });
+        }, YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
+    }
+
+    function handleYuiGuidePcOverlayStaleResult(
+        result,
+        patch,
+        attemptedRunId,
+        retried,
+        attemptedLifecycleEpoch,
+        attemptedSequence
+    ) {
         var isStaleResponse = !!(result && result.stale === true);
         var retryCount = Math.max(0, Math.floor(Number(retried) || 0));
         if (
             I.yuiGuidePcOverlayLifecycleClosed
             || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+            || attemptedSequence !== yuiGuidePcOverlaySequence
         ) {
             return;
         }
@@ -324,21 +363,30 @@
             && attemptedRunId === storedCanonicalRunId
             && !attemptedChatOwnedRun
         );
-
-        if (
+        var isSameRunSequenceStale = !!(
             isStaleResponse
-            && retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
             && result.reason === 'stale-sequence'
             && result.activeTutorialRunId === attemptedRunId
             && (
                 attemptedCanonicalRun
                 || (attemptedCurrentRun && attemptedChatOwnedRun)
             )
-        ) {
-            yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
-            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
-                tutorialRunId: attemptedRunId
-            });
+        );
+
+        if (isSameRunSequenceStale) {
+            if (retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
+                I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
+                    tutorialRunId: attemptedRunId
+                });
+            } else if (retryCount === YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                scheduleYuiGuidePcOverlayDeferredReconciliation(
+                    patch,
+                    attemptedRunId,
+                    retryCount,
+                    attemptedLifecycleEpoch
+                );
+            }
             return;
         }
 
@@ -705,6 +753,10 @@
         if (!host || I.yuiGuidePcOverlayLifecycleClosed) {
             return false;
         }
+        var retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+        if (retryCount === 0) {
+            clearYuiGuidePcOverlayDeferredReconciliation();
+        }
         var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;
         var sendOptions = options || {};
         if (I.isYuiGuidePcOverlayRunEnded(sendOptions.tutorialRunId)) {
@@ -759,11 +811,12 @@
             } catch (_) {}
         }
         yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence();
+        var updateSequence = yuiGuidePcOverlaySequence;
         try {
             Promise.resolve(host.update({
                 tutorialRunId: runId,
                 sceneId: 'external-chat',
-                sequence: yuiGuidePcOverlaySequence,
+                sequence: updateSequence,
                 payload: payload
             })).then(function (result) {
                 if (
@@ -777,8 +830,9 @@
                         result,
                         patch,
                         runId,
-                        retried,
-                        sendLifecycleEpoch
+                        retryCount,
+                        sendLifecycleEpoch,
+                        updateSequence
                     );
                     return;
                 }

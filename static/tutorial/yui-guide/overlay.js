@@ -12,6 +12,7 @@
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
     const PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
+    const PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
     const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
     const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
@@ -112,6 +113,7 @@
         let remoteReady = false;
         let failed = false;
         let lastKey = '';
+        let deferredReconciliationTimer = 0;
         const createCompleteStateStore = OverlayRendererApi.createPcOverlayCompleteStateStore
             || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.createPcOverlayCompleteStateStore);
         if (typeof createCompleteStateStore !== 'function') {
@@ -166,19 +168,43 @@
             return sequence;
         };
 
-        const handleStaleResult = (result, patch, force, retried, attemptedRunId) => {
+        const clearDeferredReconciliation = () => {
+            if (deferredReconciliationTimer) {
+                window.clearTimeout(deferredReconciliationTimer);
+                deferredReconciliationTimer = 0;
+            }
+        };
+        const scheduleDeferredReconciliation = (retryCount) => {
+            clearDeferredReconciliation();
+            deferredReconciliationTimer = window.setTimeout(() => {
+                deferredReconciliationTimer = 0;
+                if (cleared) {
+                    return;
+                }
+                send({}, true, retryCount + 1);
+            }, PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
+        };
+
+        const handleStaleResult = (result, patch, force, retried, attemptedRunId, attemptedSequence) => {
             const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
-            if (
+            if (attemptedSequence !== sequence) {
+                return;
+            }
+            const isSameRunSequenceStale = !!(
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
-                && retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
                 && !cleared
                 && attemptedRunId === runId
-            ) {
-                sequence = nextSequence(result.activeSequence);
-                send(patch, true, retryCount + 1);
+            );
+            if (isSameRunSequenceStale) {
+                if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    sequence = nextSequence(result.activeSequence);
+                    send(patch, true, retryCount + 1);
+                } else if (retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount);
+                }
                 return;
             }
             if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
@@ -191,19 +217,26 @@
             rotateRunId();
             send(patch, force, retryCount + 1);
         };
-        const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
+        const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId, attemptedSequence) => {
             const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
-            if (
+            if (attemptedSequence !== sequence) {
+                return;
+            }
+            const isSameRunSequenceStale = !!(
                 result
                 && result.stale === true
                 && result.reason === 'stale-sequence'
                 && result.activeTutorialRunId === attemptedRunId
-                && retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES
                 && !cleared
                 && attemptedRunId === runId
-            ) {
-                sequence = nextSequence(result.activeSequence);
-                sendCursorOnly(cursor, retryCount + 1);
+            );
+            if (isSameRunSequenceStale) {
+                if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    sequence = nextSequence(result.activeSequence);
+                    sendCursorOnly(cursor, retryCount + 1);
+                } else if (retryCount === PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount);
+                }
                 return;
             }
             if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
@@ -489,6 +522,10 @@
             if (cleared) {
                 return;
             }
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (retryCount === 0) {
+                clearDeferredReconciliation();
+            }
             syncRunIdFromStorage();
             const payload = completeStateStore.applyPatch(patch || {});
             const key = JSON.stringify(payload || {});
@@ -520,16 +557,17 @@
                 }
             }
             sequence = nextSequence();
+            const updateSequence = sequence;
             const updateRunId = runId;
             try {
                 Promise.resolve(host.update({
                     tutorialRunId: runId,
                     sceneId: doc && doc.body ? (doc.body.getAttribute('data-yui-guide-scene') || '') : '',
-                    sequence: sequence,
+                    sequence: updateSequence,
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleStaleResult(result, patch, force, retried, updateRunId);
+                        handleStaleResult(result, patch, force, retryCount, updateRunId, updateSequence);
                         return;
                     }
                     if (result && result.ok === false) {
@@ -553,6 +591,10 @@
         const sendCursorOnly = (cursor, retried) => {
             if (cleared || !cursor) {
                 return;
+            }
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (retryCount === 0) {
+                clearDeferredReconciliation();
             }
             syncRunIdFromStorage();
             const payload = completeStateStore.applyPatch({ cursor: cursor });
@@ -580,16 +622,17 @@
                 }
             }
             sequence = nextSequence();
+            const updateSequence = sequence;
             const updateRunId = runId;
             try {
                 Promise.resolve(host.update({
                     tutorialRunId: runId,
                     sceneId: doc && doc.body ? (doc.body.getAttribute('data-yui-guide-scene') || '') : '',
-                    sequence: sequence,
+                    sequence: updateSequence,
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleCursorOnlyStaleResult(result, cursor, retried, updateRunId);
+                        handleCursorOnlyStaleResult(result, cursor, retryCount, updateRunId, updateSequence);
                         return;
                     }
                     if (result && result.ok === false) {
@@ -705,6 +748,7 @@
                 }, durationMs + 900);
             },
             clear() {
+                clearDeferredReconciliation();
                 active = false;
                 cleared = true;
                 lastKey = '';

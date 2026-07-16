@@ -777,7 +777,7 @@
                 // applyYuiGuideChatCursor owns the request generation. Capture its resulting token so
                 // the post-expansion retry remains current until a newer cursor command supersedes it.
                 var cursorRequestToken = I.yuiGuideChatCursorRequestToken;
-                var retryCursorOptions = cursorApplied
+                var retryCursorOptions = cursorApplied && cursorOptions.effect === 'click'
                     ? Object.assign({}, cursorOptions, {
                         effect: '',
                         effectDurationMs: 0
