@@ -696,7 +696,6 @@ async def _wait_for_merged_servers_ready(
     import asyncio
 
     deadline = asyncio.get_running_loop().time() + timeout
-    last_issues = [f"{name}:{port}:not_checked" for _app, port, name in apps]
     while True:
         if completed := _completed_merged_server(tasks):
             raise RuntimeError(f"Merged startup failed: {completed}")
@@ -928,12 +927,12 @@ def run_merged_servers() -> int:
             )
             for name, server in servers_by_name.items()
         }
-        startup_error: BaseException | None = None
+        startup_error: Exception | None = None
         unexpected_exit: str | None = None
         try:
             try:
                 await _wait_for_merged_servers_ready(_apps, tasks)
-            except BaseException as exc:
+            except Exception as exc:
                 if not _exiting:
                     startup_error = exc
                     _begin_merged_shutdown(reason="startup_failure")
@@ -1860,13 +1859,19 @@ def register_shutdown_hooks():
     atexit.register(cleanup_servers)
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Failed to register SIGTERM shutdown hook: %s",
+            exc,
+        )
     if hasattr(signal, "SIGBREAK"):
         try:
             signal.signal(signal.SIGBREAK, _handle_termination_signal)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to register SIGBREAK shutdown hook: %s",
+                exc,
+            )
 
 def _ensure_playwright_browsers():
     """Auto-install Playwright Chromium if missing (needed by browser-use).
