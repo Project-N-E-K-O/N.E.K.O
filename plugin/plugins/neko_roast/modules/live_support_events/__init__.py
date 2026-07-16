@@ -25,6 +25,7 @@ from ..live_events.provider_event import (
     event_nickname,
     event_room_id,
     event_room_ref,
+    event_session_generation,
     event_signal_fields,
     event_text,
     event_type,
@@ -57,13 +58,19 @@ class LiveSupportEventsModule(BaseModule):
             if callable(unsubscribe):
                 unsubscribe()
         self._unsubscribes = []
+        self.reset()
         pending = [task for task in list(self._tasks) if not task.done()]
-        for task in pending:
-            task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._tasks.clear()
         await super().teardown()
+
+    def reset(self) -> None:
+        for task in list(self._tasks):
+            if not task.done():
+                task.cancel()
+        self._last_event_at = 0.0
+        self._last_event_type = ""
 
     def status(self) -> dict[str, Any]:
         return {
@@ -83,9 +90,17 @@ class LiveSupportEventsModule(BaseModule):
             return
         raw = getattr(event, "raw", None)
         support_event = raw if raw is not None else event
-        if not is_signal_only(support_event):
+        if is_signal_only(event):
+            selected_event_type = event_type(event)
+        elif is_signal_only(support_event):
+            selected_event_type = event_type(support_event)
+        else:
             return
-        payload = self._payload_for_event(support_event)
+        payload = self._payload_for_event(
+            support_event,
+            event_type_hint=selected_event_type,
+            fallback_event=event,
+        )
         if not payload.get("uid"):
             return
         self._last_event_at = time.time()
@@ -94,7 +109,7 @@ class LiveSupportEventsModule(BaseModule):
             self.ctx,
             payload,
             stage="live_support_events.receive",
-            status="ok",
+            status="received",
             reason=f"support {self._last_event_type}",
             route=self.id,
         )
@@ -102,20 +117,45 @@ class LiveSupportEventsModule(BaseModule):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def _payload_for_event(self, event: Any) -> dict[str, Any]:
-        selected_event_type = event_type(event)
+    def _payload_for_event(
+        self,
+        event: Any,
+        *,
+        event_type_hint: str = "",
+        fallback_event: Any = None,
+    ) -> dict[str, Any]:
+        selected_event_type = event_type_hint or event_type(event)
+
+        def first_text(extractor: Any) -> str:
+            return extractor(event) or (
+                extractor(fallback_event) if fallback_event is not None else ""
+            )
+
         payload = {
-            "uid": event_uid(event),
-            "nickname": event_nickname(event),
-            "danmaku_text": event_text(event),
-            "avatar_url": event_avatar_url(event),
-            "room_id": event_room_id(event),
+            "uid": first_text(event_uid),
+            "nickname": first_text(event_nickname),
+            "danmaku_text": first_text(event_text),
+            "avatar_url": first_text(event_avatar_url),
+            "room_id": event_room_id(event)
+            or (event_room_id(fallback_event) if fallback_event is not None else 0),
             "event_type": selected_event_type,
         }
-        room_ref = event_room_ref(event)
+        session_generation = event_session_generation(fallback_event or event)
+        if session_generation:
+            payload["_live_session_generation"] = session_generation
+        room_ref = first_text(event_room_ref)
         if room_ref:
             payload["room_ref"] = room_ref
+        if fallback_event is not None:
+            payload.update(event_signal_fields(fallback_event))
         payload.update(event_signal_fields(event))
+        trace_id = safe_text(
+            getattr(fallback_event, "trace_id", "")
+            or getattr(event, "trace_id", ""),
+            max_len=80,
+        )
+        if trace_id:
+            payload["trace_id"] = trace_id
         if "gift_count" in payload and "gift_num" not in payload:
             payload["gift_num"] = payload["gift_count"]
         if "gift_value" in payload and "gift_total_coin" not in payload:

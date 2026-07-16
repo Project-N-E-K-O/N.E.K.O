@@ -42,6 +42,36 @@ def skip_permission(
     return result
 
 
+def skip_stale_live_event(
+    ctx: Any,
+    event: ViewerEvent,
+    identity: ViewerIdentity,
+    profile: ViewerProfile,
+    steps: list[PipelineStep],
+    request: InteractionRequest | None = None,
+) -> InteractionResult:
+    reason = "live_session.stale"
+    if not steps or steps[-1].id != "live_session":
+        steps.append(PipelineStep("live_session", "skipped", reason))
+    result = InteractionResult(
+        False,
+        "skipped",
+        event,
+        identity=identity,
+        profile=profile,
+        request=request,
+        reason=reason,
+        steps=steps,
+    )
+    ctx.audit.record(
+        "stale_live_event_discarded",
+        reason,
+        level="info",
+        detail={"uid": identity.uid, "source": event.source},
+    )
+    return result
+
+
 def skip_before_event(
     ctx: Any,
     event: ViewerEvent,

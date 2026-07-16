@@ -126,6 +126,16 @@ def event_score(event: Any) -> float:
         return 0.0
 
 
+def event_session_generation(event: Any) -> int:
+    value = getattr(event, "session_generation", 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def event_signal_fields(event: Any) -> dict[str, Any]:
     """Return optional public fields for signal-only live events."""
     gift = _field(event, "gift")

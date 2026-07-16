@@ -130,6 +130,13 @@ class RoomTopicContext:
             "last_theme_keys": list(self._last_theme_keys),
         }
 
+    def reset(self) -> None:
+        """Discard short-lived room context at a live-session boundary."""
+
+        self._recent.clear()
+        self._viewer_memory.clear()
+        self._last_theme_keys = []
+
     def remember_live_event(self, event: Any, *, score: float) -> None:
         candidate = self._candidate_from_live_event(event, score=score)
         if candidate is None:

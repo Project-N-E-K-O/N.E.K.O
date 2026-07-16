@@ -476,7 +476,7 @@ def looks_like_host_handoff_to_human(text: str) -> bool:
 
 def needs_pretrim_quality_fallback(text: str, metadata: Mapping[str, Any] | None) -> bool:
     module = response_module(metadata)
-    if module == "danmaku_response" and looks_like_unverified_support_thanks(text, metadata):
+    if module in {"avatar_roast", "danmaku_response"} and looks_like_unverified_support_thanks(text, metadata):
         return True
     if module in HOST_MODULES and looks_like_host_handoff_to_human(text):
         return True
@@ -485,7 +485,7 @@ def needs_pretrim_quality_fallback(text: str, metadata: Mapping[str, Any] | None
 
 def safe_fallback_reply(text: str, metadata: Mapping[str, Any] | None) -> str:
     module = response_module(metadata)
-    if module == "danmaku_response" and looks_like_unverified_support_thanks(text, metadata):
+    if module in {"avatar_roast", "danmaku_response"} and looks_like_unverified_support_thanks(text, metadata):
         return choose_fallback_reply(text, module, UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES)
     if module in HOST_MODULES and looks_like_host_handoff_to_human(text):
         return choose_fallback_reply(text, module, HOST_HANDOFF_FALLBACK_REPLIES)
@@ -554,7 +554,7 @@ def needs_quality_fallback(text: str, metadata: Mapping[str, Any] | None) -> boo
     if looks_like_opaque_topic_drift(text):
         return True
     module = response_module(metadata)
-    if module == "danmaku_response" and looks_like_unverified_support_thanks(text, metadata):
+    if module in {"avatar_roast", "danmaku_response"} and looks_like_unverified_support_thanks(text, metadata):
         return True
     if module == "danmaku_response" and looks_like_external_action_promise(text, metadata):
         return True

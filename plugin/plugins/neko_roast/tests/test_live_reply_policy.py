@@ -458,6 +458,25 @@ def test_live_reply_policy_blocks_unverified_support_claim_thanks_from_host_outp
     assert outgoing["neko_live_reply_shape_reason"] == "quality_fallback"
 
 
+def test_live_reply_policy_blocks_unverified_support_thanks_on_avatar_route():
+    metadata = live_reply_policy.build_reply_metadata(
+        uid="42",
+        live_mode="solo_stream",
+        response_module_hint="avatar_roast",
+    )
+    metadata["viewer_claimed_support"] = "unverified_danmaku_claim"
+
+    shaped, outgoing = live_reply_policy.shape_reply_text(
+        "谢谢你送的人气票和大火箭喵",
+        metadata,
+    )
+
+    assert "谢谢" not in shaped
+    assert "人气票" not in shaped
+    assert "大火箭" not in shaped
+    assert outgoing["neko_live_reply_shape_reason"] == "quality_fallback"
+
+
 def test_live_reply_policy_replaces_target_roast_dodge():
     metadata = live_reply_policy.build_reply_metadata(
         uid="42",

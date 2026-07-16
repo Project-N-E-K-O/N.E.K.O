@@ -8,6 +8,7 @@ from typing import Any
 from .contracts import InteractionResult, PipelineStep, ViewerEvent
 from .contracts_public import public_int, public_text
 from .runtime_timeline import ensure_trace_id, record_timeline, timeline_for_trace
+from .runtime_live_session import is_current_live_session_event
 
 
 def record_result(runtime: Any, result: InteractionResult) -> None:
@@ -15,6 +16,14 @@ def record_result(runtime: Any, result: InteractionResult) -> None:
         payload = result.to_sandbox_dict()
         runtime.recent_sandbox_results.append(payload)
         runtime.event_bus.emit("sandbox_result", payload)
+        return
+    if not is_current_live_session_event(runtime, result.event):
+        runtime.audit.record(
+            "stale_live_result_discarded",
+            "result belongs to an inactive live session",
+            level="info",
+            detail={"source": result.event.source},
+        )
         return
     trace_id = ensure_trace_id(result.event)
     payload = result.to_public_dict()

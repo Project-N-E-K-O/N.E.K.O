@@ -7,6 +7,7 @@ from typing import Any
 
 from .contracts import PipelineStep, ViewerEvent, ViewerIdentity, ViewerProfile
 from .live_provider_router import identity_provider_for
+from .runtime_live_session import is_current_live_session_event
 from .runtime_timeline import record_timeline
 
 
@@ -15,6 +16,7 @@ class PipelineViewerContext:
     identity: ViewerIdentity
     profile: ViewerProfile
     is_transient_event: bool
+    session_current: bool = True
 
 
 async def resolve_viewer_context(
@@ -41,6 +43,26 @@ async def resolve_viewer_context(
             identity.error,
         )
     )
+
+    if not is_current_live_session_event(ctx, event):
+        steps.append(PipelineStep("live_session", "skipped", "live_session.stale"))
+        record_timeline(
+            ctx,
+            event,
+            stage="live_session",
+            status="skipped",
+            reason="live_session.stale",
+        )
+        return PipelineViewerContext(
+            identity=identity,
+            profile=ViewerProfile(
+                uid=identity.uid,
+                nickname=identity.nickname,
+                avatar_url=identity.avatar_url,
+            ),
+            is_transient_event=is_transient_event,
+            session_current=False,
+        )
 
     if is_transient_event:
         profile = ViewerProfile(

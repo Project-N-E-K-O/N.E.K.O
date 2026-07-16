@@ -160,7 +160,7 @@ def test_live_room_selection_requires_lookup_then_explicit_confirmation() -> Non
         assert 'const [queriedRoomRef, setQueriedRoomRef] = useState("")' in source
         assert 'const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)' in source
         assert 'onClick={lookupLiveRoom}' in source
-        assert 'disabled={!canConfirmLiveRoom}' in source
+        assert 'disabled={consoleSaving || !canConfirmLiveRoom}' in source
         assert 't("panel.console.roomTwoStepHint")' in source
         assert 't("panel.messages.roomLookupRequired")' in source
         assert "lookupLiveRoom()" not in confirm_source
@@ -198,14 +198,28 @@ def test_console_opens_stream_theme_modal_in_place_of_duplicate_diagnostics_acti
         assert "{streamThemePanel}" not in source
         assert source.count("{streamThemeForm}") == 1
         assert 'open={consoleDialog === "theme"}' in source
-        assert 'setConsoleDialog("theme")' in runtime_source
+        assert 'openConsoleDialog("theme")' in runtime_source
         assert 't("panel.actions.showAdvanced")' not in runtime_source
         assert 't("panel.actions.showAdvanced")' in session_source
         assert 't("panel.fields.streamTheme")' in source
         assert 't("panel.streamTheme.hint")' in source
         assert 't("panel.fields.mode")' in source
         assert 't("panel.fields.liveMode")' not in source
-        assert 'saveConfig(advancedConfigPatch())' in source
+        assert "saveThemeSettings()" in source
+
+
+def test_console_modal_close_callback_stays_stable_while_typing() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+
+        assert 'const closeConsoleDialog = useCallback(() => { setConsoleDialog("") }, [])' in source
+        assert 'const closeInteractionDialog = useCallback(() => { setInteractionDialog("") }, [])' in source
+        assert source.count("onClose={closeConsoleDialog}") == 5
+        assert "onClose={closeInteractionDialog}" in source
+        assert 'onClose={() => { setConsoleDialog("") }}' not in source
+        assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
 def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> None:
@@ -230,7 +244,7 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         assert 'position: "fixed"' not in dock_source
         assert 'gridTemplateColumns: "minmax(260px, 520px)"' in dock_source
         assert 'justifyContent: "center"' in dock_source
-        assert 'setConsoleDialog("pacing")' in runtime_source
+        assert 'openConsoleDialog("pacing")' in runtime_source
         assert 'onClick={connectRoom}' not in runtime_source
         assert 'open={consoleDialog === "pacing"}' in source
         assert source.count("{pacingForm}") == 1
@@ -323,7 +337,7 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         assert interaction_source.index("{currentDecisionCard}") < interaction_source.index(
             't("panel.interaction.group.audience")'
         )
-        assert 'disabled={!configForm.values.avatar_roast_enabled}' in interaction_source
+        assert 'disabled={!configForm.values.avatar_roast_enabled || settingsSaving}' in interaction_source
         assert "<details" not in interaction_source
 
     for locale_path in sorted((root / "i18n").glob("*.json")):
@@ -626,11 +640,10 @@ def test_panel_renders_platform_switch_and_douyin_cookie_controls():
     assert 'configForm.setField("live_room_ref", "")' in source
     assert 'configForm.setField("live_room_id", "")' in source
     assert 'configForm.setField("live_enabled", false)' in source
-    assert 'saveConfig({live_platform:next,live_enabled:false})' in compact_source
+    assert 'saveConfig({live_platform:next,live_room_ref:"",live_room_id:0,live_enabled:false})' in compact_source
     assert (
-        "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
-        "?patch:{...patch,live_room_ref:liveRoomRef,"
-        "live_room_id:liveRoomId,}"
+        "constpatchedPayload=hasPatchedRoomRef||hasPatchedRoomId"
+        "?{...patch,live_room_ref:liveRoomRef,live_room_id:liveRoomId,}:patch"
     ) in compact_source
     assert "panel.platform.title" in source
     assert "panel.platform.bilibili" in source
@@ -653,9 +666,9 @@ def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
         assert "ConfirmDialog" in source
         assert "consoleDialog" in source
-        assert 'setConsoleDialog("account")' in source
-        assert 'setConsoleDialog("room")' in source
-        assert 'setConsoleDialog("diagnostics")' in source
+        assert 'openConsoleDialog("account")' in source
+        assert 'openConsoleDialog("room")' in source
+        assert 'openConsoleDialog("diagnostics")' in source
         assert 'props.api.call("set_live_room", { room_id: roomRef })' in source
         assert 'callSimple("disconnect_live_room")' in source
         assert 'interactionPaused ? "resume_roast" : "pause_roast"' in source
@@ -684,20 +697,20 @@ def test_panel_console_keeps_live_operations_compact_and_modal() -> None:
             assert key in source
 
 
-def test_panel_advanced_save_resubmits_current_room_with_patch():
+def test_console_dialogs_keep_independent_drafts_and_scoped_saves():
     root = Path(__file__).resolve().parents[1]
-    source = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
-    compact_source = "".join(source.split())
 
-    assert "function advancedConfigPatch()" in source
-    assert (
-        "constpatchedPayload=hasPatchedPlatform&&!hasPatchedRoomRef&&!hasPatchedRoomId"
-        "?patch:{...patch,live_room_ref:liveRoomRef,"
-        "live_room_id:liveRoomId,}"
-    ) in compact_source
-    assert "constpayload=Object.keys(patch).length?patchedPayload:fullPayload" in compact_source
-    assert "saveConfig(advancedConfigPatch())" in source
-    assert "onClick={()=>saveConfig()}" not in compact_source
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert "const [themeDraft, setThemeDraft]" in source
+        assert "const [pacingDraft, setPacingDraft]" in source
+        assert 'const [roomDraft, setRoomDraft] = useState("")' in source
+        assert "async function saveThemeSettings()" in source
+        assert "async function savePacingSettings()" in source
+        assert "stream_theme: themeDraft.stream_theme.trim()" in source
+        assert "activity_level: pacingDraft.activity_level" in source
+        assert "saveConfig(advancedConfigPatch())" not in source
+        assert "function advancedConfigPatch()" not in source
 
 
 def test_panel_renders_guarded_viewer_memory_controls():
@@ -1097,7 +1110,7 @@ def test_all_locales_define_live_status_summary_labels():
         assert not missing, f"{locale_path.name} missing keys: {sorted(missing)}"
 
 
-def test_patched_panel_saves_include_current_room_reference() -> None:
+def test_only_explicit_room_patches_include_normalized_room_fields() -> None:
     root = Path(__file__).resolve().parents[1]
     expected = (
         "...patch,\n"
@@ -1109,38 +1122,30 @@ def test_patched_panel_saves_include_current_room_reference() -> None:
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
         assert 'const liveRoomId = livePlatform === "bilibili" ? Number(liveRoomRef) || 0 : 0' in source
         assert expected in source
-        assert source.count("live_room_id: liveRoomId,") == 2
+        assert source.count("live_room_id: liveRoomId,") == 1
         assert 'live_room_id: livePlatform === "bilibili" ? liveRoomRef : 0' not in source
+        assert "const fullPayload" not in source
 
 
-def test_patched_panel_saves_ignore_unhydrated_room_sentinel() -> None:
+def test_unrelated_patched_panel_saves_do_not_inject_room_drafts() -> None:
     root = Path(__file__).resolve().parents[1]
-    expected_room_priority = (
-        'normalizedRoomRef(configForm.values.live_room_ref) ||\n'
-        '          normalizedRoomRef(config.live_room_ref) ||\n'
-        '          normalizedRoomRef(config.live_room_id) ||\n'
-        '          normalizedRoomRef(configForm.values.live_room_id)'
-    )
 
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
         assert 'return roomRef === "0" ? "" : roomRef' in source
-        assert expected_room_priority in source
+        assert "const patchedPayload = hasPatchedRoomRef || hasPatchedRoomId" in source
+        assert ": patch" in source
+        assert "normalizedRoomRef(configForm.values.live_room_ref)" not in source
+        assert "const fullPayload" not in source
 
 
-def test_platform_switch_defers_room_reset_to_backend_contract() -> None:
+def test_platform_switch_explicitly_clears_the_old_room() -> None:
     root = Path(__file__).resolve().parents[1]
-    platform_only_switch = 'saveConfig({ live_platform: next, live_enabled: false })'
-    platform_only_payload = (
-        "const patchedPayload = hasPatchedPlatform && "
-        "!hasPatchedRoomRef && !hasPatchedRoomId\n"
-        "      ? patch"
-    )
+    platform_switch = 'saveConfig({ live_platform: next, live_room_ref: "", live_room_id: 0, live_enabled: false })'
 
     for panel_name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / panel_name).read_text(encoding="utf-8")
-        assert platform_only_switch in source
-        assert platform_only_payload in source
+        assert platform_switch in source
 
 
 def test_compat_panel_mirrors_live_connection_and_theme_controls() -> None:
@@ -1162,13 +1167,13 @@ def test_compat_panel_mirrors_accessible_qr_and_result_tones() -> None:
     helpers = (root / "ui" / "panel_helpers.ts").read_text(encoding="utf-8")
     compat = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
-    assert '<button\n                  type="button"\n                  onClick={onLogin}' in components
+    assert '<button\n                  type="button"\n                  disabled={disabled}\n                  onClick={onLogin}' in components
     assert 'aria-label={t("panel.auth.refreshHint")}' in components
     assert 'recentResultTone(String(row.status || ""))' in sections
     for source in (helpers, compat):
         assert 'if (status === "failed") return "danger"' in source
         assert 'if (status === "skipped") return "warning"' in source
-    assert '<button\n                  type="button"\n                  onClick={onLogin}' in compat
+    assert '<button\n                  type="button"\n                  disabled={disabled}\n                  onClick={onLogin}' in compat
     assert 'recentResultTone(String(row.status || ""))' in compat
 
 
@@ -1208,3 +1213,62 @@ def test_audience_page_separates_session_data_from_viewer_profiles() -> None:
         assert 'title={t("panel.audience.profileDetailTitle")}' in source
         assert 'maxRows={30}' in source
         assert 'style={{ overflowX: "auto" }}' in source
+
+
+def test_panel_live_session_controls_are_transition_safe_and_refresh_aware() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert 'const connectionTransitioning = ["connecting", "authenticating", "reconnecting"]' in source
+        assert "const sessionInProgress = started || !!config.live_enabled || sessionStartAccepted" in source
+        assert "if (startAccepted) setSessionStartAccepted(true)" in source
+        assert '(dialog === "account" || dialog === "room") && sessionInProgress' in source
+        assert 'const [authPending, setAuthPending] = useState("")' in source
+        assert "const [developerPending, setDeveloperPending] = useState(false)" in source
+        assert "const [refreshFailureCount, setRefreshFailureCount] = useState(0)" in source
+        assert 't("panel.messages.statusStale", { time: lastSuccessfulRefreshLabel })' in source
+        assert '<Tabs key={developerToolsEnabled ? "developer-enabled" : "developer-disabled"}' in source
+        assert "await refreshDashboard(true)" in source
+        assert "<RefreshButton" not in source
+        assert "applySettingsPatch({ avatar_roast_enabled: v })" in source
+        assert "applySettingsPatch({ live_support_events_enabled: v })" in source
+
+
+def test_panel_compact_tabs_and_dates_follow_accessibility_and_locale_contracts() -> None:
+    root = Path(__file__).resolve().parents[1]
+    authored_panel = (root / "ui" / "panel.tsx").read_text(encoding="utf-8")
+    compat_panel = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+    components = (root / "ui" / "panel_components.tsx").read_text(encoding="utf-8")
+    sections = (root / "ui" / "panel_data_sections.tsx").read_text(encoding="utf-8")
+
+    for source in (authored_panel, compat_panel):
+        assert "tabIndex={active ? 0 : -1}" in source
+        assert 'event.key === "ArrowRight"' in source
+        assert 'event.key === "ArrowLeft"' in source
+        assert 'event.key === "Home"' in source
+        assert 'event.key === "End"' in source
+        assert "formatLocaleDateTime(lastSuccessfulRefreshAt, props.locale)" in source
+
+    for source in (sections, compat_panel):
+        assert "formatDateTime(row.last_interaction_at, locale)" in source
+        assert "formatDateTime(row.last_seen_at, locale)" in source
+        assert "parsed.toLocaleString(locale || undefined)" in source
+
+    for source in (components, compat_panel):
+        assert "disabled?: boolean" in source
+        assert "disabled={disabled}" in source
+
+
+def test_all_locales_define_refresh_and_session_lock_messages() -> None:
+    root = Path(__file__).resolve().parents[1]
+    required_keys = {
+        "panel.messages.refreshFailedAfterAction",
+        "panel.messages.statusStale",
+        "panel.messages.endSessionBeforeChangingTarget",
+    }
+
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= set(data), locale_path.name
+        assert "{time}" in str(data["panel.messages.statusStale"]), locale_path.name

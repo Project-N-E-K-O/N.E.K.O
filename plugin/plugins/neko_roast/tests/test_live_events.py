@@ -1164,3 +1164,27 @@ async def test_rawless_live_event_reads_support_fields_from_payload():
     assert ctx.payloads[0]["gift_count"] == 2
     assert ctx.payloads[0]["gift_value"] == 30
     await support.teardown()
+
+
+@pytest.mark.asyncio
+async def test_typed_support_envelope_keeps_type_when_raw_has_no_type():
+    ctx = _FakeCtx(remaining=0.0)
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
+
+    ctx.event_bus.publish(
+        "gift",
+        LiveEvent(
+            type="gift",
+            uid="9",
+            payload={"nickname": "alice", "gift_name": "小鱼干", "gift_count": 2},
+            raw=SimpleNamespace(uid="9", nickname="alice", text="", room_id=1),
+        ),
+    )
+    await _drain_support(support)
+
+    assert len(ctx.payloads) == 1
+    assert ctx.payloads[0]["event_type"] == "gift"
+    assert ctx.payloads[0]["gift_name"] == "小鱼干"
+    assert ctx.payloads[0]["gift_count"] == 2
+    await support.teardown()

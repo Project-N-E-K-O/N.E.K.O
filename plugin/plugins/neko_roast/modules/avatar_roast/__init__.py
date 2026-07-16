@@ -6,6 +6,7 @@ from typing import Any
 
 from ...core.contracts import InteractionRequest, ViewerEvent, ViewerIdentity, ViewerProfile
 from ...core.live_host_theme import live_host_theme_block
+from ...core.live_text_guards import looks_like_support_claim_text
 from ...core.meme_knowledge import meme_knowledge_metadata, render_meme_knowledge_block, retrieve_meme_knowledge
 from ...core.viewer_addressing import viewer_address_name
 from .._base import BaseModule
@@ -84,6 +85,11 @@ class AvatarRoastModule(BaseModule):
                 viewer_preference_context_block(self.ctx, profile),
                 live_events_context_block(self.ctx, event),
             )
+            if (
+                event.source in {"live_danmaku", "manual_live_simulation"}
+                and looks_like_support_claim_text(event.danmaku_text or "")
+            ):
+                metadata["viewer_claimed_support"] = "unverified_danmaku_claim"
         return InteractionRequest(
             event=event,
             identity=identity,

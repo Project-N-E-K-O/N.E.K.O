@@ -14,7 +14,8 @@ _REASON_CODES = {
     "accepted", "allowed", "already_roasted", "batch_welcome", "blocked",
     "cooldown", "dispatcher.dry_run", "dispatcher.failed", "dispatcher.pushed",
     "dispatcher.skipped", "dry_run", "live_disabled", "live_ingest_disconnected",
-    "live_room_offline", "manual_paused", "missing_uid", "normalized", "ok",
+    "ingest.duplicate_support_event", "live_room_offline", "manual_paused",
+    "missing_uid", "normalized", "ok",
     "output_channel_unavailable", "ready", "room_not_configured", "safety_degraded",
     "safety_tripped",
 }

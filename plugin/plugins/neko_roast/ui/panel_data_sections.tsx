@@ -32,9 +32,11 @@ type DynamicLabel = (group: string, keyPrefix: string, value: string) => string
 export function LiveSessionSection({
   t,
   session,
+  locale,
 }: {
   t: PanelTranslator
   session: any
+  locale?: string
 }) {
   const [query, setQuery] = useState("")
   const [selectedViewer, setSelectedViewer] = useState<any>(null)
@@ -91,7 +93,7 @@ export function LiveSessionSection({
                   {
                     key: "last_interaction_at",
                     label: t("panel.columns.lastSeen"),
-                    render: (row: any) => formatDateTime(row.last_interaction_at),
+                    render: (row: any) => formatDateTime(row.last_interaction_at, locale),
                   },
                 ]}
               />
@@ -117,7 +119,7 @@ export function LiveSessionSection({
                 { key: "support", label: t("panel.audience.supportEvents"), value: Number(selectedViewer.support_event_count || 0) },
                 { key: "replies", label: t("panel.audience.nekoReplyCount"), value: Number(selectedViewer.neko_reply_count || 0) },
                 { key: "lastEvent", label: t("panel.audience.latestEvent"), value: sessionEventLabel(t, selectedViewer.last_event_type) },
-                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedViewer.last_interaction_at) },
+                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedViewer.last_interaction_at, locale) },
               ]}
             />
           </Stack>
@@ -242,11 +244,13 @@ export function RecentResultsTable({ t, results }: { t: PanelTranslator; results
 export function ViewerProfilesTable({
   t,
   profiles,
+  locale,
   onResetImpression,
   onDeleteProfile,
 }: {
   t: PanelTranslator
   profiles: any[]
+  locale?: string
   onResetImpression: (uid: string) => Promise<void>
   onDeleteProfile: (uid: string) => Promise<void>
 }) {
@@ -285,7 +289,7 @@ export function ViewerProfilesTable({
                   { key: "viewer_stage", label: t("panel.columns.viewerStage"), render: (row: any) => profileBadge("viewerStage", row.viewer_stage, t) },
                   { key: "profile_confidence", label: t("panel.columns.profileConfidence"), render: (row: any) => profileBadge("profileConfidence", row.profile_confidence, t) },
                   { key: "profile_freshness", label: t("panel.columns.profileFreshness"), render: (row: any) => profileBadge("profileFreshness", row.profile_freshness, t) },
-                  { key: "last_seen_at", label: t("panel.columns.lastSeen"), render: (row: any) => formatDateTime(row.last_seen_at) },
+                  { key: "last_seen_at", label: t("panel.columns.lastSeen"), render: (row: any) => formatDateTime(row.last_seen_at, locale) },
                 ]}
               />
             </div>
@@ -323,7 +327,7 @@ export function ViewerProfilesTable({
                 { key: "summary", label: t("panel.columns.latestSummary"), value: selectedProfile.impression_summary || selectedProfile.profile_summary || selectedProfile.last_interaction_summary || "-" },
                 { key: "avoid", label: t("panel.columns.avoidGuidance"), value: selectedProfile.avoid_guidance || "-" },
                 { key: "reply", label: t("panel.columns.replyGuidance"), value: selectedProfile.reply_guidance || "-" },
-                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedProfile.last_seen_at) },
+                { key: "lastSeen", label: t("panel.columns.lastSeen"), value: formatDateTime(selectedProfile.last_seen_at, locale) },
               ]}
             />
           </Stack>
@@ -360,11 +364,16 @@ function formatCountedTags(value: any): string {
     : "-"
 }
 
-function formatDateTime(value: any): string {
+function formatDateTime(value: any, locale?: string): string {
   const raw = String(value || "").trim()
   if (!raw) return "-"
   const parsed = new Date(raw)
-  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleString()
+  if (Number.isNaN(parsed.getTime())) return raw
+  try {
+    return parsed.toLocaleString(locale || undefined)
+  } catch {
+    return parsed.toLocaleString()
+  }
 }
 
 function sessionEventLabel(t: PanelTranslator, value: any): string {

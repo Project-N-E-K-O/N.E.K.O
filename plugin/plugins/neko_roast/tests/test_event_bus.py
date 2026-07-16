@@ -312,9 +312,12 @@ def test_bili_combo_send_routes_to_gift_bus_key():
     assert live_event.uid == "42"
     assert live_event.payload["raw_type"] == "COMBO_SEND"
     assert live_event.payload["event_label"] == "连击 3 个 小花花"
+    assert live_event.payload["support_verified"] is True
+    assert live_event.payload["support_evidence"] == "bilibili_typed_command"
+    assert live_event.payload["provider_event_type"] == "COMBO_SEND"
 
 
-async def test_bili_unknown_official_fans_medal_packet_routes_to_gift_event():
+async def test_bili_allowlisted_user_toast_gift_routes_to_gift_event():
     got: list[tuple[str, object]] = []
     listener = DanmakuListener(room_id=100, callbacks={"on_event": lambda cmd, event: got.append((cmd, event))})
 
@@ -346,6 +349,28 @@ async def test_bili_unknown_official_fans_medal_packet_routes_to_gift_event():
             },
         )
     ]
+
+
+async def test_bili_unknown_gift_shaped_packet_is_not_promoted_to_support_event():
+    got: list[tuple[str, object]] = []
+    listener = DanmakuListener(room_id=100, callbacks={"on_event": lambda cmd, event: got.append((cmd, event))})
+
+    await listener._dispatch_message(
+        "UNKNOWN_SUPPORT_PACKET",
+        {
+            "cmd": "UNKNOWN_SUPPORT_PACKET",
+            "data": {
+                "uid": 42,
+                "uname": "GiftUser",
+                "gift_id": 99,
+                "gift_name": "超级大火箭",
+                "num": 99999999,
+                "total_coin": 99999999,
+            },
+        },
+    )
+
+    assert got == []
 
 
 async def test_bili_plain_danmaku_claiming_fans_medal_does_not_route_to_gift_event():

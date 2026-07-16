@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import RoastConfig
-from .runtime_live_input import remember_live_room_context
+from .runtime_live_listener import refresh_live_room_context
 
 
 def pause(runtime: Any) -> None:
@@ -99,6 +99,7 @@ def _public_listener_state(primary: Any, fallback: Any = "") -> str:
     allowed = {
         "disconnected",
         "connecting",
+        "authenticating",
         "connected",
         "receiving",
         "reconnecting",
@@ -199,7 +200,7 @@ async def connect_live_room(
         runtime.live_connection_auth_mode = auth_mode
     if runtime.live_provider.is_listening() and target_room_ref == runtime.live_provider.configured_room_ref():
         return runtime.live_connection_snapshot()
-    await _refresh_live_room_context(runtime, target_room_ref)
+    await refresh_live_room_context(runtime, target_room_ref)
     runtime.config.live_enabled = True
     started = await runtime._start_live_listener(target_room_ref)
     if not started:
@@ -273,20 +274,6 @@ async def _resolve_connection_auth_mode(
     raise ValueError(
         "Bilibili login is required; sign in or explicitly confirm the limited "
         "accountless fallback for this connection"
-    )
-
-
-async def _refresh_live_room_context(runtime: Any, room_ref: str) -> None:
-    try:
-        status = await runtime.live_provider.lookup_room_status(room_ref)
-    except Exception as exc:
-        runtime.audit.record("live_room_context_lookup_failed", str(exc)[:200], level="warning")
-        return
-    remember_live_room_context(
-        runtime,
-        status,
-        platform=runtime.live_provider.platform,
-        room_ref=room_ref,
     )
 
 

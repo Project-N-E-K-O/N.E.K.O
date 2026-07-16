@@ -176,6 +176,8 @@ class DanmakuListener:
         self._live_ended: bool = False
         self._current_server: str = ""  # 当前连接的服务器地址
         self._viewer_count: int = 0  # 当前观看人数（人气值）
+        self._reconnect_count: int = 0
+        self._last_packet_at: float = 0.0
 
         # WBI key 缓存（每日更替，缓存12小时足够）
         self._wbi_mixin_key: str = ""
@@ -217,6 +219,8 @@ class DanmakuListener:
             "server": self._current_server,
             "viewer_count": self._viewer_count,
             "room_id": self.real_room_id if self._connection_state != ConnectionState.DISCONNECTED else self.room_id,
+            "reconnect_count": self._reconnect_count,
+            "last_packet_at": self._last_packet_at,
         }
 
     async def _request_json(
@@ -645,8 +649,8 @@ class DanmakuListener:
                         await self._emit("on_event", cmd, ld)
                 except Exception as e:
                     self._log(f"增强协议处理 {cmd} 异常: {e}", "debug")
-            else:
-                gift_payload = self._fallback_support_gift_payload(cmd, data)
+            elif cmd == "USER_TOAST_MSG":
+                gift_payload = self._trusted_user_toast_gift_payload(data)
                 if gift_payload:
                     await self._emit("on_event", "SEND_GIFT", gift_payload)
 
@@ -655,8 +659,21 @@ class DanmakuListener:
 
     @staticmethod
     def _fallback_support_gift_payload(cmd: str, data: dict):
-        """Recover trusted Bilibili support packets that use a newer/unknown cmd."""
-        if not isinstance(data, dict) or str(cmd or "").split(":", 1)[0] == "DANMU_MSG":
+        """Compatibility wrapper that only accepts the known USER_TOAST_MSG command.
+
+        Unknown commands must never be promoted to a support event merely because
+        their payload happens to contain gift-shaped fields.  Keeping this wrapper
+        avoids breaking older callers while enforcing the same command allowlist as
+        the live dispatch path.
+        """
+        if str(cmd or "").split(":", 1)[0] != "USER_TOAST_MSG":
+            return None
+        return DanmakuListener._trusted_user_toast_gift_payload(data)
+
+    @staticmethod
+    def _trusted_user_toast_gift_payload(data: dict):
+        """Parse the explicitly allowlisted Bilibili USER_TOAST_MSG gift shape."""
+        if not isinstance(data, dict):
             return None
         inner = data.get("data")
         if not isinstance(inner, dict):
@@ -664,13 +681,6 @@ class DanmakuListener:
         gift_info = inner.get("gift_info") or inner.get("giftInfo") or inner.get("gift") or {}
         if not isinstance(gift_info, dict):
             gift_info = {}
-        command = str(cmd or "").upper()
-        explicit_gift_command = "GIFT" in command
-        official_support_command = command in {"USER_TOAST_MSG"}
-        explicit_gift_fields = any(
-            key in inner
-            for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
-        )
         nested_gift_fields = any(
             key in gift_info
             for key in ("gift_id", "giftId", "giftName", "gift_name", "gift_name_str", "giftNameStr")
@@ -684,25 +694,18 @@ class DanmakuListener:
             gift_info,
             keys=("toast_msg", "toastMsg", "message", "msg", "copy_writing", "copyWriting", "text", "content"),
         )
-        if official_support_command and DanmakuListener._looks_like_fans_medal_activation_text(text_hint):
+        if DanmakuListener._looks_like_fans_medal_activation_text(text_hint):
             return None
         support_hint = (
-            explicit_gift_command
-            or explicit_gift_fields
-            or (
-                official_support_command
-                and nested_gift_name_fields
-                and DanmakuListener._looks_like_gift_transfer_text(text_hint)
-            )
+            nested_gift_name_fields
+            and DanmakuListener._looks_like_gift_transfer_text(text_hint)
         )
         gift_name = DanmakuListener._first_text(
             inner,
             gift_info,
             keys=("giftName", "gift_name", "gift_name_str", "giftNameStr"),
         )
-        if not gift_name and explicit_gift_command:
-            gift_name = DanmakuListener._first_text(inner, gift_info, keys=("name",))
-        elif not gift_name and nested_gift_fields:
+        if not gift_name and nested_gift_fields:
             gift_name = DanmakuListener._first_text(gift_info, keys=("name",))
         if not gift_name and support_hint and DanmakuListener._looks_like_fans_medal_text(text_hint):
             gift_name = "fans medal"
@@ -725,7 +728,7 @@ class DanmakuListener:
             "gift_count": count,
             "gift_value": value,
             "room_id": room_id,
-            "raw_cmd": str(cmd or ""),
+            "raw_cmd": "USER_TOAST_MSG",
         }
 
     @staticmethod
@@ -950,6 +953,7 @@ class DanmakuListener:
                 self._log(f"解析认证回包异常: {ex}", "debug")
 
         elif operation == OPERATION_SEND_MSG:
+            self._last_packet_at = time.time()
             if proto_ver in (PROTOCOL_VERSION_ZLIB, PROTOCOL_VERSION_BROTLI):
                 # 解压后递归处理
                 try:
@@ -979,6 +983,8 @@ class DanmakuListener:
         self._stop_event.clear()
         self._ready_event.clear()
         self._live_ended = False
+        self._reconnect_count = 0
+        self._last_packet_at = 0.0
         self.running = True
         self._connection_state = ConnectionState.CONNECTING
 
@@ -1017,6 +1023,7 @@ class DanmakuListener:
                     break
 
                 self._connection_state = ConnectionState.RECONNECTING
+                self._reconnect_count += 1
                 wait = min(retry_delay * retry_count, 60)
             # 前3次打印重连日志，之后静默
                 if retry_count <= 3:

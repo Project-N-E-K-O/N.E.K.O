@@ -120,6 +120,7 @@ class LiveEvent:
     ts: float = 0.0
     schema_version: int = 1
     raw: Any = None
+    session_generation: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         # Keep raw out of lightweight debug/status projections.

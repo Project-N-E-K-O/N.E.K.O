@@ -238,6 +238,10 @@ class DouyinLiveIngestModule(BaseModule):
             self._last_error = ""
             return None
         live_event = to_live_event(event, ts=ts)
+        live_event.session_generation = max(
+            0,
+            int(getattr(self.ctx, "_live_session_generation", 0) or 0),
+        )
         if not is_routable_event_type(live_event.type):
             self._mark_event_seen(live_event.type, live_event.ts)
             self._last_error = ""

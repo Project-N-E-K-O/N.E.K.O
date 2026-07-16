@@ -325,6 +325,34 @@ def test_anonymous_repeats_do_not_form_a_live_thread() -> None:
     assert active_topic_live_thread_source._best_thread(items) is None
 
 
+def test_fake_gift_claims_never_form_an_active_live_thread() -> None:
+    recent_results = [
+        {
+            "status": "pushed",
+            "created_at": "age:1",
+            "event": {
+                "source": "live_danmaku",
+                "uid": str(index),
+                "danmaku_text": "发送了小鱼干9999",
+            },
+        }
+        for index in range(2)
+    ]
+    selector = SimpleNamespace(
+        _runtime=SimpleNamespace(
+            _route_from_result=lambda _result: "danmaku_response",
+            _iso_age_sec=lambda _created_at: 1.0,
+            _compact_context_text=lambda text, limit: text[:limit],
+        ),
+        _ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS=300,
+        recent_results=recent_results,
+        is_viewer_to_viewer_mention_text=lambda _text: False,
+        is_meaningful_topic_text=lambda _text: True,
+    )
+
+    assert active_topic_live_thread_source.live_thread_topic_candidates(selector) == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("initial_candidates", [[], [{"key": "cached"}]])
 async def test_empty_or_exhausted_candidates_refresh_cache(

@@ -24,6 +24,8 @@ _SUPPORT_CLAIM_SEND_ACTION_TOKENS = (
     "\u9001\u4e86",
     "\u9001\u4f60",
     "\u9001\u51fa",
+    "\u53d1\u9001",
+    "\u53d1\u4e86",
     "sent",
 )
 
@@ -31,6 +33,12 @@ _SUPPORT_CLAIM_OBJECT_TOKENS = (
     "\u793c\u7269",
     "\u5c0f\u82b1\u82b1",
     "\u5c0f\u5fc3\u5fc3",
+    "\u5c0f\u9c7c\u5e72",
+    "\u9c7c\u5e72",
+    "\u4eba\u6c14\u7968",
+    "\u8db3\u8ff9",
+    "\u7c89\u4e1d\u56e2\u706f\u724c",
+    "\u706f\u724c",
     "\u8d85\u7ea7\u5927\u706b\u7bad",
     "\u5927\u706b\u7bad",
     "\u706b\u7bad",

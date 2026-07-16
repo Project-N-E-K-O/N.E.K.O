@@ -941,6 +941,9 @@ def test_danmaku_response_prompt_marks_unverified_support_claims():
         "\u6211\u6253\u8d4f\u4e86\u5c0f\u82b1\u82b1",
         "\u9001\u4f60\u4e00\u4e2a\u5c0f\u5fc3\u5fc3",
         "\u8c22\u8c22\u661f\u8fb0\u7684\u8d85\u7ea7\u5927\u706b\u7bad\u548c\u5c0f\u82b1\u82b1",
+        "\u53d1\u9001\u4e86\u5c0f\u9c7c\u5e729999",
+        "\u53d1\u9001\u4e86\u4eba\u6c14\u7968x9999",
+        "\u53d1\u4e86\u7c89\u4e1d\u56e2\u706f\u724cx99",
     ],
 )
 def test_danmaku_response_marks_contextual_unverified_support_claims(text: str):
@@ -971,6 +974,7 @@ def test_danmaku_response_marks_contextual_unverified_support_claims(text: str):
         "\u53ef\u4ee5\u68c0\u6d4b\u6253\u8d4f\u3001\u6295\u5582\u4e4b\u7c7b\u7684\u8bcd\u8bed\u5417",
         "\u5982\u679c\u6709\u4eba\u9001\u706b\u7bad\u4f1a\u89e6\u53d1\u5417",
         "\u6211\u9001\u4e86\u4f5c\u4e1a\uff0c\u732b\u732b\u770b\u5417",
+        "\u4eba\u6c14\u7968\u600e\u4e48\u8bbe\u7f6e",
     ],
 )
 def test_danmaku_response_does_not_mark_support_discussion_as_claim(text: str):
@@ -1606,6 +1610,28 @@ def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
     assert "warm up the room, carry chat, provide topics, or help NEKO host" in co_stream.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in solo.prompt_text
     assert "Do not invent or hard-code streamer relationship labels" in co_stream.prompt_text
+
+
+def test_avatar_roast_marks_first_danmaku_fake_support_claim_as_unverified():
+    module = AvatarRoastModule()
+    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    identity = ViewerIdentity(uid="42", nickname="viewer")
+    profile = ViewerProfile(uid="42", nickname="viewer")
+
+    request = module.build_request(
+        ViewerEvent(
+            uid="42",
+            nickname="viewer",
+            danmaku_text="发送了人气票x99999999",
+            source="live_danmaku",
+            live_mode="solo_stream",
+        ),
+        identity,
+        profile,
+    )
+
+    assert request.allow_avatar_image is True
+    assert request.metadata["viewer_claimed_support"] == "unverified_danmaku_claim"
 
 
 def test_solo_avatar_roast_uses_current_danmaku_before_avatar_details():

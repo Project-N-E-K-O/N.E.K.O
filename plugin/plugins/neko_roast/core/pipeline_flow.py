@@ -8,7 +8,12 @@ from typing import Any
 from .contracts import InteractionResult, PipelineStep, ViewerEvent
 from .pipeline_dispatch import dispatch_routed_request
 from .pipeline_requests import build_request_for_route
-from .pipeline_results import fail_pipeline, skip_already_roasted, skip_module_disabled
+from .pipeline_results import (
+    fail_pipeline,
+    skip_already_roasted,
+    skip_module_disabled,
+    skip_stale_live_event,
+)
 from .pipeline_viewers import resolve_viewer_context
 from .runtime_timeline import record_timeline
 
@@ -30,6 +35,8 @@ async def run_event_flow(
         )
         identity = viewer.identity
         profile = viewer.profile
+        if not viewer.session_current:
+            return skip_stale_live_event(ctx, event, identity, profile, steps)
 
         uid_lock: asyncio.Lock | None = None
         needs_session_gate = pipeline._is_live_danmaku_with_text(event)

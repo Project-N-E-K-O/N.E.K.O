@@ -37,7 +37,7 @@ NEKO Live may also borrow the health rows observation model from the Warthunder 
 
 ## Implementation Checkpoint
 
-Updated: 2026-07-07
+Updated: 2026-07-16
 
 Phase 2C has reached a stable backend-observability checkpoint. The implementation below is complete enough for offline review; packaged UI and real-stream evidence remain part of the deferred release validation rather than unfinished observability architecture:
 
@@ -49,6 +49,7 @@ Phase 2C has reached a stable backend-observability checkpoint. The implementati
 - Completed: Dashboard renders the latest event chain and runtime timeline using the read-only `live_explain` projection.
 - Completed: Monitor snapshot emission exposes `latest_trace_id` and compact timeline stage/status/route/reason fields from the same read-only projection.
 - Completed: Gift / SC / Guard support events route through `live_support_events`, preserving Pipeline -> Safety Guard -> Dispatcher and privacy-safe support metadata projection.
+- Completed: Bilibili Gift / SC / Guard events receive a privacy-safe `trace_id` at `ingest`, retain it across `event_bus` and `live_support_events`, and expose only bounded listener health facts (`reconnect_count`, `last_packet_at`, terminal outcome) rather than raw packets or viewer text.
 - Completed: Plugin-owned output policy metadata is emitted with live requests so hosted UI and Monitor can review route, trace, length mode, and response-shape intent without requiring host/core final-output hooks.
 - Completed: Plugin-owned prompt material metadata now includes optional meme hints from `data/meme_knowledge.json` and idle host beat material from `data/idle_hosting_beats.json`; Dashboard and Monitor may use fields such as `meme_hint_ids`, `meme_hint_tags`, and `host_beat_*` only as review clues.
 
@@ -142,6 +143,7 @@ Rules:
 Initial skip reasons:
 
 - `input.uid_required`
+- `ingest.duplicate_support_event`
 - `permission.developer_tools_disabled`
 - `runtime.disconnected`
 - `safety.paused`
@@ -277,6 +279,8 @@ Dashboard must not show raw payloads, cookies, tokens, avatar bytes, base64 imag
 ### ingest
 
 Provider ingest modules such as `bili_live_ingest` and `douyin_live_ingest` receive provider live data and normalize it into `LiveEvent`. Every provider projects the same lifecycle outcomes below, and this stage should explain whether its listener is started, stopped, errored, or receiving events.
+
+For Bilibili support events, `LiveEvent.type` is the authoritative route classification. The rich `raw` object may enrich public support fields, but a missing inner type must not erase an outer `gift`, `super_chat`, or `guard` classification. Duplicate rich/lightweight callbacks use `ingest.duplicate_support_event`; the timeline keeps the shared opaque `trace_id` and never stores the raw packet, nickname, or original message.
 
 Expected outcomes: `received`, `published`, `failed`, `degraded`.
 

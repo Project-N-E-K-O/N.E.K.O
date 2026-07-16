@@ -84,3 +84,11 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 - 改 `panel.tsx`/`i18n` **运行时转译、不用 rebuild**，重开面板即生效；但提交 / 导出前必须同步生成 `panel_compat.tsx`，因为 manifest 入口使用单文件兼容版以支持主分支插件中心。`panel_compat.tsx` 必须是**完整功能面板**的单文件内联版本：允许保留 `@neko/plugin-ui` import 和 hooks，但不得包含相对 import、`window.NekoUiKit` 或 `__modules` linker 包装；不要为了兼容把它替换成只剩状态概览的最小 fallback 壳。**新 UI 文案必须 8 locale 同步。**
 
 UI 只读取宿主投影的 dashboard state，并通过声明权限内的 action/config API 写入；不直接读取凭据或 store 文件，也不绕过 runtime、pipeline、`safety_guard` 或 `neko_dispatcher`。验证至少运行完整插件测试、插件 CLI check、8 locale key-set 对齐检查和 `git diff --check`。若兼容入口无法加载，回滚 `plugin.toml` 的 panel entry 到上一可用版本；后端直播、store 和输出链路不受影响。
+
+## 7. 直播会话状态与异步操作约束
+
+- `connecting`、`authenticating`、`reconnecting`、`connected` 和 `receiving` 都属于会话进行中。会话进行中不得重复开始，也不得切换平台、账号、凭据或直播间目标；主播必须先结束当前会话。
+- 所有会改变配置、认证或直播状态的按钮都必须有 pending 锁，防止双击产生并发请求。乐观更新失败时恢复旧值；一个模块开关的保存不得让其他卡片尺寸或状态跳变。
+- action 成功与随后 dashboard 刷新失败必须分开呈现：操作已经成功时不得改报为失败。连续刷新失败应显示“状态可能过期”和最后成功刷新时间，手动刷新也必须走同一状态跟踪入口。
+- 面板日期和时间必须使用插件当前 locale，而不是浏览器默认语言；用户可见的新状态文案仍需同步全部 8 个 locale。
+- 内部胶囊式子页必须实现标准 tab 键盘语义：当前项进入 Tab 顺序，并支持方向键、Home、End 切换和聚焦。条件移除开发者页时，外层 Tabs 必须回到有效选中项。

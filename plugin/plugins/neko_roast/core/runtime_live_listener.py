@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import normalize_live_platform
+from .runtime_live_input import remember_live_room_context
+from .runtime_live_session import begin_live_session, invalidate_live_session
 
 
 async def reconcile_live_listener_after_config(
@@ -33,10 +35,9 @@ async def reconcile_live_listener_after_config(
     if not room_changed and not disabled:
         return
     runtime._accepting_live_events = False
+    invalidate_live_session(runtime)
     await _stop_captured_provider(old_provider or runtime.live_provider)
-    runtime.live_audience_session.finish_session()
     if disabled or not room_ref:
-        runtime.live_events.reset()
         runtime.config.live_enabled = False
         runtime.live_connection_state = "disconnected"
         runtime.live_connection_auth_mode = "unknown"
@@ -49,8 +50,13 @@ async def reconcile_live_listener_after_config(
         runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
         return
+    await refresh_live_room_context(runtime, room_ref)
     started = await start_live_listener(runtime, room_ref)
     runtime._accepting_live_events = bool(started)
+    if started:
+        await runtime.sync_live_instructions(force=True)
+    else:
+        await runtime.restore_instructions(force=True)
     runtime.audit.record(
         "live_reconnected" if started else "live_reconnect_failed",
         (
@@ -74,10 +80,8 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime._accepting_live_events = False
     started = await runtime.live_provider.start_listening(room_ref)
     if started:
-        runtime.live_audience_session.start_session()
-        runtime.pipeline.clear_dry_run_session_state()
+        begin_live_session(runtime)
         runtime._live_listener_started_at = float(runtime._live_state_now())
-        runtime._idle_hosting_consecutive_failures = 0
     runtime.live_connection_state = "connected" if started else "disconnected"
     if not started:
         runtime.live_connection_auth_mode = "unknown"
@@ -89,9 +93,8 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
 
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
     runtime._accepting_live_events = False
+    invalidate_live_session(runtime)
     await runtime.live_provider.stop_listening()
-    runtime.live_audience_session.finish_session()
-    runtime.live_events.reset()
     if mark_disabled:
         runtime.config.live_enabled = False
         _clear_connected_room_status(runtime)
@@ -106,6 +109,45 @@ async def _stop_captured_provider(provider: Any) -> None:
     stopper = getattr(provider, "stop_listening", None)
     if callable(stopper):
         await stopper()
+
+
+async def refresh_live_room_context(runtime: Any, room_ref: str) -> dict[str, Any]:
+    """Replace room metadata without retaining fields from the previous room."""
+
+    platform = runtime.live_provider.platform
+    room_id = runtime.live_provider.configured_room_id()
+    minimal_context: dict[str, Any] = {
+        "platform": platform,
+        "room_ref": str(room_ref or "").strip(),
+        "live_status": "unknown",
+    }
+    if room_id > 0:
+        minimal_context["room_id"] = room_id
+    runtime.live_room_context = minimal_context
+    try:
+        status = await runtime.live_provider.lookup_room_status(room_ref)
+    except Exception as exc:
+        runtime.audit.record(
+            "live_room_context_lookup_failed",
+            f"room context lookup failed: {type(exc).__name__}",
+            level="warning",
+            detail={"platform": platform, "room_ref": str(room_ref or "")[:120]},
+        )
+        return runtime.live_room_context
+    if not getattr(status, "ok", False):
+        runtime.audit.record(
+            "live_room_context_lookup_failed",
+            str(getattr(status, "message", "") or "room context unavailable")[:200],
+            level="warning",
+            detail={"platform": platform, "room_ref": str(room_ref or "")[:120]},
+        )
+        return runtime.live_room_context
+    return remember_live_room_context(
+        runtime,
+        status,
+        platform=platform,
+        room_ref=room_ref,
+    )
 
 
 def sync_douyin_listener_state(runtime: Any, state: Any) -> None:

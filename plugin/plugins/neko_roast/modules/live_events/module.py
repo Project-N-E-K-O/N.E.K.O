@@ -37,6 +37,7 @@ from .provider_event import (
     event_room_id,
     event_room_ref,
     event_score,
+    event_session_generation,
     event_signal_fields,
     event_text,
     event_type,
@@ -175,9 +176,18 @@ class LiveEventsModule(BaseModule):
         flush_task = self._flush_task
         if flush_task is not None and not flush_task.done():
             flush_task.cancel()
+        for task in list(self._tasks):
+            if not task.done():
+                task.cancel()
         self._clear_window()
+        self._last_dispatch_at = 0.0
+        self._last_decision_at = 0.0
+        self._last_selected_type = ""
+        self._last_candidate_count = 0
+        self._last_skip_reason = ""
         self._recent_viewer_uids = {}
         self._last_new_viewer_batch_welcome_at = 0.0
+        self._room_topic.reset()
 
     def status(self) -> dict[str, Any]:
         status = {
@@ -483,6 +493,9 @@ class LiveEventsModule(BaseModule):
             "room_id": event_room_id(event),
             "event_type": event_type,
         }
+        session_generation = event_session_generation(event)
+        if session_generation:
+            payload["_live_session_generation"] = session_generation
         room_ref = event_room_ref(event)
         if room_ref:
             payload["room_ref"] = room_ref

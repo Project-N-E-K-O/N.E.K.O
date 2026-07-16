@@ -165,6 +165,7 @@ export function AuthCard({
   loginLoggedIn,
   loginName,
   loginUid,
+  disabled = false,
   onLogin,
   onLoginCheck,
   onLogout,
@@ -174,6 +175,7 @@ export function AuthCard({
   loginLoggedIn: boolean
   loginName: string
   loginUid: string
+  disabled?: boolean
   onLogin: () => void
   onLoginCheck: () => void
   onLogout: () => void
@@ -188,20 +190,21 @@ export function AuthCard({
         </Text>
         {loginLoggedIn ? (
           <Grid cols={2}>
-            <Button tone="info" onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
-            <Button tone="danger" onClick={onLogout}>{t("panel.actions.biliLogout")}</Button>
+            <Button tone="info" disabled={disabled} onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
+            <Button tone="danger" disabled={disabled} onClick={onLogout}>{t("panel.actions.biliLogout")}</Button>
           </Grid>
         ) : (
           <Stack>
             <Grid cols={2}>
-              <Button tone="info" onClick={onLogin}>{t("panel.actions.biliLogin")}</Button>
-              <Button tone="success" onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
+              <Button tone="info" disabled={disabled} onClick={onLogin}>{t("panel.actions.biliLogin")}</Button>
+              <Button tone="success" disabled={disabled} onClick={onLoginCheck}>{t("panel.actions.biliLoginCheck")}</Button>
             </Grid>
             {loginState?.qrcode_image ? (
               <Stack>
                 {/* hosted-ui strips data: URLs from img src, so the QR code uses a CSS background image. */}
                 <button
                   type="button"
+                  disabled={disabled}
                   onClick={onLogin}
                   aria-label={t("panel.auth.refreshHint")}
                   title={t("panel.auth.refreshHint")}
@@ -212,7 +215,7 @@ export function AuthCard({
                     padding: "8px",
                     borderRadius: "8px",
                     border: "none",
-                    cursor: "pointer",
+                    cursor: disabled ? "not-allowed" : "pointer",
                     backgroundColor: "#ffffff",
                     backgroundImage: `url("${loginState.qrcode_image}")`,
                     backgroundRepeat: "no-repeat",

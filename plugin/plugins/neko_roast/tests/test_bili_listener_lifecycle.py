@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
@@ -134,6 +135,10 @@ async def test_terminal_listener_task_clears_module_references() -> None:
     assert module.is_listening() is False
     assert module._listener is None
     assert module._listener_task is None
+    ended = [item for item in module.ctx.audit.records if item[0] == "live_listener_task_ended"]
+    assert len(ended) == 1
+    assert ended[0][2]["level"] == "warning"
+    assert ended[0][2]["detail"]["generation"] > 0
 
 
 @pytest.mark.asyncio
@@ -144,6 +149,7 @@ async def test_auth_reply_unblocks_listener_ready_wait() -> None:
     await asyncio.wait_for(ready, timeout=0.1)
 
     assert listener.get_connection_state()["state"] == "receiving"
+    assert listener.get_connection_state()["reconnect_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -209,3 +215,42 @@ def test_stale_or_paused_provider_event_is_dropped_before_event_bus() -> None:
     module._on_live_event("DANMU_MSG", {"uid": 1, "text": "paused"})
 
     assert published == []
+
+
+def test_support_event_records_privacy_safe_ingest_stages() -> None:
+    published: list[Any] = []
+    timeline: deque[dict[str, Any]] = deque(maxlen=16)
+    module = BiliLiveIngestModule()
+    module.ctx = SimpleNamespace(
+        _stopping=False,
+        event_bus=SimpleNamespace(publish=lambda *args: published.append(args)),
+        audit=_Audit(),
+        runtime_timeline=timeline,
+        _timeline_salt=b"test-timeline-salt",
+    )
+    module._room_id = 123
+
+    module._on_live_event(
+        "SEND_GIFT",
+        {"uid": 42, "nickname": "viewer", "gift_name": "小鱼干", "gift_count": 1},
+    )
+
+    assert len(published) == 1
+    assert [item["stage"] for item in timeline] == [
+        "ingest",
+        "event_bus",
+    ]
+    assert [item["status"] for item in timeline] == ["received", "published"]
+    assert timeline[0]["trace_id"] == timeline[1]["trace_id"]
+    assert timeline[0]["uid"].startswith("viewer_")
+    assert "nickname" not in timeline[0]
+
+    module._on_live_event(
+        "SEND_GIFT",
+        {"uid": 42, "nickname": "viewer", "gift_name": "小鱼干", "gift_count": 1},
+    )
+
+    assert len(published) == 1
+    assert timeline[-1]["stage"] == "ingest"
+    assert timeline[-1]["status"] == "dropped"
+    assert timeline[-1]["reason"] == "ingest.duplicate_support_event"

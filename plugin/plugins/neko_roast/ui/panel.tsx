@@ -11,7 +11,6 @@ import {
   JsonView,
   Modal,
   Page,
-  RefreshButton,
   Select,
   Stack,
   StatCard,
@@ -21,6 +20,7 @@ import {
   Textarea,
   Toolbar,
   ToolbarGroup,
+  useCallback,
   useEffect,
   useForm,
   useState,
@@ -37,7 +37,7 @@ import {
   ToggleSwitch,
   unwrapActionResult,
 } from "./panel_components"
-import type { DashboardState, RoastConfig } from "./panel_state"
+import type { DashboardState } from "./panel_state"
 import { configDefaults, presetViewer, sandboxDefaults } from "./panel_state"
 import {
   activeTopicIntentLabel,
@@ -74,7 +74,7 @@ function CompactTabs(props: { id: string; items: Array<{ id: string; label: any;
   return (
     <div className="neko-roast-compact-tabs" style={{ display: "grid", gap: "10px" }}>
       <div role="tablist" aria-label={id} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "5px" }}>
-        {items.map((item) => {
+        {items.map((item, index) => {
           const active = item.id === activeItem?.id
           const tabId = `${id}-${item.id}-tab`
           const panelId = `${id}-${item.id}-panel`
@@ -86,7 +86,22 @@ function CompactTabs(props: { id: string; items: Array<{ id: string; label: any;
               role="tab"
               aria-selected={active}
               aria-controls={panelId}
+              tabIndex={active ? 0 : -1}
               onClick={() => setActiveId(item.id)}
+              onKeyDown={(event) => {
+                let nextIndex = index
+                if (event.key === "ArrowRight") nextIndex = (index + 1) % items.length
+                else if (event.key === "ArrowLeft") nextIndex = (index - 1 + items.length) % items.length
+                else if (event.key === "Home") nextIndex = 0
+                else if (event.key === "End") nextIndex = items.length - 1
+                else return
+                event.preventDefault()
+                const nextItem = items[nextIndex]
+                if (!nextItem) return
+                setActiveId(nextItem.id)
+                const nextButton = event.currentTarget.parentElement?.children[nextIndex] as HTMLElement | undefined
+                nextButton?.focus()
+              }}
               style={{
                 minHeight: "26px",
                 padding: "2px 9px",
@@ -118,6 +133,15 @@ function CompactTabs(props: { id: string; items: Array<{ id: string; label: any;
   )
 }
 
+function formatLocaleDateTime(value: number, locale?: string): string {
+  const parsed = new Date(value)
+  try {
+    return parsed.toLocaleString(locale || undefined)
+  } catch {
+    return parsed.toLocaleString()
+  }
+}
+
 export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}
@@ -146,6 +170,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [consoleDialog, setConsoleDialog] = useState<"account" | "room" | "theme" | "pacing" | "diagnostics" | "">("")
   const [interactionDialog, setInteractionDialog] = useState<"avatar_roast" | "danmaku_response" | "live_support_events" | "warmup_hosting" | "idle_hosting" | "active_engagement" | "">("")
   const [connectPending, setConnectPending] = useState(false)
+  const [sessionStartAccepted, setSessionStartAccepted] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
@@ -154,6 +179,26 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const [clearViewerMemoryConfirmOpen, setClearViewerMemoryConfirmOpen] = useState(false)
   const [storageDetailsOpen, setStorageDetailsOpen] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [consoleSaving, setConsoleSaving] = useState(false)
+  const [authPending, setAuthPending] = useState("")
+  const [developerPending, setDeveloperPending] = useState(false)
+  const [simpleActionPending, setSimpleActionPending] = useState("")
+  const [refreshFailureCount, setRefreshFailureCount] = useState(0)
+  const [lastSuccessfulRefreshAt, setLastSuccessfulRefreshAt] = useState(() => Date.now())
+  const [themeDraft, setThemeDraft] = useState({
+    live_mode: "co_stream",
+    stream_theme: "",
+    stream_goal: "",
+    stream_columns: "",
+    stream_avoid_topics: "",
+  })
+  const [pacingDraft, setPacingDraft] = useState({
+    activity_level: "standard",
+    rate_limit_seconds: "20",
+  })
+  const [roomDraft, setRoomDraft] = useState("")
+  const closeConsoleDialog = useCallback(() => { setConsoleDialog("") }, [])
+  const closeInteractionDialog = useCallback(() => { setInteractionDialog("") }, [])
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
@@ -231,10 +276,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
   useEffect(() => {
     const state = String(connection.state || "")
+    const transitionInProgress = ["connecting", "authenticating", "reconnecting"].includes(state)
     const shouldRefresh =
       !!config.live_enabled ||
       !!connection.connected ||
       !!connection.listening ||
+      transitionInProgress ||
       state === "connected" ||
       state === "receiving"
     if (!shouldRefresh) return
@@ -260,11 +307,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       clearTimer()
       if (disposed || refreshPending || document.visibilityState !== "visible") return
       refreshPending = true
-      props.api
-        .refresh()
-        .catch(() => {
-          /* Status polling failures should not interrupt panel actions; the next poll will retry. */
-        })
+      refreshDashboard()
         .finally(() => {
           refreshPending = false
           scheduleRefresh()
@@ -288,76 +331,108 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
   }, [config.live_enabled, connection.connected, connection.listening, connection.state])
 
-  function advancedConfigPatch() {
-    return {
-      rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0,
-      queue_limit: Number(configForm.values.queue_limit) || 5,
-      safety_auto_stop_enabled: configForm.values.safety_auto_stop_enabled,
-      dry_run: configForm.values.dry_run,
-      viewer_store_dir: configForm.values.viewer_store_dir.trim(),
-      stream_theme: configForm.values.stream_theme.trim(),
-      stream_goal: configForm.values.stream_goal.trim(),
-      stream_columns: configForm.values.stream_columns.trim(),
-      stream_avoid_topics: configForm.values.stream_avoid_topics.trim(),
+  async function refreshDashboard(notifyFailure = false): Promise<boolean> {
+    try {
+      await props.api.refresh()
+      setRefreshFailureCount(0)
+      setLastSuccessfulRefreshAt(Date.now())
+      return true
+    } catch (err) {
+      setRefreshFailureCount((count) => notifyFailure ? Math.max(2, count + 1) : count + 1)
+      if (notifyFailure) toast.warning(t("panel.messages.refreshFailedAfterAction"))
+      return false
     }
   }
 
-  async function saveConfig(patch: Record<string, any> = {}): Promise<boolean> {
-    const livePlatform = String(patch.live_platform ?? config.live_platform ?? configForm.values.live_platform ?? "bilibili")
+  async function saveConfig(patch: Record<string, any>): Promise<boolean> {
     const normalizedRoomRef = (value: unknown) => {
       const roomRef = String(value ?? "").trim()
       return roomRef === "0" ? "" : roomRef
     }
-    const hasPatchedPlatform = Object.prototype.hasOwnProperty.call(patch, "live_platform")
     const hasPatchedRoomRef = Object.prototype.hasOwnProperty.call(patch, "live_room_ref")
     const hasPatchedRoomId = Object.prototype.hasOwnProperty.call(patch, "live_room_id")
-    const liveRoomRef = hasPatchedRoomRef || hasPatchedRoomId
-      ? normalizedRoomRef(hasPatchedRoomRef ? patch.live_room_ref : patch.live_room_id)
-      : (
-          normalizedRoomRef(configForm.values.live_room_ref) ||
-          normalizedRoomRef(config.live_room_ref) ||
-          normalizedRoomRef(config.live_room_id) ||
-          normalizedRoomRef(configForm.values.live_room_id)
-        )
+    const livePlatform = String(patch.live_platform ?? config.live_platform ?? configForm.values.live_platform ?? "bilibili")
+    const liveRoomRef = normalizedRoomRef(hasPatchedRoomRef ? patch.live_room_ref : patch.live_room_id)
     const liveRoomId = livePlatform === "bilibili" ? Number(liveRoomRef) || 0 : 0
-    const fullPayload = {
-      live_platform: livePlatform,
-      live_room_ref: liveRoomRef,
-      live_enabled: configForm.values.live_enabled,
-      avatar_roast_enabled: configForm.values.avatar_roast_enabled,
-      avatar_analysis_enabled: configForm.values.avatar_analysis_enabled,
-      danmaku_response_enabled: configForm.values.danmaku_response_enabled,
-      live_support_events_enabled: configForm.values.live_support_events_enabled,
-      warmup_hosting_enabled: configForm.values.warmup_hosting_enabled,
-      idle_hosting_enabled: configForm.values.idle_hosting_enabled,
-      active_engagement_enabled: configForm.values.active_engagement_enabled,
-      live_room_id: liveRoomId,
-      developer_tools_enabled: configForm.values.developer_tools_enabled,
-      live_mode: configForm.values.live_mode,
-      activity_level: configForm.values.activity_level,
-      roast_strength: configForm.values.roast_strength,
-      roast_once_per_uid: configForm.values.roast_once_per_uid,
-      viewer_memory_enabled: configForm.values.viewer_memory_enabled,
-      ...advancedConfigPatch(),
-    }
-    const patchedPayload = hasPatchedPlatform && !hasPatchedRoomRef && !hasPatchedRoomId
-      ? patch
-      : {
+    const patchedPayload = hasPatchedRoomRef || hasPatchedRoomId
+      ? {
           ...patch,
           live_room_ref: liveRoomRef,
           live_room_id: liveRoomId,
         }
-    const payload = Object.keys(patch).length
-      ? patchedPayload
-      : fullPayload
+      : patch
     try {
-      await props.api.call("update_config", payload)
-      await props.api.refresh()
+      await props.api.call("update_config", patchedPayload)
       toast.success(t("panel.messages.saved"))
+      await refreshDashboard(true)
       return true
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
       return false
+    }
+  }
+
+  function openConsoleDialog(dialog: "account" | "room" | "theme" | "pacing" | "diagnostics") {
+    if ((dialog === "account" || dialog === "room") && sessionInProgress) {
+      toast.warning(t("panel.messages.endSessionBeforeChangingTarget"))
+      return
+    }
+    if (dialog === "theme") {
+      setThemeDraft({
+        live_mode: String(config.live_mode || "co_stream"),
+        stream_theme: String(config.stream_theme || ""),
+        stream_goal: String(config.stream_goal || ""),
+        stream_columns: String(config.stream_columns || ""),
+        stream_avoid_topics: String(config.stream_avoid_topics || ""),
+      })
+    } else if (dialog === "pacing") {
+      setPacingDraft({
+        activity_level: String(config.activity_level || "standard"),
+        rate_limit_seconds: String(config.rate_limit_seconds ?? 20),
+      })
+    } else if (dialog === "room") {
+      setRoomDraft(String(config.live_room_ref || config.live_room_id || ""))
+      setLiveRoomResult(null)
+      setQueriedRoomRef("")
+    }
+    setConsoleDialog(dialog)
+  }
+
+  async function saveThemeSettings() {
+    if (consoleSaving) return
+    setConsoleSaving(true)
+    try {
+      const saved = await saveConfig({
+        live_mode: themeDraft.live_mode,
+        stream_theme: themeDraft.stream_theme.trim(),
+        stream_goal: themeDraft.stream_goal.trim(),
+        stream_columns: themeDraft.stream_columns.trim(),
+        stream_avoid_topics: themeDraft.stream_avoid_topics.trim(),
+      })
+      if (saved) closeConsoleDialog()
+    } finally {
+      setConsoleSaving(false)
+    }
+  }
+
+  const pacingCooldownText = pacingDraft.rate_limit_seconds.trim()
+  const pacingCooldownSeconds = Number(pacingCooldownText)
+  const pacingCooldownValid = /^\d+$/.test(pacingCooldownText)
+    && Number.isInteger(pacingCooldownSeconds)
+    && pacingCooldownSeconds >= 0
+    && pacingCooldownSeconds <= 3600
+
+  async function savePacingSettings() {
+    if (consoleSaving || !pacingCooldownValid) return
+    setConsoleSaving(true)
+    try {
+      const saved = await saveConfig({
+        activity_level: pacingDraft.activity_level,
+        rate_limit_seconds: pacingCooldownSeconds,
+      })
+      if (saved) closeConsoleDialog()
+    } finally {
+      setConsoleSaving(false)
     }
   }
 
@@ -378,8 +453,18 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
   }
 
-  function switchLivePlatform(next: string) {
-    if (next === livePlatform) return
+  async function switchLivePlatform(next: string) {
+    if (next === livePlatform || consoleSaving || authPending) return
+    if (sessionInProgress) {
+      toast.warning(t("panel.messages.endSessionBeforeChangingTarget"))
+      return
+    }
+    const previous = {
+      live_platform: configForm.values.live_platform,
+      live_room_ref: configForm.values.live_room_ref,
+      live_room_id: configForm.values.live_room_id,
+      live_enabled: configForm.values.live_enabled,
+    }
     setAllowLimitedConnection(false)
     configForm.setField("live_platform", next)
     configForm.setField("live_room_ref", "")
@@ -387,15 +472,25 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     configForm.setField("live_enabled", false)
     setLiveRoomResult(null)
     setQueriedRoomRef("")
-    saveConfig({ live_platform: next, live_enabled: false })
+    setConsoleSaving(true)
+    try {
+      const saved = await saveConfig({ live_platform: next, live_room_ref: "", live_room_id: 0, live_enabled: false })
+      if (!saved) {
+        Object.entries(previous).forEach(([key, value]) => configForm.setField(key as any, value))
+      }
+    } finally {
+      setConsoleSaving(false)
+    }
   }
 
   async function lookupLiveRoom(): Promise<void> {
-    const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
+    if (consoleSaving) return
+    const roomRef = roomDraft.trim()
     if (!roomRef) {
       toast.error(t("panel.messages.roomRequired"))
       return
     }
+    setConsoleSaving(true)
     try {
       const envelope = await props.api.call("lookup_live_room", { room_id: roomRef })
       const result = unwrapActionResult(envelope)
@@ -410,11 +505,18 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       setLiveRoomResult(null)
       setQueriedRoomRef("")
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConsoleSaving(false)
     }
   }
 
   async function confirmLiveRoom() {
-    const roomRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
+    if (consoleSaving) return
+    if (sessionInProgress) {
+      toast.warning(t("panel.messages.endSessionBeforeChangingTarget"))
+      return
+    }
+    const roomRef = roomDraft.trim()
     if (!roomRef) {
       toast.error(t("panel.messages.roomRequired"))
       return
@@ -423,17 +525,21 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       toast.warning(t("panel.messages.roomLookupRequired"))
       return
     }
+    setConsoleSaving(true)
     try {
       await props.api.call("set_live_room", { room_id: roomRef })
-      await props.api.refresh()
       setConsoleDialog("")
       toast.success(t("panel.messages.saved"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setConsoleSaving(false)
     }
   }
 
   async function connectRoom() {
+    if (connectPending || sessionInProgress) return
     const roomRef = String(
       configForm.values.live_room_ref ||
       configForm.values.live_room_id ||
@@ -451,13 +557,20 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         room_id: roomRef,
         allow_accountless: livePlatform === "bilibili" && !loginLoggedIn && allowLimitedConnection,
       }))
-      await props.api.refresh()
       const nextConnection = result.connection || result
+      const nextState = String(nextConnection.state || "")
+      const startAccepted = !!(
+        nextConnection.connected ||
+        nextConnection.listening ||
+        ["connecting", "authenticating", "reconnecting", "connected", "receiving"].includes(nextState)
+      )
+      if (startAccepted) setSessionStartAccepted(true)
       if (nextConnection.connected || nextConnection.listening) {
         toast.success(t("panel.messages.connected"))
       } else {
-        toast.warning(String(nextConnection.state || t("panel.connection.disconnected")))
+        toast.warning(nextState || t("panel.connection.disconnected"))
       }
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -466,6 +579,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function biliLogin() {
+    if (authPending || sessionInProgress) return
+    setAuthPending("bili_login")
     try {
       const result = unwrapActionResult(await props.api.call("bili_login"))
       setLoginState(result)
@@ -473,54 +588,69 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       else if (result.logged_in || result.status === "already_logged_in" || result.status === "done") {
         setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loggedIn"))
-        await props.api.refresh()
+        await refreshDashboard(true)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function biliLoginCheck() {
+    if (authPending || sessionInProgress) return
+    setAuthPending("bili_login_check")
     try {
       const result = unwrapActionResult(await props.api.call("bili_login_check"))
       setLoginState(result)
       if (result.status === "done" || result.logged_in) {
         setAllowLimitedConnection(false)
         toast.success(t("panel.auth.loginDone"))
-        await props.api.refresh()
+        await refreshDashboard(true)
       } else if (result.message) {
         toast.info(result.message)
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function biliLogout() {
+    if (authPending || sessionInProgress) return
+    setAuthPending("bili_logout")
     try {
       const result = unwrapActionResult(await props.api.call("bili_logout"))
       setLoginState(result)
       setAllowLimitedConnection(false)
       toast.success(t("panel.auth.logoutDone"))
-      await props.api.refresh()
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function douyinCookieStatus() {
+    if (authPending) return
+    setAuthPending("douyin_cookie_status")
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_status"))
       setDouyinAuthState(result)
       if (result.logged_in || result.has_cookie) toast.success(t("panel.douyinAuth.cookieReady"))
       else toast.info(t("panel.douyinAuth.cookieMissing"))
-      await props.api.refresh()
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function douyinCookieValidate() {
+    if (authPending) return
     const roomRef = String(
       configForm.values.live_room_ref ||
       configForm.values.live_room_id ||
@@ -532,23 +662,28 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       toast.error(t("panel.messages.roomRequired"))
       return
     }
+    setAuthPending("douyin_cookie_validate")
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_validate", { room_ref: roomRef }))
       setDouyinAuthState(result)
-      await props.api.refresh()
+      await refreshDashboard(true)
       if (result.valid) toast.success(t("panel.douyinAuth.cookieValid"))
       else toast.warning(result.message || t("panel.douyinAuth.cookieInvalid"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function douyinCookieImport() {
+    if (authPending || sessionInProgress) return
     const cookie = String(configForm.values.douyin_cookie || "").trim()
     if (!cookie) {
       toast.error(t("panel.douyinAuth.cookieRequired"))
       return
     }
+    setAuthPending("douyin_cookie_import")
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_import", {
         cookie,
@@ -557,21 +692,27 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       }))
       setDouyinAuthState(result)
       configForm.setField("douyin_cookie", "")
-      await props.api.refresh()
       toast.success(result.saved ? t("panel.douyinAuth.cookieSaved") : t("panel.douyinAuth.cookieSaveFailed"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
   async function douyinCookieDelete() {
+    if (authPending || sessionInProgress) return
+    setAuthPending("douyin_cookie_delete")
     try {
       const result = unwrapActionResult(await props.api.call("douyin_cookie_delete"))
       setDouyinAuthState(result)
-      await props.api.refresh()
       toast.success(t("panel.douyinAuth.cookieDeleted"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAuthPending("")
     }
   }
 
@@ -591,12 +732,17 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }, [])
 
   async function callSimple(action: string) {
+    if (simpleActionPending) return
+    setSimpleActionPending(action)
     try {
       await props.api.call(action, {})
-      await props.api.refresh()
+      if (action === "disconnect_live_room") setSessionStartAccepted(false)
       toast.success(t("panel.messages.done"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSimpleActionPending("")
     }
   }
 
@@ -604,8 +750,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     if (!uid) return
     try {
       await props.api.call(action, { uid })
-      await props.api.refresh()
       toast.success(t("panel.messages.done"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
       throw err
@@ -615,8 +761,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   async function clearViewerMemory(): Promise<void> {
     try {
       await props.api.call("clear_viewer_profiles", {})
-      await props.api.refresh()
       toast.success(t("panel.messages.done"))
+      await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
     } finally {
@@ -646,7 +792,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       })
       const result = unwrapActionResult(envelope)
       setSandboxResult(result)
-      await props.api.refresh()
+      await refreshDashboard(true)
       toast.success(t("panel.messages.submitted"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -662,7 +808,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       const result = unwrapActionResult(envelope)
       setLookupResult(result)
       setSandboxResult(result)
-      await props.api.refresh()
+      await refreshDashboard(true)
       toast.success(t("panel.messages.lookupDone"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -676,7 +822,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       })
       const result = unwrapActionResult(envelope)
       setSandboxResult(result)
-      await props.api.refresh()
+      await refreshDashboard(true)
       toast.success(t("panel.messages.demoSubmitted"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -688,7 +834,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       await props.api.call("clear_sandbox_data", {})
       setSandboxResult(null)
       setLookupResult(null)
-      await props.api.refresh()
+      await refreshDashboard(true)
       toast.success(t("panel.messages.sandboxCleared"))
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -696,17 +842,21 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   }
 
   async function toggleDeveloperTools(value: boolean) {
+    if (developerPending) return
     const previous = !!configForm.values.developer_tools_enabled
     configForm.setField("developer_tools_enabled", value)
+    setDeveloperPending(true)
     try {
       await props.api.call("update_config", {
         developer_tools_enabled: value,
       })
-      await props.api.refresh()
       toast.success(value ? t("panel.messages.devEnabled") : t("panel.messages.devDisabled"))
+      await refreshDashboard(true)
     } catch (err) {
       configForm.setField("developer_tools_enabled", previous)
       toast.error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeveloperPending(false)
     }
   }
 
@@ -782,10 +932,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const livePlatformLabel = t(`panel.platform.${livePlatform === "douyin" ? "douyin" : "bilibili"}`)
   const roomFieldLabel = livePlatform === "douyin" ? t("panel.fields.douyinRoom") : t("panel.fields.roomId")
   const roomPlaceholder = livePlatform === "douyin" ? t("panel.placeholders.douyinRoom") : t("panel.placeholders.roomId")
-  const currentRoomRef = String(connection.room_ref || config.live_room_ref || config.live_room_id || "").trim()
+  const configuredRoomRef = String(config.live_room_ref || config.live_room_id || "").trim()
+  const currentRoomRef = String(connection.room_ref || configuredRoomRef || "").trim()
   const lookupRoomRef = String(liveRoomResult?.room_ref || liveRoomResult?.room_id || "").trim()
   const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
-  const roomFormRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || "").trim()
+  const roomFormRef = roomDraft.trim()
   const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
@@ -802,28 +953,34 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const connectionLastError = String(connection.last_error || "")
 
   const connectionState = String(connection.state || "")
+  const connectionTransitioning = ["connecting", "authenticating", "reconnecting"].includes(connectionState)
   const started = !!(
     connection.connected ||
     connection.listening ||
+    connectionTransitioning ||
     connectionState === "connected" ||
     connectionState === "receiving"
   )
-  const roomInputRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || currentRoomRef || "").trim()
-  const roomConfigured = !!currentRoomRef
+  const sessionInProgress = started || !!config.live_enabled || sessionStartAccepted
+  useEffect(() => {
+    if (started || config.live_enabled) setSessionStartAccepted(false)
+  }, [started, config.live_enabled])
+  const roomInputRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || configuredRoomRef || "").trim()
+  const roomConfigured = !!configuredRoomRef
   const interactionPaused = liveStateName === "paused" || String(safety.status || "") === "paused"
   const connectionFailed = !started && (
     connectionState === "error" ||
     connectionState === "failed" ||
     !!connectionLastError
   )
-  const consoleState = connectPending ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
+  const consoleState = connectPending || connectionTransitioning ? "connecting" : connectionFailed ? "error" : started ? "live" : "ready"
   const accountReady = livePlatform === "douyin" ? douyinLoggedIn : loginLoggedIn
   const connectionAuthMode = String(connection.auth_mode || "unknown")
   const limitedConnection = livePlatform === "bilibili" && !loginLoggedIn && (
     allowLimitedConnection || connectionAuthMode === "limited_accountless"
   )
   const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection
-  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : douyinLoggedIn) && !connectPending
+  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : douyinLoggedIn) && !connectPending && !sessionInProgress
   const primaryStatusLabel = started
     ? t("panel.console.state.live")
     : connectPending
@@ -856,29 +1013,28 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Text>{t("panel.streamTheme.hint")}</Text>
         <Field label={t("panel.fields.mode")}>
           <Select
-            value={configForm.values.live_mode}
+            value={themeDraft.live_mode}
             options={[
               { value: "co_stream", label: t("panel.mode.co") },
               { value: "solo_stream", label: t("panel.mode.solo") },
             ]}
             onChange={(value) => {
               const next = String(value)
-              configForm.setField("live_mode", next)
-              saveConfig({ live_mode: next })
+              setThemeDraft((draft) => ({ ...draft, live_mode: next }))
             }}
           />
         </Field>
         <Field label={t("panel.fields.streamTheme")}>
-          <Input value={configForm.values.stream_theme} onChange={(value) => configForm.setField("stream_theme", value)} />
+          <Input value={themeDraft.stream_theme} onChange={(value) => setThemeDraft((draft) => ({ ...draft, stream_theme: value }))} />
         </Field>
         <Field label={t("panel.fields.streamGoal")}>
-          <Input value={configForm.values.stream_goal} onChange={(value) => configForm.setField("stream_goal", value)} />
+          <Input value={themeDraft.stream_goal} onChange={(value) => setThemeDraft((draft) => ({ ...draft, stream_goal: value }))} />
         </Field>
         <Field label={t("panel.fields.streamColumns")}>
-          <Input value={configForm.values.stream_columns} onChange={(value) => configForm.setField("stream_columns", value)} />
+          <Input value={themeDraft.stream_columns} onChange={(value) => setThemeDraft((draft) => ({ ...draft, stream_columns: value }))} />
         </Field>
         <Field label={t("panel.fields.streamAvoidTopics")}>
-          <Input value={configForm.values.stream_avoid_topics} onChange={(value) => configForm.setField("stream_avoid_topics", value)} />
+          <Input value={themeDraft.stream_avoid_topics} onChange={(value) => setThemeDraft((draft) => ({ ...draft, stream_avoid_topics: value }))} />
         </Field>
     </Stack>
   )
@@ -888,7 +1044,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Text>{t("panel.pacing.hint")}</Text>
       <Field label={t("panel.fields.activityLevel")}>
         <Select
-          value={configForm.values.activity_level}
+          value={pacingDraft.activity_level}
           options={[
             { value: "quiet", label: t("panel.activity.quiet") },
             { value: "standard", label: t("panel.activity.standard") },
@@ -896,8 +1052,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           ]}
           onChange={(value) => {
             const next = String(value)
-            configForm.setField("activity_level", next)
-            saveConfig({ activity_level: next })
+            setPacingDraft((draft) => ({ ...draft, activity_level: next }))
           }}
         />
       </Field>
@@ -910,10 +1065,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           ].map((option) => (
             <Button
               key={option.seconds}
-              tone={Number(configForm.values.rate_limit_seconds) === option.seconds ? "primary" : "default"}
+              tone={Number(pacingDraft.rate_limit_seconds) === option.seconds ? "primary" : "default"}
               onClick={() => {
-                configForm.setField("rate_limit_seconds", String(option.seconds))
-                saveConfig({ rate_limit_seconds: option.seconds })
+                setPacingDraft((draft) => ({ ...draft, rate_limit_seconds: String(option.seconds) }))
               }}
             >
               {option.label}
@@ -922,8 +1076,9 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         </Grid>
       </Field>
       <Field label={t("panel.pacing.custom")}>
-        <Input value={configForm.values.rate_limit_seconds} onChange={(value) => configForm.setField("rate_limit_seconds", value)} />
+        <Input value={pacingDraft.rate_limit_seconds} onChange={(value) => setPacingDraft((draft) => ({ ...draft, rate_limit_seconds: value }))} />
       </Field>
+      {!pacingCooldownValid ? <Alert tone="warning">{t("panel.pacing.invalidCooldown")}</Alert> : null}
     </Stack>
   )
 
@@ -931,6 +1086,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const queueLimit = Number(safety.queue_limit || config.queue_limit || configForm.values.queue_limit || 0)
   const configuredCooldownSeconds = Number(config.rate_limit_seconds ?? configForm.values.rate_limit_seconds ?? 20)
   const cooldownSeconds = Number.isFinite(configuredCooldownSeconds) ? configuredCooldownSeconds : 20
+  const lastSuccessfulRefreshLabel = formatLocaleDateTime(lastSuccessfulRefreshAt, props.locale)
 
   // Streamer-first console: routine live operations stay on one compact page.
   const consoleSection = (
@@ -950,13 +1106,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         <Card title={t("panel.console.accountTitle")}>
           <Stack gap={8}>
             <StatusBadge tone={accountReady ? "success" : "warning"} label={accountLabel} />
-            <Button tone="default" onClick={() => { setConsoleDialog("account") }}>{t("panel.console.manage")}</Button>
+            <Button tone="default" disabled={sessionInProgress} onClick={() => { openConsoleDialog("account") }}>{t("panel.console.manage")}</Button>
           </Stack>
         </Card>
         <Card title={t("panel.room.title")}>
           <Stack gap={8}>
             <StatusBadge tone={roomConfigured ? "success" : "warning"} label={currentRoomRef || t("panel.console.roomMissing")} />
-            <Button tone="default" onClick={() => { setConsoleDialog("room") }}>{t("panel.actions.setRoom")}</Button>
+            <Button tone="default" disabled={sessionInProgress} onClick={() => { openConsoleDialog("room") }}>{t("panel.actions.setRoom")}</Button>
           </Stack>
         </Card>
       </Grid>
@@ -981,8 +1137,8 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           {loginRequired && !started ? <Alert tone="info">{t("panel.console.loginRequiredHint")}</Alert> : null}
           {limitedConnection && !started ? <Alert tone="warning">{t("panel.console.limitedHint")}</Alert> : null}
           <Grid cols={2}>
-            <Button tone="default" onClick={() => { setConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
-            <Button tone="default" onClick={() => { setConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
+            <Button tone="default" onClick={() => { openConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
+            <Button tone="default" onClick={() => { openConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
           </Grid>
         </Stack>
       </Card>
@@ -996,7 +1152,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <StatCard label={t("panel.console.recentActivity")} value={results.length ? t("panel.console.recentNow") : t("panel.console.recentNone")} />
           </Grid>
           <Text>{dynamicLabel("liveModeRoleHint", "panel.liveModeRoleHint", liveModeRole)}</Text>
-          <Button tone="default" onClick={() => { setConsoleDialog("diagnostics") }}>{t("panel.actions.showAdvanced")}</Button>
+          <Button tone="default" onClick={() => { openConsoleDialog("diagnostics") }}>{t("panel.actions.showAdvanced")}</Button>
         </Stack>
       </Card>
 
@@ -1004,13 +1160,14 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         open={consoleDialog === "account"}
         title={t("panel.console.accountModalTitle")}
         size="lg"
-        onClose={() => { setConsoleDialog("") }}
+        onClose={closeConsoleDialog}
         footer={<Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>}
       >
         <Stack>
           <Field label={t("panel.fields.platform")}>
             <Select
               value={livePlatform}
+              disabled={sessionInProgress || consoleSaving || !!authPending}
               options={[
                 { value: "bilibili", label: t("panel.platform.bilibili") },
                 { value: "douyin", label: `${t("panel.platform.douyin")} ${t("panel.platform.incompleteSuffix")}` },
@@ -1025,23 +1182,23 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
               {douyinValidationMessage ? <Text>{douyinValidationMessage}</Text> : null}
               {douyinValidationStatus ? <Text>{t("panel.room.liveStatus")}: {t(`panel.liveStatus.${douyinValidationStatus}`)}</Text> : null}
               <Field label={t("panel.fields.douyinCookie")}>
-                <Textarea value={configForm.values.douyin_cookie} placeholder={t("panel.placeholders.douyinCookie")} onChange={(value) => { configForm.setField("douyin_cookie", value) }} />
+                <Textarea disabled={sessionInProgress || !!authPending} value={configForm.values.douyin_cookie} placeholder={t("panel.placeholders.douyinCookie")} onChange={(value) => { configForm.setField("douyin_cookie", value) }} />
               </Field>
               <Grid cols={2}>
-                <Field label={t("panel.fields.douyinUid")}><Input value={configForm.values.douyin_uid} onChange={(value) => { configForm.setField("douyin_uid", value) }} /></Field>
-                <Field label={t("panel.fields.douyinNickname")}><Input value={configForm.values.douyin_nickname} onChange={(value) => { configForm.setField("douyin_nickname", value) }} /></Field>
+                <Field label={t("panel.fields.douyinUid")}><Input disabled={sessionInProgress || !!authPending} value={configForm.values.douyin_uid} onChange={(value) => { configForm.setField("douyin_uid", value) }} /></Field>
+                <Field label={t("panel.fields.douyinNickname")}><Input disabled={sessionInProgress || !!authPending} value={configForm.values.douyin_nickname} onChange={(value) => { configForm.setField("douyin_nickname", value) }} /></Field>
               </Grid>
               <Grid cols={4}>
-                <Button tone="success" onClick={douyinCookieImport}>{t("panel.actions.douyinCookieImport")}</Button>
-                <Button tone="info" onClick={douyinCookieStatus}>{t("panel.actions.douyinCookieStatus")}</Button>
-                <Button tone="info" onClick={douyinCookieValidate}>{t("panel.actions.douyinCookieValidate")}</Button>
-                <Button tone="danger" onClick={douyinCookieDelete}>{t("panel.actions.douyinCookieDelete")}</Button>
+                <Button tone="success" disabled={sessionInProgress || !!authPending} onClick={douyinCookieImport}>{t("panel.actions.douyinCookieImport")}</Button>
+                <Button tone="info" disabled={!!authPending} onClick={douyinCookieStatus}>{t("panel.actions.douyinCookieStatus")}</Button>
+                <Button tone="info" disabled={!!authPending} onClick={douyinCookieValidate}>{t("panel.actions.douyinCookieValidate")}</Button>
+                <Button tone="danger" disabled={sessionInProgress || !!authPending} onClick={douyinCookieDelete}>{t("panel.actions.douyinCookieDelete")}</Button>
               </Grid>
               <Text>{t("panel.douyinAuth.manualHint")}</Text>
             </Stack>
           ) : (
             <Stack>
-              <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
+              <AuthCard t={t} loginState={loginState} loginLoggedIn={loginLoggedIn} loginName={loginName} loginUid={loginUid} disabled={sessionInProgress || !!authPending} onLogin={biliLogin} onLoginCheck={biliLoginCheck} onLogout={biliLogout} />
               {!loginLoggedIn ? (
                 <Stack gap={8}>
                   <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
@@ -1057,11 +1214,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         open={consoleDialog === "theme"}
         title={t("panel.streamTheme.title")}
         size="lg"
-        onClose={() => { setConsoleDialog("") }}
+        onClose={closeConsoleDialog}
         footer={(
           <Grid cols={2}>
-            <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
-            <Button tone="success" onClick={() => { void saveConfig(advancedConfigPatch()) }}>{t("panel.actions.save")}</Button>
+            <Button tone="default" disabled={consoleSaving} onClick={closeConsoleDialog}>{t("panel.actions.cancel")}</Button>
+            <Button tone="success" disabled={consoleSaving} onClick={() => { void saveThemeSettings() }}>{t("panel.actions.save")}</Button>
           </Grid>
         )}
       >
@@ -1071,11 +1228,11 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Modal
         open={consoleDialog === "pacing"}
         title={t("panel.pacing.title")}
-        onClose={() => { setConsoleDialog("") }}
+        onClose={closeConsoleDialog}
         footer={(
           <Grid cols={2}>
-            <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
-            <Button tone="success" onClick={() => { void saveConfig({ rate_limit_seconds: Number(configForm.values.rate_limit_seconds) || 0 }) }}>{t("panel.actions.save")}</Button>
+            <Button tone="default" disabled={consoleSaving} onClick={closeConsoleDialog}>{t("panel.actions.cancel")}</Button>
+            <Button tone="success" disabled={consoleSaving || !pacingCooldownValid} onClick={() => { void savePacingSettings() }}>{t("panel.actions.save")}</Button>
           </Grid>
         )}
       >
@@ -1085,12 +1242,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
       <Modal
         open={consoleDialog === "room"}
         title={t("panel.console.roomModalTitle")}
-        onClose={() => { setConsoleDialog("") }}
+        onClose={closeConsoleDialog}
         footer={(
           <Grid cols={3}>
-            <Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>
-            <Button tone="info" onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button>
-            <Button tone="success" disabled={!canConfirmLiveRoom} onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button>
+            <Button tone="default" disabled={consoleSaving} onClick={closeConsoleDialog}>{t("panel.actions.cancel")}</Button>
+            <Button tone="info" disabled={consoleSaving} onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button>
+            <Button tone="success" disabled={consoleSaving || !canConfirmLiveRoom} onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button>
           </Grid>
         )}
       >
@@ -1098,11 +1255,10 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
           <Alert tone="info">{t("panel.console.roomTwoStepHint")}</Alert>
           <Field label={roomFieldLabel}>
             <Input
-              value={configForm.values.live_room_ref}
+              value={roomDraft}
               placeholder={roomPlaceholder}
               onChange={(value) => {
-                configForm.setField("live_room_ref", value)
-                configForm.setField("live_room_id", value)
+                setRoomDraft(value)
                 setLiveRoomResult(null)
                 setQueriedRoomRef("")
               }}
@@ -1128,7 +1284,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         open={consoleDialog === "diagnostics"}
         title={t("panel.actions.showAdvanced")}
         size="lg"
-        onClose={() => { setConsoleDialog("") }}
+        onClose={closeConsoleDialog}
         footer={<Button tone="default" onClick={() => { setConsoleDialog("") }}>{t("panel.actions.cancel")}</Button>}
       >
         <Stack>
@@ -1190,7 +1346,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         style={{ position: "sticky", bottom: 0, zIndex: 2, display: "grid", gridTemplateColumns: "minmax(260px, 520px)", alignItems: "center", justifyContent: "center", minHeight: "68px", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--surface-strong)" }}
       >
         {started ? (
-          <Button tone="danger" onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
+          <Button tone="danger" disabled={!!simpleActionPending} onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
         ) : (
           <Button tone="success" disabled={!canStart} onClick={connectRoom}>
             {connectPending ? t("panel.console.state.connecting") : t("panel.actions.connect")}
@@ -1202,14 +1358,13 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
 
   const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
-    const configKey = name as keyof RoastConfig
     const cur = config[name]
     const label = f && f.label ? t(f.label) : name
     const hint = f && f.hint ? t(f.hint) : ""
     if (f && f.type === "boolean") {
       return (
         <Stack gap={4}>
-          <ToggleSwitch checked={cur === undefined ? !!f.default : !!cur} label={label} onChange={(v) => { configForm.setField(configKey, v); saveConfig({ [name]: v }) }} />
+          <ToggleSwitch checked={cur === undefined ? !!f.default : !!cur} disabled={settingsSaving} label={label} onChange={(v) => { applySettingsPatch({ [name]: v }) }} />
           {hint ? <Text>{hint}</Text> : null}
         </Stack>
       )
@@ -1226,11 +1381,12 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                 <button
                   key={String(o.value) || oi}
                   type="button"
-                  onClick={() => { configForm.setField(configKey, String(o.value)); saveConfig({ [name]: String(o.value) }) }}
+                  disabled={settingsSaving}
+                  onClick={() => { applySettingsPatch({ [name]: String(o.value) }) }}
                   style={{
                     padding: "6px 16px",
                     borderRadius: "999px",
-                    cursor: "pointer",
+                    cursor: settingsSaving ? "not-allowed" : "pointer",
                     font: "inherit",
                     fontWeight: 650,
                     border: selected ? "1px solid var(--primary)" : "1px solid var(--border)",
@@ -1249,7 +1405,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     }
     return (
       <Field label={label}>
-        <Input value={String(cur === undefined ? ((f && f.default) ?? "") : cur)} onChange={(v) => { configForm.setField(configKey, v); saveConfig({ [name]: v }) }} />
+        <Input disabled={settingsSaving} value={String(cur === undefined ? ((f && f.default) ?? "") : cur)} onChange={(v) => { applySettingsPatch({ [name]: v }) }} />
       </Field>
     )
   }
@@ -1313,7 +1469,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderInteractionToggle = (title: any, enabled: boolean, onChange: (value: boolean) => void) => (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px" }}>
       <span style={{ minWidth: 0, color: "var(--text)", fontSize: "15px", fontWeight: 720 }}>{title}</span>
-      <ToggleSwitch checked={enabled} label={title} tone="success" onChange={onChange} />
+      <ToggleSwitch checked={enabled} disabled={settingsSaving} label={title} tone="success" onChange={onChange} />
     </div>
   )
   const renderInteractionDisabledHint = (enabled: boolean, key: string) => (
@@ -1374,7 +1530,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderAvatarRoastCard = (m: any) => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.avatarRoast.title"), !!configForm.values.avatar_roast_enabled, (v) => { configForm.setField("avatar_roast_enabled", v); saveConfig({ avatar_roast_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.avatarRoast.title"), !!configForm.values.avatar_roast_enabled, (v) => { applySettingsPatch({ avatar_roast_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           {roastBadge}
           <StatusBadge tone="warning" label={t("panel.interaction.tags.oncePerUid")} />
@@ -1389,7 +1545,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderDanmakuResponseCard = (m: any) => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.danmakuResponse.title"), !!configForm.values.danmaku_response_enabled, (v) => { configForm.setField("danmaku_response_enabled", v); saveConfig({ danmaku_response_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.danmakuResponse.title"), !!configForm.values.danmaku_response_enabled, (v) => { applySettingsPatch({ danmaku_response_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           <StatusBadge tone={configForm.values.danmaku_response_enabled && m ? "success" : "default"} label={!configForm.values.danmaku_response_enabled ? t("panel.modules.off") : (m ? t("panel.interaction.module.danmakuResponse.badge") : t("panel.modules.soon"))} />
           <StatusBadge tone="info" label={t("panel.interaction.tags.currentDanmaku")} />
@@ -1404,7 +1560,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderLiveSupportEventsCard = (m: any) => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.liveSupportEvents.title"), !!configForm.values.live_support_events_enabled, (v) => { configForm.setField("live_support_events_enabled", v); saveConfig({ live_support_events_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.liveSupportEvents.title"), !!configForm.values.live_support_events_enabled, (v) => { applySettingsPatch({ live_support_events_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           <StatusBadge tone={configForm.values.live_support_events_enabled && m ? "success" : "default"} label={!configForm.values.live_support_events_enabled ? t("panel.modules.off") : (m ? t("panel.interaction.module.liveSupportEvents.badge") : t("panel.modules.soon"))} />
           <StatusBadge tone="info" label={t("panel.interaction.tags.safetyRequired")} />
@@ -1419,7 +1575,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderIdleHostingCard = () => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.idleHosting.title"), !!configForm.values.idle_hosting_enabled, (v) => { configForm.setField("idle_hosting_enabled", v); saveConfig({ idle_hosting_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.idleHosting.title"), !!configForm.values.idle_hosting_enabled, (v) => { applySettingsPatch({ idle_hosting_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           <StatusBadge tone={configForm.values.idle_hosting_enabled && idleHostingEligible ? "success" : "default"} label={configForm.values.idle_hosting_enabled ? t("panel.interaction.module.idleHosting.badge") : t("panel.modules.off")} />
           <StatusBadge tone={idleHostingCandidate ? "success" : "default"} label={dynamicLabel("idleHostingCandidate", "panel.idleHostingCandidate", idleHostingCandidate ? "true" : "false")} />
@@ -1434,7 +1590,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderWarmupHostingCard = () => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.warmupHosting.title"), !!configForm.values.warmup_hosting_enabled, (v) => { configForm.setField("warmup_hosting_enabled", v); saveConfig({ warmup_hosting_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.warmupHosting.title"), !!configForm.values.warmup_hosting_enabled, (v) => { applySettingsPatch({ warmup_hosting_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           <StatusBadge tone={configForm.values.warmup_hosting_enabled && warmupHostingCandidate ? "success" : "default"} label={configForm.values.warmup_hosting_enabled ? t("panel.interaction.module.warmupHosting.badge") : t("panel.modules.off")} />
           <StatusBadge tone={warmupHostingCandidate ? "success" : "default"} label={dynamicLabel("warmupHostingCandidate", "panel.warmupHostingCandidate", warmupHostingCandidate ? "true" : "false")} />
@@ -1449,7 +1605,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const renderActiveEngagementCard = () => (
     <Card>
       <div style={interactionCardBodyStyle}>
-        {renderInteractionToggle(t("panel.interaction.module.activeEngagement.title"), !!configForm.values.active_engagement_enabled, (v) => { configForm.setField("active_engagement_enabled", v); saveConfig({ active_engagement_enabled: v }) })}
+        {renderInteractionToggle(t("panel.interaction.module.activeEngagement.title"), !!configForm.values.active_engagement_enabled, (v) => { applySettingsPatch({ active_engagement_enabled: v }) })}
         <div style={interactionStatusRowStyle}>
           <StatusBadge tone={configForm.values.active_engagement_enabled && activeEngagementEligible ? "success" : "default"} label={configForm.values.active_engagement_enabled ? t("panel.interaction.module.activeEngagement.badge") : t("panel.modules.off")} />
           <StatusBadge tone={activeEngagementCandidate ? "success" : "default"} label={dynamicLabel("activeEngagementCandidate", "panel.activeEngagementCandidate", activeEngagementCandidate ? "true" : "false")} />
@@ -1478,7 +1634,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
   const interactionDialogContent = interactionDialog === "avatar_roast" ? (
     <Stack>
       <Text>{t("panel.interaction.module.avatarRoast.desc")}</Text>
-      <ToggleSwitch checked={!!configForm.values.avatar_analysis_enabled} disabled={!configForm.values.avatar_roast_enabled} label={t("panel.interaction.module.avatarRoast.avatarAnalysis")} onChange={(v) => { configForm.setField("avatar_analysis_enabled", v); saveConfig({ avatar_analysis_enabled: v }) }} />
+      <ToggleSwitch checked={!!configForm.values.avatar_analysis_enabled} disabled={!configForm.values.avatar_roast_enabled || settingsSaving} label={t("panel.interaction.module.avatarRoast.avatarAnalysis")} onChange={(v) => { applySettingsPatch({ avatar_analysis_enabled: v }) }} />
       <Text>{t("panel.interaction.module.avatarRoast.avatarAnalysisHint")}</Text>
       <StatusBadgeRow t={t} items={[
         { key: "panel.interaction.tags.currentDanmaku", tone: "success" },
@@ -1518,7 +1674,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         { key: "panel.interaction.tags.openingBeat", tone: "success" },
         { key: "panel.interaction.tags.safetyRequired" },
       ]} />
-      <Button tone="info" disabled={!configForm.values.warmup_hosting_enabled} onClick={() => callSimple("trigger_warmup_hosting")}>{t("panel.actions.triggerWarmupHosting")}</Button>
+      <Button tone="info" disabled={!configForm.values.warmup_hosting_enabled || !!simpleActionPending} onClick={() => callSimple("trigger_warmup_hosting")}>{t("panel.actions.triggerWarmupHosting")}</Button>
     </Stack>
   ) : interactionDialog === "idle_hosting" ? (
     <Stack>
@@ -1563,7 +1719,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         { key: "panel.interaction.tags.activeQuestion", tone: "success" },
         { key: "panel.interaction.tags.safetyRequired" },
       ]} />
-      <Button tone="info" disabled={!configForm.values.active_engagement_enabled} onClick={() => callSimple("trigger_active_engagement")}>{t("panel.actions.triggerActiveEngagement")}</Button>
+      <Button tone="info" disabled={!configForm.values.active_engagement_enabled || !!simpleActionPending} onClick={() => callSimple("trigger_active_engagement")}>{t("panel.actions.triggerActiveEngagement")}</Button>
     </Stack>
   ) : null
 
@@ -1586,7 +1742,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         open={!!interactionDialog}
         title={interactionDialogTitle}
         size="lg"
-        onClose={() => { setInteractionDialog("") }}
+        onClose={closeInteractionDialog}
         footer={<Button tone="default" onClick={() => { setInteractionDialog("") }}>{t("panel.actions.cancel")}</Button>}
       >
         {interactionDialogContent}
@@ -1617,6 +1773,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                     <Text>{t("panel.settings.safetyHint")}</Text>
                     <ToggleSwitch
                       checked={!!configForm.values.safety_auto_stop_enabled}
+                      disabled={settingsSaving}
                       label={t("panel.fields.autoStop")}
                       onChange={(value) => {
                         if (value) applySettingsPatch({ safety_auto_stop_enabled: true })
@@ -1665,6 +1822,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                   <Text>{t("panel.settings.privacyHint")}</Text>
                   <ToggleSwitch
                     checked={!!configForm.values.viewer_memory_enabled}
+                    disabled={settingsSaving}
                     label={t("panel.settings.viewerMemoryLabel")}
                     onChange={(value) => applySettingsPatch({ viewer_memory_enabled: value })}
                   />
@@ -1705,7 +1863,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
                 <Card title={t("panel.dev.switch.title")}>
                   <Stack gap={8}>
                     <Text>{t("panel.settings.developerHint")}</Text>
-                    <ToggleSwitch checked={!!configForm.values.developer_tools_enabled} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
+                    <ToggleSwitch checked={!!configForm.values.developer_tools_enabled} disabled={developerPending} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
                   </Stack>
                 </Card>
               </Stack>
@@ -1757,7 +1915,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         {
           id: "session",
           label: t("panel.audience.sessionTab"),
-          content: <LiveSessionSection t={t} session={liveSession} />,
+          content: <LiveSessionSection t={t} session={liveSession} locale={props.locale} />,
         },
         {
           id: "profiles",
@@ -1766,6 +1924,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
             <ViewerProfilesTable
               t={t}
               profiles={profiles}
+              locale={props.locale}
               onResetImpression={(uid) => runViewerProfileAction("reset_viewer_impression", uid)}
               onDeleteProfile={(uid) => runViewerProfileAction("delete_viewer_profile", uid)}
             />
@@ -1795,7 +1954,7 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
     <Stack>
       <Card title={t("panel.dev.switch.title")}>
         <Stack>
-          <ToggleSwitch checked={developerToolsEnabled} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
+          <ToggleSwitch checked={developerToolsEnabled} disabled={developerPending} label={t("panel.fields.developerMode")} onChange={toggleDeveloperTools} />
           {!developerToolsEnabled ? <Alert tone="info">{t("panel.dev.developerModeDisabled")}</Alert> : null}
         </Stack>
       </Card>
@@ -1995,14 +2154,17 @@ export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>
         </ToolbarGroup>
         <ToolbarGroup>
           {started ? (
-            <Button tone={interactionPaused ? "primary" : "warning"} onClick={() => callSimple(interactionPaused ? "resume_roast" : "pause_roast")}>
+            <Button tone={interactionPaused ? "primary" : "warning"} disabled={!!simpleActionPending} onClick={() => callSimple(interactionPaused ? "resume_roast" : "pause_roast")}>
               {interactionPaused ? t("panel.actions.resume") : t("panel.actions.pause")}
             </Button>
           ) : null}
-          <RefreshButton label={t("panel.actions.refreshStatus")} />
+          <Button tone="default" onClick={() => { refreshDashboard(true) }}>{t("panel.actions.refreshStatus")}</Button>
         </ToolbarGroup>
       </Toolbar>
-      <Tabs items={tabItems} />
+      {refreshFailureCount >= 2 ? (
+        <Alert tone="warning">{t("panel.messages.statusStale", { time: lastSuccessfulRefreshLabel })}</Alert>
+      ) : null}
+      <Tabs key={developerToolsEnabled ? "developer-enabled" : "developer-disabled"} items={tabItems} />
     </Page>
   )
 }

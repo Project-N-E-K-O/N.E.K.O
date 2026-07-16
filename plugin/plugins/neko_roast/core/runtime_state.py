@@ -28,6 +28,7 @@ def initialize_runtime_state(runtime: Any) -> None:
     runtime._config_revision = 0
     runtime._stopping = False
     runtime._accepting_live_events = False
+    runtime._live_session_generation = 0
     runtime._timeline_salt = secrets.token_bytes(32)
 
     runtime._idle_hosting_task: asyncio.Task[Any] | None = None

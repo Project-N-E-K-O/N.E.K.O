@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
+from ...core.runtime_timeline import record_timeline
 from .._base import BaseModule
 
 SUPPORT_EVENT_DEDUPE_SECONDS = 0.35
@@ -64,12 +65,15 @@ class BiliLiveIngestModule(BaseModule):
         await super().teardown()
 
     def status(self) -> dict[str, Any]:
+        listener_state = self.listener_state()
         return {
             "enabled": self.enabled,
             "listening": self.is_listening(),
             "room_id": self._room_id,
             "last_event_at": self._last_event_at,
             "last_event_type": self._last_event_type,
+            "reconnect_count": int(listener_state.get("reconnect_count") or 0),
+            "last_packet_at": float(listener_state.get("last_packet_at") or 0.0),
         }
 
     def is_listening(self) -> bool:
@@ -177,6 +181,9 @@ class BiliLiveIngestModule(BaseModule):
 
     async def _stop_listening_locked(self) -> None:
         self._listener_generation += 1
+        self._recent_support_event_keys.clear()
+        self._last_event_at = 0.0
+        self._last_event_type = ""
         listener = self._listener
         task = self._listener_task
         self._listener = None
@@ -216,8 +223,29 @@ class BiliLiveIngestModule(BaseModule):
             return
         self._listener = None
         self._listener_task = None
-        if exc is not None and self.ctx is not None:
-            self.ctx.audit.record("live_listener_task_failed", str(exc)[:200], level="warning")
+        if self.ctx is None:
+            return
+        if exc is not None:
+            self.ctx.audit.record("live_listener_task_failed", type(exc).__name__, level="warning")
+            return
+        live_ended = bool(getattr(listener, "_live_ended", False))
+        try:
+            state = listener.get_connection_state()
+        except Exception:
+            state = {}
+        last_packet_at = float(state.get("last_packet_at") or 0.0)
+        last_packet_age = max(0.0, time.time() - last_packet_at) if last_packet_at else 0.0
+        self.ctx.audit.record(
+            "live_listener_task_ended",
+            "live ended" if live_ended else "listener task ended unexpectedly",
+            level="info" if live_ended else "warning",
+            detail={
+                "generation": generation,
+                "reconnect_count": int(state.get("reconnect_count") or 0),
+                "last_packet_age_seconds": round(last_packet_age, 1),
+                "last_event_type": self._last_event_type,
+            },
+        )
 
     # 命令名 → LiveEvent.type 路由键（见 core/contracts.LiveEvent）。未列出的命令回落 cmd 小写。
     _CMD_TO_TYPE = {
@@ -253,10 +281,40 @@ class BiliLiveIngestModule(BaseModule):
         if bus is None:
             return
         live_event = self._to_live_event(cmd, event)
+        live_event.session_generation = max(
+            0,
+            int(getattr(self.ctx, "_live_session_generation", 0) or 0),
+        )
+        if live_event.type in {"gift", "super_chat", "guard"}:
+            record_timeline(
+                self.ctx,
+                live_event,
+                stage="ingest",
+                status="received",
+                reason=f"support.{live_event.type}",
+                route=self.id,
+            )
         if self._is_duplicate_support_event(live_event):
+            record_timeline(
+                self.ctx,
+                live_event,
+                stage="ingest",
+                status="dropped",
+                reason="ingest.duplicate_support_event",
+                route=self.id,
+            )
             return
         self._last_event_at = live_event.ts or time.time()
         self._last_event_type = live_event.type
+        if live_event.type in {"gift", "super_chat", "guard"}:
+            record_timeline(
+                self.ctx,
+                live_event,
+                stage="event_bus",
+                status="published",
+                reason=f"support.{live_event.type}",
+                route=self.id,
+            )
         bus.publish(live_event.type, live_event)
 
     def _owns_current_live_session(self) -> bool:
@@ -294,6 +352,7 @@ class BiliLiveIngestModule(BaseModule):
         ``get_score()``）的 handler（如 ``live_events`` 中枢）解包使用。"""
         normalized_cmd = self._normalize_cmd(cmd)
         event_type = self._CMD_TO_TYPE.get(normalized_cmd, normalized_cmd.lower())
+        is_typed_support = event_type in {"gift", "super_chat", "guard"}
         if isinstance(event, dict):
             payload = dict(event)
             payload["event_type"] = event_type
@@ -306,6 +365,10 @@ class BiliLiveIngestModule(BaseModule):
             payload["danmaku_text"] = text
             payload["event_label"] = self._event_label(event_type, text)
             payload["raw_type"] = normalized_cmd
+            if is_typed_support:
+                payload["support_verified"] = True
+                payload["support_evidence"] = "bilibili_typed_command"
+                payload["provider_event_type"] = normalized_cmd
             return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=payload)
         uid = str(getattr(event, "uid", "") or "").strip()
         nickname = str(getattr(event, "nickname", "") or "")
@@ -321,6 +384,10 @@ class BiliLiveIngestModule(BaseModule):
             "room_id": getattr(event, "room_id", 0) or self._room_id,
             "cmd": normalized_cmd,
         }
+        if is_typed_support:
+            payload["support_verified"] = True
+            payload["support_evidence"] = "bilibili_typed_command"
+            payload["provider_event_type"] = normalized_cmd
         return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=event)
 
     @staticmethod

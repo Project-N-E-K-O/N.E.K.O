@@ -256,7 +256,8 @@ def _prepend_danmaku_visible_target_lock(text: str, metadata: dict[str, Any], re
 
 
 def _unverified_support_claim_reply(request: InteractionRequest, metadata: dict[str, Any]) -> str:
-    if response_module_hint(request) != "danmaku_response":
+    module = response_module_hint(request)
+    if module not in {"avatar_roast", "danmaku_response"}:
         return ""
     if metadata.get("viewer_claimed_support") != "unverified_danmaku_claim":
         return ""
@@ -265,7 +266,7 @@ def _unverified_support_claim_reply(request: InteractionRequest, metadata: dict[
         return ""
     return choose_fallback_reply(
         str(request.event.danmaku_text or ""),
-        "danmaku_response",
+        module,
         UNVERIFIED_SUPPORT_CLAIM_FALLBACK_REPLIES,
     )
 

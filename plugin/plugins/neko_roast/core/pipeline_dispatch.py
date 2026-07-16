@@ -20,7 +20,9 @@ from .pipeline_results import (
     pushed_result,
     skip_before_output,
     skip_dispatcher,
+    skip_stale_live_event,
 )
+from .runtime_live_session import is_current_live_session_event
 from .runtime_timeline import record_timeline
 
 
@@ -37,6 +39,24 @@ async def dispatch_routed_request(
     should_mark_roasted: bool,
     mark_avatar_roast_sent: Callable[[], None],
 ) -> InteractionResult:
+    if not is_current_live_session_event(ctx, event):
+        record_timeline(
+            ctx,
+            event,
+            stage="live_session",
+            status="skipped",
+            reason="live_session.stale",
+            route=response_module_id,
+        )
+        return skip_stale_live_event(
+            ctx,
+            event,
+            identity,
+            profile,
+            steps,
+            request=request,
+        )
+
     output_decision = ctx.safety_guard.before_output(event)
     if not output_decision.allowed:
         record_timeline(

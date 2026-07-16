@@ -612,6 +612,29 @@ def test_live_connection_snapshot_accepts_only_public_listener_state_scalars(run
     assert snapshot["reconnect"] == {"retry_count": 1}
 
 
+def test_live_connection_snapshot_preserves_authenticating_state(runtime: RoastRuntime) -> None:
+    class _LiveProvider:
+        platform = "bilibili"
+
+        def configured_room_ref(self) -> str:
+            return "123"
+
+        def configured_room_id(self) -> int:
+            return 123
+
+        def listener_state(self) -> dict:
+            return {"state": "authenticating"}
+
+    runtime.live_provider = _LiveProvider()
+    runtime.config.live_enabled = True
+
+    snapshot = runtime.live_connection_snapshot()
+
+    assert snapshot["state"] == "authenticating"
+    assert snapshot["connected"] is False
+    assert snapshot["listening"] is False
+
+
 @pytest.mark.asyncio
 async def test_set_live_room_syncs_room_ref_for_provider_router(runtime: RoastRuntime) -> None:
     config = await runtime.set_live_room("https://live.bilibili.com/456")

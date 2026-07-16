@@ -86,11 +86,15 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
         data = runtime.config.to_dict()
         data.update(clean)
         candidate = RoastConfig.from_mapping(data)
-        if was_listening and _live_config_diff(runtime.config, candidate):
+        live_diff = _live_config_diff(runtime.config, candidate)
+        if was_listening and live_diff:
             runtime._accepting_live_events = False
         activate_config(runtime, candidate)
         runtime._config_revision += 1
-        if {
+        defer_instruction_sync = was_listening and bool(
+            {"live_platform", "live_room_ref", "live_room_id"} & set(live_diff)
+        )
+        if not defer_instruction_sync and {
             "live_enabled",
             "avatar_roast_enabled",
             "avatar_analysis_enabled",

@@ -25,6 +25,7 @@ from .pipeline_results import (
 )
 from .pipeline_session import PipelineSessionTracker
 from .runtime_timeline import ensure_trace_id, record_timeline
+from .runtime_live_session import bind_event_to_live_session
 
 AVATAR_ROAST_VIEWER_COUNT_LIMIT = 200
 AVATAR_ROAST_RECENT_REPLY_WINDOW_SECONDS = 60.0
@@ -297,6 +298,7 @@ class RoastPipeline:
 
     async def handle_event(self, event: ViewerEvent) -> InteractionResult:
         steps: list[PipelineStep] = []
+        bind_event_to_live_session(self.ctx, event)
         ensure_trace_id(event)
         record_timeline(
             self.ctx,

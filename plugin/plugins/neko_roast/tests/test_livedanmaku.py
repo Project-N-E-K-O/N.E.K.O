@@ -361,7 +361,7 @@ def test_fallback_support_gift_rejects_explicit_medal_gift_name():
     assert DanmakuListener._fallback_support_gift_payload("USER_TOAST_MSG", packet) is None
 
 
-def test_fallback_support_gift_accepts_explicit_gift_evidence():
+def test_fallback_support_gift_rejects_unknown_command_even_with_gift_fields():
     payload = DanmakuListener._fallback_support_gift_payload(
         "UNKNOWN_SUPPORT_PACKET",
         {
@@ -376,11 +376,7 @@ def test_fallback_support_gift_accepts_explicit_gift_evidence():
         },
     )
 
-    assert payload is not None
-    assert payload["uid"] == 9
-    assert payload["gift_name"] == "小心心"
-    assert payload["gift_count"] == 2
-    assert payload["gift_value"] == 200
+    assert payload is None
 
 
 def test_brotli_missing_uses_supplied_log_callback(monkeypatch):

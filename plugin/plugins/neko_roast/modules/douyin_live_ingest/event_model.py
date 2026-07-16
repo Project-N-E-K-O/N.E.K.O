@@ -207,6 +207,10 @@ def safe_payload(payload: Any) -> dict[str, Any]:
         if canonical_type in {"gift", "guard", "super_chat"}:
             safe["event_type"] = canonical_type
     safe.update({key: safe_int(raw.get(key)) for key in _INT_FIELDS if key in raw})
+    if "_live_session_generation" in raw:
+        generation = safe_int(raw.get("_live_session_generation"))
+        if generation:
+            safe["_live_session_generation"] = generation
     for key in ("uid", "user_id", "open_id"):
         if key in raw:
             safe[key] = safe_uid(raw.get(key))
