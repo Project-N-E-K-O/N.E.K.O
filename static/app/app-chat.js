@@ -547,32 +547,54 @@
         } else {
             console.warn('[MusicDispatch] sendMusicMessage \u5C1A\u672A\u5C31\u7EEA\uFF0C\u542F\u52A8\u7B49\u5F85 (ID: ' + currentDispatchId + ')...');
 
-            var retryPlay = function () {
-                // 门闩校验：只允许最新的 dispatch 请求执行
-                if (currentDispatchId !== _musicDispatchId) {
-                    console.log('[MusicDispatch] \u653E\u5F03\u8FC7\u65F6\u7684\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
-                    cleanup();
-                    return;
-                }
+            return new Promise(function (resolve) {
+                var settled = false;
+                var attempting = false;
+                var pollTimer = null;
+                var timeoutTimer = null;
 
-                if (window.sendMusicMessage) {
+                var cleanup = function () {
+                    if (pollTimer) clearInterval(pollTimer);
+                    if (timeoutTimer) clearTimeout(timeoutTimer);
+                    window.removeEventListener('music-ui-ready', retryPlay);
+                };
+
+                var finish = function (accepted) {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    resolve(accepted === true);
+                };
+
+                var retryPlay = async function () {
+                    if (settled || attempting) return;
+                    // 门闩校验：只允许最新的 dispatch 请求执行
+                    if (currentDispatchId !== _musicDispatchId) {
+                        console.log('[MusicDispatch] \u653E\u5F03\u8FC7\u65F6\u7684\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
+                        finish(false);
+                        return;
+                    }
+
+                    if (!window.sendMusicMessage) return;
+                    attempting = true;
+                    cleanup();
                     console.log('[MusicDispatch] \u63A5\u53E3\u5DF2\u5C31\u7EEA\uFF0C\u8865\u53D1\u64AD\u653E\u8BF7\u6C42 (ID: ' + currentDispatchId + ')');
-                    cleanup();
-                    window.dispatchMusicPlay(trackInfo, options);
-                }
-            };
+                    try {
+                        var accepted = await window.sendMusicMessage(trackInfo, true, options);
+                        if (accepted && options.source === 'proactive' && typeof window.markProactiveMusicRecommended === 'function') {
+                            window.markProactiveMusicRecommended();
+                        }
+                        finish(accepted);
+                    } catch (error) {
+                        console.error('[MusicDispatch] queued playback failed:', error);
+                        finish(false);
+                    }
+                };
 
-            var cleanup = function () {
-                clearInterval(pollTimer);
-                clearTimeout(timeoutTimer);
-                window.removeEventListener('music-ui-ready', retryPlay);
-            };
-
-            var pollTimer = setInterval(retryPlay, 500);
-            var timeoutTimer = setTimeout(cleanup, 5000);
-            window.addEventListener('music-ui-ready', retryPlay, { once: true });
-
-            return 'queued'; // 返回特殊状态表示排队中
+                pollTimer = setInterval(retryPlay, 500);
+                timeoutTimer = setTimeout(function () { finish(false); }, 5000);
+                window.addEventListener('music-ui-ready', retryPlay, { once: true });
+            });
         }
     };
 

@@ -7,6 +7,7 @@ MUSIC_UI_PATH = ROOT / "static" / "jukebox" / "music_ui.js"
 PROACTIVE_UI_PATH = ROOT / "static" / "app" / "app-proactive.js"
 APP_CHAT_PATH = ROOT / "static" / "app" / "app-chat.js"
 LOCALES_DIR = ROOT / "static" / "locales"
+MUSIC_ROUTER_PATH = ROOT / "main_routers" / "music_router.py"
 
 
 def test_music_dispatch_waits_for_media_and_reports_real_failure():
@@ -20,6 +21,9 @@ def test_music_dispatch_waits_for_media_and_reports_real_failure():
     assert "duration >= MAX_RECOMMENDED_TRACK_DURATION_SECONDS" in source
     assert "playbackOptions.source === 'proactive'" in source
     assert "sendMusicMessage(trackInfo, true, options)" in dispatch_source
+    assert "return new Promise(function (resolve)" in dispatch_source
+    assert "finish(accepted)" in dispatch_source
+    assert "return 'queued'" not in dispatch_source
     assert "isUnsupportedMusicStream" in source
     assert "endsWith('.m3u8')" in source
 
@@ -53,3 +57,13 @@ def test_all_locales_define_music_player_labels_and_failures():
     for locale_path in sorted(LOCALES_DIR.glob("*.json")):
         data = json.loads(locale_path.read_text(encoding="utf-8"))
         assert required <= set(data["music"]), locale_path.name
+
+
+def test_large_music_stream_does_not_advertise_probe_content_length():
+    source = MUSIC_ROUTER_PATH.read_text(encoding="utf-8")
+    large_stream_branch = source.split(
+        "if declared_size >= STREAMING_SIZE_THRESHOLD:", 1
+    )[1].split("# 小文件：", 1)[0]
+
+    assert "headers['Content-Length'] = content_length" not in large_stream_branch
+    assert "_stream_music(current_url, request_headers, MAX_MUSIC_SIZE)" in large_stream_branch

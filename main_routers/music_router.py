@@ -370,8 +370,9 @@ async def proxy_music(url: str, request: Request):
                 }
                 if content_range:
                     headers['Content-Range'] = content_range
-                if content_length:
-                    headers['Content-Length'] = content_length
+                # _stream_music issues a new upstream request, so the probe's
+                # Content-Length may no longer describe the streamed object.
+                # Omit it and let StreamingResponse terminate at the real EOF.
                 return StreamingResponse(
                     _stream_music(current_url, request_headers, MAX_MUSIC_SIZE),
                     media_type=content_type,

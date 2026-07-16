@@ -1428,13 +1428,10 @@
                                     console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
                                     var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
 
-                                    // 仅在媒体明确加载成功时标记；false 会继续尝试下一候选，
-                                    // 'queued' 仍是等待态，不能重复派发或提前隐藏链接。
+                                    // dispatchMusicPlay 会等待播放器接口就绪并返回最终布尔结果；
+                                    // 仅在媒体明确加载成功时标记，false 才继续下一候选。
                                     if (dispatchResult === true) {
                                         dispatchedTrackUrl = musicLink.url;
-                                        break;
-                                    }
-                                    if (dispatchResult === 'queued') {
                                         break;
                                     }
                                     console.warn('[ProactiveChat] 音乐候选加载失败，尝试下一条:', musicLink.url);
