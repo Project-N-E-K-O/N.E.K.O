@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -19,6 +20,15 @@ from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
 
 _Identity: TypeAlias = tuple[int, int, int]
+_FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _VoiceTurnFailure:
+    kind: Literal["unavailable", "runtime_error"]
+    stage: Literal["vad_load", "vad_feed", "consumer"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,21 +77,37 @@ class _VoiceTurnAdapter:
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=queue_maxsize)
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._consumer_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._fallback_task: asyncio.Task[None] | None = None
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
         self._vad_available = False
+        self._semantic_degraded = False
+        self._failed = False
+        self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
+        self._resources_closed = False
         self._closed = False
         self._commit_dispatched: set[_Identity] = set()
 
     async def start(self) -> None:
         if self._closed:
             raise RuntimeError("ASR_VOICE_TURN_CLOSED: adapter is closed")
+        if self._failed:
+            raise RuntimeError("ASR_VOICE_TURN_FAILED: adapter has failed")
+        if self._failure_future is None:
+            self._failure_future = asyncio.get_running_loop().create_future()
         if self._consumer_task is None:
             self._consumer_task = asyncio.create_task(
                 self._consume(), name="asr-voice-turn"
             )
+
+    async def wait_failure(self) -> _VoiceTurnFailure:
+        failure_future = self._failure_future
+        if failure_future is None:
+            failure_future = asyncio.get_running_loop().create_future()
+            self._failure_future = failure_future
+        return await failure_future
 
     async def push_audio(
         self,
@@ -115,26 +141,29 @@ class _VoiceTurnAdapter:
         await completed
 
     async def close(self) -> None:
+        close_task = self._close_task
+        if close_task is None:
+            close_task = asyncio.create_task(
+                self._close_impl(),
+                name="asr-voice-turn-close",
+            )
+            self._close_task = close_task
+        await asyncio.shield(close_task)
+
+    async def _close_impl(self) -> None:
         if self._closed:
             return
         task = self._consumer_task
         if task is None:
             self._closed = True
-            await self._coordinator.close()
-            await asyncio.to_thread(self._vad.close)
+            await self._close_resources()
             return
+        if self._failed and not task.done():
+            await asyncio.gather(task, return_exceptions=True)
         if task.done():
             self._closed = True
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-            await self._coordinator.close()
-            await asyncio.to_thread(self._vad.close)
-            for callback_task in tuple(self._callback_tasks):
-                callback_task.cancel()
-            if self._callback_tasks:
-                await asyncio.gather(*self._callback_tasks, return_exceptions=True)
+            await asyncio.gather(task, return_exceptions=True)
+            await self._close_resources()
             return
         completed = asyncio.get_running_loop().create_future()
         await self._queue.put(_CloseItem(completed))
@@ -142,6 +171,8 @@ class _VoiceTurnAdapter:
         await task
 
     def _ensure_running(self) -> None:
+        if self._failed:
+            raise RuntimeError("ASR_VOICE_TURN_FAILED: adapter has failed")
         task = self._consumer_task
         if self._closed or task is None or task.done():
             raise RuntimeError("ASR_VOICE_TURN_CLOSED: adapter is not running")
@@ -152,6 +183,8 @@ class _VoiceTurnAdapter:
             try:
                 if isinstance(item, _AudioItem):
                     await self._process_audio(item)
+                    if self._failed:
+                        return
                     continue
                 if isinstance(item, _ResetItem):
                     await self._process_reset(item.identity)
@@ -162,10 +195,15 @@ class _VoiceTurnAdapter:
                 if not item.completed.done():
                     item.completed.set_result(None)
                 return
-            except BaseException as exc:
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 completed = getattr(item, "completed", None)
                 if completed is not None and not completed.done():
                     completed.set_exception(exc)
+                if not isinstance(item, _CloseItem):
+                    self._report_failure("runtime_error", "consumer")
+                    return
                 raise
             finally:
                 self._queue.task_done()
@@ -178,11 +216,20 @@ class _VoiceTurnAdapter:
         self._coordinator.push_audio(item.pcm16)
         if not self._vad_load_attempted:
             self._vad_load_attempted = True
-            self._vad_available = await asyncio.to_thread(self._vad.load)
+            try:
+                self._vad_available = await asyncio.to_thread(self._vad.load)
+            except Exception:
+                self._report_failure("runtime_error", "vad_load")
+                return
         if not self._vad_available:
+            self._report_failure("unavailable", "vad_load")
             return
 
-        events = await asyncio.to_thread(self._gate.feed, item.pcm16)
+        try:
+            events = await asyncio.to_thread(self._gate.feed, item.pcm16)
+        except Exception:
+            self._report_failure("runtime_error", "vad_feed")
+            return
         for event in events:
             if self._on_activity is not None:
                 await self._on_activity(event)
@@ -201,20 +248,31 @@ class _VoiceTurnAdapter:
         ):
             return
 
+        if self._semantic_degraded:
+            self._schedule_fallback(item.identity, "semantic_degraded")
+            return
+
         result = await self._coordinator.evaluate_buffered()
         if item.identity != self._identity:
             return
+        status = getattr(result, "status", None)
+        decision = getattr(result, "decision", None)
         if (
-            result.status is EvaluationStatus.OK
-            and result.decision is TurnDecision.COMPLETE
+            status is EvaluationStatus.OK
+            and decision is TurnDecision.COMPLETE
         ):
             self._dispatch_commit(item.identity)
             return
         if (
-            result.status is EvaluationStatus.OK
-            and result.decision is TurnDecision.INCOMPLETE
+            status is EvaluationStatus.OK
+            and decision is TurnDecision.INCOMPLETE
         ):
-            self._schedule_fallback(item.identity)
+            self._schedule_fallback(item.identity, "semantic_incomplete")
+            return
+        if status is EvaluationStatus.STALE:
+            return
+        self._enter_semantic_degraded()
+        self._schedule_fallback(item.identity, "semantic_degraded")
 
     async def _process_reset(self, identity: _Identity) -> None:
         self._cancel_fallback()
@@ -226,6 +284,12 @@ class _VoiceTurnAdapter:
     async def _process_close(self) -> None:
         self._closed = True
         self._cancel_fallback()
+        await self._close_resources()
+
+    async def _close_resources(self) -> None:
+        if self._resources_closed:
+            return
+        self._resources_closed = True
         await self._coordinator.close()
         await asyncio.to_thread(self._vad.close)
         for task in tuple(self._callback_tasks):
@@ -233,15 +297,26 @@ class _VoiceTurnAdapter:
         if self._callback_tasks:
             await asyncio.gather(*self._callback_tasks, return_exceptions=True)
 
-    def _schedule_fallback(self, identity: _Identity) -> None:
+    def _schedule_fallback(
+        self,
+        identity: _Identity,
+        reason: _FallbackReason,
+    ) -> None:
         self._cancel_fallback()
 
         async def fallback() -> None:
             await asyncio.sleep(self._continuation_timeout_seconds)
+            state_matches = (
+                self._coordinator.state is CoordinatorState.WAIT_CONTINUATION
+                if reason == "semantic_incomplete"
+                else self._semantic_degraded
+                and self._coordinator.state is CoordinatorState.PAUSE_CANDIDATE
+            )
             if (
                 not self._closed
+                and not self._failed
                 and identity == self._identity
-                and self._coordinator.state is CoordinatorState.WAIT_CONTINUATION
+                and state_matches
             ):
                 self._dispatch_commit(identity)
 
@@ -254,6 +329,30 @@ class _VoiceTurnAdapter:
         self._fallback_task = None
         if task is not None:
             task.cancel()
+
+    def _enter_semantic_degraded(self) -> None:
+        if self._semantic_degraded:
+            return
+        self._semantic_degraded = True
+        logger.warning(
+            "ASR Smart Turn unavailable; using Silero-only endpointing for this session"
+        )
+
+    def _report_failure(
+        self,
+        kind: Literal["unavailable", "runtime_error"],
+        stage: Literal["vad_load", "vad_feed", "consumer"],
+    ) -> None:
+        if self._failed or self._closed:
+            return
+        self._failed = True
+        self._cancel_fallback()
+        failure_future = self._failure_future
+        if failure_future is None:
+            failure_future = asyncio.get_running_loop().create_future()
+            self._failure_future = failure_future
+        if not failure_future.done():
+            failure_future.set_result(_VoiceTurnFailure(kind, stage))
 
     def _dispatch_commit(self, identity: _Identity) -> None:
         if self._closed or identity != self._identity:

@@ -201,3 +201,15 @@ async def test_native_route_sends_microphone_audio_to_omni_only():
     mgr._route_microphone_audio.assert_awaited_once()
     mgr.session.stream_audio.assert_awaited_once()
     mgr._record_omni_microphone_audio.assert_called_once()
+
+
+async def test_hot_swap_flush_honors_consumed_audio_route():
+    mgr = _make_routable_audio_manager(True)
+    mgr.hot_swap_audio_cache = [b"\x01\x00" * 160]
+    mgr.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()

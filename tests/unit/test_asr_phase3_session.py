@@ -25,6 +25,7 @@ class _FakeVoiceTurnAdapter:
         self.closed = False
         self.audio: list[tuple[int, int, int, bytes]] = []
         self.resets: list[tuple[int, int, int]] = []
+        self.failure = asyncio.get_running_loop().create_future()
 
     async def start(self) -> None:
         self.started = True
@@ -50,6 +51,13 @@ class _FakeVoiceTurnAdapter:
 
     async def close(self) -> None:
         self.closed = True
+
+    async def wait_failure(self):
+        return await self.failure
+
+    def report_failure(self, failure) -> None:
+        if not self.failure.done():
+            self.failure.set_result(failure)
 
 
 class _FailingVoiceTurnAdapter(_FakeVoiceTurnAdapter):
@@ -335,3 +343,50 @@ async def test_worker_failure_unloads_voice_turn_even_when_adapter_close_fails()
     assert adapter is not None and adapter.close_calls == 1
     assert session._voice_turn_adapter is None
     assert session._state.value == "failed"
+
+
+async def test_voice_turn_terminal_failure_fails_session_and_closes_once():
+    adapter = None
+    on_error = AsyncMock()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FailingVoiceTurnAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+    assert adapter is not None
+
+    failure = type(
+        "Failure",
+        (),
+        {"kind": "unavailable", "stage": "vad_load"},
+    )()
+    adapter.report_failure(failure)
+    await asyncio.wait_for(
+        asyncio.create_task(_wait_until(lambda: session._state.value == "failed")),
+        1,
+    )
+
+    assert adapter.close_calls == 1
+    assert session._voice_turn_adapter is None
+    assert session._voice_turn_watch_task is None
+    on_error.assert_awaited_once_with(
+        "ASR_WORKER_FAILED: voice turn endpointing failed"
+    )
+    await asyncio.wait_for(session.close(), 1)
+    assert adapter.close_calls == 1
+    assert session._state.value == "closed"
+
+
+async def _wait_until(predicate) -> None:
+    while not predicate():
+        await asyncio.sleep(0)

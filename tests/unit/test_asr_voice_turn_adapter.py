@@ -5,6 +5,9 @@ import inspect
 import threading
 from collections import deque
 from collections.abc import Iterable
+from types import SimpleNamespace
+
+import pytest
 
 from main_logic.asr_client._voice_turn import _VoiceTurnAdapter
 from main_logic.voice_turn.contracts import (
@@ -44,6 +47,16 @@ def _incomplete() -> TurnEvaluation:
     )
 
 
+def _failed_evaluation(status: EvaluationStatus) -> TurnEvaluation:
+    return TurnEvaluation(
+        status,
+        None,
+        None,
+        generation=0,
+        activity_seq=1,
+    )
+
+
 class _FakeVad:
     def __init__(self, log: list[str] | None = None) -> None:
         self.load_calls = 0
@@ -62,6 +75,12 @@ class _FakeVad:
         self.close_calls += 1
         if self.log is not None:
             self.log.append("vad-close")
+
+
+class _UnavailableVad(_FakeVad):
+    def load(self) -> bool:
+        super().load()
+        return False
 
 
 class _FakeGate:
@@ -374,6 +393,25 @@ async def test_reset_and_close_are_serialized_after_inflight_gate_feed() -> None
     assert log.index("feed-1-end") < log.index("coordinator-close")
 
 
+async def test_concurrent_close_is_idempotent() -> None:
+    vad = _FakeVad()
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=vad,
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+    )
+    await adapter.start()
+
+    await asyncio.wait_for(
+        asyncio.gather(adapter.close(), adapter.close()),
+        1,
+    )
+
+    assert (vad.close_calls, coordinator.close_calls) == (1, 1)
+
+
 async def test_clear_rejects_late_complete_result_from_old_identity() -> None:
     commits: list[tuple[int, int, int]] = []
     current_identity = [7, 8, 9]
@@ -528,6 +566,197 @@ async def test_incomplete_falls_back_to_same_identity_after_default_two_second_p
     )
     await asyncio.wait_for(committed.wait(), 1)
     assert commits == [(21, 22, 23)]
+    await adapter.close()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _failed_evaluation(EvaluationStatus.UNAVAILABLE),
+        _failed_evaluation(EvaluationStatus.ERROR),
+        SimpleNamespace(status=EvaluationStatus.OK, decision=None),
+    ],
+)
+async def test_semantic_failure_latches_silero_only_endpointing(result) -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    coordinator = _FakeCoordinator([result])
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(
+            [
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            ]
+        ),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=1, buffer_epoch=2, utterance_id=3, pcm16=b"\x01\x00"
+    )
+    await _eventually(lambda: commits == [(1, 2, 3)])
+    await adapter.reset(generation=1, buffer_epoch=3, utterance_id=4)
+    await adapter.push_audio(
+        generation=1, buffer_epoch=3, utterance_id=4, pcm16=b"\x02\x00"
+    )
+    await _eventually(lambda: commits == [(1, 2, 3), (1, 3, 4)])
+
+    assert coordinator.evaluate_calls == 1
+    await adapter.close()
+
+
+async def test_semantic_degraded_fallback_is_cancelled_by_speech_resume() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    coordinator = _FakeCoordinator(
+        [_failed_evaluation(EvaluationStatus.UNAVAILABLE)]
+    )
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(
+            [
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                (SpeechActivityEvent.SPEECH_RESUMED,),
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            ]
+        ),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.02,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=5, buffer_epoch=6, utterance_id=7, pcm16=b"\x01\x00"
+    )
+    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await adapter.push_audio(
+        generation=5, buffer_epoch=6, utterance_id=7, pcm16=b"\x02\x00"
+    )
+    await asyncio.sleep(0.04)
+    assert commits == []
+
+    await adapter.push_audio(
+        generation=5, buffer_epoch=6, utterance_id=7, pcm16=b"\x03\x00"
+    )
+    await _eventually(lambda: commits == [(5, 6, 7)])
+    assert coordinator.evaluate_calls == 1
+    await adapter.close()
+
+
+async def test_stale_semantic_result_does_not_degrade_future_turns() -> None:
+    committed = asyncio.Event()
+
+    async def commit(*_identity: int) -> None:
+        committed.set()
+
+    coordinator = _FakeCoordinator(
+        [_failed_evaluation(EvaluationStatus.STALE), _complete()]
+    )
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(
+            [
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+                (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            ]
+        ),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=8, buffer_epoch=9, utterance_id=10, pcm16=b"\x01\x00"
+    )
+    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await adapter.reset(generation=8, buffer_epoch=10, utterance_id=11)
+    await adapter.push_audio(
+        generation=8, buffer_epoch=10, utterance_id=11, pcm16=b"\x02\x00"
+    )
+    await asyncio.wait_for(committed.wait(), 1)
+
+    assert coordinator.evaluate_calls == 2
+    await adapter.close()
+
+
+async def test_vad_load_failure_is_terminal_and_rejects_future_input() -> None:
+    vad = _UnavailableVad()
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=vad,
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x00\x00"
+    )
+
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+
+    assert (failure.kind, failure.stage) == ("unavailable", "vad_load")
+    with pytest.raises(RuntimeError, match="ASR_VOICE_TURN_FAILED"):
+        await adapter.push_audio(
+            generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x00\x00"
+        )
+    with pytest.raises(RuntimeError, match="ASR_VOICE_TURN_FAILED"):
+        await adapter.reset(generation=0, buffer_epoch=1, utterance_id=2)
+    await adapter.close()
+    assert (vad.close_calls, coordinator.close_calls) == (1, 1)
+
+
+async def test_vad_feed_failure_reports_fixed_terminal_classification() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FailingGate(),
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x00\x00"
+    )
+
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+
+    assert (failure.kind, failure.stage) == ("runtime_error", "vad_feed")
+    await adapter.close()
+
+
+async def test_unexpected_consumer_failure_is_terminal() -> None:
+    coordinator = _FakeCoordinator()
+
+    def fail_push(_pcm16: bytes) -> None:
+        raise RuntimeError("unexpected coordinator failure")
+
+    coordinator.push_audio = fail_push
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x00\x00"
+    )
+
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+
+    assert (failure.kind, failure.stage) == ("runtime_error", "consumer")
     await adapter.close()
 
 
