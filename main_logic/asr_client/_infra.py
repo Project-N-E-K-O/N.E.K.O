@@ -197,6 +197,8 @@ class _VoiceTurnAdapterProtocol(Protocol):
         utterance_id: int,
     ) -> None: ...
 
+    async def wait_failure(self) -> Any: ...
+
     async def close(self) -> None: ...
 
 
@@ -251,6 +253,7 @@ class _RealtimeAsrSessionImpl:
         self._on_status_message = on_status_message
         self._voice_turn_factory = voice_turn_factory
         self._voice_turn_adapter: _VoiceTurnAdapterProtocol | None = None
+        self._voice_turn_watch_task: asyncio.Task[None] | None = None
 
         self._state = _SessionState.NEW
         self._generation = 0
@@ -381,6 +384,10 @@ class _RealtimeAsrSessionImpl:
                         "ASR_WORKER_FAILED: worker failed while voice turn started"
                     )
                 self._voice_turn_adapter = adapter
+                self._voice_turn_watch_task = asyncio.create_task(
+                    self._watch_voice_turn_failure(adapter),
+                    name="asr-voice-turn-watch",
+                )
 
     async def update_session(self, config: Mapping[str, Any]) -> None:
         if not isinstance(config, Mapping):
@@ -602,8 +609,40 @@ class _RealtimeAsrSessionImpl:
 
     async def _unload_voice_turn_adapter(self, *, context: str) -> None:
         adapter, self._voice_turn_adapter = self._voice_turn_adapter, None
+        watch_task, self._voice_turn_watch_task = (
+            self._voice_turn_watch_task,
+            None,
+        )
+        current_task = asyncio.current_task()
+        if watch_task is not None and watch_task is not current_task:
+            watch_task.cancel()
+            await asyncio.gather(watch_task, return_exceptions=True)
         if adapter is not None:
             await self._close_voice_turn_instance(adapter, context=context)
+
+    async def _watch_voice_turn_failure(
+        self,
+        adapter: _VoiceTurnAdapterProtocol,
+    ) -> None:
+        try:
+            failure = await adapter.wait_failure()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            failure = None
+        if (
+            adapter is not self._voice_turn_adapter
+            or self._state is not _SessionState.READY
+        ):
+            return
+        kind = getattr(failure, "kind", "runtime_error")
+        stage = getattr(failure, "stage", "consumer")
+        logger.warning(
+            "ASR voice turn endpointing failed kind=%s stage=%s",
+            kind if kind in ("unavailable", "runtime_error") else "runtime_error",
+            stage if stage in ("vad_load", "vad_feed", "consumer") else "consumer",
+        )
+        await self._fail("ASR_WORKER_FAILED", "voice turn endpointing failed")
 
     async def _handle_voice_turn_commit(
         self,

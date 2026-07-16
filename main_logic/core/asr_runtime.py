@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from typing import Any, Literal
 
 from main_logic import core as _core_facade
 from main_logic.asr_client import (
@@ -19,7 +19,6 @@ from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 from ._shared import (
     _ASR_DUPLICATE_FINAL_WINDOW_SECONDS,
-    _ASR_FALLBACK_SILENCE_SECONDS,
     logger,
 )
 
@@ -30,16 +29,15 @@ class AsrRuntimeMixin:
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
         self._asr_route_mode = "native"
+        self._asr_required = False
         self._asr_session_epoch = 0
         self._asr_provider = None
         self._asr_core_type = None
         self._asr_turn_prepared = False
         self._asr_final_lock = asyncio.Lock()
-        self._asr_fallback_pending = False
         self._asr_audio_bytes = 0
         self._omni_mic_audio_bytes = 0
         self._asr_received_audio = False
-        self._asr_fallback_task: asyncio.Task[None] | None = None
         self._asr_close_tasks: set[asyncio.Task[None]] = set()
         self._asr_last_final: tuple[str, float] | None = None
 
@@ -50,10 +48,14 @@ class AsrRuntimeMixin:
             self._init_asr_runtime_state()
 
     async def _start_independent_asr_if_enabled(self, input_mode: str) -> None:
-        """Create ASR before opening the input gate; failures keep Omni native."""
+        """Resolve the hard microphone route before opening the input gate."""
 
         self._ensure_asr_runtime_state()
-        await self._close_independent_asr()
+        next_route_mode: Literal["native", "blocked"] = (
+            "blocked" if input_mode == "audio" else "native"
+        )
+        self._asr_required = input_mode == "audio"
+        await self._close_independent_asr(next_route_mode=next_route_mode)
         self._asr_audio_bytes = 0
         self._omni_mic_audio_bytes = 0
         if input_mode != "audio":
@@ -68,9 +70,16 @@ class AsrRuntimeMixin:
             settings = await _core_facade.aload_global_conversation_settings()
             enabled = bool(settings.get("independentAsrEnabled", False))
         except Exception:
-            enabled = False
-        if not enabled:
+            await self._send_asr_status(
+                "ASR_INDEPENDENT_FAILED", core_type or "unknown"
+            )
             return
+        if not enabled:
+            self._asr_required = False
+            self._asr_route_mode = "native"
+            return
+        self._asr_required = True
+        self._asr_route_mode = "blocked"
 
         route = CORE_ASR_ROUTES.get(core_type)
         selection = _resolve_asr_selection(core_type) if route is not None else None
@@ -146,7 +155,6 @@ class AsrRuntimeMixin:
             self._asr_session = asr_session
             self._asr_provider = provider
             self._asr_route_mode = "independent"
-            self._asr_fallback_pending = False
             await self._send_asr_status("ASR_INDEPENDENT_READY", provider)
         except asyncio.CancelledError:
             if asr_session is not None:
@@ -161,11 +169,14 @@ class AsrRuntimeMixin:
             if epoch == self._asr_session_epoch:
                 self._asr_session = None
                 self._asr_provider = None
-                self._asr_route_mode = "native"
-                self._asr_fallback_pending = False
-                await self._send_asr_status("ASR_INDEPENDENT_FALLBACK", provider)
+                self._asr_route_mode = "blocked"
+                await self._send_asr_status("ASR_INDEPENDENT_FAILED", provider)
 
-    async def _close_independent_asr(self) -> None:
+    async def _close_independent_asr(
+        self,
+        *,
+        next_route_mode: Literal["native", "blocked"] = "native",
+    ) -> None:
         """Invalidate callbacks first, then release the detached provider session."""
 
         self._ensure_asr_runtime_state()
@@ -177,15 +188,11 @@ class AsrRuntimeMixin:
         self._asr_session = None
         self._asr_provider = None
         self._asr_core_type = None
-        self._asr_route_mode = "native"
-        self._asr_fallback_pending = False
+        self._asr_route_mode = next_route_mode
+        self._asr_required = next_route_mode != "native"
         self._asr_received_audio = False
         self._asr_turn_prepared = False
         self._asr_last_final = None
-        fallback_task = self._asr_fallback_task
-        self._asr_fallback_task = None
-        if fallback_task is not None:
-            fallback_task.cancel()
         if asr_session is not None:
             try:
                 await asr_session.close()
@@ -214,20 +221,20 @@ class AsrRuntimeMixin:
 
         self._ensure_asr_runtime_state()
         if self._asr_route_mode == "native":
+            if self._asr_required:
+                self._asr_route_mode = "blocked"
+                return True
             return False
-        if self._asr_route_mode == "fallback_pending":
-            self._schedule_native_fallback_after_silence()
+        if self._asr_route_mode == "blocked":
             return True
 
         asr_session = self._asr_session
         if asr_session is None or not asr_session.is_ready:
-            if self._asr_received_audio:
-                self._asr_route_mode = "fallback_pending"
-                self._asr_fallback_pending = True
-                self._schedule_native_fallback_after_silence()
-                return True
-            self._asr_route_mode = "native"
-            return False
+            await self._handle_independent_asr_error(
+                self._asr_session_epoch,
+                self._asr_provider or "unknown",
+            )
+            return True
 
         try:
             await asr_session.stream_audio(pcm16, sample_rate_hz=sample_rate_hz)
@@ -397,13 +404,11 @@ class AsrRuntimeMixin:
         asr_session = self._asr_session
         self._asr_session = None
         self._asr_provider = None
-        if self._asr_received_audio:
-            self._asr_route_mode = "fallback_pending"
-            self._asr_fallback_pending = True
-            self._schedule_native_fallback_after_silence()
-        else:
-            self._asr_route_mode = "native"
-            self._asr_fallback_pending = False
+        self._asr_required = True
+        self._asr_route_mode = "blocked"
+        self._asr_received_audio = False
+        self._asr_turn_prepared = False
+        self._asr_last_final = None
         if asr_session is not None:
             task = asyncio.create_task(self._close_asr_session(asr_session))
             self._asr_close_tasks.add(task)
@@ -415,27 +420,6 @@ class AsrRuntimeMixin:
             await asr_session.close()
         except Exception:
             logger.warning("[%s] independent ASR background close failed", self.lanlan_name)
-
-    def _schedule_native_fallback_after_silence(self) -> None:
-        task = self._asr_fallback_task
-        if task is not None and not task.done():
-            return
-
-        epoch = self._asr_session_epoch
-
-        async def activate() -> None:
-            await asyncio.sleep(_ASR_FALLBACK_SILENCE_SECONDS)
-            if epoch != self._asr_session_epoch:
-                return
-            self._asr_route_mode = "native"
-            self._asr_fallback_pending = False
-            self._asr_received_audio = False
-            self._asr_turn_prepared = False
-
-        self._asr_fallback_task = asyncio.create_task(
-            activate(),
-            name="independent-asr-native-fallback",
-        )
 
     async def _send_asr_status(self, code: str, provider: str) -> None:
         try:

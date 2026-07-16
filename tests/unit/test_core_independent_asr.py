@@ -63,6 +63,20 @@ async def test_native_route_leaves_pcm_for_omni_and_counts_on_record() -> None:
     assert runtime._omni_mic_audio_bytes == 320
 
 
+async def test_native_label_cannot_bypass_required_independent_asr() -> None:
+    runtime = _Runtime()
+    runtime._asr_required = True
+    runtime._asr_route_mode = "native"
+
+    consumed = await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert consumed is True
+    assert runtime._asr_route_mode == "blocked"
+
+
 async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
     runtime = _Runtime()
     epoch = runtime._asr_session_epoch
@@ -226,8 +240,8 @@ async def test_asr_stream_failure_never_replays_the_failed_frame_to_omni() -> No
     )
 
     assert consumed is True
-    assert runtime._asr_fallback_pending is True
-    assert runtime._asr_route_mode == "fallback_pending"
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_session is None
     assert "sensitive provider body" not in str(runtime.send_status.await_args)
 
 
@@ -258,6 +272,44 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     assert runtime._asr_provider == "gemini"
     assert runtime._asr_route_mode == "independent"
     assert factory.call_args.args == ("gemini",)
+
+
+async def test_startup_close_window_is_blocked_before_settings_resolution(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class _OldAsr:
+        is_ready = True
+
+        async def close(self) -> None:
+            close_started.set()
+            await release_close.wait()
+
+    runtime._asr_session = _OldAsr()
+    runtime._asr_route_mode = "independent"
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": False}),
+    )
+
+    start_task = asyncio.create_task(
+        runtime._start_independent_asr_if_enabled("audio")
+    )
+    await asyncio.wait_for(close_started.wait(), 1)
+
+    assert runtime._asr_route_mode == "blocked"
+    assert await runtime._route_microphone_audio(
+        b"\x00\x00", sample_rate_hz=16_000
+    ) is True
+
+    release_close.set()
+    await asyncio.wait_for(start_task, 1)
+    assert runtime._asr_route_mode == "native"
 
 
 async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> None:
@@ -404,7 +456,7 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
     runtime.handle_input_transcript.assert_not_awaited()
 
 
-async def test_start_failure_keeps_native_omni_without_leaking_error(monkeypatch) -> None:
+async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> None:
     import main_logic.core.asr_runtime as runtime_module
 
     runtime = _Runtime()
@@ -421,7 +473,7 @@ async def test_start_failure_keeps_native_omni_without_leaking_error(monkeypatch
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
     assert runtime._asr_session is None
     assert "secret provider response" not in str(runtime.send_status.await_args)
 
@@ -470,7 +522,7 @@ async def test_hot_swap_starts_independent_asr_after_core_route_change(
     runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
 
 
-@pytest.mark.parametrize("route_mode", ["native", "fallback_pending"])
+@pytest.mark.parametrize("route_mode", ["native", "blocked"])
 async def test_hot_swap_does_not_retry_failed_same_core_route(
     route_mode: str,
 ) -> None:
@@ -550,7 +602,7 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
     assert runtime._asr_route_mode == "native"
 
 
-async def test_free_core_reports_unavailable_and_stays_native(monkeypatch) -> None:
+async def test_free_core_reports_unavailable_and_blocks_omni(monkeypatch) -> None:
     runtime = _Runtime()
     runtime.core_api_type = "free"
     monkeypatch.setattr(
@@ -561,11 +613,11 @@ async def test_free_core_reports_unavailable_and_stays_native(monkeypatch) -> No
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
     assert "ASR_INDEPENDENT_UNAVAILABLE" in runtime.send_status.await_args.args[0]
 
 
-async def test_provider_error_without_audio_closes_and_falls_back_immediately() -> None:
+async def test_provider_error_without_audio_closes_and_blocks_omni() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
     asr.close = AsyncMock()
@@ -577,45 +629,48 @@ async def test_provider_error_without_audio_closes_and_falls_back_immediately() 
     await asyncio.sleep(0)
 
     assert runtime._asr_session_epoch == epoch + 1
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
     asr.close.assert_awaited_once_with()
 
 
-async def test_fallback_pending_switches_to_native_only_after_silence(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
-
+async def test_blocked_route_consumes_audio_without_an_asr_or_omni_send() -> None:
     runtime = _Runtime()
-    runtime._asr_route_mode = "fallback_pending"
-    runtime._asr_fallback_pending = True
-    monkeypatch.setattr(runtime_module, "_ASR_FALLBACK_SILENCE_SECONDS", 0)
+    runtime._asr_route_mode = "blocked"
 
     assert await runtime._route_microphone_audio(
         b"\x00\x00",
         sample_rate_hz=16_000,
     ) is True
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    assert runtime._asr_route_mode == "native"
-    assert runtime._asr_fallback_pending is False
+    assert runtime._asr_route_mode == "blocked"
 
 
-async def test_continuous_silent_pcm_does_not_reset_native_fallback(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
-
+async def test_independent_route_without_ready_session_blocks_omni() -> None:
     runtime = _Runtime()
-    runtime._asr_route_mode = "fallback_pending"
-    runtime._asr_fallback_pending = True
-    monkeypatch.setattr(runtime_module, "_ASR_FALLBACK_SILENCE_SECONDS", 0.02)
+    asr = type("Asr", (), {"is_ready": False})()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
 
-    await runtime._route_microphone_audio(b"\x00\x00", sample_rate_hz=16_000)
-    fallback_task = runtime._asr_fallback_task
-    for _ in range(5):
-        await asyncio.sleep(0.005)
-        await runtime._route_microphone_audio(b"\x00\x00", sample_rate_hz=16_000)
+    assert await runtime._route_microphone_audio(
+        b"\x00\x00", sample_rate_hz=16_000
+    ) is True
+    assert runtime._asr_route_mode == "blocked"
 
-    assert runtime._asr_route_mode == "native"
-    assert runtime._asr_fallback_task is fallback_task
+
+async def test_settings_read_failure_blocks_omni(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(side_effect=RuntimeError("settings unavailable")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_route_mode == "blocked"
+    assert await runtime._route_microphone_audio(
+        b"\x00\x00", sample_rate_hz=16_000
+    ) is True
 
 
 async def test_injection_failure_is_reported_once_without_provider_body() -> None:
