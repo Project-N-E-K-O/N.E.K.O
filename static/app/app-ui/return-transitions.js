@@ -1104,7 +1104,7 @@
 
     window.hideNekoReturnBallContainer = I.hideReturnBallContainer;
 
-    const NEKO_GAME_MODE_RETURN_EDGE_ANCHORS = [
+    const NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS = [
         'left',
         'right',
         'top-left',
@@ -1113,16 +1113,16 @@
         'bottom-right'
     ];
 
-    function clearGameModeReturnBallEdgeAnchor(container) {
+    function clearLive2DPeekReturnBallEdgeAnchor(container) {
         if (!container) return;
-        container.removeAttribute('data-neko-game-mode-edge-anchor');
-        container.__nekoGameModeEdgeAnchor = null;
+        container.removeAttribute('data-neko-live2d-peek-anchor');
+        container.__nekoLive2DPeekEdgeAnchor = null;
     }
 
-    function positionGameModeReturnBallAtEdge(container, edgeAnchor) {
+    function positionLive2DPeekReturnBallAtEdge(container, edgeAnchor) {
         if (!container || !edgeAnchor || edgeAnchor.kind !== 'live2d-edge-peek') return false;
         const edge = String(edgeAnchor.edge || edgeAnchor.side || '');
-        if (!NEKO_GAME_MODE_RETURN_EDGE_ANCHORS.includes(edge)) return false;
+        if (!NEKO_LIVE2D_PEEK_RETURN_EDGE_ANCHORS.includes(edge)) return false;
 
         const width = Math.round(container.offsetWidth) || 64;
         const height = Math.round(container.offsetHeight) || 64;
@@ -1139,8 +1139,8 @@
         if (edge.startsWith('top-')) top = Math.round(-hiddenY);
         if (edge.startsWith('bottom-')) top = Math.round(viewportHeight - height + hiddenY);
 
-        container.setAttribute('data-neko-game-mode-edge-anchor', edge);
-        container.__nekoGameModeEdgeAnchor = Object.assign({}, edgeAnchor, { edge });
+        container.setAttribute('data-neko-live2d-peek-anchor', edge);
+        container.__nekoLive2DPeekEdgeAnchor = Object.assign({}, edgeAnchor, { edge });
         container.style.left = `${left}px`;
         container.style.top = `${top}px`;
         container.style.right = '';
@@ -1158,8 +1158,8 @@
         container.style.bottom = '';
         container.style.transform = 'none';
 
-        if (positionGameModeReturnBallAtEdge(container, edgeAnchor)) return;
-        clearGameModeReturnBallEdgeAnchor(container);
+        if (positionLive2DPeekReturnBallAtEdge(container, edgeAnchor)) return;
+        clearLive2DPeekReturnBallEdgeAnchor(container);
 
         if (anchorRect) {
             const containerWidth = Math.round(container.offsetWidth) || 64;
@@ -1367,7 +1367,7 @@
     window.addEventListener('neko:return-ball-manual-move', (event) => {
         const detail = event && event.detail;
         if (detail && detail.reason === 'return-ball-drag-start' && detail.container) {
-            clearGameModeReturnBallEdgeAnchor(detail.container);
+            clearLive2DPeekReturnBallEdgeAnchor(detail.container);
         }
         syncIdleReturnBallDesktopStateFromManualMove(event && event.detail);
     });
@@ -1378,16 +1378,16 @@
         const container = I.getVisibleIdleReturnBallContainer();
         if (getNekoGoodbyeIdleAppearance() === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {
             syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');
-            if (container && container.__nekoGameModeEdgeAnchor) {
+            if (container && container.__nekoLive2DPeekEdgeAnchor) {
                 requestAnimationFrame(() => {
-                    positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+                    positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
                 });
             }
             return;
         }
-        if (container && container.__nekoGameModeEdgeAnchor) {
+        if (container && container.__nekoLive2DPeekEdgeAnchor) {
             requestAnimationFrame(() => {
-                positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+                positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
             });
         }
         I.scheduleIdleReturnBallDesktopBridge(
@@ -1405,8 +1405,8 @@
     });
     window.addEventListener('resize', () => {
         const container = I.getVisibleIdleReturnBallContainer();
-        if (container && container.__nekoGameModeEdgeAnchor) {
-            positionGameModeReturnBallAtEdge(container, container.__nekoGameModeEdgeAnchor);
+        if (container && container.__nekoLive2DPeekEdgeAnchor) {
+            positionLive2DPeekReturnBallAtEdge(container, container.__nekoLive2DPeekEdgeAnchor);
         }
         I.scheduleIdleReturnBallDesktopBridge('viewport-resize');
     });

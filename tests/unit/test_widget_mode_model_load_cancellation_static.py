@@ -4,16 +4,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_game_mode_uses_explicit_cancellation_contract_for_all_model_managers():
-    app = (ROOT / "static" / "app" / "app-game-mode-beta.js").read_text(encoding="utf-8")
+def test_widget_mode_uses_explicit_cancellation_contract_for_all_model_managers():
+    app = (ROOT / "static" / "app" / "app-widget-mode.js").read_text(encoding="utf-8")
     live2d = (ROOT / "static" / "live2d" / "live2d-model.js").read_text(encoding="utf-8")
     vrm = (ROOT / "static" / "vrm" / "vrm-manager.js").read_text(encoding="utf-8")
     mmd = (ROOT / "static" / "mmd" / "mmd-manager.js").read_text(encoding="utf-8")
 
-    assert "cancelActiveModelLoadForGameMode" in live2d
-    assert "cancelActiveModelLoadForGameMode" in vrm
-    assert "cancelActiveModelLoadForGameMode" in mmd
-    assert "manager.cancelActiveModelLoadForGameMode('game-mode-protection')" in app
+    assert "cancelActiveModelLoadForWidgetMode" in live2d
+    assert "cancelActiveModelLoadForWidgetMode" in vrm
+    assert "cancelActiveModelLoadForWidgetMode" in mmd
+    assert "manager.cancelActiveModelLoadForWidgetMode('widget-mode-compaction')" in app
+    assert "await ensureInvalidatedModelReloaded()" in app
+    assert "[WidgetMode] model reload after compaction failed:" in app
 
 
 def test_mmd_cancellation_blocks_default_model_fallback_after_token_invalidation():

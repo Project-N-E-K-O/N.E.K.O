@@ -1356,9 +1356,11 @@
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
         // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
         // 否则中文名时守卫永远失败、造不出真正的幂等。
-        var gameModeCapabilityQuery = window.nekoGameModeBeta ? '?game_mode_capable=1' : '';
+        var widgetModeCapabilityQuery = (
+            window.nekoWidgetMode && window.nekoWidgetModeHost
+        ) ? '?widget_mode_capable=1' : '';
         var wsUrl = protocol + '://' + window.location.host + '/ws/'
-            + encodeURIComponent(currentLanlanName) + gameModeCapabilityQuery;
+            + encodeURIComponent(currentLanlanName) + widgetModeCapabilityQuery;
 
         // 幂等兜底：如果当前 socket 已经 OPEN 且指向同一个 URL，说明有 stale 路径
         // （比如 Chat 窗口里被误触发 onclose 排队的 auto-reconnect）到了这一步。
@@ -1604,17 +1606,9 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
-                if (response.type === 'game_mode_auto_switch') {
+                if (typeof response.type === 'string' && response.type.indexOf('widget_mode_') === 0) {
                     try {
-                        window.dispatchEvent(new CustomEvent('neko:game-mode-beta-auto-switch', {
-                            detail: response,
-                        }));
-                    } catch (_) {}
-                    return;
-                }
-                if (typeof response.type === 'string' && response.type.indexOf('game_mode_') === 0) {
-                    try {
-                        window.dispatchEvent(new CustomEvent('neko:game-mode-beta-message', {
+                        window.dispatchEvent(new CustomEvent('neko:widget-mode-message', {
                             detail: response,
                         }));
                     } catch (_) {}

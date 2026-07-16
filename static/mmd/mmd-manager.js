@@ -252,12 +252,12 @@ class MMDManager {
         }
     }
 
-    cancelActiveModelLoadForGameMode(reason = 'game-mode-protection') {
+    cancelActiveModelLoadForWidgetMode(reason = 'widget-mode-compaction') {
         if (this._modelLoadState !== 'loading') return false;
         this._activeLoadToken += 1;
         this._modelLoadState = 'cancelled';
-        this._nekoGameModeReloadRequired = true;
-        this._nekoGameModeLoadCancelReason = reason;
+        this._nekoWidgetModeReloadRequired = true;
+        this._nekoWidgetModeLoadCancelReason = reason;
         return true;
     }
 

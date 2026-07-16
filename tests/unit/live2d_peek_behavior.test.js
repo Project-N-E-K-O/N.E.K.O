@@ -9,7 +9,7 @@ const interactionPath = path.join(projectRoot, 'static', 'live2d', 'live2d-inter
 const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
 
 function createHarness({
-    gameModeEnabled = true,
+    widgetModeEnabled = true,
     innerWidth = 1000,
     innerHeight = 800,
     platform = '',
@@ -48,8 +48,8 @@ function createHarness({
                     return currentDisplay;
                 }
             } : null,
-            nekoGameModeBeta: {
-                isEnabled: () => gameModeEnabled
+            nekoWidgetMode: {
+                isEnabled: () => widgetModeEnabled
             },
             addEventListener(type, handler) {
                 const handlers = listeners.get(type) || [];
@@ -194,8 +194,8 @@ test('edge peek enter naturally moves model offscreen and reports visible bounds
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0 });
 
-    const promise = manager._tryApplyLive2DGameModeEdgePeek(model);
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), true);
+    const promise = manager._tryApplyLive2DPeek(model);
+    assert.equal(manager.isLive2DPeekActive(), true);
     flushNextFrame(harness);
     const entered = await promise;
 
@@ -204,7 +204,7 @@ test('edge peek enter naturally moves model offscreen and reports visible bounds
     assert.equal(model.y, 120);
     assert.equal(model.rotation, 60 * Math.PI / 180);
     assert.equal(model.scale.x, 1);
-    assert.deepEqual(JSON.parse(JSON.stringify(manager._live2DGameModeEdgePeekState.visibleBounds)), {
+    assert.deepEqual(JSON.parse(JSON.stringify(manager._live2DPeekState.visibleBounds)), {
         left: 0,
         right: 110,
         top: 120,
@@ -214,7 +214,7 @@ test('edge peek enter naturally moves model offscreen and reports visible bounds
         centerX: 55,
         centerY: 420
     });
-    assert.equal(harness.bodyClasses.has('neko-live2d-game-mode-edge-peek'), true);
+    assert.equal(harness.bodyClasses.has('neko-live2d-peek'), true);
 });
 
 test('restore anchor stores semantic display identity without absolute coordinates', async () => {
@@ -223,10 +223,10 @@ test('restore anchor stores semantic display identity without absolute coordinat
     const model = createModel({ x: 0 });
     harness.window.live2dManager = manager;
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
-    const anchor = harness.window.nekoLive2DGameModeEdgePeek.captureRestoreAnchor();
+    const anchor = harness.window.nekoLive2DPeek.captureRestoreAnchor();
 
     assert.equal(anchor.side, 'left');
     assert.equal(anchor.facing, 'inward');
@@ -250,15 +250,15 @@ test('head anchor keeps the face visible when a tail widens the model bounds', a
         return { rect: { centerX: waist.x, bottom: waist.y } };
     };
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
 
     const head = manager.getHeadScreenAnchor();
-    assert.equal(manager._live2DGameModeEdgePeekState.side, 'left');
-    assert.equal(manager._live2DGameModeEdgePeekState.headAnchored, true);
+    assert.equal(manager._live2DPeekState.side, 'left');
+    assert.equal(manager._live2DPeekState.headAnchored, true);
     assert.ok(head.x > 20 && head.x < 260, `head should lean inside the edge, got ${head.x}`);
-    assert.equal(manager._live2DGameModeEdgePeekState.waistAnchored, true);
+    assert.equal(manager._live2DPeekState.waistAnchored, true);
     assert.ok(Math.abs(manager.getBodyScreenRectInfo().rect.centerX + 8) < 0.001);
     assert.ok(Math.abs(manager.getBodyScreenRectInfo().rect.bottom - 450) < 0.001);
     const lowerBody = transformedPoint(140, 600);
@@ -284,10 +284,10 @@ test('corner peeks keep the head at the corner and the body outside the matching
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 
-        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        const enterPromise = manager._tryApplyLive2DPeek(model);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true, `${item.edge} should enter`);
-        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(manager._live2DPeekState.edge, item.edge);
         assert.equal(model.rotation, item.rotation * Math.PI / 180);
 
         const head = manager.getHeadScreenAnchor();
@@ -325,19 +325,19 @@ test('semantic corner anchor restores the model to the same corner', async () =>
     };
     harness.window.live2dManager = manager;
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
-    const anchor = harness.window.nekoLive2DGameModeEdgePeek.captureRestoreAnchor();
+    const anchor = harness.window.nekoLive2DPeek.captureRestoreAnchor();
     assert.equal(anchor.edge, 'top-left');
 
-    manager.clearLive2DGameModeEdgePeek('game-mode-auto');
+    manager.clearLive2DPeek('widget-mode-disabled');
     model.x = 350;
     model.y = 100;
-    const restorePromise = harness.window.nekoLive2DGameModeEdgePeek.restoreAnchor(anchor);
+    const restorePromise = harness.window.nekoLive2DPeek.restoreAnchor(anchor);
     flushNextFrame(harness);
     assert.equal(await restorePromise, true);
-    assert.equal(manager._live2DGameModeEdgePeekState.edge, 'top-left');
+    assert.equal(manager._live2DPeekState.edge, 'top-left');
     assert.equal(model.rotation, 135 * Math.PI / 180);
 });
 
@@ -352,14 +352,14 @@ test('corner peeks fall back to model transforms when no head anchor is availabl
         const manager = new harness.Live2DManager();
         const model = createRotatingModel({ x: 0, y: item.y, scaleX: 1 });
 
-        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        const enterPromise = manager._tryApplyLive2DPeek(model);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
 
         const estimatedHead = model.transformPoint(150, 600 * 0.24);
         const lowerBody = model.transformPoint(150, 560);
-        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
-        assert.equal(manager._live2DGameModeEdgePeekState.headAnchorSource, 'bounds-fallback');
+        assert.equal(manager._live2DPeekState.edge, item.edge);
+        assert.equal(manager._live2DPeekState.headAnchorSource, 'bounds-fallback');
         assert.ok(estimatedHead.x >= 48 && estimatedHead.x <= 84, `fallback head x should remain visible, got ${estimatedHead.x}`);
         assert.ok(
             estimatedHead.y >= item.headYRange[0] && estimatedHead.y <= item.headYRange[1],
@@ -394,13 +394,13 @@ test('macOS top corners trigger at the current display work-area top', async () 
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 
-        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        const enterPromise = manager._tryApplyLive2DPeek(model);
         for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
             await Promise.resolve();
         }
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
-        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(manager._live2DPeekState.edge, item.edge);
         assert.equal(model.rotation, item.rotation * Math.PI / 180);
     }
 });
@@ -431,13 +431,13 @@ test('Windows bottom corners trigger at the current display work-area bottom', a
             return { rect: { centerX: waist.x, bottom: waist.y } };
         };
 
-        const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+        const enterPromise = manager._tryApplyLive2DPeek(model);
         for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
             await Promise.resolve();
         }
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
-        assert.equal(manager._live2DGameModeEdgePeekState.edge, item.edge);
+        assert.equal(manager._live2DPeekState.edge, item.edge);
         assert.equal(model.rotation, item.rotation * Math.PI / 180);
     }
 });
@@ -447,20 +447,20 @@ test('clearing during enter animation prevents stale peek writeback', async () =
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0 });
 
-    const promise = manager._tryApplyLive2DGameModeEdgePeek(model);
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), true);
-    manager.clearLive2DGameModeEdgePeek('game-mode-disabled');
+    const promise = manager._tryApplyLive2DPeek(model);
+    assert.equal(manager.isLive2DPeekActive(), true);
+    manager.clearLive2DPeek('widget-mode-disabled');
 
     flushNextFrame(harness);
     const entered = await promise;
 
     assert.equal(entered, false);
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
     assert.equal(model.x, 0);
     assert.equal(model.y, 120);
     assert.equal(model.rotation, 0);
     assert.equal(model.scale.x, 1);
-    assert.equal(harness.bodyClasses.has('neko-live2d-game-mode-edge-peek'), false);
+    assert.equal(harness.bodyClasses.has('neko-live2d-peek'), false);
 });
 
 test('right edge peek faces inward and restores original transform', async () => {
@@ -468,7 +468,7 @@ test('right edge peek faces inward and restores original transform', async () =>
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 520, y: 100 });
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
 
@@ -477,16 +477,16 @@ test('right edge peek faces inward and restores original transform', async () =>
     assert.equal(model.rotation, -60 * Math.PI / 180);
     assert.equal(model.scale.x, -1);
 
-    const restorePromise = manager.restoreLive2DGameModeEdgePeek('click-restore');
+    const restorePromise = manager.restoreLive2DPeek('click-restore');
     flushNextFrame(harness);
     assert.equal(await restorePromise, true);
 
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
     assert.equal(model.x, 520);
     assert.equal(model.y, 100);
     assert.equal(model.rotation, 0);
     assert.equal(model.scale.x, 1);
-    assert.equal(harness.bodyClasses.has('neko-live2d-game-mode-edge-peek'), false);
+    assert.equal(harness.bodyClasses.has('neko-live2d-peek'), false);
 });
 
 test('edge peek uses renderer screen bounds when canvas differs from window viewport', async () => {
@@ -499,14 +499,14 @@ test('edge peek uses renderer screen bounds when canvas differs from window view
     };
     const model = createModel({ x: 580, y: 100 });
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
 
     assert.equal(model.x, 970);
     assert.equal(model.rotation, -60 * Math.PI / 180);
     assert.equal(model.scale.x, -1);
-    assert.deepEqual(JSON.parse(JSON.stringify(manager._live2DGameModeEdgePeekState.visibleBounds)), {
+    assert.deepEqual(JSON.parse(JSON.stringify(manager._live2DPeekState.visibleBounds)), {
         left: 970,
         right: 1080,
         top: 100,
@@ -563,56 +563,56 @@ test('drag-style clear exits peek without restoring position but restores transf
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0, y: 120 });
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
     assert.equal(model.x, -390);
 
-    manager.clearLive2DGameModeEdgePeek('drag-start', { restore: false });
+    manager.clearLive2DPeek('drag-start', { restore: false });
 
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
     assert.equal(model.x, -390);
     assert.equal(model.y, 120);
     assert.equal(model.rotation, 0);
     assert.equal(model.scale.x, 1);
 });
 
-test('edge peek only triggers while game mode beta is enabled', async () => {
-    const harness = createHarness({ gameModeEnabled: false });
+test('edge peek only triggers while Widget Mode is enabled', async () => {
+    const harness = createHarness({ widgetModeEnabled: false });
     const manager = new harness.Live2DManager();
     const model = createModel({ x: 0, y: 120 });
 
-    const entered = await manager._tryApplyLive2DGameModeEdgePeek(model);
+    const entered = await manager._tryApplyLive2DPeek(model);
 
     assert.equal(entered, false);
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
     assert.equal(harness.rafQueue.length, 0);
     assert.equal(model.x, 0);
     assert.equal(model.y, 120);
 });
 
-test('game mode disabled event restores active edge peek to its base position', async () => {
+test('Widget Mode disabled event restores active edge peek to its base position', async () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();
     harness.window.live2dManager = manager;
     const model = createModel({ x: 0, y: 120 });
 
-    const enterPromise = manager._tryApplyLive2DGameModeEdgePeek(model);
+    const enterPromise = manager._tryApplyLive2DPeek(model);
     flushNextFrame(harness);
     assert.equal(await enterPromise, true);
     assert.equal(model.x, -390);
 
     harness.window.dispatchEvent({
-        type: 'neko:game-mode-beta-state',
+        type: 'neko:widget-mode-state-changed',
         detail: { enabled: false }
     });
 
-    assert.equal(manager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(manager.isLive2DPeekActive(), false);
     assert.equal(model.x, 0);
     assert.equal(model.y, 120);
     assert.equal(model.rotation, 0);
     assert.equal(model.scale.x, 1);
-    assert.equal(harness.bodyClasses.has('neko-live2d-game-mode-edge-peek'), false);
+    assert.equal(harness.bodyClasses.has('neko-live2d-peek'), false);
 });
 
 test('top and bottom edges alone do not trigger edge peek', async () => {
@@ -620,16 +620,16 @@ test('top and bottom edges alone do not trigger edge peek', async () => {
     const topManager = new topHarness.Live2DManager();
     const topModel = createModel({ x: 250, y: 0 });
 
-    assert.equal(await topManager._tryApplyLive2DGameModeEdgePeek(topModel), false);
-    assert.equal(topManager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(await topManager._tryApplyLive2DPeek(topModel), false);
+    assert.equal(topManager.isLive2DPeekActive(), false);
     assert.equal(topHarness.rafQueue.length, 0);
 
     const bottomHarness = createHarness();
     const bottomManager = new bottomHarness.Live2DManager();
     const bottomModel = createModel({ x: 250, y: 200, height: 600 });
 
-    assert.equal(await bottomManager._tryApplyLive2DGameModeEdgePeek(bottomModel), false);
-    assert.equal(bottomManager.isLive2DGameModeEdgePeekActive(), false);
+    assert.equal(await bottomManager._tryApplyLive2DPeek(bottomModel), false);
+    assert.equal(bottomManager.isLive2DPeekActive(), false);
     assert.equal(bottomHarness.rafQueue.length, 0);
 });
 
@@ -638,20 +638,20 @@ test('visible reveal width is clamped between 96 and 180 pixels', async () => {
     const narrowManager = new narrowHarness.Live2DManager();
     const narrowModel = createModel({ x: 0, width: 300 });
 
-    const narrowPromise = narrowManager._tryApplyLive2DGameModeEdgePeek(narrowModel);
+    const narrowPromise = narrowManager._tryApplyLive2DPeek(narrowModel);
     flushNextFrame(narrowHarness);
     assert.equal(await narrowPromise, true);
-    assert.equal(narrowManager._live2DGameModeEdgePeekState.visibleBounds.width, 96);
+    assert.equal(narrowManager._live2DPeekState.visibleBounds.width, 96);
     assert.equal(narrowModel.x, -204);
 
     const wideHarness = createHarness();
     const wideManager = new wideHarness.Live2DManager();
     const wideModel = createModel({ x: 0, width: 1200 });
 
-    const widePromise = wideManager._tryApplyLive2DGameModeEdgePeek(wideModel);
+    const widePromise = wideManager._tryApplyLive2DPeek(wideModel);
     flushNextFrame(wideHarness);
     assert.equal(await widePromise, true);
-    assert.equal(wideManager._live2DGameModeEdgePeekState.visibleBounds.width, 180);
+    assert.equal(wideManager._live2DPeekState.visibleBounds.width, 180);
 });
 
 test('core model screen bounds reports viewport intersection while edge peek is active', () => {
@@ -671,7 +671,7 @@ test('core model screen bounds reports viewport intersection while edge peek is 
         centerY: 420
     });
 
-    manager._live2DGameModeEdgePeekState = {
+    manager._live2DPeekState = {
         active: true,
         model
     };
@@ -698,7 +698,7 @@ test('core edge peek screen bounds use renderer screen instead of wider window',
     };
     const model = createModel({ x: 970, y: 100, width: 500, height: 600 });
     manager.currentModel = model;
-    manager._live2DGameModeEdgePeekState = {
+    manager._live2DPeekState = {
         active: true,
         model
     };

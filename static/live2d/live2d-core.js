@@ -340,10 +340,10 @@ class Live2DManager {
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
 
-                    if (typeof this.isLive2DGameModeEdgePeekActive === 'function' &&
-                        this.isLive2DGameModeEdgePeekActive() &&
-                        typeof this.clearLive2DGameModeEdgePeek === 'function') {
-                        this.clearLive2DGameModeEdgePeek(`viewport-changed:${reason}`);
+                    if (typeof this.isLive2DPeekActive === 'function' &&
+                        this.isLive2DPeekActive() &&
+                        typeof this.clearLive2DPeek === 'function') {
+                        this.clearLive2DPeek(`viewport-changed:${reason}`);
                     }
 
                     if (resolutionChanged) {
@@ -4537,7 +4537,7 @@ class Live2DManager {
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
     getModelScreenBounds() {
-        const edgePeekState = this._live2DGameModeEdgePeekState;
+        const edgePeekState = this._live2DPeekState;
         if (edgePeekState && edgePeekState.active) {
             const model = edgePeekState.model || this.currentModel;
             if (model && !model.destroyed && typeof model.getBounds === 'function') {
@@ -4632,8 +4632,8 @@ class Live2DManager {
 
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
-        if (typeof this.clearLive2DGameModeEdgePeek === 'function') {
-            this.clearLive2DGameModeEdgePeek('reset-model-position');
+        if (typeof this.clearLive2DPeek === 'function') {
+            this.clearLive2DPeek('reset-model-position');
         }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');

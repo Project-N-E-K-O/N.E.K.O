@@ -32,32 +32,36 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
-def test_game_mode_auto_switch_websocket_event_is_relayed_to_frontend():
+def test_widget_mode_websocket_events_are_relayed_to_frontend():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
-    game_mode_block = source.split("if (response.type === 'game_mode_auto_switch')", 1)[1].split(
+    widget_mode_block = source.split(
+        "if (typeof response.type === 'string' && response.type.indexOf('widget_mode_') === 0)",
+        1,
+    )[1].split(
         "// -------- gemini_response --------",
         1,
     )[0]
 
-    assert "new CustomEvent('neko:game-mode-beta-auto-switch'" in game_mode_block
-    assert "detail: response" in game_mode_block
-    assert "return;" in game_mode_block
+    assert "new CustomEvent('neko:widget-mode-message'" in widget_mode_block
+    assert "detail: response" in widget_mode_block
+    assert "return;" in widget_mode_block
 
 
-def test_websocket_marks_only_pages_with_game_mode_listener_as_capable():
+def test_websocket_marks_only_widget_mode_pet_pages_as_capable():
     frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
 
     assert re.search(
-        r"window\.nekoGameModeBeta\s*\?\s*'\?game_mode_capable=1'\s*:\s*''",
+        r"window\.nekoWidgetMode\s*&&\s*window\.nekoWidgetModeHost",
         frontend_source,
     )
+    assert "'?widget_mode_capable=1' : ''" in frontend_source
     assert re.search(
-        r'websocket\.query_params\.get\(\s*"game_mode_capable"\s*\)\s*==\s*"1"',
+        r'websocket\.query_params\.get\(\s*"widget_mode_capable"\s*\)\s*==\s*"1"',
         router_source,
     )
-    assert re.search(r"mgr\.game_mode_capable\s*=\s*game_mode_capable", router_source)
+    assert re.search(r"mgr\.widget_mode_capable\s*=\s*widget_mode_capable", router_source)
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():

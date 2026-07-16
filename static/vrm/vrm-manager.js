@@ -73,12 +73,12 @@ class VRMManager {
         return this._activeLoadToken === loadToken;
     }
 
-    cancelActiveModelLoadForGameMode(reason = 'game-mode-protection') {
+    cancelActiveModelLoadForWidgetMode(reason = 'widget-mode-compaction') {
         if (!['preparing', 'settling'].includes(this._loadState)) return false;
         this._activeLoadToken += 1;
         this._loadState = 'cancelled';
-        this._nekoGameModeReloadRequired = true;
-        this._nekoGameModeLoadCancelReason = reason;
+        this._nekoWidgetModeReloadRequired = true;
+        this._nekoWidgetModeLoadCancelReason = reason;
         return true;
     }
 
