@@ -44,7 +44,6 @@ from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
-from memory.persona.fusion import ExternalMemoryFusionError
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -158,11 +157,13 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             )
             added_persona += fusion_result["added"]
             skipped_persona += fusion_result["skipped"]
-    except ExternalMemoryFusionError:
-        # 融合终态失败：保留用户素材，返回 partial（added_persona = 已成功融合的
-        # entity 计数），前端重试幂等。绝不回退成逐条 append 撑爆 persona 池。
+    except Exception:
+        # 任何 persona 阶段失败（融合终态失败 ExternalMemoryFusionError / asave_persona
+        # 崩溃等）都保留已落盘素材、返回 partial（added_persona = 已成功融合并保存的
+        # entity 计数），前端据此幂等重试。绝不回退成逐条 append 撑爆 persona 池；异常
+        # 已 logger.exception 兜底，第二个 entity 上崩溃不再漏成 generic 500（Codex P2）。
         logger.exception(
-            "External Markdown import: persona fusion failed: character=%s added_persona=%s",
+            "External Markdown import: persona stage failed: character=%s added_persona=%s",
             name,
             added_persona,
         )
