@@ -3748,6 +3748,7 @@
         "thisPlatform": "this platform",
         "instructions": {
             "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "youtube": "<b>Target:</b> Sign in at <b>youtube.com</b> and fetch either SAPISID or __Secure-3PAPISID.",
             "douyin": "<b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
             "kuaishou": "<b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "<b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
@@ -3764,6 +3765,14 @@
             "step4": "Find <span class=\"highlight-text\">Cookies</span> on the left sidebar, click the domain, and copy the required values on the right."
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Google session credential (provide this or __Secure-3PAPISID)"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "Secure Google session credential (provide this or SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Core identity credential (Required)"

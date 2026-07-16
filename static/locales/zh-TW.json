@@ -3748,6 +3748,7 @@
         "thisPlatform": "該平台",
         "instructions": {
             "bilibili": "<b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
+            "youtube": "<b>目標：</b> 請登入 <b>youtube.com</b>，取得 SAPISID 或 __Secure-3PAPISID。",
             "douyin": "<b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
             "kuaishou": "<b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
             "weibo": "<b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
@@ -3764,6 +3765,14 @@
             "step4": "在左側找到 <span class=\"highlight-text\">Cookies</span>，點擊網域後在右側複製對應的值。"
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Google 工作階段憑證（與 __Secure-3PAPISID 二選一）"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "Google 安全工作階段憑證（與 SAPISID 二選一）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "核心身份憑證 (必填)"

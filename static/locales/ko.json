@@ -3748,6 +3748,7 @@
         "thisPlatform": "이 플랫폼",
         "instructions": {
             "bilibili": "<b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
+            "youtube": "<b>대상:</b> <b>youtube.com</b>에 로그인한 뒤 SAPISID 또는 __Secure-3PAPISID를 가져오세요.",
             "douyin": "<b>대상:</b> <b>douyin.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "kuaishou": "<b>대상:</b> <b>kuaishou.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "weibo": "<b>대상:</b> <b>weibo.com</b>에 접속하여 해당 쿠키를 가져오세요.",
@@ -3764,6 +3765,14 @@
             "step4": "왼쪽 사이드바에서 <span class=\"highlight-text\">Cookies</span>를 찾아 도메인을 클릭한 후, 오른쪽에서 필요한 값을 복사합니다."
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Google 세션 자격 증명 (__Secure-3PAPISID와 둘 중 하나 입력)"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "보안 Google 세션 자격 증명 (SAPISID와 둘 중 하나 입력)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "핵심 신분 자격 증명 (필수)"

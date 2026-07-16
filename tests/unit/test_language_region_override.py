@@ -3,6 +3,13 @@ import pytest
 from utils import language_utils
 
 
+@pytest.fixture(autouse=True)
+def reset_language_cache():
+    language_utils.reset_global_language()
+    yield
+    language_utils.reset_global_language()
+
+
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
 def test_region_env_truthy_forces_china(monkeypatch, value):
     monkeypatch.setenv("NEKO_IS_CHINA_REGION", value)
@@ -28,9 +35,5 @@ def test_invalid_region_env_falls_back_to_locale(monkeypatch):
 
 def test_region_env_populates_public_region_cache(monkeypatch):
     monkeypatch.setenv("NEKO_IS_CHINA_REGION", "false")
-    language_utils.reset_global_language()
-    try:
-        assert language_utils.get_global_region() == "non-china"
-        assert language_utils.is_china_region() is False
-    finally:
-        language_utils.reset_global_language()
+    assert language_utils.get_global_region() == "non-china"
+    assert language_utils.is_china_region() is False

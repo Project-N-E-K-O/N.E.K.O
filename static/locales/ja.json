@@ -3748,6 +3748,7 @@
         "thisPlatform": "このプラットフォーム",
         "instructions": {
             "bilibili": "<b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
+            "youtube": "<b>対象：</b> <b>youtube.com</b> にログインし、SAPISID または __Secure-3PAPISID を取得してください。",
             "douyin": "<b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
             "kuaishou": "<b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "<b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
@@ -3764,6 +3765,14 @@
             "step4": "左側の <span class=\"highlight-text\">Cookies</span> を展開し、ドメインをクリックして右側にある必要な値をコピーします。"
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Google セッションクレデンシャル（これか __Secure-3PAPISID のどちらかを入力）"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "セキュアな Google セッションクレデンシャル（これか SAPISID のどちらかを入力）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "コアIDクレデンシャル (必須)"

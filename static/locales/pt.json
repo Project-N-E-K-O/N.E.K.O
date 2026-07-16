@@ -3748,6 +3748,7 @@
         "thisPlatform": "esta plataforma",
         "instructions": {
             "bilibili": "<b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
+            "youtube": "<b>Destino:</b> Entre em <b>youtube.com</b> e obtenha SAPISID ou __Secure-3PAPISID.",
             "douyin": "<b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
             "kuaishou": "<b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
             "weibo": "<b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
@@ -3764,6 +3765,14 @@
             "step4": "Encontre <span class=\"highlight-text\">Cookies</span> na barra lateral esquerda, clique no domínio e copie os valores necessários à direita."
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Credencial de sessão do Google (informe esta ou __Secure-3PAPISID)"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "Credencial segura de sessão do Google (informe esta ou SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Credencial de identidade principal (obrigatório)"

@@ -3748,6 +3748,7 @@
         "thisPlatform": "Эта платформа",
         "instructions": {
             "bilibili": "<b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
+            "youtube": "<b>Цель:</b> Войдите на <b>youtube.com</b> и получите SAPISID или __Secure-3PAPISID.",
             "douyin": "<b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
             "kuaishou": "<b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
             "weibo": "<b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
@@ -3764,6 +3765,14 @@
             "step4": "Найдите <span class=\"highlight-text\">Cookies</span> на левой боковой панели, нажмите на домен и скопируйте нужные значения справа."
         },
         "fields": {
+            "SAPISID": {
+                "label": "SAPISID",
+                "desc": "Учетные данные сессии Google (укажите это поле или __Secure-3PAPISID)"
+            },
+            "secure3PAPISID": {
+                "label": "__Secure-3PAPISID",
+                "desc": "Защищенные учетные данные сессии Google (укажите это поле или SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Основные учетные данные личности (Обязательно)"

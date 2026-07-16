@@ -56,10 +56,10 @@ def _log_video_content(lanlan_name: str, video_content: dict):
                 for title in titles:
                     print(f"  - {title}")
         else:
-            posts = video_data.get('posts', [])
-            titles = [post.get('title', '') for post in posts[:5]]
+            videos = video_data.get('videos', [])
+            titles = [video.get('title', '') for video in videos[:5]]
             if titles:
-                print(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
+                print(f"[{lanlan_name}] 成功获取YouTube视频:")
                 for title in titles:
                     print(f"  - {title}")
 

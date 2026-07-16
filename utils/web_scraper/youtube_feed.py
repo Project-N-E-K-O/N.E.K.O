@@ -32,6 +32,7 @@ from typing import Any, Iterator
 import httpx
 
 from utils.external_http_client import get_external_http_client
+from utils.language_utils import get_global_language_full
 
 from ._shared import get_random_user_agent, logger
 from .platform_helpers import _get_platform_cookies
@@ -39,9 +40,19 @@ from .platform_helpers import _get_platform_cookies
 
 _YOUTUBE_ORIGIN = "https://www.youtube.com"
 _HOME_BROWSE_ID = "FEwhat_to_watch"
-_ANONYMOUS_DISCOVERY_QUERY = "trending videos"
 _DEFAULT_CLIENT_NAME = "1"  # WEB
 _DEFAULT_CLIENT_VERSION = "2.20250710.01.00"
+_AUTH_HEADER_NAMES = {"Authorization", "X-Goog-AuthUser", "X-Origin"}
+_LANGUAGE_SETTINGS = {
+    "zh": ("zh-CN,zh;q=0.9,en;q=0.8", "热门视频"),
+    "zh-TW": ("zh-TW,zh;q=0.9,en;q=0.8", "熱門影片"),
+    "en": ("en-US,en;q=0.9", "trending videos"),
+    "ja": ("ja-JP,ja;q=0.9,en;q=0.8", "話題の動画"),
+    "ko": ("ko-KR,ko;q=0.9,en;q=0.8", "인기 동영상"),
+    "ru": ("ru-RU,ru;q=0.9,en;q=0.8", "популярные видео"),
+    "es": ("es-ES,es;q=0.9,en;q=0.8", "videos populares"),
+    "pt": ("pt-BR,pt;q=0.9,en;q=0.8", "vídeos em alta"),
+}
 
 
 def _format_fetch_error(exc: Exception) -> str:
@@ -228,16 +239,49 @@ def _cookie_header(cookies: dict[str, str]) -> str:
     return "; ".join(f"{key}={value}" for key, value in values.items())
 
 
+def _request_language_settings() -> tuple[str, str]:
+    """Return the YouTube request locale and localized discovery query."""
+    language = get_global_language_full()
+    if language == "zh-TW":
+        return _LANGUAGE_SETTINGS["zh-TW"]
+    short_language = language.split("-", 1)[0]
+    return _LANGUAGE_SETTINGS.get(short_language, _LANGUAGE_SETTINGS["en"])
+
+
+def _without_authentication(headers: dict[str, str]) -> dict[str, str]:
+    """Build headers for a genuinely anonymous retry or discovery request."""
+    anonymous_headers = {
+        key: value for key, value in headers.items() if key not in _AUTH_HEADER_NAMES
+    }
+    anonymous_headers["Cookie"] = _cookie_header({})
+    return anonymous_headers
+
+
 async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
     """Fetch YouTube's anonymous or signed-in homepage recommendations."""
+    client: httpx.AsyncClient | None = None
+    owns_client = False
     try:
         cookies = await asyncio.to_thread(_get_platform_cookies, "youtube")
         cookie_header = _cookie_header(cookies)
         user_agent = get_random_user_agent()
-        client = get_external_http_client()
+        accept_language, discovery_query = _request_language_settings()
+
+        # Credentialed requests must not use the process-wide shared client:
+        # httpx persists response Set-Cookie values in the client jar, which
+        # would keep deleted or changed account state alive across later calls.
+        if cookies:
+            client = httpx.AsyncClient(
+                timeout=15.0,
+                trust_env=True,
+                follow_redirects=True,
+            )
+            owns_client = True
+        else:
+            client = get_external_http_client()
 
         bootstrap_headers = {
-            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Language": accept_language,
             "Cookie": cookie_header,
             "User-Agent": user_agent,
         }
@@ -274,14 +318,34 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
                 "X-Origin": _YOUTUBE_ORIGIN,
             })
 
+        browse_url = f"{_YOUTUBE_ORIGIN}/youtubei/v1/browse"
+        browse_params = {"prettyPrint": "false", "key": api_key}
+        browse_payload = {"context": context, "browseId": _HOME_BROWSE_ID}
         response = await client.post(
-            f"{_YOUTUBE_ORIGIN}/youtubei/v1/browse",
-            params={"prettyPrint": "false", "key": api_key},
+            browse_url,
+            params=browse_params,
             headers=headers,
-            json={"context": context, "browseId": _HOME_BROWSE_ID},
+            json=browse_payload,
             timeout=15.0,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if not authorization or status_code not in {401, 403}:
+                raise
+            logger.info("YouTube 登录凭证失效，回退匿名首页 Feed")
+            client.cookies.clear()
+            headers = _without_authentication(headers)
+            authorization = ""
+            response = await client.post(
+                browse_url,
+                params=browse_params,
+                headers=headers,
+                json=browse_payload,
+                timeout=15.0,
+            )
+            response.raise_for_status()
         videos = _extract_videos(response.json(), max(1, limit))
         feed_kind = "home"
 
@@ -290,11 +354,15 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
         # public search keeps the non-login video source useful while preserving
         # the real Home Feed whenever YouTube supplies one.
         if not videos:
+            if authorization:
+                client.cookies.clear()
+                headers = _without_authentication(headers)
+                authorization = ""
             discovery_response = await client.post(
                 f"{_YOUTUBE_ORIGIN}/youtubei/v1/search",
                 params={"prettyPrint": "false", "key": api_key},
                 headers=headers,
-                json={"context": context, "query": _ANONYMOUS_DISCOVERY_QUERY},
+                json={"context": context, "query": discovery_query},
                 timeout=15.0,
             )
             discovery_response.raise_for_status()
@@ -322,3 +390,9 @@ async def fetch_youtube_home_feed(limit: int = 30) -> dict[str, Any]:
             "videos": [],
             "error": error,
         }
+    finally:
+        if owns_client and client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                logger.debug("关闭 YouTube 独立 HTTP 客户端失败", exc_info=True)

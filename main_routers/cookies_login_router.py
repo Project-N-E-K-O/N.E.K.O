@@ -129,7 +129,12 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 @router.get("/page", response_class=HTMLResponse, summary="凭证管理可视化后台入口")
 async def render_auth_page(request: Request):
     """Credential management page (local access only)."""
-    return templates.TemplateResponse("cookies_login.html", {"request": request})
+    from config import APP_VERSION
+
+    return templates.TemplateResponse("cookies_login.html", {
+        "request": request,
+        "static_asset_version": APP_VERSION,
+    })
 
 # ============ 3. API 核心功能 ============
 
