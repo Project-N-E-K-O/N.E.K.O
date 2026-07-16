@@ -581,6 +581,17 @@ def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
     return results
 
 
+def _http_probe_validation_errors(
+    probes: dict[str, dict[str, Any]],
+) -> list[str]:
+    failed_paths = [
+        path for path, probe in probes.items() if probe.get("status") != 200
+    ]
+    if not failed_paths:
+        return []
+    return ["HTTP route probes failed: " + ", ".join(failed_paths)]
+
+
 def _assert_ports_available(ports: list[int]) -> None:
     busy: list[int] = []
     for port in ports:
@@ -983,6 +994,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
             http_probes = _probe_http_paths(
                 ports[roles.index("main")],
                 args.probe_path,
+            )
+            validation_errors.extend(
+                _http_probe_validation_errors(http_probes)
             )
 
         if args.graceful_shutdown:

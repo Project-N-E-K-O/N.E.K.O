@@ -40,7 +40,7 @@ All environment variables use the `NEKO_` prefix.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEKO_MERGED` | Source: `0`; frozen package: `1` | `1` runs main, memory, and agent HTTP services in one process while preserving their contracts; `0` keeps three service processes. A partial existing backend is never reused: conflicting public and internal ports fall back so one complete new topology starts in isolation. |
+| `NEKO_MERGED` | Source: `0`; frozen package: `1` | `1` runs main, memory, and agent HTTP services in one process while preserving their contracts; `0` keeps three service processes. A partial or mixed existing backend is never reused and forces a three-process launch on isolated fallback ports, even when merged mode would otherwise be selected. |
 
 Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged

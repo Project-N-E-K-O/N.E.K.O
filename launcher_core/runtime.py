@@ -100,6 +100,7 @@ _cleanup_lock = threading.Lock()
 _cleanup_done = False
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
+_partial_or_mixed_existing_backend = False
 DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
     "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
@@ -1417,7 +1418,8 @@ def apply_port_strategy() -> bool | str:
        isolated topology.
     """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
-    global _existing_neko_services
+    global _existing_neko_services, _partial_or_mixed_existing_backend
+    _partial_or_mixed_existing_backend = False
     chosen: dict[str, int] = {}
     chosen_internal: dict[str, int] = {}
     fallback_details: list[dict] = []
@@ -1514,6 +1516,7 @@ def apply_port_strategy() -> bool | str:
     # A partial or mismatched N.E.K.O footprint must not be spliced into a new
     # runtime instance. Move every conflicting public service to a fallback and
     # start a complete topology with one fresh INSTANCE_ID and IPC port plan.
+    _partial_or_mixed_existing_backend = bool(existing_health_by_key)
     _existing_neko_services = set()
     for key, health in existing_health_by_key.items():
         preferred = int(DEFAULT_PORTS[key])
@@ -1953,7 +1956,7 @@ def _select_launcher_mode() -> tuple[str, str]:
     """Select topology while keeping partial existing-service reuse safe."""
     if not _should_use_merged_mode():
         return "multi", "configured_multi"
-    if _existing_neko_services:
+    if _partial_or_mixed_existing_backend or _existing_neko_services:
         return "multi", "partial_existing_services"
     return "merged", "configured_merged"
 

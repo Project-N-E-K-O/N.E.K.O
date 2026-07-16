@@ -178,3 +178,46 @@ def test_http_path_probe_records_status_without_body(monkeypatch):
     assert all(item["status"] == 200 for item in result.values())
     assert all(item["content_type"] == "text/html" for item in result.values())
     assert all("body" not in item for item in result.values())
+
+
+@pytest.mark.unit
+def test_failed_http_path_probe_is_a_cli_failure(monkeypatch, tmp_path):
+    probes = {
+        "/": {"status": 200},
+        "/chat": {"status": 404},
+        "/subtitle": {"status": None, "error": "URLError"},
+    }
+    validation_errors = baseline._http_probe_validation_errors(probes)
+    assert validation_errors == ["HTTP route probes failed: /chat, /subtitle"]
+
+    monkeypatch.setattr(
+        baseline,
+        "_stack",
+        lambda _args: {
+            "scenario": "stack",
+            "http_probes": probes,
+            "validation_errors": validation_errors,
+        },
+    )
+    monkeypatch.setattr(baseline, "_metadata", lambda _args: {})
+    written = []
+    monkeypatch.setattr(
+        baseline,
+        "_write_json",
+        lambda path, payload: written.append((path, payload)),
+    )
+
+    result = baseline.main(
+        [
+            "--output",
+            str(tmp_path / "result.json"),
+            "stack",
+            "--backend-command",
+            '["launcher"]',
+            "--probe-path",
+            "/chat",
+        ]
+    )
+
+    assert result == 1
+    assert written[0][1]["validation_errors"] == validation_errors

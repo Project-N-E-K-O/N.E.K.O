@@ -271,20 +271,101 @@ def test_runtime_config_reload_preserves_negotiated_fallback_ports(monkeypatch):
 
 
 @pytest.mark.unit
-def test_launcher_partial_existing_services_force_multi_mode(monkeypatch):
+@pytest.mark.parametrize("footprint", ["partial", "mixed"])
+def test_launcher_partial_existing_services_force_multi_mode(monkeypatch, footprint):
     from launcher_core import runtime as launcher
 
+    public_ports = {
+        "MAIN_SERVER_PORT": 43111,
+        "MEMORY_SERVER_PORT": 43112,
+        "TOOL_SERVER_PORT": 43115,
+    }
+    internal_ports = {
+        "USER_PLUGIN_SERVER_PORT": 43116,
+        "AGENT_MQ_PORT": 43117,
+        "MAIN_AGENT_EVENT_PORT": 43118,
+    }
+    expected_roles = {
+        "MAIN_SERVER_PORT": "main",
+        "MEMORY_SERVER_PORT": "memory",
+        "TOOL_SERVER_PORT": "agent",
+    }
+    conflicting_keys = (
+        {"MEMORY_SERVER_PORT"}
+        if footprint == "partial"
+        else set(public_ports)
+    )
+    health_by_port = {
+        public_ports[key]: {
+            "service": expected_roles[key],
+            "instance_id": "existing-a" if key != "TOOL_SERVER_PORT" else "existing-b",
+        }
+        for key in conflicting_keys
+    }
+    emitted_events = []
+
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: True)
+    monkeypatch.setattr(launcher, "DEFAULT_PORTS", public_ports)
+    monkeypatch.setattr(launcher, "INTERNAL_DEFAULT_PORTS", internal_ports)
+    for name, port in {**public_ports, **internal_ports}.items():
+        monkeypatch.setenv(f"NEKO_{name}", str(port))
+    for name, port in public_ports.items():
+        monkeypatch.setattr(launcher, name, port)
     monkeypatch.setattr(
         launcher,
-        "_existing_neko_services",
-        {"MEMORY_SERVER_PORT"},
+        "SERVERS",
+        [
+            {"name": "Memory Server", "module": "memory_server", "port": 43112},
+            {"name": "Agent Server", "module": "agent_server", "port": 43115},
+            {"name": "Main Server", "module": "main_server", "port": 43111},
+        ],
     )
+    monkeypatch.setattr(launcher, "_existing_neko_services", set())
+    monkeypatch.setattr(launcher, "_partial_or_mixed_existing_backend", False)
+    monkeypatch.setattr(launcher, "get_hyperv_excluded_ranges", lambda: [])
+    monkeypatch.setattr(
+        launcher,
+        "_is_port_bindable",
+        lambda port: port not in health_by_port,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_classify_port_conflict",
+        lambda _port, _ranges: ("neko", [123]),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "probe_neko_health",
+        lambda port: health_by_port.get(port),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_pick_fallback_port",
+        lambda preferred, _reserved: preferred + 1000,
+    )
+    monkeypatch.setattr(launcher, "_sync_runtime_config_globals", lambda *_args: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda name, payload: emitted_events.append((name, payload)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "report_startup_failure",
+        lambda message: pytest.fail(message),
+    )
+
+    assert launcher.apply_port_strategy() is True
 
     assert launcher._select_launcher_mode() == (
         "multi",
         "partial_existing_services",
     )
+    assert launcher._partial_or_mixed_existing_backend is True
+    assert launcher._existing_neko_services == set()
+    selected = dict(emitted_events)["port_plan"]["selected"]
+    for key in conflicting_keys:
+        assert selected[key] == public_ports[key] + 1000
 
 
 @pytest.mark.unit

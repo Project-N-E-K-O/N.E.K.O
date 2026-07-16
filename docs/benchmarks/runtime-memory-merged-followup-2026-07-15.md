@@ -83,7 +83,7 @@ main/memory/agent process and event-loop fault isolation does not.
 | Packaged Electron/Steam, one launcher owns the full backend | Merged on the Xiao8 server side; packaged restart remains a release gate | Reproducible 206.4 MiB USS saving; `/`, `/chat`, and `/subtitle` keep main port 48911 and the same HTTP/WebSocket contract. |
 | Source development, pytest, debugger, fault injection | Three server | Independent traces and service-level crash isolation are more valuable than the memory saving. |
 | Manual service startup or independent supervisor | Three server | Independent ownership must remain explicit; source mode keeps this default. |
-| Partial or mixed existing-service footprint | Configured topology, but one complete fresh instance on fallback ports | Neither merged nor three-server may splice services from different instance IDs or IPC plans. |
+| Partial or mixed existing-service footprint | Three server on isolated fallback ports | Neither topology may splice services from different instance IDs or IPC plans; process isolation is retained for recovery from the conflicting footprint. |
 | Deployment requiring agent/browser/native failure not to take down chat and memory | Three server | Multi-process mode intentionally treats agent as non-critical; merged has one shared failure domain. |
 | User plugins | Separate plugin processes in both modes | Provider/plugin isolation remains a hard contract and was not changed. |
 
@@ -106,7 +106,7 @@ rollback. The follow-up adds these guards:
    service roles and one shared non-empty instance ID. A partial or mixed
    footprint is never spliced into a new runtime: every conflicting public port
    moves to a fallback, internal IPC ports are planned afresh, and the launcher
-   starts one complete new topology.
+   forces one complete three-process topology.
 3. Uvicorn 0.38's `capture_signals()` and the legacy
    `install_signal_handlers()` path are both disabled per server so only the
    launcher coordinates signals.
