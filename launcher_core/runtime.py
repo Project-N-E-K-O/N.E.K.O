@@ -1480,7 +1480,8 @@ def apply_port_strategy() -> bool | str:
         emit_frontend_event(
             "port_plan",
             {
-                "instance_id": INSTANCE_ID,
+                "instance_id": existing_instance,
+                "launcher_instance_id": INSTANCE_ID,
                 "defaults": DEFAULT_PORTS,
                 "selected": chosen,
                 "internal_defaults": INTERNAL_DEFAULT_PORTS,
@@ -1493,6 +1494,8 @@ def apply_port_strategy() -> bool | str:
         emit_frontend_event(
             "attach_existing",
             {
+                "instance_id": existing_instance,
+                "launcher_instance_id": INSTANCE_ID,
                 "selected": chosen,
                 "existing_instance_id": existing_instance,
                 "message": "Validated complete N.E.K.O backend on default ports",

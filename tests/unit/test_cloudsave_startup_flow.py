@@ -268,6 +268,56 @@ def test_existing_backend_attach_requires_roles_and_one_instance():
 
 
 @pytest.mark.unit
+def test_existing_backend_attach_events_identify_selected_backend(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    health_by_port = {
+        launcher.DEFAULT_PORTS["MAIN_SERVER_PORT"]: {
+            "service": "main",
+            "instance_id": "existing-instance",
+        },
+        launcher.DEFAULT_PORTS["MEMORY_SERVER_PORT"]: {
+            "service": "memory",
+            "instance_id": "existing-instance",
+        },
+        launcher.DEFAULT_PORTS["TOOL_SERVER_PORT"]: {
+            "service": "agent",
+            "instance_id": "existing-instance",
+        },
+    }
+    events = []
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "launcher-instance")
+    monkeypatch.setattr(launcher, "_existing_neko_services", set())
+    monkeypatch.setattr(launcher, "get_hyperv_excluded_ranges", lambda: [])
+    monkeypatch.setattr(launcher, "_is_port_bindable", lambda _port: False)
+    monkeypatch.setattr(
+        launcher,
+        "_classify_port_conflict",
+        lambda _port, _ranges: ("neko", []),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "probe_neko_health",
+        lambda port: health_by_port.get(port),
+    )
+    monkeypatch.setattr(launcher, "_sync_runtime_config_globals", lambda *_args: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda name, payload: events.append((name, payload)),
+    )
+    for key, port in launcher.DEFAULT_PORTS.items():
+        monkeypatch.setenv(f"NEKO_{key}", str(port))
+
+    assert launcher.apply_port_strategy() == "attach"
+
+    payload_by_event = dict(events)
+    assert payload_by_event["port_plan"]["instance_id"] == "existing-instance"
+    assert payload_by_event["port_plan"]["launcher_instance_id"] == "launcher-instance"
+    assert payload_by_event["attach_existing"]["instance_id"] == "existing-instance"
+
+
+@pytest.mark.unit
 def test_start_server_never_reuses_a_partial_existing_service(monkeypatch):
     from launcher_core import runtime as launcher
 
