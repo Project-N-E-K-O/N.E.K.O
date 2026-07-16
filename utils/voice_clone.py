@@ -49,7 +49,6 @@ from utils.tts.providers.minimax import (
     get_minimax_storage_prefix,
     sanitize_minimax_voice_prefix,
 )  # noqa: F401 - intentional compatibility re-exports for existing Clone callers.
-from utils.tts.providers.mimo import MIMO_VOICE_STORAGE_KEY  # noqa: F401 - intentional compatibility re-export.
 
 logger = logging.getLogger(__name__)
 
