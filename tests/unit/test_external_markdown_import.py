@@ -169,6 +169,14 @@ def test_detect_source_format_supports_one_shot_iterables():
     assert detect_source_format(sources) == "hermes"
 
 
+def test_hermes_delimiter_detected_beyond_first_5k_chars():
+    # detect_source_format must scan the whole file for the section-sign, not
+    # just a 5k prefix, or a loose (non-.hermes) Hermes file with a late
+    # delimiter is misclassified as OpenClaw (Codex P2).
+    sources = [MarkdownSourceFile("USER.md", f"{'x' * 6000}\n§\nsecond block")]
+    assert detect_source_format(sources) == "hermes"
+
+
 def test_heading_breadcrumb_cannot_push_candidate_over_entry_limit():
     sources = collect_markdown_files([
         {
@@ -191,3 +199,32 @@ def test_oversized_heading_breadcrumb_is_bounded_in_metadata():
     candidates = build_import_candidates(sources)["candidates"]
     assert candidates
     assert all(len(c["source_section"]) <= MAX_SECTION_CHARS for c in candidates)
+
+
+def test_hermes_daily_under_memories_dir_is_recognized():
+    # Hermes nests daily journals under memories/ (plural); OpenClaw uses
+    # memory/ (singular). Both must classify as daily fact candidates.
+    sources = collect_markdown_files([
+        {"path": ".hermes/memories/2026-07-12.md", "content": "Shipped the importer fix."},
+        {"path": ".hermes/memories/2026-07-13-notes.md", "content": "Reviewed feedback."},
+    ])
+    analysis = build_import_candidates(sources)
+
+    assert analysis["source_format"] == "hermes"
+    daily = [c for c in analysis["candidates"] if c["kind"] == "daily"]
+    assert {c["event_date"] for c in daily} == {"2026-07-12", "2026-07-13"}
+    assert all(c["target"] == "facts" and c["entity"] == "master" for c in daily)
+
+
+def test_oversized_list_item_is_split_not_rejected():
+    # A single list item longer than MAX_ENTRY_CHARS must be split into multiple
+    # entries (each within the limit), not emitted as one oversized candidate
+    # that the memory server's per-entry validation would reject.
+    long_item = "x" * (MAX_ENTRY_CHARS + 500)
+    sources = collect_markdown_files([
+        {"path": "MEMORY.md", "content": f"- {long_item}"},
+    ])
+    candidates = build_import_candidates(sources)["candidates"]
+
+    assert len(candidates) >= 2  # the oversized item was split
+    assert all(len(candidate["text"]) <= MAX_ENTRY_CHARS for candidate in candidates)

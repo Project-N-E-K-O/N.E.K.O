@@ -11,7 +11,7 @@ deterministic, reviewable mapping:
 
 * ``USER.md`` -> budgeted ``master`` persona entries
 * ``SOUL.md`` -> budgeted ``neko`` persona entries
-* ``MEMORY.md`` and ``memory/YYYY-MM-DD[-slug].md`` -> atomic facts
+* ``MEMORY.md`` and daily ``memory/`` or ``memories/YYYY-MM-DD[-slug].md`` -> atomic facts
 
 Both projects use free-form Markdown, so parsing is deliberately permissive:
 headings provide a breadcrumb, list items become individual entries, ordinary
@@ -41,7 +41,7 @@ MAX_ENTRY_CHARS = 8000
 MAX_SECTION_CHARS = 500
 
 _SUPPORTED_ROOT_NAMES = frozenset({"USER.MD", "SOUL.MD", "MEMORY.MD"})
-_DAILY_RE = re.compile(r"^memory/(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
+_DAILY_RE = re.compile(r"^memor(?:y|ies)/(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
 _DAILY_BASENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _LIST_RE = re.compile(r"^\s{0,3}(?:[-+*]|\d+[.)])\s+(.+?)\s*$")
@@ -84,8 +84,9 @@ def _classify_path(path: str) -> tuple[str, str | None] | None:
         return upper.removesuffix(".MD").lower(), None
 
     # Workspaces/profiles are commonly wrapped in one or more archive folders.
+    # OpenClaw nests daily files under memory/, Hermes under memories/.
     lower = normalised.lower()
-    marker = lower.rfind("/memory/")
+    marker = max(lower.rfind("/memory/"), lower.rfind("/memories/"))
     relative = normalised[marker + 1:] if marker >= 0 else normalised
     match = _DAILY_RE.match(relative)
     if match is None and len(parts) == 1:
@@ -160,7 +161,7 @@ def collect_markdown_files(
 
     if not collected:
         raise ExternalMemoryImportError(
-            "No supported USER.md, SOUL.md, MEMORY.md, or memory/YYYY-MM-DD*.md files found"
+            "No supported USER.md, SOUL.md, MEMORY.md, or memory(ies)/YYYY-MM-DD*.md files found"
         )
     return collected
 
@@ -173,8 +174,12 @@ def detect_source_format(files: Iterable[MarkdownSourceFile], requested: str = "
     if requested != "auto":
         raise ExternalMemoryImportError("source_format must be auto, openclaw, or hermes")
     paths = [item.path.lower() for item in source_files]
-    contents = "\n".join(item.content[:5000] for item in source_files)
-    if any(".hermes" in path or "/memories/" in path for path in paths) or "\n§\n" in contents:
+    # Scan each file's full content for the section-sign, not just a 5k prefix:
+    # loose (non-.hermes) Hermes uploads can carry the first delimiter well past
+    # 5k and would otherwise be misclassified as OpenClaw (Codex P2).
+    if any(".hermes" in path or "/memories/" in path for path in paths) or any(
+        "\n§\n" in item.content for item in source_files
+    ):
         return "hermes"
     return "openclaw"
 
@@ -248,8 +253,12 @@ def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list
             if item:
                 flush()
                 cleaned = _clean_fragment(item.group(1))
-                if cleaned:
-                    entries.append({"section": " / ".join(headings), "text": cleaned})
+                # Mirror the paragraph path: a single list item can exceed
+                # MAX_ENTRY_CHARS, so split it instead of emitting an oversized
+                # entry the memory server would later reject.
+                for piece in _split_long_fragment(cleaned):
+                    if piece:
+                        entries.append({"section": " / ".join(headings), "text": piece})
                 continue
             if not line.strip():
                 flush()
