@@ -155,9 +155,12 @@ class ExternalFusionMixin:
             ]
 
         # ── Phase 2 (unlocked): 融合「已存桶 + 新候选」（几十秒，绝不持锁）──
-        # 新候选放前面：_allm_call_fusion 按 token 上限从尾部截断，优先保住本次
-        # 导入素材；已存桶是既有 digest，边界情形被截也只是少叠加一点旧内容。
-        fold_input = list(cands) + [{"text": t} for t in existing_texts]
+        # 已存桶放前面：_allm_call_fusion 按 token 上限从**尾部**截断，把已累积的多源
+        # digest 放头部保证不被截掉——否则一次超大新导入会把旧源挤出融合输入，而
+        # Phase 3 又会清空整个桶、按只见过新源的 LLM 输出重写，静默抹掉旧源（Codex
+        # P2）。已存桶被 per-entity 预算钉死(≤budget≪输入上限)，恒有余量给新候选；
+        # 真溢出时被截的是本次新素材尾部，而非已累积状态。
+        fold_input = [{"text": t} for t in existing_texts] + list(cands)
         fused = await self._allm_call_fusion(name, entity, fold_input, budget)
         if fused is None:
             raise ExternalMemoryFusionError(f"persona fusion LLM failed: {name}/{entity}")
@@ -283,17 +286,25 @@ class ExternalFusionMixin:
         )
 
         set_call_type("persona_external_fusion")
-        api_config = self._config_manager.get_model_api_config("correction")
-        llm = await create_chat_llm_async(
-            api_config["model"],
-            api_config["base_url"],
-            api_config["api_key"],
-            timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
-            max_retries=0,
-            max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
-            extra_body=None,
-            provider_type=api_config.get("provider_type"),
-        )
+        # 客户端构造（含 correction 模型配置读取）也可能抛（配置非法等）；必须与
+        # ainvoke 一样收敛成 None，否则异常绕过 ExternalMemoryFusionError——在第二个
+        # entity 上（第一个已落盘）会让端点返 generic 500 而非 external_import_partial，
+        # 丢掉前端重试所需的 partial 元数据（Codex P2）。
+        try:
+            api_config = self._config_manager.get_model_api_config("correction")
+            llm = await create_chat_llm_async(
+                api_config["model"],
+                api_config["base_url"],
+                api_config["api_key"],
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
+                max_retries=0,
+                max_completion_tokens=LLM_OUTPUT_GUARD_MAX_TOKENS,
+                extra_body=None,
+                provider_type=api_config.get("provider_type"),
+            )
+        except Exception as exc:
+            logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
+            return None
         try:
             # noqa 理由：cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
             resp = await llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET

@@ -219,9 +219,15 @@ async def test_second_source_folds_existing_bucket_and_accumulates():
     assert harness.llm_call_count == 2
 
     # The 2nd fusion folded BOTH the existing digest text AND the new candidates.
-    second_input = {c["text"] for c in harness.fusion_inputs[1]}
+    second_list = [c["text"] for c in harness.fusion_inputs[1]]
+    second_input = set(second_list)
     assert "Digest after fold." in second_input   # existing bucket carried in
     assert {"b1", "b2"} <= second_input           # new source's candidates
+    # Existing digest is fed BEFORE the new candidates so tail-truncation on a
+    # large re-fold can never drop the already-accumulated persona (Codex P2).
+    assert second_list.index("Digest after fold.") < min(
+        second_list.index("b1"), second_list.index("b2"),
+    )
 
     # Bucket rewritten to the merged digest; folded set names both sources now.
     facts = harness.persona["master"]["facts"]
@@ -278,3 +284,26 @@ async def test_concurrent_import_change_triggers_cas_and_preserves_state():
     assert "concurrently imported" in texts
     assert "my digest" not in texts
     assert harness.save_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fusion_llm_client_construction_failure_returns_none():
+    # A bad correction-model config / client construction must be converted to
+    # None (→ the caller raises ExternalMemoryFusionError → external_import_partial),
+    # not propagate as a raw exception that bypasses the partial-import contract
+    # and surfaces as a generic 500 on the second entity (Codex P2).
+    class _FailingConfigManager:
+        async def aget_character_data(self):
+            return (None, None, None, None, {}, None, None, None, None)
+
+        def get_model_api_config(self, _tier):
+            raise RuntimeError("invalid correction model config")
+
+    class _CallHarness(ExternalFusionMixin):
+        def __init__(self):
+            self._config_manager = _FailingConfigManager()
+
+    result = await _CallHarness()._allm_call_fusion(
+        "Neko", "master", [{"text": "some candidate"}], 600,
+    )
+    assert result is None
