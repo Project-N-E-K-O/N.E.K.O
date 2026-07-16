@@ -3866,6 +3866,12 @@
     "music": {
         "unknownTrack": "不明な曲",
         "unknownArtist": "不明なアーティスト",
+        "unknownSource": "不明な音源",
+        "volumeControl": "音量",
+        "closePlayer": "プレイヤーを閉じる",
+        "trackTooLong": "この音源は音楽おすすめの長さ制限を超えています",
+        "loadTimeout": "音楽の読み込みがタイムアウトしました",
+        "loading": "読み込み中",
         "play": "再生",
         "pause": "一時停止",
         "playing": "再生中",

@@ -3866,6 +3866,12 @@
     "music": {
         "unknownTrack": "Pista desconocida",
         "unknownArtist": "Artista desconocido",
+        "unknownSource": "Fuente desconocida",
+        "volumeControl": "Volumen",
+        "closePlayer": "Cerrar reproductor",
+        "trackTooLong": "Esta pista supera el límite de duración para recomendaciones",
+        "loadTimeout": "Se agotó el tiempo de carga de la música",
+        "loading": "Cargando",
         "play": "Jugar",
         "pause": "Pausar",
         "playing": "Jugando",

@@ -3866,6 +3866,12 @@
     "music": {
         "unknownTrack": "未知曲目",
         "unknownArtist": "未知艺术家",
+        "unknownSource": "未知音源",
+        "volumeControl": "音量",
+        "closePlayer": "关闭播放器",
+        "trackTooLong": "该音频超过音乐推荐的时长限制",
+        "loadTimeout": "音乐加载超时",
+        "loading": "加载中",
         "play": "播放",
         "pause": "暂停",
         "playing": "播放中",
