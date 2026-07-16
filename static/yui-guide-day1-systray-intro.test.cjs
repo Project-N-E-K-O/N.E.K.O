@@ -122,7 +122,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
     /box-shadow/
   );
   assert.match(yuiGuideCssSource, /@media \(max-width: 620px\)/);
-  assert.match(launcherSpecSource, /add_data\('static\/assets', 'static\/assets'\)/);
+  assert.match(launcherSpecSource, /add_data\('static', 'static'\)/);
 
   const zhCn = JSON.parse(zhCnLocaleSource);
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');
