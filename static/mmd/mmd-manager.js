@@ -254,11 +254,17 @@ class MMDManager {
      * @param {'idle'|'dance'} mode - 动画模式，影响视线跟踪权重
      */
     playAnimation(mode = 'idle') {
+        // 供空闲低频 governor 判定：idle 循环动画按 Live2D 先例以地板帧率渲染，
+        // 只有非 idle 播放（dance 等）才算需要满帧的活动
+        this._currentAnimationMode = mode;
         if (this.cursorFollow) {
             this.cursorFollow.setAnimationMode(mode);
         }
         if (this.animationModule) {
             this.animationModule.play();
+        }
+        if (mode !== 'idle' && this.core && typeof this.core._boostInteractiveFPS === 'function') {
+            this.core._boostInteractiveFPS();
         }
     }
 
@@ -269,6 +275,7 @@ class MMDManager {
     }
 
     stopAnimation() {
+        this._currentAnimationMode = null;
         if (this.animationModule) {
             this.animationModule.stop();
         }
@@ -440,6 +447,11 @@ class MMDManager {
 
     pauseRendering() {
         this._shouldRender = false;
+        // 空闲低频模式下 _animationFrameId 为 null（interval 驱动），
+        // 必须显式退出该模式（不复跑），否则暂停对 interval 无效
+        if (this.core && typeof this.core._exitIdleTickMode === 'function') {
+            this.core._exitIdleTickMode(false);
+        }
         if (this._animationFrameId) {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;
