@@ -655,6 +655,74 @@ async def test_elevenlabs_design_endpoint_preserves_upstream_4xx(monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(("provider", "expected_code"), [
+    ("minimax", "MINIMAX_API_KEY_MISSING"),
+    ("minimax_intl", "MINIMAX_API_KEY_MISSING"),
+    ("mimo", "MIMO_API_KEY_MISSING"),
+])
+async def test_voice_design_missing_api_key_matches_voice_clone_contract(
+    monkeypatch, provider, expected_code,
+):
+    from main_routers.characters_router import voice_design as cr
+
+    class _CM:
+        def get_tts_api_key(self, requested_provider):
+            assert requested_provider == provider
+            return ""
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+
+    response = await cr.voice_design(_JsonRequest({
+        "provider": provider,
+        "prefix": "aria",
+        "voice_prompt": "a warm clear voice",
+        "ref_language": "en",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 400
+    assert body["code"] == expected_code
+
+
+@pytest.mark.unit
+async def test_reserved_elevenlabs_design_create_uses_async_voice_storage(monkeypatch):
+    from main_routers.characters_router import voice_design as cr
+
+    saved = {}
+
+    class _CM:
+        def get_tts_api_key(self, provider):
+            assert provider == "elevenlabs"
+            return "elevenlabs-key"
+
+        async def asave_voice_for_api_key(self, storage_key, voice_id, voice_data):
+            saved.update(storage_key=storage_key, voice_id=voice_id, voice_data=voice_data)
+
+    async def fake_base_url(_cm):
+        return "https://api.elevenlabs.io"
+
+    async def fake_create(**kwargs):
+        assert kwargs["generated_voice_id"] == "generated-voice-1"
+        return "saved-voice-1"
+
+    monkeypatch.setattr(cr, "get_config_manager", lambda: _CM())
+    monkeypatch.setattr(cr, "_get_elevenlabs_base_url", fake_base_url)
+    monkeypatch.setattr(cr, "_elevenlabs_create_voice_from_preview", fake_create)
+
+    response = await cr.voice_design_create(_JsonRequest({
+        "description": "a warm clear young adult narrator voice",
+        "generated_voice_id": "generated-voice-1",
+        "name": "aria",
+    }))
+    body = json.loads(response.body)
+
+    assert response.status_code == 200
+    assert body["voice_id"] == "saved-voice-1"
+    assert saved["voice_id"] == "saved-voice-1"
+    assert saved["voice_data"]["source"] == "design"
+
+
+@pytest.mark.unit
 async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
     from main_routers.characters_router import voice_design as cr
 

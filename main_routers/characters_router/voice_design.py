@@ -207,8 +207,9 @@ async def voice_design(request: Request):
             api_key = (config_manager.get_tts_api_key(provider) or '').strip()
             if not api_key:
                 return JSONResponse({
-                    'error': 'TTS_AUDIO_API_KEY_MISSING',
-                    'code': 'TTS_AUDIO_API_KEY_MISSING',
+                    # Keep the Design response contract aligned with Voice Clone.
+                    'error': 'MINIMAX_API_KEY_MISSING',
+                    'code': 'MINIMAX_API_KEY_MISSING',
                     'provider': provider,
                 }, status_code=400)
             base_url = get_minimax_base_url(provider)
@@ -273,8 +274,9 @@ async def voice_design(request: Request):
             api_key = (config_manager.get_tts_api_key('mimo') or '').strip()
             if not api_key:
                 return JSONResponse({
-                    'error': 'TTS_AUDIO_API_KEY_MISSING',
-                    'code': 'TTS_AUDIO_API_KEY_MISSING',
+                    # Keep the Design response contract aligned with Voice Clone.
+                    'error': 'MIMO_API_KEY_MISSING',
+                    'code': 'MIMO_API_KEY_MISSING',
                     'provider': provider,
                 }, status_code=400)
             provider_label = 'MiMo'
@@ -513,7 +515,7 @@ async def voice_design_create(request: Request):
     }
     storage_key = f'__ELEVENLABS__{api_key[-8:]}'
     try:
-        config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
+        await config_manager.asave_voice_for_api_key(storage_key, voice_id, voice_data)
     except Exception as save_error:
         logger.error(f"保存 ElevenLabs 设计音色到音色库失败: {save_error}")
         return JSONResponse({
