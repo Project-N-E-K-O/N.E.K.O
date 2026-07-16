@@ -1317,6 +1317,103 @@ async def test_soniox_manual_finalize_waits_for_fin(monkeypatch) -> None:
     await _stop_worker(task, requests, responses)
 
 
+async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
+    monkeypatch,
+) -> None:
+    finalize_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal finalize_count
+        if not isinstance(payload, str):
+            return
+        if json.loads(payload).get("type") != "finalize":
+            return
+        finalize_count += 1
+        if finalize_count == 2:
+            await ws.server_send(
+                {
+                    "tokens": [
+                        {"text": "second", "is_final": True},
+                        {"text": "<fin>", "is_final": True},
+                    ]
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(soniox.websockets, "connect", _FakeConnector(websocket))
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+
+    first_audio = b"\x10\x10"
+    second_audio = b"\x20\x20"
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=3,
+            buffer_epoch=4,
+            utterance_id=5,
+            audio=first_audio,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit", generation=3, buffer_epoch=4, utterance_id=5
+        )
+    )
+    await _wait_until(lambda: finalize_count == 1)
+
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=8,
+            buffer_epoch=9,
+            utterance_id=6,
+            audio=second_audio,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit", generation=8, buffer_epoch=9, utterance_id=6
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert second_audio not in websocket.sent
+
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<fin>", "is_final": True},
+            ]
+        }
+    )
+    first = await _next_event(responses, "final")
+    assert (first.generation, first.buffer_epoch, first.utterance_id) == (3, 4, 5)
+
+    await _wait_until(lambda: finalize_count == 2)
+    assert second_audio in websocket.sent
+    second = await _next_event(responses, "final")
+    assert (second.generation, second.buffer_epoch, second.utterance_id) == (8, 9, 6)
+    assert second.text == "second"
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=8,
+        buffer_epoch=9,
+        utterance_id=7,
+    )
+
+
 @pytest.mark.parametrize("disconnect_at", ["before_send", "send_raises", "after_send"])
 async def test_soniox_manual_reconnect_replays_pending_finalize(
     monkeypatch, disconnect_at: str

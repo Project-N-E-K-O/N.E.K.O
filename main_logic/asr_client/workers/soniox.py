@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -160,6 +161,9 @@ async def soniox_asr_worker(
     audio_bytes_sent = 0
     websocket = None
     pending_finalize: _PendingFinalize | None = None
+    deferred_requests: deque[_AsrWorkerRequest] = deque()
+    finalize_completed = asyncio.Event()
+    finalize_completed.set()
     worker_started_at = time.monotonic()
 
     async def emit_error(code: str, message: str) -> None:
@@ -223,8 +227,14 @@ async def soniox_asr_worker(
         nonlocal pending_finalize, reconnect_attempted
         if state.completed:
             return
-        had_pending_finalize = pending_finalize is not None
+        completion_identity = pending_finalize
+        had_pending_finalize = completion_identity is not None
+        if completion_identity is not None:
+            state.generation = completion_identity.generation
+            state.buffer_epoch = completion_identity.buffer_epoch
+            state.utterance_id = completion_identity.utterance_id
         pending_finalize = None
+        finalize_completed.set()
         text = "".join(state.final_tokens).strip()
         if not text:
             if (
@@ -343,22 +353,76 @@ async def soniox_asr_worker(
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
         nonlocal pending_finalize
         while True:
-            try:
-                request = await asyncio.wait_for(
-                    request_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue, not queue.Queue
-                    timeout=_KEEPALIVE_SECONDS,
+            if pending_finalize is None and deferred_requests:
+                request = deferred_requests.popleft()
+            elif pending_finalize is not None and deferred_requests:
+                request_task = asyncio.create_task(
+                    request_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue
                 )
-            except asyncio.TimeoutError:
-                if (
-                    time.monotonic() - connected_at >= _SAFE_ROTATION_SECONDS
-                    and not replay_audio
-                ):
-                    return "rotate"
-                await connection.send(json.dumps({"type": "keepalive"}))
-                continue
+                finalized_task = asyncio.create_task(finalize_completed.wait())
+                done, pending = await asyncio.wait(
+                    {request_task, finalized_task},
+                    timeout=_KEEPALIVE_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if request_task in done:
+                    request = request_task.result()
+                    if request.kind in {"audio", "commit"}:
+                        deferred_requests.append(request)
+                        finalized_task.cancel()
+                        await asyncio.gather(
+                            finalized_task, return_exceptions=True
+                        )
+                        continue
+                elif finalized_task in done:
+                    request_task.cancel()
+                    await asyncio.gather(request_task, return_exceptions=True)
+                    continue
+                else:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    await connection.send(json.dumps({"type": "keepalive"}))
+                    continue
+                finalized_task.cancel()
+                await asyncio.gather(finalized_task, return_exceptions=True)
+            else:
+                try:
+                    request = await asyncio.wait_for(
+                        request_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue
+                        timeout=_KEEPALIVE_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    if (
+                        time.monotonic() - connected_at >= _SAFE_ROTATION_SECONDS
+                        and not replay_audio
+                    ):
+                        return "rotate"
+                    await connection.send(json.dumps({"type": "keepalive"}))
+                    continue
+            request_deferred = False
             try:
+                request_utterance_id = (
+                    request.utterance_id
+                    if request.utterance_id is not None
+                    else state.utterance_id
+                )
+                request_identity = _PendingFinalize(
+                    generation=request.generation,
+                    buffer_epoch=request.buffer_epoch,
+                    utterance_id=request_utterance_id,
+                )
+                if (
+                    pending_finalize is not None
+                    and request.kind in {"audio", "commit"}
+                    and request_identity != pending_finalize
+                ):
+                    deferred_requests.append(request)
+                    request_deferred = True
+                    continue
                 state.generation = request.generation
                 state.buffer_epoch = request.buffer_epoch
+                state.utterance_id = request_utterance_id
                 if request.kind == "audio":
                     if request.audio:
                         if state.first_audio_at is None:
@@ -380,20 +444,29 @@ async def soniox_asr_worker(
                     pending_finalize = _PendingFinalize(
                         generation=request.generation,
                         buffer_epoch=request.buffer_epoch,
-                        utterance_id=request.utterance_id,
+                        utterance_id=request_utterance_id,
                     )
+                    finalize_completed.clear()
                     await connection.send(json.dumps({"type": "finalize"}))
                     continue
                 if request.kind == "clear":
                     pending_finalize = None
+                    finalize_completed.set()
+                    while deferred_requests:
+                        deferred_requests.popleft()
+                        request_queue.task_done()
                     replay_audio.clear()
                     state.reset_transport(
                         generation=request.generation,
                         buffer_epoch=request.buffer_epoch,
                     )
+                    state.utterance_id = request_utterance_id
                     return "reset"
                 if request.kind == "shutdown":
                     intentional_shutdown = True
+                    while deferred_requests:
+                        deferred_requests.popleft()
+                        request_queue.task_done()
                     await connection.send(b"")
                     return "shutdown"
                 await emit_error(
@@ -402,7 +475,8 @@ async def soniox_asr_worker(
                 )
                 return "failed"
             finally:
-                request_queue.task_done()
+                if not request_deferred:
+                    request_queue.task_done()
 
     try:
         while True:

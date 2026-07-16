@@ -21,6 +21,7 @@ async def test_receive_loop_dispatches_non_created_events_after_stale_filter():
     client.ws = AsyncMock()
     client.ws.__aiter__.return_value = [
         json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        json.dumps({"type": "response.done", "response": {"id": "resp-stale"}}),
         json.dumps({"type": "response.done", "response": {"id": "resp-1"}}),
     ]
 
@@ -368,6 +369,9 @@ async def test_item_ack_requires_exact_user_item_id():
     )
     result = await ticket.done
     assert result.item_acknowledged is True
+
+
+@pytest.mark.asyncio
 async def test_paused_precreated_proactive_yields_to_completed_user_turn():
     sent = []
     arbiter = None
@@ -395,6 +399,52 @@ async def test_paused_precreated_proactive_yields_to_completed_user_turn():
     await user.done
     await proactive.done
     assert [event["event_id"] for event in sent] == ["user", "proactive"]
+
+
+@pytest.mark.asyncio
+async def test_external_text_turn_rejects_gemini_before_creating_arbiter():
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = True
+    client._response_arbiter = None
+
+    with pytest.raises(RuntimeError, match="Gemini"):
+        await client.submit_external_text_turn("hello", turn_id="turn-gemini")
+
+    assert client._response_arbiter is None
+
+
+@pytest.mark.asyncio
+async def test_normal_close_fails_pending_response_ticket_immediately():
+    class FakeSocket:
+        def __init__(self):
+            self.sent = []
+            self.closed = False
+
+        async def send(self, payload):
+            self.sent.append(payload)
+
+        async def close(self):
+            self.closed = True
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+    )
+    socket = FakeSocket()
+    client.ws = socket
+    ticket = await client._response_arbiter.enqueue(source="pending-on-close")
+    await ticket.sent
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-close"}}
+    )
+
+    await client.close()
+
+    with pytest.raises(ConnectionError, match="closed"):
+        await asyncio.wait_for(ticket.done, timeout=0.05)
+    assert socket.closed is True
 
 
 @pytest.mark.asyncio
