@@ -46,6 +46,9 @@ _DAILY_BASENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNO
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _LIST_RE = re.compile(r"^\s{0,3}(?:[-+*]|\d+[.)])\s+(.+?)\s*$")
 _FIELD_RE = re.compile(r"^\*{0,2}([^:*]{1,80})\*{0,2}\s*:\s*(.+)$")
+# Hermes section-sign delimiter. Shared by auto-detection and the splitter so
+# the two never disagree on what counts as a delimiter (indentation, boundaries).
+_HERMES_DELIM_RE = re.compile(r"(?m)^\s*§\s*$")
 _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("role_marker", re.compile(r"(?im)^\s*(?:system|developer|assistant|user)\s*[:：]")),
     ("chatml_token", re.compile(r"<\|(?:im_start|im_end|endoftext)\|>", re.IGNORECASE)),
@@ -178,7 +181,7 @@ def detect_source_format(files: Iterable[MarkdownSourceFile], requested: str = "
     # loose (non-.hermes) Hermes uploads can carry the first delimiter well past
     # 5k and would otherwise be misclassified as OpenClaw (Codex P2).
     if any(".hermes" in path or "/memories/" in path for path in paths) or any(
-        "\n§\n" in item.content for item in source_files
+        _HERMES_DELIM_RE.search(item.content) for item in source_files
     ):
         return "hermes"
     return "openclaw"
@@ -209,14 +212,34 @@ def _split_long_fragment(text: str) -> list[str]:
     return [item for item in out if item]
 
 
+def _is_fence_line(line: str) -> bool:
+    stripped = line.lstrip()
+    return stripped.startswith("```") or stripped.startswith("~~~")
+
+
+def _strip_fenced_code(text: str) -> str:
+    """Drop fenced code blocks (``` / ~~~) from a text run, mirroring the parser's
+    fenced-line skipping — so a pasted script/log inside a Hermes ``§`` block is
+    not imported as a memory candidate."""
+    out: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if _is_fence_line(line):
+            fenced = not fenced
+            continue
+        if not fenced:
+            out.append(line)
+    return "\n".join(out)
+
+
 def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list[dict[str, str]]:
     """Split free Markdown into ``{section, text}`` entries."""
-    if hermes_delimiter and re.search(r"(?m)^\s*§\s*$", text):
-        blocks = re.split(r"(?m)^\s*§\s*$", text)
+    if hermes_delimiter and _HERMES_DELIM_RE.search(text):
+        blocks = _HERMES_DELIM_RE.split(text)
         return [
             {"section": "", "text": piece}
             for block in blocks
-            for piece in _split_long_fragment(_clean_fragment(block))
+            for piece in _split_long_fragment(_clean_fragment(_strip_fenced_code(block)))
             if piece
         ]
 
@@ -236,7 +259,7 @@ def split_markdown_entries(text: str, *, hermes_delimiter: bool = False) -> list
 
     for raw_line in text.splitlines():
         line = raw_line.rstrip()
-        if line.lstrip().startswith("```") or line.lstrip().startswith("~~~"):
+        if _is_fence_line(line):
             fenced = not fenced
             continue
         if fenced:

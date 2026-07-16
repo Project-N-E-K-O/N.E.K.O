@@ -228,3 +228,23 @@ def test_oversized_list_item_is_split_not_rejected():
 
     assert len(candidates) >= 2  # the oversized item was split
     assert all(len(candidate["text"]) <= MAX_ENTRY_CHARS for candidate in candidates)
+
+
+def test_hermes_delimiter_detection_matches_splitter_regex():
+    # Detection must use the same delimiter regex as the splitter: a § with
+    # surrounding whitespace must still classify as Hermes, or the parser runs
+    # with hermes_delimiter=False and merges sections into one item (Codex P2).
+    sources = [MarkdownSourceFile("USER.md", "first\n § \nsecond")]
+    assert detect_source_format(sources) == "hermes"
+
+
+def test_hermes_blocks_strip_fenced_code():
+    # A pasted script/log inside ``` fences in a Hermes § block must not be
+    # imported as a candidate — matching the parser's documented code filtering (Codex P2).
+    content = "User prefers dark mode\n```sh\nrm -rf /\n```\n§\nSecond note"
+    sources = collect_markdown_files([{"path": ".hermes/USER.md", "content": content}])
+    analysis = build_import_candidates(sources)
+
+    assert analysis["source_format"] == "hermes"
+    assert not any("rm -rf" in c["text"] for c in analysis["candidates"])
+    assert any("dark mode" in c["text"] for c in analysis["candidates"])
