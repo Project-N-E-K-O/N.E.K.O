@@ -172,6 +172,11 @@ def _reload_runtime_config_from_env() -> None:
     """
     global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 
+    # ``config`` is a compatibility facade that re-exports values from the cached
+    # ``config.network`` submodule. Refresh the source module first so reloading
+    # the facade cannot restore pre-negotiation ports over launcher fallbacks.
+    network_config = importlib.import_module("config.network")
+    importlib.reload(network_config)
     reloaded = importlib.reload(config_module)
     INSTANCE_ID = str(reloaded.INSTANCE_ID)
     MAIN_SERVER_PORT = int(reloaded.MAIN_SERVER_PORT)

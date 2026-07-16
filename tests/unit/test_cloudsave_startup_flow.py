@@ -224,6 +224,53 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
 
 
 @pytest.mark.unit
+def test_runtime_config_reload_preserves_negotiated_fallback_ports(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    network_config = launcher.importlib.import_module("config.network")
+    selected_ports = {
+        "MAIN_SERVER_PORT": 53111,
+        "MEMORY_SERVER_PORT": 53112,
+        "TOOL_SERVER_PORT": 53115,
+        "USER_PLUGIN_SERVER_PORT": 53116,
+        "AGENT_MQ_PORT": 53117,
+        "MAIN_AGENT_EVENT_PORT": 53118,
+    }
+    stale_ports = {name: port - 1000 for name, port in selected_ports.items()}
+
+    for module in (network_config, launcher.config_module):
+        for name, port in stale_ports.items():
+            monkeypatch.setattr(module, name, port)
+        monkeypatch.setattr(module, "INSTANCE_ID", "stale-instance")
+        monkeypatch.setattr(module, "USER_PLUGIN_BASE", "http://127.0.0.1:52116")
+        monkeypatch.setattr(module, "AUTOSTART_ALLOWED_ORIGINS", ())
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "stale-instance")
+    monkeypatch.setattr(launcher, "MAIN_SERVER_PORT", stale_ports["MAIN_SERVER_PORT"])
+    monkeypatch.setattr(launcher, "MEMORY_SERVER_PORT", stale_ports["MEMORY_SERVER_PORT"])
+    monkeypatch.setattr(launcher, "TOOL_SERVER_PORT", stale_ports["TOOL_SERVER_PORT"])
+    monkeypatch.setenv("NEKO_INSTANCE_ID", "fallback-instance")
+    for name, port in selected_ports.items():
+        monkeypatch.setenv(f"NEKO_{name}", str(port))
+
+    launcher._reload_runtime_config_from_env()
+
+    for module in (network_config, launcher.config_module):
+        for name, port in selected_ports.items():
+            assert getattr(module, name) == port
+        assert module.INSTANCE_ID == "fallback-instance"
+        assert module.USER_PLUGIN_BASE == "http://127.0.0.1:53116"
+        assert f"http://127.0.0.1:{selected_ports['MAIN_SERVER_PORT']}" in (
+            module.AUTOSTART_ALLOWED_ORIGINS
+        )
+
+    assert launcher.INSTANCE_ID == "fallback-instance"
+    assert launcher.MAIN_SERVER_PORT == selected_ports["MAIN_SERVER_PORT"]
+    assert launcher.MEMORY_SERVER_PORT == selected_ports["MEMORY_SERVER_PORT"]
+    assert launcher.TOOL_SERVER_PORT == selected_ports["TOOL_SERVER_PORT"]
+
+
+@pytest.mark.unit
 def test_launcher_partial_existing_services_force_multi_mode(monkeypatch):
     from launcher_core import runtime as launcher
 
