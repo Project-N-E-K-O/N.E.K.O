@@ -660,11 +660,30 @@ class _RealtimeAsrSessionImpl:
         self._utterance_has_audio = False
         self._reset_resampler()
         if self._voice_turn_adapter is not None:
-            await self._voice_turn_adapter.reset(
-                generation=self._generation,
-                buffer_epoch=self._buffer_epoch,
-                utterance_id=self._utterance_id,
+            adapter = self._voice_turn_adapter
+            next_generation = self._generation
+            next_buffer_epoch = self._buffer_epoch
+            next_utterance_id = self._utterance_id
+
+            async def reset_voice_turn() -> None:
+                try:
+                    await adapter.reset(
+                        generation=next_generation,
+                        buffer_epoch=next_buffer_epoch,
+                        utterance_id=next_utterance_id,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("ASR voice turn reset failed after commit")
+
+            asyncio.create_task(
+                reset_voice_turn(), name="asr-voice-turn-reset-after-commit"
             )
+            # Let reset enqueue behind the audio that belongs to the completed
+            # utterance without waiting for model/VAD work to drain. This keeps
+            # explicit commit responsive while preserving FIFO identity order.
+            await asyncio.sleep(0)
 
     async def _run_worker(self) -> None:
         assert self._request_queue is not None
@@ -770,6 +789,20 @@ class _RealtimeAsrSessionImpl:
                     self._utterance_order.append(key)
             return False
         if event.kind == "partial":
+            callback = getattr(self, "_on_partial_transcript", None)
+            text = event.text.strip()
+            if (
+                callback is not None
+                and text
+                and self._state is _SessionState.READY
+                and event.buffer_epoch == self._buffer_epoch
+            ):
+                try:
+                    await callback(text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("ASR partial callback failed")
             return False
         if event.kind == "final":
             if event.utterance_id is None:

@@ -8,7 +8,12 @@ import time
 from typing import Any
 
 from main_logic import core as _core_facade
-from main_logic.asr_client import create_asr_session
+from main_logic.asr_client import (
+    _attach_partial_callback,
+    _create_core_follow_asr_session,
+    _resolve_asr_selection,
+    create_asr_session,
+)
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 
@@ -68,17 +73,21 @@ class AsrRuntimeMixin:
             return
 
         route = CORE_ASR_ROUTES.get(core_type)
+        selection = _resolve_asr_selection(core_type) if route is not None else None
         # Qwen Realtime's public WebSocket protocol accepts microphone audio
         # turns, but not external user-role text turns.  Sending an ASR final
         # through conversation.item.create is silently ignored by the current
         # service, so keep native Omni audio instead of reporting a false
         # independent-ASR success.  qwen_intl maps to the same provider key.
-        if route is None or route.provider_key in {"free", "qwen"}:
+        if (
+            route is None
+            or route.provider_key == "free"
+        ):
             await self._send_asr_status("ASR_INDEPENDENT_UNAVAILABLE", core_type or "unknown")
             return
 
         epoch = self._asr_session_epoch
-        provider = route.provider_key
+        provider = selection.provider_key
 
         async def on_final(text: str) -> None:
             await self._handle_independent_asr_final(text, epoch, provider)
@@ -102,7 +111,35 @@ class AsrRuntimeMixin:
                 on_status_message=on_status,
                 on_speech_activity=on_activity,
             )
-            await asr_session.connect()
+            _attach_partial_callback(
+                asr_session,
+                lambda text: self._send_independent_asr_preview(text, epoch),
+            )
+            try:
+                await asr_session.connect()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if provider != "soniox" or self._asr_received_audio:
+                    raise
+                try:
+                    await asr_session.close()
+                except Exception:
+                    pass
+                asr_session = None
+                provider = route.provider_key
+                asr_session = _create_core_follow_asr_session(
+                    core_type,
+                    on_input_transcript=on_final,
+                    on_connection_error=on_error,
+                    on_status_message=on_status,
+                    on_speech_activity=on_activity,
+                )
+                _attach_partial_callback(
+                    asr_session,
+                    lambda text: self._send_independent_asr_preview(text, epoch),
+                )
+                await asr_session.connect()
             if epoch != self._asr_session_epoch:
                 await asr_session.close()
                 return
@@ -239,17 +276,48 @@ class AsrRuntimeMixin:
         self._asr_turn_prepared = True
         session_ref = self.session
         handle_interruption = getattr(session_ref, "handle_interruption", None)
-        if callable(handle_interruption):
-            try:
+        try:
+            ensure_arbiter = getattr(session_ref, "_ensure_response_arbiter", None)
+            if callable(ensure_arbiter) and not getattr(
+                session_ref, "_is_gemini", False
+            ):
+                arbiter = ensure_arbiter()
+                arbiter.pause_dispatch()
+                await arbiter.cancel_current()
+            if callable(handle_interruption):
                 await handle_interruption()
-            except Exception:
-                logger.warning("[%s] independent ASR interruption failed", self.lanlan_name)
+        except Exception:
+            logger.warning("[%s] independent ASR interruption failed", self.lanlan_name)
         if epoch != self._asr_session_epoch or session_ref is not self.session:
             return
         try:
             await self.handle_new_message()
         except Exception:
             logger.warning("[%s] independent ASR turn preparation failed", self.lanlan_name)
+
+    async def _send_independent_asr_preview(self, text: str, epoch: int) -> None:
+        """Send display-only ASR partials without writing conversation history."""
+
+        clean = str(text or "").strip()
+        if not clean or epoch != self._asr_session_epoch:
+            return
+        websocket = getattr(self, "websocket", None)
+        send_json = getattr(websocket, "send_json", None)
+        if not callable(send_json):
+            return
+        turn_id = str(
+            getattr(self, "current_speech_id", None) or f"asr-preview-{epoch}"
+        )
+        try:
+            await send_json(
+                {
+                    "type": "user_transcript_preview",
+                    "text": clean,
+                    "turn_id": turn_id,
+                }
+            )
+        except Exception:
+            logger.debug("[%s] independent ASR preview delivery failed", self.lanlan_name)
 
     async def _handle_independent_asr_final(
         self,
@@ -294,7 +362,18 @@ class AsrRuntimeMixin:
                     return
                 if epoch != self._asr_session_epoch or session_ref is not self.session:
                     return
-                await session_ref.create_response(clean)
+                submit_external_turn = getattr(
+                    session_ref, "submit_external_text_turn", None
+                )
+                if callable(submit_external_turn) and not getattr(
+                    session_ref, "_is_gemini", False
+                ):
+                    await submit_external_turn(
+                        clean,
+                        turn_id=f"asr-{epoch}-{time.monotonic_ns()}",
+                    )
+                else:
+                    await session_ref.create_response(clean)
             except asyncio.CancelledError:
                 raise
             except Exception:

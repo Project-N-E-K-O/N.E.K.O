@@ -100,6 +100,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
+        requires_smart_turn=True,
     ),
     "qwen": AsrProviderMeta(
         provider_key="qwen",
@@ -107,7 +108,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
-        implementation_status="blocked_credentials",
+        implementation_status="implemented",
+        requires_smart_turn=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",
@@ -149,6 +151,15 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
+        implementation_status="implemented",
+        requires_smart_turn=True,
+    ),
+    "soniox": AsrProviderMeta(
+        provider_key="soniox",
+        category="ws_streaming",
+        worker_input_sample_rate_hz=16_000,
+        wire_sample_rate_hz=16_000,
+        supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
         requires_smart_turn=True,
     ),

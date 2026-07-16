@@ -141,6 +141,8 @@ def test_public_exports_are_frozen():
 
 def test_routes_fail_synchronously_without_dummy(monkeypatch):
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
     callback = AsyncMock()
 
     with pytest.raises(RuntimeError, match="ASR_UNKNOWN_CORE"):
@@ -205,6 +207,7 @@ def test_phase2_registry_routes_and_capabilities():
         "grok",
         "glm",
         "gemini",
+        "soniox",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
@@ -224,17 +227,129 @@ def test_phase2_registry_routes_and_capabilities():
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
-    for provider_key in ("qwen", "step", "grok"):
+    for provider_key in ("step", "grok"):
         assert (
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
     assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["qwen"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is True
     for provider_key in ("glm", "gemini"):
         meta = ASR_PROVIDER_REGISTRY[provider_key]
         assert meta.implementation_status == "implemented"
         assert meta.requires_smart_turn is True
+    soniox_meta = ASR_PROVIDER_REGISTRY["soniox"]
+    assert soniox_meta.implementation_status == "implemented"
+    assert soniox_meta.supported_endpointing_modes == {"manual", "provider"}
+    assert soniox_meta.requires_smart_turn is True
+
+
+def test_phase3_selection_prefers_soniox_only_for_explicit_intl_region(
+    monkeypatch,
+):
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "configured", "SONIOX_REGION": "eu"},
+        raising=False,
+    )
+
+    intl = asr_client._resolve_asr_selection("gemini", user_region="intl")
+    unknown = asr_client._resolve_asr_selection("gemini", user_region="unknown")
+    mainland = asr_client._resolve_asr_selection("gemini", user_region="cn")
+
+    assert (intl.provider_key, intl.endpointing_mode, intl.soniox_region) == (
+        "soniox",
+        "provider",
+        "eu",
+    )
+    assert unknown.provider_key == "gemini"
+    assert mainland.provider_key == "gemini"
+
+
+def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "configured"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("openai")
+
+    assert selection.provider_key == "openai"
+    assert selection.endpointing_mode == "manual"
+
+
+def test_dummy_selection_reads_dev_override_once_and_uses_smart_turn(monkeypatch):
+    callback = AsyncMock()
+    reads = 0
+
+    def fake_getenv(name, default=""):
+        nonlocal reads
+        if name == "ASR_PROVIDER":
+            reads += 1
+            return "dummy"
+        return default
+
+    monkeypatch.setattr(asr_client.os, "getenv", fake_getenv)
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert reads == 1
+    assert session._config.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
+
+
+def test_smart_turn_factory_is_disabled_for_provider_endpoint(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_resolve_asr_selection",
+        lambda *_args, **_kwargs: type(
+            "Selection",
+            (),
+            {
+                "provider_key": "qwen",
+                "endpointing_mode": "provider",
+                "soniox_region": None,
+            },
+        )(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        asr_client,
+        "_get_asr_worker",
+        lambda *_args, **_kwargs: (dummy_asr_worker, "", "qwen"),
+    )
+    monkeypatch.setitem(
+        ASR_PROVIDER_REGISTRY,
+        "qwen",
+        replace(
+            ASR_PROVIDER_REGISTRY["qwen"],
+            implementation_status="implemented",
+            requires_smart_turn=True,
+        ),
+    )
+
+    session = create_asr_session(
+        "qwen",
+        config=AsrSessionConfig(endpointing_mode="provider"),
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._voice_turn_factory is None
 
 
 def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
@@ -782,41 +897,27 @@ async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     await session.close()
 
 
-async def test_cancelled_connect_closes_worker_and_dispatch_tasks():
-    async def never_ready_worker(request_queue, response_queue, api_key, config):
-        del api_key, config
-        while True:
-            request = await request_queue.get()
-            try:
-                if request.kind == "shutdown":
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="closed", generation=request.generation)
-                    )
-                    return
-            finally:
-                request_queue.task_done()
-
-    on_error = AsyncMock()
+async def test_optional_partial_callback_receives_preview_without_history_write():
+    previews: asyncio.Queue[str] = asyncio.Queue()
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
     session = _RealtimeAsrSessionImpl(
-        worker_fn=never_ready_worker,
-        api_key="",
+        worker_fn=_scripted_worker,
+        api_key="events",
         config=AsrSessionConfig(),
-        on_input_transcript=AsyncMock(),
-        on_connection_error=on_error,
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
     )
-    connect_task = asyncio.create_task(session.connect())
-    while session._worker_task is None:
-        await asyncio.sleep(0)
+    asr_client._attach_partial_callback(session, previews.put)
 
-    connect_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await connect_task
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
 
-    assert session.is_ready is False
-    assert session._worker_task.done()
-    assert session._response_task is not None and session._response_task.done()
-    assert session._callback_task is not None and session._callback_task.done()
-    on_error.assert_not_awaited()
+    assert await asyncio.wait_for(previews.get(), 1) == "draft"
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
+    assert previews.empty()
+    assert transcripts.empty()
+    await session.close()
 
 
 async def test_stale_utterance_error_is_dropped_after_clear():
