@@ -37,6 +37,10 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
         self.FACT_QUEUED_CORRECTION = "queued"
         self._reject_texts: set[str] = set()
         self._queue_texts: set[str] = set()
+        # (existing_text, new_text): new_text is queued only when existing_text is
+        # already present in the section passed to the guard (models a conflict that
+        # only manifests once an earlier survivor is accepted).
+        self._conflict_pairs: set[tuple] = set()
         self.queued_corrections: list[tuple] = []
 
     def _get_alock(self, _name: str) -> asyncio.Lock:
@@ -51,11 +55,15 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
     async def _aget_entity_stop_names(self, _name=None) -> list:
         return []
 
-    def _evaluate_fact_contradiction(self, _name, text, _section_facts, _stop_names):
+    def _evaluate_fact_contradiction(self, _name, text, section_facts, _stop_names):
         if text in self._reject_texts:
             return self.FACT_REJECTED_CARD, "card"
         if text in self._queue_texts:
             return self.FACT_QUEUED_CORRECTION, "existing"
+        present = {(e.get("text") if isinstance(e, dict) else str(e)) for e in section_facts}
+        for existing_text, new_text in self._conflict_pairs:
+            if text == new_text and existing_text in present:
+                return self.FACT_QUEUED_CORRECTION, existing_text
         return None, None
 
     async def _aqueue_correction_locked(self, _name, old_text, new_text, _entity):
@@ -525,3 +533,26 @@ async def test_fusion_input_exceeding_budget_raises():
     huge = "word " * 20000  # well over EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
     with pytest.raises(ExternalMemoryFusionError):
         await _CallHarness()._allm_call_fusion("Neko", "master", [{"text": huge}], 600)
+
+
+@pytest.mark.asyncio
+async def test_fused_entries_contradicting_each_other_are_queued():
+    # Two contradictory entries in the same fusion response must not both survive:
+    # each is checked against the already-accepted survivors, so the later one is
+    # queued instead of rendered alongside the first (Codex P2).
+    harness = _FusionHarness(
+        {"master": {"facts": []}},
+        stub_fused=[
+            {"text": "Master lives in Tokyo.", "importance": 8},
+            {"text": "Master lives in Osaka.", "importance": 6},
+        ],
+    )
+    harness._conflict_pairs = {("Master lives in Tokyo.", "Master lives in Osaka.")}
+
+    result = await harness.afuse_external_facts("Neko", "master", _candidates("raw"), "openclaw")
+
+    texts = {f["text"] for f in harness.persona["master"]["facts"]}
+    assert "Master lives in Tokyo." in texts          # first (higher importance) survives
+    assert "Master lives in Osaka." not in texts       # contradicts a survivor -> queued
+    assert ("Master lives in Tokyo.", "Master lives in Osaka.") in harness.queued_corrections
+    assert result["added"] == 1

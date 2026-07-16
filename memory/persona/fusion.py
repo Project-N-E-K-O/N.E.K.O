@@ -212,8 +212,10 @@ class ExternalFusionMixin:
             stop_names = await self._aget_entity_stop_names(name)
             survivors: list[dict] = []
             for item in fused:
+                # 对照「非外部导入条目 + 已接受的幸存者」——防同一批融合里两条互相
+                # 矛盾的条目都被接受、并存渲染（Codex P2）。
                 code, old_text = self._evaluate_fact_contradiction(
-                    name, item["text"], non_external, stop_names,
+                    name, item["text"], non_external + survivors, stop_names,
                 )
                 if code == self.FACT_REJECTED_CARD:
                     continue

@@ -276,3 +276,20 @@ def test_hermes_delimiter_inside_fence_is_not_a_delimiter():
     texts = [c["text"] for c in analysis["candidates"]]
     assert any("Real memory one" in t for t in texts)
     assert any("Real memory two" in t for t in texts)
+
+
+def test_hermes_daily_split_on_section_delimiters():
+    # Hermes daily memories (facts, stored verbatim) must be split on § like
+    # MEMORY.md, or a whole day's journal collapses into one fact (Codex P2).
+    content = "first daily note\n§\nsecond daily note"
+    sources = collect_markdown_files([
+        {"path": ".hermes/memories/2026-07-14.md", "content": content},
+    ])
+    analysis = build_import_candidates(sources)
+
+    assert analysis["source_format"] == "hermes"
+    daily = [c for c in analysis["candidates"] if c["kind"] == "daily"]
+    texts = [c["text"] for c in daily]
+    assert len(daily) >= 2  # split on §, not one blob
+    assert any("first daily note" in t for t in texts)
+    assert any("second daily note" in t for t in texts)

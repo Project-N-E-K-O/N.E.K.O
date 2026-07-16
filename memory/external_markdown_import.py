@@ -345,7 +345,9 @@ def build_import_candidates(
                 ) from exc
         fragments = split_markdown_entries(
             source.content,
-            hermes_delimiter=(detected == "hermes" and kind in {"user", "memory"}),
+            # daily 也吃 § 切分：daily→facts 是逐条落盘（非融合再消化），§ 分块必须
+            # 切开，否则一整份日记会当成一条 fact（Codex P2）。SOUL 走融合故不需要。
+            hermes_delimiter=(detected == "hermes" and kind in {"user", "memory", "daily"}),
         )
         for fragment in fragments:
             text = _candidate_text(fragment["section"], fragment["text"])
