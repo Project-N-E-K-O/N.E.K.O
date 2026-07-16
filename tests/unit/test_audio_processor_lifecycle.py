@@ -86,6 +86,35 @@ def test_disabling_noise_reduction_releases_native_denoiser() -> None:
     assert processor._frame_buffer.size == 0
 
 
+def test_reenabling_noise_reduction_recreates_frame_buffer(monkeypatch) -> None:
+    class _Denoiser:
+        def process_frame(self, frame: np.ndarray) -> tuple[np.ndarray, float]:
+            return frame.copy(), 0.0
+
+        def close(self) -> None:
+            return None
+
+    processor = AudioProcessor(
+        input_sample_rate=48_000,
+        output_sample_rate=48_000,
+        noise_reduce_enabled=False,
+        agc_enabled=False,
+        limiter_enabled=False,
+    )
+    monkeypatch.setattr(
+        processor,
+        "_init_denoiser",
+        lambda: setattr(processor, "_denoiser", _Denoiser()),
+    )
+
+    processor.set_enabled(True)
+    output = processor.process_chunk(np.zeros(480, dtype=np.int16).tobytes())
+
+    assert processor._frame_buffer.size == processor.RNNOISE_FRAME_SIZE
+    assert len(output) == 480 * np.dtype(np.int16).itemsize
+    processor.close()
+
+
 @pytest.mark.asyncio
 async def test_audio_close_waits_for_executor_chunk_processing() -> None:
     processing_started = threading.Event()
