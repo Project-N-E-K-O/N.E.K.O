@@ -18,6 +18,7 @@ _SPEC.loader.exec_module(_MODULE)
 ExternalMemoryImportError = _MODULE.ExternalMemoryImportError
 MAX_ARCHIVE_MEMBERS = _MODULE.MAX_ARCHIVE_MEMBERS
 MAX_ENTRY_CHARS = _MODULE.MAX_ENTRY_CHARS
+MAX_SECTION_CHARS = _MODULE.MAX_SECTION_CHARS
 MAX_FILE_BYTES = _MODULE.MAX_FILE_BYTES
 MAX_TOTAL_BYTES = _MODULE.MAX_TOTAL_BYTES
 MarkdownSourceFile = _MODULE.MarkdownSourceFile
@@ -178,3 +179,15 @@ def test_heading_breadcrumb_cannot_push_candidate_over_entry_limit():
     candidates = build_import_candidates(sources)["candidates"]
     assert candidates
     assert all(len(candidate["text"]) <= MAX_ENTRY_CHARS for candidate in candidates)
+
+
+def test_oversized_heading_breadcrumb_is_bounded_in_metadata():
+    # A huge single-line heading must not be stored as an unbounded source_section
+    # that persona fusion would re-prepend, crowding the memory text out of the
+    # LLM input budget (Greptile P1).
+    sources = collect_markdown_files([
+        {"path": "USER.md", "content": f"# {'x' * (MAX_ENTRY_CHARS * 2)}\n\n- Prefers tea"},
+    ])
+    candidates = build_import_candidates(sources)["candidates"]
+    assert candidates
+    assert all(len(c["source_section"]) <= MAX_SECTION_CHARS for c in candidates)

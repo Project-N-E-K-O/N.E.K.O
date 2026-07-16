@@ -33,6 +33,12 @@ MAX_TOTAL_BYTES = 8 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 2048
 MAX_ENTRIES = 1000
 MAX_ENTRY_CHARS = 8000
+# Breadcrumb (heading-path) cap. source_section is stored separately from the
+# (already-bounded) candidate text and re-prepended by persona fusion before its
+# input budget applies, so an unbounded heading could crowd the real memory text
+# out of the LLM input (Greptile P1). A breadcrumb is short by nature; cap it well
+# under the fusion budget.
+MAX_SECTION_CHARS = 500
 
 _SUPPORTED_ROOT_NAMES = frozenset({"USER.MD", "SOUL.MD", "MEMORY.MD"})
 _DAILY_RE = re.compile(r"^memory/(\d{4}-\d{2}-\d{2})(?:-[^/]+)?\.md$", re.IGNORECASE)
@@ -323,7 +329,7 @@ def build_import_candidates(
                 "text": text,
                 "kind": kind,
                 "source_file": source.path,
-                "source_section": fragment["section"],
+                "source_section": fragment["section"][:MAX_SECTION_CHARS],
                 "event_date": event_date,
                 "warning_patterns": hits,
             })
