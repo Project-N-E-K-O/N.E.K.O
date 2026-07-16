@@ -853,15 +853,19 @@ async def commit_external_memory_import(request: Request):
             except Exception:
                 upstream_error = {}
                 detail = None
-            if upstream_error.get("error_code") == "external_import_partial":
+            error_code = upstream_error.get("error_code")
+            if error_code in ("external_import_partial", "external_import_too_large"):
+                # 透传上游错误码 + partial 元数据（含已落盘的 added_persona）+ 状态码
+                # （partial=500 / too_large=413），否则前端拿不到对应分支的引导与
+                # memory_edited 广播（Codex P2）。
                 return JSONResponse(
                     {
                         "success": False,
                         "error": detail,
-                        "error_code": "external_import_partial",
+                        "error_code": error_code,
                         "partial_import": upstream_error.get("partial_import") or {},
                     },
-                    status_code=500,
+                    status_code=response.status_code,
                 )
             raise ExternalMemoryImportError(
                 str(detail or f"Memory service rejected the import (HTTP {response.status_code})")

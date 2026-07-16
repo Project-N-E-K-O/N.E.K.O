@@ -1979,6 +1979,9 @@
         chatData[idx].text = memoPrefix + value;
     }
     async function selectMemoryFile(filename, li, catName) {
+        // 导入进行中冻结角色 / 文件切换：commit 用的是已快照的 targetCharacter，
+        // 放行切换只会让侧栏与正在导入的选择不一致（Codex P2）。
+        if (window._memoryImportInProgress) return;
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
@@ -2259,11 +2262,13 @@
             syncExternalMemoryFormatDropdown();
             if (externalFormatTrigger) {
                 externalFormatTrigger.addEventListener('click', function () {
+                    if (window._memoryImportInProgress) return;  // 导入期间冻结格式选择 (Codex P2)
                     setExternalMemoryFormatOpen(!(externalFormatPopup && !externalFormatPopup.hidden));
                 });
             }
             if (externalFormatPopup) {
                 externalFormatPopup.addEventListener('click', function (event) {
+                    if (window._memoryImportInProgress) return;  // 导入期间冻结格式选择 (Codex P2)
                     const option = event.target.closest('[data-external-memory-format]');
                     if (!option) return;
                     externalFormatSelect.value = option.dataset.externalMemoryFormat || 'auto';
