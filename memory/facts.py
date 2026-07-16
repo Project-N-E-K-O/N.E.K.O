@@ -515,6 +515,18 @@ class FactStore:
     _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
     _SOURCE_DEFAULT = 'user_observation'
 
+    @staticmethod
+    def _apply_external_import_provenance(entry: dict, external_import: dict) -> None:
+        """Stamp external-import provenance onto a fact entry: metadata, tags, the
+        event_start_at derived from event_date, and signal_processed=True
+        (external_import facts skip the Stage-2 evidence loop)."""
+        entry['external_import'] = dict(external_import)
+        entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
+        entry['signal_processed'] = True
+        event_date = external_import.get('event_date')
+        if isinstance(event_date, str) and event_date:
+            entry['event_start_at'] = f"{event_date}T00:00:00"
+
     async def _apersist_new_facts(
         self, lanlan_name: str, extracted: list[dict],
         *,
@@ -622,6 +634,12 @@ class FactStore:
                     # → 升级 source + 重新进 Stage-2 evidence loop
                     existing['source'] = 'user_observation'
                     existing['signal_processed'] = False
+                    # 若这条印证来自外部导入，补上 external_import provenance——否则
+                    # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
+                    # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
+                    external_import = fact.get('_external_import')
+                    if isinstance(external_import, dict):
+                        self._apply_external_import_provenance(existing, external_import)
                     upgraded_count += 1
                 continue
 
@@ -694,12 +712,7 @@ class FactStore:
             }
             external_import = fact.get('_external_import')
             if isinstance(external_import, dict):
-                fact_entry['external_import'] = dict(external_import)
-                fact_entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
-                fact_entry['signal_processed'] = True
-                event_date = external_import.get('event_date')
-                if isinstance(event_date, str) and event_date:
-                    fact_entry['event_start_at'] = f"{event_date}T00:00:00"
+                self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact
