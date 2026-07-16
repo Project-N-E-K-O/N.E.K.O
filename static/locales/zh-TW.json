@@ -792,7 +792,7 @@
         "toolFist": "貓爪",
         "toolHammer": "錘子",
         "avatarToolsButtonAriaLabel": "頭像道具",
-        "clearCursorToolAriaLabel": "恢復滑鼠",
+        "clearAvatarToolAriaLabel": "取消道具",
         "avatarToolQuickbarAriaLabel": "頭像快捷道具",
         "avatarToolQuickbarEmpty": "暫無快捷道具",
         "avatarToolEdit": "編輯快捷道具",

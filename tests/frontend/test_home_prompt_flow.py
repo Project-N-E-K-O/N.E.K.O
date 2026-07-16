@@ -13935,7 +13935,7 @@ def test_day3_avatar_tools_props_opens_tools_on_click_then_closes_after_narratio
 
 
 @pytest.mark.frontend
-def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
+def test_react_chat_close_deactivates_active_avatar_tool(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -13962,7 +13962,7 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
             const host = window.reactChatWindowHost;
             await host.ensureBundleLoaded();
             host.openWindow();
-            window.__toolCursorResetKeys = [];
+            window.__avatarToolDeactivationKeys = [];
             window.__avatarToolStateEvents = [];
             host.setOnAvatarToolStateChange((detail) => {
                 window.__avatarToolStateEvents.push(detail);
@@ -13978,10 +13978,10 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
         """
         () => {
             const host = window.reactChatWindowHost;
-            host.deactivateToolCursor();
-            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+            host.deactivateAvatarTool();
+            window.__avatarToolDeactivationKeys.push(window.__lastReactChatProps._avatarToolDeactivationKey);
             host.closeWindow();
-            window.__toolCursorResetKeys.push(window.__lastReactChatProps._toolCursorResetKey);
+            window.__avatarToolDeactivationKeys.push(window.__lastReactChatProps._avatarToolDeactivationKey);
         }
         """
     )
@@ -13989,16 +13989,16 @@ def test_react_chat_close_deactivates_active_tool_cursor(mock_page: Page):
     result = mock_page.evaluate(
         """
         () => ({
-            resetKeys: window.__toolCursorResetKeys.slice(),
+            deactivationKeys: window.__avatarToolDeactivationKeys.slice(),
             avatarToolStateEvents: window.__avatarToolStateEvents.slice(),
         })
         """
     )
 
-    assert len(result["resetKeys"]) == 2
-    assert result["resetKeys"][0]
-    assert result["resetKeys"][1]
-    assert result["resetKeys"][1] != result["resetKeys"][0]
+    assert len(result["deactivationKeys"]) == 2
+    assert result["deactivationKeys"][0]
+    assert result["deactivationKeys"][1]
+    assert result["deactivationKeys"][1] != result["deactivationKeys"][0]
     assert result["avatarToolStateEvents"][-1]["active"] is False
     assert result["avatarToolStateEvents"][-1]["toolId"] is None
 

@@ -8,27 +8,27 @@
 
 主要文件：
 
-1. `config/prompts/prompts_avatar_interaction.py`
+1. `config/prompts/avatar_interaction_contract.py`
+   - tool/action/intensity/special-field 和 payload normalizer。
+2. `config/prompts/prompts_avatar_interaction.py`
+   - prompt、reaction profile、memory 模板和 text-context sanitizer。
 
 关键结构：
 
-1. `_AVATAR_INTERACTION_ALLOWED_ACTIONS`
-2. `_AVATAR_INTERACTION_ALLOWED_INTENSITIES`
-3. `_AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS`
-4. `_AVATAR_INTERACTION_TOOL_LABELS`
-5. `_AVATAR_INTERACTION_ACTION_LABELS`
-6. `_AVATAR_INTERACTION_REACTION_PROFILES`
-7. `_AVATAR_INTERACTION_PROMPT_TEXT`
-8. `_normalize_avatar_interaction_payload`
-9. `_build_avatar_interaction_instruction`
+1. `AVATAR_INTERACTION_TOOL_CONTRACT`
+2. `normalize_avatar_interaction_payload`
+3. `_sanitize_avatar_interaction_text_context`
+4. `_AVATAR_INTERACTION_REACTION_PROFILES`
+5. `_AVATAR_INTERACTION_TOUCH_ZONE_FACTS`
+6. `_build_avatar_interaction_instruction`
 
-当前实际提示词走 `compact_fields=True` 分支，结构是：
+当前提示词只有一条直接生效的事件事实链路，结构是：
 
 ```text
 客观事件事实
 ```
 
-不要只看配置里遗留的非 compact 字段。检查提示词时必须调用 `_build_avatar_interaction_instruction` 看最终字符串。
+检查提示词时必须调用 `_build_avatar_interaction_instruction` 看最终字符串；不要从 payload 字段或 memory note 推测模型实际收到的内容。
 
 ## 核心目标
 
@@ -84,8 +84,6 @@
 5. “别闹”“你又来”“哥哥坏”等固定台词方向。
 6. 当前事件没有提供的主观判断或剧情补全。
 
-`style_hint` 在 compact 分支里不参与最终提示词。保留它时只写短事件标签，不能把它当第二套口吻提示词。
-
 ## 当前道具事件边界
 
 新增或修改时要保留同一工具内部的多事件差异，不要把一个道具压成单一事件。
@@ -102,9 +100,9 @@
 | `hammer` | `bonk` | `normal` | 锤子敲中一次 |
 | `hammer` | `bonk` | `rapid` | 短时间内又敲中一次 |
 | `hammer` | `bonk` | `burst` | 锤子连续快速敲中好几次 |
-| `hammer` | `bonk` | `easter_egg=True` 或 `easter_egg` | 放大彩蛋锤敲中一次 |
+| `hammer` | `bonk` | `easter_egg=True` 且 `intensity=easter_egg` | 放大彩蛋锤敲中一次 |
 
-修改事件时，先确认前端 payload 和 `_normalize_avatar_interaction_payload` 的归一逻辑。不要只改文案导致 action、intensity、flag 与事件事实互相打架。
+修改事件时，先确认前端 payload 和 `normalize_avatar_interaction_payload` 的归一逻辑。不要只改文案导致 action、intensity、flag 与事件事实互相打架。
 
 ## 多语言一致性
 
@@ -118,10 +116,11 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 
 1. 每个 locale 都要覆盖相同的工具、action、intensity 和附加结果。
 2. 每个 locale 的 `reaction_focus` 要表达同一个客观事实，可以按语言习惯本地化，不要求逐字翻译。
-3. 每个 locale 都应使用同样简短的 compact 输出结构。
+3. 每个 locale 都应使用同样简短的直接事件事实结构。
 4. 不要让某个语言额外加入口吻要求、禁令、前端字段或动作括号。
 5. 事件事实使用 `{actor}`，不要直接把 `{master_name}` 写进运行时事件句；`{master_name}` 为空、纯空白或跨语言语法需要由 actor helper 统一处理。
-6. CJK 语言可不加空格连接事件事实和回复要求；韩文、英文、俄文、西语、葡语等需要自然空格。
+6. 连接基础事实与位置事实时，中文、繁中、日文可不加空格；韩文、英文、俄文、西语、葡语使用自然空格。
+7. 猫爪和锤子的 `touch_zone` 是事件事实：有值时必须在 prompt 和 memory 中保持 `ear/head/face/body` 的真实位置；无值时不补默认位置。棒棒糖不消费该字段。
 
 检查时至少生成 8 个语言的代表样例，不能只读字典。
 
@@ -148,22 +147,20 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 
 需要同步：
 
-1. `_AVATAR_INTERACTION_ALLOWED_ACTIONS`
-2. `_AVATAR_INTERACTION_ALLOWED_INTENSITIES`，仅当新增强度时修改
-3. `_AVATAR_INTERACTION_ALLOWED_INTENSITY_COMBINATIONS`
-4. `_normalize_avatar_interaction_payload`，仅当新增 flag 或特殊归一规则时修改
+1. `config/prompts/avatar_interaction_contract.py` 的 `AVATAR_INTERACTION_TOOL_CONTRACT`，在对应 action 下声明允许的 intensity、touch zone 能力和特殊布尔字段。
+2. `normalize_avatar_interaction_payload`，仅当 wire alias 或特殊归一规则确实变化时修改。
+3. `static/app/app-buttons.js` 的 `AVATAR_INTERACTION_CONTRACT`，保持宿主发送契约与后端一致。
+
+`normalize_avatar_interaction_payload` 是 Python 侧唯一归一入口；真实 greeting 和 testbench 都直接从 `config.prompts.avatar_interaction_contract` 导入它，并显式注入 `_sanitize_avatar_interaction_text_context`。旧的私有 `_normalize_avatar_interaction_payload` 已退役，不得通过 `main_logic.core` alias、兼容 wrapper 或其它 facade 恢复。调用方应迁移到公开入口，而不是继续依赖旧 helper 的宽松纠错语义。也不要再派生第二份 allowed actions / intensities / combinations 配置。
 
 不要把无法被归一验证的事件写进 `reaction_focus`。
 
-### 3. 更新标签
+### 3. 更新事件事实
 
 需要同步 8 个 locale：
 
-1. `_AVATAR_INTERACTION_TOOL_LABELS`
-2. `_AVATAR_INTERACTION_ACTION_LABELS`
-3. `_AVATAR_INTERACTION_INTENSITY_LABELS`，仅当新增强度时修改
-
-标签是给非 compact 兼容路径和维护阅读用的，也要保持语义一致。
+1. `_AVATAR_INTERACTION_REACTION_PROFILES` 中对应 action/intensity/flag 的 `reaction_focus`。
+2. `_AVATAR_INTERACTION_TOUCH_ZONE_FACTS`，仅当该道具声明位置能力或位置表达变化时修改。
 
 ### 4. 编写 reaction profile
 
@@ -174,11 +171,9 @@ zh / zh-TW / en / ja / ko / ru / es / pt
     "new_action": {
         "normal": {
             "reaction_focus": "{actor}刚刚用<新道具><客观动作>了你一次。",
-            "style_hint": "<新道具><短事件标签>。",
         },
         "rapid": {
             "reaction_focus": "{actor}刚刚用<新道具>连续<客观动作>了你几次。",
-            "style_hint": "<新道具>连续<短事件标签>。",
         },
     },
 }
@@ -186,7 +181,7 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 
 `reaction_focus` 要像事件记录，不要像角色台词。角色怎么说交给模型根据当前人设和上下文生成。
 
-### 5. 检查 compact prompt
+### 5. 检查直接事件事实 prompt
 
 除非有明确设计变更，新道具也应沿用：
 
@@ -194,7 +189,9 @@ zh / zh-TW / en / ja / ko / ru / es / pt
 reaction_focus
 ```
 
-当前 `compact_reply_line` 默认留空，减少“感叹词 + 事件描述 + 评价”的模板化倾向。只有在实际输出证明模型不知道这是聊天互动时，才考虑加入极短对话指向；不要把坏回复里的具体词写成禁令，也不要规定“一句话”“固定语气”或其它会压出格式感的写法。不要为单个道具新增长 wrapper、字段列表、示例台词或专属禁令。
+当前运行时只发送事件事实，不再保留 wrapper、字段列表、reply line 或 requirements 兼容分支。只有在真实输出证明模型无法识别聊天互动、且有可复现证据时，才重新评估统一结构；不要为单个道具加入示例台词、专属禁令、“一句话”或“固定语气”等格式压力。
+
+`text_context` 暂时保留在 payload normalizer 中，由真实 greeting 和 testbench 调用方注入同一个 sanitizer，供历史调用与诊断预览使用；当前事件事实 prompt 不把它发送给模型，也不依据它改变反应。
 
 ## 修改现有道具模板
 
@@ -268,7 +265,7 @@ PY
 
 人工检查重点：
 
-1. 是否只出现事件事实和一句回应要求。
+1. 是否只出现事件事实。
 2. 是否没有字段名、wrapper、payload、前端、坐标、草稿说明。
 3. 是否没有括号动作、旁白、示例台词。
 4. 是否没有某个语言额外多出一套约束。
@@ -281,15 +278,16 @@ PY
 提示词或 payload 归一逻辑修改后，至少运行：
 
 ```bash
-uv run python -m compileall config/prompts/prompts_avatar_interaction.py
-uv run pytest tests/unit/test_avatar_interaction_memory_contract.py
+uv run python -m compileall config/prompts/avatar_interaction_contract.py config/prompts/prompts_avatar_interaction.py
+uv run pytest tests/unit/test_avatar_interaction_payload_contract.py tests/unit/test_avatar_interaction_memory_contract.py
+node --test static/avatar-interaction-contract.test.cjs
 ```
 
 如果新增了 tool、action、intensity、flag 或 locale 覆盖，优先补对应单元测试，至少覆盖：
 
 1. payload 归一后事件进入正确 profile。
-2. 非法 intensity 会回落到允许值。
-3. flag 与 intensity 冲突时归一结果一致。
+2. 缺失或非法 intensity 会被直接拒绝，不会回落到其它事件事实。
+3. flag 与 intensity 冲突时直接拒绝，不改写事件事实。
 4. 8 个 locale 都能生成非空 prompt。
 5. 生成结果不包含运行时不应暴露的字段。
 

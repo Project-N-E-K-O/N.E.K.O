@@ -866,7 +866,7 @@
         rotateCompactToolWheel: I.rotateCompactToolWheel,
         setCompactToolWheelIndex: I.setCompactToolWheelIndex,
         setCompactHistoryOpen: I.setCompactHistoryOpen,
-        deactivateToolCursor: I.deactivateToolCursor,
+        deactivateAvatarTool: I.deactivateAvatarTool,
         appendMessage: I.appendMessage,
         updateMessage: I.updateMessage,
         removeMessage: I.removeMessage,
@@ -892,6 +892,18 @@
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {
             I.state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
+            if (I.state.onAvatarInteraction && I.state.pendingAvatarInteractions.length) {
+                var avatarInteractionHandler = I.state.onAvatarInteraction;
+                var pendingInteractions = I.state.pendingAvatarInteractions.slice();
+                I.state.pendingAvatarInteractions = [];
+                pendingInteractions.forEach(function (detail) {
+                    try {
+                        avatarInteractionHandler(detail);
+                    } catch (error) {
+                        console.error('[ReactChatWindow] queued onAvatarInteraction failed:', error);
+                    }
+                });
+            }
         },
         setOnAvatarToolStateChange: function (handler) {
             I.state.onAvatarToolStateChange = typeof handler === 'function' ? handler : null;
