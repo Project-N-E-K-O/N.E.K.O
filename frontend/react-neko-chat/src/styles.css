@@ -3497,20 +3497,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(0, 210, 255, 0.96);
 }
 
+/* 只呼吸 opacity，不呼吸 filter：drop-shadow 参与动画时每帧都要重光栅化
+   （无法走合成器捷径），在 120Hz 屏上是持续的 raster+GPU 开销。脉动的光晕感
+   由 ::after 的 opacity/transform 呼吸层承担，::before 保持基础态的静态阴影。 */
 @keyframes compact-history-handle-breathe {
   0%,
   100% {
     opacity: 0.72;
-    filter:
-      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
   }
 
   50% {
     opacity: 1;
-    filter:
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
-      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
   }
 }
 
