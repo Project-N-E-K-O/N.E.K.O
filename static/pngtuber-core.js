@@ -25,6 +25,12 @@
     const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
     const REMIX_MESH_DEFORM_STRENGTH = 0.28;
     const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
+    // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
+    // 峰值速度 ~2.6px/s，20fps 与满帧视觉无差；动画循环空闲态压到 30fps
+    // （弹簧物理 dt 33ms 在各处 0.05s clamp 之内），活动时仍走 rAF 满帧。
+    const PNGTUBER_BREATHING_IDLE_FPS = 20;
+    const PNGTUBER_ANIMATION_IDLE_FPS = 30;
+    const PNGTUBER_FULL_RATE_HOLD_MS = 900;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -432,9 +438,14 @@
 
         stopLayeredAnimationLoop() {
             if (this.layeredAnimationFrame) {
-                cancelAnimationFrame(this.layeredAnimationFrame);
+                if (this._layeredAnimationDriveMode === 'timer') {
+                    clearTimeout(this.layeredAnimationFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredAnimationFrame);
+                }
                 this.layeredAnimationFrame = null;
             }
+            this._layeredAnimationDriveMode = null;
         }
 
         attachLayeredHotkeys() {
@@ -566,6 +577,8 @@
                 this.layeredStateReturnTimer = null;
             }
             this.layeredStateIndex = nextIndex;
+            // 状态切换后的 900ms 满帧余温：切换过渡（贴图换装/弹跳）以 rAF 满帧渲染
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
             this.drawLayeredState();
             this.restartLayeredAnimationLoop();
             if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
@@ -1276,10 +1289,54 @@
             });
         }
 
+        // 当前状态是否有"有效帧率超过空闲地板"的贴图动画：
+        // sheet 帧率 = animation_speed × REMIX_FRAME_SPEED_MULTIPLIER，
+        // 超过 PNGTUBER_ANIMATION_IDLE_FPS 时 30fps 采样会持续丢帧，需保持 rAF。
+        _layeredStateHasFastSheetAnimation(stateName = this.state || 'idle') {
+            if (!this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')) return false;
+            const layers = Array.isArray(this.layeredMetadata && this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers : [];
+            return layers.some((layer) => {
+                if (!this.shouldRenderLayer(layer, stateName)) return false;
+                const layerState = this.layerStateForRender(layer, stateName);
+                if (!layerState || !this.stateHasFrameAnimation(layerState)) return false;
+                const speed = Math.max(0, Number(layerState.animation_speed) || 0);
+                return speed * REMIX_FRAME_SPEED_MULTIPLIER > PNGTUBER_ANIMATION_IDLE_FPS;
+            });
+        }
+
+        // 动画循环是否需要 rAF 满帧：拖拽/触摸缩放、说话相关帧、非 idle 状态、
+        // 指针/物理仍需逐帧、弹簧未静定、高速贴图动画、或换装/拖拽释放后的
+        // 满帧余温。否则以 PNGTUBER_ANIMATION_IDLE_FPS 定时器低频驱动（避免
+        // rAF 请求把 Blink 主帧调度顶到显示器刷新率——live2d round-2 同款策略）。
+        _layeredAnimationNeedsFullRate(timestamp) {
+            try {
+                if (this._dragState || this._touchZoomState) return true;
+                if (this.isSpeaking || this.lipSyncFrame || this.talkingHopFrame || this.speakingBounceFrame) return true;
+                if ((this.state || 'idle') !== 'idle') return true;
+                if (typeof this.layeredPointerNeedsFrame === 'function' && this.layeredPointerNeedsFrame(timestamp)) return true;
+                if (typeof this.layeredPhysicsNeedsFrame === 'function' && this.layeredPhysicsNeedsFrame(timestamp)) return true;
+                const motion = this.remixModelMotionState;
+                if (motion && (Math.abs(motion.x || 0) > 0.02 || Math.abs(motion.y || 0) > 0.02 || Math.abs(motion.yVel || 0) > 1)) return true;
+                if (this._layeredFullRateHoldUntil && timestamp < this._layeredFullRateHoldUntil) return true;
+                if (this._layeredStateHasFastSheetAnimation()) return true;
+            } catch (_) { return true; }
+            return false;
+        }
+
         startLayeredAnimationLoop(options = {}) {
             if (this._renderingPaused) return;
             this.startLayeredBreathingLoop();
-            if (this.layeredAnimationFrame) return;
+            if (this.layeredAnimationFrame) {
+                // 已在低频定时器驱动中且此刻需要满帧：立即升频，不等下一拍
+                if (this._layeredAnimationDriveMode === 'timer' && this._layeredAnimationTick &&
+                    this._layeredAnimationNeedsFullRate(performance.now())) {
+                    clearTimeout(this.layeredAnimationFrame);
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(this._layeredAnimationTick);
+                }
+                return;
+            }
             if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
             if (!options.preserveTimeline || !this.layeredAnimationStart) {
                 this.layeredAnimationStart = performance.now();
@@ -1289,13 +1346,28 @@
                     this.stopLayeredAnimationLoop();
                     return;
                 }
-                this.drawLayeredState(this.state || 'idle', timestamp);
+                // 隐藏标签页跳过 canvas 绘制但保持链条（timer 驱动路径专用；
+                // rAF 路径在隐藏标签页本身就会被浏览器暂停）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.drawLayeredState(this.state || 'idle', timestamp);
+                }
                 if (!this.hasMotionLayersForCurrentState()) {
                     this.stopLayeredAnimationLoop();
                     return;
                 }
-                this.layeredAnimationFrame = requestAnimationFrame(tick);
+                if (this._layeredAnimationNeedsFullRate(timestamp)) {
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(tick);
+                } else {
+                    this._layeredAnimationDriveMode = 'timer';
+                    this.layeredAnimationFrame = setTimeout(
+                        () => tick(performance.now()),
+                        Math.round(1000 / PNGTUBER_ANIMATION_IDLE_FPS)
+                    );
+                }
             };
+            this._layeredAnimationTick = tick;
+            this._layeredAnimationDriveMode = 'raf';
             this.layeredAnimationFrame = requestAnimationFrame(tick);
         }
 
@@ -1340,23 +1412,37 @@
             if (this._renderingPaused) return;
             if (this.layeredBreathingFrame || !this.layeredBreathingEnabled()) return;
             this.layeredBreathingStart = this.layeredBreathingStart || performance.now();
+            // 呼吸是 0.32Hz 正弦（峰值速度 ~2.6px/s），全程用 20fps 定时器驱动即可：
+            // 视觉与满帧 rAF 无差，且不会让 Blink 以显示器刷新率空跑主帧。
+            // 拖拽/说话等高频视觉各自的路径会直接调 applyTransform，不依赖本循环。
+            const breathingIntervalMs = Math.round(1000 / PNGTUBER_BREATHING_IDLE_FPS);
             const tick = (timestamp) => {
                 if (!this.layeredBreathingEnabled() || !this.container || this.container.style.display === 'none') {
                     this.stopLayeredBreathingLoop();
                     return;
                 }
-                this.applyAnimationTransform(timestamp);
-                this.updateOverlayPositionsForAnimation(timestamp);
-                this.layeredBreathingFrame = requestAnimationFrame(tick);
+                // 纯浏览器隐藏标签页跳过绘制但保持链条（rAF 暂停语义的近似；
+                // Electron 宠物窗禁用了节流，不受影响）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.applyAnimationTransform(timestamp);
+                    this.updateOverlayPositionsForAnimation(timestamp);
+                }
+                this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
             };
-            this.layeredBreathingFrame = requestAnimationFrame(tick);
+            this._layeredBreathingDriveMode = 'timer';
+            this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
         }
 
         stopLayeredBreathingLoop() {
             if (this.layeredBreathingFrame) {
-                cancelAnimationFrame(this.layeredBreathingFrame);
+                if (this._layeredBreathingDriveMode === 'timer') {
+                    clearTimeout(this.layeredBreathingFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredBreathingFrame);
+                }
                 this.layeredBreathingFrame = null;
             }
+            this._layeredBreathingDriveMode = null;
             this.layeredBreathingStart = 0;
         }
 
@@ -2561,6 +2647,9 @@
             const state = this._dragState;
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
             this._dragState = null;
+            // 拖拽释放后的物理回摆窗口保持满帧：Plus 模型物理状态的内部字段
+            // （draggerX/Y）不走 remix 形状探测，用时间窗兜底两种物理形态
+            this._layeredFullRateHoldUntil = performance.now() + 2000;
             this.resetLayeredDragVelocity();
             if (this.image && typeof this.image.releasePointerCapture === 'function') {
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
@@ -3158,6 +3247,8 @@
 
         startCostumeChangeHopAnimation() {
             if (this.talkingHopFrame || !this.isLayeredActive()) return;
+            // 弹跳期间保持动画循环满帧
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
             this.talkingHopStart = performance.now();
             this.talkingHopAmplitude = 4.5;
             this.talkingHopPeriodMs = 260;
