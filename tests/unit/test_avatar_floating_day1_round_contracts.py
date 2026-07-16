@@ -788,7 +788,8 @@ def test_pc_overlay_resistance_cursor_uses_cursor_only_patch_without_touching_sp
 
     assert "const payload = completeStateStore.applyPatch({ cursor: cursor });" in cursor_only_block
     assert "const payload = { cursor: cursor };" not in cursor_only_block
-    assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" in cursor_only_block
+    assert "handleCursorOnlyStaleResult(result, cursor, retried === true, updateRunId);" in cursor_only_block
+    assert "handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);" not in cursor_only_block
     assert "result && result.ok === false" in cursor_only_block
     assert "moveCursorOnlyTo(x, y, durationMs, effect, effectDurationMs)" in overlay_source
     assert "normalizedOptions.forcePcOverlay === true" in move_cursor_block

@@ -72,6 +72,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     I.savedExpandedShellPosition = null; // last known full-surface desktop position
     I.lastRestorableChatSurfaceMode = 'compact';
     I.tutorialChatRequestSeq = 0;
+    I.homeTutorialCompactChatStateSnapshot = null;
     I._sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     // The active compact↔minimized cycle. `full` is intentionally NOT here: it is

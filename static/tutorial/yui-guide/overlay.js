@@ -555,11 +555,10 @@
             const payload = completeStateStore.applyPatch({ cursor: cursor });
             if (!active) {
                 active = true;
-                const beginRunId = runId;
                 try {
                     Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
                         if (result && result.stale === true) {
-                            handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);
+                            // The paired cursor update carries the state and owns stale retries.
                             return;
                         }
                         if (result && result.ok === false) {

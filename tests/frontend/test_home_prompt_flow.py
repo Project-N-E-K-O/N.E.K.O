@@ -2640,12 +2640,16 @@ def test_home_tutorial_input_lock_temporarily_reveals_hidden_compact_tools(
             host.setChatSurfaceMode('compact');
             host.setComposerHidden(true);
             host.setGoodbyeComposerHidden(true, 'pre-tutorial-goodbye');
+            host.setCompactChatState('options');
 
             host.setHomeTutorialInputLocked(true, 'avatar-floating-guide-day2');
             const hiddenDuringTutorial = window.__lastReactChatProps.composerHidden;
             host.setCompactToolFanOpen(true, 'avatar-floating-guide-open-tool-fan');
             const stateDuringTutorial = host.getState();
             const propsDuringTutorial = window.__lastReactChatProps;
+            host.setCompactToolFanOpen(false, 'avatar-floating-guide-close-tool-fan');
+            const compactChatStateAfterFanClose = host.getState().compactChatState;
+            host.setCompactToolFanOpen(true, 'avatar-floating-guide-reopen-tool-fan');
 
             host.setHomeTutorialInputLocked(false, 'avatar-floating-guide-day2-complete');
 
@@ -2653,6 +2657,8 @@ def test_home_tutorial_input_lock_temporarily_reveals_hidden_compact_tools(
                 hiddenDuringTutorial,
                 compactChatState: stateDuringTutorial.compactChatState,
                 fanOpen: propsDuringTutorial.compactToolFanOpenRequest.open,
+                compactChatStateAfterFanClose,
+                compactChatStateAfterTutorial: host.getState().compactChatState,
                 hiddenAfterTutorial: window.__lastReactChatProps.composerHidden,
                 composerHiddenRequestedAfterTutorial: host.getState().composerHiddenRequested,
                 goodbyeComposerHiddenAfterTutorial: host.getState().goodbyeComposerHidden,
@@ -2665,6 +2671,8 @@ def test_home_tutorial_input_lock_temporarily_reveals_hidden_compact_tools(
         "hiddenDuringTutorial": False,
         "compactChatState": "input",
         "fanOpen": True,
+        "compactChatStateAfterFanClose": "options",
+        "compactChatStateAfterTutorial": "options",
         "hiddenAfterTutorial": True,
         "composerHiddenRequestedAfterTutorial": True,
         "goodbyeComposerHiddenAfterTutorial": True,
@@ -7682,6 +7690,55 @@ def test_pc_overlay_begin_stale_response_does_not_duplicate_update(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_pc_overlay_cursor_only_begin_stale_response_does_not_duplicate_update(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'cursor-only-begin-stale-run');
+            window.__pcOverlayUpdates = [];
+            window.__pcOverlayBeginResolvers = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    contentBounds: { x: 0, y: 0, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                begin: () => new Promise((resolve) => window.__pcOverlayBeginResolvers.push(resolve)),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return new Promise(() => {});
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("tutorial/yui-guide/overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.pcOverlayBridge.moveCursorOnlyTo(240, 180, 0, 'click', 420);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const first = window.__pcOverlayUpdates[0];
+            window.__pcOverlayBeginResolvers[0]({
+                ok: false,
+                stale: true,
+                reason: 'stale-sequence',
+                activeTutorialRunId: first.tutorialRunId,
+                activeSequence: first.sequence,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__pcOverlayUpdates.length;
+        }
+        """
+    )
+
+    assert result == 1
+
+
+@pytest.mark.frontend
 def test_pc_overlay_stale_update_retry_bypasses_ready_state_dedupe(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -7733,12 +7790,19 @@ def test_pc_overlay_stale_update_retry_bypasses_ready_state_dedupe(mock_page: Pa
                 activeSequence: staleUpdate.sequence,
             });
             await new Promise((resolve) => setTimeout(resolve, 0));
-            return window.__pcOverlayUpdates.length;
+            return {
+                updates: window.__pcOverlayUpdates.length,
+                activeSequence: staleUpdate.sequence,
+                retry: window.__pcOverlayUpdates[2],
+            };
         }
         """
     )
 
-    assert result == 3
+    assert result["updates"] == 3
+    assert result["retry"]["tutorialRunId"] == "dedupe-run"
+    # Sequence also respects the persisted and wall-clock floors, so the contract is strictly newer.
+    assert result["retry"]["sequence"] > result["activeSequence"]
 
 
 @pytest.mark.frontend
@@ -7876,15 +7940,26 @@ def test_external_chat_ignores_late_stale_response_from_replaced_run(mock_page: 
                 activeSequence: oldUpdate.sequence,
             });
             await new Promise((resolve) => setTimeout(resolve, 0));
+            const afterLateResponse = window.__externalChatOverlayUpdates.length;
+            const previousNewRunUpdate = window.__externalChatOverlayUpdates.find(
+                (update) => update.tutorialRunId === 'new-run'
+            );
+            relayCursor('new-run', Date.now() + 2);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const latestNewRunUpdate = window.__externalChatOverlayUpdates.at(-1);
             return {
                 beforeLateResponse,
-                afterLateResponse: window.__externalChatOverlayUpdates.length,
+                afterLateResponse,
+                previousNewRunUpdate,
+                latestNewRunUpdate,
             };
         }
         """
     )
 
     assert result["afterLateResponse"] == result["beforeLateResponse"]
+    assert result["latestNewRunUpdate"]["tutorialRunId"] == "new-run"
+    assert result["latestNewRunUpdate"]["sequence"] > result["previousNewRunUpdate"]["sequence"]
 
 
 @pytest.mark.frontend

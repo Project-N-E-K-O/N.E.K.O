@@ -1821,6 +1821,9 @@
             I.resetCompactChatState();
         }
         I.state.homeTutorialInteractionLocked = next;
+        if (!next && !I.state.homeTutorialInputLocked) {
+            I.restoreHomeTutorialCompactChatState(true);
+        }
         I.state.viewProps = Object.assign({}, I.ensureViewProps(), {
             compactChatState: I.getCurrentCompactChatState(),
             composerDisabled: !!next
@@ -1838,6 +1841,9 @@
             I.resetCompactChatState();
         }
         I.state.homeTutorialInputLocked = next;
+        if (!next && !I.state.homeTutorialInteractionLocked) {
+            I.restoreHomeTutorialCompactChatState(true);
+        }
         I.state.viewProps = Object.assign({}, I.ensureViewProps(), {
             compactChatState: I.getCurrentCompactChatState(),
             compactInputLocked: next,
