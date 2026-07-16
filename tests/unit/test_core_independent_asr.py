@@ -27,6 +27,18 @@ class _Runtime(AsrRuntimeMixin):
         self.send_status = AsyncMock()
 
 
+def _selection(provider_key: str, endpointing_mode: str = "manual"):
+    return type(
+        "Selection",
+        (),
+        {
+            "provider_key": provider_key,
+            "endpointing_mode": endpointing_mode,
+            "soniox_region": None,
+        },
+    )()
+
+
 async def test_independent_route_sends_pcm_to_asr_only() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -263,7 +275,16 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        factory,
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
@@ -272,6 +293,49 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     assert runtime._asr_provider == "gemini"
     assert runtime._asr_route_mode == "independent"
     assert factory.call_args.args == ("gemini",)
+    assert factory.call_args.kwargs["selection"].provider_key == "gemini"
+
+
+async def test_runtime_builds_primary_candidate_from_its_single_selection(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client as asr_client
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    selection = asr_client._AsrSelection(
+        provider_key="gemini",
+        endpointing_mode="manual",
+    )
+    resolver = MagicMock(return_value=selection)
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    builder = MagicMock(return_value=asr)
+
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(runtime_module, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+        raising=False,
+    )
+    assert not hasattr(runtime_module, "create_asr_session")
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    resolver.assert_called_once_with("gemini")
+    assert builder.call_args.kwargs["selection"] is selection
+    asr.connect.assert_awaited_once_with()
+    assert runtime._asr_session is asr
+    assert runtime._asr_provider == "gemini"
+    assert runtime._asr_route_mode == "independent"
 
 
 async def test_startup_close_window_is_blocked_before_settings_resolution(
@@ -332,7 +396,11 @@ async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> Non
         MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
         raising=False,
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        factory,
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
@@ -353,6 +421,11 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
     core_session = type("CoreAsr", (), {})()
     core_session.connect = AsyncMock()
     core_session.close = AsyncMock()
+    soniox_selection = _selection("soniox", "provider")
+    core_selection = _selection("gemini")
+    primary_resolver = MagicMock(return_value=soniox_selection)
+    core_resolver = MagicMock(return_value=core_selection)
+    built_selections = []
     monkeypatch.setattr(
         core_facade,
         "aload_global_conversation_settings",
@@ -361,24 +434,35 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
     monkeypatch.setattr(
         runtime_module,
         "_resolve_asr_selection",
-        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+        primary_resolver,
         raising=False,
     )
-    monkeypatch.setattr(
-        runtime_module, "create_asr_session", MagicMock(return_value=soniox_session)
-    )
-    core_factory = MagicMock(return_value=core_session)
     monkeypatch.setattr(
         runtime_module,
-        "_create_core_follow_asr_session",
-        core_factory,
-        raising=False,
+        "_resolve_core_follow_selection",
+        core_resolver,
+    )
+
+    def build_candidate(_core_type, *, selection, **_kwargs):
+        built_selections.append(selection)
+        if selection is soniox_selection:
+            return soniox_session
+        assert selection is core_selection
+        return core_session
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        build_candidate,
     )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
     soniox_session.close.assert_awaited_once_with()
     core_session.connect.assert_awaited_once_with()
+    primary_resolver.assert_called_once_with("gemini")
+    core_resolver.assert_called_once_with("gemini")
+    assert built_selections == [soniox_selection, core_selection]
     assert runtime._asr_session is core_session
     assert runtime._asr_provider == "gemini"
     assert runtime._asr_route_mode == "independent"
@@ -399,20 +483,22 @@ async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
     core_session = type("CoreAsr", (), {})()
     core_session.connect = AsyncMock()
     core_session.close = AsyncMock()
+    soniox_selection = _selection("soniox", "provider")
+    core_selection = _selection("gemini")
 
-    def create_soniox(_core_type, **kwargs):
-        callbacks["soniox"] = kwargs
-        return soniox_session
+    def create_candidate(_core_type, *, selection, **kwargs):
+        if selection is soniox_selection:
+            callbacks["soniox"] = kwargs
+            return soniox_session
+        assert selection is core_selection
+        callbacks["core"] = kwargs
+        return core_session
 
     async def connect_soniox() -> None:
         await callbacks["soniox"]["on_connection_error"]("provider detail")
         raise RuntimeError("provider detail")
 
     soniox_session.connect = AsyncMock(side_effect=connect_soniox)
-
-    def create_core(_core_type, **kwargs):
-        callbacks["core"] = kwargs
-        return core_session
 
     monkeypatch.setattr(
         core_facade,
@@ -422,10 +508,18 @@ async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
     monkeypatch.setattr(
         runtime_module,
         "_resolve_asr_selection",
-        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+        MagicMock(return_value=soniox_selection),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", create_soniox)
-    monkeypatch.setattr(runtime_module, "_create_core_follow_asr_session", create_core)
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_core_follow_selection",
+        MagicMock(return_value=core_selection),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        create_candidate,
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
@@ -453,15 +547,17 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     core_session = type("CoreAsr", (), {})()
     core_session.connect = AsyncMock()
     core_session.close = AsyncMock()
+    soniox_selection = _selection("soniox", "provider")
+    core_selection = _selection("gemini")
 
     def capture_partial(session, callback) -> None:
         session.partial_callback = callback
 
-    def create_soniox(_core_type, **kwargs):
-        callbacks["soniox"] = kwargs
-        return soniox_session
-
-    def create_core(_core_type, **kwargs):
+    def create_candidate(_core_type, *, selection, **kwargs):
+        if selection is soniox_selection:
+            callbacks["soniox"] = kwargs
+            return soniox_session
+        assert selection is core_selection
         callbacks["core"] = kwargs
         return core_session
 
@@ -473,10 +569,18 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     monkeypatch.setattr(
         runtime_module,
         "_resolve_asr_selection",
-        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+        MagicMock(return_value=soniox_selection),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", create_soniox)
-    monkeypatch.setattr(runtime_module, "_create_core_follow_asr_session", create_core)
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_core_follow_selection",
+        MagicMock(return_value=core_selection),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        create_candidate,
+    )
     monkeypatch.setattr(runtime_module, "_attach_partial_callback", capture_partial)
 
     await runtime._start_independent_asr_if_enabled("audio")
@@ -593,7 +697,16 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("qwen")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        factory,
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
@@ -659,13 +772,61 @@ async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> N
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", MagicMock(return_value=asr))
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("glm")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
 
     assert runtime._asr_route_mode == "blocked"
     assert runtime._asr_session is None
     assert "secret provider response" not in str(runtime.send_status.await_args)
+
+
+async def test_builder_failure_stays_blocked_and_never_sends_audio_to_omni(
+    monkeypatch,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.session.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(side_effect=RuntimeError("private provider detail")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    consumed = await runtime._route_microphone_audio(
+        b"\x00\x00",
+        sample_rate_hz=16_000,
+    )
+    if not consumed:
+        await runtime.session.stream_audio(b"\x00\x00")
+
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_session is None
+    assert consumed is True
+    runtime.session.stream_audio.assert_not_awaited()
+    assert "private provider detail" not in str(runtime.send_status.await_args)
 
 
 async def test_hot_swap_reuses_matching_asr_provider() -> None:
@@ -783,7 +944,11 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
-    monkeypatch.setattr(runtime_module, "create_asr_session", factory)
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        factory,
+    )
 
     await runtime._start_independent_asr_if_enabled("audio")
     await runtime._start_independent_asr_if_enabled("text")

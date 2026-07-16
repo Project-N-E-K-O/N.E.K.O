@@ -4,7 +4,7 @@ import asyncio
 import gc
 import weakref
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -287,6 +287,167 @@ def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
     assert selection.endpointing_mode == "manual"
 
 
+def test_soniox_selection_captures_environment_credential_once(monkeypatch):
+    reads: dict[str, int] = {}
+
+    def fake_getenv(name, default=""):
+        reads[name] = reads.get(name, 0) + 1
+        if name == "SONIOX_API_KEY":
+            return "soniox-env-key"
+        if name == "SONIOX_REGION":
+            return "us"
+        return default
+
+    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client.os, "getenv", fake_getenv)
+
+    selection = asr_client._resolve_asr_selection("gemini", user_region="intl")
+
+    assert selection.provider_key == "soniox"
+    assert selection.endpointing_mode == "provider"
+    assert reads["SONIOX_API_KEY"] == 1
+    assert "soniox-env-key" not in repr(selection)
+
+
+def test_public_factory_resolves_once_and_builds_from_exact_selection(monkeypatch):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key="dummy",
+        endpointing_mode="manual",
+    )
+    resolver = MagicMock(return_value=selection)
+    built_session = object()
+    builder = MagicMock(return_value=built_session)
+
+    monkeypatch.setattr(asr_client, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(
+        asr_client,
+        "_create_asr_session_from_selection",
+        builder,
+        raising=False,
+    )
+    # Keep the legacy path constructible so the failure is specifically that
+    # it bypasses the new builder, rather than an unrelated credential error.
+    monkeypatch.setattr(
+        asr_client,
+        "_get_asr_worker",
+        lambda *_args, **_kwargs: (dummy_asr_worker, "", "dummy"),
+    )
+
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session is built_session
+    resolver.assert_called_once_with("qwen", user_region=None)
+    assert builder.call_args.kwargs["selection"] is selection
+
+
+def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
+    monkeypatch,
+):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_QWEN": "snapshot-key"},
+    )
+    selection = asr_client._resolve_asr_selection("qwen")
+
+    assert "snapshot-key" not in repr(selection)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: (_ for _ in ()).throw(AssertionError("config reread")),
+    )
+    monkeypatch.setattr(
+        asr_client.os,
+        "getenv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("environment reread")
+        ),
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._api_key == "snapshot-key"
+    assert session._config.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
+
+
+@pytest.mark.parametrize(
+    ("provider_key", "endpointing_mode", "expects_smart_turn"),
+    [
+        ("dummy", "manual", True),
+        ("qwen", "manual", True),
+        ("qwen", "provider", False),
+        ("openai", "manual", True),
+        ("glm", "manual", True),
+        ("gemini", "manual", True),
+        ("soniox", "provider", False),
+        ("soniox", "manual", True),
+    ],
+)
+def test_builder_preserves_manual_smart_turn_boundary(
+    provider_key,
+    endpointing_mode,
+    expects_smart_turn,
+):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode=endpointing_mode,
+        _worker_fn=dummy_asr_worker,
+        _api_key="" if provider_key == "dummy" else "test-key",
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert (session._voice_turn_factory is not None) is expects_smart_turn
+
+
+def test_core_follow_selection_ignores_soniox_and_dev_routing(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setenv("ASR_USER_REGION", "intl")
+    monkeypatch.setenv("SONIOX_REGION", "eu")
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {
+            "SONIOX_API_KEY": "soniox-key",
+            "ASSIST_API_KEY_GEMINI": "gemini-key",
+        },
+    )
+
+    selection = asr_client._resolve_core_follow_selection("gemini")
+    session = asr_client._create_asr_session_from_selection(
+        "gemini",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert selection.provider_key == "gemini"
+    assert selection.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
+
+
 def test_dummy_selection_reads_dev_override_once_and_uses_smart_turn(monkeypatch):
     callback = AsyncMock()
     reads = 0
@@ -316,21 +477,13 @@ def test_smart_turn_factory_is_disabled_for_provider_endpoint(monkeypatch):
     monkeypatch.setattr(
         asr_client,
         "_resolve_asr_selection",
-        lambda *_args, **_kwargs: type(
-            "Selection",
-            (),
-            {
-                "provider_key": "qwen",
-                "endpointing_mode": "provider",
-                "soniox_region": None,
-            },
-        )(),
+        lambda *_args, **_kwargs: asr_client._AsrSelection(
+            provider_key="qwen",
+            endpointing_mode="provider",
+            _worker_fn=dummy_asr_worker,
+            _api_key="test-key",
+        ),
         raising=False,
-    )
-    monkeypatch.setattr(
-        asr_client,
-        "_get_asr_worker",
-        lambda *_args, **_kwargs: (dummy_asr_worker, "", "qwen"),
     )
     monkeypatch.setitem(
         ASR_PROVIDER_REGISTRY,
@@ -356,9 +509,12 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
     callback = AsyncMock()
     observed_modes: list[tuple[str, str]] = []
 
-    def fake_get_asr_worker(core_type, endpointing_mode="manual"):
+    def fake_get_asr_worker(core_type, endpointing_mode="manual", **kwargs):
         observed_modes.append((core_type, endpointing_mode))
-        return dummy_asr_worker, "", "dummy"
+        provider_key = kwargs.get("provider_key_override") or CORE_ASR_ROUTES[
+            core_type
+        ].provider_key
+        return dummy_asr_worker, "test-key", provider_key
 
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.setattr(asr_client, "_get_asr_worker", fake_get_asr_worker)

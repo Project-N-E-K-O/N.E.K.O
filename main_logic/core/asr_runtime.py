@@ -10,9 +10,9 @@ from typing import Any, Literal
 from main_logic import core as _core_facade
 from main_logic.asr_client import (
     _attach_partial_callback,
-    _create_core_follow_asr_session,
+    _create_asr_session_from_selection,
+    _resolve_core_follow_selection,
     _resolve_asr_selection,
-    create_asr_session,
 )
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
 from main_logic.voice_turn.contracts import SpeechActivityEvent
@@ -111,9 +111,10 @@ class AsrRuntimeMixin:
 
         epoch = self._asr_session_epoch
 
-        def create_candidate(factory: Any, candidate_provider: str) -> Any:
+        def create_candidate(candidate_selection: Any) -> Any:
             """Create one startup candidate with callbacks bound to its identity."""
 
+            candidate_provider = candidate_selection.provider_key
             candidate_session = None
 
             def is_adopted_candidate() -> bool:
@@ -149,8 +150,9 @@ class AsrRuntimeMixin:
                     return
                 await self._send_independent_asr_preview(text, epoch)
 
-            candidate_session = factory(
+            candidate_session = _create_asr_session_from_selection(
                 core_type,
+                selection=candidate_selection,
                 on_input_transcript=on_final,
                 on_connection_error=on_error,
                 on_status_message=on_status,
@@ -161,7 +163,7 @@ class AsrRuntimeMixin:
 
         asr_session = None
         try:
-            asr_session = create_candidate(create_asr_session, provider)
+            asr_session = create_candidate(selection)
             try:
                 await asr_session.connect()
             except asyncio.CancelledError:
@@ -174,11 +176,9 @@ class AsrRuntimeMixin:
                 except Exception:
                     pass
                 asr_session = None
-                provider = route.provider_key
-                asr_session = create_candidate(
-                    _create_core_follow_asr_session,
-                    provider,
-                )
+                core_selection = _resolve_core_follow_selection(core_type)
+                provider = core_selection.provider_key
+                asr_session = create_candidate(core_selection)
                 await asr_session.connect()
             if epoch != self._asr_session_epoch:
                 await asr_session.close()
