@@ -50,6 +50,14 @@ DEFAULT_SERVICE_ROLES = ("main", "memory", "agent")
 _PROBED_EMBEDDING_SERVICES: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
 def _mib(value: int | float | None) -> float | None:
     if value is None:
         return None
@@ -794,7 +802,7 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
 
 def _probe_health(port: int, *, timeout: float = 0.25) -> dict[str, Any] | None:
     try:
-        with urllib.request.urlopen(
+        with _NO_REDIRECT_OPENER.open(
             f"http://127.0.0.1:{port}/health",
             timeout=timeout,
         ) as response:
@@ -836,7 +844,7 @@ def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
     for raw_path in paths:
         path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
         try:
-            with urllib.request.urlopen(
+            with _NO_REDIRECT_OPENER.open(
                 f"http://127.0.0.1:{port}{path}",
                 timeout=5.0,
             ) as response:
@@ -846,6 +854,14 @@ def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
                     "content_type": response.headers.get_content_type(),
                     "body_bytes": len(body),
                 }
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            results[path] = {
+                "status": int(exc.code),
+                "content_type": exc.headers.get_content_type(),
+                "body_bytes": len(body),
+                "error": type(exc).__name__,
+            }
         except (OSError, urllib.error.URLError) as exc:
             results[path] = {
                 "status": None,
@@ -908,11 +924,33 @@ def _port_released(port: int) -> bool:
         probe.close()
 
 
+def _capture_process_tree(pid: int) -> list[psutil.Process]:
+    try:
+        root = psutil.Process(pid)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return []
+    try:
+        return [root, *root.children(recursive=True)]
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return [root]
+
+
+def _process_is_alive(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return False
+
+
+def _alive_process_pids(processes: Iterable[psutil.Process]) -> list[int]:
+    return sorted(process.pid for process in processes if _process_is_alive(process))
+
+
 def _terminate_process_trees(
     processes: Iterable[subprocess.Popen[Any]],
     observed_processes: Iterable[psutil.Process],
     timeout: float = 12.0,
-) -> list[int]:
+) -> tuple[list[int], list[int]]:
     targets: dict[tuple[int, float], psutil.Process] = {}
     for target in observed_processes:
         try:
@@ -930,7 +968,8 @@ def _terminate_process_trees(
                 targets[(target.pid, target.create_time())] = target
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 continue
-    target_list = list(targets.values())
+    target_list = [target for target in targets.values() if _process_is_alive(target)]
+    forced_pids = sorted(target.pid for target in target_list)
     # Teardown is best-effort because processes can exit between discovery and action.
     for target in reversed(target_list):
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
@@ -940,7 +979,7 @@ def _terminate_process_trees(
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             target.kill()
     _gone, residual = psutil.wait_procs(alive, timeout=2.0)
-    return sorted(target.pid for target in residual)
+    return forced_pids, sorted(target.pid for target in residual)
 
 
 async def _run_synthetic_chat(
@@ -1093,6 +1132,8 @@ def _request_graceful_shutdown(
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     signal_name = "SIGTERM"
+    tracked_processes = _capture_process_tree(process.pid)
+    tracked_pids = sorted(target.pid for target in tracked_processes)
     try:
         if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
             signal_name = "CTRL_BREAK_EVENT"
@@ -1107,6 +1148,8 @@ def _request_graceful_shutdown(
             "elapsed_s": round(time.perf_counter() - started_at, 3),
             "exit_code": process.poll(),
             "ports_closed": False,
+            "tracked_pids": tracked_pids,
+            "alive_pids": _alive_process_pids(tracked_processes),
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -1117,13 +1160,16 @@ def _request_graceful_shutdown(
         if process.poll() is not None and ports_closed:
             break
         time.sleep(0.1)
+    alive_pids = _alive_process_pids(tracked_processes)
     return {
         "requested": True,
         "signal": signal_name,
-        "graceful": process.poll() == 0 and ports_closed,
+        "graceful": process.poll() == 0 and ports_closed and not alive_pids,
         "elapsed_s": round(time.perf_counter() - started_at, 3),
         "exit_code": process.poll(),
         "ports_closed": ports_closed,
+        "tracked_pids": tracked_pids,
+        "alive_pids": alive_pids,
         "error": None,
     }
 
@@ -1315,16 +1361,28 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
         }
         return result_payload
     finally:
-        residual_pids = _terminate_process_trees(
+        forced_pids, residual_pids = _terminate_process_trees(
             (process for _name, process, _log_file in processes),
             observed_processes.values(),
         )
         residual_ports = [port for port in ports if not _port_released(port)]
         if result_payload is not None:
+            shutdown_tracked_pids = set((shutdown_result or {}).get("tracked_pids", []))
+            shutdown_forced_pids = [
+                pid for pid in forced_pids if pid in shutdown_tracked_pids
+            ]
             result_payload["forced_cleanup"] = {
+                "forced_pids": forced_pids,
                 "residual_pids": residual_pids,
                 "residual_ports": residual_ports,
             }
+            if shutdown_result is not None:
+                shutdown_result["forced_pids"] = shutdown_forced_pids
+            if args.graceful_shutdown and shutdown_forced_pids:
+                validation_errors.append(
+                    "graceful shutdown required forced process cleanup: "
+                    + ", ".join(str(pid) for pid in shutdown_forced_pids)
+                )
             if residual_pids or residual_ports:
                 validation_errors.append(
                     "forced cleanup left residual processes or bound ports"
