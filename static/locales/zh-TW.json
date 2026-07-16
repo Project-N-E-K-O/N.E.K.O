@@ -930,8 +930,8 @@
         "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰",
         "independentAsr": "獨立語音辨識",
         "independentAsrActive": "目前使用獨立 ASR：{{provider}}",
-        "independentAsrFallback": "獨立 ASR 無法使用，已切回 Omni 原生辨識",
-        "independentAsrNextSession": "將於下次語音會話啟用；無法使用時自動切回 Omni",
+        "independentAsrFallback": "獨立 ASR 無法使用，本次語音輸入已停止。請重新開始語音會話，或關閉獨立 ASR 後重試。",
+        "independentAsrNextSession": "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
         "independentAsrNative": "目前使用 Omni 原生語音辨識"
     },
     "speaker": {

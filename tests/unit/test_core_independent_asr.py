@@ -385,6 +385,196 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
     assert "provider detail" not in str(runtime.send_status.await_args_list)
 
 
+async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
+    monkeypatch,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    callbacks: dict[str, dict[str, object]] = {}
+
+    soniox_session = type("Soniox", (), {})()
+    soniox_session.close = AsyncMock()
+    core_session = type("CoreAsr", (), {})()
+    core_session.connect = AsyncMock()
+    core_session.close = AsyncMock()
+
+    def create_soniox(_core_type, **kwargs):
+        callbacks["soniox"] = kwargs
+        return soniox_session
+
+    async def connect_soniox() -> None:
+        await callbacks["soniox"]["on_connection_error"]("provider detail")
+        raise RuntimeError("provider detail")
+
+    soniox_session.connect = AsyncMock(side_effect=connect_soniox)
+
+    def create_core(_core_type, **kwargs):
+        callbacks["core"] = kwargs
+        return core_session
+
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+    )
+    monkeypatch.setattr(runtime_module, "create_asr_session", create_soniox)
+    monkeypatch.setattr(runtime_module, "_create_core_follow_asr_session", create_core)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    core_session.connect.assert_awaited_once_with()
+    core_session.close.assert_not_awaited()
+    assert runtime._asr_session is core_session
+    assert runtime._asr_provider == "gemini"
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_session_epoch == 1
+
+
+async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
+    monkeypatch,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.websocket = type("WebSocket", (), {"send_json": AsyncMock()})()
+    callbacks: dict[str, dict[str, object]] = {}
+
+    soniox_session = type("Soniox", (), {})()
+    soniox_session.connect = AsyncMock(side_effect=RuntimeError("provider detail"))
+    soniox_session.close = AsyncMock()
+    core_session = type("CoreAsr", (), {})()
+    core_session.connect = AsyncMock()
+    core_session.close = AsyncMock()
+
+    def capture_partial(session, callback) -> None:
+        session.partial_callback = callback
+
+    def create_soniox(_core_type, **kwargs):
+        callbacks["soniox"] = kwargs
+        return soniox_session
+
+    def create_core(_core_type, **kwargs):
+        callbacks["core"] = kwargs
+        return core_session
+
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=type("Selection", (), {"provider_key": "soniox"})()),
+    )
+    monkeypatch.setattr(runtime_module, "create_asr_session", create_soniox)
+    monkeypatch.setattr(runtime_module, "_create_core_follow_asr_session", create_core)
+    monkeypatch.setattr(runtime_module, "_attach_partial_callback", capture_partial)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+    adopted_epoch = runtime._asr_session_epoch
+
+    await callbacks["soniox"]["on_input_transcript"]("late soniox final")
+    await callbacks["soniox"]["on_speech_activity"](
+        SpeechActivityEvent.SPEECH_STARTED
+    )
+    await soniox_session.partial_callback("late soniox preview")
+    await callbacks["soniox"]["on_connection_error"]("late soniox error")
+    await asyncio.sleep(0)
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.handle_interruption.assert_not_awaited()
+    runtime.handle_new_message.assert_not_awaited()
+    runtime.websocket.send_json.assert_not_awaited()
+    core_session.close.assert_not_awaited()
+    assert runtime._asr_session is core_session
+    assert runtime._asr_provider == "gemini"
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_session_epoch == adopted_epoch
+
+    await callbacks["core"]["on_input_transcript"]("current core final")
+
+    runtime.handle_input_transcript.assert_awaited_once_with(
+        "current core final",
+        is_voice_source=True,
+        source="independent_asr",
+        metadata={"provider": "gemini"},
+    )
+
+    await callbacks["core"]["on_connection_error"]("current core error")
+    await asyncio.sleep(0)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_provider is None
+    assert runtime._asr_route_mode == "blocked"
+    core_session.close.assert_awaited_once_with()
+
+
+async def test_selection_failure_is_reported_without_escaping_session_start(
+    monkeypatch,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(side_effect=ValueError("invalid provider configuration")),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert runtime._asr_required is True
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_session is None
+    assert runtime._asr_provider is None
+    assert "ASR_INDEPENDENT_FAILED" in runtime.send_status.await_args.args[0]
+    assert "invalid provider configuration" not in str(runtime.send_status.await_args_list)
+
+
+async def test_selection_failure_during_core_change_stays_blocked(
+    monkeypatch,
+) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    runtime._asr_core_type = "openai"
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(side_effect=ValueError("invalid region configuration")),
+    )
+
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert runtime._asr_core_type == "gemini"
+    assert runtime._asr_required is True
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_session is None
+    assert "ASR_INDEPENDENT_FAILED" in runtime.send_status.await_args.args[0]
+
+
 @pytest.mark.parametrize("core_type", ["qwen", "qwen_intl"])
 async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     monkeypatch,

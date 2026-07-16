@@ -1,9 +1,11 @@
+import json
 import re
 from pathlib import Path
 
 
 APP_WEBSOCKET_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-websocket.js"
 APP_STATE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-state.js"
+LOCALES_PATH = Path(__file__).resolve().parents[2] / "static" / "locales"
 WEBSOCKET_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "websocket_router.py"
 
 
@@ -38,6 +40,56 @@ def test_independent_asr_terminal_status_clears_partial_preview():
     assert terminal_branch.index("removeExternalAsrPreview();") < terminal_branch.index(
         "S.independentAsrActive = false;"
     )
+
+
+def test_independent_asr_terminal_status_reports_stopped_voice_input():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "Independent ASR unavailable; using Omni native recognition" not in source
+    assert "Voice input has stopped for this session" in source
+
+
+def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
+    expected = {
+        "en.json": (
+            "Independent ASR unavailable. Voice input has stopped for this session. Start a new voice session or disable independent ASR to retry.",
+            "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
+        ),
+        "es.json": (
+            "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Inicia una nueva sesión de voz o desactiva el ASR independiente para volver a intentarlo.",
+            "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
+        ),
+        "ja.json": (
+            "独立 ASR を利用できないため、この音声セッションの入力を停止しました。新しい音声セッションを開始するか、独立 ASR を無効にして再試行してください。",
+            "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
+        ),
+        "ko.json": (
+            "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 새 음성 세션을 시작하거나 독립 ASR을 비활성화한 후 다시 시도하세요.",
+            "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
+        ),
+        "pt.json": (
+            "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Inicie uma nova sessão de voz ou desative o ASR independente para tentar novamente.",
+            "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
+        ),
+        "ru.json": (
+            "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Начните новый голосовой сеанс или отключите независимый ASR и повторите попытку.",
+            "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
+        ),
+        "zh-CN.json": (
+            "独立 ASR 不可用，本次语音输入已停止。请重新开始语音会话，或关闭独立 ASR 后重试。",
+            "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
+        ),
+        "zh-TW.json": (
+            "獨立 ASR 無法使用，本次語音輸入已停止。請重新開始語音會話，或關閉獨立 ASR 後重試。",
+            "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
+        ),
+    }
+
+    for locale_name, copy in expected.items():
+        locale = json.loads((LOCALES_PATH / locale_name).read_text(encoding="utf-8"))
+        microphone = locale["microphone"]
+        assert microphone["independentAsrFallback"] == copy[0]
+        assert microphone["independentAsrNextSession"] == copy[1]
 
 
 def test_response_discarded_visible_in_react_chat():
