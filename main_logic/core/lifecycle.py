@@ -1375,7 +1375,8 @@ class LifecycleMixin:
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         # Resolve the microphone route before session_started opens the frontend
-        # input path. Independent-ASR failure is non-fatal and stays on Omni.
+        # input path. When independent ASR is required, failure is non-fatal to
+        # the Core session but keeps microphone input blocked instead of using Omni.
         await self._start_independent_asr_if_enabled(input_mode)
 
         # 启动成功，重置失败计数器和熔断

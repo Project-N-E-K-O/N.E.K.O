@@ -931,8 +931,8 @@
         "noiseReductionHint": "RNNoise AI noise reduction for clearer voice",
         "independentAsr": "Independent Speech Recognition",
         "independentAsrActive": "Independent ASR active: {{provider}}",
-        "independentAsrFallback": "Independent ASR unavailable; using Omni native recognition",
-        "independentAsrNextSession": "Enabled for the next voice session; falls back to Omni if unavailable",
+        "independentAsrFallback": "Independent ASR unavailable. Voice input has stopped for this session. Start a new voice session or disable independent ASR to retry.",
+        "independentAsrNextSession": "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
         "independentAsrNative": "Using Omni native speech recognition"
     },
     "speaker": {

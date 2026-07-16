@@ -82,48 +82,86 @@ class AsrRuntimeMixin:
         self._asr_route_mode = "blocked"
 
         route = CORE_ASR_ROUTES.get(core_type)
-        selection = _resolve_asr_selection(core_type) if route is not None else None
-        # Qwen Realtime's public WebSocket protocol accepts microphone audio
-        # turns, but not external user-role text turns.  Sending an ASR final
-        # through conversation.item.create is silently ignored by the current
-        # service, so keep native Omni audio instead of reporting a false
-        # independent-ASR success.  qwen_intl maps to the same provider key.
-        if (
-            route is None
-            or route.provider_key == "free"
-        ):
+        # A missing route and the intentionally blocked Free backend cannot
+        # provide an independent-ASR session. The hard microphone route stays
+        # blocked instead of silently falling back to Omni.
+        if route is None or route.provider_key == "free":
             await self._send_asr_status("ASR_INDEPENDENT_UNAVAILABLE", core_type or "unknown")
             return
 
-        epoch = self._asr_session_epoch
-        provider = selection.provider_key
-
-        async def on_final(text: str) -> None:
-            await self._handle_independent_asr_final(text, epoch, provider)
-
-        async def on_error(_message: str) -> None:
-            await self._handle_independent_asr_error(epoch, provider)
-
-        async def on_status(_message: str) -> None:
-            # Provider status strings are intentionally not forwarded verbatim.
-            return None
-
-        async def on_activity(event: SpeechActivityEvent) -> None:
-            await self._handle_independent_asr_activity(event, epoch)
-
-        asr_session = None
         try:
-            asr_session = create_asr_session(
+            selection = _resolve_asr_selection(core_type)
+            selected_provider = getattr(selection, "provider_key", None)
+            if not isinstance(selected_provider, str) or not selected_provider.strip():
+                raise ValueError("invalid ASR provider selection")
+            provider = selected_provider.strip().lower()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Configuration errors must not abort the already-started Core
+            # session. Keep the microphone fail-closed and report only the
+            # fixed status code/provider category.
+            self._asr_session = None
+            self._asr_provider = None
+            self._asr_route_mode = "blocked"
+            await self._send_asr_status(
+                "ASR_INDEPENDENT_FAILED", core_type or "unknown"
+            )
+            return
+
+        epoch = self._asr_session_epoch
+
+        def create_candidate(factory: Any, candidate_provider: str) -> Any:
+            """Create one startup candidate with callbacks bound to its identity."""
+
+            candidate_session = None
+
+            def is_adopted_candidate() -> bool:
+                return (
+                    candidate_session is not None
+                    and self._asr_session is candidate_session
+                    and epoch == self._asr_session_epoch
+                )
+
+            async def on_final(text: str) -> None:
+                if not is_adopted_candidate():
+                    return
+                await self._handle_independent_asr_final(
+                    text, epoch, candidate_provider
+                )
+
+            async def on_error(_message: str) -> None:
+                if not is_adopted_candidate():
+                    return
+                await self._handle_independent_asr_error(epoch, candidate_provider)
+
+            async def on_status(_message: str) -> None:
+                # Provider status strings are intentionally not forwarded verbatim.
+                return None
+
+            async def on_activity(event: SpeechActivityEvent) -> None:
+                if not is_adopted_candidate():
+                    return
+                await self._handle_independent_asr_activity(event, epoch)
+
+            async def on_partial(text: str) -> None:
+                if not is_adopted_candidate():
+                    return
+                await self._send_independent_asr_preview(text, epoch)
+
+            candidate_session = factory(
                 core_type,
                 on_input_transcript=on_final,
                 on_connection_error=on_error,
                 on_status_message=on_status,
                 on_speech_activity=on_activity,
             )
-            _attach_partial_callback(
-                asr_session,
-                lambda text: self._send_independent_asr_preview(text, epoch),
-            )
+            _attach_partial_callback(candidate_session, on_partial)
+            return candidate_session
+
+        asr_session = None
+        try:
+            asr_session = create_candidate(create_asr_session, provider)
             try:
                 await asr_session.connect()
             except asyncio.CancelledError:
@@ -137,16 +175,9 @@ class AsrRuntimeMixin:
                     pass
                 asr_session = None
                 provider = route.provider_key
-                asr_session = _create_core_follow_asr_session(
-                    core_type,
-                    on_input_transcript=on_final,
-                    on_connection_error=on_error,
-                    on_status_message=on_status,
-                    on_speech_activity=on_activity,
-                )
-                _attach_partial_callback(
-                    asr_session,
-                    lambda text: self._send_independent_asr_preview(text, epoch),
+                asr_session = create_candidate(
+                    _create_core_follow_asr_session,
+                    provider,
                 )
                 await asr_session.connect()
             if epoch != self._asr_session_epoch:

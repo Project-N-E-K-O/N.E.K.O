@@ -2169,7 +2169,7 @@
                         S.independentAsrActive = false;
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
-                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable; using Omni native recognition',
+                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Start a new voice session or disable independent ASR to retry.',
                                 5000
                             );
                         }
