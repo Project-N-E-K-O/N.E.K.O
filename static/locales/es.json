@@ -1749,6 +1749,7 @@
         "externalImportDoNotClose": "Fusionando recuerdos: no cierres esta ventana ni salgas de la aplicación, o la importación fallará.",
         "externalImportSuccess": "Se importaron {{persona}} entradas de personalidad y {{facts}} hechos; se omitieron {{duplicates}} duplicados.",
         "externalImportPartial": "La importación se detuvo tras guardar {{persona}} entradas de personalidad. Reintenta para terminar; se omitirán los duplicados.",
+        "externalImportTooLargeToFuse": "Esta importación tiene demasiadas memorias para fusionarlas de una vez. Divide el espacio de trabajo en archivos más pequeños e impórtalos por separado.",
         "chatHistory": "Historial de chat",
         "save": "Guardar",
         "clear": "Claro",

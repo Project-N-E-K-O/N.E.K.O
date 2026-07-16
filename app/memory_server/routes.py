@@ -44,6 +44,7 @@ from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -157,6 +158,26 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
             )
             added_persona += fusion_result["added"]
             skipped_persona += fusion_result["skipped"]
+    except ExternalMemoryImportTooLargeError:
+        # 确定性失败：候选超单次融合输入池，重试同一份必然再失败（没记指纹）→ 返回
+        # 不可重试的 too_large 错误码，让前端提示「拆分 workspace」而非「重试完成」。
+        logger.warning(
+            "External Markdown import: persona too large for single fusion: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": "External memory import is too large for a single fusion pass",
+                "error_code": "external_import_too_large",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
     except Exception:
         # 任何 persona 阶段失败（融合终态失败 ExternalMemoryFusionError / asave_persona
         # 崩溃等）都保留已落盘素材、返回 partial（added_persona = 已成功融合并保存的

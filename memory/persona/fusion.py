@@ -107,6 +107,15 @@ class ExternalMemoryFusionError(RuntimeError):
     """
 
 
+class ExternalMemoryImportTooLargeError(ExternalMemoryFusionError):
+    """Non-retryable: the candidate set exceeds the single-fusion input budget.
+
+    Distinct from a transient ``ExternalMemoryFusionError`` — retrying the same
+    oversized workspace just fails again (no fingerprint is recorded), so the
+    caller surfaces a "split the workspace" message rather than "retry to finish".
+    """
+
+
 class ExternalFusionMixin:
     """PersonaManager mixin: fuse external-import material via an LLM, then persist into persona.
 
@@ -309,7 +318,7 @@ class ExternalFusionMixin:
             # 候选超过单次融合输入池：尾部会被截掉、但整批指纹仍会记 folded，后段记忆
             # 永久漏掉。宁可抛可重试错误（→ external_import_partial，提示用户拆分
             # workspace），也不静默丢数据（Greptile P1）。批量无损融合是后续方向。
-            raise ExternalMemoryFusionError(
+            raise ExternalMemoryImportTooLargeError(
                 f"external import too large for a single fusion pass: {name}/{entity}"
             )
 

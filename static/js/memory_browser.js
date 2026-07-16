@@ -1652,6 +1652,12 @@
         // 都据此拦截，防用户在预览 / 确认期间切角色或换文件重新启用按钮、起第二次
         // 导入（Codex P2）。finally 统一清除。
         window._memoryImportInProgress = true;
+        // 冻结文件 / 格式选择：payload 在预览前已快照，期间若改选，commit 仍发旧
+        // payload，会导入与界面所示不同的 workspace（Codex P2）。finally 复原。
+        const fileInput = document.getElementById('external-memory-files');
+        const formatSelect = document.getElementById('external-memory-format');
+        if (fileInput) fileInput.disabled = true;
+        if (formatSelect) formatSelect.disabled = true;
         try {
             const targetCharacter = currentCatName;
             setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
@@ -1724,6 +1730,17 @@
                         { persona: partial.added_persona || 0 }
                     ));
                 }
+                if (result.error_code === 'external_import_too_large') {
+                    // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
+                    const big = result.partial_import || {};
+                    if (big.added_persona > 0 && big.character_name) {
+                        broadcastExternalMemoryEdited(big.character_name);
+                    }
+                    throw new Error(translate(
+                        'memory.externalImportTooLargeToFuse',
+                        'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
+                    ));
+                }
                 throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
             }
             setExternalImportStatus(
@@ -1746,6 +1763,8 @@
             );
         } finally {
             window._memoryImportInProgress = false;
+            if (fileInput) fileInput.disabled = false;
+            if (formatSelect) formatSelect.disabled = false;
             updateExternalImportButton();
         }
     }

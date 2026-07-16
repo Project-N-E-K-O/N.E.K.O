@@ -7,7 +7,11 @@ import pytest
 from memory.evidence import initial_reinforcement_from_importance
 from memory.persona import fusion as fusion_module
 from memory.persona.facts import FactsMixin
-from memory.persona.fusion import ExternalFusionMixin, ExternalMemoryFusionError
+from memory.persona.fusion import (
+    ExternalFusionMixin,
+    ExternalMemoryFusionError,
+    ExternalMemoryImportTooLargeError,
+)
 from utils.tokenize import count_tokens
 
 
@@ -531,7 +535,9 @@ async def test_fusion_input_exceeding_budget_raises():
             self._config_manager = _CfgMgr()
 
     huge = "word " * 20000  # well over EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
-    with pytest.raises(ExternalMemoryFusionError):
+    # Distinct non-retryable subclass so routes.py returns external_import_too_large
+    # (split-workspace guidance) rather than the retryable partial (Codex P2).
+    with pytest.raises(ExternalMemoryImportTooLargeError):
         await _CallHarness()._allm_call_fusion("Neko", "master", [{"text": huge}], 600)
 
 
