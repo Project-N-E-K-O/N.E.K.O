@@ -1,6 +1,6 @@
 # 猫咪 idle 状态机设计
 
-> 本文是猫咪 idle 状态机的目标设计入口，不代表当前已经实现。当前已落地行为以 `cat-idle-states-feature.md` 和当前代码为准。旧版 `cat-idle-state-machine.md` 只作为流程参考，不作为后续实施边界。
+> 本文记录猫咪 idle 状态机的设计目标和架构边界。Cat Mind 已分阶段落地，但本文仍包含设计背景，不作为当前数值或功能清单；实际计分规则以 [`cat-idle-state-machine-action-scoring.md`](cat-idle-state-machine-action-scoring.md) 为准，运行行为以 `static/app/app-cat-mind.js`、当前测试和可复现结果为准。`cat-idle-states-feature.md` 与旧版 `cat-idle-state-machine.md` 只作为历史功能基线和流程参考。
 
 ## 1. 设计目标
 

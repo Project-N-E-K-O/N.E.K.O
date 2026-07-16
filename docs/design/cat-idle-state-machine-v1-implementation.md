@@ -1,6 +1,6 @@
 # 猫咪 idle 状态机第一版实施文档
 
-> 本文是 `cat-idle-state-machine-design.md` 的第一版实施拆解。它描述如何分阶段落地，不代表当前已经实现。实施时以当前代码和可复现运行结果为准；`cat-idle-state-machine-action-scoring.md` 是当前网页端已采用的数值基线，具体参数仍以代码和运行验证为准。
+> 本文是 `cat-idle-state-machine-design.md` 的第一版实施拆解，保留分阶段落地背景，不是当前完成度清单。Cat Mind 已在网页端落地；实际数值以 [`cat-idle-state-machine-action-scoring.md`](cat-idle-state-machine-action-scoring.md) 为准，具体行为以 `static/app/app-cat-mind.js`、当前测试和可复现运行结果为准。
 
 ## 1. 第一版目标
 

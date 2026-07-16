@@ -3741,6 +3741,7 @@
         "title": "N.E.K.O Credential Control Center",
         "header": "Credential Acquisition Center",
         "bilibili": "Bilibili",
+        "youtube": "YouTube",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "this platform",
         "instructions": {
             "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
+            "youtube": "<b>1. Get the Cookie</b><br>In a browser signed in to YouTube:<br>1. Open <b>youtube.com</b><br>2. Press F12 → Network<br>3. Refresh the page and select a <code>youtubei/v1/browse</code> request<br>4. Copy the complete Cookie value from Request Headers",
             "douyin": "<b>Target:</b> Go to <b>douyin.com</b> to fetch these cookies.",
             "kuaishou": "<b>Target:</b> Go to <b>kuaishou.com</b> to fetch these cookies.",
             "weibo": "<b>Target:</b> Go to <b>weibo.com</b> to fetch these cookies.",
@@ -3784,6 +3786,10 @@
             "step4": "Find <span class=\"highlight-text\">Cookies</span> on the left sidebar, click the domain, and copy the required values on the right."
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "Complete Cookie",
+                "desc": "Paste the complete Cookie value from Request Headers (must include SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Core identity credential (Required)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "Unknown Track",
         "unknownArtist": "Unknown Artist",
+        "unknownSource": "Unknown source",
+        "volumeControl": "Volume",
+        "closePlayer": "Close player",
+        "trackTooLong": "This track is too long for music recommendations",
+        "loadTimeout": "Music loading timed out",
+        "loading": "Loading",
         "play": "Play",
         "pause": "Pause",
         "playing": "Playing",

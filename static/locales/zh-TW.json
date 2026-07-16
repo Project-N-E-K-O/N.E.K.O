@@ -3741,6 +3741,7 @@
         "title": "N.E.K.O 憑證控制中心",
         "header": "憑證取得中心",
         "bilibili": "嗶哩嗶哩",
+        "youtube": "YouTube",
         "douyin": "抖音",
         "kuaishou": "快手",
         "weibo": "微博",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "該平台",
         "instructions": {
             "bilibili": "<b>目標：</b> 請前往 <b>bilibili.com</b> 獲取這些 Cookies。",
+            "youtube": "<b>1. 取得 Cookie</b><br>在已登入 YouTube 的瀏覽器中：<br>1. 開啟 <b>youtube.com</b><br>2. 按 F12 → Network<br>3. 重新整理頁面，選擇一個 <code>youtubei/v1/browse</code> 請求<br>4. 在 Request Headers 中複製完整的 Cookie 值",
             "douyin": "<b>目標：</b> 請前往 <b>douyin.com</b> 獲取這些 Cookies。",
             "kuaishou": "<b>目標：</b> 請前往 <b>kuaishou.com</b> 獲取這些 Cookies。",
             "weibo": "<b>目標：</b> 請前往 <b>weibo.com</b> 獲取這些 Cookies。",
@@ -3784,6 +3786,10 @@
             "step4": "在左側找到 <span class=\"highlight-text\">Cookies</span>，點擊網域後在右側複製對應的值。"
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "完整 Cookie",
+                "desc": "貼上 Request Headers 中完整的 Cookie 值（必須包含 SAPISID）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "核心身份憑證 (必填)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "未知曲目",
         "unknownArtist": "未知藝術家",
+        "unknownSource": "未知音源",
+        "volumeControl": "音量",
+        "closePlayer": "關閉播放器",
+        "trackTooLong": "此音訊超過音樂推薦的時長限制",
+        "loadTimeout": "音樂載入逾時",
+        "loading": "載入中",
         "play": "播放",
         "pause": "暫停",
         "playing": "播放中",

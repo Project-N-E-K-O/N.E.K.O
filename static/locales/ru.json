@@ -3741,6 +3741,7 @@
         "title": "Центр управления учетными данными N.E.K.O",
         "header": "Центр получения учетных данных",
         "bilibili": "Bilibili",
+        "youtube": "YouTube",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "Эта платформа",
         "instructions": {
             "bilibili": "<b>Цель:</b> Перейдите на <b>bilibili.com</b>, чтобы получить эти файлы cookie.",
+            "youtube": "<b>1. Получите Cookie</b><br>В браузере, где выполнен вход в YouTube:<br>1. Откройте <b>youtube.com</b><br>2. Нажмите F12 → Network<br>3. Обновите страницу и выберите запрос <code>youtubei/v1/browse</code><br>4. Скопируйте полное значение Cookie из Request Headers",
             "douyin": "<b>Цель:</b> Перейдите на <b>douyin.com</b>, чтобы получить эти файлы cookie.",
             "kuaishou": "<b>Цель:</b> Перейдите на <b>kuaishou.com</b>, чтобы получить эти файлы cookie.",
             "weibo": "<b>Цель:</b> Перейдите на <b>weibo.com</b>, чтобы получить эти файлы cookie.",
@@ -3784,6 +3786,10 @@
             "step4": "Найдите <span class=\"highlight-text\">Cookies</span> на левой боковой панели, нажмите на домен и скопируйте нужные значения справа."
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "Полный Cookie",
+                "desc": "Вставьте полное значение Cookie из Request Headers (должно содержать SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Основные учетные данные личности (Обязательно)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "Неизвестный трек",
         "unknownArtist": "Неизвестный исполнитель",
+        "unknownSource": "Неизвестный источник",
+        "volumeControl": "Громкость",
+        "closePlayer": "Закрыть плеер",
+        "trackTooLong": "Этот трек превышает ограничение длительности для рекомендаций",
+        "loadTimeout": "Время загрузки музыки истекло",
+        "loading": "Загрузка",
         "play": "Воспроизвести",
         "pause": "Пауза",
         "playing": "Воспроизводится",

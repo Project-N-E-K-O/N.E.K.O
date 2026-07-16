@@ -3741,6 +3741,7 @@
         "title": "N.E.K.O クレデンシャル制御センター",
         "header": "クレデンシャル取得センター",
         "bilibili": "ビリビリ (Bilibili)",
+        "youtube": "YouTube",
         "douyin": "抖音 (Douyin)",
         "kuaishou": "快手 (Kuaishou)",
         "weibo": "微博 (Weibo)",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "このプラットフォーム",
         "instructions": {
             "bilibili": "<b>対象：</b> <b>bilibili.com</b> にアクセスして Cookie を取得してください。",
+            "youtube": "<b>1. Cookie を取得</b><br>YouTube にログイン済みのブラウザで：<br>1. <b>youtube.com</b> を開く<br>2. F12 → Network を押す<br>3. ページを更新し、<code>youtubei/v1/browse</code> リクエストを選択する<br>4. Request Headers から完全な Cookie 値をコピーする",
             "douyin": "<b>対象：</b> <b>douyin.com</b> にアクセスして Cookie を取得してください。",
             "kuaishou": "<b>対象：</b> <b>kuaishou.com</b> にアクセスして Cookie を取得してください。",
             "weibo": "<b>対象：</b> <b>weibo.com</b> にアクセスして Cookie を取得してください。",
@@ -3784,6 +3786,10 @@
             "step4": "左側の <span class=\"highlight-text\">Cookies</span> を展開し、ドメインをクリックして右側にある必要な値をコピーします。"
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "完全な Cookie",
+                "desc": "Request Headers の Cookie 値全体を貼り付けてください（SAPISID 必須）"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "コアIDクレデンシャル (必須)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "不明な曲",
         "unknownArtist": "不明なアーティスト",
+        "unknownSource": "不明な音源",
+        "volumeControl": "音量",
+        "closePlayer": "プレイヤーを閉じる",
+        "trackTooLong": "この音源は音楽おすすめの長さ制限を超えています",
+        "loadTimeout": "音楽の読み込みがタイムアウトしました",
+        "loading": "読み込み中",
         "play": "再生",
         "pause": "一時停止",
         "playing": "再生中",

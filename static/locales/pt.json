@@ -3741,6 +3741,7 @@
         "title": "Centro de controle de credenciais NEKO",
         "header": "Centro de aquisição de credenciais",
         "bilibili": "Bilíbili",
+        "youtube": "YouTube",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "esta plataforma",
         "instructions": {
             "bilibili": "<b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
+            "youtube": "<b>1. Obtenha o Cookie</b><br>Em um navegador conectado ao YouTube:<br>1. Abra <b>youtube.com</b><br>2. Pressione F12 → Network<br>3. Atualize a página e selecione uma solicitação <code>youtubei/v1/browse</code><br>4. Copie o valor completo do Cookie em Request Headers",
             "douyin": "<b>Target:</b> Vá para <b>douyin.com</b> para buscar esses cookies.",
             "kuaishou": "<b>Target:</b> Vá para <b>kuaishou.com</b> para buscar esses cookies.",
             "weibo": "<b>Target:</b> Vá para <b>weibo.com</b> para buscar esses cookies.",
@@ -3784,6 +3786,10 @@
             "step4": "Encontre <span class=\"highlight-text\">Cookies</span> na barra lateral esquerda, clique no domínio e copie os valores necessários à direita."
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "Cookie completo",
+                "desc": "Cole o valor completo do Cookie em Request Headers (deve incluir SAPISID)"
+            },
             "SESSDATA": {
                 "label": "SESSDATA",
                 "desc": "Credencial de identidade principal (obrigatório)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "Trilha desconhecida",
         "unknownArtist": "Artista desconhecido",
+        "unknownSource": "Fonte desconhecida",
+        "volumeControl": "Volume",
+        "closePlayer": "Fechar leitor",
+        "trackTooLong": "Esta faixa excede o limite de duração para recomendações",
+        "loadTimeout": "O carregamento da música expirou",
+        "loading": "A carregar",
         "play": "Jogar",
         "pause": "Pausar",
         "playing": "Jogando",

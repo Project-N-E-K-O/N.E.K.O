@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Project N.E.K.O.
   text: 开发者文档
-  tagline: 主动式全模态 AI 伙伴，具备 24/7 环境感知、智能体能力与具身情感引擎。
+  tagline: 以当前代码为依据，说明本地伙伴运行时、记忆系统、Agent 服务、插件、浏览器 UI 与 Electron 路由。
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -12,55 +12,55 @@ hero:
     - theme: brand
       text: 快速开始
       link: /zh-CN/guide/
-    - theme: brand
-      text: Steam 上获取
-      link: https://store.steampowered.com/app/4099310/__NEKO/
+    - theme: alt
+      text: 运行与部署
+      link: /zh-CN/deployment/
     - theme: alt
       text: API 参考
       link: /zh-CN/api/
     - theme: alt
-      text: 在 GitHub 上查看
+      text: 查看 GitHub
       link: https://github.com/Project-N-E-K-O/N.E.K.O
 
 features:
-  - icon: 🎮
-    title: Steam 创意工坊与社区
-    details: 已上架 Steam，完整支持创意工坊 UGC —— 分享和发现社区创建的角色、模型、语音包与插件。
-    link: https://store.steampowered.com/app/4099310/__NEKO/
-    linkText: 在 Steam 上查看
+  - icon: 🧭
+    title: 先选对运行环境
+    details: 源码开发在 / 提供浏览器 UI；Electron 分发则使用 /chat、/subtitle 等独立路由与窗口。
+    link: /zh-CN/guide/quick-start
+    linkText: 从这里开始
   - icon: 🎙️
-    title: 全模态对话
-    details: 语音、文字、视觉统一在一个对话循环中。实时语音搭载 RNNoise 神经网络降噪、AGC 与 VAD，超低延迟交互。
-    link: /zh-CN/architecture/
-    linkText: 了解更多
-  - icon: 💬
-    title: 主动搭话
-    details: 24/7 环境感知 —— 屏幕理解、社交媒体热点、个人动态、音乐与表情包。她会主动找你聊天。
-    link: /zh-CN/guide/
-    linkText: 了解更多
-  - icon: 🧠
-    title: 五维记忆系统
-    details: 通过嵌入向量和 BM25 混合索引实现语义召回。工作记忆、近期记忆、事实记忆、反思记忆、人格记忆五维记忆，支持滑动窗口压缩和持久化用户偏好。
-    link: /zh-CN/architecture/memory-system
-    linkText: 工作原理
-  - icon: 🤖
-    title: 智能体框架
-    details: 通过 MCP 工具、Computer Use、Browser Use 和 OpenFang A2A 适配器执行后台任务。自动任务规划、去重和并行执行。
-    link: /zh-CN/architecture/agent-system
-    linkText: 探索智能体
-  - icon: 🔌
-    title: 插件生态
-    details: 完整插件 SDK 与市场，支持自定义扩展。装饰器 API、异步生命周期钩子和插件间通信。内置 MCP、提醒、直播弹幕、智能家居等插件。
-    link: /zh-CN/plugins/
-    linkText: 构建插件
-  - icon: 🎭
-    title: Live2D、VRM、MMD、PNGTuber、猫咪桌宠
-    details: 五种具身化虚拟形象，支持情绪驱动表情、口型同步、待机动画、动作捕捉与全屏追踪。仅需 5 秒音频即可通过 MiniMax 或 CosyVoice 后端克隆任意声音。
+    title: 对话与虚拟形象
+    details: 按当前归属理解文字、音频、视觉、角色、Live2D、VRM、MMD、PNGTuber 与桌宠；不要复制另一套 React 聊天 UI。
     link: /zh-CN/frontend/
-    linkText: 前端指南
-  - icon: 🌐
-    title: 14+ 大模型服务商与国际化
-    details: OpenAI、Anthropic、Google、通义千问、DeepSeek、Groq、Ollama 等，开箱即用含免费模型。全量 UI 与 Prompt 本地化覆盖 8 种语言（简中、繁中、英、日、韩、俄、西、葡）。
-    link: /zh-CN/config/api-providers
-    linkText: 服务商列表
+    linkText: 前端架构
+  - icon: 🧠
+    title: 持久化记忆
+    details: 对话事件、投影、召回候选、证据与反思、人格、维护队列及可选本地向量检索是相互独立的层。
+    link: /zh-CN/architecture/memory-system
+    linkText: 记忆架构
+  - icon: 🤖
+    title: Agent 与插件
+    details: 从实际代码路径追踪任务状态、浏览器与桌面自动化、外部 Agent 适配、插件路由、SDK、Hosted UI 与打包契约。
+    link: /zh-CN/architecture/agent-system
+    linkText: Agent 架构
+  - icon: ▶️
+    title: 从源码启动
+    details: 使用 Python 3.11 和 uv，通过仓库脚本构建两个前端项目，再用 uv run python launcher.py 启动受支持的服务组。
+    link: /zh-CN/guide/dev-setup
+    linkText: 开发环境
+  - icon: 🔌
+    title: 端口与部署
+    details: 源码默认主服务 48911、记忆服务 48912；Docker 的宿主机 48911/48912 则分别映射 Nginx HTTP/HTTPS，不要混用两套含义。
+    link: /zh-CN/deployment/
+    linkText: 选择部署方式
+  - icon: 📡
+    title: API 契约
+    details: 查阅当前路由验证过的 REST、WebSocket、内部服务、Web 页面、运行时工具、云存档 staging 与截图桥。
+    link: /zh-CN/api/
+    linkText: 打开 API 参考
+  - icon: 🧰
+    title: 配置与贡献
+    details: 使用当前配置 schema 与各入口自己的优先级，并遵循 uv、i18n、隐私、结构对偶、测试与打包门禁。
+    link: /zh-CN/contributing/
+    linkText: 安全参与贡献
 ---

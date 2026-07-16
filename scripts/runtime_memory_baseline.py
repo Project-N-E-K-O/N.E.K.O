@@ -19,15 +19,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gc
+import hashlib
 import json
 import os
 import platform
+import signal
 import socket
 import statistics
 import subprocess
 import sys
 import time
 import tracemalloc
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -42,7 +45,20 @@ import psutil
 
 MIB = 1024 * 1024
 DEFAULT_SAMPLE_INTERVAL = 0.25
+HEALTH_APP_SIGNATURE = "N.E.K.O"
+DEFAULT_SERVICE_ROLES = ("main", "memory", "agent")
 _PROBED_EMBEDDING_SERVICES: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+_LOCAL_PROBE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirectHandler(),
+)
 
 
 def _mib(value: int | float | None) -> float | None:
@@ -500,21 +516,96 @@ def _in_process_checkpoint(
     return checkpoint
 
 
-def _metadata() -> dict[str, Any]:
+def _sha256_file(path: Path) -> str | None:
     try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _git_provenance(path: Path) -> dict[str, Any]:
+    """Record enough source state to attribute a benchmark without copying diffs."""
+    try:
+        root = Path(
+            subprocess.check_output(
+                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        )
         commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
+        status = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            stderr=subprocess.DEVNULL,
+        )
+        tracked_diff = subprocess.check_output(
+            ["git", "-C", str(root), "diff", "--binary", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
-        commit = ""
+        return {
+            "commit": "",
+            "dirty": None,
+            "status_sha256": None,
+            "tracked_diff_sha256": None,
+            "uv_lock_sha256": _sha256_file(path / "uv.lock"),
+        }
+    return {
+        "commit": commit,
+        "dirty": bool(status),
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+        "tracked_diff_sha256": hashlib.sha256(tracked_diff).hexdigest(),
+        "uv_lock_sha256": _sha256_file(root / "uv.lock"),
+    }
+
+
+def _metadata(args: argparse.Namespace) -> dict[str, Any]:
+    command = getattr(args, "command", None)
+    benchmark_source = _git_provenance(Path.cwd())
+    backend_source = (
+        _git_provenance(Path(args.backend_cwd).resolve())
+        if command == "stack"
+        else benchmark_source
+    )
     return {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "git_commit": commit,
+        "git_commit": backend_source["commit"],
+        "source": {
+            "benchmark": benchmark_source,
+            "backend": backend_source,
+        },
         "python": platform.python_version(),
         "platform": platform.platform(),
         "logical_cpu_count": psutil.cpu_count(),
         "ram_gib": round(psutil.virtual_memory().total / (1024**3), 3),
-        "sample_interval_s": DEFAULT_SAMPLE_INTERVAL,
+        "psutil": psutil.__version__,
+        "sample_interval_s": args.interval,
+        "sample_window_s": args.window,
+        "stack": (
+            {
+                "settle_s": args.settle,
+                "startup_timeout_s": args.timeout,
+                "shutdown_timeout_s": args.shutdown_timeout,
+                "topology": _parse_env(args.env).get("NEKO_MERGED", "auto"),
+            }
+            if command == "stack"
+            else None
+        ),
     }
 
 
@@ -713,14 +804,87 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _ports_ready(ports: list[int]) -> bool:
-    for port in ports:
+def _probe_health(port: int, *, timeout: float = 0.25) -> dict[str, Any] | None:
+    try:
+        with _LOCAL_PROBE_OPENER.open(
+            f"http://127.0.0.1:{port}/health",
+            timeout=timeout,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("app") != HEALTH_APP_SIGNATURE or payload.get("status") != "ok":
+        return None
+    return payload
+
+
+def _service_health_state(
+    ports: list[int],
+    roles: list[str],
+) -> tuple[bool, dict[str, dict[str, Any]]]:
+    state: dict[str, dict[str, Any]] = {}
+    instance_ids: set[str] = set()
+    for port, expected_role in zip(ports, roles):
+        health = _probe_health(port)
+        actual_role = str((health or {}).get("service") or "")
+        instance_id = str((health or {}).get("instance_id") or "")
+        role_ready = bool(health and actual_role == expected_role and instance_id)
+        state[expected_role] = {
+            "port": port,
+            "ready": role_ready,
+            "actual_service": actual_role or None,
+        }
+        if role_ready:
+            instance_ids.add(instance_id)
+    all_ready = all(item["ready"] for item in state.values())
+    same_instance = all_ready and len(instance_ids) == 1
+    return same_instance, state
+
+
+def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    for raw_path in paths:
+        path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
-                pass
-        except OSError:
-            return False
-    return True
+            with _LOCAL_PROBE_OPENER.open(
+                f"http://127.0.0.1:{port}{path}",
+                timeout=5.0,
+            ) as response:
+                body = response.read()
+                results[path] = {
+                    "status": int(response.status),
+                    "content_type": response.headers.get_content_type(),
+                    "body_bytes": len(body),
+                }
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            results[path] = {
+                "status": int(exc.code),
+                "content_type": exc.headers.get_content_type(),
+                "body_bytes": len(body),
+                "error": type(exc).__name__,
+            }
+        except (OSError, urllib.error.URLError) as exc:
+            results[path] = {
+                "status": None,
+                "content_type": None,
+                "body_bytes": 0,
+                "error": type(exc).__name__,
+            }
+    return results
+
+
+def _http_probe_validation_errors(
+    probes: dict[str, dict[str, Any]],
+) -> list[str]:
+    failed_paths = [
+        path for path, probe in probes.items() if probe.get("status") != 200
+    ]
+    if not failed_paths:
+        return []
+    return ["HTTP route probes failed: " + ", ".join(failed_paths)]
 
 
 def _assert_ports_available(ports: list[int]) -> None:
@@ -742,11 +906,55 @@ def _assert_ports_available(ports: list[int]) -> None:
         )
 
 
+def _port_released(port: int) -> bool:
+    """Require both no listener and immediate exclusive re-bindability."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+            return False
+    except OSError:
+        pass
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _capture_process_tree(pid: int) -> list[psutil.Process]:
+    try:
+        root = psutil.Process(pid)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return []
+    try:
+        return [root, *root.children(recursive=True)]
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return [root]
+
+
+def _process_is_alive(process: psutil.Process) -> bool:
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+        return False
+
+
+def _alive_process_pids(processes: Iterable[psutil.Process]) -> list[int]:
+    return sorted(process.pid for process in processes if _process_is_alive(process))
+
+
 def _terminate_process_trees(
     processes: Iterable[subprocess.Popen[Any]],
     observed_processes: Iterable[psutil.Process],
     timeout: float = 12.0,
-) -> None:
+) -> tuple[list[int], list[int]]:
     targets: dict[tuple[int, float], psutil.Process] = {}
     for target in observed_processes:
         try:
@@ -764,7 +972,8 @@ def _terminate_process_trees(
                 targets[(target.pid, target.create_time())] = target
             except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
                 continue
-    target_list = list(targets.values())
+    target_list = [target for target in targets.values() if _process_is_alive(target)]
+    forced_pids = sorted(target.pid for target in target_list)
     # Teardown is best-effort because processes can exit between discovery and action.
     for target in reversed(target_list):
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
@@ -773,6 +982,8 @@ def _terminate_process_trees(
     for target in alive:
         with suppress(psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             target.kill()
+    _gone, residual = psutil.wait_procs(alive, timeout=2.0)
+    return forced_pids, sorted(target.pid for target in residual)
 
 
 async def _run_synthetic_chat(
@@ -917,6 +1128,56 @@ def _parse_env(items: list[str]) -> dict[str, str]:
     return result
 
 
+def _request_graceful_shutdown(
+    process: subprocess.Popen[Any],
+    *,
+    ports: list[int],
+    timeout: float,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    signal_name = "SIGTERM"
+    tracked_processes = _capture_process_tree(process.pid)
+    tracked_pids = sorted(target.pid for target in tracked_processes)
+    try:
+        if os.name == "nt" and hasattr(signal, "CTRL_BREAK_EVENT"):
+            signal_name = "CTRL_BREAK_EVENT"
+            process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            process.send_signal(signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "requested": True,
+            "signal": signal_name,
+            "graceful": False,
+            "elapsed_s": round(time.perf_counter() - started_at, 3),
+            "exit_code": process.poll(),
+            "ports_closed": False,
+            "tracked_pids": tracked_pids,
+            "alive_pids": _alive_process_pids(tracked_processes),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    deadline = time.monotonic() + timeout
+    ports_closed = False
+    while time.monotonic() < deadline:
+        ports_closed = all(_port_released(port) for port in ports)
+        if process.poll() is not None and ports_closed:
+            break
+        time.sleep(0.1)
+    alive_pids = _alive_process_pids(tracked_processes)
+    return {
+        "requested": True,
+        "signal": signal_name,
+        "graceful": process.poll() == 0 and ports_closed and not alive_pids,
+        "elapsed_s": round(time.perf_counter() - started_at, 3),
+        "exit_code": process.poll(),
+        "ports_closed": ports_closed,
+        "tracked_pids": tracked_pids,
+        "alive_pids": alive_pids,
+        "error": None,
+    }
+
+
 def _spawn(
     command: list[str],
     *,
@@ -948,6 +1209,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
         _decode_command(args.electron_command) if args.electron_command else None
     )
     ports = _decode_ports(args.ports)
+    roles = [item.strip().lower() for item in args.services.split(",") if item.strip()]
+    if len(roles) != len(ports) or len(set(roles)) != len(roles):
+        raise ValueError("--services must contain one unique role for each --ports entry")
     _assert_ports_available(ports)
     processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
     checkpoints: list[dict[str, Any]] = []
@@ -956,6 +1220,12 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
     observed_processes: dict[tuple[int, float], psutil.Process] = {}
     started_at = time.perf_counter()
     ports_ready_elapsed_s: float | None = None
+    service_ready_elapsed_s: dict[str, float] = {}
+    final_health_state: dict[str, dict[str, Any]] = {}
+    shutdown_result: dict[str, Any] | None = None
+    http_probes: dict[str, dict[str, Any]] = {}
+    validation_errors: list[str] = []
+    result_payload: dict[str, Any] | None = None
 
     try:
         backend, backend_log = _spawn(
@@ -967,7 +1237,15 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
         processes.append(("backend", backend, backend_log))
         roots.append(backend.pid)
         deadline = time.monotonic() + args.timeout
-        while not _ports_ready(ports):
+        while True:
+            services_ready, health_state = _service_health_state(ports, roles)
+            elapsed = time.perf_counter() - started_at
+            for role, state in health_state.items():
+                if state["ready"] and role not in service_ready_elapsed_s:
+                    service_ready_elapsed_s[role] = round(elapsed, 3)
+            final_health_state = health_state
+            if services_ready:
+                break
             startup_samples.append(
                 _sample(roots, observed_processes=observed_processes)
             )
@@ -1017,6 +1295,8 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
         chat_result = None
         if args.synthetic_chat:
+            if "main" not in roles:
+                raise ValueError("--synthetic-chat requires a main role in --services")
 
             def _record_live_first_chat() -> None:
                 time.sleep(args.settle)
@@ -1032,7 +1312,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
             chat_result = asyncio.run(
                 _run_synthetic_chat(
-                    port=ports[0],
+                    port=ports[roles.index("main")],
                     character=args.chat_character,
                     prompt=args.chat_prompt,
                     timeout=args.chat_timeout,
@@ -1040,14 +1320,42 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                 )
             )
 
-        return {
+        if args.probe_path:
+            if "main" not in roles:
+                raise ValueError("--probe-path requires a main role in --services")
+            http_probes = _probe_http_paths(
+                ports[roles.index("main")],
+                args.probe_path,
+            )
+            validation_errors.extend(
+                _http_probe_validation_errors(http_probes)
+            )
+
+        if args.graceful_shutdown:
+            shutdown_result = _request_graceful_shutdown(
+                backend,
+                ports=ports,
+                timeout=args.shutdown_timeout,
+            )
+            if not shutdown_result["graceful"]:
+                validation_errors.append(
+                    "graceful shutdown did not exit cleanly with every port released"
+                )
+
+        result_payload = {
             "scenario": "stack",
+            "ready_contract": "signed_health_same_instance",
             "ports_ready_elapsed_s": round(ports_ready_elapsed_s, 3),
+            "services_ready_elapsed_s": service_ready_elapsed_s,
+            "service_health": final_health_state,
             "measurement_elapsed_s": round(time.perf_counter() - started_at, 3),
             "ports": ports,
             "startup_window": _series_summary(startup_samples),
             "checkpoints": checkpoints,
             "synthetic_chat": chat_result,
+            "http_probes": http_probes,
+            "shutdown": shutdown_result,
+            "validation_errors": validation_errors,
             "logs": {
                 "backend": str(output.with_suffix(".backend.log")),
                 "electron": str(output.with_suffix(".electron.log"))
@@ -1055,11 +1363,34 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                 else None,
             },
         }
+        return result_payload
     finally:
-        _terminate_process_trees(
+        forced_pids, residual_pids = _terminate_process_trees(
             (process for _name, process, _log_file in processes),
             observed_processes.values(),
         )
+        residual_ports = [port for port in ports if not _port_released(port)]
+        if result_payload is not None:
+            shutdown_tracked_pids = set((shutdown_result or {}).get("tracked_pids", []))
+            shutdown_forced_pids = [
+                pid for pid in forced_pids if pid in shutdown_tracked_pids
+            ]
+            result_payload["forced_cleanup"] = {
+                "forced_pids": forced_pids,
+                "residual_pids": residual_pids,
+                "residual_ports": residual_ports,
+            }
+            if shutdown_result is not None:
+                shutdown_result["forced_pids"] = shutdown_forced_pids
+            if args.graceful_shutdown and shutdown_forced_pids:
+                validation_errors.append(
+                    "graceful shutdown required forced process cleanup: "
+                    + ", ".join(str(pid) for pid in shutdown_forced_pids)
+                )
+            if residual_pids or residual_ports:
+                validation_errors.append(
+                    "forced cleanup left residual processes or bound ports"
+                )
         for _name, _process, log_file in processes:
             log_file.close()
 
@@ -1092,10 +1423,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     stack.add_argument("--electron-cwd", default=str(Path.cwd()))
     stack.add_argument("--ports", default="48911,48912,48915")
+    stack.add_argument("--services", default=",".join(DEFAULT_SERVICE_ROLES))
     stack.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     stack.add_argument("--timeout", type=float, default=150.0)
     stack.add_argument("--settle", type=float, default=5.0)
     stack.add_argument("--electron-settle", type=float, default=12.0)
+    stack.add_argument("--graceful-shutdown", action="store_true")
+    stack.add_argument("--shutdown-timeout", type=float, default=40.0)
+    stack.add_argument("--probe-path", action="append", default=[])
     stack.add_argument("--synthetic-chat", action="store_true")
     stack.add_argument("--chat-character", default="")
     stack.add_argument(
@@ -1111,6 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.interval <= 0 or args.window < 0:
         raise SystemExit("--interval must be positive and --window cannot be negative")
 
+    metadata = _metadata(args)
     if args.command == "scenario":
         tracemalloc.start(10)
         if args.name == "embedding":
@@ -1122,8 +1458,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         result = _stack(args)
 
-    payload = {"metadata": _metadata(), **result}
+    payload = {"metadata": metadata, **result}
     _write_json(Path(args.output), payload)
+    if result.get("validation_errors"):
+        print("benchmark validation failed: " + "; ".join(result["validation_errors"]))
+        return 1
     return 0
 
 

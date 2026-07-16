@@ -361,7 +361,10 @@ async def memory_browser(request: Request):
 async def cookies_login_page(request: Request):
     """Media credential acquisition page."""
     templates = get_templates()
-    return templates.TemplateResponse('templates/cookies_login.html', {"request": request})
+    return templates.TemplateResponse('templates/cookies_login.html', {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 

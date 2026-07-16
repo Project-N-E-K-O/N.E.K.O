@@ -3741,6 +3741,7 @@
         "title": "Centro de control de credenciales N.E.K.O",
         "header": "Centro de adquisición de credenciales",
         "bilibili": "Bilibili",
+        "youtube": "YouTube",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3768,6 +3769,7 @@
         "thisPlatform": "esta plataforma",
         "instructions": {
             "bilibili": "<b>Destino:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
+            "youtube": "<b>1. Obtén la Cookie</b><br>En un navegador con la sesión de YouTube iniciada:<br>1. Abre <b>youtube.com</b><br>2. Pulsa F12 → Network<br>3. Actualiza la página y selecciona una solicitud <code>youtubei/v1/browse</code><br>4. Copia el valor completo de Cookie desde Request Headers",
             "douyin": "<b>Destino:</b> Vaya a <b>douyin.com</b> para buscar estas cookies.",
             "kuaishou": "<b>Destino:</b> Vaya a <b>kuaishou.com</b> para buscar estas cookies.",
             "weibo": "<b>Destino:</b> Vaya a <b>weibo.com</b> para buscar estas cookies.",
@@ -3784,6 +3786,10 @@
             "step4": "Busque <span class=\"highlight-text\">Cookies</span> en la barra lateral izquierda, haga clic en el dominio y copie los valores requeridos a la derecha."
         },
         "fields": {
+            "youtubeCookie": {
+                "label": "Cookie completa",
+                "desc": "Pega el valor completo de Cookie de Request Headers (debe incluir SAPISID)"
+            },
             "SESSDATA": {
                 "label": "DATOSESSDATA",
                 "desc": "Credencial de identidad principal (obligatoria)"
@@ -3900,6 +3906,12 @@
     "music": {
         "unknownTrack": "Pista desconocida",
         "unknownArtist": "Artista desconocido",
+        "unknownSource": "Fuente desconocida",
+        "volumeControl": "Volumen",
+        "closePlayer": "Cerrar reproductor",
+        "trackTooLong": "Esta pista supera el límite de duración para recomendaciones",
+        "loadTimeout": "Se agotó el tiempo de carga de la música",
+        "loading": "Cargando",
         "play": "Jugar",
         "pause": "Pausar",
         "playing": "Jugando",

@@ -1,74 +1,32 @@
 # Model Configuration
 
-N.E.K.O. uses different AI models for different tasks. Each can be individually configured.
+N.E.K.O. resolves models by **role**, not through one global model string. The selected profile supplies defaults; supported values in `core_config.json` can override individual roles.
 
-## Model roles
+| Role | Runtime field |
+| --- | --- |
+| Core | `CORE_MODEL` |
+| Conversation | `CONVERSATION_MODEL` |
+| Summary | `SUMMARY_MODEL` |
+| Correction | `CORRECTION_MODEL` |
+| Emotion | `EMOTION_MODEL` |
+| Vision | `VISION_MODEL` |
+| Agent | `AGENT_MODEL` |
+| Realtime | `REALTIME_MODEL` |
+| TTS | `TTS_MODEL` |
 
-The model for each role is resolved from the **selected assist provider** (`config/api_providers.json` → `assist_api_providers`), so there is no single global default — each provider ships its own per-role models. The columns below show the shipped defaults for the OpenAI, Claude (Anthropic), and Qwen providers. (The `DEFAULT_*_MODEL` constants in `config/__init__.py` are last-resort fallbacks only.)
+Feature code may derive additional role values from these settings.
 
-| Role | Config field | OpenAI | Claude | Qwen |
-|------|--------------|--------|--------|------|
-| Conversation | `conversation_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
-| Summary | `summary_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
-| Correction | `correction_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus` |
-| Emotion | `emotion_model` | `gpt-4.1-nano` | `claude-haiku-4-5-20251001` | `qwen3.6-flash` |
-| Vision | `vision_model` | `gpt-5-chat-latest` | `claude-sonnet-4-6` | `qwen3.7-plus-2026-05-26` |
-| Agent | `agent_model` | `glm-5v-turbo` | `claude-opus-4-6` | `qwen3.7-plus` |
+## Recommended flow
 
-> **Note:** `agent_model` is the model used for agent (Computer Use) task grounding. Several providers intentionally ship a strong vision/grounding model here regardless of their own family — e.g. the OpenAI provider's `agent_model` is `glm-5v-turbo` (a GLM vision model). These values are copied verbatim from `config/api_providers.json` and are by design, not typos.
+1. Select Core and Assist providers in the Web UI.
+2. Enter credentials for the selected providers.
+3. Run the UI connectivity checks.
+4. Only then configure a supported per-role model, URL, or key.
 
-## Custom model endpoints
+A saved resolved provider URL is reused only while it remains in the current profile's candidate set.
 
-Each model role can use a custom API endpoint. This is configured in `core_config.json` or via the Web UI:
+## Avoid catalog snapshots
 
-```json
-{
-  "conversationModel": "custom-model-name",
-  "conversationModelUrl": "https://custom-api.example.com/v1",
-  "conversationModelApiKey": "sk-xxxxx"
-}
-```
+Model IDs, endpoints, thinking controls, token limits, and voice catalogs are provider-specific and change over time. Use the Web UI and `config/api_providers.json` from the same revision as the running app. Examples are not compatibility promises.
 
-When a custom URL/key is set, it overrides the global assist API provider for that specific role.
-
-## Computer Use models
-
-Computer Use requires two vision models:
-
-| Role | Default | Purpose |
-|------|---------|---------|
-| Planning model | `qwen3-vl-plus-2025-09-23` | Analyze screenshots and plan actions |
-| Grounding model | `qwen3-vl-plus-2025-09-23` | Locate UI elements for clicking |
-
-Configure via `core_config.json`:
-
-```json
-{
-  "computerUseModel": "qwen3-vl-plus-2025-09-23",
-  "computerUseModelUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "computerUseModelApiKey": "sk-xxxxx",
-  "computerUseGroundModel": "qwen3-vl-plus-2025-09-23",
-  "computerUseGroundUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "computerUseGroundApiKey": "sk-xxxxx"
-}
-```
-
-## Thinking mode configuration
-
-Some models support "thinking" or "extended reasoning" modes. N.E.K.O. disables these by default for faster responses. The disable format varies by provider:
-
-| Provider | Disable format |
-|----------|---------------|
-| Qwen, Step, DeepSeek | `{"enable_thinking": false}` |
-| GLM | `{"thinking": {"type": "disabled"}}` |
-| Gemini 2.x | `{"thinking_config": {"thinking_budget": 0}}` |
-| Gemini 3.x | `{"thinking_config": {"thinking_level": "low"}}` |
-
-This is handled automatically in `config/__init__.py` based on the model name.
-
-## Image rate limiting
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `NATIVE_IMAGE_MIN_INTERVAL` | 1.5s | Minimum interval between screen captures |
-| `IMAGE_IDLE_RATE_MULTIPLIER` | 5x | Multiplier when no voice activity |
+Adding a role or field requires synchronized loader, config-manager, router/UI, tests, and all eight locale files. Do not silently pass unsupported parameters; model wrappers deliberately omit options incompatible with reasoning/extended-thinking APIs.

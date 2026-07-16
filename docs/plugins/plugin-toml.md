@@ -1,6 +1,10 @@
 # Plugin Config (plugin.toml)
 
-Every plugin has a `plugin.toml` in its root folder. It tells N.E.K.O what your plugin is, how to load it, and what capabilities it has.
+Every plugin has a `plugin.toml` in its root folder. It tells N.E.K.O what the package is, which Python class the host must load, and which optional capabilities it exposes.
+
+::: warning Two different kinds of entry
+`[plugin].entry = "module.path:ClassName"` is a **host-loading entry point**. It imports one `NekoPluginBase` class when the plugin process starts. Runtime entry IDs such as `greet` come from `@plugin_entry(id="greet")` or `register_dynamic_entry(...)`; the Agent selects those IDs only after the plugin has loaded.
+:::
 
 Below is a complete config for a fictional "Smart Notes" plugin. This plugin can search and create notes, has its own UI panel, supports multiple languages, and can be called by the AI agent.
 
@@ -10,6 +14,7 @@ Below is a complete config for a fictional "Smart Notes" plugin. This plugin can
 [plugin]
 id = "smart_notes"
 name = "Smart Notes"
+type = "plugin"
 description = "Manage your notes: search, create, organize, with AI-powered classification."
 short_description = "Note management with AI-powered organization."
 keywords = ["note", "笔记", "memo", "record", "メモ"]
@@ -66,7 +71,9 @@ name = "Smart Notes"
 entry = "plugin.plugins.smart_notes:SmartNotesPlugin"
 ```
 
-These three fields are **required**. `id` must match the folder name. `entry` tells the system where to find your Python class.
+These three fields are **required**. `id` must match `^[A-Za-z0-9_-]+$` and must be unique. Keeping it equal to the folder name is strongly recommended: a mismatch can still load, but profile lookup and tooling may assume `<plugin.id>/plugin.toml`. `entry` must use `module.path:ClassName` and resolve to a `NekoPluginBase` subclass; a `PluginRouter` cannot be launched directly.
+
+For a normal plugin, `type = "plugin"` is optional because it is the default. Use `type = "adapter"` only for an Adapter package. The removed `extension` type and `[plugin.host]` table are rejected.
 
 ```toml
 description = "Manage your notes: search, create, organize, with AI-powered classification."
@@ -74,13 +81,15 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "笔记", "memo", "record", "メモ"]
 ```
 
-These three fields determine whether the **AI agent can find your plugin**:
+These fields affect Agent routing after the host has loaded the plugin:
 
-- `short_description` — The AI uses this to judge "what can this plugin do". Keep it concise and accurate.
-- `keywords` — The AI uses these to match user intent. If the user says "take a note" and your keywords include "note", it matches.
-- `description` — Full description for humans, shown in Plugin Manager.
+- `description` — Full description used in plugin metadata and fine-grained Agent assessment.
+- `short_description` — Compact description used by coarse screening. If absent, the Agent may generate and cache one from `description`.
+- `keywords` — Regular-expression patterns. Matches are unioned into the Stage 1 candidate set; they do not bypass Stage 2 or guarantee execution.
 
-If your plugin doesn't need to be called by the AI (e.g. a pure listener), you can skip these and add `passive = true`.
+Set `passive = true` for a listener/integration that must never participate in Agent dispatch. A non-passive plugin also needs at least one Agent-visible runtime entry before it can become a candidate.
+
+The Agent's final Stage 2 decision returns a `plugin_id` and runtime `entry_id`. Both are checked against the candidates shown to that assessment; one corrective retry is allowed, then an invalid decision is rejected.
 
 ```toml
 version = "1.2.0"
@@ -109,12 +118,14 @@ recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
 ```
 
-Tells the system which SDK version your plugin was written for. If the user's N.E.K.O is too old or too new, the system will warn or refuse to load.
+Tells the host which plugin SDK versions this package supports. Values use Python packaging specifier syntax.
 
-- `supported` — Below this range: refused to load
-- `recommended` — Best experience in this range
-- `untested` — Allowed but shows "untested" warning
-- `conflicts` — Explicitly incompatible versions
+- `supported` — Versions accepted without an untested exception
+- `recommended` — Best-tested range; being outside it produces a warning
+- `untested` — Additional allowed range that produces a warning
+- `conflicts` — Explicitly rejected version ranges, even if another range matches
+
+If `supported` is present, a host outside both `supported` and `untested` is not loaded. Invalid specifiers are also rejected.
 
 ---
 
@@ -124,6 +135,7 @@ Tells the system which SDK version your plugin was written for. If the user's N.
 [plugin_runtime]
 enabled = true
 auto_start = true
+priority = 0
 timeout = 10
 startup_failure = "warn"
 ```
@@ -132,6 +144,7 @@ startup_failure = "warn"
 - `startup_failure` - What to do if `lifecycle.startup` raises after the process is alive. Omit it to default to `warn`: `warn` keeps the plugin running and marks startup as degraded, `fail` aborts startup, and `ignore` only logs the error.
 - `enabled` — Set to `false` to temporarily disable without deleting files
 - `auto_start` — When `true`, starts automatically with N.E.K.O; otherwise start manually from the panel
+- `priority` — Optional integer runtime ordering hint
 
 ---
 
@@ -207,7 +220,7 @@ max_per_page = 20
 auto_classify = true
 ```
 
-Any section the framework doesn't recognize becomes your business config. Read it in code:
+Additional top-level sections are preserved as business config. Read them in code:
 
 ```python
 cfg = await self.config.dump()
@@ -235,4 +248,4 @@ plugin/plugins/smart_notes/
 └── data/                    ← runtime data (auto-created, self.data_path() points here)
 ```
 
-Only `plugin.toml` and `__init__.py` are required. Everything else is created as needed.
+Only `plugin.toml` and the importable Python module named by `[plugin].entry` are required. The module does not have to be `__init__.py`, although that is the common layout.

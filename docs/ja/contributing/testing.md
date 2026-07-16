@@ -1,135 +1,55 @@
+
 # テスト
 
-N.E.K.O. はユニットテスト、フロントエンド統合テスト、エンドツーエンドフローをカバーする包括的なテストスイートを備えています。
-
-## セットアップ
+## 準備
 
 ```bash
-# 依存関係をインストール
 uv sync
-
-# Playwright ブラウザをインストール（フロントエンド & e2e テスト用）
-uv run playwright install
+uv run playwright install chromium
 ```
 
-### テスト用 API キー
+ルートの `tests/conftest.py` も Chromium がない場合にインストールを試みますが、明示的な準備のほうが予測可能です。`tests/api_keys.json` は commit しません。外部サービスを実際に呼ぶテストでのみ template から作成します。
+
+## よく使うコマンド
 
 ```bash
-cp tests/api_keys.json.template tests/api_keys.json
-# tests/api_keys.json を編集して API キーを入力
+# ルート全体
+uv run pytest -q
+
+# 対象 path／marker
+uv run pytest tests/unit -q
+uv run pytest tests/frontend -m frontend -q
+uv run pytest tests/e2e -m e2e -q
+
+# 手動テスト：実 API、画面、ブラウザー。監督下でのみ実行
+uv run pytest -m manual --run-manual -s
+
+# plugin suite は独自の pytest 設定を使用
+uv run pytest plugin/tests -q
 ```
 
-このファイルは gitignore されており、コミットされません。
+現在の `tests/conftest.py` に `--run-e2e` はありません。opt-in CLI flag は `--run-manual` だけです。Performance test は所有テストの `RUN_PERF_TESTS=true` を使います。
 
-## テストの実行
+## Marker
 
-::: warning
-すべてのテストコマンドは正しい Python 環境を使用するために `uv run` を使用する必要があります。
-:::
+ルート `pytest.ini` は `unit`、`frontend`、`e2e`、`performance`、`plugin_unit`、`plugin_e2e` を登録します。`conftest.py` は `manual` を追加し、明示的に有効化しない限り手動テストを skip します。
 
-```bash
-# すべてのテスト（e2e を除く）
-uv run pytest tests/ -s
+ディレクトリ名だけでは挙動を証明できません。fixture とテストコードを確認し、server 起動、Playwright、外部 credential、ローカル UI／OS 状態の変更があるか判断してください。
 
-# ユニットテストのみ
-uv run pytest tests/unit -s
+## CI の範囲
 
-# フロントエンド統合テスト
-uv run pytest tests/frontend -s
+- `.github/workflows/plugin-tests.yml`：Windows 上の plugin suite と選択されたルート契約。
+- `.github/workflows/analyze.yml`：Ruff とプロジェクト固有の静的契約。
+- `.github/workflows/docs.yml`：`npm ci` と VitePress build。
+- desktop／Docker workflow はパッケージング経路を別に検証します。
 
-# エンドツーエンドテスト（明示的なフラグが必要）
-uv run pytest tests/e2e --run-e2e -s
-```
+一般的な GitHub workflow は、完全な cross-platform ルート `pytest` を保証しません。ローカルで実際に実行した内容を正確に記録してください。
 
-## テスト構成
+## テスト作成
 
-```
-tests/
-├── conftest.py                # 共有フィクスチャ（サーバーライフサイクル、ページ、データディレクトリ）
-├── api_keys.json              # API キー（gitignore 対象）
-├── unit/
-│   ├── test_providers.py      # マルチプロバイダー API 接続
-│   ├── test_text_chat.py      # OmniOfflineClient テキスト + ビジョンチャット
-│   ├── test_voice_session.py  # OmniRealtimeClient WebSocket セッション
-│   └── test_video_session.py  # OmniRealtimeClient ビデオ/画面ストリーミング
-├── frontend/
-│   ├── test_api_settings.py   # API キー設定ページ
-│   ├── test_chara_settings.py # キャラクター管理ページ
-│   ├── test_memory_browser.py # メモリブラウザページ
-│   ├── test_voice_clone.py    # ボイスクローンページ
-│   └── test_emotion.py        # Live2D + VRM 感情マネージャーページ
-├── e2e/
-│   └── test_e2e_full_flow.py  # 完全なアプリジャーニー（8 ステージ）
-├── utils/
-│   ├── llm_judger.py          # LLM ベースのレスポンス品質評価器
-│   └── audio_streamer.py      # オーディオストリーミングテストユーティリティ
-└── test_inputs/
-    ├── script.md              # オーディオテスト用の録音スクリプト
-    └── screenshot.png         # ビジョンテスト用のテストスクリーンショット
-```
-
-## テストカテゴリ
-
-### ユニットテスト (`tests/unit/`)
-
-コアバックエンドコンポーネントを分離してテストします：
-
-- **プロバイダー接続**: サポートされているすべてのプロバイダーへの API 接続を検証
-- **テキストチャット**: テキストとビジョン入力で `OmniOfflineClient` をテスト
-- **ボイスセッション**: `OmniRealtimeClient` の WebSocket 接続をテスト
-- **ビデオセッション**: 画面共有とビデオストリーミングをテスト
-
-### フロントエンドテスト (`tests/frontend/`)
-
-Playwright を使用して Web UI ページをテストします：
-
-- **API 設定**: キー入力、プロバイダー切り替え、保存/読み込み
-- **キャラクター設定**: CRUD 操作、性格編集
-- **メモリブラウザ**: メモリファイルの一覧、編集、保存
-- **ボイスクローン**: アップロードインターフェース、ボイスプレビュー
-- **感情マネージャー**: Live2D と VRM の感情マッピング
-
-### E2E テスト (`tests/e2e/`)
-
-完全なシステムを実行する完全なユーザージャーニーテストです。以下の理由により `--run-e2e` フラグが必要です：
-
-- 実際のサーバープロセスを起動する
-- 実際の API 呼び出しを行う
-- 実行に長い時間がかかる
-
-## テストユーティリティ
-
-### LLM Judger (`tests/utils/llm_judger.py`)
-
-レスポンスの品質を評価する LLM ベースの評価器です。e2e テストでキャラクターの応答が文脈的に適切で、キャラクターに沿っており、事実として妥当であることを検証するために使用されます。
-
-### Playwright パターン
-
-フロントエンドテストは **偵察後アクション** パターンに従います：
-
-1. ページに移動する
-2. `networkidle` を待つ（JS レンダリングコンテンツには重要）
-3. レンダリングされた DOM を検査する
-4. 検出したセレクターを使用してアクションを実行する
-
-```python
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
-    page.goto('http://localhost:48911')
-    page.wait_for_load_state('networkidle')
-    # ページとの安全なインタラクションが可能
-```
-
-::: tip
-CI 互換性のために常に Chromium をヘッドレスモードで起動してください。動的コンテンツを検査する前に `networkidle` を待ってください。
-:::
-
-## 新しいテストの作成
-
-1. テストファイルを適切なサブディレクトリに配置します（`unit/`、`frontend/`、`e2e/`）
-2. pytest マーカーを使用します: `@pytest.mark.unit`、`@pytest.mark.frontend`、`@pytest.mark.e2e`
-3. サーバーライフサイクルとページセットアップには `conftest.py` の共有フィクスチャを使用します
-4. 既存の命名規則に従います: `test_<module>_<feature>.py`
+- Regression test は所有する test cohort に置きます。
+- 一時 path と合成されたプライバシー安全な内容を使います。
+- 明示的な manual／integration test 以外では実 API を避けます。
+- async test を決定的にし、任意 sleep で lifecycle 同期を置き換えません。
+- 実行契約が明確な場合だけ marker を追加／再利用します。
+- i18n／provider 変更は、一つだけでなく同期対象のすべてを検証します。

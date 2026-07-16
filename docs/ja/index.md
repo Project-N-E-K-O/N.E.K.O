@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Project N.E.K.O.
   text: 開発者ドキュメント
-  tagline: プロアクティブなオムニモーダルAIコンパニオン — 24時間環境認識、エージェント機能、具現化された感情エンジンを搭載。
+  tagline: 現在のコードに基づく、ローカル companion runtime、memory、Agent service、plugin、browser UI、Electron route の文書です。
   image:
     src: /logo.jpg
     alt: N.E.K.O. ロゴ
@@ -12,55 +12,55 @@ hero:
     - theme: brand
       text: はじめる
       link: /ja/guide/
-    - theme: brand
-      text: Steamで入手
-      link: https://store.steampowered.com/app/4099310/__NEKO/
     - theme: alt
-      text: APIリファレンス
+      text: 実行とデプロイ
+      link: /ja/deployment/
+    - theme: alt
+      text: API リファレンス
       link: /ja/api/
     - theme: alt
-      text: GitHubで見る
+      text: GitHub で見る
       link: https://github.com/Project-N-E-K-O/N.E.K.O
 
 features:
-  - icon: 🎮
-    title: Steamワークショップ & コミュニティ
-    details: Steamで配信中。ワークショップUGCに完全対応 — コミュニティが作成したキャラクター、モデル、ボイスパック、プラグインを共有・発見できます。
-    link: https://store.steampowered.com/app/4099310/__NEKO/
-    linkText: Steamで見る
+  - icon: 🧭
+    title: Runtime を選ぶ
+    details: Source 開発では / に browser UI を提供し、Electron distribution では /chat や /subtitle などの独立した route／window を使います。
+    link: /ja/guide/quick-start
+    linkText: ここから開始
   - icon: 🎙️
-    title: オムニモーダル対話
-    details: 音声・テキスト・ビジョンを統合した対話ループ。RNNoiseニューラルノイズ除去、AGC、VADによる超低レイテンシのリアルタイム音声。
-    link: /ja/architecture/
-    linkText: 詳しく見る
-  - icon: 💬
-    title: プロアクティブチャット
-    details: 24時間環境認識 — 画面理解、SNSトレンド、個人フィード、音楽やミーム。彼女から会話を始めてくれます。
-    link: /ja/guide/
-    linkText: 詳しく見る
-  - icon: 🧠
-    title: 五次元メモリシステム
-    details: EmbeddingベクトルとBM25のハイブリッドインデックスによるセマンティック検索。ワーキング記憶・直近記憶・事実記憶・振り返り記憶・ペルソナ記憶の五次元構成。スライディングウィンドウ圧縮と永続的ユーザー設定に対応。
-    link: /ja/architecture/memory-system
-    linkText: 仕組みを見る
-  - icon: 🤖
-    title: エージェントフレームワーク
-    details: MCPツール、Computer Use、Browser Use、OpenFang A2Aアダプターによるバックグラウンドタスク実行。自動タスク計画、重複排除、並列実行に対応。
-    link: /ja/architecture/agent-system
-    linkText: エージェントを探る
-  - icon: 🔌
-    title: プラグインエコシステム
-    details: プラグインSDKとマーケットプレイスによるカスタム拡張。デコレーターAPI、非同期ライフサイクルフック、プラグイン間通信に対応。MCP、リマインダー、ライブ配信、スマートホームなどの組み込みプラグイン付き。
-    link: /ja/plugins/
-    linkText: プラグインを作る
-  - icon: 🎭
-    title: Live2D・VRM・MMD・PNGTuber・猫デスクトップペット
-    details: 5種類の具現化アバター形態。感情連動の表情、リップシンク、アイドルアニメーション、モーションキャプチャ、全画面トラッキングに対応。5秒の音声サンプルからMiniMaxまたはCosyVoiceでどんな声でもクローン可能。
+    title: 会話と Avatar
+    details: Text、audio、vision、character、Live2D、VRM、MMD、PNGTuber、desktop pet の現在の所有境界に従い、React chat UI を複製しません。
     link: /ja/frontend/
-    linkText: フロントエンドガイド
-  - icon: 🌐
-    title: 14+ AIプロバイダー & 国際化
-    details: OpenAI、Anthropic、Google、通義千問、DeepSeek、Groq、Ollamaなど — 無料モデルもすぐ使えます。UI・プロンプト全体を8言語にローカライズ（簡体字・繁体字中国語、英語、日本語、韓国語、ロシア語、スペイン語、ポルトガル語）。
-    link: /ja/config/api-providers
-    linkText: プロバイダー一覧
+    linkText: Frontend 構成
+  - icon: 🧠
+    title: 永続 Memory
+    details: Event 永続化、projection、recall candidate、evidence／reflection、persona、maintenance queue、任意の local-vector retrieval は別レイヤーです。
+    link: /ja/architecture/memory-system
+    linkText: Memory アーキテクチャ
+  - icon: 🤖
+    title: Agent と Plugin
+    details: Task state、browser／computer automation、外部 Agent adapter、plugin routing、SDK、Hosted UI、packaging を実装済み path から追跡します。
+    link: /ja/architecture/agent-system
+    linkText: Agent アーキテクチャ
+  - icon: ▶️
+    title: Source から起動
+    details: Python 3.11 を uv 経由で使い、repository script で二つの frontend を build し、uv run python launcher.py でサポート対象 suite を起動します。
+    link: /ja/guide/dev-setup
+    linkText: 開発環境
+  - icon: 🔌
+    title: Port とデプロイ
+    details: Source の既定は main service 48911、memory service 48912 です。Docker の host 48911/48912 は Nginx HTTP/HTTPS なので、意味を混同しないでください。
+    link: /ja/deployment/
+    linkText: デプロイ方式
+  - icon: 📡
+    title: API 契約
+    details: 現在の router で確認された REST、WebSocket、内部 service、Web page、runtime tool、cloud-save staging、capture bridge を参照できます。
+    link: /ja/api/
+    linkText: API を開く
+  - icon: 🧰
+    title: 設定とコントリビューション
+    details: 現行 schema と surface ごとの優先順位を使い、uv、i18n、privacy、構造対称性、test、packaging gate に従います。
+    link: /ja/contributing/
+    linkText: 安全に貢献する
 ---

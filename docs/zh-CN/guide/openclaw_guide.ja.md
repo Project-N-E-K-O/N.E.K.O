@@ -1,93 +1,72 @@
-# NEKO から QwenPaw に接続する方法
 
-## QwenPaw インストールガイド
+# N.E.K.O. を QwenPaw に接続する
 
-### ステップ 1：インストール
+N.E.K.O. は既存設定との互換性のため、QwenPaw 連携を引き続き **OpenClaw** と呼びます。このガイドの OpenClaw スイッチは、別プロセスで動作する QwenPaw サービスへ接続します。
 
-Python を手動で設定する必要はありません。1 行のコマンドで `uv` の導入、仮想環境の作成、QwenPaw 本体と依存関係のインストールまで自動で行われます。なお、ネットワーク環境や企業の権限制限によっては利用できない場合があります。
+## 1. 配布元を確認してインストール
 
-macOS / Linux:
+現在の手順は [QwenPaw 公式リポジトリ](https://github.com/agentscope-ai/QwenPaw)で確認してください。以下のコマンドはリモートのインストールスクリプトをダウンロードして直接実行します。セキュリティポリシーで必要な場合は、先にスクリプトを確認してください。制限されたネットワークや管理対象端末では失敗することがあります。
+
+macOS / Linux：
 
 ```bash
 curl -fsSL https://qwenpaw.agentscope.io/install.sh | bash
 ```
 
-Windows（PowerShell）:
+Windows PowerShell：
 
 ```powershell
 irm https://qwenpaw.agentscope.io/install.ps1 | iex
 ```
 
-### ステップ 2：初期化
+インストーラーは `uv`、隔離環境、QwenPaw と依存関係を準備します。完了後は新しい terminal を開いてください。
 
-インストール後、新しいターミナルを開いて次を実行します。
+## 2. 初期化
 
 ```bash
 qwenpaw init --defaults
 ```
 
-初期化時には安全警告が表示されます。QwenPaw はローカル環境で動作し、同じインスタンスを複数人で共有すると、ファイル、コマンド、シークレットへのアクセス権も共有されると説明します。内容を確認し、`yes` を入力して続行してください。
+承認前に QwenPaw のセキュリティ警告を読んでください。一つのローカル instance は、実行 account が利用できる file、command、credential にアクセスできます。信頼できないユーザー間で共有しないでください。
 
-![QwenPaw 初期化時のセキュリティ警告](assets/openclaw_guide/image1.png)
+![QwenPaw の初期化時セキュリティ通知](assets/openclaw_guide/image1.png)
 
-### ステップ 3：起動
-
-```bash
-qwenpaw app
-```
-
-正常に起動すると、通常はターミナルの最後に次が表示されます。
-
-```text
-INFO:     Uvicorn running on http://127.0.0.1:8088 (Press CTRL+C to quit)
-```
-
-起動後、`http://127.0.0.1:8088` にアクセスすると QwenPaw コンソールを開けます。
-
-### ステップ 4：人格ファイルの置き換え（任意）
-
-初期化後、QwenPaw は自動的に設定ディレクトリを作成します。
-
-- Windows の既定パス: `C:\Users\ユーザー名\.qwenpaw`
-- macOS の既定パス: `~/.qwenpaw`
-
-`.qwenpaw` は隠しフォルダなので、必要に応じて表示してください。
-
-- Windows: エクスプローラーで隠し項目を表示
-- macOS: Finder で `Command + Shift + .`
-
-QwenPaw を N.E.K.O 用の純粋なバックエンド実行役として使いたい場合は、次の置き換えファイルをダウンロードします。
-
-- [置き換えファイル.zip](assets/openclaw_guide/替换文件.zip)
-
-圧縮ファイル内の `SOUL.md`、`AGENTS.md`、`PROFILE.md` を `.qwenpaw/workspaces/default` にコピーして上書きし、そのディレクトリの `BOOTSTRAP.md` は削除してください。
-
-その後、`CTRL+C` で QwenPaw を停止し、次で再起動します。
+## 3. 起動と確認
 
 ```bash
 qwenpaw app
 ```
 
-## 基本設定：モデル設定
+既定の console は `http://127.0.0.1:8088/` です。terminal を動かしたまま、browser で開きます。表示できなければ、N.E.K.O. を有効にする前に QwenPaw の起動エラーを解消してください。
 
-QwenPaw コンソールを開き、「モデル」ページに移動して使用したいプロバイダを選びます。初心者には `DashScope` が分かりやすいですが、API Key に応じて別のプロバイダでも構いません。
+認証とネットワーク境界を理解して設定するまでは、localhost の外へ公開しないでください。
 
-設定を開き、API Key を入力して保存します。
+## 4. QwenPaw でモデルを設定
 
-![QwenPaw のモデル設定画面](assets/openclaw_guide/image2.png)
+QwenPaw console の model page を開き、provider と必要な credential を設定して保存します。その後 chat page で設定済み model を選びます。利用可能な provider／model 名はインストール中の QwenPaw version に依存するため、コピーされた一覧ではなく現在の UI を確認してください。
 
-保存後、チャット画面に戻ると設定したモデルを選択できます。
+![QwenPaw のモデル設定](assets/openclaw_guide/image2.png)
 
-## N.E.K.O で OpenClaw を有効化する
+## 5. 任意：executor persona
 
-N.E.K.O の内部名は引き続き `openclaw` のままなので、UI に表示される `OpenClaw` トグルは QwenPaw を意味します。
+同梱の[置換用 archive](assets/openclaw_guide/qwenpaw-executor-profile.zip)には、executor 向けの `SOUL.md`、`AGENTS.md`、`PROFILE.md` が含まれます。接続に必須ではなく、QwenPaw の挙動を変更します。
 
-次の順番で操作してください。
+置換前に：
 
-1. N.E.K.O のネコクローパネルを開く
-2. まずネコクローマスタースイッチを ON にする
-3. `openclawUrl` が `http://127.0.0.1:8088` を指していることを確認する
-4. 次に `OpenClaw` のサブスイッチを ON にする
-5. 利用可否チェックが通るのを待つ
+1. QwenPaw を停止し、`.qwenpaw/workspaces/default` を backup します。
+2. archive の内容を確認し、現在の workspace と比較します。
+3. 置換する意図のある file だけをコピーします。
 
-N.E.K.O はまず QwenPaw の互換エンドポイントを試し、必要に応じて自動で `process` エンドポイントへフォールバックします。メインの接続経路ではカスタムチャンネル設定は不要です。
+設定 directory は通常、Windows では `%USERPROFILE%\.qwenpaw`、macOS/Linux では `~/.qwenpaw` です。`BOOTSTRAP.md` の削除は、この任意 executor-profile 手順だけの一部であり、N.E.K.O. 接続には不要です。変更後に `qwenpaw app` を再起動します。
+
+## 6. N.E.K.O. で有効化
+
+1. QwenPaw を起動したままにします。
+2. N.E.K.O. の paw／Agent panel を開きます。
+3. Agent master switch を有効にします。
+4. **OpenClaw** child switch を有効にします。
+5. availability check を待ちます。
+
+N.E.K.O. の既定接続先は `http://127.0.0.1:8088` です。QwenPaw が別 address を使う場合、N.E.K.O. の core 設定で `openclawUrl`（adapter は `qwenpawUrl` も受理）を更新してから再試行します。
+
+現在の adapter は QwenPaw v2 console API と旧 agent-compatible API の両方を認識します。Availability check は version に応じて `/api/version` または `/api/agent/health` を確認し、一致する console／agent endpoint を使います。既定 console 構成では別の channel file は不要です。

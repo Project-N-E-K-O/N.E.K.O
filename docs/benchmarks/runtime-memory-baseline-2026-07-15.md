@@ -1,5 +1,7 @@
 # Runtime memory baseline (2026-07-15)
 
+> **Document type: frozen benchmark snapshot.** Every measurement below belongs to the 2026-07-15 environment and procedure recorded in this page. Preserve the observed numbers as historical evidence; do not treat them as the current baseline, a release gate, or a promise for another machine. Re-run the script and publish a newly dated snapshot before making current comparisons.
+
 This document is the reproducible **before** baseline for runtime-memory work in
 Xiao8. Measurements were collected from commit
 `5ca2f416db2e09b4628b395c51a108ead7fc13a4` (`origin/main` on 2026-07-15) with
