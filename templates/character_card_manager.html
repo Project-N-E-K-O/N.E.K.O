@@ -7,6 +7,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="steam.workshopManager">角色卡管理 - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <!-- 模型预览/编辑页豁免 avatar 空闲节流：用户在此手动播放任意动画（含无参
+         playAnimation 的舞蹈 VMD），期望满帧预览，不应被空闲地板压到 30fps -->
+    <script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">

@@ -6,6 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="cardExport.title">卡面制作 - Project N.E.K.O.</title>
     <!-- VRM 光照默认值 -->
+    <!-- 模型预览/编辑页豁免 avatar 空闲节流：用户在此手动播放任意动画（含无参
+         playAnimation 的舞蹈 VMD），期望满帧预览，不应被空闲地板压到 30fps -->
+    <script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
     <script id="vrm-default-lighting-data" type="application/json">{{ (vrm_defaults | default({}, true)) | tojson | safe }}</script>
     <script>
         const vrmDefaultLightingData = document.getElementById('vrm-default-lighting-data');

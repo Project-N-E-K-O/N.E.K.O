@@ -566,8 +566,11 @@
                 window.live2dManager.pixi_app.ticker.stop();
             }
 
-            // 停止 VRM 渲染循环
-            if (window.vrmManager && window.vrmManager._animationFrameId) {
+            // 停止 VRM 渲染循环（走 pauseRendering：空闲低频模式下 rAF id 为
+            // null，裸字段取消管不到 interval，会让旧模型在后台永久渲染）
+            if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                window.vrmManager.pauseRendering();
+            } else if (window.vrmManager && window.vrmManager._animationFrameId) {
                 cancelAnimationFrame(window.vrmManager._animationFrameId);
                 window.vrmManager._animationFrameId = null;
             }
@@ -667,8 +670,10 @@
                 }
 
                 if (window.vrmManager) {
-                    // 1. 停止动画循环
-                    if (window.vrmManager._animationFrameId) {
+                    // 1. 停止动画循环（走 pauseRendering，理由同上：兼容空闲低频模式）
+                    if (typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    } else if (window.vrmManager._animationFrameId) {
                         cancelAnimationFrame(window.vrmManager._animationFrameId);
                         window.vrmManager._animationFrameId = null;
                     }
