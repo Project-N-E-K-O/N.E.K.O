@@ -7,13 +7,16 @@ import json
 import time
 import urllib.error
 import urllib.request
+from collections import OrderedDict
 from typing import Any
 
 from ...core.contracts import LiveEvent, LiveRoomStatus, ViewerEvent
 from ...core.runtime_timeline import record_timeline
 from .._base import BaseModule
+from ..live_events.provider_event import event_signal_fields, event_support_fields
 
 SUPPORT_EVENT_DEDUPE_SECONDS = 0.35
+SUPPORT_EVENT_DEDUPE_LIMIT = 4096
 
 
 class _ListenerLog:
@@ -58,7 +61,7 @@ class BiliLiveIngestModule(BaseModule):
         self._room_status_ttl: float = 60.0
         self._last_event_at: float = 0.0
         self._last_event_type: str = ""
-        self._recent_support_event_keys: dict[str, float] = {}
+        self._recent_support_event_keys: OrderedDict[str, float] = OrderedDict()
 
     async def teardown(self) -> None:
         await self.stop_listening()
@@ -366,9 +369,7 @@ class BiliLiveIngestModule(BaseModule):
             payload["event_label"] = self._event_label(event_type, text)
             payload["raw_type"] = normalized_cmd
             if is_typed_support:
-                payload["support_verified"] = True
-                payload["support_evidence"] = "bilibili_typed_command"
-                payload["provider_event_type"] = normalized_cmd
+                payload.update(self._typed_support_fields(normalized_cmd, event))
             return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=payload)
         uid = str(getattr(event, "uid", "") or "").strip()
         nickname = str(getattr(event, "nickname", "") or "")
@@ -384,11 +385,40 @@ class BiliLiveIngestModule(BaseModule):
             "room_id": getattr(event, "room_id", 0) or self._room_id,
             "cmd": normalized_cmd,
         }
+        payload.update(event_signal_fields(event))
         if is_typed_support:
-            payload["support_verified"] = True
-            payload["support_evidence"] = "bilibili_typed_command"
-            payload["provider_event_type"] = normalized_cmd
+            payload.update(self._typed_support_fields(normalized_cmd, event))
         return LiveEvent(type=event_type, uid=uid, payload=payload, source="live", ts=time.time(), raw=event)
+
+    @staticmethod
+    def _typed_support_fields(normalized_cmd: str, event: Any) -> dict[str, Any]:
+        def value(*names: str) -> Any:
+            for name in names:
+                if isinstance(event, dict):
+                    candidate = event.get(name)
+                else:
+                    candidate = getattr(event, name, None)
+                if candidate is not None:
+                    return candidate
+            return None
+
+        gift = value("gift")
+        if isinstance(gift, dict):
+            gift_coin_type = gift.get("coin_type")
+        else:
+            gift_coin_type = getattr(gift, "coin_type", None)
+        source = {
+            "support_verified": True,
+            "support_evidence": "bilibili_typed_command",
+            "provider_event_type": normalized_cmd,
+            "provider_event_id": value("provider_event_id", "msg_id", "tid", "id", "rnd"),
+            "provider_timestamp_ms": value("provider_timestamp_ms"),
+            "combo_id": value("combo_id", "batch_combo_id"),
+            "combo_count": value("combo_count", "combo_num"),
+            "combo_end": value("combo_end"),
+            "coin_type": value("coin_type", "gift_coin_type") or gift_coin_type,
+        }
+        return event_support_fields(source)
 
     @staticmethod
     def _normalize_cmd(cmd: Any) -> str:
@@ -398,13 +428,11 @@ class BiliLiveIngestModule(BaseModule):
         if live_event.type not in {"gift", "super_chat", "guard"}:
             return False
         now = float(live_event.ts or time.time())
-        expired = [
-            key
-            for key, seen_at in self._recent_support_event_keys.items()
-            if now - seen_at > SUPPORT_EVENT_DEDUPE_SECONDS
-        ]
-        for key in expired:
-            self._recent_support_event_keys.pop(key, None)
+        while self._recent_support_event_keys:
+            _oldest_key, oldest_seen_at = next(iter(self._recent_support_event_keys.items()))
+            if now - oldest_seen_at <= SUPPORT_EVENT_DEDUPE_SECONDS:
+                break
+            self._recent_support_event_keys.popitem(last=False)
         key = self._support_event_key(live_event)
         if not key:
             return False
@@ -412,12 +440,30 @@ class BiliLiveIngestModule(BaseModule):
         if last_seen is not None and 0 <= now - last_seen <= SUPPORT_EVENT_DEDUPE_SECONDS:
             return True
         self._recent_support_event_keys[key] = now
+        self._recent_support_event_keys.move_to_end(key)
+        while len(self._recent_support_event_keys) > SUPPORT_EVENT_DEDUPE_LIMIT:
+            self._recent_support_event_keys.popitem(last=False)
         return False
 
     @staticmethod
     def _support_event_key(live_event: LiveEvent) -> str:
         raw = live_event.raw
         payload = live_event.payload if isinstance(live_event.payload, dict) else {}
+        support_fields = event_support_fields(payload)
+        provider_event_id = support_fields.get("provider_event_id")
+        if provider_event_id:
+            if str(support_fields.get("provider_event_type") or "").upper() == "COMBO_SEND":
+                return "|".join(
+                    (
+                        "provider_combo",
+                        str(provider_event_id)[:80],
+                        str(support_fields.get("combo_id") or "")[:80],
+                        str(support_fields.get("combo_count") or 0),
+                        str(payload.get("gift_value") or 0)[:32],
+                        "end" if support_fields.get("combo_end") is True else "progress",
+                    )
+                )
+            return f"provider|{provider_event_id}"
         gift = getattr(raw, "gift", None) if raw is not None else None
         command = BiliLiveIngestModule._normalize_cmd(
             payload.get("raw_cmd") or payload.get("cmd") or payload.get("raw_type") or ""

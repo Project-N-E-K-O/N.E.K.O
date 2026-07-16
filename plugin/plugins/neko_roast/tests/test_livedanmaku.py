@@ -260,6 +260,120 @@ def test_support_callbacks_publish_rich_event_before_lightweight_fallback():
         assert isinstance(seen[0][1], LiveDanmaku)
 
 
+def test_bili_gift_packet_preserves_safe_provider_metadata_on_rich_event():
+    seen: list[LiveDanmaku] = []
+    listener = DanmakuListener(
+        room_id=1,
+        callbacks={"on_event": lambda _cmd, event: seen.append(event)},
+    )
+    packet = {
+        "cmd": "SEND_GIFT",
+        "data": {
+            "uid": 9,
+            "uname": "GiftUser",
+            "giftName": "Heart",
+            "num": 2,
+            "coin_type": "gold",
+            "total_coin": 2000,
+            "tid": "evt-42",
+            "timestamp": 1_720_000_000,
+            "batch_combo_id": "combo-7",
+            "combo_num": 2,
+            "combo_end": False,
+        },
+    }
+
+    asyncio.run(listener._dispatch_message("SEND_GIFT", packet))
+
+    event = seen[0]
+    assert event.provider_event_id == "evt-42"
+    assert event.provider_timestamp_ms == 1_720_000_000_000
+    assert event.combo_id == "combo-7"
+    assert event.combo_count == 2
+    assert event.combo_end is False
+
+
+def test_bili_super_chat_packet_preserves_safe_provider_metadata_on_rich_event():
+    seen: list[LiveDanmaku] = []
+    listener = DanmakuListener(
+        room_id=1,
+        callbacks={"on_event": lambda _cmd, event: seen.append(event)},
+    )
+    packet = {
+        "cmd": "SUPER_CHAT_MESSAGE",
+        "data": {
+            "uid": 10,
+            "user_info": {"uname": "SCUser"},
+            "message": "hello",
+            "price": 30,
+            "id": "sc-42",
+            "ts": 1_720_000_000,
+        },
+    }
+
+    asyncio.run(listener._dispatch_message("SUPER_CHAT_MESSAGE", packet))
+
+    event = seen[0]
+    assert event.provider_event_id == "sc-42"
+    assert event.provider_timestamp_ms == 1_720_000_000_000
+
+
+def test_bili_guard_packet_preserves_safe_provider_metadata_on_rich_event():
+    seen: list[LiveDanmaku] = []
+    listener = DanmakuListener(
+        room_id=1,
+        callbacks={"on_event": lambda _cmd, event: seen.append(event)},
+    )
+    packet = {
+        "cmd": "GUARD_BUY",
+        "data": {
+            "uid": 11,
+            "username": "GuardUser",
+            "gift_name": "Captain",
+            "num": 1,
+            "price": 19_800_000,
+            "msg_id": "guard-42",
+            "timestamp": 1_720_000_001,
+        },
+    }
+
+    asyncio.run(listener._dispatch_message("GUARD_BUY", packet))
+
+    event = seen[0]
+    assert event.provider_event_id == "guard-42"
+    assert event.provider_timestamp_ms == 1_720_000_001_000
+
+
+def test_bili_combo_packet_preserves_combo_identity_on_rich_event():
+    seen: list[LiveDanmaku] = []
+    listener = DanmakuListener(
+        room_id=1,
+        callbacks={"on_event": lambda _cmd, event: seen.append(event)},
+    )
+    packet = {
+        "cmd": "COMBO_SEND",
+        "data": {
+            "uid": 9,
+            "uname": "GiftUser",
+            "gift_name": "Heart",
+            "combo_num": 3,
+            "coin_type": "gold",
+            "total_coin": 3000,
+            "msg_id": "evt-43",
+            "batch_combo_id": "combo-7",
+        },
+    }
+
+    asyncio.run(listener._dispatch_message("COMBO_SEND", packet))
+
+    event = seen[0]
+    assert event.provider_event_id == "evt-43"
+    assert event.combo_id == "combo-7"
+    assert event.combo_count == 3
+    assert event.gift is not None
+    assert event.gift.coin_type == "gold"
+
+
 def test_enhanced_cmd_handler_table_keeps_static_handlers_callable():
     """Class-level enhanced handlers should stay callable from _CMD_HANDLERS."""
     handler = DanmakuListener._CMD_HANDLERS["SUPER_CHAT_MESSAGE_JPN"]

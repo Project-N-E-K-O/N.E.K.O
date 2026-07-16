@@ -569,6 +569,7 @@ class DanmakuListener:
                 try:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_gift(data)
+                    self._apply_support_metadata(ld, data)
                     await self._emit("on_event", "SEND_GIFT", ld)
                 except Exception as e:
                     self._log(f"LiveDanmaku SEND_GIFT parse failed: {e}", "debug")
@@ -598,6 +599,7 @@ class DanmakuListener:
                 try:
                     from .livedanmaku import LiveDanmaku as _LD
                     ld = _LD.from_sc(data)
+                    self._apply_support_metadata(ld, data)
                     await self._emit("on_event", "SUPER_CHAT_MESSAGE", ld)
                 except Exception as e:
                     self._log(f"LiveDanmaku SUPER_CHAT_MESSAGE parse failed: {e}", "debug")
@@ -646,6 +648,8 @@ class DanmakuListener:
                 try:
                     ld = handler(data)
                     if ld:
+                        if cmd in {"COMBO_SEND", "GUARD_BUY", "SUPER_CHAT_MESSAGE_JPN"}:
+                            self._apply_support_metadata(ld, data)
                         await self._emit("on_event", cmd, ld)
                 except Exception as e:
                     self._log(f"增强协议处理 {cmd} 异常: {e}", "debug")
@@ -656,6 +660,43 @@ class DanmakuListener:
 
         except Exception as e:
             self._log(f"分发消息 {cmd} 异常: {e}", "debug")
+
+    @staticmethod
+    def _apply_support_metadata(event: Any, packet: dict) -> None:
+        inner = packet.get("data") if isinstance(packet, dict) else None
+        if not isinstance(inner, dict):
+            return
+
+        def scalar(*names: str) -> Any:
+            for name in names:
+                value = inner.get(name)
+                if isinstance(value, (str, int)) and not isinstance(value, bool):
+                    return value
+            return None
+
+        provider_event_id = scalar("provider_event_id", "msg_id", "tid", "id", "rnd")
+        if provider_event_id is not None:
+            event.provider_event_id = str(provider_event_id).strip()
+        combo_id = scalar("combo_id", "batch_combo_id")
+        if combo_id is not None:
+            event.combo_id = str(combo_id).strip()
+
+        timestamp = scalar("provider_timestamp_ms", "timestamp", "ts")
+        try:
+            timestamp_ms = int(timestamp) if timestamp is not None else 0
+        except (TypeError, ValueError):
+            timestamp_ms = 0
+        if 0 < timestamp_ms < 1_000_000_000_000:
+            timestamp_ms *= 1000
+        event.provider_timestamp_ms = max(0, timestamp_ms)
+
+        combo_count = scalar("combo_count", "combo_num")
+        try:
+            event.combo_count = max(0, int(combo_count)) if combo_count is not None else 0
+        except (TypeError, ValueError):
+            event.combo_count = 0
+        combo_end = inner.get("combo_end")
+        event.combo_end = combo_end if isinstance(combo_end, bool) else None
 
     @staticmethod
     def _fallback_support_gift_payload(cmd: str, data: dict):
@@ -800,6 +841,9 @@ class DanmakuListener:
         """COMBO_SEND — 礼物连击"""
         from .livedanmaku import LiveDanmaku as _LD, GiftInfo, MessageType, MedalInfo
         d = data.get("data", {})
+        coin_type = str(d.get("coin_type") or "silver").strip().lower()
+        if coin_type not in {"gold", "silver"}:
+            coin_type = "silver"
         return _LD(
             msg_type=MessageType.MSG_GIFT,
             uid=int(d.get("uid", 0)),
@@ -813,6 +857,7 @@ class DanmakuListener:
                 gift_name=str(d.get("gift_name", "礼物")),
                 num=int(d.get("combo_num", 1)),
                 total_coin=int(d.get("total_coin", 0)),
+                coin_type=coin_type,
             ),
             medal=MedalInfo(
                 name=str(d.get("medal_info", {}).get("medal_name", "")),

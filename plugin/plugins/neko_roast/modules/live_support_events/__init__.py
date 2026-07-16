@@ -27,11 +27,13 @@ from ..live_events.provider_event import (
     event_room_ref,
     event_session_generation,
     event_signal_fields,
+    event_support_fields,
     event_text,
     event_type,
     event_uid,
     is_signal_only,
 )
+from .scheduler import SupportEventScheduler
 
 
 class LiveSupportEventsModule(BaseModule):
@@ -43,11 +45,17 @@ class LiveSupportEventsModule(BaseModule):
         super().__init__()
         self._unsubscribes: list[Any] = []
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._scheduler: SupportEventScheduler | None = None
         self._last_event_at: float = 0.0
         self._last_event_type: str = ""
 
     async def setup(self, ctx: Any) -> None:
         await super().setup(ctx)
+        self._scheduler = SupportEventScheduler(
+            dispatch=self._handle_payload,
+            audit=getattr(ctx, "audit", None),
+            queue_limit=max(8, int(getattr(ctx.config, "queue_limit", 64) or 64)),
+        )
         bus = getattr(ctx, "event_bus", None)
         if bus is not None:
             for event_name in ("gift", "super_chat", "guard"):
@@ -58,7 +66,11 @@ class LiveSupportEventsModule(BaseModule):
             if callable(unsubscribe):
                 unsubscribe()
         self._unsubscribes = []
+        scheduler = self._scheduler
+        self._scheduler = None
         self.reset()
+        if scheduler is not None:
+            await scheduler.close()
         pending = [task for task in list(self._tasks) if not task.done()]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
@@ -66,6 +78,8 @@ class LiveSupportEventsModule(BaseModule):
         await super().teardown()
 
     def reset(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.reset()
         for task in list(self._tasks):
             if not task.done():
                 task.cancel()
@@ -73,10 +87,15 @@ class LiveSupportEventsModule(BaseModule):
         self._last_event_type = ""
 
     def status(self) -> dict[str, Any]:
+        scheduler_status = self._scheduler.status() if self._scheduler is not None else {}
         return {
             "enabled": self.enabled,
             "subscribed": bool(self._unsubscribes),
-            "pending": len([task for task in self._tasks if not task.done()]),
+            "pending": scheduler_status.get("pending_count", 0),
+            "active_combos": scheduler_status.get("active_combo_count", 0),
+            "queue_overflow_count": scheduler_status.get("overflow_count", 0),
+            "queue_dropped_count": scheduler_status.get("dropped_count", 0),
+            "queue_aggregated_count": scheduler_status.get("aggregated_count", 0),
             "last_event_at": self._last_event_at,
             "last_event_type": self._last_event_type,
         }
@@ -101,7 +120,7 @@ class LiveSupportEventsModule(BaseModule):
             event_type_hint=selected_event_type,
             fallback_event=event,
         )
-        if not payload.get("uid"):
+        if not payload.get("uid") or payload.get("support_verified") is not True:
             return
         self._last_event_at = time.time()
         self._last_event_type = str(payload.get("event_type") or "")
@@ -113,9 +132,8 @@ class LiveSupportEventsModule(BaseModule):
             reason=f"support {self._last_event_type}",
             route=self.id,
         )
-        task = asyncio.create_task(self._handle_payload(payload))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        if self._scheduler is not None:
+            self._scheduler.submit(payload)
 
     def _payload_for_event(
         self,
@@ -148,7 +166,9 @@ class LiveSupportEventsModule(BaseModule):
             payload["room_ref"] = room_ref
         if fallback_event is not None:
             payload.update(event_signal_fields(fallback_event))
+            payload.update(event_support_fields(fallback_event))
         payload.update(event_signal_fields(event))
+        payload.update(event_support_fields(event))
         trace_id = safe_text(
             getattr(fallback_event, "trace_id", "")
             or getattr(event, "trace_id", ""),
@@ -165,10 +185,7 @@ class LiveSupportEventsModule(BaseModule):
     async def _handle_payload(self, payload: dict[str, Any]) -> None:
         if self.ctx is None:
             return
-        try:
-            await self.ctx.handle_live_payload(payload)
-        except Exception as exc:
-            self.ctx.audit.record("live_support_event_failed", type(exc).__name__, level="warning")
+        await self.ctx.handle_live_payload(payload)
 
     def build_request(
         self,

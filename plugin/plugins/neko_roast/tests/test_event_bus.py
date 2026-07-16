@@ -13,8 +13,12 @@ from types import SimpleNamespace
 
 from plugin.plugins.neko_roast.core.contracts import LiveEvent
 from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_roast.modules.bili_live_ingest import (
+    SUPPORT_EVENT_DEDUPE_LIMIT,
+    BiliLiveIngestModule,
+)
 from plugin.plugins.neko_roast.modules.bili_live_ingest.danmaku_core import DanmakuListener
+from plugin.plugins.neko_roast.modules.live_events.provider_event import event_support_fields
 
 
 class _Audit:
@@ -133,6 +137,66 @@ def test_avatar_roast_module_imports_with_its_prompt_dependencies():
     assert AvatarRoastModule.id == "avatar_roast"
 
 
+def test_event_support_fields_projects_only_safe_scheduling_metadata():
+    fields = event_support_fields(
+        {
+            "support_verified": True,
+            "support_evidence": "bilibili_typed_command",
+            "provider_event_id": "evt-42",
+            "provider_event_type": "COMBO_SEND",
+            "provider_timestamp_ms": "123456",
+            "combo_id": "combo-7",
+            "combo_count": "9",
+            "combo_end": True,
+            "coin_type": "gold",
+        }
+    )
+
+    assert fields == {
+        "support_verified": True,
+        "support_evidence": "bilibili_typed_command",
+        "provider_event_id": "evt-42",
+        "provider_event_type": "COMBO_SEND",
+        "provider_timestamp_ms": 123456,
+        "combo_id": "combo-7",
+        "combo_count": 9,
+        "combo_end": True,
+        "coin_type": "gold",
+    }
+
+
+def test_event_support_fields_fail_closed_for_unverified_or_unknown_evidence():
+    assert event_support_fields({"support_verified": False}) == {}
+    assert event_support_fields(
+        {
+            "support_verified": True,
+            "support_evidence": "untrusted_chat_text",
+            "provider_event_id": "evt-42",
+        }
+    ) == {}
+
+
+def test_event_support_fields_omits_unsafe_optional_values():
+    fields = event_support_fields(
+        {
+            "support_verified": True,
+            "support_evidence": "bilibili_typed_command",
+            "provider_event_id": "token=secret",
+            "provider_event_type": {"cmd": "SEND_GIFT"},
+            "provider_timestamp_ms": True,
+            "combo_id": ["combo-7"],
+            "combo_count": -1,
+            "combo_end": 1,
+            "coin_type": "diamonds",
+        }
+    )
+
+    assert fields == {
+        "support_verified": True,
+        "support_evidence": "bilibili_typed_command",
+    }
+
+
 def test_support_dedupe_keeps_send_gift_and_combo_send_distinct():
     module = BiliLiveIngestModule()
     common = {
@@ -175,6 +239,91 @@ def test_support_dedupe_duplicate_does_not_extend_window():
     assert module._is_duplicate_support_event(first) is False
     assert module._is_duplicate_support_event(duplicate) is True
     assert module._is_duplicate_support_event(after_window) is False
+
+
+def test_support_dedupe_prefers_provider_event_id_over_content_fingerprint():
+    module = BiliLiveIngestModule()
+    common = {
+        "gift_name": "Small Heart",
+        "gift_count": 1,
+        "gift_value": 100,
+        "cmd": "SEND_GIFT",
+        "support_verified": True,
+        "support_evidence": "bilibili_typed_command",
+    }
+    first = LiveEvent(
+        type="gift",
+        uid="9",
+        payload={**common, "provider_event_id": "evt-1"},
+        ts=100.0,
+    )
+    same_id = LiveEvent(
+        type="gift",
+        uid="9",
+        payload={**common, "provider_event_id": "evt-1", "gift_count": 2},
+        ts=100.1,
+    )
+    same_content_new_id = LiveEvent(
+        type="gift",
+        uid="9",
+        payload={**common, "provider_event_id": "evt-2"},
+        ts=100.2,
+    )
+
+    assert module._is_duplicate_support_event(first) is False
+    assert module._is_duplicate_support_event(same_id) is True
+    assert module._is_duplicate_support_event(same_content_new_id) is False
+
+
+def test_support_dedupe_allows_same_provider_id_combo_progress():
+    module = BiliLiveIngestModule()
+
+    def combo(count: int) -> LiveEvent:
+        return LiveEvent(
+            type="gift",
+            uid="9",
+            payload={
+                "gift_name": "Small Heart",
+                "gift_count": count,
+                "gift_value": count * 100,
+                "cmd": "COMBO_SEND",
+                "support_verified": True,
+                "support_evidence": "bilibili_typed_command",
+                "provider_event_id": "evt-1",
+                "provider_event_type": "COMBO_SEND",
+                "combo_id": "combo-1",
+                "combo_count": count,
+                "combo_end": False,
+            },
+            ts=100.0 + count / 10,
+        )
+
+    assert module._is_duplicate_support_event(combo(1)) is False
+    assert module._is_duplicate_support_event(combo(2)) is False
+    assert module._is_duplicate_support_event(combo(2)) is True
+
+
+def test_support_dedupe_cache_has_a_hard_capacity_limit():
+    module = BiliLiveIngestModule()
+    for index in range(SUPPORT_EVENT_DEDUPE_LIMIT + 100):
+        event = LiveEvent(
+            type="gift",
+            uid="9",
+            payload={
+                "gift_name": "Small Heart",
+                "gift_count": 1,
+                "gift_value": 100,
+                "cmd": "SEND_GIFT",
+                "support_verified": True,
+                "support_evidence": "bilibili_typed_command",
+                "provider_event_id": f"evt-{index}",
+                "provider_event_type": "SEND_GIFT",
+            },
+            ts=100.0 + index / 1_000_000,
+        )
+        assert module._is_duplicate_support_event(event) is False
+
+    assert len(module._recent_support_event_keys) == SUPPORT_EVENT_DEDUPE_LIMIT
 
 
 def test_publish_updates_status_for_runtime_health_rows():
@@ -315,6 +464,43 @@ def test_bili_combo_send_routes_to_gift_bus_key():
     assert live_event.payload["support_verified"] is True
     assert live_event.payload["support_evidence"] == "bilibili_typed_command"
     assert live_event.payload["provider_event_type"] == "COMBO_SEND"
+
+
+def test_bili_typed_support_object_projects_safe_provider_metadata():
+    module = BiliLiveIngestModule()
+    module._room_id = 100
+    event = SimpleNamespace(
+        uid=42,
+        nickname="GiftUser",
+        text="combo gift",
+        room_id=100,
+        guard_level=0,
+        provider_event_id="evt-42",
+        provider_timestamp_ms=123456,
+        combo_id="combo-7",
+        combo_count=9,
+        combo_end=False,
+        gift=SimpleNamespace(
+            gift_name="Small Heart",
+            num=9,
+            total_coin=9000,
+            coin_type="gold",
+        ),
+    )
+
+    live_event = module._to_live_event("COMBO_SEND", event)
+
+    assert event_support_fields(live_event.payload) == {
+        "support_verified": True,
+        "support_evidence": "bilibili_typed_command",
+        "provider_event_id": "evt-42",
+        "provider_event_type": "COMBO_SEND",
+        "provider_timestamp_ms": 123456,
+        "combo_id": "combo-7",
+        "combo_count": 9,
+        "combo_end": False,
+        "coin_type": "gold",
+    }
 
 
 async def test_bili_allowlisted_user_toast_gift_routes_to_gift_event():

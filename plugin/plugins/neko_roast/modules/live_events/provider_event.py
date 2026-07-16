@@ -49,6 +49,12 @@ _SENSITIVE_AUTH_RE = re.compile(r"\bauthorization\b\s*[:=]\s*[^,;]+", re.IGNOREC
 _PUBLIC_LABEL_TEXT_MAX = 64
 _PUBLIC_EVENT_TEXT_MAX = 512
 _PUBLIC_PROMPT_TEXT_MAX = 120
+_SUPPORT_EVIDENCE = {
+    "bilibili_typed_command",
+    "douyin_bridge_typed_event",
+    "manual_live_simulation",
+}
+_SUPPORT_COIN_TYPES = {"gold", "silver"}
 
 
 def event_type(event: Any) -> str:
@@ -161,6 +167,38 @@ def event_signal_fields(event: Any) -> dict[str, Any]:
     )
     if value is not None:
         payload["gift_value"] = value
+    return payload
+
+
+def event_support_fields(event: Any) -> dict[str, Any]:
+    """Return verified provider metadata used only for support-event scheduling."""
+    if _field(event, "support_verified") is not True:
+        return {}
+    evidence = public_text(_field(event, "support_evidence"), max_length=48)
+    if evidence not in _SUPPORT_EVIDENCE:
+        return {}
+
+    payload: dict[str, Any] = {
+        "support_verified": True,
+        "support_evidence": evidence,
+    }
+    for key in ("provider_event_id", "provider_event_type", "combo_id"):
+        token = _public_token_text(_field(event, key), allow_positive_int=True)
+        if _is_safe_public_token(token):
+            payload[key] = token
+
+    timestamp_ms = _optional_non_negative_int(_field(event, "provider_timestamp_ms"))
+    if timestamp_ms is not None:
+        payload["provider_timestamp_ms"] = timestamp_ms
+    combo_count = _optional_non_negative_int(_field(event, "combo_count"))
+    if combo_count is not None:
+        payload["combo_count"] = combo_count
+    combo_end = _field(event, "combo_end")
+    if isinstance(combo_end, bool):
+        payload["combo_end"] = combo_end
+    coin_type = public_text(_field(event, "coin_type"), max_length=16).lower()
+    if coin_type in _SUPPORT_COIN_TYPES:
+        payload["coin_type"] = coin_type
     return payload
 
 

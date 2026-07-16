@@ -17,6 +17,7 @@ from plugin.plugins.neko_roast.core.runtime_live_listener import (
     start_live_listener,
     stop_live_listener,
 )
+from plugin.plugins.neko_roast.core.runtime_live_session import invalidate_live_session
 from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
 
 
@@ -333,3 +334,42 @@ async def test_session_reset_cancels_pending_event_tasks(runtime: RoastRuntime) 
 
     assert live_task.cancelled()
     assert support_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_invalidating_live_session_cancels_open_support_combo(runtime: RoastRuntime) -> None:
+    await runtime.live_support_events.setup(runtime)
+    scheduler = runtime.live_support_events._scheduler
+    assert scheduler is not None
+    scheduler._combo_idle_seconds = 0.01
+    dispatched: list[dict] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload)
+
+    scheduler._dispatch = dispatch
+    scheduler.submit(
+        {
+            "event_type": "gift",
+            "uid": "viewer-9",
+            "room_ref": "42",
+            "gift_name": "Heart",
+            "gift_count": 3,
+            "combo_count": 3,
+            "combo_id": "combo-1",
+            "combo_end": False,
+            "provider_event_type": "COMBO_SEND",
+            "provider_event_id": "evt-1",
+            "support_verified": True,
+            "support_evidence": "manual_live_simulation",
+        }
+    )
+    assert scheduler.status()["active_combo_count"] == 1
+
+    invalidate_live_session(runtime)
+    await asyncio.sleep(0.02)
+
+    assert dispatched == []
+    assert scheduler.status()["active_combo_count"] == 0
+    assert scheduler.status()["pending_count"] == 0
+    await runtime.live_support_events.teardown()

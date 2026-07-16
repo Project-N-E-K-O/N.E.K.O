@@ -106,6 +106,8 @@ async def _drain(hub: LiveEventsModule) -> None:
 
 
 async def _drain_support(module: LiveSupportEventsModule) -> None:
+    if module._scheduler is not None:
+        await module._scheduler.wait_idle()
     for task in list(module._tasks):
         if not task.done():
             await task
@@ -892,6 +894,9 @@ def test_douyin_event_model_live_event_projection_is_safe():
         "gift_name": "small heart",
         "gift_count": 2,
         "gift_value": 600,
+        "support_verified": True,
+        "support_evidence": "douyin_bridge_typed_event",
+        "provider_event_type": "gift",
     }
     assert "must-not-leak" not in json.dumps(live_event.to_dict(), ensure_ascii=False)
 

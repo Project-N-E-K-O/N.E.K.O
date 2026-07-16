@@ -108,6 +108,13 @@ class LiveDanmaku:
     # 礼物信息
     gift: Optional[GiftInfo] = None
 
+    # Provider-neutral support scheduling metadata (safe scalar values only).
+    provider_event_id: str = ""
+    provider_timestamp_ms: int = 0
+    combo_id: str = ""
+    combo_count: int = 0
+    combo_end: Optional[bool] = None
+
     # 粉丝数据
     fans_medal_name: str = ""
     fans_medal_level: int = 0

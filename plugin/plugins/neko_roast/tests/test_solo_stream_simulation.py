@@ -282,6 +282,15 @@ async def _run_solo_stream_simulation(runtime: RoastRuntime) -> None:
             "event_type": event_type,
             "seen_at": f"sim:{float(t)}",
         }
+        if event_type in {"gift", "super_chat", "guard"}:
+            payload.update(
+                {
+                    "support_verified": True,
+                    "support_evidence": "manual_live_simulation",
+                    "provider_event_type": event_type,
+                    "provider_event_id": f"sim-{event_type}-{uid}-{int(t)}",
+                }
+            )
         normalized = runtime.bili_live_ingest.normalize(payload)
         runtime.event_bus.publish(
             event_type,
@@ -295,6 +304,8 @@ async def _run_solo_stream_simulation(runtime: RoastRuntime) -> None:
         ]
         if pending:
             await asyncio.gather(*pending)
+        if runtime.live_support_events._scheduler is not None:
+            await runtime.live_support_events._scheduler.wait_idle()
         if event_type == "danmaku":
             runtime._last_live_danmaku_seen_at = clock["t"]
             runtime._last_live_danmaku_seen_type = "live_danmaku"

@@ -16,10 +16,11 @@ Runtime observability must answer five questions:
 
 - Do not define a concrete Dashboard layout.
 - Do not require a new storage backend.
+- The current support scheduler exposes bounded in-memory counters only; it does not write a persistent gift ledger or diagnostic event log.
 - Do not replace `stores/audit_store.py` or existing `PipelineStep` / `InteractionResult` fields in this phase.
 - Do not turn Monitor into a separate source of truth; it must read runtime projections.
 - Do not add contribution ranking, reward, or ceremony behavior for Gift / SC / Guard events.
-- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, FIFO output queue, or output path that bypasses the NEKO Live main chain.
+- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, general FIFO output queue, or output path that bypasses the NEKO Live main chain. The bounded `live_support_events` pending scheduler is a local exception for verified support events only; it remains upstream of Pipeline and never interrupts active output.
 
 ## Reference Principles
 
@@ -29,7 +30,7 @@ Core rule: 每次猫猫只该说一句；这句话为什么是它，系统必须
 
 Phase 2B uses three reference principles:
 
-- No FIFO queue: live events are strong real-time input. NEKO Live should not make the cat repeat stale messages from an output queue. Within a selection window, the runtime should keep or select the single event most worth speaking about.
+- No general FIFO output queue: ordinary live events remain real-time input and must not become a stale replay list. Verified Gift / SC / Guard events use a separate bounded, priority-ordered pending scheduler so paid milestones are not lost behind lower-value support packets.
 - High-value events may rank higher: SC, Guard, and important gift events may receive higher selection priority than ordinary danmaku. High priority must not bypass Safety Guard, directly call Dispatcher, skip cooldown policy, or ignore `dry_run`.
 - `dry_run` must explain the complete chain: even without real output, runtime observability must record whether the event was received, entered Selection, who won, who lost, why candidates lost, whether Pipeline started, whether Safety Guard passed, and whether Dispatcher ended as `dry_run`, `pushed`, or `failed`.
 
@@ -186,7 +187,9 @@ High-value Event Priority Contract defines how SC, Guard, and important gift eve
 Contract:
 
 - High-value events may receive higher ranking weight than ordinary danmaku.
-- Higher priority only affects Selection ranking unless a future design explicitly updates this document.
+- Inside `live_support_events`, priority also orders pending verified support events: milestone, high, medium, then light; equal priorities keep submission order.
+- Priority never cancels the support reply currently in Pipeline or TTS.
+- Provider event ID dedupe, one-second combo finalization, bounded backpressure, and session reset happen before the normal Pipeline call.
 - Higher priority does not bypass Safety Guard, cooldown policy, `dry_run`, Dispatcher, or privacy rules.
 - Higher priority does not create critical hard preemption.
 - Higher priority must still produce explainable winner and loser records through the Selection Decision Chain.

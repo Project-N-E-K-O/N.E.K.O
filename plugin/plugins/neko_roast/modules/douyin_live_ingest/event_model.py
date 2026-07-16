@@ -112,6 +112,14 @@ def to_live_event(event: DouyinLiveProviderEvent, *, ts: float | None = None) ->
         payload["gift_count"] = event.gift_count
     if event.gift_value:
         payload["gift_value"] = event.gift_value
+    if event.event_type in {"gift", "super_chat", "guard"}:
+        payload.update(
+            {
+                "support_verified": True,
+                "support_evidence": "douyin_bridge_typed_event",
+                "provider_event_type": event.event_type,
+            }
+        )
     return LiveEvent(
         type=event.event_type,
         uid=event.uid,

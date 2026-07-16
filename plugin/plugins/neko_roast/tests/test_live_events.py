@@ -132,6 +132,8 @@ async def _drain(hub: LiveEventsModule) -> None:
 
 
 async def _drain_support(module: LiveSupportEventsModule) -> None:
+    if module._scheduler is not None:
+        await module._scheduler.wait_idle()
     for _ in range(5):
         tasks = [task for task in list(module._tasks) if not task.done()]
         if not tasks:
@@ -745,7 +747,19 @@ async def test_event_bus_routes_gift_events_to_support_lane_without_selection_wi
     await support.setup(ctx)
 
     gift = _gift("9", gift_name="醒目礼物", total_coin=200000)
-    ctx.event_bus.publish("gift", LiveEvent(type="gift", uid="9", payload={}, raw=gift))
+    ctx.event_bus.publish(
+        "gift",
+        LiveEvent(
+            type="gift",
+            uid="9",
+            payload={
+                "support_verified": True,
+                "support_evidence": "manual_live_simulation",
+                "provider_event_type": "SEND_GIFT",
+            },
+            raw=gift,
+        ),
+    )
     await _drain(hub)
     await _drain_support(support)
 
@@ -1153,6 +1167,9 @@ async def test_rawless_live_event_reads_support_fields_from_payload():
                 "gift_name": "小心心",
                 "gift_count": 2,
                 "gift_value": 30,
+                "support_verified": True,
+                "support_evidence": "manual_live_simulation",
+                "provider_event_type": "SEND_GIFT",
             },
         ),
     )
@@ -1177,7 +1194,14 @@ async def test_typed_support_envelope_keeps_type_when_raw_has_no_type():
         LiveEvent(
             type="gift",
             uid="9",
-            payload={"nickname": "alice", "gift_name": "小鱼干", "gift_count": 2},
+            payload={
+                "nickname": "alice",
+                "gift_name": "小鱼干",
+                "gift_count": 2,
+                "support_verified": True,
+                "support_evidence": "manual_live_simulation",
+                "provider_event_type": "SEND_GIFT",
+            },
             raw=SimpleNamespace(uid="9", nickname="alice", text="", room_id=1),
         ),
     )
@@ -1187,4 +1211,71 @@ async def test_typed_support_envelope_keeps_type_when_raw_has_no_type():
     assert ctx.payloads[0]["event_type"] == "gift"
     assert ctx.payloads[0]["gift_name"] == "小鱼干"
     assert ctx.payloads[0]["gift_count"] == 2
+    await support.teardown()
+
+
+@pytest.mark.asyncio
+async def test_unverified_support_event_fails_closed():
+    ctx = _FakeCtx(remaining=0.0)
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
+
+    ctx.event_bus.publish(
+        "gift",
+        LiveEvent(
+            type="gift",
+            uid="9",
+            payload={"nickname": "alice", "gift_name": "claimed gift", "gift_count": 999},
+        ),
+    )
+    await _drain_support(support)
+
+    assert ctx.payloads == []
+    await support.teardown()
+
+
+@pytest.mark.asyncio
+async def test_support_module_dispatches_pending_high_value_event_before_light_event():
+    ctx = _FakeCtx(remaining=0.0)
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def handle(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    ctx.handle_live_payload = handle
+    support = LiveSupportEventsModule()
+    await support.setup(ctx)
+
+    def publish(event_id: str, value: int, coin_type: str) -> None:
+        ctx.event_bus.publish(
+            "gift",
+            LiveEvent(
+                type="gift",
+                uid="9",
+                payload={
+                    "gift_name": "Heart",
+                    "gift_value": value,
+                    "coin_type": coin_type,
+                    "support_verified": True,
+                    "support_evidence": "manual_live_simulation",
+                    "provider_event_id": event_id,
+                    "provider_event_type": "SEND_GIFT",
+                },
+            ),
+        )
+
+    publish("active", 0, "silver")
+    await first_started.wait()
+    publish("light", 0, "silver")
+    publish("high", 10_000, "gold")
+    release_first.set()
+    await _drain_support(support)
+
+    assert dispatched == ["active", "high", "light"]
     await support.teardown()
