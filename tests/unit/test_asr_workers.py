@@ -538,7 +538,7 @@ async def test_step_manual_uses_transcription_item_id_not_committed_item_id(
         await _stop_worker(task, requests, responses, utterance_id=8)
 
 
-async def test_step_manual_rejects_commit_when_previous_item_is_unbound(
+async def test_step_manual_rejects_overlap_without_dropping_previous_final(
     monkeypatch,
 ) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
@@ -574,22 +574,48 @@ async def test_step_manual_rejects_commit_when_previous_item_is_unbound(
     )
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
 
-    error = await _next_event(responses, "error")
-    assert (error.error_code, error.utterance_id) == (
-        "ASR_STEP_PROTOCOL_ERROR",
-        2,
+    rejected = await _next_event(responses, "final")
+    assert (rejected.utterance_id, rejected.text) == (2, "")
+    assert not task.done()
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-1",
+            "transcript": "first",
+        }
     )
-    assert (await _next_event(responses, "closed")).kind == "closed"
-    await asyncio.wait_for(task, 1)
-    assert responses.empty()
+    first = await _next_event(responses, "final")
+    assert (first.utterance_id, first.text) == (1, "first")
+
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=3))
+    await _wait_until(
+        lambda: (
+            sum(
+                isinstance(payload, str)
+                and json.loads(payload).get("type") == "input_audio_buffer.commit"
+                for payload in websocket.sent
+            )
+            == 2
+        )
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-3",
+            "transcript": "third",
+        }
+    )
+    third = await _next_event(responses, "final")
+    assert (third.utterance_id, third.text) == (3, "third")
     assert (
         sum(
             isinstance(payload, str)
-            and json.loads(payload).get("type") == "input_audio_buffer.commit"
+            and json.loads(payload).get("type") == "input_audio_buffer.clear"
             for payload in websocket.sent
         )
         == 1
     )
+    await _stop_worker(task, requests, responses, utterance_id=4)
 
 
 async def test_step_duplicate_final_does_not_consume_next_commit(monkeypatch) -> None:

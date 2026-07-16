@@ -216,17 +216,27 @@ async def _step_sender(
                         request.utterance_id,
                     )
                     if state.pending_manual_commits:
-                        await _emit_step_error_once(
-                            response_queue,
-                            state,
-                            "ASR_STEP_PROTOCOL_ERROR",
-                            (
-                                "Step ASR previous commit has no transcription item; "
-                                "rejecting a new commit to prevent utterance mis-correlation"
-                            ),
-                            item_key=key,
+                        # Keep receiving the already-committed turn. Only the
+                        # overlapping uncommitted buffer is discarded, and an
+                        # empty terminal final retires its local FIFO slot.
+                        await ws.send(
+                            json.dumps(
+                                {
+                                    "event_id": _step_event_id(),
+                                    "type": "input_audio_buffer.clear",
+                                }
+                            )
                         )
-                        return "error", request
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="final",
+                                generation=key[0],
+                                buffer_epoch=key[1],
+                                utterance_id=key[2],
+                                text="",
+                            )
+                        )
+                        continue
                     state.pending_manual_commits.append(key)
                     _step_bind_pending_manual_items(state)
                     await ws.send(
