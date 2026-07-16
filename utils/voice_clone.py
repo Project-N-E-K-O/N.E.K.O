@@ -657,7 +657,7 @@ class QwenVoiceCloneClient:
                 error_detail = str(e)
                 is_timeout = any(kw in error_detail.lower() for kw in
                                  ["responsetimeout", "response timeout", "timeout"])
-                is_download_failed = ("download audio failed" in error_detail or "415" in error_detail)
+                is_download_failed = ("download audio failed" in error_detail.lower() or "415" in error_detail)
 
                 if (is_timeout or is_download_failed) and attempt < self.MAX_RETRIES - 1:
                     label = '超时' if is_timeout else '文件下载失败'
