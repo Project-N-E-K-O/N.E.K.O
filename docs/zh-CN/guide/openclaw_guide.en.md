@@ -67,6 +67,6 @@ The default configuration directory is usually `%USERPROFILE%\.qwenpaw` on Windo
 4. Enable the **OpenClaw** child switch.
 5. Wait for the availability check.
 
-N.E.K.O. defaults to `http://127.0.0.1:8088`. If QwenPaw uses another address, update `openclawUrl` (the adapter also accepts `qwenpawUrl`) in N.E.K.O.'s core configuration before retrying.
+N.E.K.O. defaults to `http://127.0.0.1:8088`. If QwenPaw uses another address, update `openclawUrl` in N.E.K.O.'s core configuration before retrying.
 
 The current adapter recognizes QwenPaw's v2 console API and legacy agent-compatible APIs. Availability checks probe `/api/version` and `/api/agent/health` as appropriate; requests then use the matching console or agent endpoint. You do not need to create a separate channel file for the default console setup.

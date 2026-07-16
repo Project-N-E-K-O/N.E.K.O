@@ -67,6 +67,6 @@ qwenpaw app
 4. 開啟 **OpenClaw** 子開關。
 5. 等待可用性檢查。
 
-N.E.K.O. 預設連線 `http://127.0.0.1:8088`。若 QwenPaw 使用其他位址，請在 N.E.K.O. 的 core 設定中更新 `openclawUrl`（adapter 也接受 `qwenpawUrl`），再重試。
+N.E.K.O. 預設連線 `http://127.0.0.1:8088`。若 QwenPaw 使用其他位址，請在 N.E.K.O. 的 core 設定中更新 `openclawUrl`，再重試。
 
 目前 adapter 同時識別 QwenPaw v2 主控台 API 與舊版 agent 相容 API。可用性檢查會依實際版本探測 `/api/version` 或 `/api/agent/health`，之後使用相符的主控台或 agent endpoint。預設 console 情境不需要另建 channel 檔案。
