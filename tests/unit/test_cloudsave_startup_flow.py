@@ -352,7 +352,7 @@ def test_launcher_partial_existing_services_force_multi_mode(monkeypatch, footpr
     monkeypatch.setattr(
         launcher,
         "report_startup_failure",
-        lambda message: pytest.fail(message),
+        pytest.fail,
     )
 
     assert launcher.apply_port_strategy() is True
