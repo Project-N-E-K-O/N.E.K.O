@@ -48,20 +48,13 @@ def _log_video_content(lanlan_name: str, video_content: dict):
     region = video_content.get('region', 'china')
     video_data = video_content.get('video', {})
     if video_data.get('success'):
-        if region == 'china':
-            videos = video_data.get('videos', [])
-            titles = [video.get('title', '') for video in videos[:5]]
-            if titles:
-                print(f"[{lanlan_name}] 成功获取B站视频:")
-                for title in titles:
-                    print(f"  - {title}")
-        else:
-            videos = video_data.get('videos', [])
-            titles = [video.get('title', '') for video in videos[:5]]
-            if titles:
-                print(f"[{lanlan_name}] 成功获取YouTube视频:")
-                for title in titles:
-                    print(f"  - {title}")
+        videos = video_data.get('videos', [])
+        titles = [video.get('title', '') for video in videos[:5]]
+        if titles:
+            source = "B站视频" if region == 'china' else "YouTube视频"
+            print(f"[{lanlan_name}] 成功获取{source}:")
+            for title in titles:
+                print(f"  - {title}")
 
 
 def _log_trending_content(lanlan_name: str, trending_content: dict):

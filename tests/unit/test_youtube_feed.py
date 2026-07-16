@@ -473,16 +473,28 @@ def test_youtube_cookie_i18n_contract_is_complete_for_all_locales():
         assert cookies_login_i18n["fields"]["secure3PAPISID"]["desc"]
 
 
-def test_non_china_video_log_reports_youtube_payload(capsys):
+@pytest.mark.parametrize(
+    ("region", "source"),
+    [("china", "B站视频"), ("non-china", "YouTube视频")],
+)
+def test_video_log_reports_region_source(capsys, region, source):
     _log_video_content("YUI", {
-        "region": "non-china",
+        "region": region,
         "video": {
             "success": True,
-            "videos": [{"title": "A YouTube recommendation"}],
+            "videos": [{"title": "A video recommendation"}],
         },
     })
 
     output = capsys.readouterr().out
-    assert "成功获取YouTube视频" in output
-    assert "A YouTube recommendation" in output
-    assert "Reddit" not in output
+    assert f"成功获取{source}" in output
+    assert "A video recommendation" in output
+
+
+def test_video_log_stays_silent_without_titles(capsys):
+    _log_video_content("YUI", {
+        "region": "non-china",
+        "video": {"success": True, "videos": []},
+    })
+
+    assert capsys.readouterr().out == ""
