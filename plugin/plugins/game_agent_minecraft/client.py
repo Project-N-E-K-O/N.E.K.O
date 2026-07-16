@@ -84,6 +84,7 @@ class GameAgentClient:
         self._ws: Optional[Any] = None
         self._running = False
         self.is_connected: bool = False
+        self._background_callbacks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -154,6 +155,12 @@ class GameAgentClient:
                 # already torn down (peer hung up, OS reaped fd, ...)
                 # there's nothing for us to recover; we're stopping.
                 pass
+        callbacks = tuple(self._background_callbacks)
+        for task in callbacks:
+            task.cancel()
+        if callbacks:
+            await asyncio.gather(*callbacks, return_exceptions=True)
+        self._background_callbacks.clear()
         self._log_info("stopped")
 
     # ------------------------------------------------------------------
@@ -277,7 +284,10 @@ class GameAgentClient:
                     elif msg_type == "ingame_chat" and self.on_ingame_chat is not None:
                         messages = self._parse_ingame_chat_messages(data)
                         if messages:
-                            await self.on_ingame_chat(messages)
+                            self._start_background_callback(
+                                self.on_ingame_chat(messages),
+                                msg_type=msg_type,
+                            )
 
                     elif msg_type == "agent_status":
                         # Informational status — the original integration
@@ -298,6 +308,33 @@ class GameAgentClient:
         except Exception as exc:
             self.is_connected = False
             self._log_error("listen error: {}: {}", type(exc).__name__, exc)
+
+    def _start_background_callback(
+        self,
+        callback: Awaitable[None],
+        *,
+        msg_type: str,
+    ) -> None:
+        """Run a potentially slow callback without stalling frame ingestion."""
+        task = asyncio.create_task(
+            callback,
+            name=f"game_agent_minecraft.callback.{msg_type}",
+        )
+        self._background_callbacks.add(task)
+
+        def _done(done: asyncio.Task[None]) -> None:
+            self._background_callbacks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception as exc:
+                self._log_error(
+                    "background callback error for type={}: {}: {}",
+                    msg_type, type(exc).__name__, exc,
+                )
+
+        task.add_done_callback(_done)
 
     @staticmethod
     def _parse_ingame_chat_messages(

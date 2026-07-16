@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 
 import pytest
 
@@ -73,11 +74,49 @@ async def test_client_dispatches_typed_ingame_chat_batch_once():
     ])
 
     await client._listen()
+    await asyncio.gather(*tuple(client._background_callbacks))
 
     assert received == [(
         IngameChatMessage(player="Alice", text="hello Neko"),
         IngameChatMessage(player="Bob", text="come explore"),
     )]
+
+
+@pytest.mark.asyncio
+async def test_slow_chat_callback_does_not_stall_later_frames():
+    chat_started = asyncio.Event()
+    release_chat = asyncio.Event()
+    finished_frames = []
+
+    async def on_ingame_chat(_messages) -> None:
+        chat_started.set()
+        await release_chat.wait()
+
+    async def on_task_finished(data) -> None:
+        finished_frames.append(data)
+
+    client = GameAgentClient(
+        "ws://example",
+        on_ingame_chat=on_ingame_chat,
+        on_task_finished=on_task_finished,
+    )
+    client._ws = _FrameStream([
+        json.dumps({
+            "type": "ingame_chat",
+            "messages": [{"player": "Alice", "text": "hello"}],
+        }),
+        json.dumps({"type": "task_finished", "status": "ok"}),
+    ])
+
+    await client._listen()
+    await chat_started.wait()
+
+    assert len(finished_frames) == 1
+    assert finished_frames[0]["type"] == "task_finished"
+
+    callbacks = tuple(client._background_callbacks)
+    release_chat.set()
+    await asyncio.gather(*callbacks)
 
 
 @pytest.mark.asyncio
@@ -142,6 +181,14 @@ async def test_service_pushes_one_non_admin_dialog_turn_without_echo():
     service, push_calls = _make_service()
     fake_client = _FakeClient()
     service._client = fake_client
+    event_loop_thread = threading.get_ident()
+    push_threads = []
+
+    def fake_push(**kwargs):
+        push_threads.append(threading.get_ident())
+        push_calls.append(kwargs)
+
+    service._push_message = fake_push
 
     await service._on_ingame_chat((
         IngameChatMessage(player="Alice", text="hello Neko"),
@@ -163,6 +210,7 @@ async def test_service_pushes_one_non_admin_dialog_turn_without_echo():
     assert '{"player":"Bob","text":"come explore"}' in body
     assert body.count("hello Neko") == 1
     assert fake_client.sent == []
+    assert push_threads and push_threads[0] != event_loop_thread
 
 
 @pytest.mark.asyncio

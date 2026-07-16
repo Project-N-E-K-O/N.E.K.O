@@ -182,6 +182,10 @@ class GameAgentService:
         # Cross-callback state
         self._pending: Optional[PendingTask] = None
         self._pending_lock = asyncio.Lock()
+        # ``push_message`` ultimately performs a synchronous ZMQ send. Chat
+        # callbacks are dispatched in the background by the client, and this
+        # fair lock keeps their thread-offloaded pushes in WebSocket order.
+        self._ingame_chat_push_lock = asyncio.Lock()
         # Bounded history of dispatched task_id → task_text. Used by
         # ``_on_task_finished`` to recognize completion frames for tasks
         # that are no longer the active ``_pending`` (typical case:
@@ -1127,13 +1131,15 @@ class GameAgentService:
             "the existing tool rules."
         )
         try:
-            self._push_message(
-                source="game_agent_minecraft",
-                visibility=[],
-                ai_behavior="respond",
-                parts=[{"type": "text", "text": body}],
-                priority=5,
-            )
+            async with self._ingame_chat_push_lock:
+                await asyncio.to_thread(
+                    self._push_message,
+                    source="game_agent_minecraft",
+                    visibility=[],
+                    ai_behavior="respond",
+                    parts=[{"type": "text", "text": body}],
+                    priority=5,
+                )
         except Exception as exc:
             self._log_error(
                 "in-game chat push failed: {}: {}", type(exc).__name__, exc,
