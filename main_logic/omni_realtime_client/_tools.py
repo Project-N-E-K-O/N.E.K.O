@@ -187,8 +187,14 @@ class _ToolingMixin:
             pass
         elif result.call_id:
             item["call_id"] = result.call_id
-        await self.send_event({
+        item_event = {
             "type": "conversation.item.create",
             "item": item,
-        })
-        await self.send_event({"type": "response.create"})
+        }
+        ticket = await self._ensure_response_arbiter().enqueue(
+            source="tool_result",
+            events_before_response=(item_event,),
+            response_event={"type": "response.create"},
+            priority=5,
+        )
+        await ticket.sent
