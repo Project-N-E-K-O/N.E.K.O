@@ -438,3 +438,47 @@ async def test_fused_entries_contradicting_noncard_are_queued_not_appended():
     assert "Master enjoys tea." in texts
     assert ("existing", "Master lives in Tokyo.") in harness.queued_corrections
     assert result["added"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fusion_input_bounds_breadcrumb_prefix(monkeypatch):
+    # A huge source_section must be token-bounded in the fusion input so it cannot
+    # starve later candidate bodies out of the shared input budget (Greptile P1).
+    captured = {}
+
+    class _FakeResp:
+        content = "[]"
+
+    class _FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            return _FakeResp()
+
+        async def aclose(self):
+            pass
+
+    async def _fake_create(*_a, **_k):
+        return _FakeLLM()
+
+    monkeypatch.setattr("utils.llm_client.create_chat_llm_async", _fake_create)
+
+    class _CfgMgr:
+        async def aget_character_data(self):
+            return (None, None, None, None, {}, None, None, None, None)
+
+        def get_model_api_config(self, _tier):
+            return {"model": "m", "base_url": "u", "api_key": "k", "provider_type": None}
+
+    class _CallHarness(ExternalFusionMixin):
+        def __init__(self):
+            self._config_manager = _CfgMgr()
+
+    huge_section = "H" * 5000
+    await _CallHarness()._allm_call_fusion(
+        "Neko", "master",
+        [{"source_section": huge_section, "text": "user prefers tea"}],
+        600,
+    )
+    # breadcrumb is bounded (nowhere near the 5000-char heading); body survives
+    assert "H" * 500 not in captured["prompt"]
+    assert "user prefers tea" in captured["prompt"]

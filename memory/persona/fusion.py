@@ -66,6 +66,7 @@ import re
 from datetime import datetime
 
 from config import (
+    EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS,
     EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS,
     EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS,
     EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS,
@@ -284,7 +285,12 @@ class ExternalFusionMixin:
 
         lines = []
         for idx, cand in enumerate(candidates, 1):
-            section = str(cand.get("source_section") or "").strip()
+            # 面包屑单独按 token 上界截断，防大量长标题候选把输入池吃光、挤掉后段
+            # 候选正文（尾部截断 → 后段记忆永久漏掉）(Greptile P1)。
+            section = truncate_to_tokens(
+                str(cand.get("source_section") or "").strip(),
+                EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS,
+            )
             text = str(cand.get("text") or "").strip()
             prefix = f"{section}: " if section and section.casefold() not in text.casefold() else ""
             lines.append(f"{idx}. {prefix}{text}")

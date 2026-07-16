@@ -417,6 +417,10 @@ EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS = 6000
 # 融合产出的单条 soft cap（token）：防 LLM 把多条揉成一条超长文本，在渲染层
 # whole-entry 贪心截断里挤掉大量其它条目。
 EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
+# 融合输入里单条候选的面包屑（source_section）前缀 token 上界：面包屑只提供分节
+# 上下文，不钉死的话大量带长标题的候选会把输入池吃光、把后面候选的正文挤出 LLM
+# 输入（尾部截断），导致后段记忆永久漏掉。
+EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。
