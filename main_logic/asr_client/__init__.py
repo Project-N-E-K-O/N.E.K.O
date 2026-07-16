@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from typing import Literal
@@ -69,6 +69,12 @@ class _AsrSelection:
     provider_key: str
     endpointing_mode: _AsrEndpointingMode
     soniox_region: Literal["us", "eu", "jp"] | None = None
+    _worker_fn: _AsrWorkerFn | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _api_key: str = field(default="", repr=False, compare=False)
 
 
 def _load_core_config() -> dict:
@@ -132,7 +138,19 @@ def _resolve_asr_selection(
                 "ASR_INVALID_CONFIG: ASR_PROVIDER only supports the development "
                 "value 'dummy'"
             )
-        return _AsrSelection(provider_key="dummy", endpointing_mode="manual")
+        worker_fn, api_key, _provider_key = _get_asr_worker(
+            core_key,
+            "manual",
+            provider_key_override="dummy",
+            core_config={},
+            require_credential=False,
+        )
+        return _AsrSelection(
+            provider_key="dummy",
+            endpointing_mode="manual",
+            _worker_fn=worker_fn,
+            _api_key=api_key or "",
+        )
 
     core_config = _load_core_config()
     resolved_region = str(
@@ -156,15 +174,35 @@ def _resolve_asr_selection(
             raise RuntimeError(
                 "ASR_INVALID_CONFIG: SONIOX_REGION must be us, eu, or jp"
             )
+        soniox_config = {**core_config, "SONIOX_API_KEY": soniox_key}
+        worker_fn, api_key, _provider_key = _get_asr_worker(
+            core_key,
+            "provider",
+            provider_key_override="soniox",
+            soniox_region=raw_soniox_region,
+            core_config=soniox_config,
+            require_credential=False,
+        )
         return _AsrSelection(
             provider_key="soniox",
             endpointing_mode="provider",
             soniox_region=raw_soniox_region,  # type: ignore[arg-type]
+            _worker_fn=worker_fn,
+            _api_key=api_key or "",
         )
 
+    worker_fn, api_key, provider_key = _get_asr_worker(
+        core_key,
+        route.default_endpointing_mode,
+        provider_key_override=route.provider_key,
+        core_config=core_config,
+        require_credential=False,
+    )
     return _AsrSelection(
-        provider_key=route.provider_key,
+        provider_key=provider_key,
         endpointing_mode=route.default_endpointing_mode,
+        _worker_fn=worker_fn,
+        _api_key=api_key or "",
     )
 
 
@@ -178,6 +216,8 @@ def _get_asr_worker(
     *,
     provider_key_override: str | None = None,
     soniox_region: str | None = None,
+    core_config: dict | None = None,
+    require_credential: bool = True,
 ) -> tuple[_AsrWorkerFn, str | None, str]:
     """Resolve one worker without exposing provider internals to callers."""
 
@@ -213,16 +253,16 @@ def _get_asr_worker(
     # ConfigManager owns the only permitted provider-specific credential
     # fallback: a matching Core may supply CORE_API_KEY through its matching
     # ASSIST_API_KEY_* slot. No audio/TTS/other-provider key is consulted here.
-    core_config = _load_core_config()
+    resolved_core_config = _load_core_config() if core_config is None else core_config
     credential_field = (
         "SONIOX_API_KEY" if provider_key == "soniox" else route.credential_field
     )
     api_key = str(
-        core_config.get(credential_field)
+        resolved_core_config.get(credential_field)
         or (os.getenv("SONIOX_API_KEY", "") if provider_key == "soniox" else "")
         or ""
     ).strip()
-    if not api_key:
+    if not api_key and require_credential:
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
 
     if provider_key == "qwen":
@@ -247,25 +287,54 @@ def create_asr_session(
     if config is not None and not isinstance(config, AsrSessionConfig):
         raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
     selection = _resolve_asr_selection(core_type, user_region=user_region)
+    return _create_asr_session_from_selection(
+        core_type,
+        selection=selection,
+        config=config,
+        on_input_transcript=on_input_transcript,
+        on_connection_error=on_connection_error,
+        on_status_message=on_status_message,
+        on_speech_activity=on_speech_activity,
+    )
+
+
+def _create_asr_session_from_selection(
+    core_type: str,
+    *,
+    selection: _AsrSelection,
+    config: AsrSessionConfig | None = None,
+    on_input_transcript: Callable[[str], Awaitable[None]],
+    on_connection_error: Callable[[str], Awaitable[None]],
+    on_status_message: Callable[[str], Awaitable[None]] | None = None,
+    on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
+) -> RealtimeAsrSession:
+    """Build one session from an already-resolved, immutable selection."""
+
+    if not isinstance(selection, _AsrSelection):
+        raise TypeError("ASR_INVALID_CONFIG: selection must be _AsrSelection")
+    if config is not None and not isinstance(config, AsrSessionConfig):
+        raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
     session_config = config or AsrSessionConfig(
         endpointing_mode=selection.endpointing_mode
     )
-    route = _CORE_ASR_ROUTES[str(core_type or "").strip().lower()]
-    worker_kwargs = {}
-    if selection.provider_key != route.provider_key:
-        worker_kwargs = {
-            "provider_key_override": selection.provider_key,
-            "soniox_region": selection.soniox_region,
-        }
-    worker_fn, api_key_override, provider_key = _get_asr_worker(
-        core_type,
-        session_config.endpointing_mode,
-        **worker_kwargs,
-    )
+    provider_key = selection.provider_key
+    provider_meta = _ASR_PROVIDER_REGISTRY.get(provider_key)
+    if provider_meta is None:
+        raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
+    if session_config.endpointing_mode not in provider_meta.supported_endpointing_modes:
+        raise RuntimeError(
+            "ASR_ENDPOINTING_NOT_SUPPORTED: "
+            f"{provider_key} does not support {session_config.endpointing_mode}"
+        )
+    worker_fn = selection._worker_fn
+    if worker_fn is None:
+        raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
+    if provider_key != "dummy" and not selection._api_key:
+        raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
 
     return _RealtimeAsrSessionImpl(
         worker_fn=worker_fn,
-        api_key=api_key_override or "",
+        api_key=selection._api_key,
         config=session_config,
         on_input_transcript=on_input_transcript,
         on_connection_error=on_connection_error,
@@ -273,7 +342,7 @@ def create_asr_session(
         voice_turn_factory=(
             partial(_create_voice_turn_adapter, on_activity=on_speech_activity)
             if (
-                _ASR_PROVIDER_REGISTRY[provider_key].requires_smart_turn
+                provider_meta.requires_smart_turn
                 and session_config.endpointing_mode == "manual"
             )
             else None
@@ -281,40 +350,27 @@ def create_asr_session(
     )
 
 
-def _create_core_follow_asr_session(
-    core_type: str,
-    *,
-    on_input_transcript: Callable[[str], Awaitable[None]],
-    on_connection_error: Callable[[str], Awaitable[None]],
-    on_status_message: Callable[[str], Awaitable[None]] | None = None,
-    on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
-) -> RealtimeAsrSession:
-    """Create the configured Core's ASR without applying regional preference."""
+def _resolve_core_follow_selection(core_type: str) -> _AsrSelection:
+    """Resolve the configured Core's ASR without regional provider preference."""
 
     core_key = str(core_type or "").strip().lower()
     route = _CORE_ASR_ROUTES.get(core_key)
     if route is None:
         raise RuntimeError(f"ASR_UNKNOWN_CORE: {core_key or '<empty>'}")
     endpointing_mode = route.default_endpointing_mode
+    core_config = _load_core_config()
     worker_fn, api_key_override, provider_key = _get_asr_worker(
         core_key,
         endpointing_mode,
+        provider_key_override=route.provider_key,
+        core_config=core_config,
+        require_credential=False,
     )
-    return _RealtimeAsrSessionImpl(
-        worker_fn=worker_fn,
-        api_key=api_key_override or "",
-        config=AsrSessionConfig(endpointing_mode=endpointing_mode),
-        on_input_transcript=on_input_transcript,
-        on_connection_error=on_connection_error,
-        on_status_message=on_status_message,
-        voice_turn_factory=(
-            partial(_create_voice_turn_adapter, on_activity=on_speech_activity)
-            if (
-                _ASR_PROVIDER_REGISTRY[provider_key].requires_smart_turn
-                and endpointing_mode == "manual"
-            )
-            else None
-        ),
+    return _AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode=endpointing_mode,
+        _worker_fn=worker_fn,
+        _api_key=api_key_override or "",
     )
 
 
