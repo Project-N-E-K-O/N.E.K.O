@@ -24,7 +24,7 @@ function createCommit(
 
 function createProgressiveReleaseHandlers(
   definition: AvatarToolDefinition,
-  profile: Extract<AvatarToolInteractionProfile, { kind: 'progressive-release-v1' }>,
+  profile: Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>,
 ): AvatarToolRuleHandlers {
   return {
     pointerDown: () => ({}),
@@ -55,7 +55,7 @@ function createProgressiveReleaseHandlers(
 
 function createPressReleaseHandlers(
   definition: AvatarToolDefinition,
-  profile: Extract<AvatarToolInteractionProfile, { kind: 'press-release-v1' }>,
+  profile: Extract<AvatarToolInteractionProfile, { kind: 'press-release' }>,
 ): AvatarToolRuleHandlers {
   return {
     pointerDown: () => ({
@@ -88,7 +88,7 @@ function createPressReleaseHandlers(
 
 function createLockedImpactHandlers(
   definition: AvatarToolDefinition,
-  profile: Extract<AvatarToolInteractionProfile, { kind: 'locked-impact-v1' }>,
+  profile: Extract<AvatarToolInteractionProfile, { kind: 'locked-impact' }>,
 ): AvatarToolRuleHandlers {
   return {
     pointerDown: (context: AvatarToolRuleContext) => context.hit ? {} : {
@@ -109,7 +109,7 @@ function createLockedImpactHandlers(
       const effect = definition.effects.find(
         candidate => candidate.id === profile.feedback.effect,
       );
-      const effectMode = chanceHit && effect?.kind === 'hammer-swing-v1'
+      const effectMode = chanceHit && effect?.kind === 'hammer-swing'
         ? effect.easterEgg.mode
         : '';
       return {
@@ -132,10 +132,10 @@ export function createAvatarToolProfileHandlers(
   definition: AvatarToolDefinition,
 ): AvatarToolRuleHandlers {
   const profile = definition.interaction;
-  if (profile.kind === 'progressive-release-v1') {
+  if (profile.kind === 'progressive-release') {
     return createProgressiveReleaseHandlers(definition, profile);
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return createPressReleaseHandlers(definition, profile);
   }
   return createLockedImpactHandlers(definition, profile);

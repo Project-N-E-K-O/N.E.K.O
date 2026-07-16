@@ -554,13 +554,22 @@ class AudioProcessor:
         """Enable or disable noise reduction."""
         prev = self.noise_reduce_enabled
         self.noise_reduce_enabled = enabled
-        if enabled and self._denoiser is None:
-            self._init_denoiser()
-        elif not enabled and self._denoiser is not None:
-            self._denoiser.close()
-            self._denoiser = None
+        if enabled:
+            if self._denoiser is None:
+                self._init_denoiser()
+            if (
+                self._denoiser is not None
+                and self._frame_buffer.size != self.RNNOISE_FRAME_SIZE
+            ):
+                self._frame_buffer = np.empty(self.RNNOISE_FRAME_SIZE, dtype=np.int16)
+        else:
+            if self._denoiser is not None:
+                self._denoiser.close()
+                self._denoiser = None
+            self._frame_buffer = np.array([], dtype=np.int16)
         if prev != enabled:
-            self._frame_buffer.fill(0)
+            if self._frame_buffer.size:
+                self._frame_buffer.fill(0)
             self._frame_buffer_size = 0
             self._agc_gain = 1.0
         logger.info(f"🎤 Noise reduction {'enabled' if enabled else 'disabled'}")

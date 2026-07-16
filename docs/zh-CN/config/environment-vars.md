@@ -26,9 +26,19 @@ Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优
 
 - `NEKO_VECTORS_ENABLED`：默认开启；
 - `NEKO_VECTORS_QUANTIZATION`：`auto`、`int8` 或 `fp32`；
+
 可用内存门槛目前是固定的运行时常量 `VECTORS_MIN_RAM_GB = 4.0`，没有对应的环境变量覆盖项。
 
-布尔解析接受 `1/true/yes/on` 与 `0/false/no/off`。向量变量也兼容无前缀形式。
+## 运行拓扑
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `NEKO_MERGED` | 源码环境：`0`；冻结发行包：`1` | `1` 让 main、memory、agent 三个 HTTP 服务在同一进程中运行，但保留原有契约；`0` 保留三个服务进程。不会复用不完整或混合的已有后端；即使原本选择 merged，也会在隔离的回退端口上强制启动三个服务进程。 |
+
+源码开发、独立服务监管或需要 agent 故障隔离时应使用多进程模式。发行包可通过
+`NEKO_MERGED=0` 立即回退。
+
+通用布尔解析通常接受 `1/true/yes/on` 与 `0/false/no/off`；`NEKO_MERGED` 自身只接受 `1/true/yes` 与 `0/false/no`。向量变量也兼容无前缀形式。
 
 ## 仅用于 Docker 初始配置
 

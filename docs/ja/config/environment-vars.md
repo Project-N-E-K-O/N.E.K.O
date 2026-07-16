@@ -18,4 +18,14 @@ Runtime では `NEKO_INSTANCE_ID`、`NEKO_AUTOSTART_CSRF_TOKEN`、`NEKO_AUTOSTAR
 
 Local vectors は `NEKO_VECTORS_ENABLED` と `NEKO_VECTORS_QUANTIZATION`（`auto/int8/fp32`）を受け付けます。Boolean は `1/true/yes/on` と `0/false/no/off` です。利用可能 RAM の下限は現在、固定の実行時定数 `VECTORS_MIN_RAM_GB = 4.0` であり、環境変数による上書きはありません。
 
+## ランタイム構成
+
+| 変数 | デフォルト | 説明 |
+|------|------------|------|
+| `NEKO_MERGED` | ソース環境: `0`、凍結パッケージ: `1` | `1` は main、memory、agent の HTTP サービスを同一プロセスで実行しつつ各契約を維持します。`0` は 3 サービスを別プロセスで実行します。既存バックエンドが不完全または混在している場合は再利用せず、merged が選択されていても分離したフォールバックポートで 3 プロセスを起動します。 |
+
+開発、サービスごとの監視、agent 障害の分離が必要な場合はマルチプロセスを使用してください。
+パッケージ版は `NEKO_MERGED=0` ですぐにロールバックできます。
+`NEKO_MERGED` 自体が受け付ける値は `1/true/yes` と `0/false/no` です。
+
 Docker entrypoint は initial `/app/config/core_config.json` の生成時だけ `NEKO_CORE_API_KEY`、`NEKO_CORE_API`、`NEKO_ASSIST_API`、一部 `NEKO_ASSIST_API_KEY_*`、`NEKO_MCP_TOKEN` を読みます。`NEKO_FORCE_ENV_UPDATE` は再生成要求です。旧 `docker/env.template` の未接続 model 変数には依存しないでください。
