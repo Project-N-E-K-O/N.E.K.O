@@ -1453,7 +1453,7 @@
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,
             _rollbackKey: I.state._rollbackKey || undefined,
-            _toolCursorResetKey: I.state._toolCursorResetKey || undefined,
+            _avatarToolDeactivationKey: I.state._avatarToolDeactivationKey || undefined,
             composerHidden: I.getEffectiveComposerHidden(),
             chatSurfaceMode: I.getCurrentChatSurfaceMode(),
             compactMinimizeCancelSeq: I.compactMinimizeCancelSeq,

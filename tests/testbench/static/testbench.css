@@ -6387,6 +6387,16 @@ button.is-dirty {
 .mtrace-node-status { fill: var(--text-tertiary); font-size: 9.5px; }
 .mtrace-node--fact .mtrace-node-box { stroke: var(--ok); }
 .mtrace-node--fact .mtrace-node-type { fill: var(--ok); }
+/* Archived fact: absorbed into a reflection and moved to facts_archive.json.
+   Same fact colour family but dashed + de-emphasised — it reads as "off the
+   active pool, materialised only to complete a reflection's source chain". */
+.mtrace-node--fact_archived .mtrace-node-box {
+  stroke: var(--ok);
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+.mtrace-node--fact_archived .mtrace-node-type { fill: var(--ok); opacity: 0.85; }
+.mtrace-node--fact_archived .mtrace-node-label { fill: var(--text-secondary); }
 .mtrace-node--reflection .mtrace-node-type { fill: var(--link); }
 .mtrace-node--persona_entry .mtrace-node-type { fill: var(--accent); }
 .mtrace-node--correction .mtrace-node-box { stroke: var(--err); stroke-dasharray: 4 3; }

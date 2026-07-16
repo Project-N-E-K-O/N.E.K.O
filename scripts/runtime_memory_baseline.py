@@ -18,17 +18,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import json
 import os
 import platform
 import socket
 import statistics
 import subprocess
+import sys
 import time
 import tracemalloc
 import urllib.parse
 import urllib.request
 import uuid
+import weakref
 from collections import Counter
 from contextlib import suppress
 from pathlib import Path
@@ -39,6 +42,7 @@ import psutil
 
 MIB = 1024 * 1024
 DEFAULT_SAMPLE_INTERVAL = 0.25
+_PROBED_EMBEDDING_SERVICES: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def _mib(value: int | float | None) -> float | None:
@@ -81,6 +85,35 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
             uss = getattr(full, "uss", None)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             uss = None
+        try:
+            thread_count = process.num_threads()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            thread_count = None
+        try:
+            handle_count = (
+                process.num_handles() if hasattr(process, "num_handles") else None
+            )
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            handle_count = None
+
+        onnx_map_count: int | None = 0
+        onnx_mapped_rss: int | None = 0
+        try:
+            for memory_map in process.memory_maps(grouped=True):
+                path = str(getattr(memory_map, "path", "") or "").lower()
+                if "onnxruntime" not in path and not path.endswith(".onnx"):
+                    continue
+                onnx_map_count += 1
+                onnx_mapped_rss += int(getattr(memory_map, "rss", 0) or 0)
+        except (
+            psutil.AccessDenied,
+            psutil.NoSuchProcess,
+            OSError,
+            NotImplementedError,
+        ):
+            # Preserve an unknown result when maps are unsupported or inaccessible.
+            onnx_map_count = None
+            onnx_mapped_rss = None
         return {
             "pid": process.pid,
             "ppid": process.ppid(),
@@ -88,6 +121,10 @@ def _process_row(process: psutil.Process) -> dict[str, Any] | None:
             "category": _process_category(process),
             "rss_mib": _mib(basic.rss),
             "uss_mib": _mib(uss),
+            "threads": thread_count,
+            "handles": handle_count,
+            "onnx_map_count": onnx_map_count,
+            "onnx_mapped_rss_mib": _mib(onnx_mapped_rss),
         }
     except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
         return None
@@ -123,19 +160,70 @@ def _sample(
     for row in rows:
         entry = categories.setdefault(
             row["category"],
-            {"count": 0, "rss_mib": 0.0, "uss_mib": 0.0, "uss_processes": 0},
+            {
+                "count": 0,
+                "rss_mib": 0.0,
+                "uss_mib": 0.0,
+                "uss_processes": 0,
+                "threads": 0,
+                "thread_processes": 0,
+                "handles": 0,
+                "handle_processes": 0,
+                "onnx_map_count": 0,
+                "onnx_map_processes": 0,
+                "onnx_mapped_rss_mib": 0.0,
+                "onnx_mapped_rss_processes": 0,
+            },
         )
         entry["count"] = int(entry["count"]) + 1
         entry["rss_mib"] = float(entry["rss_mib"]) + float(row["rss_mib"] or 0.0)
         if row["uss_mib"] is not None:
             entry["uss_mib"] = float(entry["uss_mib"]) + float(row["uss_mib"])
             entry["uss_processes"] = int(entry["uss_processes"]) + 1
+        if row["threads"] is not None:
+            entry["threads"] = int(entry["threads"]) + int(row["threads"])
+            entry["thread_processes"] = int(entry["thread_processes"]) + 1
+        if row["handles"] is not None:
+            entry["handles"] = int(entry["handles"]) + int(row["handles"])
+            entry["handle_processes"] = int(entry["handle_processes"]) + 1
+        if row["onnx_map_count"] is not None:
+            entry["onnx_map_count"] = int(entry["onnx_map_count"]) + int(
+                row["onnx_map_count"]
+            )
+            entry["onnx_map_processes"] = int(entry["onnx_map_processes"]) + 1
+        if row["onnx_mapped_rss_mib"] is not None:
+            entry["onnx_mapped_rss_mib"] = float(entry["onnx_mapped_rss_mib"]) + float(
+                row["onnx_mapped_rss_mib"]
+            )
+            entry["onnx_mapped_rss_processes"] = (
+                int(entry["onnx_mapped_rss_processes"]) + 1
+            )
     for entry in categories.values():
         if entry["uss_processes"] == 0:
             entry["uss_mib"] = None
+        if entry["thread_processes"] == 0:
+            entry["threads"] = None
+        if entry["handle_processes"] == 0:
+            entry["handles"] = None
+        if entry["onnx_map_processes"] == 0:
+            entry["onnx_map_count"] = None
+        if entry["onnx_mapped_rss_processes"] == 0:
+            entry["onnx_mapped_rss_mib"] = None
 
     total_rss = sum(float(row["rss_mib"] or 0.0) for row in rows)
-    total_uss_values = [float(row["uss_mib"]) for row in rows if row["uss_mib"] is not None]
+    total_uss_values = [
+        float(row["uss_mib"]) for row in rows if row["uss_mib"] is not None
+    ]
+    total_threads = [int(row["threads"]) for row in rows if row["threads"] is not None]
+    total_handles = [int(row["handles"]) for row in rows if row["handles"] is not None]
+    total_onnx_maps = [
+        int(row["onnx_map_count"]) for row in rows if row["onnx_map_count"] is not None
+    ]
+    total_onnx_rss = [
+        float(row["onnx_mapped_rss_mib"])
+        for row in rows
+        if row["onnx_mapped_rss_mib"] is not None
+    ]
     return {
         "elapsed_s": round(time.perf_counter(), 6),
         "categories": categories,
@@ -144,6 +232,16 @@ def _sample(
             "rss_mib": round(total_rss, 3),
             "uss_mib": round(sum(total_uss_values), 3) if total_uss_values else None,
             "uss_processes": len(total_uss_values),
+            "threads": sum(total_threads) if total_threads else None,
+            "thread_processes": len(total_threads),
+            "handles": sum(total_handles) if total_handles else None,
+            "handle_processes": len(total_handles),
+            "onnx_map_count": sum(total_onnx_maps) if total_onnx_maps else None,
+            "onnx_map_processes": len(total_onnx_maps),
+            "onnx_mapped_rss_mib": round(sum(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
+            "onnx_mapped_rss_processes": len(total_onnx_rss),
         },
         "processes": rows,
     }
@@ -172,6 +270,28 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             int(sample["categories"].get(name, {}).get("count", 0))
             for sample in samples
         ]
+        thread_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("threads")) is not None
+        ]
+        handle_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("handles")) is not None
+        ]
+        onnx_map_values = [
+            int(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_map_count"))
+            is not None
+        ]
+        onnx_rss_values = [
+            float(value)
+            for sample in samples
+            if (value := sample["categories"].get(name, {}).get("onnx_mapped_rss_mib"))
+            is not None
+        ]
         categories[name] = {
             "median_count": int(statistics.median(count_values)),
             "max_count": max(count_values),
@@ -181,6 +301,24 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             if uss_values
             else None,
             "peak_uss_mib": round(max(uss_values), 3) if uss_values else None,
+            "median_threads": round(statistics.median(thread_values), 3)
+            if thread_values
+            else None,
+            "max_threads": max(thread_values) if thread_values else None,
+            "median_handles": round(statistics.median(handle_values), 3)
+            if handle_values
+            else None,
+            "max_handles": max(handle_values) if handle_values else None,
+            "median_onnx_map_count": round(statistics.median(onnx_map_values), 3)
+            if onnx_map_values
+            else None,
+            "max_onnx_map_count": max(onnx_map_values) if onnx_map_values else None,
+            "median_onnx_mapped_rss_mib": round(statistics.median(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
+            "peak_onnx_mapped_rss_mib": round(max(onnx_rss_values), 3)
+            if onnx_rss_values
+            else None,
         }
 
     total_rss = [float(sample["total"]["rss_mib"] or 0.0) for sample in samples]
@@ -189,14 +327,56 @@ def _series_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         for sample in samples
         if sample["total"]["uss_mib"] is not None
     ]
+    total_threads = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("threads")) is not None
+    ]
+    total_handles = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("handles")) is not None
+    ]
+    total_onnx_maps = [
+        int(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_map_count")) is not None
+    ]
+    total_onnx_rss = [
+        float(value)
+        for sample in samples
+        if (value := sample["total"].get("onnx_mapped_rss_mib")) is not None
+    ]
     return {
         "sample_count": len(samples),
         "categories": categories,
         "total": {
-            "median_rss_mib": round(statistics.median(total_rss), 3) if total_rss else 0.0,
+            "median_rss_mib": round(statistics.median(total_rss), 3)
+            if total_rss
+            else 0.0,
             "peak_rss_mib": round(max(total_rss), 3) if total_rss else 0.0,
-            "median_uss_mib": round(statistics.median(total_uss), 3) if total_uss else None,
+            "median_uss_mib": round(statistics.median(total_uss), 3)
+            if total_uss
+            else None,
             "peak_uss_mib": round(max(total_uss), 3) if total_uss else None,
+            "median_threads": round(statistics.median(total_threads), 3)
+            if total_threads
+            else None,
+            "max_threads": max(total_threads) if total_threads else None,
+            "median_handles": round(statistics.median(total_handles), 3)
+            if total_handles
+            else None,
+            "max_handles": max(total_handles) if total_handles else None,
+            "median_onnx_map_count": round(statistics.median(total_onnx_maps), 3)
+            if total_onnx_maps
+            else None,
+            "max_onnx_map_count": max(total_onnx_maps) if total_onnx_maps else None,
+            "median_onnx_mapped_rss_mib": round(statistics.median(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
+            "peak_onnx_mapped_rss_mib": round(max(total_onnx_rss), 3)
+            if total_onnx_rss
+            else None,
         },
         "last_processes": samples[-1]["processes"] if samples else [],
     }
@@ -241,6 +421,85 @@ def _sample_window(
     return result
 
 
+def _register_embedding_service(service: Any) -> None:
+    """Track direct probe services without extending their lifetime."""
+    _PROBED_EMBEDDING_SERVICES.add(service)
+
+
+def _runtime_resource_counts() -> dict[str, Any]:
+    """Return reference counts for heavy runtimes without importing them.
+
+    The process sampler reports mapped ONNX files and Chromium descendants.
+    These counters complement it with the owners that are visible in Python so
+    a released owner can be distinguished from a still-referenced model.
+    """
+    result: dict[str, Any] = {
+        "embedding_service_instances": 0,
+        "embedding_session_refs": 0,
+        "embedding_tokenizer_refs": 0,
+        "rapidocr_cache_entries": 0,
+        "rapidocr_cache_owners": 0,
+    }
+
+    services = list(_PROBED_EMBEDDING_SERVICES)
+    embeddings = sys.modules.get("memory.embeddings")
+    if embeddings is not None:
+        service = getattr(embeddings, "_SERVICE", None)
+        if service is not None and all(service is not item for item in services):
+            services.append(service)
+    result["embedding_service_instances"] = len(services)
+    result["embedding_session_refs"] = sum(
+        int(getattr(service, "_session", None) is not None) for service in services
+    )
+    result["embedding_tokenizer_refs"] = sum(
+        int(getattr(service, "_tokenizer", None) is not None) for service in services
+    )
+
+    seen_caches: set[int] = set()
+    for module_name in (
+        "plugin.plugins._shared.rapidocr.ocr_runtime_types",
+        "plugin.plugins.galgame_plugin.ocr_runtime_types",
+    ):
+        runtime_types = sys.modules.get(module_name)
+        if runtime_types is None:
+            continue
+        cache = getattr(runtime_types, "_RAPIDOCR_RUNTIME_CACHE", None)
+        owners = getattr(runtime_types, "_RAPIDOCR_RUNTIME_CACHE_OWNERS", None)
+        if not isinstance(cache, dict) or id(cache) in seen_caches:
+            continue
+        seen_caches.add(id(cache))
+        result["rapidocr_cache_entries"] += len(cache)
+        if isinstance(owners, dict):
+            result["rapidocr_cache_owners"] += sum(
+                max(0, int(value or 0)) for value in owners.values()
+            )
+    return result
+
+
+def _in_process_checkpoint(
+    label: str,
+    *,
+    seconds: float,
+    interval: float,
+    collect: bool = False,
+    root_pids: Iterable[int] | None = None,
+) -> dict[str, Any]:
+    if collect:
+        gc.collect()
+    sample_root_pids = list(root_pids) if root_pids is not None else [os.getpid()]
+    checkpoint = _sample_window(
+        label,
+        sample_root_pids,
+        seconds=seconds,
+        interval=interval,
+        traced_python_pid=os.getpid() if os.getpid() in sample_root_pids else None,
+    )
+    checkpoint["captured_perf_counter"] = round(time.perf_counter(), 6)
+    checkpoint["resources"] = _runtime_resource_counts()
+    checkpoint["gc_counts"] = list(gc.get_count())
+    return checkpoint
+
+
 def _metadata() -> dict[str, Any]:
     try:
         commit = subprocess.check_output(
@@ -259,20 +518,19 @@ def _metadata() -> dict[str, Any]:
     }
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: dict[str, Any], *, announce: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(path.resolve())
+    if announce:
+        print(path.resolve())
 
 
 async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
 
@@ -285,12 +543,10 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
     from memory.embeddings import EmbeddingService
 
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     service = EmbeddingService(
@@ -301,16 +557,17 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
         min_ram_gb=VECTORS_MIN_RAM_GB,
         profile_id=VECTORS_MODEL_PROFILE_ID,
     )
+    _register_embedding_service(service)
     ready = await service.request_load()
     if not ready:
-        raise RuntimeError(f"embedding service did not become READY: {service.disable_reason()}")
+        raise RuntimeError(
+            f"embedding service did not become READY: {service.disable_reason()}"
+        )
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_ready",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     vector = await service.embed("N.E.K.O runtime memory baseline")
@@ -319,21 +576,31 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
             f"embedding inference failed after READY: {service.disable_reason()}"
         )
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "embedding_first_inference",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
+        )
+    )
+    model_id = service.model_id()
+    await service.close()
+    vector_dimensions = len(vector)
+    del vector, service
+    checkpoints.append(
+        _in_process_checkpoint(
+            "embedding_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
         )
     )
     return {
         "scenario": "embedding",
         "embedding": {
             "ready": ready,
-            "model_id": service.model_id(),
+            "model_id": model_id,
             "model_root": str(Path(args.embedding_root).resolve()),
-            "vector_dimensions": len(vector),
+            "vector_dimensions": vector_dimensions,
         },
         "checkpoints": checkpoints,
     }
@@ -341,12 +608,10 @@ async def _embedding_scenario(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
     from PIL import Image
@@ -367,53 +632,56 @@ async def _ocr_scenario(args: argparse.Namespace) -> dict[str, Any]:
     )
     available = backend.is_available()
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "ocr_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     if not available:
         raise RuntimeError("RapidOCR backend is not available")
     text = backend.extract_text(Image.new("RGB", (640, 360), "white"))
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "ocr_ready_after_first_inference",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
+        )
+    )
+    synthetic_text_length = len(text)
+    backend.close()
+    del text, backend
+    checkpoints.append(
+        _in_process_checkpoint(
+            "ocr_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
         )
     )
     return {
         "scenario": "ocr",
-        "ocr": {"available": available, "synthetic_text_length": len(text)},
+        "ocr": {"available": available, "synthetic_text_length": synthetic_text_length},
         "checkpoints": checkpoints,
     }
 
 
 async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
     checkpoints = [
-        _sample_window(
+        _in_process_checkpoint(
             "python_baseline",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     ]
     from brain.browser_use_adapter import BrowserUseAdapter
 
     adapter = BrowserUseAdapter(headless=not args.headed)
     checkpoints.append(
-        _sample_window(
+        _in_process_checkpoint(
             "browser_use_imported",
-            [os.getpid()],
             seconds=args.window,
             interval=args.interval,
-            traced_python_pid=os.getpid(),
         )
     )
     session = await adapter._get_browser_session()
@@ -421,16 +689,23 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
         await session.start()
         adapter._session_ever_started = True
         checkpoints.append(
-            _sample_window(
+            _in_process_checkpoint(
                 "browser_use_playwright_started",
-                [os.getpid()],
                 seconds=args.window,
                 interval=args.interval,
-                traced_python_pid=os.getpid(),
             )
         )
     finally:
         await adapter.close()
+    del session, adapter
+    checkpoints.append(
+        _in_process_checkpoint(
+            "browser_use_released",
+            seconds=args.window,
+            interval=args.interval,
+            collect=True,
+        )
+    )
     return {
         "scenario": "browser_use",
         "browser": {"headless": not args.headed},
@@ -511,6 +786,7 @@ async def _run_synthetic_chat(
     import websockets
 
     if not character:
+
         def _read_current_character() -> dict[str, Any]:
             with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/api/characters/current_catgirl", timeout=5
@@ -668,7 +944,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
     env = os.environ.copy()
     env.update(_parse_env(args.env))
     backend_command = _decode_command(args.backend_command)
-    electron_command = _decode_command(args.electron_command) if args.electron_command else None
+    electron_command = (
+        _decode_command(args.electron_command) if args.electron_command else None
+    )
     ports = _decode_ports(args.ports)
     _assert_ports_available(ports)
     processes: list[tuple[str, subprocess.Popen[Any], Any]] = []
@@ -694,7 +972,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
                 _sample(roots, observed_processes=observed_processes)
             )
             if backend.poll() is not None:
-                raise RuntimeError(f"backend exited before ready with code {backend.returncode}")
+                raise RuntimeError(
+                    f"backend exited before ready with code {backend.returncode}"
+                )
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"ports did not become ready: {ports}")
             time.sleep(args.interval)
@@ -722,7 +1002,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
             roots.append(electron.pid)
             time.sleep(args.electron_settle)
             if electron.poll() is not None:
-                raise RuntimeError(f"Electron exited early with code {electron.returncode}")
+                raise RuntimeError(
+                    f"Electron exited early with code {electron.returncode}"
+                )
             checkpoints.append(
                 _sample_window(
                     "electron_attached",
@@ -735,6 +1017,7 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
 
         chat_result = None
         if args.synthetic_chat:
+
             def _record_live_first_chat() -> None:
                 time.sleep(args.settle)
                 checkpoints.append(
@@ -767,7 +1050,9 @@ def _stack(args: argparse.Namespace) -> dict[str, Any]:
             "synthetic_chat": chat_result,
             "logs": {
                 "backend": str(output.with_suffix(".backend.log")),
-                "electron": str(output.with_suffix(".electron.log")) if electron_command else None,
+                "electron": str(output.with_suffix(".electron.log"))
+                if electron_command
+                else None,
             },
         }
     finally:
@@ -786,19 +1071,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--window", type=float, default=3.0)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    scenario = subparsers.add_parser("scenario", help="Run an in-process lazy feature scenario")
+    scenario = subparsers.add_parser(
+        "scenario", help="Run an in-process lazy feature scenario"
+    )
     scenario.add_argument("name", choices=("embedding", "ocr", "browser-use"))
     scenario.add_argument("--embedding-root", default="data/embedding_models")
     scenario.add_argument("--headed", action="store_true")
 
-    stack = subparsers.add_parser("stack", help="Measure a launcher/Electron process tree")
+    stack = subparsers.add_parser(
+        "stack", help="Measure a launcher/Electron process tree"
+    )
     stack.add_argument(
         "--backend-command",
         required=True,
         help="JSON array or a pipe-delimited command",
     )
     stack.add_argument("--backend-cwd", default=str(Path.cwd()))
-    stack.add_argument("--electron-command", help="JSON array or a pipe-delimited command")
+    stack.add_argument(
+        "--electron-command", help="JSON array or a pipe-delimited command"
+    )
     stack.add_argument("--electron-cwd", default=str(Path.cwd()))
     stack.add_argument("--ports", default="48911,48912,48915")
     stack.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")

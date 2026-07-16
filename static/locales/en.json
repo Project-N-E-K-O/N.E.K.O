@@ -792,7 +792,7 @@
         "toolFist": "Cat paw",
         "toolHammer": "Hammer",
         "avatarToolsButtonAriaLabel": "Avatar tools",
-        "clearCursorToolAriaLabel": "Restore cursor",
+        "clearAvatarToolAriaLabel": "Clear tool",
         "avatarToolQuickbarAriaLabel": "Avatar quick tools",
         "avatarToolQuickbarEmpty": "No quick tools",
         "avatarToolEdit": "Edit quick tools",
