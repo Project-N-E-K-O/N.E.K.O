@@ -674,6 +674,48 @@ async def test_openai_native_clear_and_mode_rejection(monkeypatch) -> None:
     assert len(connector.calls) == 1
 
 
+async def test_openai_transcription_failure_is_terminal(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            await ws.server_send(
+                {"type": "input_audio_buffer.committed", "item_id": "failed-item"}
+            )
+            await ws.server_send(
+                {
+                    "type": "conversation.item.input_audio_transcription.failed",
+                    "item_id": "failed-item",
+                }
+            )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(openai.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        openai.openai_asr_worker(requests, responses, "key", AsrSessionConfig())
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=0,
+            utterance_id=1,
+            audio=b"\0\0" * 100,
+        )
+    )
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_OPENAI_TRANSCRIPTION_FAILED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+
+
 async def test_openai_clear_keeps_old_commit_tombstone(monkeypatch) -> None:
     commit_count = 0
 

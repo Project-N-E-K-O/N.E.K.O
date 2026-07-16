@@ -38,15 +38,17 @@ async def _scripted_worker(request_queue, response_queue, api_key, config):
                 await response_queue.put(
                     _AsrWorkerEvent(kind="partial", text="draft", **common)
                 )
-                await response_queue.put(
-                    _AsrWorkerEvent(kind="final", text="   ", **common)
-                )
-                await response_queue.put(
-                    _AsrWorkerEvent(kind="final", text=" first ", **common)
-                )
-                await response_queue.put(
-                    _AsrWorkerEvent(kind="final", text="conflict", **common)
-                )
+                if request.utterance_id == 1:
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="final", text="   ", **common)
+                    )
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="final", text="conflict", **common)
+                    )
+                else:
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="final", text=" second ", **common)
+                    )
             elif api_key == "error":
                 await response_queue.put(
                     _AsrWorkerEvent(
@@ -729,7 +731,7 @@ async def test_manual_finals_are_delivered_in_commit_order():
     await session.close()
 
 
-async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
+async def test_empty_final_retires_utterance_without_blocking_later_final():
     transcripts: asyncio.Queue[str] = asyncio.Queue()
     session = _RealtimeAsrSessionImpl(
         worker_fn=_scripted_worker,
@@ -741,10 +743,49 @@ async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
     await session.signal_user_activity_end()
-    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     await asyncio.sleep(0.05)
     assert transcripts.empty()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     await session.close()
+
+
+async def test_cancelled_connect_closes_worker_and_dispatch_tasks():
+    async def never_ready_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        while True:
+            request = await request_queue.get()
+            try:
+                if request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    on_error = AsyncMock()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=never_ready_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+    )
+    connect_task = asyncio.create_task(session.connect())
+    while session._worker_task is None:
+        await asyncio.sleep(0)
+
+    connect_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await connect_task
+
+    assert session.is_ready is False
+    assert session._worker_task.done()
+    assert session._response_task is not None and session._response_task.done()
+    assert session._callback_task is not None and session._callback_task.done()
+    on_error.assert_not_awaited()
 
 
 async def test_stale_utterance_error_is_dropped_after_clear():

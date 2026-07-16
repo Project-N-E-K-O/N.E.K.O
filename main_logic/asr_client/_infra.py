@@ -288,6 +288,11 @@ class _RealtimeAsrSessionImpl:
                     asyncio.shield(self._ready_future),
                     timeout=_READY_TIMEOUT_SECONDS,
                 )
+            except asyncio.CancelledError:
+                if self._ready_future is not None and not self._ready_future.done():
+                    self._ready_future.cancel()
+                await self.close()
+                raise
             except asyncio.TimeoutError as exc:
                 if self._ready_future is not None and not self._ready_future.done():
                     self._ready_future.cancel()
@@ -647,8 +652,6 @@ class _RealtimeAsrSessionImpl:
             if event.utterance_id is None:
                 return False
             text = event.text.strip()
-            if not text:
-                return False
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
                 if (
@@ -684,7 +687,8 @@ class _RealtimeAsrSessionImpl:
                     self._committed_utterance_keys.discard(ready_key)
             assert self._callback_queue is not None
             for ready_text in ready_texts:
-                await self._callback_queue.put(_CallbackItem(text=ready_text))
+                if ready_text:
+                    await self._callback_queue.put(_CallbackItem(text=ready_text))
             return False
         if event.kind == "error":
             if (
