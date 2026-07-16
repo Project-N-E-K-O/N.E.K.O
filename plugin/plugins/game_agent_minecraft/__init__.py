@@ -16,10 +16,9 @@ and blocks the handler on an :class:`asyncio.Event` until the
 Screenshots streamed by the agent server are forwarded into the
 realtime LLM session via :class:`push_message v2 <push_message>` with
 ``ai_behavior="read"`` so they enter the model's vision context. A
-background task periodically injects a passive "GAME_SYSTEM" awareness
-snapshot with the latest log digest and screenshot cache. Separately gated,
-rate-limited keep-going turns can wake the model after a correlated task has
-been finished for 45 seconds, without authorizing it to replay an old command.
+background task periodically fires a "GAME_SYSTEM" nudge prompt with
+the latest log digest and screenshot cache so the model keeps playing
+autonomously when the user is silent.
 """
 from __future__ import annotations
 
@@ -598,7 +597,6 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             lines.append(prompts.t("COMPLETION_FOLLOWUP_SUCCESS", lang=self._lang))
         else:
             lines.append(prompts.t("COMPLETION_FOLLOWUP_FAILED", lang=self._lang))
-        lines.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         lines.append(prompts.t("INTERNAL_STATE_GAG", lang=self._lang))
         return prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(lines)
 

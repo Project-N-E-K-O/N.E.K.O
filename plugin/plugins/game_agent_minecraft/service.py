@@ -9,9 +9,9 @@ Responsibilities split off the plugin facade so it stays testable:
      (``ai_behavior="read"``)
    * task_finished → wakes the pending ``minecraft_task`` handler so it
      can return the result to the LLM
-3. Run the system-prompt loop that injects passive game-state awareness and,
-   after a confirmed task completion has stayed idle for 45 seconds,
-   rate-limited keep-going model turns.
+3. Run the autonomous "system prompt" loop that periodically nudges the
+   LLM with the latest game state when there's nothing else for it to
+   talk about.
 
 The original integration in ``main_logic/core.py`` (commit ``bca0c5f3``,
 later abandoned) baked all of this directly into the realtime client
@@ -261,13 +261,14 @@ class GameAgentService:
         #   ≥10s, periodically prompt the dialog LLM to narrate what it's
         #   doing in its own voice (so the user gets ongoing engagement
         #   instead of dead silence during long actions)
-        # * ``_last_keep_going_nudge_at`` — after a correlated task_finished
-        #   frame has stayed idle for 45s, wake the dialog LLM, then keep the
-        #   original 45s cooldown while it remains idle. Startup, local send
-        #   failures/timeouts, connection bounces and stray frames never arm
-        #   this branch.
-        # ``_last_task_finished_at`` is the real-completion anchor;
-        # ``_last_keep_going_nudge_at`` paces the retained recurring mechanism.
+        # * ``_last_keep_going_nudge_at`` — after a task finishes, if no
+        #   new task is dispatched within ~5s, prompt the dialog LLM to
+        #   decide the next concrete action (so the avatar doesn't stand
+        #   still indefinitely waiting for {MASTER_NAME} to drive it).
+        # ``_last_task_finished_at`` is the anchor for the keep-going
+        # branch: time-since-finish must be in [5s, 60s] to fire — too
+        # early and the cue cooldown is still active; too late and the
+        # user has clearly moved on.
         self._last_system_prompt_time: float = 0.0
         self._last_in_progress_nudge_at: float = 0.0
         self._last_keep_going_nudge_at: float = 0.0
@@ -466,6 +467,16 @@ class GameAgentService:
             self._system_prompt_loop(),
             name="game_agent_minecraft.system_loop",
         )
+        # Anchor the keep_going nudge clock at start time so the loop
+        # can fire its "you're idle, decide a next action" prompt even
+        # before the dialog LLM has ever dispatched a single
+        # minecraft_task. Without this, a session where the user asks
+        # for an in-game action and the dialog LLM responds with chat
+        # only (no function call) leaves the plugin in a state where
+        # nudge fires never trigger — _last_task_finished_at stays 0,
+        # keep_going's ``> 0`` guard fails, and Neko stands still with
+        # no self-prompt to push her into actually dispatching.
+        self._last_task_finished_at = time.time()
         self._log_info("started, ws_url={}", self._ws_url)
 
     async def stop(self) -> None:
@@ -572,10 +583,6 @@ class GameAgentService:
         # first task_finished frame.
         self._seen_task_id_echo = False
         self._task_finished = True
-        # Completion eligibility belongs to the old WS session. Carrying it
-        # across a restart could fire keep-going for a task from another world.
-        self._last_task_finished_at = 0.0
-        self._last_keep_going_nudge_at = 0.0
         self._log_info("stopped")
 
     # ------------------------------------------------------------------
@@ -813,10 +820,6 @@ class GameAgentService:
             )
             self._pending = my_pending
             self._task_finished = False
-            # A new dispatch supersedes any prior completion's keep-going
-            # eligibility. Only this task's own correlated task_finished frame
-            # may arm a fresh 45-second timer.
-            self._last_task_finished_at = 0.0
             return my_pending
 
     async def run_claimed_task(self, my_pending: PendingTask) -> Dict[str, Any]:
@@ -875,6 +878,11 @@ class GameAgentService:
                     self._pending = None
                     self._task_finished = True
                     self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
+                    # Send failure is functionally "task ended" from the
+                    # autonomous loop's perspective — anchor so the
+                    # keep_going nudge can prod the dialog LLM to retry
+                    # or change plans instead of going silent.
+                    self._last_task_finished_at = time.time()
             return {
                 "output": {
                     "error": "agent server is not connected",
@@ -890,7 +898,14 @@ class GameAgentService:
             async with self._pending_lock:
                 if self._pending is my_pending:
                     self._pending = None
+                    # Anchor the keep-going nudge clock even on timeout —
+                    # without this the autonomous loop's keep_going branch
+                    # (gated on ``_last_task_finished_at > 0``) never fires
+                    # after a timeout, so the dialog LLM gets the timeout
+                    # cue once via the detached done-callback and then
+                    # falls completely silent until the user prods her.
                     self._task_finished = True
+                    self._last_task_finished_at = time.time()
                     self._mark_agent_idle()  # [BUSY] local terminal — drop stale latch
             self._log_info("task timed out: {}", task[:80])
             return {
@@ -903,6 +918,7 @@ class GameAgentService:
                 if self._pending is my_pending:
                     self._pending = None
                     self._task_finished = True
+                    self._last_task_finished_at = time.time()
             raise
 
         async with self._pending_lock:
@@ -1135,6 +1151,12 @@ class GameAgentService:
                     self._pending = None
                     pending.event.set()
                     self._task_finished = True
+                    # Anchor for the keep_going nudge: a bounce is a "task
+                    # ended" event from the dialog LLM's perspective, and
+                    # without this her only signal would be the
+                    # interrupted cue with no follow-up to push her into
+                    # a new dispatch.
+                    self._last_task_finished_at = time.time()
         # [ANTI-PARROT] drop internal command/telemetry lines entirely (no cache,
         # no push) so the dialog LLM never sees command syntax it would echo back
         # as a task. This is what stops the goToCoordinates/attackEntity dispatch
@@ -1452,7 +1474,6 @@ class GameAgentService:
                     "RETROACTIVE_INVENTORY_LINE", lang=self._lang, snippet=snippet,
                 ))
         sections.append(prompts.t("RETROACTIVE_FOLLOWUP", lang=self._lang))
-        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         body = prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(sections)
         try:
             self._push_message(
@@ -1590,9 +1611,6 @@ class GameAgentService:
                 pending.result = result_payload
                 pending.event.set()
                 self._task_finished = True
-                # This is a correlated terminal frame for the current task, so
-                # it is the only trustworthy completion clock. Status affects
-                # the completion cue, not whether the task has really ended.
                 self._last_task_finished_at = time.time()
                 # [BUSY] a dispatched task just reached a terminal frame — the
                 # agent is no longer mid-action on it. Clear the busy flag now so
@@ -1654,22 +1672,6 @@ class GameAgentService:
     # Autonomous system-prompt loop
     # ------------------------------------------------------------------
 
-    def _keep_going_due(
-        self, now: float, *, min_delay: float, cooldown: float
-    ) -> bool:
-        """Return whether confirmed idle completion is due another turn."""
-        finished_at = self._last_task_finished_at
-        return (
-            self._task_finished
-            and self._pending is None
-            and finished_at > 0
-            and now - finished_at >= min_delay
-            and now - self._last_keep_going_nudge_at >= cooldown
-            # A self-reported autonomous action means the character is not
-            # actually idle; wait for its terminal state instead.
-            and not self._mc_agent_busy()
-        )
-
     async def _system_prompt_loop(self) -> None:
         """Periodically nudge the dialog LLM. Three branches, each with
         its own rate limiter:
@@ -1681,11 +1683,12 @@ class GameAgentService:
           repeat yourself)". Without this branch, long actions (mining,
           pathfinding) leave the user hearing nothing for 30+ seconds.
 
-        * **Keep-going nudge**. After a correlated task completion has remained
-          idle for 45 seconds, wakes the dialog LLM every 45 seconds while idle.
-          The prompt may continue the conversation but may dispatch only a new
-          command from master's most recent message; old commands are never
-          recalled or replayed.
+        * **Keep-going nudge** (idle, recently finished). Fires when no
+          task is pending, the most recent task_finished is 5–60s ago,
+          and the last keep-going nudge was ≥15s ago. Tells the dialog
+          LLM "your body finished — decide and dispatch the next concrete
+          action". Without this branch, the avatar stands still after
+          each task waiting for the user to drive it.
 
         * **General catch-all** — original behavior: every
           ``system_prompt_interval`` seconds (default 5s), if there's
@@ -1698,14 +1701,28 @@ class GameAgentService:
         only about not flooding main_server with redundant wake-ups,
         not about real-time conversation politeness.
         """
+        # Anchor thresholds. in-progress: nudge 8s into a long task, then every
+        # 8s. keep-going: first self-prompt 8s after a task ends, then re-prompt
+        # every 10s while STILL idle.
+        #
+        # [ISSUE4a] The old design had a 90s ``_KEEP_GOING_MAX_WINDOW`` upper
+        # bound: once a task had been finished for >90s, keep_going stopped
+        # firing entirely ("user has moved on"). In practice that PERMANENTLY
+        # killed the autonomous self-prompt — after one >90s idle stretch she
+        # went dead-air until something external (mc-agent self-prompt / user)
+        # restarted her (the user-reported "self-prompt 停了很久才恢复"). For an
+        # autonomous game companion the desired behaviour is the opposite: keep
+        # nudging her to play as long as she's idle. So the upper bound is gone —
+        # keep_going now fires whenever idle, forever, paced by the cooldown.
+        # (User present/absent gating is main_server's proactive SM job, not the
+        # plugin's; the plugin only paces wake-ups.)
         _IN_PROGRESS_AFTER = 30.0      # [THROTTLE] was 8.0
         _IN_PROGRESS_COOLDOWN = 30.0   # [THROTTLE] was 8.0
-        _KEEP_GOING_AFTER = 45.0
-        _KEEP_GOING_COOLDOWN = 45.0
+        _KEEP_GOING_AFTER = 30.0       # [THROTTLE] was 8.0
+        _KEEP_GOING_COOLDOWN = 45.0    # [THROTTLE] was 10.0
 
         self._log_debug(
-            "system_prompt_loop started (in_progress={}/{}, "
-            "keep_going={}/{}, "
+            "system_prompt_loop started (in_progress={}/{}, keep_going={}/{}, "
             "general_interval={}s)",
             _IN_PROGRESS_AFTER, _IN_PROGRESS_COOLDOWN,
             _KEEP_GOING_AFTER, _KEEP_GOING_COOLDOWN,
@@ -1738,21 +1755,29 @@ class GameAgentService:
                     # the dialog LLM's queue for the same situation.
                     continue
 
-                # ---- Branch 2: retained keep-going, paced after real finish ----
-                if self._keep_going_due(
-                    now,
-                    min_delay=_KEEP_GOING_AFTER,
-                    cooldown=_KEEP_GOING_COOLDOWN,
+                # ---- Branch 2: keep-going nudge (idle, recent finish) ----
+                if (
+                    self._task_finished
+                    and self._pending is None
+                    and self._last_task_finished_at > 0
+                    and not self._mc_agent_busy()  # [BUSY] agent is executing on its own — don't tell her to dispatch
                 ):
                     since_finish = now - self._last_task_finished_at
-                    self._log_debug(
-                        "firing keep_going nudge "
-                        "(since_finish={:.1f}s)",
-                        since_finish,
-                    )
-                    await self._fire_keep_going_nudge()
-                    self._last_keep_going_nudge_at = now
-                    continue
+                    since_last_keep = now - self._last_keep_going_nudge_at
+                    # No upper bound (see _KEEP_GOING_MAX_WINDOW removal note):
+                    # idle → keep nudging forever, paced by the cooldown.
+                    if (
+                        since_finish >= _KEEP_GOING_AFTER
+                        and since_last_keep >= _KEEP_GOING_COOLDOWN
+                    ):
+                        self._log_debug(
+                            "firing keep_going nudge (since_finish={:.1f}s, "
+                            "since_last_keep={:.1f}s)",
+                            since_finish, since_last_keep,
+                        )
+                        await self._fire_keep_going_nudge()
+                        self._last_keep_going_nudge_at = now
+                        continue
 
                 # ---- Branch 3: general catch-all (original behavior) ----
                 if now - self._last_system_prompt_time < self._system_prompt_interval:
@@ -1827,13 +1852,20 @@ class GameAgentService:
             )
 
     async def _fire_keep_going_nudge(self) -> None:
-        """Wake the dialog LLM after 45s of confirmed post-task idle."""
+        """Push a "decide the next action" prompt after a task finishes.
+
+        Without this, the conversation drifts after each completion and
+        the avatar stands still indefinitely waiting for {MASTER_NAME} to
+        explicitly drive it. We give the dialog LLM a clear "you are the
+        agent — pick the next concrete action and dispatch it via
+        minecraft_task" cue, plus the latest inventory ground truth so
+        it can ground its next decision.
+        """
         sections: list[str] = []
         inv_line = self._inventory_section_if_changed(top_n=20)
         if inv_line:
             sections.append(inv_line)
         sections.append(prompts.t("KEEP_GOING_BODY", lang=self._lang))
-        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         body_text = prompts.t("CUE_PREFIX_IDLE", lang=self._lang) + "\n" + "\n".join(sections)
         parts: list[Dict[str, Any]] = [{"type": "text", "text": body_text}]
         try:
@@ -1853,9 +1885,10 @@ class GameAgentService:
     async def _fire_system_prompt(self) -> None:
         """Build + push the autonomous nudge.
 
-        Body shape mirrors the original integration: a "GAME_SYSTEM" header,
-        the recent agent log snippet, and an awareness tail that distinguishes
-        idle from running state without instructing the model to dispatch.
+        Body shape mirrors the original integration so prompt-engineering
+        carries over: a "GAME_SYSTEM" header, the recent agent log
+        snippet, and either a "task done — pick the next one" or a
+        "task running — comment if you like" tail.
         """
         log_text = ""
         if self._log_cache:
@@ -1886,7 +1919,6 @@ class GameAgentService:
             sections.append(prompts.t("SYSTEM_PROMPT_IDLE_BODY", lang=self._lang))
         else:
             sections.append(prompts.t("SYSTEM_PROMPT_BUSY_BODY", lang=self._lang))
-        sections.append(prompts.t("LATEST_MASTER_TOOL_GUARD", lang=self._lang))
         prompt_text = prompts.t("CUE_PREFIX_STATE", lang=self._lang) + "\n" + "\n".join(sections)
 
         # Build the parts list: cached screenshots first (so the LLM

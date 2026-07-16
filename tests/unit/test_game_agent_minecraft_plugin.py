@@ -245,7 +245,6 @@ async def test_execute_returns_disconnected_when_send_fails():
     # "正在进行的操作" branch would behave as if a phantom task were
     # still running.
     assert service._task_finished is True
-    assert service._last_task_finished_at == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +365,6 @@ async def test_execute_times_out_when_no_finish_arrives():
     assert "Not finished" in out["reason"]
     # Slot freed so a subsequent call isn't permanently busy.
     assert service._pending is None
-    assert service._last_task_finished_at == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -642,87 +640,6 @@ async def test_system_prompt_bundles_only_latest_frame_with_mime():
     assert service.get_status()["screenshot_cache_size"] == 0
 
 
-def test_keep_going_repeats_only_after_confirmed_finish_and_cooldown():
-    """Keep-going is retained at 45s, but requires a real completion."""
-    service, _ = _make_service()
-    service._task_finished = True
-    service._pending = None
-    # Startup/no real completion must never arm keep-going.
-    assert not service._keep_going_due(
-        999.0, min_delay=45.0, cooldown=45.0
-    )
-
-    service._last_task_finished_at = 100.0
-    service._last_keep_going_nudge_at = 0.0
-
-    assert not service._keep_going_due(
-        144.9, min_delay=45.0, cooldown=45.0
-    )
-    assert service._keep_going_due(
-        145.0, min_delay=45.0, cooldown=45.0
-    )
-
-    service._last_keep_going_nudge_at = 145.0
-    assert not service._keep_going_due(
-        189.9, min_delay=45.0, cooldown=45.0
-    )
-    assert service._keep_going_due(
-        190.0, min_delay=45.0, cooldown=45.0
-    )
-
-    service._last_task_finished_at = 600.0
-    assert service._keep_going_due(
-        645.0, min_delay=45.0, cooldown=45.0
-    )
-
-
-@pytest.mark.asyncio
-async def test_keep_going_arms_only_from_correlated_task_finished():
-    """Only a task_finished correlated to the current dispatch starts time."""
-    service, _ = _make_service()
-
-    await service._on_task_finished({
-        "status": "ok", "task_id": "foreign", "text": "done",
-    })
-    assert service._last_task_finished_at == 0.0
-
-    completed = await service.try_claim_pending("mine coal", overwrite=False)
-    assert completed is not None
-    await service._on_task_finished({
-        "status": "failed", "task_id": completed.task_id, "text": "failed",
-    })
-    assert service._last_task_finished_at > 0.0
-
-    next_task = await service.try_claim_pending("chop one tree", overwrite=False)
-    assert next_task is not None
-    # Claiming a new task disarms the previous completion while it is running.
-    assert service._last_task_finished_at == 0.0
-
-    await service._on_task_finished({
-        "status": "ok", "task_id": next_task.task_id, "text": "done",
-    })
-    assert service._last_task_finished_at > 0.0
-
-
-@pytest.mark.asyncio
-async def test_keep_going_wakes_model_with_latest_master_guard():
-    """Keep-going remains a response, but cannot replay an older command."""
-    service, push_calls = _make_service()
-
-    await service._fire_keep_going_nudge()
-
-    assert len(push_calls) == 1
-    assert push_calls[0]["ai_behavior"] == "respond"
-    text_parts = [
-        part["text"] for part in push_calls[0]["parts"]
-        if part["type"] == "text"
-    ]
-    assert len(text_parts) == 1
-    assert "45 seconds" in text_parts[0]
-    assert "most recent message" in text_parts[0]
-    assert "already been dispatched" in text_parts[0]
-
-
 @pytest.mark.asyncio
 async def test_log_cache_is_bounded():
     """Without a cap, an idle ``skip_system_prompt_if_busy=True`` plus a
@@ -818,7 +735,6 @@ async def test_log_connection_lost_wakes_pending_handler():
     assert "connection bounced" in out["reason"].lower()
     # Slot is free for the next call.
     assert service._pending is None
-    assert service._last_task_finished_at == 0.0
 
 
 @pytest.mark.asyncio
@@ -1408,7 +1324,6 @@ def test_task_tool_description_preserves_master_words_and_coordinates():
         "COMPLETION_FOLLOWUP_SUCCESS",
         "COMPLETION_FOLLOWUP_FAILED",
         "RETROACTIVE_FOLLOWUP",
-        "SYSTEM_PROMPT_IDLE_BODY",
     ):
         cue = prompts.t(key, lang="en")
         assert "unfinished explicit instruction" not in cue
@@ -1731,7 +1646,9 @@ async def test_connection_bounce_wakes_pending_even_when_deduped():
 
 @pytest.mark.asyncio
 async def test_busy_flag_cleared_on_task_timeout():
-    """[BUSY] A local timeout clears busy without faking task_finished."""
+    """[BUSY] A dispatched task that ends via the local timeout path (no
+    task_finished ever arrives) must also clear _agent_busy — otherwise the
+    keep-going nudge stays suppressed for the full TTL after the timeout."""
     import time
 
     service, _ = _make_service()
@@ -1750,7 +1667,9 @@ async def test_busy_flag_cleared_on_task_timeout():
 
 @pytest.mark.asyncio
 async def test_busy_flag_cleared_on_connection_bounce():
-    """[BUSY] A connection bounce clears busy without arming keep-going."""
+    """[BUSY] A connection bounce ends the pending task via _on_log and anchors
+    the recovery keep-going nudge — it must also clear _agent_busy, or that
+    nudge stays suppressed for the full TTL after the bounce."""
     import time
     from plugin.plugins.game_agent_minecraft.service import PendingTask
 
@@ -1767,7 +1686,6 @@ async def test_busy_flag_cleared_on_connection_bounce():
     assert service._pending is None
     assert service._agent_busy is False
     assert service._mc_agent_busy() is False
-    assert service._last_task_finished_at == 0.0
 
 
 @pytest.mark.asyncio
