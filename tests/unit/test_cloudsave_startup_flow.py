@@ -224,6 +224,243 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
 
 
 @pytest.mark.unit
+def test_launcher_partial_existing_services_force_multi_mode(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: True)
+    monkeypatch.setattr(
+        launcher,
+        "_existing_neko_services",
+        {"MEMORY_SERVER_PORT"},
+    )
+
+    assert launcher._select_launcher_mode() == (
+        "multi",
+        "partial_existing_services",
+    )
+
+
+@pytest.mark.unit
+def test_existing_backend_attach_requires_roles_and_one_instance():
+    from launcher_core import runtime as launcher
+
+    healthy = {
+        "MAIN_SERVER_PORT": {"service": "main", "instance_id": "existing"},
+        "MEMORY_SERVER_PORT": {"service": "memory", "instance_id": "existing"},
+        "TOOL_SERVER_PORT": {"service": "agent", "instance_id": "existing"},
+    }
+    assert launcher._validated_existing_backend_instance(healthy) == "existing"
+
+    partial = dict(healthy)
+    partial.pop("TOOL_SERVER_PORT")
+    assert launcher._validated_existing_backend_instance(partial) is None
+
+    mixed = dict(healthy)
+    mixed["TOOL_SERVER_PORT"] = {"service": "agent", "instance_id": "other"}
+    assert launcher._validated_existing_backend_instance(mixed) is None
+
+    wrong_role = dict(healthy)
+    wrong_role["TOOL_SERVER_PORT"] = {
+        "service": "main",
+        "instance_id": "existing",
+    }
+    assert launcher._validated_existing_backend_instance(wrong_role) is None
+
+
+@pytest.mark.unit
+def test_start_server_never_reuses_a_partial_existing_service(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(
+        launcher,
+        "_existing_neko_services",
+        {"MEMORY_SERVER_PORT"},
+    )
+    monkeypatch.setattr(launcher, "check_port", lambda _port: True)
+    monkeypatch.setattr(launcher, "get_port_owners", lambda _port: [123])
+    failures = []
+    monkeypatch.setattr(launcher, "report_startup_failure", failures.append)
+
+    server = {
+        "name": "Memory Server",
+        "module": "memory_server",
+        "port": 43112,
+    }
+    assert launcher.start_server(server) is False
+    assert failures and "already in use" in failures[0]
+
+
+@pytest.mark.unit
+def test_merged_health_requires_expected_services_and_current_instance(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "current-instance")
+    apps = [
+        (object(), 43112, "Memory"),
+        (object(), 43115, "Agent"),
+        (object(), 43111, "Main"),
+    ]
+    healthy = {
+        43112: {"service": "memory", "instance_id": "current-instance"},
+        43115: {"service": "agent", "instance_id": "current-instance"},
+        43111: {"service": "main", "instance_id": "current-instance"},
+    }
+
+    assert launcher._merged_health_issues(apps, healthy) == []
+
+    wrong = dict(healthy)
+    wrong[43115] = {"service": "main", "instance_id": "current-instance"}
+    wrong[43111] = {"service": "main", "instance_id": "old-instance"}
+    assert launcher._merged_health_issues(apps, wrong) == [
+        "Agent:43115:wrong_service",
+        "Main:43111:wrong_instance",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_ready_rejects_early_server_exit(monkeypatch):
+    import asyncio
+
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "current-instance")
+    monkeypatch.setattr(launcher, "probe_neko_health", lambda *_args, **_kwargs: None)
+
+    async def _exit_early():
+        return None
+
+    async def _keep_running():
+        await asyncio.Event().wait()
+
+    tasks = {
+        "Memory": asyncio.create_task(_exit_early()),
+        "Agent": asyncio.create_task(_keep_running()),
+        "Main": asyncio.create_task(_keep_running()),
+    }
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(RuntimeError, match="Memory server task exited"):
+            await launcher._wait_for_merged_servers_ready(
+                [(object(), 43112, "Memory")],
+                tasks,
+                timeout=0.1,
+                poll_interval=0.01,
+            )
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_shutdown_preserves_main_memory_agent_order():
+    import asyncio
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    servers = {
+        name: SimpleNamespace(should_exit=False)
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+    exit_order = []
+
+    async def _serve_until_exit(name):
+        while not servers[name].should_exit:
+            await asyncio.sleep(0)
+        exit_order.append(name)
+
+    tasks = {
+        name: asyncio.create_task(_serve_until_exit(name))
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+
+    failures = await launcher._shutdown_merged_servers_in_order(servers, tasks)
+
+    assert failures == []
+    assert exit_order == ["Main", "Memory", "Agent"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_shutdown_timeout_still_advances_to_later_services():
+    import asyncio
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    servers = {
+        name: SimpleNamespace(should_exit=False)
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+    exit_order = []
+
+    async def _stuck_main():
+        await asyncio.Event().wait()
+
+    async def _serve_until_exit(name):
+        while not servers[name].should_exit:
+            await asyncio.sleep(0)
+        exit_order.append(name)
+
+    tasks = {
+        "Main": asyncio.create_task(_stuck_main()),
+        "Memory": asyncio.create_task(_serve_until_exit("Memory")),
+        "Agent": asyncio.create_task(_serve_until_exit("Agent")),
+    }
+    failures = await launcher._shutdown_merged_servers_in_order(
+        servers,
+        tasks,
+        timeouts={"Main": 0.01, "Memory": 0.1, "Agent": 0.1},
+    )
+
+    assert failures == ["Main:shutdown_timeout"]
+    assert exit_order == ["Memory", "Agent"]
+    await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_server_converts_uvicorn_system_exit():
+    from launcher_core import runtime as launcher
+
+    class _Server:
+        async def serve(self):
+            raise SystemExit(2)
+
+    with pytest.raises(RuntimeError, match="Main server exited.*code=2"):
+        await launcher._serve_merged_server(_Server(), "Main")
+
+
+@pytest.mark.unit
+def test_merged_disables_new_and_legacy_uvicorn_signal_hooks():
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    @contextmanager
+    def _capturing():
+        raise AssertionError("signal capture should have been replaced")
+        yield
+
+    server = SimpleNamespace(
+        install_signal_handlers=lambda: (_ for _ in ()).throw(
+            AssertionError("legacy signal hook should have been replaced")
+        ),
+        capture_signals=_capturing,
+    )
+
+    launcher._disable_uvicorn_signal_handlers(server)
+
+    server.install_signal_handlers()
+    with server.capture_signals():
+        pass
+
+
+@pytest.mark.unit
 def test_launcher_suppresses_startup_failure_events_during_expected_shutdown(monkeypatch):
     from launcher_core import runtime as launcher
 
