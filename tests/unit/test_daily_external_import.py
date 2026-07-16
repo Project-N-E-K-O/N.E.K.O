@@ -15,8 +15,7 @@ class _DailyHarness(FactStore):
     """
 
     def __init__(self, stub):
-        # Deliberately skip FactStore.__init__ — the method under test only
-        # touches the stubbed helpers below (plus pure helpers it imports).
+        super().__init__()
         self._stub = stub                       # journal_text -> list[dict] | None
         self.extract_inputs: list[str] = []
         self.persisted: list[list[dict]] = []
@@ -194,12 +193,7 @@ class _PersistHarness(FactStore):
     """Real _apersist_new_facts over an in-memory store (no disk, no model)."""
 
     def __init__(self, time_indexed=None):
-        import threading
-        self._facts = {}
-        self._locks = {}
-        self._locks_guard = threading.Lock()
-        self._persist_alocks = {}
-        self._time_indexed = time_indexed
+        super().__init__(time_indexed_memory=time_indexed)
         self._mem: list[dict] = []
 
     async def aload_facts(self, lanlan_name):

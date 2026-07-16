@@ -248,6 +248,7 @@ class _DailyConcurrencyHarness(FactStore):
     """FactStore stand-in: async-controllable extraction stub, no real init."""
 
     def __init__(self, extract):
+        super().__init__()
         self._extract = extract
         self.persisted: list[list[dict]] = []
 
