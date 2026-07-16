@@ -4598,12 +4598,21 @@ _CAT_GREETING_LONG_THRESHOLDS = {
     "sleep": 1800,
 }
 
-# Keep one Chinese system-prompt watermark across every localized cat-return
-# path.  This is appended by the public getters so legacy, episode, and short
-# return prompts cannot drift or omit the project watermark contract.
-CAT_GREETING_SYSTEM_PROMPT_WATERMARK = (
-    "\n======以上为猫形态返回系统提示======\n"
-)
+# Reuse the existing environment wrapper's closing line as the shared
+# cross-locale watermark. It replaces the localized closing line instead of
+# adding another prompt section.
+CAT_GREETING_ENVIRONMENT_END_MARKER = "======以上为环境提示======"
+
+
+def _with_cat_greeting_environment_end_marker(prompt: str) -> str:
+    """Replace the existing environment wrapper's closing line."""
+    body, separator, closing_line = prompt.rpartition("\n")
+    if not separator or not (
+        closing_line.startswith("======") and closing_line.endswith("======")
+    ):
+        return prompt
+    return f"{body}\n{CAT_GREETING_ENVIRONMENT_END_MARKER}"
+
 
 # Cat Mind's one-shot return episode is deliberately an enum-to-text scene
 # table, not a rendering of browser input. A valid scene is the factual
@@ -5013,9 +5022,8 @@ def get_cat_greeting_episode_prompt(
         behavior_band,
         _CAT_GREETING_EPISODE_RETURN_TONES["en"][behavior_band],
     )
-    return (
+    return _with_cat_greeting_environment_end_marker(
         template.replace("{episode_return_tone}", tone)
-        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
     )
 
 
@@ -5027,12 +5035,11 @@ def get_cat_greeting_started_return_prompt(lang: str = "zh") -> str:
     action as completed.
     """
     lang_key = _normalize_prompt_language(lang)
-    return (
+    return _with_cat_greeting_environment_end_marker(
         _CAT_GREETING_SHORT_STARTED_PROMPTS.get(
             lang_key,
             _CAT_GREETING_SHORT_STARTED_PROMPTS["en"],
         )
-        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
     )
 
 
@@ -5049,9 +5056,8 @@ def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = 
         return None
     table = _CAT_GREETING_TABLES[behavior_band]
     lang_key = _normalize_prompt_language(lang)
-    return (
+    return _with_cat_greeting_environment_end_marker(
         table.get(lang_key, table.get("en", table["zh"]))
-        + CAT_GREETING_SYSTEM_PROMPT_WATERMARK
     )
 
 
