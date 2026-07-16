@@ -206,7 +206,7 @@ class AsrRuntimeMixin:
     async def _close_independent_asr(
         self,
         *,
-        next_route_mode: Literal["native", "blocked"] = "native",
+        next_route_mode: Literal["native", "blocked"],
     ) -> None:
         """Invalidate callbacks first, then release the detached provider session."""
 
