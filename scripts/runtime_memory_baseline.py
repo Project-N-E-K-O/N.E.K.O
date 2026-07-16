@@ -55,7 +55,10 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+_LOCAL_PROBE_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _NoRedirectHandler(),
+)
 
 
 def _mib(value: int | float | None) -> float | None:
@@ -572,10 +575,11 @@ def _git_provenance(path: Path) -> dict[str, Any]:
 
 
 def _metadata(args: argparse.Namespace) -> dict[str, Any]:
+    command = getattr(args, "command", None)
     benchmark_source = _git_provenance(Path.cwd())
     backend_source = (
         _git_provenance(Path(args.backend_cwd).resolve())
-        if args.command == "stack"
+        if command == "stack"
         else benchmark_source
     )
     return {
@@ -599,7 +603,7 @@ def _metadata(args: argparse.Namespace) -> dict[str, Any]:
                 "shutdown_timeout_s": args.shutdown_timeout,
                 "topology": _parse_env(args.env).get("NEKO_MERGED", "auto"),
             }
-            if args.command == "stack"
+            if command == "stack"
             else None
         ),
     }
@@ -802,7 +806,7 @@ async def _browser_scenario(args: argparse.Namespace) -> dict[str, Any]:
 
 def _probe_health(port: int, *, timeout: float = 0.25) -> dict[str, Any] | None:
     try:
-        with _NO_REDIRECT_OPENER.open(
+        with _LOCAL_PROBE_OPENER.open(
             f"http://127.0.0.1:{port}/health",
             timeout=timeout,
         ) as response:
@@ -844,7 +848,7 @@ def _probe_http_paths(port: int, paths: list[str]) -> dict[str, dict[str, Any]]:
     for raw_path in paths:
         path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
         try:
-            with _NO_REDIRECT_OPENER.open(
+            with _LOCAL_PROBE_OPENER.open(
                 f"http://127.0.0.1:{port}{path}",
                 timeout=5.0,
             ) as response:
@@ -1442,6 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.interval <= 0 or args.window < 0:
         raise SystemExit("--interval must be positive and --window cannot be negative")
 
+    metadata = _metadata(args)
     if args.command == "scenario":
         tracemalloc.start(10)
         if args.name == "embedding":
@@ -1453,7 +1458,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         result = _stack(args)
 
-    payload = {"metadata": _metadata(args), **result}
+    payload = {"metadata": metadata, **result}
     _write_json(Path(args.output), payload)
     if result.get("validation_errors"):
         print("benchmark validation failed: " + "; ".join(result["validation_errors"]))

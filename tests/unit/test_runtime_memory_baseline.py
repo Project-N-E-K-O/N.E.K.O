@@ -261,7 +261,7 @@ def test_http_path_probe_records_status_without_body(monkeypatch):
             return b"private page contents are not retained"
 
     monkeypatch.setattr(
-        baseline._NO_REDIRECT_OPENER,
+        baseline._LOCAL_PROBE_OPENER,
         "open",
         lambda *_args, **_kwargs: _Response(),
     )
@@ -272,6 +272,14 @@ def test_http_path_probe_records_status_without_body(monkeypatch):
     assert all(item["status"] == 200 for item in result.values())
     assert all(item["content_type"] == "text/html" for item in result.values())
     assert all("body" not in item for item in result.values())
+
+
+@pytest.mark.unit
+def test_local_probe_opener_disables_environment_proxies():
+    assert not any(
+        isinstance(handler, baseline.urllib.request.ProxyHandler)
+        for handler in baseline._LOCAL_PROBE_OPENER.handlers
+    )
 
 
 @pytest.mark.unit
@@ -376,3 +384,39 @@ def test_failed_http_path_probe_is_a_cli_failure(monkeypatch, tmp_path):
 
     assert result == 1
     assert written[0][1]["validation_errors"] == validation_errors
+
+
+@pytest.mark.unit
+def test_main_captures_metadata_before_stack_artifacts(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        baseline,
+        "_metadata",
+        lambda _args: calls.append("metadata") or {"source": "clean"},
+    )
+    monkeypatch.setattr(
+        baseline,
+        "_stack",
+        lambda _args: calls.append("stack")
+        or {"scenario": "stack", "validation_errors": []},
+    )
+    written = []
+    monkeypatch.setattr(
+        baseline,
+        "_write_json",
+        lambda path, payload: written.append((path, payload)),
+    )
+
+    result = baseline.main(
+        [
+            "--output",
+            str(tmp_path / "result.json"),
+            "stack",
+            "--backend-command",
+            '["launcher"]',
+        ]
+    )
+
+    assert result == 0
+    assert calls == ["metadata", "stack"]
+    assert written[0][1]["metadata"] == {"source": "clean"}

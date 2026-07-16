@@ -364,7 +364,7 @@ def test_launcher_partial_existing_services_force_multi_mode(monkeypatch, footpr
     assert launcher._partial_or_mixed_existing_backend is True
     assert launcher._existing_neko_services == set()
     selected = dict(emitted_events)["port_plan"]["selected"]
-    for key in conflicting_keys:
+    for key in public_ports:
         assert selected[key] == public_ports[key] + 1000
 
 

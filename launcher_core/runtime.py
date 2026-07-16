@@ -1514,14 +1514,17 @@ def apply_port_strategy() -> bool | str:
         return "attach"
 
     # A partial or mismatched N.E.K.O footprint must not be spliced into a new
-    # runtime instance. Move every conflicting public service to a fallback and
-    # start a complete topology with one fresh INSTANCE_ID and IPC port plan.
+    # runtime instance. Move the complete public port set off the defaults and
+    # start one topology with a fresh INSTANCE_ID and IPC port plan.
     _partial_or_mixed_existing_backend = bool(existing_health_by_key)
     _existing_neko_services = set()
-    for key, health in existing_health_by_key.items():
+    for key in ("MEMORY_SERVER_PORT", "TOOL_SERVER_PORT", "MAIN_SERVER_PORT"):
         preferred = int(DEFAULT_PORTS[key])
+        if not _partial_or_mixed_existing_backend or chosen[key] != preferred:
+            continue
         fallback = _pick_fallback_port(preferred, reserved)
         if fallback is None:
+            health = existing_health_by_key.get(key, {})
             report_startup_failure(
                 f"Startup failed: no isolated fallback port available for {key} "
                 f"(preferred={preferred}, existing_service={health.get('service')})"
@@ -1534,7 +1537,11 @@ def apply_port_strategy() -> bool | str:
                 "port_key": key,
                 "preferred": preferred,
                 "selected": fallback,
-                "reason": "existing_neko_conflict",
+                "reason": (
+                    "existing_neko_conflict"
+                    if key in existing_health_by_key
+                    else "isolate_from_existing_neko_backend"
+                ),
                 "owners": existing_owners_by_key.get(key, []),
             }
         )
