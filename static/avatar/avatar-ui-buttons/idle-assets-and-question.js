@@ -329,6 +329,395 @@ function _runAfterNekoIdleSoundStarted(state, audio, callback) {
     run();
 }
 
+// Cat Mind owns scheduling; this file remains the capability/read-only provider
+// and the sole adapter from an accepted request to the existing runners.
+function _getNekoCatMindActionRequestEventName() {
+    try {
+        const name = window.NekoCatMindContract && window.NekoCatMindContract.EVENT_NAMES && window.NekoCatMindContract.EVENT_NAMES.ACTION_REQUEST;
+        if (typeof name === 'string' && name) return name;
+    } catch (_) {}
+    return _NEKO_CAT_MIND_ACTION_REQUEST_EVENT;
+}
+
+function _getNekoCatMindActionResultEventName() {
+    try {
+        const name = window.NekoCatMindContract && window.NekoCatMindContract.EVENT_NAMES && window.NekoCatMindContract.EVENT_NAMES.ACTION_RESULT;
+        if (typeof name === 'string' && name) return name;
+    } catch (_) {}
+    return _NEKO_CAT_MIND_ACTION_RESULT_EVENT;
+}
+
+function _nextNekoCatMindActionRunId(actionId) {
+    _nekoCatMindActionRunSequence += 1;
+    return `${actionId || 'action'}:${_nekoCatMindActionRunSequence}`;
+}
+
+function _beginNekoCatMindStateAction(state, actionId, tier, detail = {}) {
+    if (!state || !actionId) return null;
+    state.catMindActionId = actionId;
+    state.catMindRunId = _nextNekoCatMindActionRunId(actionId);
+    state.catMindStartedAt = Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now();
+    state.catMindSource = detail.source || 'avatar-ui-buttons';
+    state.catMindRequestId = detail.requestId || '';
+    state.catMindTier = _normalizeNekoIdleReturnTier(tier);
+    state.catMindResultReported = false;
+    return { actionId: state.catMindActionId, runId: state.catMindRunId, requestId: state.catMindRequestId,
+        startedAt: state.catMindStartedAt, source: state.catMindSource, tier: state.catMindTier };
+}
+
+function _clearNekoCatMindStateAction(state) {
+    if (!state) return;
+    state.catMindActionId = '';
+    state.catMindRunId = '';
+    state.catMindStartedAt = 0;
+    state.catMindSource = '';
+    state.catMindRequestId = '';
+    state.catMindTier = _NEKO_IDLE_TIER_NONE;
+    state.catMindResultReported = false;
+}
+
+function _dispatchNekoCatMindActionResult(actionId, result, detail = {}) {
+    if (!actionId || !result || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return false;
+    const endedAt = Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now();
+    const startedAt = Number(detail.startedAt);
+    const payload = {
+        actionId, result, source: detail.source || 'avatar-ui-buttons',
+        tier: _normalizeNekoIdleReturnTier(detail.tier), timestamp: endedAt,
+        reason: detail.reason || result,
+        detail: _sanitizeNekoCatIdleObservationDetail(Object.assign({}, detail.detail || {}, {
+            runId: detail.runId || '', requestId: detail.requestId || '',
+            durationMs: Number.isFinite(startedAt) && startedAt > 0 ? Math.max(0, endedAt - startedAt) : 0
+        }))
+    };
+    try {
+        window.dispatchEvent(new CustomEvent(_getNekoCatMindActionResultEventName(), { detail: payload }));
+        return true;
+    } catch (_) { return false; }
+}
+
+function _reportNekoCatMindStateActionResult(state, result, detail = {}) {
+    if (!state || !state.catMindActionId || state.catMindResultReported) return false;
+    state.catMindResultReported = true;
+    const reported = _dispatchNekoCatMindActionResult(state.catMindActionId, result, Object.assign({}, detail, {
+        source: detail.source || state.catMindSource, tier: detail.tier || state.catMindTier,
+        runId: detail.runId || state.catMindRunId, requestId: detail.requestId || state.catMindRequestId,
+        startedAt: detail.startedAt || state.catMindStartedAt
+    }));
+    _clearNekoCatMindStateAction(state);
+    return reported;
+}
+
+function _isNekoCatMindStateActionRunCurrent(state, run, audio = null) {
+    return !!(state && run && run.actionId && run.runId && state.catMindActionId === run.actionId &&
+        state.catMindRunId === run.runId && (!audio || !state.audio || state.audio === audio));
+}
+
+function _reportNekoCatMindStateActionRunResult(state, run, audio, result, detail = {}) {
+    if (!_isNekoCatMindStateActionRunCurrent(state, run, audio)) return false;
+    return _reportNekoCatMindStateActionResult(state, result, Object.assign({
+        source: run.source, tier: run.tier, runId: run.runId, requestId: run.requestId, startedAt: run.startedAt
+    }, detail));
+}
+
+function _notifyNekoCatMindRunnerAccepted(options, run) {
+    try { if (options && typeof options.onAccepted === 'function' && run && run.runId) options.onAccepted(run); } catch (_) {}
+}
+function _notifyNekoCatMindRunnerStarted(options, run) {
+    try { if (options && typeof options.onStarted === 'function' && run && run.runId) options.onStarted(run); } catch (_) {}
+}
+function _getNekoCatMindCancelResult(reason, finishedReason) {
+    if (finishedReason && reason === finishedReason) return _NEKO_CAT_MIND_ACTION_RESULTS.DONE;
+    return /drag|return|tier|container|cat-to-model/.test(String(reason || ''))
+        ? _NEKO_CAT_MIND_ACTION_RESULTS.INTERRUPTED : _NEKO_CAT_MIND_ACTION_RESULTS.CANCELLED;
+}
+
+function _makeNekoCatMindProviderDecision(allowed, reason, detail = {}) {
+    return { allowed: allowed === true, reason: reason || (allowed ? 'allowed' : 'rejected'), detail };
+}
+function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {}) {
+    const result = decision && typeof decision === 'object' ? decision : _makeNekoCatMindProviderDecision(false, 'provider_rejected');
+    const tier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
+        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    const button = context.button || _findNekoCatMindVisibleButtonForTier(tier);
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    const journey = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    const profile = journey && journey.profile ? journey.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    let chatTarget = null;
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) {
+        try { chatTarget = _getNekoIdleCat1PairMoveChatTarget(); } catch (_) { chatTarget = null; }
+    }
+    const catRect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+    const chatRect = chatTarget && chatTarget.rect;
+    const pairMove = profile.pairMove || {};
+    const minUsableDistancePx = Math.max(1, Number(pairMove.minUsableDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX);
+    const maxDistancePx = Math.max(1, Number(pairMove.maxDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX);
+    const geometryKnown = !!(catRect && catRect.width > 0 && catRect.height > 0 && chatRect && chatRect.width > 0 && chatRect.height > 0);
+    const art = button && button.querySelector ? button.querySelector('.neko-idle-return-art') : null;
+    let playYarnCapability = false;
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) {
+        try { playYarnCapability = _canNekoCatMindControlPlayYarn(); } catch (_) { playYarnCapability = false; }
+    }
+    const facts = {
+        tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button, returnBallVisible: _isNekoCatMindButtonContainerVisible(button),
+        hasArt: !!art,
+        returnBallDragBlocking: _isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
+        returnPending: _isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending(),
+        transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
+        audioEnabled: isNekoIdleCatAudioEnabled(), ambientAudioActive: !!_nekoIdleCat1AmbientSoundState.active,
+        playYarnCapability,
+        sleepTierMatches: actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK
+            ? _nekoIdleSleepSoundState.tier === tier : null,
+        nearChat: actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN
+            ? _isNekoCatMindCat1NearChat(button) : null,
+        smallMove: actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE ? {
+            chatTargetAvailable: !!chatTarget, chatTargetMode: chatTarget && chatTarget.mode || '', geometryKnown,
+            vectorSpaceAvailable: geometryKnown && _hasNekoIdleCat1MoveVectorSpace(catRect, chatRect, maxDistancePx, minUsableDistancePx),
+            minUsableDistancePx, maxDistancePx
+        } : null,
+        journey: journey ? { exists: true, paused: !!journey.paused, substate: journey.substate || '',
+            idleSubstate: profile.idleSubstate || '', actionSettled: !!journey.actionSettled,
+            targetKind: journey.targetKind || '', pairMoveActive: !!(journey.pairMovePlan || journey.pairMoveFrame),
+            pendingWalk: !!(journey.pendingWalkTimer || journey.pendingWalkReady || journey.frame || journey.settleTimer) } : { exists: false }
+    };
+    const checks = [
+        { id: 'known_action', passed: Object.values(_NEKO_CAT_MIND_ACTION_IDS).includes(actionId) },
+        { id: 'return_ball_drag_free', passed: !facts.returnBallDragBlocking }, { id: 'return_not_pending', passed: !facts.returnPending },
+        { id: 'edge_peek_inactive', passed: !facts.edgePeekActive },
+        { id: 'transition_idle', passed: !facts.transitionActive }, { id: 'no_independent_action', passed: !facts.independentActionActive },
+        { id: 'compact_surface_idle', passed: !facts.compactSurfaceDragging }, { id: 'return_ball_visible', passed: facts.returnBallVisible }
+    ];
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) {
+        checks.push({ id: 'return_art_ready', passed: facts.hasArt });
+    }
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) {
+        checks.push({ id: 'audio_enabled', passed: facts.audioEnabled }, { id: 'ambient_audio_active', passed: facts.ambientAudioActive });
+    }
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) {
+        checks.push({ id: 'near_chat', passed: facts.nearChat === true }, { id: 'play_yarn_capability', passed: facts.playYarnCapability });
+    }
+    if (facts.smallMove) {
+        const moveJourney = facts.journey || {};
+        checks.push({ id: 'journey_settled_idle', passed: moveJourney.exists && !moveJourney.paused && !moveJourney.pairMoveActive && !moveJourney.pendingWalk && moveJourney.substate === moveJourney.idleSubstate && moveJourney.actionSettled },
+            { id: 'not_compact_top_edge', passed: moveJourney.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE },
+            { id: 'near_chat', passed: facts.nearChat === true }, { id: 'chat_target_available', passed: facts.smallMove.chatTargetAvailable },
+            { id: 'small_move_geometry_known', passed: facts.smallMove.geometryKnown }, { id: 'move_vector_space', passed: facts.smallMove.vectorSpaceAvailable });
+    }
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) {
+        checks.push({ id: 'audio_enabled', passed: facts.audioEnabled }, { id: 'sleep_tier_matches', passed: facts.tier === tier }, { id: 'sleep_audio_active', passed: facts.sleepTierMatches === true });
+    }
+    return _makeNekoCatMindProviderDecision(result.allowed === true, result.reason, Object.assign({}, result.detail || {}, {
+        actionId, facts, checks, failedCheck: result.allowed ? '' : result.reason || 'provider_rejected'
+    }));
+}
+function _isNekoCatMindButtonContainerVisible(button) {
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    return !!(container && container.style.display !== 'none');
+}
+function _findNekoCatMindVisibleButtonForTier(tier) {
+    let found = null;
+    _forEachNekoIdleReturnButton((button) => {
+        if (!found && _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) === _normalizeNekoIdleReturnTier(tier) &&
+            _isNekoCatMindButtonContainerVisible(button)) found = button;
+    });
+    return found;
+}
+function _isNekoCatMindReturnPending(button) {
+    const container = button && _getNekoIdleReturnContainerFromButton(button);
+    return !!(container && (container.getAttribute('data-neko-return-click-suppressed') === 'true' ||
+        container.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model'));
+}
+function _isAnyNekoCatMindReturnPending() {
+    let pending = false;
+    _forEachNekoIdleReturnButton((button) => { pending = pending || _isNekoCatMindReturnPending(button); });
+    return pending;
+}
+function _isNekoIdleReturnDragActionBlocking(button) {
+    const container = button && _getNekoIdleReturnContainerFromButton(button);
+    const dragging = container && container.getAttribute('data-dragging');
+    return dragging === 'pending' || dragging === 'true' || _isNekoIdleReturnDragActionActive(button);
+}
+function _isAnyNekoIdleReturnDragActionBlocking() {
+    let blocking = false;
+    _forEachNekoIdleReturnButton((button) => { blocking = blocking || _isNekoIdleReturnDragActionBlocking(button); });
+    return blocking;
+}
+function _isNekoCatMindTransitionActive(button) {
+    const container = button && _getNekoIdleReturnContainerFromButton(button);
+    const shell = typeof document !== 'undefined' && typeof document.getElementById === 'function'
+        ? document.getElementById('react-chat-window-shell') : null;
+    return !!((container && container.getAttribute('data-neko-model-cat-transitioning') &&
+        container.getAttribute('data-neko-model-cat-transitioning') !== 'false') ||
+        (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive()) ||
+        (shell && (shell.classList.contains('is-collapsing') || shell.classList.contains('is-expanding'))));
+}
+function _isNekoCatMindChatTransitionActive() {
+    return _isNekoCatMindTransitionActive(null);
+}
+function _isNekoCatMindCat1NearChat(button) {
+    const journey = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!journey) return false;
+    const profile = journey.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    return _isNekoIdleCat1SettledOnMinimizedSide(journey, profile);
+}
+function _canNekoCatMindControlPlayYarn() {
+    return !!(_getNekoIdleReactChatMinimizedShell() || (_getNekoIdleDesktopChatMinimizedRect() && typeof window.dispatchEvent === 'function'));
+}
+function _evaluateNekoCatMindActionProvider(actionId, context = {}) {
+    if (actionId && typeof actionId === 'object') { context = actionId; actionId = context.actionId; }
+    const tier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
+        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    const button = context.button || _findNekoCatMindVisibleButtonForTier(tier);
+    const facts = { tier: _getActiveNekoIdleReturnTier(), buttonFound: !!button,
+        returnBallVisible: _isNekoCatMindButtonContainerVisible(button), returnPending: _isAnyNekoCatMindReturnPending(),
+        transitionActive: _isNekoCatMindTransitionActive(button), compactSurfaceDragging: _isNekoIdleCompactSurfaceDragging(),
+        independentActionActive: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
+        audioEnabled: isNekoIdleCatAudioEnabled(),
+        nearChat: _isNekoCatMindCat1NearChat(button) };
+    let reason = '';
+    if (!button) reason = 'missing_button';
+    else if (facts.tier !== tier) reason = 'tier_mismatch';
+    else if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) reason = 'return_ball_drag_active';
+    else if (facts.compactSurfaceDragging) reason = 'compact_surface_dragging';
+    else if (facts.returnPending) reason = 'return_pending';
+    else if (facts.transitionActive) reason = 'transition_active';
+    else if (facts.independentActionActive) reason = 'active_independent_action';
+    else if (!facts.returnBallVisible) reason = 'return_ball_not_visible';
+    else if (facts.edgePeekActive) reason = 'edge_peek_active';
+    else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) && !button.querySelector('.neko-idle-return-art')) reason = 'missing_art';
+    else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) && !facts.nearChat) reason = 'near_chat_unavailable';
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !_canNekoCatMindControlPlayYarn()) reason = 'play_yarn_unavailable';
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE && (!button.__nekoIdleCat1Journey || !_canScheduleNekoIdleCat1PairMove(button, button.__nekoIdleCat1Journey))) reason = 'small_move_unavailable';
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING && (!facts.audioEnabled || !_nekoIdleCat1AmbientSoundState.active)) reason = facts.audioEnabled ? 'ambient_inactive' : 'audio_disabled';
+    else if ((actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) &&
+        (!facts.audioEnabled || _nekoIdleSleepSoundState.tier !== tier)) reason = facts.audioEnabled ? 'sleep_feedback_inactive' : 'audio_disabled';
+    else if (!Object.values(_NEKO_CAT_MIND_ACTION_IDS).includes(actionId)) reason = 'unknown_action';
+    return _makeNekoCatMindProviderDecision(!reason, reason || 'allowed', { actionId, facts });
+}
+
+function _dryRunNekoCatMindCat1ButtonProvider(actionId, button) {
+    if (!button) return _makeNekoCatMindProviderDecision(false, 'missing_button');
+    if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) return _makeNekoCatMindProviderDecision(false, 'return_ball_drag_active');
+    if (_isNekoIdleCompactSurfaceDragging()) return _makeNekoCatMindProviderDecision(false, 'compact_surface_dragging');
+    if (_isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending()) return _makeNekoCatMindProviderDecision(false, 'return_pending');
+    if (_isNekoCatMindTransitionActive(button)) return _makeNekoCatMindProviderDecision(false, 'transition_active');
+    if (_isNekoIdleCat1IndependentActionActive(button) || _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive()) return _makeNekoCatMindProviderDecision(false, 'active_independent_action');
+    return _evaluateNekoCatMindActionProvider(actionId, { button });
+}
+function _dryRunNekoCatMindSocialPingProvider(context = {}) {
+    if (_isNekoIdleCompactSurfaceDragging()) return _makeNekoCatMindProviderDecision(false, 'compact_surface_dragging');
+    const decision = _dryRunNekoCatMindCat1ButtonProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
+    return decision.allowed ? _evaluateNekoCatMindActionProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING, context) : decision;
+}
+function _dryRunNekoCatMindPlayYarnProvider(context = {}) {
+    if (_isNekoIdleCompactSurfaceDragging()) return _makeNekoCatMindProviderDecision(false, 'compact_surface_dragging');
+    if (_isNekoCatMindChatTransitionActive()) return _makeNekoCatMindProviderDecision(false, 'transition_active');
+    const button = context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1);
+    const decision = _dryRunNekoCatMindCat1ButtonProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN, button);
+    if (!decision.allowed) return decision;
+    if (!_isNekoCatMindCat1NearChat(button)) return _makeNekoCatMindProviderDecision(false, 'near_chat_unavailable');
+    if (!_canNekoCatMindControlPlayYarn()) return _makeNekoCatMindProviderDecision(false, 'play_yarn_unavailable');
+    return _evaluateNekoCatMindActionProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN, context);
+}
+function _dryRunNekoCatMindSmallMoveProvider(context = {}) {
+    return _evaluateNekoCatMindActionProvider(_NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE, context);
+}
+function _dryRunNekoCatMindSleepFeedbackProvider(actionId, context = {}) {
+    if (_isNekoIdleCompactSurfaceDragging()) return _makeNekoCatMindProviderDecision(false, 'compact_surface_dragging');
+    if (_isNekoCatMindAudioActionActive()) return _makeNekoCatMindProviderDecision(false, 'active_independent_action');
+    if (_isAnyNekoCatMindReturnPending()) return _makeNekoCatMindProviderDecision(false, 'return_pending');
+    if (_isNekoCatMindTransitionActive()) return _makeNekoCatMindProviderDecision(false, 'transition_active');
+    return _evaluateNekoCatMindActionProvider(actionId, context);
+}
+function _dryRunNekoCatMindActionProvider(actionId, context = {}) {
+    if (actionId && typeof actionId === 'object') { context = actionId; actionId = context.actionId; }
+    const normalizedActionId = typeof actionId === 'string' ? actionId : '';
+    let decision;
+    if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) decision = _dryRunNekoCatMindCat1ButtonProvider(normalizedActionId, context.button || _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1));
+    else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) decision = _dryRunNekoCatMindSocialPingProvider(context);
+    else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) decision = _dryRunNekoCatMindPlayYarnProvider(context);
+    else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) decision = _dryRunNekoCatMindSmallMoveProvider(context);
+    else if (normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || normalizedActionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) decision = _dryRunNekoCatMindSleepFeedbackProvider(normalizedActionId, context);
+    else decision = _makeNekoCatMindProviderDecision(false, 'unknown_action', { actionId: normalizedActionId });
+    return _attachNekoCatMindProviderDiagnostics(normalizedActionId, decision, context);
+}
+
+function _acknowledgeNekoCatMindActionRequest(request, status, detail = {}) {
+    try {
+        return !!(window.nekoCatMind && typeof window.nekoCatMind.acknowledgeActionRequest === 'function' &&
+            window.nekoCatMind.acknowledgeActionRequest({ requestId: request.requestId, actionId: request.actionId,
+                status, reason: detail.reason || status, runId: detail.runId || '', timestamp: Date.now() }) === true);
+    } catch (_) { return false; }
+}
+function _runNekoCatMindActionRequest(request) {
+    if (!request || request.source !== 'cat_mind' || !request.requestId || !request.actionId || !request.tier) return;
+    const actionId = request.actionId;
+    const expectedTier = actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK ? _NEKO_IDLE_TIER_CAT2 :
+        (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK ? _NEKO_IDLE_TIER_CAT3 : _NEKO_IDLE_TIER_CAT1);
+    if (request.tier !== expectedTier) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'request_tier_mismatch' }); return; }
+    const provider = _dryRunNekoCatMindActionProvider(actionId, { source: 'cat-mind-action-adapter' });
+    if (!provider.allowed) { _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: provider.reason }); return; }
+    let bound = false;
+    const options = { source: 'cat_mind', requestId: request.requestId,
+        onAccepted(run) { bound = _acknowledgeNekoCatMindActionRequest(request, 'accepted', { reason: 'runner_accepted', runId: run && run.runId }) || bound; },
+        onStarted(run) { _acknowledgeNekoCatMindActionRequest(request, 'started', { reason: 'runner_started', runId: run && run.runId }); } };
+    const button = _findNekoCatMindVisibleButtonForTier(expectedTier);
+    let accepted = false;
+    if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_EAT_SNACK) accepted = _playNekoIdleCat1EatAction(button, options);
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) accepted = _startNekoIdleCat1PairMove(button, options);
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN) accepted = _playNekoIdleCat1PlayAction(button, options);
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_SOCIAL_PING) accepted = _playNekoIdleCat1AmbientSound(_nekoIdleCat1AmbientSoundState.token, options);
+    else if (actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT2_NAP_FEEDBACK || actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT3_SLEEP_FEEDBACK) accepted = _playNekoIdleSleepSound(expectedTier, _nekoIdleSleepSoundState.token, options);
+    if (!accepted && !bound) _acknowledgeNekoCatMindActionRequest(request, 'rejected', { reason: 'runner_not_started' });
+}
+function _isNekoCatMindAudioActionActive() {
+    return !!(_nekoIdleCat1AmbientSoundState.catMindActionId || _nekoIdleSleepSoundState.catMindActionId);
+}
+function _getNekoCatMindRuntimeGateSnapshot() {
+    const tier = _getActiveNekoIdleReturnTier(); const button = _findNekoCatMindVisibleButtonForTier(tier);
+    return Object.freeze({ returnPending: _isAnyNekoCatMindReturnPending(), dragPending: _isAnyNekoIdleReturnDragActionBlocking(), dragging: _isAnyNekoIdleReturnDragActionActive(),
+        edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button),
+        transitionActive: _isNekoCatMindTransitionActive(button), activeIndependentAction: _isAnyNekoIdleCat1IndependentActionActive() || _isNekoCatMindAudioActionActive(),
+        returnBallVisible: !!button, validCatRuntime: tier !== _NEKO_IDLE_TIER_NONE, chatSurfaceDragging: _isNekoIdleCompactSurfaceDragging(), tier });
+}
+function _sanitizeNekoCatIdleObservationDetail(detail = {}) {
+    const result = {};
+    Object.keys(detail || {}).forEach((key) => {
+        if (key === 'button' || key === 'container' || key === 'target' || key === 'originalEvent') return;
+        const value = detail[key];
+        if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') result[key] = value;
+        else if (typeof value === 'number') result[key] = Number.isFinite(value) ? value : null;
+    });
+    return result;
+}
+function _dispatchNekoCatIdleObservationSource(type, detail = {}) {
+    if (!type || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return false;
+    try {
+        window.dispatchEvent(new CustomEvent(_NEKO_CAT_IDLE_OBSERVATION_SOURCE_EVENT, { detail: {
+            type, source: detail.source || 'avatar-ui-buttons', tier: _normalizeNekoIdleReturnTier(detail.tier),
+            timestamp: Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now(),
+            detail: _sanitizeNekoCatIdleObservationDetail(detail)
+        }}));
+        return true;
+    } catch (_) { return false; }
+}
+function _clearNekoIdleThoughtBubbleForTier(tier) {
+    _forEachNekoIdleReturnButton((button) => {
+        if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) === _normalizeNekoIdleReturnTier(tier)) {
+            _clearNekoIdleThoughtBubble(button);
+        }
+    });
+}
+if (typeof window !== 'undefined') {
+    window.NekoCatMindActionProviders = Object.freeze({ ACTION_IDS: _NEKO_CAT_MIND_ACTION_IDS, RESULTS: _NEKO_CAT_MIND_ACTION_RESULTS,
+        dryRun: _dryRunNekoCatMindActionProvider, getRuntimeGateSnapshot: _getNekoCatMindRuntimeGateSnapshot });
+    window.addEventListener(_getNekoCatMindActionRequestEventName(), function (event) {
+        _runNekoCatMindActionRequest(event && event.detail);
+    });
+}
+
 function _getNekoIdleCat1QuestionMarkAssetUrl() {
     return `${_NEKO_IDLE_CAT1_QUESTION_MARK_ASSET_URL}${_getNekoIdleReturnAssetVersionSuffix()}`;
 }

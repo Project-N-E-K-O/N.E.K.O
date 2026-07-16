@@ -1,14 +1,19 @@
-import type { AvatarInteractionPayload } from './message-schema';
+import type {
+  AvatarToolVariantId as CatalogAvatarToolVariantId,
+  AvatarToolDefinitionId,
+  AvatarToolDefinition,
+  AvatarToolManagerIconVisual,
+} from './avatar-tools/catalog';
+import {
+  AVATAR_TOOL_DEFINITIONS,
+  withAvatarToolAssetVersion,
+} from './avatar-tools/catalog';
 
-export type AvatarToolId = AvatarInteractionPayload['toolId'];
+export { withAvatarToolAssetVersion };
 
-export type CursorVariant = 'primary' | 'secondary' | 'tertiary';
+export type AvatarToolId = AvatarToolDefinitionId;
 
-declare global {
-  interface Window {
-    __NEKO_REACT_CHAT_ASSET_VERSION__?: string;
-  }
-}
+export type AvatarToolVariantId = CatalogAvatarToolVariantId;
 
 export type AvatarToolItem = {
   id: AvatarToolId;
@@ -24,90 +29,83 @@ export type AvatarToolItem = {
   menuIconOffsetYAlt?: number;
   menuIconOffsetXAlt2?: number;
   menuIconOffsetYAlt2?: number;
-  cursorImagePath: string;
-  cursorImagePathAlt?: string;
-  cursorImagePathAlt2?: string;
-  cursorHotspotX?: number;
-  cursorHotspotY?: number;
-  cursorNaturalWidth?: number;
-  cursorNaturalHeight?: number;
-  cursorDisplayWidth?: number;
-  cursorDisplayHeight?: number;
+  managerIconVisual?: AvatarToolManagerIconVisual;
+  pointerImagePath: string;
+  pointerImagePathAlt?: string;
+  pointerImagePathAlt2?: string;
+  pointerHotspotX?: number;
+  pointerHotspotY?: number;
+  pointerNaturalWidth?: number;
+  pointerNaturalHeight?: number;
+  pointerDisplayWidth?: number;
+  pointerDisplayHeight?: number;
 };
 
 export const ACTIVE_AVATAR_TOOLS_STORAGE_KEY = 'neko.reactChatWindow.activeAvatarTools';
 export const MAX_ACTIVE_AVATAR_TOOLS = 3;
 export const DEFAULT_ACTIVE_AVATAR_TOOL_IDS: AvatarToolId[] = ['lollipop', 'fist', 'hammer'];
 
-export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] = [
-  {
-    id: 'lollipop',
-    labelKey: 'chat.toolLollipop',
-    labelFallback: '棒棒糖',
-    iconImagePath: '/static/icons/chat_sugar1.png',
-    iconImagePathAlt: '/static/icons/chat_sugar2.png',
-    iconImagePathAlt2: '/static/icons/chat_sugar3.png',
-    cursorImagePath: '/static/icons/chat_sugar1_cursor.png',
-    cursorImagePathAlt: '/static/icons/chat_sugar2_cursor.png',
-    menuIconScale: 1.18,
-    cursorHotspotX: 27,
-    cursorHotspotY: 46,
-    cursorNaturalWidth: 55,
-    cursorNaturalHeight: 80,
-    cursorDisplayWidth: 74,
-    cursorDisplayHeight: 108,
-  },
-  {
-    id: 'fist',
-    labelKey: 'chat.toolFist',
-    labelFallback: '猫爪',
-    iconImagePath: '/static/icons/cat_claw1.png',
-    iconImagePathAlt: '/static/icons/cat_claw2.png',
-    cursorImagePath: '/static/icons/cat_claw1_cursor.png',
-    cursorImagePathAlt: '/static/icons/cat_claw2_cursor.png',
-    cursorHotspotX: 39,
-    cursorHotspotY: 46,
-    cursorNaturalWidth: 78,
-    cursorNaturalHeight: 80,
-    cursorDisplayWidth: 78,
-    cursorDisplayHeight: 80,
-  },
-  {
-    id: 'hammer',
-    labelKey: 'chat.toolHammer',
-    labelFallback: '锤子',
-    iconImagePath: '/static/icons/chat_hammer1.png',
-    iconImagePathAlt: '/static/icons/chat_hammer2.png',
-    cursorImagePath: '/static/icons/chat_hammer1_cursor.png',
-    cursorImagePathAlt: '/static/icons/chat_hammer2_cursor.png',
-    menuIconScale: 1.52,
-    menuIconOffsetX: -8,
-    menuIconOffsetY: 4,
-    menuIconOffsetXAlt: 1,
-    menuIconOffsetYAlt: -1,
-    cursorHotspotX: 50,
-    cursorHotspotY: 54,
-    cursorNaturalWidth: 100,
-    cursorNaturalHeight: 96,
-    cursorDisplayWidth: 100,
-    cursorDisplayHeight: 96,
-  },
-];
+function projectAvatarToolDefinitionToItem(definition: AvatarToolDefinition): AvatarToolItem {
+  const { primary, secondary, tertiary } = definition.visual.variants;
+  // Icons fall straight back to primary, while a tertiary pointer falls back
+  // through secondary in resolveAvatarToolImagePaths; compare against those
+  // respective fallback sources so the projected optional paths stay lossless.
+  const secondaryIcon = secondary.iconImagePath !== primary.iconImagePath
+    ? secondary.iconImagePath
+    : undefined;
+  const tertiaryIcon = tertiary.iconImagePath !== primary.iconImagePath
+    ? tertiary.iconImagePath
+    : undefined;
+  const secondaryPointer = secondary.pointerImagePath !== primary.pointerImagePath
+    ? secondary.pointerImagePath
+    : undefined;
+  const tertiaryPointer = tertiary.pointerImagePath !== secondary.pointerImagePath
+    ? tertiary.pointerImagePath
+    : undefined;
+  const secondaryOffsetX = secondary.menuOffsetX !== primary.menuOffsetX
+    ? secondary.menuOffsetX
+    : undefined;
+  const secondaryOffsetY = secondary.menuOffsetY !== primary.menuOffsetY
+    ? secondary.menuOffsetY
+    : undefined;
+  const tertiaryOffsetX = tertiary.menuOffsetX !== secondary.menuOffsetX
+    ? tertiary.menuOffsetX
+    : undefined;
+  const tertiaryOffsetY = tertiary.menuOffsetY !== secondary.menuOffsetY
+    ? tertiary.menuOffsetY
+    : undefined;
+
+  return {
+    id: definition.id,
+    labelKey: definition.label.key,
+    labelFallback: definition.label.fallback,
+    iconImagePath: primary.iconImagePath,
+    ...(secondaryIcon ? { iconImagePathAlt: secondaryIcon } : {}),
+    ...(tertiaryIcon ? { iconImagePathAlt2: tertiaryIcon } : {}),
+    pointerImagePath: primary.pointerImagePath,
+    ...(secondaryPointer ? { pointerImagePathAlt: secondaryPointer } : {}),
+    ...(tertiaryPointer ? { pointerImagePathAlt2: tertiaryPointer } : {}),
+    ...(definition.visual.menuScale !== 1 ? { menuIconScale: definition.visual.menuScale } : {}),
+    ...(primary.menuOffsetX !== 0 ? { menuIconOffsetX: primary.menuOffsetX } : {}),
+    ...(primary.menuOffsetY !== 0 ? { menuIconOffsetY: primary.menuOffsetY } : {}),
+    ...(secondaryOffsetX !== undefined ? { menuIconOffsetXAlt: secondaryOffsetX } : {}),
+    ...(secondaryOffsetY !== undefined ? { menuIconOffsetYAlt: secondaryOffsetY } : {}),
+    ...(tertiaryOffsetX !== undefined ? { menuIconOffsetXAlt2: tertiaryOffsetX } : {}),
+    ...(tertiaryOffsetY !== undefined ? { menuIconOffsetYAlt2: tertiaryOffsetY } : {}),
+    ...(definition.visual.managerIcon ? { managerIconVisual: definition.visual.managerIcon } : {}),
+    pointerHotspotX: definition.visual.hotspotX,
+    pointerHotspotY: definition.visual.hotspotY,
+    pointerNaturalWidth: definition.visual.naturalWidth,
+    pointerNaturalHeight: definition.visual.naturalHeight,
+    pointerDisplayWidth: definition.visual.pointer.displayWidth,
+    pointerDisplayHeight: definition.visual.pointer.displayHeight,
+  };
+}
+
+export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] =
+  AVATAR_TOOL_DEFINITIONS.map(projectAvatarToolDefinitionToItem);
 
 const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(AVAILABLE_AVATAR_TOOLS.map(item => item.id));
-
-function getReactChatAssetVersion(): string {
-  if (typeof window === 'undefined') return '';
-  const version = window.__NEKO_REACT_CHAT_ASSET_VERSION__;
-  return typeof version === 'string' ? version.trim() : '';
-}
-
-export function withAvatarToolAssetVersion(path: string): string {
-  const version = getReactChatAssetVersion();
-  if (!version || !path) return path;
-  const separator = path.includes('?') ? '&' : '?';
-  return `${path}${separator}v=${encodeURIComponent(version)}`;
-}
 
 export function isAvatarToolId(value: unknown): value is AvatarToolId {
   return typeof value === 'string' && AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId);
@@ -156,27 +154,27 @@ export function persistActiveAvatarToolIds(ids: AvatarToolId[]) {
   }
 }
 
-export function resolveAvatarToolImagePaths(item: AvatarToolItem, variant: CursorVariant) {
+export function resolveAvatarToolImagePaths(item: AvatarToolItem, variant: AvatarToolVariantId) {
   const iconImagePath = variant === 'tertiary' && item.iconImagePathAlt2
     ? item.iconImagePathAlt2
     : variant === 'secondary' && item.iconImagePathAlt
       ? item.iconImagePathAlt
       : item.iconImagePath;
-  const cursorImagePath = variant === 'tertiary' && item.cursorImagePathAlt2
-    ? item.cursorImagePathAlt2
-    : variant === 'secondary' && item.cursorImagePathAlt
-      ? item.cursorImagePathAlt
-      : variant === 'tertiary' && item.cursorImagePathAlt
-        ? item.cursorImagePathAlt
-        : item.cursorImagePath;
+  const pointerImagePath = variant === 'tertiary' && item.pointerImagePathAlt2
+    ? item.pointerImagePathAlt2
+    : variant === 'secondary' && item.pointerImagePathAlt
+      ? item.pointerImagePathAlt
+      : variant === 'tertiary' && item.pointerImagePathAlt
+        ? item.pointerImagePathAlt
+        : item.pointerImagePath;
 
   return {
     iconImagePath: withAvatarToolAssetVersion(iconImagePath),
-    cursorImagePath: withAvatarToolAssetVersion(cursorImagePath),
+    pointerImagePath: withAvatarToolAssetVersion(pointerImagePath),
   };
 }
 
-export function resolveAvatarToolMenuIconVisual(item: AvatarToolItem, variant: CursorVariant) {
+export function resolveAvatarToolMenuIconVisual(item: AvatarToolItem, variant: AvatarToolVariantId) {
   const imagePath = variant === 'tertiary' && item.iconImagePathAlt2
     ? item.iconImagePathAlt2
     : variant === 'secondary' && item.iconImagePathAlt

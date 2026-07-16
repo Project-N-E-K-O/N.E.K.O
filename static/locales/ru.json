@@ -792,7 +792,7 @@
         "toolFist": "Кошачья лапка",
         "toolHammer": "Молоток",
         "avatarToolsButtonAriaLabel": "Инструменты аватара",
-        "clearCursorToolAriaLabel": "Восстановить курсор",
+        "clearAvatarToolAriaLabel": "Убрать инструмент",
         "avatarToolQuickbarAriaLabel": "Быстрые инструменты аватара",
         "avatarToolQuickbarEmpty": "Нет быстрых инструментов",
         "avatarToolEdit": "Изменить быстрые инструменты",

@@ -409,6 +409,21 @@
         return true;
     }
 
+    I.queuePendingAvatarInteraction = function queuePendingAvatarInteraction(detail) {
+        var interactionId = String(
+            detail && (detail.interactionId || detail.interaction_id) || ''
+        ).trim();
+        if (interactionId && I.state.pendingAvatarInteractions.some(function (pending) {
+            return String(pending && (pending.interactionId || pending.interaction_id) || '').trim() === interactionId;
+        })) {
+            return;
+        }
+        I.state.pendingAvatarInteractions.push(detail);
+        if (I.state.pendingAvatarInteractions.length > 8) {
+            I.state.pendingAvatarInteractions.shift();
+        }
+    };
+
     I.handleAvatarInteraction = function handleAvatarInteraction(payload) {
         var detail = payload || {};
 
@@ -419,7 +434,11 @@
                 console.error('[ReactChatWindow] onAvatarInteraction failed:', error);
             }
         } else {
-            console.warn('[ReactChatWindow] no avatar interaction handler registered; dispatching host event only');
+            // React can become interactive before app-buttons binds the
+            // authoritative Host callback. Preserve the committed interaction;
+            // the auxiliary DOM event is not a delivery acknowledgement.
+            I.queuePendingAvatarInteraction(detail);
+            console.warn('[ReactChatWindow] avatar interaction handler not ready; queued for host binding');
         }
 
         I.dispatchHostEvent('avatar-interaction', detail);
@@ -1861,8 +1880,8 @@
         });
     }
 
-    I.deactivateToolCursor = function deactivateToolCursor() {
-        I.state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    I.deactivateAvatarTool = function deactivateAvatarTool() {
+        I.state._avatarToolDeactivationKey = 'atd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         I.renderWindow();
     }
 

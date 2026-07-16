@@ -1708,7 +1708,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         I.pendingChatSurfaceMode = null;
         I.clearIdleDockState();
-        I.deactivateToolCursor();
+        I.deactivateAvatarTool();
         I.hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
