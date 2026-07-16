@@ -49,6 +49,7 @@ class _TransportMixin:
         # silence-check task, or Gemini SDK init). Applies uniformly to all providers.
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+        self._response_arbiter.reset_connection_state()
 
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
         # same OmniRealtimeClient instance is reused across sessions, so stale
@@ -842,6 +843,7 @@ class _TransportMixin:
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
                     self._route_inject_rejection(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(err_event_id, error_msg)
 
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
@@ -968,7 +970,10 @@ class _TransportMixin:
                             result = await self._execute_tool_call(call)
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
+                elif event_type == "conversation.item.created":
+                    self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    self._response_arbiter.notify_response_terminal(event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
                     # Lifecycle cleanup of proactive inject rejection handlers
@@ -1055,6 +1060,7 @@ class _TransportMixin:
                     if not self._has_server_vad and self.on_sid_rotate:
                         await self.on_sid_rotate()
                 elif event_type == "response.created":
+                    self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     # A response started — our proactive inject's response.create
@@ -1189,25 +1195,49 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
+            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
+            await self._close_failed_transport("realtime connection closed")
             logger.info("Connection closed as expected")
-            self._fatal_error_occurred = True
-            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
+            await self._close_failed_transport(error_msg)
             logger.error(f"Connection closed with error: {error_msg}")
-            self._fatal_error_occurred = True
-            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
-            if self.ws:
-                await self.ws.close()
+            await self._close_failed_transport("realtime connection timeout")
             if self.on_connection_error:
                 await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
+            await self._close_failed_transport(
+                f"realtime message handling failed: {type(e).__name__}"
+            )
             logger.error(f"Error in message handling: {str(e)}")
-            raise e
+            raise
+
+    async def _close_failed_transport(self, reason: str) -> None:
+        """Fail response tickets and atomically detach the failed socket."""
+
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            response_arbiter.notify_connection_lost(reason)
+        await self._abort_failed_transport(reason)
+
+    async def _abort_failed_transport(self, reason: str) -> None:
+        """Atomically detach and physically close a failed raw WebSocket."""
+
+        self._fatal_error_occurred = True
+        ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as exc:
+                logger.debug(
+                    "failed transport close also failed (%s): %s",
+                    reason,
+                    type(exc).__name__,
+                )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
