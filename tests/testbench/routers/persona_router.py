@@ -548,11 +548,12 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
         the export aborts with HTTP 413 the moment it crosses
         :data:`_MAX_ARCHIVE_UNCOMPRESSED_BYTES`, *before* the file is read into
         memory.
-      * **Stay in tree** — a character dir that is itself a symlink escaping the
-        resolved ``memory_dir`` root is rejected outright (HTTP 500
-        ``UnsafeCharacterDir``); within it, symlinks are skipped and any entry
-        whose resolved path escapes the root is skipped, so ``rglob`` can never
-        follow a link out to unrelated host files.
+      * **Stay in tree** — a character dir that is itself a symlink is rejected
+        outright (HTTP 500 ``UnsafeCharacterDir``), whether it points outside
+        ``memory_dir`` or at a SIBLING character dir (which would otherwise leak
+        the wrong character's files under this name); within it, symlinks are
+        skipped and any entry whose resolved path escapes the root is skipped,
+        so ``rglob`` can never follow a link out to unrelated host files.
       * **No partial backup** — an in-tree file we cannot stat/read aborts the
         whole export with HTTP 500 instead of silently shipping an incomplete
         "faithful" archive.
@@ -618,19 +619,32 @@ def _zip_character_memory(config_dir: Path, memory_dir: Path, name: str) -> byte
             written.add(arc)
 
         char_mem = memory_dir / name
+        # A faithful dump must stay inside ``memory_dir/<name>``. Reject a
+        # character dir that is ITSELF a symlink, up front and unconditionally:
+        #   * pointing OUTSIDE memory_dir → would pack unrelated host files;
+        #   * pointing at a SIBLING (e.g. ``memory_dir/A`` → ``memory_dir/B``)
+        #     stays "in-tree" and passes the resolved-root check below, yet
+        #     would silently return B's UN-redacted memory under the ``A/``
+        #     prefix — the wrong character's private files (greptile P1).
+        # A legitimately relocated memory root (the WHOLE ``memory_dir``
+        # symlinked elsewhere) is unaffected: ``memory_dir/<name>`` is then a
+        # real subdir, not a symlink, so this check does not fire.
+        if char_mem.is_symlink():
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_type": "UnsafeCharacterDir",
+                    "message": (
+                        f"角色 {name!r} 的记忆目录是符号链接, 已中止导出 "
+                        "(避免打包到其它角色或宿主目录的文件)。"
+                    ),
+                },
+            )
         if char_mem.is_dir():
-            # A faithful dump must stay inside ``memory_dir/<name>``. ``rglob``
-            # would happily follow a symlinked character dir (or a symlinked
-            # file inside it) into unrelated readable host directories and pack
-            # them into this UN-redacted export.
-            #
-            # First reject a character dir that is itself a symlink escaping the
-            # memory root: ``is_dir()`` follows the link and ``char_mem.resolve()``
-            # would make the external target look "in-tree", so the per-entry
-            # ``relative_to(mem_root)`` check below would pass and dump unrelated
-            # host files. A legitimately relocated memory dir (the WHOLE
-            # ``memory_dir`` symlinked elsewhere) still passes, because both
-            # roots then resolve under the same target.
+            # ``rglob`` would also follow a symlinked file INSIDE the dir into
+            # unrelated readable host directories. Resolve the root once and,
+            # per entry, skip symlinks and anything whose real path escapes the
+            # resolved root (defence in depth on top of the root check above).
             mem_root = char_mem.resolve()
             try:
                 mem_root.relative_to(memory_dir.resolve())
