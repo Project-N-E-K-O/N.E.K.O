@@ -272,3 +272,48 @@ async def test_fts_dedup_exempts_cross_date_daily_hits():
         semantic_dedup=True,
     )
     assert len(same_date) == 0  # 同日期近似：仍判重复
+
+
+@pytest.mark.asyncio
+async def test_multi_batch_day_with_failed_batch_persists_nothing_and_retries_fully():
+    # 多批天任一批失败 → 整天原子放弃（不落盘任何批、不留指纹），重试从头
+    # 重抽——否则早批带全天指纹落盘后，重试被指纹整天 skip、失败批内容永久
+    # 丢失（Greptile P1）。
+    calls = {"n": 0}
+
+    def stub(journal):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return None  # 第一轮的第二批失败
+        return [{"text": f"fact#{calls['n']}", "importance": 5}]
+
+    harness = _DailyHarness(stub)
+    long_journal = "word " * 7000  # > 6000 token，拆 2 批
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", long_journal)
+
+    first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
+    assert first["failed_days"] == 1
+    assert harness.persisted == []          # 整天没落盘
+    assert harness.store == []              # 无指纹残留
+
+    retry = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
+    assert retry["failed_days"] == 0
+    assert retry["skipped_days"] == 0       # 没被指纹误 skip
+    assert retry["added"] == 2              # 两批都重抽成功
+
+
+@pytest.mark.asyncio
+async def test_reordered_journal_changes_fingerprint_and_reextracts():
+    # 日记是叙事：条目重排（如「停药」「复药」互换）语义不同，指纹保序 →
+    # 重排后的同内容日记必须重新抽取而非被 skip（Greptile P1）。
+    harness = _DailyHarness(lambda j: [{"text": f"fact:{j[:30]}", "importance": 5}])
+    day_a = _daily("memories/2026-07-12.md", "2026-07-12",
+                   "stopped medication", "started medication")
+    await harness.aimport_external_daily("Neko", day_a, "hermes", "t1")
+    assert len(harness.extract_inputs) == 1
+
+    day_b = _daily("memories/2026-07-12.md", "2026-07-12",
+                   "started medication", "stopped medication")
+    result = await harness.aimport_external_daily("Neko", day_b, "hermes", "t2")
+    assert result["skipped_days"] == 0      # 重排 ≠ 未变，不能 skip
+    assert len(harness.extract_inputs) == 2  # 重新走了 LLM

@@ -298,6 +298,38 @@ async def test_daily_days_extract_concurrently():
 
 
 @pytest.mark.asyncio
+async def test_daily_concurrency_is_bounded_by_semaphore():
+    # 交叉握手只证明「能并行」；无界 gather 同样能过。这里用活跃计数器证明
+    # 峰值并发被 Semaphore 钉在 EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY 以内
+    # （误删限流时本测试变红），同时峰值 ≥2 佐证确实在并发（CodeRabbit）。
+    from config import EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+
+    active = 0
+    peak = 0
+
+    async def extract(text):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.05)  # 让所有并发槽真正重叠
+        active -= 1
+        return [{"text": f"fact for {text[:12]}", "importance": 5}]
+
+    harness = _DailyConcurrencyHarness(extract)
+    days = [
+        _daily("memories/2026-07-%02d.md" % (10 + i), "2026-07-%02d" % (10 + i), f"day-{i}")
+        for i in range(EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY + 2)
+    ]
+    result = await asyncio.wait_for(
+        harness.aimport_external_daily("Neko", days, "hermes", "t"), timeout=10,
+    )
+
+    assert result["failed_days"] == 0
+    assert result["added"] == len(days)
+    assert 2 <= peak <= EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY
+
+
+@pytest.mark.asyncio
 async def test_daily_crashing_day_is_counted_failed_and_others_survive():
     # 单日抽取崩溃（异常而非 None）也必须 best-effort：计入 failed_days，
     # 不拖垮其他天（gather return_exceptions 语义）。

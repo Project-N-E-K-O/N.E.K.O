@@ -1242,10 +1242,12 @@ class FactStore:
         under ``EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY`` (a month of journals run
         sequentially would blow past the upstream 240s forwarding window);
         batches within a day run sequentially; persistence stays serialized by
-        the per-character persist lock. Best-effort per day: a day is counted in
-        ``failed_days`` when any of its batches fails (None) or crashes — facts
-        already extracted from its other batches are kept, and the caller is
-        expected to surface a retryable partial result instead of success.
+        the per-character persist lock. Best-effort per day, atomic within a
+        day: when any batch fails (None) or crashes the whole day persists
+        nothing — no facts, no fingerprint — and is counted in ``failed_days``
+        so the caller surfaces a retryable partial result; the retry re-extracts
+        that day from scratch (a partially-persisted day would fingerprint-skip
+        forever, Greptile P1).
 
         Idempotency mirrors persona ``folded_fingerprints``: each persisted fact
         carries its day's content fingerprint; a re-imported day whose fragments
@@ -1310,8 +1312,11 @@ class FactStore:
             batches = batch_daily_fragments(
                 [p for p in parts if p], EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS,
             )
-            day_added = 0
-            day_failed = False
+            # 先抽完该天全部批次、**任一批失败则整天不落盘**：若早批先落盘（带
+            # 全天指纹）而后批失败，重试会被指纹整天 skip、失败批内容永久丢失
+            # （Greptile P1）。整天原子化后，失败天既无 fact 也无指纹，重试从头
+            # 重抽；persist 自身崩溃同理由 gather 计入 failed_days 且无指纹残留。
+            day_extracted: list[dict] = []
             for batch_text in batches:
                 messages = convert_to_messages(
                     [{"role": "user", "content": batch_text}]
@@ -1321,34 +1326,30 @@ class FactStore:
                 async with llm_slots:
                     extracted = await self._allm_extract_facts(lanlan_name, messages)
                 if extracted is None:
-                    # Stage-1 terminal failure for this batch → mark the day failed
-                    # but keep extracting its remaining batches (salvage the rest).
-                    day_failed = True
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
-                        f"跳过 {source_file} 的一个批次"
+                        f"放弃 {source_file}（整天重试重抽）"
                     )
-                    continue
-                if not extracted:
-                    continue
-                for fact in extracted:
-                    if isinstance(fact, dict):
-                        # Stamp provenance; _apersist_new_facts_locked turns event_date
-                        # into event_start_at and tags the entry as external_import.
-                        # day_fingerprint 是重导幂等的依据（见 docstring）。
-                        fact["_external_import"] = {
-                            "format": source_format,
-                            "file": source_file,
-                            "section": "daily",
-                            "event_date": event_date,
-                            "imported_at": imported_at,
-                            "day_fingerprint": day_fps[source_file],
-                        }
-                new_facts = await self._apersist_new_facts(
-                    lanlan_name, extracted, semantic_dedup=True,
-                )
-                day_added += len(new_facts)
-            return day_added, day_failed
+                    return 0, True
+                day_extracted.extend(f for f in extracted if isinstance(f, dict))
+            if not day_extracted:
+                return 0, False
+            for fact in day_extracted:
+                # Stamp provenance; _apersist_new_facts_locked turns event_date
+                # into event_start_at and tags the entry as external_import.
+                # day_fingerprint 是重导幂等的依据（见 docstring）。
+                fact["_external_import"] = {
+                    "format": source_format,
+                    "file": source_file,
+                    "section": "daily",
+                    "event_date": event_date,
+                    "imported_at": imported_at,
+                    "day_fingerprint": day_fps[source_file],
+                }
+            new_facts = await self._apersist_new_facts(
+                lanlan_name, day_extracted, semantic_dedup=True,
+            )
+            return len(new_facts), False
 
         outcomes = await asyncio.gather(
             *(_extract_one_day(f, g) for f, g in pending.items()),
@@ -1377,9 +1378,13 @@ class FactStore:
 
     @staticmethod
     def _daily_fingerprint(texts: list[str]) -> str:
-        """Stable, order-independent fingerprint over one day's fragment texts
-        (mirrors persona ``_fusion_fingerprint`` for symmetric idempotency)."""
-        norm = sorted(" ".join((t or "").casefold().split()) for t in texts)
+        """Whitespace/case-normalized, **order-preserving** fingerprint over one
+        day's fragment texts. Journals are narrative — reordering entries (e.g.
+        "stopped medication" vs "started medication" swapped) changes meaning,
+        so an edited order must re-extract instead of fingerprint-skipping
+        (Greptile P1). persona's ``_fusion_fingerprint`` stays sorted by design:
+        its candidates are an unordered set, not a narrative."""
+        norm = [" ".join((t or "").casefold().split()) for t in texts]
         return hashlib.sha256("\n".join(norm).encode("utf-8")).hexdigest()
 
     async def aextract_facts_with_known_pool(
