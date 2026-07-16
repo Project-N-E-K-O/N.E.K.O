@@ -49,7 +49,7 @@ qwenpaw app
 
 ## 5. Необязательно: persona исполнителя
 
-В [архиве замены](/downloads/qwenpaw-executor-profile.zip) находятся `SOUL.md`, `AGENTS.md` и `PROFILE.md` для профиля исполнителя. Этот шаг не нужен для подключения и изменяет поведение QwenPaw.
+В [архиве замены](assets/openclaw_guide/qwenpaw-executor-profile.zip) находятся `SOUL.md`, `AGENTS.md` и `PROFILE.md` для профиля исполнителя. Этот шаг не нужен для подключения и изменяет поведение QwenPaw.
 
 Перед заменой:
 

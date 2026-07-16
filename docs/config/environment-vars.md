@@ -39,9 +39,9 @@ The shared boolean parser accepts `1/true/yes/on` and `0/false/no/off`.
 | `NEKO_STORAGE_ANCHOR_ROOT` | Launcher-supplied anchor root |
 | `NEKO_VECTORS_ENABLED` | Enable local vectors; default true |
 | `NEKO_VECTORS_QUANTIZATION` | `auto`, `int8`, or `fp32` |
-| `NEKO_VECTORS_MIN_AVAILABLE_RAM_GB` | Available-RAM gate; default 4 |
 
 Vector settings also accept bare compatibility names.
+The available-RAM gate is currently the fixed `VECTORS_MIN_RAM_GB = 4.0` runtime constant; there is no environment override for it.
 
 ## Docker-only API initialization
 

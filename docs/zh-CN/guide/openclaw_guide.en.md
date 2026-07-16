@@ -49,7 +49,7 @@ In the QwenPaw console, open the model page, choose a provider, enter the requir
 
 ## 5. Optional: executor persona
 
-The bundled [replacement archive](/downloads/qwenpaw-executor-profile.zip) contains `SOUL.md`, `AGENTS.md`, and `PROFILE.md` for an executor-oriented profile. This step is optional and changes QwenPaw behavior.
+The bundled [replacement archive](assets/openclaw_guide/qwenpaw-executor-profile.zip) contains `SOUL.md`, `AGENTS.md`, and `PROFILE.md` for an executor-oriented profile. This step is optional and changes QwenPaw behavior.
 
 Before replacing anything:
 

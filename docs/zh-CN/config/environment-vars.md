@@ -26,7 +26,7 @@ Electron 的 `port_config.json` 位于平台配置目录；显式环境变量优
 
 - `NEKO_VECTORS_ENABLED`：默认开启；
 - `NEKO_VECTORS_QUANTIZATION`：`auto`、`int8` 或 `fp32`；
-- `NEKO_VECTORS_MIN_AVAILABLE_RAM_GB`：可用内存门槛，默认 4。
+可用内存门槛目前是固定的运行时常量 `VECTORS_MIN_RAM_GB = 4.0`，没有对应的环境变量覆盖项。
 
 布尔解析接受 `1/true/yes/on` 与 `0/false/no/off`。向量变量也兼容无前缀形式。
 

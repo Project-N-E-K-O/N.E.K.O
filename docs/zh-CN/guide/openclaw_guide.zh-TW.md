@@ -49,7 +49,7 @@ qwenpaw app
 
 ## 5. 選用：執行器人設
 
-隨文件提供的[替換檔案包](/downloads/qwenpaw-executor-profile.zip)包含 `SOUL.md`、`AGENTS.md` 與 `PROFILE.md`，可用於偏執行器的人設。此步驟不是連線 N.E.K.O. 的必要條件，而且會改變 QwenPaw 行為。
+隨文件提供的[替換檔案包](assets/openclaw_guide/qwenpaw-executor-profile.zip)包含 `SOUL.md`、`AGENTS.md` 與 `PROFILE.md`，可用於偏執行器的人設。此步驟不是連線 N.E.K.O. 的必要條件，而且會改變 QwenPaw 行為。
 
 替換前：
 
