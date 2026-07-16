@@ -61,7 +61,7 @@ Persona entries are grouped by entity. The built-in entities are `master`, `neko
 
 With powerful memory enabled, promotion is evidence-driven. A confirmed reflection that reaches the promotion threshold goes through a correction-tier merge decision: the result may become a new persona entry, merge into existing persona knowledge, be rejected, or queue a contradiction for later resolution. With powerful memory disabled, a configurable age-based fallback confirms and promotes reflections without the merge LLM.
 
-## Read path: automatic context and explicit recall
+## Recall subsystem and automatic context
 
 ### Automatic context for a new dialog
 
@@ -76,21 +76,36 @@ The renderer separates tentative and confirmed reflections, moves temporally sta
 
 This path does **not** run a semantic search over all facts or raw conversations. It also does not dump the complete fact store into the prompt.
 
-### Explicit `recall_memory` tool
+### User-facing hybrid recall
 
-`main_logic/core/tool_calling.py` registers a built-in `recall_memory` tool for the conversation model. The handler calls `POST /query_memory/{lanlan_name}` and returns structured results to the model. The model may supply a natural-language `query`, a `time` expression, or both:
+`memory/hybrid_recall.py` is the user-facing retrieval backend. The main conversation path registers the built-in `recall_memory` tool in `main_logic/core/tool_calling.py`; its handler calls `POST /query_memory/{lanlan_name}`. The QQ auto-reply plugin also calls that endpoint directly with the incoming message and injects at most five rendered hits into its reply context.
+
+The conversation model may supply a natural-language `query`, a `time` expression, or both:
 
 | Tool arguments | Retrieval behavior |
 |---|---|
-| `query` only | BM25 and optional cosine retrieval over active facts and reflections, fused with reciprocal-rank fusion |
+| `query` only | BM25 over active facts, active reflections, and archived facts, plus optional cosine retrieval over active facts and reflections; fuse both ranked lists with reciprocal-rank fusion |
 | `time` only | Facts, reflections, and archived facts nearest to the parsed event-time window |
 | `query` and `time` | Hard-filter by the event-time window, then run semantic retrieval inside that window |
 
-Persona is intentionally excluded because it is already rendered into ordinary dialog context. Archived facts participate in BM25 and time recall, but not vector recall. The user-facing recall path does not add another LLM reranking request; this keeps tool latency bounded.
+For this user-facing pool, persona is intentionally excluded because it is already rendered into ordinary dialog context. The shared hard filter removes negative-score, suppressed, malformed, and terminal reflection entries. The query path takes up to four BM25 and four cosine hits by default, fuses them with RRF, and returns at most eight unique results. It does not add another LLM reranking request.
 
-The embedding service in `memory/embeddings.py` is optional and local. It uses the CPU ONNX execution provider and disables itself when the required runtime, model bundle, supported hardware, or configured memory budget is unavailable. Hybrid recall then continues as BM25-only. If the memory-server request itself fails, the tool returns an empty-result message so the conversation can continue.
+The HTTP endpoint returns structured rows, but the main conversation handler renders them as localized Markdown bullets before sending tool output to the model. Memory text is not translated; each bullet includes its tier/entity and, when present, the event date and relative age. If the memory-server request fails, the handler returns an empty-result message so the conversation can continue.
 
-Set `NEKO_DISABLE_BUILTIN_TOOLS=1` only as a diagnostic kill switch when the built-in tool schema must be removed from LLM sessions.
+### Internal maintenance relevance recall
+
+`memory/recall.py::MemoryRecallReranker` is a separate background subsystem. It does not answer the `recall_memory` tool:
+
+| Consumer | Candidate pool and query | Ranking and fallback |
+|---|---|---|
+| Stage-2 evidence-signal detection in `memory/facts.py` | Confirmed/promoted reflections plus non-protected persona; query texts are newly extracted facts | Shared hard filter, vector coarse rank to three times the budget, then an optional LLM rerank to the 30-entry observation budget. Without vectors, it keeps hard-filtered entries in evidence-score order and does not call the reranker LLM. |
+| Reflection synthesis in `memory/reflection/synthesis.py` | Absorbed facts queried separately by each unabsorbed fact | Per-query cosine top 3, then round-robin union/dedup with a total cap of 20. Without ready, valid embeddings it returns no related-context anchors rather than injecting unrelated high-score facts. |
+
+The distinction matters: persona is excluded only from user-facing hybrid recall, while non-protected persona is deliberately part of Stage-2 maintenance recall.
+
+The shared embedding service in `memory/embeddings.py` is optional and local, using the CPU ONNX execution provider. Its failure modes differ by caller: user-facing recall becomes BM25-only, Stage-2 maintenance recall falls back to evidence-score order, and reflection-anchor recall becomes an empty related-context block.
+
+`NEKO_DISABLE_BUILTIN_TOOLS=1` removes the built-in schema from main conversation sessions for diagnostics. It does not disable `POST /query_memory`, QQ auto-reply recall, or the internal maintenance reranker.
 
 ## Evidence and reflection lifecycle
 
@@ -181,7 +196,7 @@ Writes are atomic where a full JSON view is replaced, and per-character locks se
 
 - Memory data is stored locally by default, but memory **processing is not necessarily local**. Summary, extraction, reflection, promotion, review, and correction tasks use the configured model providers. Relevant conversation or memory text is sent to those providers when those tasks run.
 - Explicit recall results are returned to the active conversation model, so the selected chat provider receives those recalled snippets as tool output.
-- Normal `INFO` recall logs contain metadata such as mode, hit count, and elapsed time, not the raw query or recalled text. Diagnostic `DEBUG` logging can contain the raw query and tool arguments.
+- The main conversation tool handler's normal `INFO` recall logs contain metadata such as mode, hit count, and elapsed time, not the raw query or recalled text. Diagnostic `DEBUG` logging can contain the raw query and tool arguments.
 - Vector inference is local and optional. Losing vector support does not disable facts, reflections, persona, BM25 recall, or time recall.
 - A corrupt or unavailable optional archive degrades to the active store. A recall error returns no hits. A failed summary leaves the uncompressed recent history available and is retried or bounded by the hard cap.
 - During storage-location selection, migration, or recovery, the memory server can enter a limited mode and return `409` for memory operations until storage is safe to use.
