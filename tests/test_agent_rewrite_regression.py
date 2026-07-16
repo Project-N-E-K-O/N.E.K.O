@@ -1288,7 +1288,6 @@ def test_avatar_tool_resource_references_are_canonical_and_exist():
         Path("frontend/react-neko-chat/src/avatar-tools/catalog.ts"),
         Path("frontend/react-neko-chat/src/AvatarToolQuickbar.tsx"),
         Path("static/js/card_maker.js"),
-        Path("docs/design/avatar-tool-rock-paper-scissors-frontend-implementation.md"),
     )
     sources = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
     resource_urls = set(re.findall(
