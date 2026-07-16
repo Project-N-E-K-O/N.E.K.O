@@ -307,3 +307,25 @@ async def test_fusion_llm_client_construction_failure_returns_none():
         "Neko", "master", [{"text": "some candidate"}], 600,
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fused_duplicate_texts_are_deduped_keeping_highest_importance():
+    # An LLM that repeats a line must not mint two persona entries sharing one
+    # timestamp+text-hash id (Codex P2): _trim_fused_to_budget dedups by
+    # normalized text, keeping the highest importance.
+    harness = _FusionHarness(
+        {"master": {"facts": []}},
+        stub_fused=[
+            {"text": "Master lives in Osaka.", "importance": 6},
+            {"text": "master lives in osaka.", "importance": 9},   # dup (case/space)
+            {"text": "Master enjoys tea.", "importance": 5},
+        ],
+    )
+    await harness.afuse_external_facts("Neko", "master", _candidates("raw"), "openclaw")
+
+    facts = harness.persona["master"]["facts"]
+    osaka = [f for f in facts if "osaka" in f["text"].casefold()]
+    assert len(osaka) == 1  # the repeated line collapsed to one entry
+    assert osaka[0]["reinforcement"] == initial_reinforcement_from_importance(9)
+    assert any(f["text"] == "Master enjoys tea." for f in facts)

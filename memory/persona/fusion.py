@@ -349,18 +349,25 @@ class ExternalFusionMixin:
 
         Whole-entry greedy (stop as soon as total+t>budget), matching the rendering
         layer's _ascore_trim_entries. Keeps at least 1 entry so boundary cases don't
-        drop the whole batch.
+        drop the whole batch. Deduplicates by normalized text (keeping the highest
+        importance, since sorted desc) so an LLM that repeats a line can't mint two
+        entries sharing one timestamp+text-hash id (Codex P2).
         """
         ordered = sorted(fused, key=lambda x: x.get("importance", 5), reverse=True)
         kept: list[dict] = []
+        seen: set[str] = set()
         total = 0
         for item in ordered:
             text = truncate_to_tokens(item["text"], EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS)
             if not text:
                 continue
+            norm = " ".join(text.casefold().split())
+            if norm in seen:
+                continue
             t = count_tokens(text)
             if kept and total + t > budget:
                 break
             kept.append({"text": text, "importance": item["importance"]})
+            seen.add(norm)
             total += t
         return kept
