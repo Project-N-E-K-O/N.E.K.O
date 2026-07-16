@@ -912,7 +912,7 @@ class _TransportMixin:
                 # All three return results via conversation.item.create
                 # of type function_call_output + response.create, handled
                 # by ``_send_tool_result_openai_realtime``.
-                elif event_type == "response.function_call_arguments.delta":
+                if event_type == "response.function_call_arguments.delta":
                     call_id = event.get("call_id") or ""
                     if call_id:
                         slot = self._inflight_tool_args.setdefault(call_id, {
