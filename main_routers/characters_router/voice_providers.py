@@ -13,13 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Provider-specific voice helpers: ElevenLabs clone/preview,
-Minimax request prefix, local voice-clone TTS detection.
+"""Provider-specific voice helpers: ElevenLabs clone/preview and local
+voice-clone TTS detection.
 
 Voice Design provider behavior is implemented in :mod:`utils.voice_design`.
 """
-
-from ._shared import logger
 
 import json
 import io
@@ -28,35 +26,12 @@ from utils.tts.providers.elevenlabs import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_VOICE_PREFIX,
 )
-from utils.voice_clone import (
-    sanitize_minimax_voice_prefix,
-    MINIMAX_PREFIX_MAX_LENGTH,
-)
 
 
 class ElevenLabsUpstreamError(Exception):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
         self.status_code = status_code
-
-
-def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
-    """Normalize the user-entered prefix into a safe prefix that MiniMax accepts."""
-    import uuid
-
-    original_prefix = str(prefix or '').strip()
-    safe_prefix = sanitize_minimax_voice_prefix(
-        original_prefix,
-        max_length=MINIMAX_PREFIX_MAX_LENGTH,
-    )
-    if safe_prefix != original_prefix:
-        logger.info(
-            "%s 音色前缀已规范化: %r -> %r",
-            provider_label,
-            original_prefix,
-            safe_prefix,
-        )
-    return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:

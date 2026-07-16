@@ -65,23 +65,15 @@ from utils.tts import provider_registry as tts_provider_registry
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
-    get_minimax_base_url,
     MimoVoiceCloneClient,
     MimoVoiceCloneError,
 )
+from utils.tts.providers.minimax import get_minimax_base_url
 from utils.voice_design import MimoVoiceDesignClient, MimoVoiceDesignError
-from utils.language_utils import is_supported_language_code, normalize_language_code
+from utils.voice_preview_text import normalize_voice_preview_language
 
-
-def _normalize_voice_preview_language(raw_language: object) -> str | None:
-    """Normalize the voice preview language; returns None for invalid values so other sources can be tried."""
-    raw = str(raw_language or "").strip()
-    if not raw or not is_supported_language_code(raw):
-        return None
-    normalized = normalize_language_code(raw, format="full")
-    if normalized in VOICE_PREVIEW_TEXTS:
-        return normalized
-    return None
+# Backward-compatible private alias for existing router-package imports.
+_normalize_voice_preview_language = normalize_voice_preview_language
 
 
 def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:

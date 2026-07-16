@@ -15,6 +15,7 @@
 """Voice Design provider, routing, storage, and validation tests."""
 
 import json
+import re
 from functools import partial
 
 import httpx
@@ -114,17 +115,18 @@ def test_registry_declares_design_for_minimax_and_mimo():
 
 @pytest.mark.unit
 def test_cosyvoice_design_language_hints_are_limited_to_zh_en():
-    from main_routers.characters_router import voice_cloning, voice_preview
-    from utils import voice_design
+    from main_routers.characters_router import voice_design as voice_design_router
+    from main_routers.characters_router import voice_preview
+    from utils import voice_design as voice_design_util
 
-    assert voice_design._cosyvoice_design_language_hints("ch") == ["zh"]
-    assert voice_design._cosyvoice_design_language_hints("zh") == ["zh"]
-    assert voice_design._cosyvoice_design_language_hints("en") == ["en"]
-    assert voice_design._cosyvoice_design_language_hints("ru") == ["zh"]
-    assert voice_cloning._cosyvoice_design_default_preview_text("en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
-    assert voice_cloning._cosyvoice_design_default_preview_text("ru") == voice_preview.VOICE_PREVIEW_TEXTS["zh-CN"]
-    assert voice_cloning._voice_design_preview_text("ru", "ch") == voice_preview.VOICE_PREVIEW_TEXTS["ru"]
-    assert voice_cloning._voice_design_preview_text(None, "en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
+    assert voice_design_util._cosyvoice_design_language_hints("ch") == ["zh"]
+    assert voice_design_util._cosyvoice_design_language_hints("zh") == ["zh"]
+    assert voice_design_util._cosyvoice_design_language_hints("en") == ["en"]
+    assert voice_design_util._cosyvoice_design_language_hints("ru") == ["zh"]
+    assert voice_design_router._cosyvoice_design_default_preview_text("en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
+    assert voice_design_router._cosyvoice_design_default_preview_text("ru") == voice_preview.VOICE_PREVIEW_TEXTS["zh-CN"]
+    assert voice_design_router._voice_design_preview_text("ru", "ch") == voice_preview.VOICE_PREVIEW_TEXTS["ru"]
+    assert voice_design_router._voice_design_preview_text(None, "en") == voice_preview.VOICE_PREVIEW_TEXTS["en"]
 
 
 # ── router design helpers: design previews → create-from-preview ──────────────
@@ -192,11 +194,11 @@ async def test_elevenlabs_design_previews_and_create(monkeypatch):
 
 @pytest.mark.unit
 def test_voice_design_description_validation():
-    _, too_short = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("short")
+    _, too_short = __import__('importlib').import_module('main_routers.characters_router.voice_design')._validate_voice_design_description("short")
     assert too_short is not None and too_short.status_code == 400
-    desc, ok = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("a warm gentle young woman voice")
+    desc, ok = __import__('importlib').import_module('main_routers.characters_router.voice_design')._validate_voice_design_description("a warm gentle young woman voice")
     assert ok is None and desc.startswith("a warm")
-    _, too_long = __import__('importlib').import_module('main_routers.characters_router.voice_cloning')._validate_voice_design_description("x" * 1001)
+    _, too_long = __import__('importlib').import_module('main_routers.characters_router.voice_design')._validate_voice_design_description("x" * 1001)
     assert too_long is not None and too_long.status_code == 400
 
 
@@ -293,7 +295,7 @@ async def test_cosyvoice_design_payload_and_parse(monkeypatch):
         "target_model": "cosyvoice-v3.5-plus",
         "voice_prompt": "a warm clear voice",
         "preview_text": "hello there",
-        "prefix": "aria",
+            "prefix": "aria",
         "language_hints": ["zh"],
     }
     assert req["body"]["parameters"] == {"sample_rate": 24000, "response_format": "wav"}
@@ -420,7 +422,7 @@ class _JsonRequest:
 
 @pytest.mark.unit
 async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     saved = {}
 
@@ -471,7 +473,7 @@ async def test_cosyvoice_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_cosyvoice_intl_design_endpoint_is_rejected():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice_intl",
@@ -487,7 +489,7 @@ async def test_cosyvoice_intl_design_endpoint_is_rejected():
 
 @pytest.mark.unit
 async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     saved = {}
     long_prompt = "m" * 501
@@ -536,7 +538,7 @@ async def test_minimax_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_minimax_design_endpoint_rejects_missing_base_url(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     class _CM:
         def get_tts_api_key(self, provider):
@@ -564,7 +566,7 @@ async def test_minimax_design_endpoint_rejects_missing_base_url(monkeypatch):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     saved = {}
 
@@ -619,7 +621,7 @@ async def test_elevenlabs_design_endpoint_saves_source_design(monkeypatch):
 
 @pytest.mark.unit
 async def test_elevenlabs_design_endpoint_preserves_upstream_4xx(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     class _CM:
         def get_tts_api_key(self, provider):
@@ -654,7 +656,7 @@ async def test_elevenlabs_design_endpoint_preserves_upstream_4xx(monkeypatch):
 
 @pytest.mark.unit
 async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     saved = {}
     validated = {}
@@ -684,7 +686,7 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "mimo",
-        "prefix": "aria",
+        "prefix": "声音 设计-very-long-prefix",
         "voice_prompt": long_prompt,
         "ref_language": "en",
     }))
@@ -693,14 +695,15 @@ async def test_mimo_design_endpoint_saves_source_design(monkeypatch):
     assert response.status_code == 200
     assert body["provider"] == "mimo"
     assert body["source"] == "design"
-    assert body["voice_id"].startswith("mimo-design-aria-")
+    assert re.fullmatch(r"mimo-design-[0-9a-f]{32}", body["voice_id"])
     assert validated["sample_text"] == cr.VOICE_PREVIEW_TEXTS["en"]
     assert saved["voice_data"]["design_prompt"] == long_prompt
+    assert saved["voice_data"]["prefix"] == "声音 设计-very-long-prefix"
 
 
 @pytest.mark.unit
 async def test_voice_design_endpoint_requires_prompt():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice",
@@ -714,7 +717,7 @@ async def test_voice_design_endpoint_requires_prompt():
 
 @pytest.mark.unit
 async def test_cosyvoice_design_endpoint_enforces_documented_prompt_max():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice",
@@ -731,7 +734,7 @@ async def test_cosyvoice_design_endpoint_enforces_documented_prompt_max():
 
 @pytest.mark.unit
 async def test_elevenlabs_design_endpoint_exposes_prompt_min_for_i18n():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "elevenlabs",
@@ -748,7 +751,7 @@ async def test_elevenlabs_design_endpoint_exposes_prompt_min_for_i18n():
 
 @pytest.mark.unit
 async def test_voice_design_endpoint_rejects_vllm_omni_provider():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "vllm_omni",
@@ -764,7 +767,7 @@ async def test_voice_design_endpoint_rejects_vllm_omni_provider():
 
 @pytest.mark.unit
 async def test_cosyvoice_design_endpoint_rejects_underscore_prefix():
-    from main_routers.characters_router import voice_cloning as cr
+    from main_routers.characters_router import voice_design as cr
 
     response = await cr.voice_design(_JsonRequest({
         "provider": "cosyvoice",

@@ -531,6 +531,7 @@ def test_voice_design_rejects_underscore_prefix_before_submit(mock_page: Page, r
 
         mock_page.goto(f"{running_server}/voice_clone")
         mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
         mock_page.locator("#btnVoiceSourceDesign").click()
         mock_page.fill("#prefix", "cosy_test6")
         mock_page.fill("#voiceDesignPrompt", "a warm clear voice")

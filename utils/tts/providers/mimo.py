@@ -20,6 +20,7 @@ published in the MiMo-V2.5-TTS speech synthesis guide.
 """
 
 import base64
+import uuid
 from urllib.parse import urlparse, urlunparse
 
 from utils.api_config_loader import get_native_tts_voice_provider_config
@@ -35,6 +36,18 @@ MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"
 MIMO_TTS_VOICEDESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
 MIMO_TTS_BASE_URL = "https://api.xiaomimimo.com/v1"
+# Voice-storage bucket marker shared by MiMo Clone and Voice Design enrollment.
+MIMO_VOICE_STORAGE_KEY = '__MIMO__'
+
+
+def new_mimo_design_voice_id() -> str:
+    """Create an opaque local ID for a MiMo designed voice.
+
+    MiMo has no remote enrolled voice ID and documents no prefix character or
+    length restriction. The user-provided prefix stays in metadata for UI
+    display, while an opaque ID avoids leaking MiniMax constraints into MiMo.
+    """
+    return f"mimo-design-{uuid.uuid4().hex}"
 
 
 def mimo_chat_completions_url(base_url: str | None = None) -> str:

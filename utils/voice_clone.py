@@ -39,8 +39,22 @@ from typing import Optional
 import httpx
 
 from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.tts.providers.minimax import (
+    MINIMAX_DOMESTIC_BASE_URL,
+    MINIMAX_INTL_BASE_URL,
+    MINIMAX_INTL_VOICE_STORAGE_KEY,
+    MINIMAX_PREFIX_MAX_LENGTH,
+    MINIMAX_VOICE_STORAGE_KEY,
+    get_minimax_base_url,
+    get_minimax_storage_prefix,
+    sanitize_minimax_voice_prefix,
+)
+from utils.tts.providers.mimo import MIMO_VOICE_STORAGE_KEY
 
 logger = logging.getLogger(__name__)
+
+# Compatibility re-exports for established Clone callers. New shared provider
+# code must import from ``utils.tts.providers.minimax`` or ``.mimo`` directly.
 
 
 # ============================================================================
@@ -55,11 +69,6 @@ class VoiceCloneError(Exception):
 # MiniMax 语音克隆
 # ============================================================================
 
-# MiniMax 国服 API 端点（默认）
-MINIMAX_DOMESTIC_BASE_URL = "https://api.minimaxi.com"
-# MiniMax 国际服 API 端点
-MINIMAX_INTL_BASE_URL = "https://api.minimax.io"
-
 # 内部语言代码 → MiniMax 语言代码
 _MINIMAX_LANGUAGE_CODE_MAP = {
     'ch': 'zh', 'zh': 'zh',
@@ -70,13 +79,6 @@ _MINIMAX_LANGUAGE_CODE_MAP = {
     'es': 'es', 'it': 'it', 'pt': 'pt',
 }
 
-# voice_storage 中标识 MiniMax 音色的前缀
-MINIMAX_VOICE_STORAGE_KEY = '__MINIMAX__'
-# voice_storage 中标识 MiniMax 国际服音色的前缀
-MINIMAX_INTL_VOICE_STORAGE_KEY = '__MINIMAX_INTL__'
-MINIMAX_PREFIX_MAX_LENGTH = 10
-
-
 class MinimaxVoiceCloneError(VoiceCloneError):
     """MiniMax voice-clone related error"""
 
@@ -85,43 +87,6 @@ def minimax_normalize_language(lang: str) -> str:
     """Convert the project's internal language codes to MiniMax language codes."""
     return _MINIMAX_LANGUAGE_CODE_MAP.get(lang.lower().strip(), 'zh')
 
-
-def get_minimax_base_url(provider: str = 'minimax') -> str:
-    """Return the MiniMax API base URL for the given provider."""
-    if provider == 'minimax_intl':
-        return MINIMAX_INTL_BASE_URL
-    return MINIMAX_DOMESTIC_BASE_URL
-
-
-def get_minimax_storage_prefix(provider: str = 'minimax') -> str:
-    """Return the voice_storage key prefix for the given provider."""
-    if provider == 'minimax_intl':
-        return MINIMAX_INTL_VOICE_STORAGE_KEY
-    return MINIMAX_VOICE_STORAGE_KEY
-
-
-def sanitize_minimax_voice_prefix(
-    prefix: str,
-    default_prefix: str = 'voice',
-    *,
-    max_length: Optional[int] = MINIMAX_PREFIX_MAX_LENGTH,
-) -> str:
-    """Restrict the MiniMax prefix to ASCII alphanumerics.
-
-    MiniMax is stricter about the ``voice_id`` character set when creating voices.
-    Here we keep only English letters and digits; when the result is empty, fall back
-    to ``voice``.
-    """
-    normalized = ''.join(ch for ch in str(prefix or '') if ch.isascii() and ch.isalnum())
-    if max_length is not None:
-        normalized = normalized[:max_length]
-    if normalized:
-        return normalized
-
-    fallback = ''.join(ch for ch in str(default_prefix or '') if ch.isascii() and ch.isalnum())
-    if max_length is not None:
-        fallback = fallback[:max_length]
-    return fallback or 'voice'
 
 
 class MinimaxVoiceCloneClient:
@@ -360,7 +325,6 @@ class MinimaxVoiceCloneClient:
 # 对偶 MiniMax 的预览。dispatch 由 mimo provider 按 voice_meta.provider 选中后读出样本内联。
 
 # voice_storage 中标识 MiMo 克隆音色的前缀（按 MiMo API key 末 8 位分桶）
-MIMO_VOICE_STORAGE_KEY = '__MIMO__'
 # MiMo 校验 / 试听用 wav（自包含、非流式一次性返回，便于直接取音频）；运行时 worker 才用
 # pcm16 流式。Codex review #1851：非流式请求不应再要 pcm16 裸流。
 _MIMO_PREVIEW_AUDIO_FORMAT = 'wav'

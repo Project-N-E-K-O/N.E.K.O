@@ -83,7 +83,6 @@ from .direct_link import (  # noqa: F401
 )
 from .voice_providers import (  # noqa: F401
     ElevenLabsUpstreamError,
-    _build_minimax_request_prefix,
     _get_elevenlabs_base_url,
     _config_value_is_enabled,
     _prefixed_elevenlabs_voice_id,
@@ -93,23 +92,6 @@ from .voice_providers import (  # noqa: F401
     _is_local_voice_clone_tts_config,
     _local_voice_clone_tts_base_url,
     _elevenlabs_synthesize_preview,
-)
-from utils.voice_design import (  # noqa: F401
-    COSYVOICE_VOICE_DESIGN_DEFAULT_MEDIA_TYPE,
-    ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
-    CosyVoiceDesignError,
-    ElevenLabsVoiceDesignError,
-    MiniMaxVoiceDesignError,
-    MimoVoiceDesignClient,
-    MimoVoiceDesignError,
-    _cosyvoice_customization_url,
-    _cosyvoice_design_language_hints,
-    _cosyvoice_design_voice,
-    _first_nested_value,
-    _minimax_voice_design_url,
-    _minimax_design_voice,
-    _elevenlabs_design_previews,
-    _elevenlabs_create_voice_from_preview,
 )
 from .live2d_models import (  # noqa: F401
     _derive_live2d_model_name,
@@ -208,10 +190,6 @@ from .voice_preview import (  # noqa: F401
     get_voice_preview,
 )
 from .voice_cloning import (  # noqa: F401
-    _cosyvoice_design_default_preview_text,
-    _voice_design_preview_language,
-    _voice_design_preview_text,
-    _provider_supports_voice_design,
     _normalize_doubao_voice_clone_speaker_id,
     _trim_tasks,
     analyze_silence,
@@ -219,12 +197,9 @@ from .voice_cloning import (  # noqa: F401
     get_trim_progress,
     cancel_trim_task,
     voice_clone,
-    voice_design,
-    _validate_voice_design_description,
-    voice_design_preview,
-    voice_design_create,
     voice_clone_direct,
 )
+from . import voice_design as _voice_design  # noqa: F401 - register Voice Design routes
 from .cards import (  # noqa: F401
     _embed_zip_in_png_chunk,
     get_character_cards,

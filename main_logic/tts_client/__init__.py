@@ -504,7 +504,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
 #     cosyvoice/minimax）。MiMo 克隆没有远端 voice_id——参考音频本地保存、每次合成内联，
 #     dispatch 由 _mimo_resolve 按 voice_meta.provider=='mimo' 选中并读出样本（见 §4/§7）。
 #   - design：保存文字描述并由 voicedesign 模型在合成时复用，同样通过 voice_meta 选中。
-# 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected clone），
+# 同一 provider 条目承载两种选中机制（config-selected preset / voice_meta-selected custom voice），
 # 见 workers/mimo.py 的 _mimo_is_selected/_mimo_resolve。
 # tts_dropdown_only=False：MiMo 本身是 assist LLM provider，不能被前端从 LLM 下拉隐藏。
 _tts_providers.register(_tts_providers.TTSProvider(

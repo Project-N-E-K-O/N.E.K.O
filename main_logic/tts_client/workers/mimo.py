@@ -218,14 +218,14 @@ def mimo_tts_worker(request_queue, response_queue, audio_api_key, voice_id, base
 # 两种选中机制（设计文档 §3.1）合并在一个 provider 条目里：
 #   1. 配置选中（preset）——assistApi=mimo / TTS_PROVIDER=mimo 时把 MiMo 当默认 TTS，
 #      走预制音色目录。
-#   2. 音色元数据选中（clone）——用户挑了某个 MiMo 克隆音色（voice_meta.provider=='mimo'），
-#      对偶 cosyvoice/minimax/elevenlabs 的克隆路由。MiMo 克隆没有远端 voice_id：参考音频
-#      存在本地，dispatch 时读出来内联进 voiceclone 请求。
+#   2. 音色元数据选中（custom voice）——用户挑了某个 MiMo Clone 或 Voice Design 音色
+#      （voice_meta.provider=='mimo'）。Clone 没有远端 voice_id：参考音频存在本地，dispatch
+#      时读出来内联进 voiceclone 请求；Design 保存描述并在下方优先走 voicedesign 模型。
 
-def _mimo_voice_meta_is_clone(vm) -> bool:
+def _mimo_voice_meta_is_custom_voice(vm) -> bool:
     return bool(vm and vm.get('provider') == 'mimo')
 
-def _mimo_has_foreign_clone_voice(ctx) -> bool:
+def _mimo_has_foreign_custom_voice(ctx) -> bool:
     if not (ctx.has_custom_voice and ctx.voice_id):
         return False
     provider = str((ctx.voice_meta or {}).get('provider') or '').strip().lower()
@@ -236,10 +236,10 @@ def _mimo_is_selected(ctx) -> bool:
     tts_provider = str(cc.get('TTS_PROVIDER') or cc.get('ttsProvider') or '').strip().lower()
     assist_api_type = str(cc.get('assistApi') or '').strip().lower()
     if tts_provider == 'mimo' or assist_api_type == 'mimo':
-        return not _mimo_has_foreign_clone_voice(ctx)
-    # 克隆音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
+        return not _mimo_has_foreign_custom_voice(ctx)
+    # 自定义音色选中：按所选音色的 voice_meta.provider 路由（惰性，命中前面 config-selected
     # provider 时不会触发 voice_meta 加载）。
-    return _mimo_voice_meta_is_clone(ctx.voice_meta)
+    return _mimo_voice_meta_is_custom_voice(ctx.voice_meta)
 
 def _mimo_resolve(ctx):
     cc = ctx.core_config
@@ -255,8 +255,8 @@ def _mimo_resolve(ctx):
     # 它，保证 key 与端点同源；否则用默认 xiaomimimo。
     config_base_url = cc.get('OPENROUTER_URL') if assist_api_type == 'mimo' else None
 
-    # 克隆音色优先：用户挑了某个具体的 MiMo 克隆音色（voice_meta.provider=='mimo'），即使
-    # 同时把 MiMo 配成了默认 TTS 也应当尊重这个更具体的选择，走 voiceclone 内联参考音频。
+    # 自定义音色优先：用户挑了具体的 MiMo Clone 或 Design 音色时，即使同时把 MiMo 配成默认
+    # TTS 也应尊重这个更具体的选择；Design 走描述驱动模型，Clone 内联参考音频。
     vm = ctx.voice_meta
     if vm and vm.get('provider') == 'mimo' and vm.get('source') == 'design':
         design_prompt = str(vm.get('design_prompt') or '').strip()
@@ -271,7 +271,7 @@ def _mimo_resolve(ctx):
             'mimo',
         )
 
-    if _mimo_voice_meta_is_clone(vm):
+    if _mimo_voice_meta_is_custom_voice(vm):
         clone_voice = _build_mimo_clone_data_uri(vm)
         if not clone_voice:
             logger.warning(
