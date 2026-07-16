@@ -207,8 +207,16 @@ class ExternalFusionMixin:
                 f for f in section_facts
                 if not (isinstance(f, dict) and f.get("source") == "external_import")
             ]
+            # 与角色卡（protected character_card）矛盾的融合条目无条件丢弃——外部导入
+            # 不得架空角色卡；复用 aadd_fact 同一道轻量守卫（Codex P2）。
+            stop_names = await self._aget_entity_stop_names(name)
             added = 0
             for item in fused:
+                code, _ = self._evaluate_fact_contradiction(
+                    name, item["text"], section_facts, stop_names,
+                )
+                if code == self.FACT_REJECTED_CARD:
+                    continue
                 entry = self._build_fact_entry(item["text"], "external_import", source_id)
                 entry["reinforcement"] = initial_reinforcement_from_importance(item["importance"])
                 entry["external_import"] = dict(metadata)

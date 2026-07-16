@@ -30,6 +30,11 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
         # Optional hook fired inside _allm_call_fusion (Phase 2, unlocked) to
         # simulate a concurrent import mutating the bucket before Phase 3's CAS.
         self.fusion_side_effect = None
+        # Card-contradiction guard support: _evaluate_fact_contradiction is
+        # stubbed to reject any fused text placed in _reject_texts (simulating a
+        # character_card conflict) so the Phase-3 filter can be tested directly.
+        self.FACT_REJECTED_CARD = "rejected_card"
+        self._reject_texts: set[str] = set()
 
     def _get_alock(self, _name: str) -> asyncio.Lock:
         return self.lock
@@ -39,6 +44,14 @@ class _FusionHarness(ExternalFusionMixin, FactsMixin):
 
     async def asave_persona(self, _name: str, _persona: dict) -> None:
         self.save_count += 1
+
+    async def _aget_entity_stop_names(self, _name=None) -> list:
+        return []
+
+    def _evaluate_fact_contradiction(self, _name, text, _section_facts, _stop_names):
+        if text in self._reject_texts:
+            return self.FACT_REJECTED_CARD, "card"
+        return None, None
 
     async def _allm_call_fusion(self, _name, _entity, _candidates, _budget):
         # Deterministic stub — no real LLM. Returns whatever the test configured
@@ -367,3 +380,28 @@ async def test_fused_duplicate_texts_are_deduped_keeping_highest_importance():
     assert len(osaka) == 1  # the repeated line collapsed to one entry
     assert osaka[0]["reinforcement"] == initial_reinforcement_from_importance(9)
     assert any(f["text"] == "Master enjoys tea." for f in facts)
+
+
+@pytest.mark.asyncio
+async def test_fused_entries_contradicting_card_are_dropped():
+    # A fused entry that contradicts a protected character_card fact must be
+    # dropped (same guard as aadd_fact), so an import can't undermine the card
+    # without editing it (Codex P2). Protected/other entries stay untouched.
+    harness = _FusionHarness(
+        {"master": {"facts": [
+            {"text": "card fact", "source": "character_card", "protected": True, "id": "card_1"},
+        ]}},
+        stub_fused=[
+            {"text": "contradicts the card", "importance": 9},
+            {"text": "harmless impression", "importance": 6},
+        ],
+    )
+    harness._reject_texts = {"contradicts the card"}
+
+    result = await harness.afuse_external_facts("Neko", "master", _candidates("raw"), "openclaw")
+
+    texts = {f["text"] for f in harness.persona["master"]["facts"]}
+    assert "contradicts the card" not in texts   # card-contradiction dropped
+    assert "harmless impression" in texts
+    assert "card fact" in texts                   # protected card untouched
+    assert result["added"] == 1
