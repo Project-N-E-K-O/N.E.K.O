@@ -16,9 +16,9 @@ def test_mic_lease_state_and_priority_are_explicit() -> None:
     priority = source.split("function resolveMicLeaseOwner()", 1)[1].split(
         "function refreshMicLease()", 1
     )[0]
-    assert priority.index("!S.isRecording") < priority.index("S.isMicMuted")
-    assert priority.index("S.isMicMuted") < priority.index("S.gameVoiceSttGateActive")
+    assert priority.index("!S.isRecording") < priority.index("S.gameVoiceSttGateActive")
     assert "return MIC_LEASE.CORE" in priority
+    assert "HARD_MUTED" not in source.split("let voiceLeaseGeneration", 1)[0]
 
 
 def test_worklet_upload_is_governed_by_one_mic_lease_gate() -> None:
@@ -61,13 +61,11 @@ def test_mic_lease_changes_are_sent_to_backend_with_generation() -> None:
     source = CAPTURE.read_text(encoding="utf-8")
 
     assert "action: 'voice_input_control'" in source
+    assert "event: 'lease_sync'" in source
     assert "lease_generation" in source
-    assert "hard_mute" in source
-    assert "hard_unmute" in source
-    assert "game_takeover" in source
-    assert "game_release" in source
-    assert "focus_suppress" in source
-    assert "focus_resume" in source
+    assert "owner: state.owner" in source
+    assert "hard_muted: state.hard_muted" in source
+    assert "focus_suppressed: state.focus_suppressed" in source
 
 
 def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:
@@ -90,12 +88,8 @@ def test_websocket_reconnect_resets_and_replays_authoritative_mic_lease() -> Non
         "function setVoiceInputLifecycleState", 1
     )[0]
     assert "voiceLeaseGeneration = 0" in sync_block
-    assert "hard_mute" in sync_block
-    assert "game_takeover" in sync_block
-    assert "focus_suppress" in sync_block
-    assert "hard_unmute" in sync_block
-    assert "game_release" in sync_block
-    assert "focus_resume" in sync_block
+    assert "lastVoiceLeaseFingerprint = ''" in sync_block
+    assert "sendVoiceInputControlState(true)" in sync_block
     assert "voice-input-socket-open" in capture
 
     onopen = websocket.split("S.socket.onopen = function () {", 1)[1].split(
@@ -103,3 +97,14 @@ def test_websocket_reconnect_resets_and_replays_authoritative_mic_lease() -> Non
     )[0]
     assert "voice-input-socket-open" in onopen
     assert "_thisSocket" in onopen
+
+
+def test_game_owner_and_hard_mute_are_independent_state_fields() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+    snapshot = source.split("function currentVoiceInputControlState()", 1)[1].split(
+        "function sendVoiceInputControlState", 1
+    )[0]
+
+    assert "owner: resolveMicLeaseOwner()" in snapshot
+    assert "hard_muted: S.isMicMuted === true" in snapshot
+    assert "focus_suppressed:" in snapshot

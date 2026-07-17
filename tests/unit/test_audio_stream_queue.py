@@ -104,6 +104,12 @@ def _queue_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
 
 
+def _authorize_core_lease(mgr: LLMSessionManager) -> None:
+    mgr._voice_lease_synchronized = True
+    mgr._voice_lease_owner = "core"
+    mgr._voice_input_suppressed = False
+
+
 def test_audio_stream_queue_uses_ceiling_duration_accounting():
     frame = QueuedMicFrame.from_message(
         {
@@ -122,6 +128,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.lanlan_name = "Test"
     mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
     mgr._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("qwen", "manual"),
         shadow_mode=False,
@@ -158,6 +165,7 @@ async def test_active_audio_queue_overflow_blocks_the_whole_turn():
     mgr.lanlan_name = "Test"
     mgr.send_status = AsyncMock()
     mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
     mgr._asr_provider = "qwen"
     mgr._asr_route_mode = "independent"
     mgr._asr_lifecycle = VoiceInputLifecycleController(
@@ -196,6 +204,7 @@ async def test_active_audio_queue_overflow_blocks_the_whole_turn():
 async def test_audio_worker_drops_stale_ingress_token_before_processing():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
     mgr._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("qwen", "manual"),
         shadow_mode=False,
@@ -232,6 +241,7 @@ async def test_audio_worker_drops_stale_ingress_token_before_processing():
 async def test_audio_worker_does_not_wait_for_core_session_readiness():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
     mgr._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("qwen", "manual"),
         shadow_mode=False,

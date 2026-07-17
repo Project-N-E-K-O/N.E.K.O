@@ -84,7 +84,12 @@ class AsrRuntimeMixin:
         self._asr_first_partial_recorded = False
         self._voice_lease_generation = -1
         self._voice_lease_connection_id = ""
-        self._voice_input_suppressed = False
+        self._voice_lease_synchronized = False
+        self._voice_lease_owner = "none"
+        self._voice_lease_hard_muted = False
+        self._voice_lease_focus_suppressed = False
+        self._voice_lease_requires_abort = False
+        self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = set()
 
     def _ensure_asr_runtime_state(self) -> None:
@@ -137,6 +142,15 @@ class AsrRuntimeMixin:
             and token.audio_generation == self._asr_audio_generation
             and lifecycle is not None
             and token.route_generation == lifecycle.snapshot.route_generation
+        )
+
+    def _voice_input_accepts_pcm(self) -> bool:
+        return bool(
+            self._voice_lease_synchronized
+            and self._voice_lease_owner == "core"
+            and not self._voice_lease_hard_muted
+            and not self._voice_lease_focus_suppressed
+            and not self._voice_input_suppressed
         )
 
     def _transport_token_matches(
@@ -501,7 +515,7 @@ class AsrRuntimeMixin:
         if self._asr_route_mode != "independent":
             self._asr_route_mode = "blocked"
             return True
-        if self._voice_input_suppressed:
+        if not self._voice_input_accepts_pcm():
             return True
 
         try:
@@ -703,6 +717,37 @@ class AsrRuntimeMixin:
                 self._asr_provider or "unknown",
             )
 
+    async def abort_transport(self, reason: str) -> None:
+        """Invalidate provider I/O before closing a live transport."""
+
+        self._asr_audio_generation += 1
+        self._asr_transcript_dispatcher.invalidate_all()
+        self._asr_reserved_final_key = None
+        self._asr_sealed_turn_token = None
+        self._asr_turn_prepared = False
+        self._asr_received_audio = False
+        self._asr_pending_speech_confirmed = False
+        self._asr_turn_endpointed_at = None
+        self._asr_accepted_final_keys.clear()
+        for task_name in ("_asr_transport_task", "_asr_warm_expiry_task"):
+            task = getattr(self, task_name, None)
+            setattr(self, task_name, None)
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+        asr_session, self._asr_session = self._asr_session, None
+        lifecycle = self._asr_lifecycle
+        if lifecycle is not None:
+            lifecycle.invalidate_transport()
+        if asr_session is not None:
+            try:
+                await asr_session.close()
+            except Exception:
+                logger.warning(
+                    "[%s] independent ASR abort failed reason=%s",
+                    self.lanlan_name,
+                    reason,
+                )
+
     async def close_transport_only(self) -> None:
         """Enter deep sleep while preserving microphone detection."""
 
@@ -817,62 +862,109 @@ class AsrRuntimeMixin:
         )
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
-        """Give game voice exclusive input ownership and invalidate pending PCM."""
+        """Compatibility wrapper for game ownership transitions."""
 
-        self._ensure_asr_runtime_state()
-        lifecycle = self._asr_lifecycle
-        if lifecycle is None or lifecycle.snapshot.state in {
-            VoiceLifecycleState.OFF,
-            VoiceLifecycleState.BLOCKED,
-            VoiceLifecycleState.SUSPENDED,
-        }:
-            return
-        lifecycle.transition(VoiceLifecycleEvent.GAME_TAKEOVER)
-        await self._send_asr_lifecycle_state(VoiceLifecycleState.SUSPENDED)
-        self._asr_turn_prepared = False
-        self._asr_received_audio = False
-        self._asr_sealed_turn_token = None
-        asr_session = self._asr_session
-        if asr_session is not None and asr_session.is_ready:
-            try:
-                await asr_session.clear_audio_buffer()
-            except Exception:
-                logger.warning(
-                    "[%s] provider audio clear failed during game takeover",
-                    self.lanlan_name,
-                )
-        detector = self._asr_detector
-        if detector is not None:
-            try:
-                await detector.reset()
-            except Exception:
-                logger.warning(
-                    "[%s] detector reset failed during game takeover",
-                    self.lanlan_name,
-                )
-        await self.close_transport_only()
+        await self._apply_voice_lease_state(
+            owner="game",
+            hard_muted=self._voice_lease_hard_muted,
+            focus_suppressed=self._voice_lease_focus_suppressed,
+            reason="game_takeover",
+            force_abort=True,
+        )
 
     async def _resume_independent_voice_input_after_game(self) -> None:
-        """Resume with a clean local-listen turn; never replay pre-game audio."""
+        """Compatibility wrapper for returning ownership to Core."""
 
-        self._ensure_asr_runtime_state()
+        await self._apply_voice_lease_state(
+            owner="core",
+            hard_muted=self._voice_lease_hard_muted,
+            focus_suppressed=self._voice_lease_focus_suppressed,
+            reason="game_release",
+            force_abort=False,
+        )
+
+    def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+        """Apply the synchronous half of every authoritative PCM barrier."""
+
+        self._asr_audio_generation += 1
+        self._asr_transcript_dispatcher.invalidate_all()
+        self._asr_reserved_final_key = None
+        self._asr_sealed_turn_token = None
+        self._asr_turn_prepared = False
+        self._asr_received_audio = False
+        self._asr_pending_speech_confirmed = False
+        clear_queue = getattr(self, "_clear_audio_stream_queue", None)
+        if callable(clear_queue):
+            clear_queue(reason)
+        hot_swap_audio_cache = getattr(self, "hot_swap_audio_cache", None)
+        if hot_swap_audio_cache is not None:
+            hot_swap_audio_cache.clear()
         lifecycle = self._asr_lifecycle
-        if (
-            lifecycle is None
-            or lifecycle.snapshot.state is not VoiceLifecycleState.SUSPENDED
-        ):
-            return
-        lifecycle.transition(VoiceLifecycleEvent.GAME_RELEASED)
-        await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
+        if lifecycle is not None:
+            lifecycle.invalidate_audio()
+
+    async def _apply_voice_lease_state(
+        self,
+        *,
+        owner: str,
+        hard_muted: bool,
+        focus_suppressed: bool,
+        reason: str,
+        force_abort: bool,
+    ) -> None:
+        previous = (
+            self._voice_lease_owner,
+            self._voice_lease_hard_muted,
+            self._voice_lease_focus_suppressed,
+        )
+        self._voice_lease_owner = owner
+        self._voice_lease_hard_muted = hard_muted
+        self._voice_lease_focus_suppressed = focus_suppressed
+        reasons: set[str] = set()
+        if owner == "none":
+            reasons.add("owner_none")
+        elif owner == "game":
+            reasons.add("game")
+        if hard_muted:
+            reasons.add("hard_mute")
+        if focus_suppressed:
+            reasons.add("focus")
+        self._voice_input_suppression_reasons = reasons
+        self._voice_input_suppressed = bool(reasons)
+        self._invalidate_voice_pcm_sync(reason)
+
+        lifecycle = self._asr_lifecycle
+        if lifecycle is not None:
+            if owner == "game" and lifecycle.snapshot.state not in {
+                VoiceLifecycleState.OFF,
+                VoiceLifecycleState.BLOCKED,
+                VoiceLifecycleState.SUSPENDED,
+            }:
+                lifecycle.transition(VoiceLifecycleEvent.GAME_TAKEOVER)
+            elif (
+                owner == "core"
+                and lifecycle.snapshot.state is VoiceLifecycleState.SUSPENDED
+            ):
+                lifecycle.transition(VoiceLifecycleEvent.GAME_RELEASED)
+
         detector = self._asr_detector
         if detector is not None:
             try:
                 await detector.reset()
             except Exception:
                 logger.warning(
-                    "[%s] detector reset failed after game release",
+                    "[%s] detector reset failed during lease sync",
                     self.lanlan_name,
                 )
+
+        current = (owner, hard_muted, focus_suppressed)
+        should_abort = force_abort or self._voice_lease_requires_abort or previous != current
+        self._voice_lease_requires_abort = False
+        if should_abort:
+            await self.abort_transport(reason)
+        lifecycle = self._asr_lifecycle
+        if lifecycle is not None:
+            await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
 
     def _begin_voice_input_connection(self, connection_id: str) -> bool:
         """Start a lease generation scope for the current WebSocket."""
@@ -882,14 +974,26 @@ class AsrRuntimeMixin:
             return False
         self._voice_lease_connection_id = normalized
         self._voice_lease_generation = -1
+        self._voice_lease_synchronized = False
+        self._voice_lease_owner = "none"
+        self._voice_lease_hard_muted = False
+        self._voice_lease_focus_suppressed = False
+        self._voice_input_suppression_reasons = {"owner_none"}
+        self._voice_input_suppressed = True
+        self._voice_lease_requires_abort = True
+        self._invalidate_voice_pcm_sync("websocket_reconnect")
         return True
 
     async def _handle_voice_input_control(
         self,
         event: str,
         lease_generation: int,
+        *,
+        owner: str | None = None,
+        hard_muted: bool | None = None,
+        focus_suppressed: bool | None = None,
     ) -> bool:
-        """Apply monotonic MicLease events and reject stale generations."""
+        """Apply one complete MicLease snapshot, with legacy event compatibility."""
 
         self._ensure_asr_runtime_state()
         try:
@@ -898,82 +1002,61 @@ class AsrRuntimeMixin:
             return False
         if generation <= self._voice_lease_generation:
             return False
-        normalized = str(event or "").strip().lower()
-        if normalized not in {
+        normalized_event = str(event or "").strip().lower()
+        allowed_events = {
+            "lease_sync",
             "hard_mute",
             "hard_unmute",
             "focus_suppress",
             "focus_resume",
             "game_takeover",
             "game_release",
-        }:
+        }
+        if normalized_event not in allowed_events:
             return False
+
+        if normalized_event == "lease_sync":
+            normalized_owner = str(owner or "").strip().lower()
+            if normalized_owner not in {"none", "core", "game"}:
+                return False
+            if not isinstance(hard_muted, bool) or not isinstance(
+                focus_suppressed,
+                bool,
+            ):
+                return False
+            next_owner = normalized_owner
+            next_hard_muted = hard_muted
+            next_focus_suppressed = focus_suppressed
+        else:
+            next_owner = self._voice_lease_owner
+            next_hard_muted = self._voice_lease_hard_muted
+            next_focus_suppressed = self._voice_lease_focus_suppressed
+            if normalized_event == "hard_mute":
+                next_hard_muted = True
+            elif normalized_event == "hard_unmute":
+                next_hard_muted = False
+            elif normalized_event == "focus_suppress":
+                next_focus_suppressed = True
+            elif normalized_event == "focus_resume":
+                next_focus_suppressed = False
+            elif normalized_event == "game_takeover":
+                next_owner = "game"
+            elif normalized_event == "game_release":
+                next_owner = "core"
+
         self._voice_lease_generation = generation
-
-        if normalized == "game_takeover":
-            self._voice_input_suppression_reasons.add("game")
-            self._voice_input_suppressed = True
-            await self._suspend_independent_voice_input_for_game()
-            return True
-        if normalized == "game_release":
-            await self._resume_independent_voice_input_after_game()
-            self._voice_input_suppression_reasons.discard("game")
-            self._voice_input_suppressed = bool(
-                self._voice_input_suppression_reasons
-            )
-            return True
-
-        lifecycle = self._asr_lifecycle
-        if normalized in {"hard_mute", "focus_suppress"}:
-            reason = "hard_mute" if normalized == "hard_mute" else "focus"
-            self._voice_input_suppression_reasons.add(reason)
-            self._voice_input_suppressed = True
-            self._asr_pending_speech_confirmed = False
-            self._asr_turn_prepared = False
-            self._asr_received_audio = False
-            self._asr_sealed_turn_token = None
-            if lifecycle is not None:
-                lifecycle.invalidate_audio()
-                await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
-            asr_session = self._asr_session
-            if asr_session is not None and getattr(asr_session, "is_ready", True):
-                try:
-                    await asr_session.clear_audio_buffer()
-                except Exception:
-                    logger.warning(
-                        "[%s] provider audio clear failed during %s",
-                        self.lanlan_name,
-                        normalized,
-                    )
-            detector = self._asr_detector
-            if detector is not None:
-                try:
-                    await detector.reset()
-                except Exception:
-                    logger.warning(
-                        "[%s] detector reset failed during %s",
-                        self.lanlan_name,
-                        normalized,
-                    )
-            return True
-
-        # hard_unmute/focus_resume 都从干净的 LOCAL_LISTEN 恢复，绝不重放旧 PCM。
-        reason = "hard_mute" if normalized == "hard_unmute" else "focus"
-        self._voice_input_suppression_reasons.discard(reason)
-        self._voice_input_suppressed = bool(self._voice_input_suppression_reasons)
-        if lifecycle is not None:
-            lifecycle.invalidate_audio()
-            await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
-        detector = self._asr_detector
-        if detector is not None:
-            try:
-                await detector.reset()
-            except Exception:
-                logger.warning(
-                    "[%s] detector reset failed during %s",
-                    self.lanlan_name,
-                    normalized,
-                )
+        self._voice_lease_synchronized = True
+        await self._apply_voice_lease_state(
+            owner=next_owner,
+            hard_muted=next_hard_muted,
+            focus_suppressed=next_focus_suppressed,
+            reason=normalized_event,
+            force_abort=normalized_event in {
+                "hard_mute",
+                "focus_suppress",
+                "game_takeover",
+            },
+        )
         return True
 
     async def _handle_independent_asr_activity(

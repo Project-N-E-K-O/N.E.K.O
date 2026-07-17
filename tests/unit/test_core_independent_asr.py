@@ -27,6 +27,9 @@ pytestmark = pytest.mark.asyncio
 class _Runtime(AsrRuntimeMixin):
     def __init__(self) -> None:
         self._init_asr_runtime_state()
+        self._voice_lease_synchronized = True
+        self._voice_lease_owner = "core"
+        self._voice_input_suppressed = False
         self.lanlan_name = "Test"
         self.session = type("Omni", (), {})()
         self.session.create_response = AsyncMock()
@@ -197,7 +200,7 @@ async def test_game_takeover_clears_provider_audio_and_suspends_lifecycle() -> N
     runtime = _Runtime()
     asr = type("Asr", (), {})()
     asr.is_ready = True
-    asr.clear_audio_buffer = AsyncMock()
+    asr.close = AsyncMock()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
     runtime._asr_lifecycle = VoiceInputLifecycleController(
@@ -210,7 +213,7 @@ async def test_game_takeover_clears_provider_audio_and_suspends_lifecycle() -> N
 
     await runtime._suspend_independent_voice_input_for_game()
 
-    asr.clear_audio_buffer.assert_awaited_once_with()
+    asr.close.assert_awaited_once_with()
     detector.reset.assert_awaited_once_with()
     assert runtime._asr_lifecycle.snapshot.state.value == "suspended"
 
@@ -222,9 +225,7 @@ async def test_game_takeover_wins_even_if_provider_clear_fails() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
     asr.is_ready = True
-    asr.clear_audio_buffer = AsyncMock(
-        side_effect=RuntimeError("provider clear failed")
-    )
+    asr.close = AsyncMock(side_effect=RuntimeError("provider abort failed"))
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
     runtime._asr_lifecycle = VoiceInputLifecycleController(
@@ -448,7 +449,7 @@ async def test_hard_mute_is_backend_authoritative_and_rejects_stale_lease_events
     runtime = _Runtime()
     asr = type("Asr", (), {})()
     asr.is_ready = True
-    asr.clear_audio_buffer = AsyncMock()
+    asr.close = AsyncMock()
     asr.stream_audio = AsyncMock()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
@@ -461,22 +462,46 @@ async def test_hard_mute_is_backend_authoritative_and_rejects_stale_lease_events
     detector.reset = AsyncMock()
     detector.feed = AsyncMock(return_value=DetectorFeedResult((), True))
     runtime._asr_detector = detector
+    runtime._clear_audio_stream_queue = MagicMock()
+    runtime.hot_swap_audio_cache = [b"old-pcm"]
+    old_token = runtime._capture_ingress_token(runtime._asr_lifecycle)
 
-    assert await runtime._handle_voice_input_control("hard_mute", 12) is True
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        12,
+        owner="core",
+        hard_muted=True,
+        focus_suppressed=False,
+    ) is True
     await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
     )
 
-    asr.clear_audio_buffer.assert_awaited_once_with()
+    asr.close.assert_awaited_once_with()
+    runtime._clear_audio_stream_queue.assert_called_once_with("lease_sync")
+    assert runtime.hot_swap_audio_cache == []
+    assert runtime._ingress_token_matches(old_token) is False
     detector.reset.assert_awaited_once_with()
     detector.feed.assert_not_awaited()
     asr.stream_audio.assert_not_awaited()
     assert runtime._asr_lifecycle.pre_roll_bytes == 0
 
-    assert await runtime._handle_voice_input_control("hard_unmute", 11) is False
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        11,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is False
     assert runtime._voice_input_suppressed is True
-    assert await runtime._handle_voice_input_control("hard_unmute", 13) is True
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        13,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
     assert runtime._voice_input_suppressed is False
 
 
@@ -486,13 +511,54 @@ async def test_new_websocket_connection_resets_mic_lease_generation_once() -> No
 
     assert runtime._begin_voice_input_connection("socket-a") is True
     assert runtime._voice_lease_generation == -1
-    assert await runtime._handle_voice_input_control("hard_mute", 1) is True
+    assert runtime._voice_input_accepts_pcm() is False
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="none",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
+    assert runtime._voice_input_accepts_pcm() is False
 
     assert runtime._begin_voice_input_connection("socket-a") is False
-    assert await runtime._handle_voice_input_control("hard_unmute", 1) is False
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is False
 
     assert runtime._begin_voice_input_connection("socket-b") is True
-    assert await runtime._handle_voice_input_control("hard_unmute", 1) is True
+    assert runtime._voice_input_accepts_pcm() is False
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
+    assert runtime._voice_input_accepts_pcm() is True
+
+
+async def test_game_owner_and_hard_mute_remain_simultaneously_authoritative() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=True,
+        focus_suppressed=False,
+    ) is True
+
+    assert runtime._voice_lease_owner == "game"
+    assert runtime._voice_lease_hard_muted is True
+    assert runtime._voice_input_suppression_reasons == {"game", "hard_mute"}
+    assert runtime._voice_input_accepts_pcm() is False
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.SUSPENDED
 
 
 async def test_accepted_final_is_recorded_and_injected_once() -> None:
