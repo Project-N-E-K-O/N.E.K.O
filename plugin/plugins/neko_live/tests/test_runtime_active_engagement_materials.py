@@ -197,15 +197,26 @@ def test_active_engagement_prompt_keeps_viewer_derived_topic_material_internal()
 def test_active_engagement_prompt_sanitizes_and_bounds_all_topic_fields() -> None:
     secret = "token=super-secret " + ("x" * 400)
 
-    block = ActiveEngagementModule._topic_material_block(
-        {
-            "source": secret,
-            "title": secret,
-            "hook": secret,
-            "pattern": secret,
-            "evidence": [secret],
-        }
+    fields = (
+        "source",
+        "shape",
+        "title",
+        "fun_axis",
+        "family",
+        "hook",
+        "pattern",
+        "intent",
+        "live_column",
+        "topic_pack",
+        "reply_affordance",
+        "interest",
+        "relevance",
+        "risk",
+        "hint",
     )
+    material = {field: secret for field in fields}
+    material["evidence"] = [secret]
+    block = ActiveEngagementModule._topic_material_block(material)
 
     assert "super-secret" not in block
     assert "x" * 150 not in block

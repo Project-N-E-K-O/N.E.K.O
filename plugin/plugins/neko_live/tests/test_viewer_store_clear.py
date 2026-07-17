@@ -154,6 +154,12 @@ async def test_viewer_memory_provider_failure_fails_closed(tmp_path):
 
     assert profile.preference_tags == {}
     assert profile.favorite_topics == {}
+    assert profile.running_jokes == {}
+    assert profile.interaction_style == ""
+    assert profile.response_preference == ""
+    assert profile.last_interaction_summary == ""
+    assert profile.impression_summary == ""
+    assert profile.avoid_guidance == ""
 
 
 @pytest.mark.asyncio
