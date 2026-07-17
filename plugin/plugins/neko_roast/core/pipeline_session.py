@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from .contracts import ViewerEvent
 from .pipeline_routing import entrance_pacing_interval_seconds
 
 
+@dataclass
+class _UidLockEntry:
+    lock: asyncio.Lock
+    users: int = 0
+
+
 class PipelineSessionTracker:
     def __init__(self) -> None:
-        self._uid_locks: dict[str, asyncio.Lock] = {}
+        self._uid_locks: dict[str, _UidLockEntry] = {}
         self._dry_run_roasted_uids: set[str] = set()
         self._session_roasted_uids: set[str] = set()
         self._last_avatar_roast_at: float | None = None
@@ -53,8 +60,31 @@ class PipelineSessionTracker:
             is_live_danmaku_with_text
         )
 
-    def lock_for(self, uid: str) -> asyncio.Lock:
-        return self._uid_locks.setdefault(uid, asyncio.Lock())
+    async def acquire_uid_lock(self, uid: str) -> asyncio.Lock:
+        key = str(uid or "").strip()
+        entry = self._uid_locks.get(key)
+        if entry is None:
+            entry = _UidLockEntry(asyncio.Lock())
+            self._uid_locks[key] = entry
+        entry.users += 1
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            entry.users -= 1
+            if entry.users == 0 and not entry.lock.locked():
+                self._uid_locks.pop(key, None)
+            raise
+        return entry.lock
+
+    def release_uid_lock(self, uid: str, lock: asyncio.Lock) -> None:
+        key = str(uid or "").strip()
+        entry = self._uid_locks.get(key)
+        if entry is None or entry.lock is not lock:
+            raise RuntimeError("uid lock lease does not belong to this session")
+        lock.release()
+        entry.users -= 1
+        if entry.users == 0:
+            self._uid_locks.pop(key, None)
 
     async def already_roasted(self, ctx: Any, event: ViewerEvent, uid: str) -> bool:
         if uid in self._session_roasted_uids:

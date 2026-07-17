@@ -22,6 +22,7 @@ import {
   interactionRoute,
   interactionRouteLabel,
   interactionRouteTone,
+  localizedStatusCode,
   recentResultTone,
   speechExplanationTone,
 } from "./panel_helpers"
@@ -188,7 +189,7 @@ export function LiveExplainSection({
             rowKey="row_id"
             columns={[
               { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || row.id || "-" },
-              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "blocked" ? "warning" : row.status === "healthy" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "blocked" ? "warning" : row.status === "healthy" ? "success" : "default"} label={localizedStatusCode(t, String(row.status || ""))} /> },
               { key: "last_outcome", label: t("panel.columns.message"), render: (row: any) => row.last_outcome || "-" },
               { key: "last_skip_reason", label: t("panel.columns.detail"), render: (row: any) => row.last_skip_reason || "-" },
             ]}
@@ -200,7 +201,7 @@ export function LiveExplainSection({
             rowKey="row_id"
             columns={[
               { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || "-" },
-              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "skipped" ? "warning" : row.status === "ok" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "skipped" ? "warning" : row.status === "ok" ? "success" : "default"} label={localizedStatusCode(t, String(row.status || ""))} /> },
               { key: "route", label: t("panel.columns.responseModule"), render: (row: any) => row.route || "-" },
               { key: "reason", label: t("panel.columns.detail"), render: (row: any) => row.reason || "-" },
             ]}
@@ -229,7 +230,7 @@ export function RecentResultsTable({ t, results }: { t: PanelTranslator; results
               const signal = String(row.event_signal || "unknown")
               return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
             } },
-            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={String(row.status || "-")} /> },
+            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={localizedStatusCode(t, String(row.status || ""))} /> },
             { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
             { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
           ]}

@@ -11,6 +11,27 @@ import {
 
 type PanelTranslator = (key: string) => string
 
+const moduleTitleKeys: Record<string, string> = {
+  bili_live_ingest: "panel.modules.biliLiveInput",
+  douyin_live_ingest: "panel.modules.douyinLiveInput",
+  bili_identity: "panel.modules.biliIdentity",
+  douyin_identity: "panel.modules.douyinIdentity",
+  live_audience_session: "panel.modules.liveAudienceSession",
+  viewer_profile: "panel.modules.viewerProfile",
+  avatar_roast: "panel.interaction.module.avatarRoast.title",
+  danmaku_response: "panel.interaction.module.danmakuResponse.title",
+  live_support_events: "panel.interaction.module.liveSupportEvents.title",
+  active_engagement: "panel.interaction.module.activeEngagement.title",
+  warmup_hosting: "panel.interaction.module.warmupHosting.title",
+  developer_sandbox: "panel.modules.developerSandbox",
+  live_events: "panel.modules.liveEvents",
+}
+
+export function localizedModuleTitle(module: any, t: PanelTranslator): string {
+  const key = moduleTitleKeys[String(module?.id || "")]
+  return key ? t(key) : String(module?.title || module?.id || "-")
+}
+
 export function ModuleHealthBadge({ module, t }: { module: any; t: PanelTranslator }) {
   if (module && module.degraded) return <StatusBadge tone="danger" label={t("panel.modules.degraded")} />
   const on = !!(module && module.enabled)
@@ -262,7 +283,7 @@ export function ModuleOverviewCard({ modules, t }: { modules: Array<Record<strin
           data={modules.map((item: any, index: number) => ({ ...item, id: item.id || String(index) }))}
           rowKey="id"
           columns={[
-            { key: "title", label: t("panel.modules.name"), render: (row: any) => row.title || row.id || "-" },
+            { key: "title", label: t("panel.modules.name"), render: (row: any) => localizedModuleTitle(row, t) },
             { key: "status", label: t("panel.modules.status"), render: (row: any) => <ModuleHealthBadge module={row} t={t} /> },
             { key: "id", label: "ID", render: (row: any) => row.id || "-" },
           ]}

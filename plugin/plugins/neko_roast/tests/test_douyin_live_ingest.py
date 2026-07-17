@@ -2148,6 +2148,34 @@ def test_douyin_live_bridge_adapter_infers_gift_when_type_is_missing():
     ]
 
 
+def test_douyin_live_bridge_adapter_does_not_infer_gift_from_viewer_name():
+    adapter = DouyinLiveBridgeAdapter()
+
+    payloads = adapter.map_message(
+        {
+            "uid": "123",
+            "name": "viewer",
+            "text": "hello bridge",
+        },
+        room_ref="room-42",
+    )
+
+    assert payloads == [
+        {
+            "event_type": "danmaku",
+            "room_ref": "room-42",
+            "uid": "123",
+            "nickname": "viewer",
+            "text": "hello bridge",
+            "avatar_url": "",
+            "gift_name": "",
+            "gift_count": 0,
+            "gift_value": 0,
+            "room_id": 0,
+        }
+    ]
+
+
 def test_douyin_live_bridge_adapter_drops_unknown_method_nested_payloads():
     adapter = DouyinLiveBridgeAdapter()
 

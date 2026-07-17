@@ -14,6 +14,19 @@ export function liveStatusTone(summary: string): "success" | "warning" | "danger
   return "default"
 }
 
+export function normalizeRoomLiveStatus(value: any): "live" | "offline" | "rounding" | "unknown" {
+  const status = String(value || "").trim().toLowerCase()
+  if (status === "live" || status === "offline" || status === "rounding") return status
+  return "unknown"
+}
+
+export function roomLiveStatusTone(status: string): "success" | "warning" | "info" | "default" {
+  if (status === "live") return "success"
+  if (status === "rounding") return "info"
+  if (status === "offline" || status === "unknown") return "warning"
+  return "default"
+}
+
 export function liveStateTone(state: string): "success" | "warning" | "danger" | "default" {
   if (state === "engaged" || state === "warmup") return "success"
   if (state === "quiet" || state === "idle" || state === "paused") return "warning"
@@ -53,6 +66,12 @@ export function panelText(t: (key: string) => string, key: string, fallback: str
   const value = t(key)
   if (!value || value === key || value.startsWith("panel.") || value.startsWith("entries.")) return fallback
   return value
+}
+
+export function localizedStatusCode(t: (key: string) => string, status: string): string {
+  const code = String(status || "").trim().toLowerCase()
+  if (!code) return "-"
+  return panelText(t, `panel.statusCode.${code}`, code.replace(/_/g, " "))
 }
 
 export function labelFallback(group: string, value: string): string {

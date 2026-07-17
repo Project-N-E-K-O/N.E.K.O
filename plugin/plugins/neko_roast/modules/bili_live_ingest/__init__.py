@@ -122,11 +122,10 @@ class BiliLiveIngestModule(BaseModule):
                 await self._on_error(exc, generation=generation)
 
             callbacks = {
-                # 富模型 on_event（带 get_score 打分）→ live_events 中枢窗口择优；不再用轻量
-                # on_danmaku 直连 pipeline，避免同一条弹幕被两条路各锐评一次。
+                # 富模型 on_event 是弹幕与支持事件的唯一入口。DanmakuListener 在富模型
+                # 解析失败时也会发送字典 fallback，因此不能同时注册 on_gift/on_sc，
+                # 否则同一 provider packet 会沿两条回调路径各调度一次。
                 "on_event": lambda cmd, event: self._on_live_event(cmd, event, generation=generation),
-                "on_gift": lambda event: self._on_gift_event(event, generation=generation),
-                "on_sc": lambda event: self._on_super_chat_event(event, generation=generation),
                 "on_live": on_live,
                 "on_preparing": on_preparing,
                 "on_error": on_error,
@@ -266,8 +265,9 @@ class BiliLiveIngestModule(BaseModule):
 
         同步、非阻塞：``publish`` 只做同步派发（订阅者内部各自 fire-and-forget），不拖慢弹幕
         接收循环。``danmaku_core`` 对 DANMU_MSG/SEND_GIFT/SC/INTERACT_WORD/增强指令都发
-        ``on_event``，全部发布到总线；``live_events`` 订阅 danmaku/gift/super_chat/guard
-        参与窗口择优；其他事件族 handler 可各自订阅（见 docs/development.md「直播事件中枢」）。
+        ``on_event``，全部发布到总线；``live_events`` 只订阅普通弹幕，
+        ``live_support_events`` 独立订阅 gift/super_chat/guard；其他事件族 handler 可各自订阅
+        （见 docs/development.md「直播事件中枢」）。
         """
         if generation is not None and generation != self._listener_generation:
             return

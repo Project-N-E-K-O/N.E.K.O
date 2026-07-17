@@ -2,7 +2,7 @@
 
 本文档面向后续参与 `neko_roast` 的开发者，记录**已落地设计**。它是架构边界、模块边界、协作规范、测试门禁和文档要求的 Canonical Source。配套 `live-center-roadmap.md` 只记录阶段目标、完成状态和下一阶段顺序。
 
-对旧插件 `bilibili_danmaku` 的**直播主链路选择性复用已经完成**：连接+解析层已独立迁入 `modules/bili_live_ingest/`，扫码登录已独立迁入 `adapters/bili_auth_service.py`；旧插件自带的 LLM / orchestrator / memory 没有直接进入 NEKO Live（输出继续走 NEKO 统一 `dispatcher` → `main_server` 人设）。NEKO Live 当前不存在对旧插件包的运行时导入，但这不代表旧插件全部功能已经吸收：平台内容读取、平台写入、历史查询、用户管理和部分分析/运营能力仍须逐项评估迁移、替代或明确放弃，完成前不得删除旧插件目录。
+对旧插件 `bilibili_danmaku` 的**直播主链路选择性复用已经完成**：连接+解析层已独立迁入 `modules/bili_live_ingest/`，扫码登录已独立迁入 `adapters/bili_auth_service.py`；旧插件自带的 LLM / orchestrator / memory 没有直接进入 NEKO Live（输出继续走 NEKO 统一 `dispatcher` → `main_server` 人设）。NEKO Live 当前不存在对旧插件包的运行时导入。旧插件 47 个公开入口及内部能力的逐项决策见 `bilibili-danmaku-migration-matrix.md`；矩阵完成不等于迁移完成，获批吸收项和独立插件取舍关闭前不得删除旧插件目录。
 
 ## 命名与范围
 
@@ -21,7 +21,7 @@
 已落地能力（详见对应章节）：
 
 - **真实直播接入**：吞并 `DanmakuListener`，`connect/disconnect` 启停真实监听（DoD 真机验证：新观众首条弹幕 → 猫全自动锐评其昵称+头像）。
-- **事件中枢窗口择优**（P2.5）：富模型 `on_event` + `get_score` 冷却期缓冲择优（弹幕 / 礼物 / SC / 上舰同窗竞争）+ 首评即时。见「直播事件中枢」。
+- **事件族分流与择优**（P2.5）：富模型 `on_event` 进入 EventBus；普通弹幕由 `live_events` 做 `get_score` 冷却期缓冲择优 + 首评即时，Gift / SC / Guard 由 `live_support_events.scheduler` 独立做真实性、去重、聚合、优先级与有界排队。见「直播事件中枢」和「Gift / SC / Guard 短句致谢」。
 - **B站登录态**（P5）：扫码登录 + Fernet 加密凭据，接进头像抓取 / 弹幕连接 / 查询，根治 -352。见「B站登录态」。
 - **健壮性**：`dry_run` 安全态、限流 / 自动急停 / 队列、配置写竞争免疫、查询 -352 友好降级、房号支持直播间链接输入。见各对应章节。
 - **开发者沙盒**：离线 UID / URL 调试、内置 demo 案例。
@@ -477,7 +477,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 - `live_director_status`：面板状态聚合，不新增输出路径；它只解释下一次自动开口会是 `none` / `warmup_hosting` / `active_engagement` / `idle_hosting`、当前是否 eligible、以及还要等多久，方便统一直播测试时判断猫猫为什么不说话。
 - `solo_test_readiness`: dashboard-only streamer readiness aggregation for solo-stream validation. It summarizes preflight, test isolation, warmup hosting, first-viewer roast, follow-up danmaku reply, active engagement, idle hosting, and pacing control; it does not add a new output path, bypass safety, or replace runtime status.
 - `developer_sandbox`：提供离线 UID / URL 调试入口。
-- `live_events`：直播事件中枢（P2.5）。经 `event_bus` **订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"` 事件**，解包信封 `raw` 取富模型 `LiveDanmaku`，冷却期缓冲候选互动、按 `get_score()` 打分，冷却结束择优（舰长/总督/SC、礼物、粉丝牌、用户等级、长文本优先）取分最高者投 `pipeline`；空闲态首条仍即时锐评。`modules/live_events/room_topic.py` 是中枢私有协作组件，只维护短期弹幕主题、低质过滤、回复技巧和运行期观众提示，供 `avatar_roast` / `danmaku_response` 的 prompt builder 读取；它不进 registry、不另开输出队列、不写长期档案。Gift / SC / Guard 被中枢选中后由 `pipeline_routing` 转到 `live_support_events`，不得误走 `avatar_roast` 或 `danmaku_response`。详见下文「直播事件中枢」。
+- `live_events`：普通弹幕事件中枢（P2.5）。经 `event_bus` **只订阅 `"danmaku"`**，解包信封 `raw` 取 provider-neutral 富模型，冷却期缓冲候选弹幕、按 `get_score()` 打分，冷却结束择优（粉丝牌、用户等级、长文本优先）取分最高者投 `pipeline`；空闲态首条仍即时锐评。`modules/live_events/room_topic.py` 是中枢私有协作组件，只维护短期弹幕主题、低质过滤、回复技巧和运行期观众提示，供 `avatar_roast` / `danmaku_response` 的 prompt builder 读取；它不进 registry、不另开输出队列、不写长期档案。Gift / SC / Guard 由 `live_support_events` 独立订阅和有界调度，不与普通弹幕争用窗口。详见下文「直播事件中枢」。
 
 以下能力曾以空 `ReservedModule` 占位，现已从 runtime 和源码目录移除；它们只是远期产品候选，不是当前模块，也不得出现在 Dashboard：
 
@@ -643,6 +643,20 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 **已知限制**：① 依赖 `bilibili_api` + `cryptography`（NEKO 内置）；② 本地注销不吊销服务端 token；③ 凭据过期需重新登录（`bili_login_status` 会报失效）；④ 受限无账号连接仍受 B 站匿名链路风控和能力缺失影响，不作为等价登录路径。
 
+### 延期能力：主播账号身份保护
+
+旧 `bilibili_danmaku.set_master_bili_account` 中“不要把主播本人当普通观众”的产品目的仍有价值，但维护者于 2026-07-17 决定**只记录契约，之后再做**，不进入当前迁移切片。
+
+未来实现必须满足：
+
+- 只允许用户在已验证的 B 站扫码登录后，显式确认“当前登录账号是主播账号”；运行时从加密凭据派生 UID，不按昵称、显示名或自由文本猜测。
+- 确认状态只绑定当前凭据；退出登录、凭据失效或登录 UID 变化后自动失效。主播 UID / 昵称不得写入公开 `RoastConfig`、audit、普通日志、Dashboard 或 prompt。
+- 命中主播 UID 的普通弹幕、进场等观众事件不得触发 `avatar_roast`、普通 `danmaku_response`、观众画像学习、观众人数/刷屏统计或首次出场记录；开发者诊断只允许显示稳定机器码，例如 `viewer.host_account_filtered`。
+- 默认不把主播消息转换成隐藏上下文，也不让猫猫知道 owner/master/backstage 关系。若以后需要“主播提示猫猫”，必须另建显式 `host_cue` 产品能力，经独立开关、可见状态和安全评审，不得借身份过滤暗中实现。
+- 普通观众以及 provider 证明为真的 Gift / SC / Guard 继续走现有链路；不得因为昵称相似、UID 缺失或登录态不可校验而误过滤。无法确认身份时默认按普通事件处理，不做猜测。
+
+实现前须先补独立设计与测试范围，至少覆盖确认/注销/换号、同名冒充、UID 缺失、viewer store 不落盘、Selection 不入队和 prompt 无关系泄露；不得直接迁移旧插件的 `master_bili_name` 字符串匹配。
+
 ## 限流（rate_limit_seconds）
 
 `safety_guard.before_output()` 按 `rate_limit_seconds` 控制**最小锐评间隔**：直播态下两次锐评投递之间至少隔这么多秒，期间到达的事件返回 `skipped`（reason `rate limited`），不投给猫猫——避免爆量房间猫猫连珠炮。开发者沙盒事件（`source == "developer_sandbox"`）不受限流，保证即时调试反馈。`rate_limit_seconds = 0` 关闭限流。`safety_guard.resume()` 会重置间隔计时。
@@ -706,9 +720,9 @@ Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 
 
 > Provider-neutral update: `live_events` no longer assumes Bilibili-only `LiveDanmaku` input. Provider events are read through `modules/live_events/provider_event.py`; Bilibili object-style events and already-sanitized dict events are both accepted. Public `uid`, `room_ref`, `avatar_url`, `danmaku_text`, nickname, non-negative finite numeric fields, signal-only summaries, candidate audit summaries, and room-topic prompt examples must use those helpers before reaching `ctx.handle_live_payload()`, audit, recent results, or prompt context.
 
-P2.5：把已落地但无人消费的富模型 `LiveDanmaku` 接上 pipeline，并用 `get_score()` 在一批直播互动里挑最值得响应的那个。这是「事件中枢/事件族」地基的第一步。
+P2.5：把 provider-neutral 富模型弹幕接上 pipeline，并用 `get_score()` 在一批普通弹幕里挑最值得响应的那个。这是「事件中枢/事件族」地基的第一步。
 
-**功能目的**：爆量房间里不再「冷却后谁先冒泡锐评谁」（可能是个发"8888"的路人），而是冷却期缓冲候选、按价值择优（舰长/总督/SC、礼物、粉丝牌、用户等级、长文本优先）。顺带：每个冷却窗口只有 1 条进 pipeline，缓解 `queue_limit` 溢出。
+**功能目的**：爆量房间里不再「冷却后谁先冒泡锐评谁」（可能是个发"8888"的路人），而是冷却期缓冲普通弹幕、按价值择优（粉丝牌、用户等级、长文本优先）。顺带：每个冷却窗口只有 1 条进 pipeline，缓解 `queue_limit` 溢出。Gift / SC / Guard 由 `live_support_events.scheduler` 按支持事件优先级独立处理。
 
 
 **责任模块**：`modules/live_events/__init__.py`（`LiveEventsModule`）。
@@ -732,17 +746,17 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 **经过 safety_guard 吗 / 失败如何降级**：中枢只站在 pipeline **前面**做「选谁」，胜者照走完整 pipeline——`before_event`（连接/暂停/队列）、`before_output`（限流）、安全门必经，四条不变量（唯一出口 / 唯一档案写 / 唯一审计 / 安全门）原样保持。`get_score()` 抛错 → 该候选记 0 分（`_safe_score`）；窗口 flush 抛错 → 记 `live_event_flush_failed` 并复位窗口；`handle_live_payload` 抛错 → 记 `live_event_roast_failed`，不影响后续窗口。断开直播间时 `runtime.disconnect_live_room` 调 `live_events.reset()` 取消待触发窗口，避免迟到的择优在断开后误投（即便误投，pipeline 也会因 `live_enabled=False` 被 `permission_gate` 拦下）。
 
-**触碰的契约 / store / UI / action**：胜者仍复用 `bili_live_ingest.normalize` 既有 pipeline 输入形状，不直接写 store、不直接 `push_message`。Gift / SC / Guard 胜者由 `pipeline_routing` 转到 `live_support_events`；`ViewerEvent.to_dict()` 只公开轻量 `event_type` 和 support summary 字段（如 gift 名称、数量、coin 总量、guard level）供 dashboard / monitor 标记 `gift_signal`、`super_chat_signal`、`danmaku_signal` 与 support-event metadata，不暴露完整 raw payload。新增 audit op：`live_event_selected`（含 `candidates` 候选数、`score`、`guard_level`、`event_type`、`selected` 脱敏摘要、`dropped_candidates` 脱敏摘要 + `skip_reason`）、`live_event_flush_failed`、`live_event_roast_failed`。无新增 UI action（`live_events` 出现在 `dashboard_state.modules` 快照里，`status()` 暴露 `buffered` / `window_open`）。
+**触碰的契约 / store / UI / action**：弹幕胜者仍复用 provider normalize 的既有 pipeline 输入形状，不直接写 store、不直接 `push_message`。`ViewerEvent.to_dict()` 只公开轻量事件字段供 dashboard / monitor 使用，不暴露完整 raw payload。audit op 包括 `live_event_selected`（候选数、分数、脱敏摘要与 skip reason）、`live_event_flush_failed`、`live_event_roast_failed`。Gift / SC / Guard 的轻量 support summary、优先级、聚合、去重和队列状态属于 `live_support_events.scheduler`。无新增 UI action（`live_events` 出现在 `dashboard_state.modules` 快照里，`status()` 暴露 `buffered` / `window_open`）。
 
 **读写了哪些用户数据**：中枢本身不落任何用户数据——只在内存里短暂持有「当前分最高的一条候选」，投递后即清。头像不经中枢（弹幕不含头像，由下游 `bili_identity` 按 UID 抓）。档案 / 审计 / 总结的写入仍由既有边界负责。
 
-**测试命令与主要场景**：`plugin/plugins/neko_roast/tests/test_live_events.py`（8 用例：空闲态首条即时；冷却期开窗按 `get_score` 择优、整窗只投 1 条；高价值礼物可胜过普通弹幕；EventBus `"gift"` 接线进入中枢；本地冷却挡第二条防并发双锐评；空 uid / 空文本丢弃；`reset` 取消开窗；`safety_guard.output_cooldown_remaining` 时序）。契约测试 `test_live_listener_routes_rich_event_through_hub_to_pipeline` 锁住「富模型 `on_event` → 中枢 → pipeline」打通。
+**测试命令与主要场景**：`plugin/plugins/neko_roast/tests/test_live_events.py` 覆盖空闲态首条即时、冷却期开窗按 `get_score` 择优、整窗只投 1 条、本地冷却防并发双锐评、空 uid / 空文本丢弃、`reset` 取消开窗和 cooldown 时序。支持事件接线、优先级、聚合与队列边界由 `test_live_support_scheduler.py` 覆盖。契约测试锁住「富模型 `on_event` → EventBus → 对应单一消费者 → pipeline」打通。
 
-**已知限制**：① `live_events` 只负责选中 support event，不负责写致谢 prompt；具体短句由 `live_support_events` 处理。② 「首评即时」下，空闲态第一条互动即使紧随其后到了更高价值的观众也不会被改选——这是用「临场感」换来的，已拍板取舍。③ 窗口择优依赖 `get_score()` 的打分权重（见 `livedanmaku.get_score`），权重调整会改变择优结果。
+**已知限制**：① `live_events` 只负责普通弹幕择优；支持事件由 `live_support_events` 处理。② 「首评即时」下，空闲态第一条弹幕即使紧随其后到了更高分弹幕也不会被改选——这是用「临场感」换来的，已拍板取舍。③ 窗口择优依赖 `get_score()` 的打分权重（见 `livedanmaku.get_score`），权重调整会改变择优结果。
 
 ## Gift / SC / Guard 短句致谢（live_support_events）
 
-**功能目的**：礼物、SC、上舰被中枢选中后不再伪装成普通弹幕，也不只停在 signal-only 观测，而是由独立模块生成一条短句致谢。它只承认支持事件并自然接住现场，不做贡献榜、奖励承诺、仪式化播报，也不能向观众索要更多礼物 / SC / 上舰。
+**功能目的**：礼物、SC、上舰由 EventBus 直接交给独立模块的有界调度器，不再伪装成普通弹幕，也不只停在 signal-only 观测。调度器完成真实性门、去重、连击聚合与优先级选择后生成一条短句致谢；它不做贡献榜、奖励承诺、仪式化播报，也不能向观众索要更多礼物 / SC / 上舰。
 
 **责任模块**：`modules/live_support_events/__init__.py`（`LiveSupportEventsModule`），路由在 `core/pipeline_routing.py`，request 构造在 `core/pipeline_requests.py`。
 
@@ -1039,7 +1053,7 @@ uv run pytest plugin/plugins/neko_roast/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
-截至 2026-07-17：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1368 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-07-17：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1375 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

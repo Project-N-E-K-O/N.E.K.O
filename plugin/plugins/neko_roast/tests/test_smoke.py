@@ -25,6 +25,9 @@ def test_neko_roast_manifest_smoke():
     assert manifest["plugin"]["id"] == "neko_roast"
     assert manifest["plugin"]["entry"] == "plugin.plugins.neko_roast:NekoRoastPlugin"
     assert manifest["neko_roast"]["roast_strength"] == "normal"
+    assert manifest["neko_roast"]["live_room_ref"] == ""
+    assert manifest["neko_roast"]["live_room_id"] == 0
+    assert manifest["neko_roast"]["live_mode"] == "co_stream"
     panel_entry = manifest["plugin"]["ui"]["panel"][0]["entry"]
     assert panel_entry == "ui/panel_compat.tsx"
     assert (root / panel_entry).is_file()
@@ -108,6 +111,24 @@ def test_dry_run_defaults_off_and_is_hidden_from_normal_panel():
         assert "config.dry_run !== false" not in source
 
 
+def test_console_accepts_zero_cooldown_as_a_ready_live_setting() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert "savedCooldownSeconds >= 0" in source
+        assert "savedCooldownSeconds > 0" not in source
+
+
+def test_console_readiness_blocks_tripped_paused_or_degraded_safety() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / name).read_text(encoding="utf-8")
+        assert 'const unsafeSafetyStates = new Set(["paused", "tripped", "degraded"])' in source
+        assert '!unsafeSafetyStates.has(String(safety.status || ""))' in source
+
+
 def test_developer_tools_default_off_until_explicitly_enabled():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
@@ -159,10 +180,24 @@ def test_live_room_selection_requires_lookup_then_explicit_confirmation() -> Non
 
         assert 'const [queriedRoomRef, setQueriedRoomRef] = useState("")' in source
         assert 'const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)' in source
-        assert 'onClick={lookupLiveRoom}' in source
-        assert 'disabled={consoleSaving || !canConfirmLiveRoom}' in source
+        assert 'onClick={canConfirmLiveRoom ? confirmLiveRoom : lookupLiveRoom}' in source
+        assert 'disabled={consoleSaving || !roomFormRef}' in source
         assert 't("panel.console.roomTwoStepHint")' in source
         assert 't("panel.messages.roomLookupRequired")' in source
+        assert 'const roomLookupLiveStatus = normalizeRoomLiveStatus(liveRoomResult?.live_status)' in source
+        assert 't(`panel.liveStatus.${roomLookupLiveStatus}`)' in source
+        assert 't(`panel.room.statusHint.${roomLookupLiveStatus}`)' in source
+        assert 't("panel.room.liveStatus")' in source
+        room_modal_source = source.split('open={consoleDialog === "room"}', 1)[1].split(
+            'open={consoleDialog === "diagnostics"}', 1
+        )[0]
+        assert '<Grid cols={2}>' in room_modal_source
+        assert 'canConfirmLiveRoom ? t("panel.console.confirmRoom") : t("panel.actions.lookupRoom")' in room_modal_source
+        assert '<Grid cols={3}>' not in room_modal_source
+        assert '{!liveRoomResult?.ok ? <Alert tone="info">{t("panel.console.roomTwoStepHint")}</Alert> : null}' in room_modal_source
+        assert 'livePlatform === "bilibili" && !liveRoomResult?.ok' in room_modal_source
+        assert '[t("panel.room.liveStatus"), t(`panel.liveStatus.${roomLookupLiveStatus}`)]' not in room_modal_source
+        assert 'padding: "8px 10px"' in room_modal_source
         assert "lookupLiveRoom()" not in confirm_source
         assert "props.api.refresh()" not in lookup_source
         assert 'setLiveRoomResult(null);setQueriedRoomRef("")' in compact_source or 'setLiveRoomResult(null)setQueriedRoomRef("")' in compact_source
@@ -222,7 +257,7 @@ def test_console_modal_close_callback_stays_stable_while_typing() -> None:
         assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
-def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> None:
+def test_console_uses_floating_live_control_with_ordered_readiness_tooltip() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -230,20 +265,56 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
-        dock_source = source.split('className="neko-roast-console-dock"', 1)[1].split("</footer>", 1)[0]
+        dock_source = source.split('className="neko-roast-live-fab"', 1)[1].split(">\n        {", 1)[0]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
         assert 'className="neko-roast-console-layout"' in source
-        assert 'gridTemplateRows: "auto auto"' in source
+        assert '<Page className="neko-roast-page"' in source
+        assert ".neko-page.neko-roast-page" in source
+        assert "animation-fill-mode: backwards !important" in source
+        assert 'gridTemplateRows: "auto"' in source
+        assert 'paddingBottom: "120px"' in source
+        assert 'scrollPaddingBottom: "120px"' in source
         assert 'className="neko-roast-console-scroll"' in source
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
-        assert 'position: "sticky"' in dock_source
-        assert 'bottom: 0' in dock_source
-        assert 'position: "fixed"' not in dock_source
-        assert 'gridTemplateColumns: "minmax(260px, 520px)"' in dock_source
-        assert 'justifyContent: "center"' in dock_source
+        assert 'position: "fixed"' in dock_source
+        assert 'right: "20px"' in dock_source
+        assert 'bottom: "20px"' in dock_source
+        assert 'position: "sticky"' not in dock_source
+        assert 'className="neko-roast-console-dock"' not in source
+        assert "<Tooltip" in source
+        assert 'placement="top"' in source
+        assert 'content={readinessTooltip}' in source
+        preparation_source = source.split("const preparationSteps = [", 1)[1].split("]", 1)[0]
+        expected_steps = (
+            'panel.console.preparation.login',
+            'panel.console.preparation.lookupRoom',
+            'panel.console.preparation.confirmRoom',
+            'panel.console.preparation.liveSettings',
+            'panel.console.preparation.safety',
+        )
+        assert all(key in preparation_source for key in expected_steps)
+        assert [preparation_source.index(key) for key in expected_steps] == sorted(
+            preparation_source.index(key) for key in expected_steps
+        )
+        assert 't("panel.console.preparation.notReady")' in source
+        assert "const [startConfirmOpen, setStartConfirmOpen] = useState(false)" in source
+        assert "open={startConfirmOpen}" in source
+        assert 'title={t("panel.console.startTitle")}' in source
+        assert 't("panel.console.startMessage")' in source
+        start_dialog_source = source.split('open={startConfirmOpen}', 1)[1].split(
+            'open={stopConfirmOpen}', 1
+        )[0]
+        assert 't("panel.console.returnCheck")' in start_dialog_source
+        assert 't("panel.console.confirmStart")' in start_dialog_source
+        assert 't("panel.room.liveStatus")' in start_dialog_source
+        assert 't(`panel.liveStatus.${currentRoomLiveStatus}`)' in start_dialog_source
+        assert '<Grid cols={2}>' in start_dialog_source
+        assert 'message={`${t("panel.console.startMessage")}' not in start_dialog_source
+        assert "setStartConfirmOpen(true)" in source
+        assert "setStartConfirmOpen(false)" in source
         assert 'openConsoleDialog("pacing")' in runtime_source
         assert 'onClick={connectRoom}' not in runtime_source
         assert 'open={consoleDialog === "pacing"}' in source
@@ -251,9 +322,7 @@ def test_console_uses_pinned_live_control_dock_and_separate_pacing_modal() -> No
         assert 't("panel.pacing.fast")' in source
         assert 't("panel.pacing.standard")' in source
         assert 't("panel.pacing.slow")' in source
-        assert 'onClick={connectRoom}' in dock_source
-        assert dock_source.count("<Button") == 2
-        assert "<StatusBadge" not in dock_source
+        assert "void connectRoom()" in source
         assert 'callSimple("clear_queue")' not in dock_source
         assert 'callSimple("pause_roast")' not in dock_source
         assert 'const canStart = roomConfigured' in source
@@ -319,6 +388,7 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         "panel.interaction.module.warmupHosting.disabledHint",
         "panel.interaction.module.idleHosting.disabledHint",
         "panel.interaction.module.activeEngagement.disabledHint",
+        "panel.interaction.autoSaveHint",
     }
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -338,6 +408,7 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
             't("panel.interaction.group.audience")'
         )
         assert 'disabled={!configForm.values.avatar_roast_enabled || settingsSaving}' in interaction_source
+        assert '<Alert tone="info">{t("panel.interaction.autoSaveHint")}</Alert>' in interaction_source
         assert "<details" not in interaction_source
 
     for locale_path in sorted((root / "i18n").glob("*.json")):
@@ -889,6 +960,17 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.fields.platform",
         "panel.platform.bilibili",
         "panel.platform.douyin",
+        "panel.room.liveStatus",
+        "panel.liveStatus.live",
+        "panel.liveStatus.offline",
+        "panel.liveStatus.rounding",
+        "panel.liveStatus.unknown",
+        "panel.room.statusHint.live",
+        "panel.room.statusHint.offline",
+        "panel.room.statusHint.rounding",
+        "panel.room.statusHint.unknown",
+        "panel.console.returnCheck",
+        "panel.console.confirmStart",
         "panel.fields.douyinRoom",
         "panel.placeholders.douyinRoom",
         "panel.douyinAuth.title",
@@ -1216,6 +1298,43 @@ def test_developer_tools_use_three_internal_subpages_in_both_panels() -> None:
         assert 'label: t("panel.dev.runtimeResults")' in developer_source
         assert "<CompactTabs" in developer_source
         assert 'id="developer-tools"' in developer_source
+        assert 't("panel.dev.emitter.defaultNickname")' in source
+        assert 't("panel.dev.emitter.defaultDanmaku")' in source
+        assert 'First time here, can you roast my avatar?' not in source
+        assert 'Demo viewer' not in source
+
+    components = (root / "ui" / "panel_components.tsx").read_text(encoding="utf-8")
+    sections = (root / "ui" / "panel_data_sections.tsx").read_text(encoding="utf-8")
+    compat = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
+    for source in (components, compat):
+        assert 'localizedModuleTitle(row, t)' in source
+    for source in (sections, compat):
+        assert 'localizedStatusCode(t, String(row.status || ""))' in source
+
+    required_keys = {
+        "panel.dev.emitter.defaultNickname",
+        "panel.dev.emitter.defaultDanmaku",
+        "panel.modules.biliLiveInput",
+        "panel.modules.biliIdentity",
+        "panel.modules.douyinIdentity",
+        "panel.modules.liveAudienceSession",
+        "panel.modules.douyinLiveInput",
+        "panel.modules.viewerProfile",
+        "panel.modules.developerSandbox",
+        "panel.modules.liveEvents",
+        "panel.statusCode.idle",
+        "panel.statusCode.blocked",
+        "panel.statusCode.healthy",
+        "panel.statusCode.failed",
+        "panel.statusCode.skipped",
+        "panel.statusCode.ok",
+        "panel.statusCode.pushed",
+        "panel.statusCode.live_disabled",
+        "panel.statusCode.unknown",
+    }
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        locale = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert required_keys <= set(locale), locale_path.name
 
 
 def test_audience_page_separates_session_data_from_viewer_profiles() -> None:

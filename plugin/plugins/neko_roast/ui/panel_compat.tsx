@@ -22,6 +22,7 @@ import {
   Tabs,
   Text,
   Textarea,
+  Tooltip,
   Toolbar,
   ToolbarGroup,
   useCallback,
@@ -140,8 +141,6 @@ const sandboxDefaults = {
 
 const presetViewer = {
   uid: "9000000000000001",
-  nickname: "Demo viewer",
-  danmaku_text: "First time here, can you roast my avatar?",
 }
 
 /* bundled source: ui/panel_helpers.ts */
@@ -158,6 +157,19 @@ function liveStatusTone(summary: string): "success" | "warning" | "danger" | "de
   if (summary === "ready_to_stream") return "success"
   if (summary === "test_only" || summary === "temporarily_not_speaking") return "warning"
   if (summary === "cannot_stream") return "danger"
+  return "default"
+}
+
+function normalizeRoomLiveStatus(value: any): "live" | "offline" | "rounding" | "unknown" {
+  const status = String(value || "").trim().toLowerCase()
+  if (status === "live" || status === "offline" || status === "rounding") return status
+  return "unknown"
+}
+
+function roomLiveStatusTone(status: string): "success" | "warning" | "info" | "default" {
+  if (status === "live") return "success"
+  if (status === "rounding") return "info"
+  if (status === "offline" || status === "unknown") return "warning"
   return "default"
 }
 
@@ -200,6 +212,12 @@ function panelText(t: (key: string) => string, key: string, fallback: string): s
   const value = t(key)
   if (!value || value === key || value.startsWith("panel.") || value.startsWith("entries.")) return fallback
   return value
+}
+
+function localizedStatusCode(t: (key: string) => string, status: string): string {
+  const code = String(status || "").trim().toLowerCase()
+  if (!code) return "-"
+  return panelText(t, `panel.statusCode.${code}`, code.replace(/_/g, " "))
 }
 
 function labelFallback(group: string, value: string): string {
@@ -734,6 +752,27 @@ function StatusBadgeRow({
   )
 }
 
+const moduleTitleKeys: Record<string, string> = {
+  bili_live_ingest: "panel.modules.biliLiveInput",
+  douyin_live_ingest: "panel.modules.douyinLiveInput",
+  bili_identity: "panel.modules.biliIdentity",
+  douyin_identity: "panel.modules.douyinIdentity",
+  live_audience_session: "panel.modules.liveAudienceSession",
+  viewer_profile: "panel.modules.viewerProfile",
+  avatar_roast: "panel.interaction.module.avatarRoast.title",
+  danmaku_response: "panel.interaction.module.danmakuResponse.title",
+  live_support_events: "panel.interaction.module.liveSupportEvents.title",
+  active_engagement: "panel.interaction.module.activeEngagement.title",
+  warmup_hosting: "panel.interaction.module.warmupHosting.title",
+  developer_sandbox: "panel.modules.developerSandbox",
+  live_events: "panel.modules.liveEvents",
+}
+
+function localizedModuleTitle(module: any, t: PanelTranslator): string {
+  const key = moduleTitleKeys[String(module?.id || "")]
+  return key ? t(key) : String(module?.title || module?.id || "-")
+}
+
 function ModuleOverviewCard({ modules, t }: { modules: Array<Record<string, any>>; t: PanelTranslator }) {
   return (
     <Card title={t("panel.tabs.modules")}>
@@ -742,7 +781,7 @@ function ModuleOverviewCard({ modules, t }: { modules: Array<Record<string, any>
           data={modules.map((item: any, index: number) => ({ ...item, id: item.id || String(index) }))}
           rowKey="id"
           columns={[
-            { key: "title", label: t("panel.modules.name"), render: (row: any) => row.title || row.id || "-" },
+            { key: "title", label: t("panel.modules.name"), render: (row: any) => localizedModuleTitle(row, t) },
             { key: "status", label: t("panel.modules.status"), render: (row: any) => <ModuleHealthBadge module={row} t={t} /> },
             { key: "id", label: "ID", render: (row: any) => row.id || "-" },
           ]}
@@ -932,7 +971,7 @@ function LiveExplainSection({
             rowKey="row_id"
             columns={[
               { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || row.id || "-" },
-              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "blocked" ? "warning" : row.status === "healthy" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "blocked" ? "warning" : row.status === "healthy" ? "success" : "default"} label={localizedStatusCode(t, String(row.status || ""))} /> },
               { key: "last_outcome", label: t("panel.columns.message"), render: (row: any) => row.last_outcome || "-" },
               { key: "last_skip_reason", label: t("panel.columns.detail"), render: (row: any) => row.last_skip_reason || "-" },
             ]}
@@ -944,7 +983,7 @@ function LiveExplainSection({
             rowKey="row_id"
             columns={[
               { key: "stage", label: t("panel.explain.stage"), render: (row: any) => row.stage || "-" },
-              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "skipped" ? "warning" : row.status === "ok" ? "success" : "default"} label={String(row.status || "-")} /> },
+              { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "failed" ? "danger" : row.status === "skipped" ? "warning" : row.status === "ok" ? "success" : "default"} label={localizedStatusCode(t, String(row.status || ""))} /> },
               { key: "route", label: t("panel.columns.responseModule"), render: (row: any) => row.route || "-" },
               { key: "reason", label: t("panel.columns.detail"), render: (row: any) => row.reason || "-" },
             ]}
@@ -973,7 +1012,7 @@ function RecentResultsTable({ t, results }: { t: PanelTranslator; results: any[]
               const signal = String(row.event_signal || "unknown")
               return <StatusBadge tone={eventSignalTone(signal)} label={eventSignalLabel(signal, t)} />
             } },
-            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={String(row.status || "-")} /> },
+            { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={recentResultTone(String(row.status || ""))} label={localizedStatusCode(t, String(row.status || ""))} /> },
             { key: "response_latency_ms", label: t("panel.columns.responseLatency"), render: (row: any) => formatLatencyMs(row.response_latency_ms) },
             { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
           ]}
@@ -1050,8 +1089,8 @@ function ViewerProfilesTable({
         footer={
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", flexWrap: "wrap" }}>
             <Button tone="default" disabled={actionPending} onClick={() => setSelectedProfile(null)}>{t("panel.actions.cancel")}</Button>
-            <Button tone="info" disabled={actionPending} onClick={() => setPendingAction("reset")}>{t("panel.actions.resetViewerImpression")}</Button>
-            <Button tone="danger" disabled={actionPending} onClick={() => setPendingAction("delete")}>{t("panel.actions.deleteViewerProfile")}</Button>
+            <Button tone="info" disabled={actionPending} onClick={() => { setPendingAction("reset") }}>{t("panel.actions.resetViewerImpression")}</Button>
+            <Button tone="danger" disabled={actionPending} onClick={() => { setPendingAction("delete") }}>{t("panel.actions.deleteViewerProfile")}</Button>
           </div>
         }
       >
@@ -1270,6 +1309,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const [interactionDialog, setInteractionDialog] = useState<"avatar_roast" | "danmaku_response" | "live_support_events" | "warmup_hosting" | "idle_hosting" | "active_engagement" | "">("")
   const [connectPending, setConnectPending] = useState(false)
   const [sessionStartAccepted, setSessionStartAccepted] = useState(false)
+  const [startConfirmOpen, setStartConfirmOpen] = useState(false)
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false)
   const [allowLimitedConnection, setAllowLimitedConnection] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
@@ -1301,6 +1341,8 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const toast = useToast()
   const configForm = useForm({ ...configDefaults })
   const sandboxForm = useForm({ ...sandboxDefaults })
+  const presetViewerNickname = t("panel.dev.emitter.defaultNickname")
+  const presetViewerDanmaku = t("panel.dev.emitter.defaultDanmaku")
 
   useEffect(() => {
     try {
@@ -1879,7 +1921,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     const nickname =
       sandboxForm.values.nickname.trim() ||
       String(identity.nickname || identity.name || "").trim() ||
-      (!uid && !typedTarget ? presetViewer.nickname : "")
+      (!uid && !typedTarget ? presetViewerNickname : "")
     const avatarUrl = sandboxForm.values.avatar_url.trim() || String(identity.avatar_url || "").trim()
     const target = uid ? "" : typedTarget || "__demo__"
     try {
@@ -1888,7 +1930,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         uid,
         nickname,
         avatar_url: avatarUrl,
-        danmaku_text: sandboxForm.values.danmaku_text.trim() || presetViewer.danmaku_text,
+        danmaku_text: sandboxForm.values.danmaku_text.trim() || presetViewerDanmaku,
       })
       const result = unwrapActionResult(envelope)
       setSandboxResult(result)
@@ -2035,9 +2077,17 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const configuredRoomRef = String(config.live_room_ref || config.live_room_id || "").trim()
   const currentRoomRef = String(connection.room_ref || configuredRoomRef || "").trim()
   const lookupRoomRef = String(liveRoomResult?.room_ref || liveRoomResult?.room_id || "").trim()
-  const roomLookupTone: "success" | "warning" = liveRoomResult?.ok ? "success" : "warning"
+  const roomLookupLiveStatus = normalizeRoomLiveStatus(liveRoomResult?.live_status)
+  const roomLookupStatusTone = roomLiveStatusTone(roomLookupLiveStatus)
   const roomFormRef = roomDraft.trim()
   const canConfirmLiveRoom = Boolean(liveRoomResult?.ok && queriedRoomRef === roomFormRef)
+  const currentRoomLiveStatus = normalizeRoomLiveStatus(
+    lookupRoomRef && lookupRoomRef === currentRoomRef ? liveRoomResult?.live_status : liveStatus.live_status
+  )
+  const currentRoomStatusTone = roomLiveStatusTone(currentRoomLiveStatus)
+  const currentRoomTitle = lookupRoomRef && lookupRoomRef === currentRoomRef
+    ? String(liveRoomResult?.title || "").trim()
+    : ""
   const loginLoggedIn = !!(loginState && (loginState.logged_in === true || loginState.status === "done" || loginState.status === "already_logged_in"))
   const loginName = (loginState && loginState.username) || ""
   const loginUid = (loginState && loginState.uid) || ""
@@ -2080,7 +2130,36 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     allowLimitedConnection || connectionAuthMode === "limited_accountless"
   )
   const loginRequired = livePlatform === "bilibili" && !loginLoggedIn && !limitedConnection
-  const canStart = roomConfigured && (livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : douyinLoggedIn) && !connectPending && !sessionInProgress
+  const accountStartReady = livePlatform === "bilibili" ? (loginLoggedIn || limitedConnection) : douyinLoggedIn
+  const savedCooldownSeconds = Number(config.rate_limit_seconds ?? configForm.values.rate_limit_seconds ?? 20)
+  const liveSettingsReady = Boolean(String(config.live_mode || configForm.values.live_mode || "").trim()) && Number.isFinite(savedCooldownSeconds) && savedCooldownSeconds >= 0
+  const unsafeSafetyStates = new Set(["paused", "tripped", "degraded"])
+  const safetyCheckReady = !connectPending && !sessionInProgress && !unsafeSafetyStates.has(String(safety.status || ""))
+  const canStart = roomConfigured && accountStartReady && liveSettingsReady && safetyCheckReady
+  const preparationSteps = [
+    {
+      label: t(limitedConnection && !accountReady ? "panel.console.preparation.limitedAccount" : "panel.console.preparation.login"),
+      complete: accountStartReady,
+    },
+    { label: t("panel.console.preparation.lookupRoom"), complete: roomConfigured || canConfirmLiveRoom },
+    { label: t("panel.console.preparation.confirmRoom"), complete: roomConfigured },
+    { label: t("panel.console.preparation.liveSettings"), complete: liveSettingsReady },
+    { label: t("panel.console.preparation.safety"), complete: safetyCheckReady },
+  ]
+  const preparationCompleted = preparationSteps.filter((step) => step.complete).length
+  const readinessTooltip = (
+    <span style={{ display: "grid", gap: "6px", minWidth: "220px" }}>
+      <strong>{t("panel.console.preparation.title")} · {preparationCompleted}/{preparationSteps.length}</strong>
+      {preparationSteps.map((step) => (
+        <span key={step.label} style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+          <span aria-hidden="true" style={{ color: step.complete ? "var(--success)" : "var(--warning)", fontWeight: 800 }}>
+            {step.complete ? "✓" : "○"}
+          </span>
+          <span>{step.label}</span>
+        </span>
+      ))}
+    </span>
+  )
   const primaryStatusLabel = started
     ? t("panel.console.state.live")
     : connectPending
@@ -2192,7 +2271,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const consoleSection = (
     <div
       className="neko-roast-console-layout"
-      style={{ display: "grid", gridTemplateRows: "auto auto", minHeight: "360px", overflow: "visible" }}
+      style={{ display: "grid", gridTemplateRows: "auto", minHeight: "360px", overflow: "visible", paddingBottom: "120px", scrollPaddingBottom: "120px" }}
     >
       <div className="neko-roast-console-scroll" style={{ minHeight: 0, overflow: "visible" }}>
         <Stack>
@@ -2344,15 +2423,20 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         title={t("panel.console.roomModalTitle")}
         onClose={closeConsoleDialog}
         footer={(
-          <Grid cols={3}>
+          <Grid cols={2}>
             <Button tone="default" disabled={consoleSaving} onClick={closeConsoleDialog}>{t("panel.actions.cancel")}</Button>
-            <Button tone="info" disabled={consoleSaving} onClick={lookupLiveRoom}>{t("panel.actions.lookupRoom")}</Button>
-            <Button tone="success" disabled={consoleSaving || !canConfirmLiveRoom} onClick={confirmLiveRoom}>{t("panel.console.confirmRoom")}</Button>
+            <Button
+              tone={canConfirmLiveRoom ? "success" : "info"}
+              disabled={consoleSaving || !roomFormRef}
+              onClick={canConfirmLiveRoom ? confirmLiveRoom : lookupLiveRoom}
+            >
+              {canConfirmLiveRoom ? t("panel.console.confirmRoom") : t("panel.actions.lookupRoom")}
+            </Button>
           </Grid>
         )}
       >
-        <Stack>
-          <Alert tone="info">{t("panel.console.roomTwoStepHint")}</Alert>
+        <Stack gap={8}>
+          {!liveRoomResult?.ok ? <Alert tone="info">{t("panel.console.roomTwoStepHint")}</Alert> : null}
           <Field label={roomFieldLabel}>
             <Input
               value={roomDraft}
@@ -2364,18 +2448,31 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
               }}
             />
           </Field>
-          {livePlatform === "bilibili" ? <Text>{t("panel.console.roomNumeric")}</Text> : null}
-          {liveRoomResult ? (
-            <Alert tone={roomLookupTone}>
-              {liveRoomResult.ok ? t("panel.room.lookupOk") : (liveRoomResult.message || t("panel.room.lookupFailed"))}
-            </Alert>
+          {livePlatform === "bilibili" && !liveRoomResult?.ok ? <Text>{t("panel.console.roomNumeric")}</Text> : null}
+          {liveRoomResult && !liveRoomResult.ok ? (
+            <Alert tone="warning">{liveRoomResult.message || t("panel.room.lookupFailed")}</Alert>
           ) : null}
           {liveRoomResult?.ok ? (
-            <Grid cols={3}>
-              <StatCard label={t("panel.stats.room")} value={lookupRoomRef || "-"} />
-              <StatCard label={t("panel.room.titleLabel")} value={liveRoomResult.title || "-"} />
-              <StatCard label={t("panel.room.anchor")} value={liveRoomResult.anchor_name || "-"} />
-            </Grid>
+            <Stack gap={8}>
+              <Alert tone={roomLookupStatusTone}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                  <StatusBadge tone={roomLookupStatusTone} label={t(`panel.liveStatus.${roomLookupLiveStatus}`)} />
+                  <span>{t(`panel.room.statusHint.${roomLookupLiveStatus}`)}</span>
+                </div>
+              </Alert>
+              <div style={{ border: "1px solid var(--border)", borderRadius: "12px", overflow: "hidden", background: "var(--surface)" }}>
+                {[
+                  [t("panel.stats.room"), lookupRoomRef || "-"],
+                  [t("panel.room.titleLabel"), liveRoomResult.title || "-"],
+                  [t("panel.room.anchor"), liveRoomResult.anchor_name || "-"],
+                ].map(([label, value], index) => (
+                  <div key={String(label)} style={{ display: "grid", gridTemplateColumns: "minmax(88px, 0.32fr) minmax(0, 1fr)", gap: "12px", alignItems: "center", padding: "8px 10px", borderTop: index ? "1px solid var(--border)" : "none" }}>
+                    <span style={{ color: "var(--muted)", fontSize: "13px" }}>{label}</span>
+                    <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>{value}</strong>
+                  </div>
+                ))}
+              </div>
+            </Stack>
           ) : null}
         </Stack>
       </Modal>
@@ -2425,6 +2522,45 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         </Stack>
       </Modal>
 
+      <Modal
+        open={startConfirmOpen}
+        title={t("panel.console.startTitle")}
+        onClose={() => { setStartConfirmOpen(false) }}
+        footer={(
+          <Grid cols={2}>
+            <Button tone="default" onClick={() => { setStartConfirmOpen(false) }}>{t("panel.console.returnCheck")}</Button>
+            <Button tone="success" onClick={() => {
+              setStartConfirmOpen(false)
+              void connectRoom()
+            }}>{t("panel.console.confirmStart")}</Button>
+          </Grid>
+        )}
+      >
+        <Stack gap={12}>
+          <Alert tone={currentRoomStatusTone}>
+            <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+              <StatusBadge tone={currentRoomStatusTone} label={t(`panel.liveStatus.${currentRoomLiveStatus}`)} />
+              <span>{t(`panel.room.statusHint.${currentRoomLiveStatus}`)}</span>
+            </div>
+          </Alert>
+          <div style={{ border: "1px solid var(--border)", borderRadius: "12px", overflow: "hidden", background: "var(--surface)" }}>
+            {[
+              [t("panel.platform.title"), `${livePlatformLabel} · ${accountLabel}`],
+              [t("panel.stats.room"), currentRoomTitle ? `${currentRoomRef || "-"} · ${currentRoomTitle}` : (currentRoomRef || "-")],
+              [t("panel.room.liveStatus"), t(`panel.liveStatus.${currentRoomLiveStatus}`)],
+              [t("panel.fields.mode"), dynamicLabel("liveModeRole", "panel.liveModeRole", liveMode)],
+              [t("panel.liveStatusSummary.cooldown"), `${savedCooldownSeconds.toFixed(0)}s`],
+            ].map(([label, value], index) => (
+              <div key={String(label)} style={{ display: "grid", gridTemplateColumns: "minmax(88px, 0.32fr) minmax(0, 1fr)", gap: "14px", alignItems: "center", padding: "10px 12px", borderTop: index ? "1px solid var(--border)" : "none" }}>
+                <span style={{ color: "var(--muted)", fontSize: "13px" }}>{label}</span>
+                <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>{value}</strong>
+              </div>
+            ))}
+          </div>
+          <Text>{t("panel.console.startMessage")}</Text>
+        </Stack>
+      </Modal>
+
       <ConfirmDialog
         open={stopConfirmOpen}
         title={t("panel.console.stopTitle")}
@@ -2440,19 +2576,41 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       />
         </Stack>
       </div>
-      <footer
-        className="neko-roast-console-dock"
+      <div
+        className="neko-roast-live-fab"
         aria-label={t("panel.console.runtimeTitle")}
-        style={{ position: "sticky", bottom: 0, zIndex: 2, display: "grid", gridTemplateColumns: "minmax(260px, 520px)", alignItems: "center", justifyContent: "center", minHeight: "68px", padding: "10px 14px", borderTop: "1px solid var(--border)", background: "var(--surface-strong)" }}
+        style={{ position: "fixed", right: "20px", bottom: "20px", zIndex: 20, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
       >
-        {started ? (
-          <Button tone="danger" disabled={!!simpleActionPending} onClick={() => { setStopConfirmOpen(true) }}>{t("panel.actions.disconnect")}</Button>
+        {!started && !canStart && !connectPending ? (
+          <Tooltip content={readinessTooltip} placement="top">
+            <button
+              type="button"
+              className="neko-button"
+              data-tone="default"
+              disabled
+              style={{ minWidth: "148px", minHeight: "48px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)" }}
+            >
+              <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
+              {t("panel.console.preparation.notReady")}
+            </button>
+          </Tooltip>
         ) : (
-          <Button tone="success" disabled={!canStart} onClick={connectRoom}>
-            {connectPending ? t("panel.console.state.connecting") : t("panel.actions.connect")}
-          </Button>
+          <button
+            type="button"
+            className="neko-button"
+            data-tone={started ? "danger" : "success"}
+            disabled={connectPending || !!simpleActionPending}
+            onClick={() => {
+              if (started) setStopConfirmOpen(true)
+              else if (canStart) setStartConfirmOpen(true)
+            }}
+            style={{ minWidth: "148px", minHeight: "48px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)" }}
+          >
+            <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
+            {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
+          </button>
         )}
-      </footer>
+      </div>
     </div>
   )
 
@@ -2845,7 +3003,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
         onClose={closeInteractionDialog}
         footer={<Button tone="default" onClick={() => { setInteractionDialog("") }}>{t("panel.actions.cancel")}</Button>}
       >
-        {interactionDialogContent}
+        <Stack gap={12}>
+          <Alert tone="info">{t("panel.interaction.autoSaveHint")}</Alert>
+          {interactionDialogContent}
+        </Stack>
       </Modal>
     </Stack>
   )
@@ -3045,10 +3206,10 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const emitterNickname =
     sandboxForm.values.nickname.trim() ||
     String(lookupIdentity?.nickname || lookupIdentity?.name || "").trim() ||
-    presetViewer.nickname
+    presetViewerNickname
   const emitterAvatar = sandboxForm.values.avatar_url.trim() || String(lookupIdentity?.avatar_url || "").trim()
   const emitterAvatarSrc = sandboxForm.values.avatar_url.trim() || lookupAvatarSrc
-  const emitterDanmaku = sandboxForm.values.danmaku_text.trim() || presetViewer.danmaku_text
+  const emitterDanmaku = sandboxForm.values.danmaku_text.trim() || presetViewerDanmaku
 
   const developerSandbox = (
     <Stack>
@@ -3102,7 +3263,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
                 <Card title={t("panel.dev.emitter.title")}>
                   <Stack>
                     <Field label={t("panel.fields.danmaku")}>
-                      <Input value={sandboxForm.values.danmaku_text} placeholder={presetViewer.danmaku_text} onChange={(value) => sandboxForm.setField("danmaku_text", value)} />
+                      <Input value={sandboxForm.values.danmaku_text} placeholder={presetViewerDanmaku} onChange={(value) => sandboxForm.setField("danmaku_text", value)} />
                     </Field>
                     <Grid cols={3}>
                       <Field label={t("panel.fields.overrideUid")}>
@@ -3180,7 +3341,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
                       columns={[
                         { key: "uid", label: "UID", render: (row: any) => row.uid || "-" },
                         { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.nickname || "-" },
-                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={String(row.status || "-")} /> },
+                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={localizedStatusCode(t, String(row.status || ""))} /> },
                         { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
                       ]}
                     />
@@ -3216,7 +3377,12 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
   const currentOnboarding = onboardingSteps[Math.min(onboardingStep, onboardingSteps.length - 1)]
 
   return (
-    <Page title={t("panel.title")} subtitle={t("panel.subtitle")}>
+    <Page className="neko-roast-page" title={t("panel.title")} subtitle={t("panel.subtitle")}>
+      <style>{`
+        .neko-page.neko-roast-page {
+          animation-fill-mode: backwards !important;
+        }
+      `}</style>
       {!safeState.store_enabled ? <Alert tone="warning">{t("panel.store.disabled")}</Alert> : null}
       <Modal
         open={onboardingOpen}

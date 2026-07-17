@@ -83,7 +83,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **P2-T2.1 限流** | `safety_guard.before_output(event)` 按 `rate_limit_seconds` 控最小锐评间隔（直播态生效、沙盒豁免） | 单测 + 真机 |
 | **富模型修复** | `livedanmaku.from_danmaku`：`info[7]`（int 大航海等级）被当列表 → 任意弹幕 TypeError 被吞、`on_event("DANMU_MSG")` 永不触发，已修 + 全下标加守卫 | `tests/test_livedanmaku.py` 9 用例 |
 | **人气值 UI** | 后端透传的 `viewer_count` 之前没在面板渲染 → `panel.tsx` 加"人气值"卡 + 8 locale | **无需 rebuild 前端**：panel.tsx 由 plugin-manager 用 sucrase **运行时转译**（`hosted/tsxRuntime.ts`），后端已确认供含人气值卡的源码（`hosted-ui/source` 含 `viewer_count`/`panel.stats.viewers`）→ UI 里(重)开 neko_roast 面板即见；待肉眼确认 |
-| **P2.5 事件中枢** | 激活 `live_events` 中枢：富模型 `on_event` 接入 + `get_score` 开窗择优（弹幕 / 礼物 / SC / 上舰同窗竞争，舰长/总督/SC/礼物/牌子/高等级/长文本优先）+ 首评即时；轻量 `on_danmaku`→pipeline 直连退役防双锐评；新增 `safety_guard.output_cooldown_remaining()` 对齐窗口与限流冷却 | 单测 `tests/test_live_events.py` 8 用例 + 契约 1 条；**真机✓**（连 81004：一个窗口缓冲 4 条弹幕候选 → `get_score` 挑出舰长 `guard=3/score=1562` 投递，丢另 3 路人；dry_run 全程未投猫；断开后 `live_events.reset()` 清空生效）。gift/SC/guard 接线已单测覆盖，待真机补样本 |
+| **P2.5 事件中枢** | 激活 `live_events` 普通弹幕中枢：富模型 `on_event` 接入 + `get_score` 开窗择优 + 首评即时；轻量重复回调退役防双锐评；新增 `safety_guard.output_cooldown_remaining()` 对齐窗口与限流冷却。Gift / SC / Guard 已拆到 `live_support_events.scheduler`，不再和普通弹幕同窗竞争 | 单测与契约覆盖弹幕中枢、支持事件独立接线、真实性、去重、连击、优先级及队列边界；真机已验证弹幕窗口择优，支持事件仍需后续受控样本校准 |
 | **配置写竞争（插件侧免疫 + host 修复已进）** | `runtime.update_config` 反转为「先内存生效 → 带预算（4s）尽力持久化、超时/失败不回滚不阻塞」+ `asyncio.Lock` 串行化；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支，插件侧兜底继续保留 | 契约新增 2 用例（`update_config`/`connect` 持久化卡死不阻塞）；host/core 切片 `plugin/tests/unit/core/test_host_storage_layout_env.py` + `plugin/tests/unit/sdk/plugin/test_sdk_v2_plugin_base.py` 已用于验证修复依据；**真机✓**（原 500 的 `update_config{dry_run}`→OK 4.1s+`config_persist_timeout`，`connect`→OK 4.5s 真连上） |
 | **旧 bilibili_danmaku 待退役** | 连接、解析与扫码登录能力已独立迁入 NEKO Live，当前无运行时导入；但旧插件仍是可加载、可手动启动的完整插件，README/manifest 尚无真实弃用横幅，并保留平台内容读取、弹幕/评论/动态/私信写入、历史查询、用户管理和独立分析能力。旧目录有 41 个 tracked 文件，另有构建注释和通用测试夹具引用 | 只能确认直播主链路已独立，不能宣称完整功能对等；删除前须先完成能力清单与逐项迁移/替代/放弃决策 |
 | **A1 anti-352 for lookup** | `lookup_room_status` 加临时 buvid3（首页 Set-Cookie + 6h 缓存）+ 浏览器 headers + 撞 -352 刷新重试一次 + 成功 60s 缓存；只降频率，彻底消除需登录态(P5) | 契约 +3 用例；**真机 2026-06-17**：buvid3 能抓到、机制通，但本机重度风控 IP 4 房间仍全 -352 → 匿名不足，需 P5 登录态 |
@@ -91,7 +91,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **P5 登录态（登录部分）** | Fernet 加密凭据 store + 扫码登录服务（移植旧插件）+ runtime 4 action + 凭据接进 identity/ingest/lookup（**根治 -352、恢复头像**，credential=None 时零回归）+ 面板登录卡 + 8 locale；本地注销 | 契约/store +6 用例；**真机 2026-06-17 ✅**（用户扫码本人账号 uid 1408555810）：同房 81004 登录前匿名 lookup -352、登录后 -352 彻底消失 + 头像抓取恢复（`has_avatar:true`）+ 凭据加密落盘可解密回环。私信/写能力留待后续；登录卡 UI 肉眼验为非阻塞收尾 |
 | **UI 架构重构（6-tab 生命周期）** | 薄外壳 + 模块贡献：6 个一级页（控制台/直播间互动/观众/私信/自动化/⚙设置 + dev 条件追加）；`ModuleRegistry.setup_all/teardown_all` 逐模块 try/except 隔离 + `degraded` 标记；`BaseModule.config_schema()` 契约 + schema 驱动功能卡（boolean→Toggle / select→Select）；「一张嘴」切分（功能参数进卡、平台参数留设置）。契约文档 `docs/ui-architecture.md` | 单测 +4（`test_module_registry.py`）；契约 `test_panel_uses_six_top_level_tabs_in_order`；panel transpile OK |
 | **观众档案本地 JSON 持久化** | 历史上用于绕开宿主 `store.enabled` 构造期冻结 bug（见 `docs/devlog.md`），当前作为简洁可审计的档案写入边界继续保留：`viewer_store.py` 改写本机 `viewer_profiles.json`（原子写 tmp+os.replace + asyncio 锁 + 不可写回退默认目录 + audit）；dashboard 暴露实际在用的 `viewer_store` 路径和可写状态，替换失败会清理 tmp。#1884 已修复 host 数据根刷新；`viewer_store_dir` 自定义入口按当前产品范围继续隐藏 | 默认目录、自定义目录、回退读取、嵌套目录状态、路径冲突、失败 tmp 清理与档案治理回归通过；自定义目录 UI 不在当前范围 |
-| **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——`bili_live_ingest` 把富模型包成 `LiveEvent` 统一信封（`contracts.LiveEvent`：type/uid/payload/source/ts/schema_version/raw）发布到 `EventBus`；`EventBus` 升级为真订阅分发（`subscribe(type,handler,owner)` / `publish`），每订阅者隔离 + 归属（owner）+ audit（`event_handler_failed`）+ 无订阅者静默丢弃。`live_events` 改为**经 bus 订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"`** 的示范订阅者（`submit()` 签名不变、内部择优复用既有 pipeline 语境）。**这是「分发给其他开发者各写各事件 handler」的核心契约**（development.md「直播事件中枢（EventBus）」含第三方加 handler 配方）| 单测 +8（`test_event_bus.py`）+ 契约 +1；端到端经 bus 的 `test_live_listener_routes_rich_event_through_hub_to_pipeline` 仍绿；gift/SC/guard 接线已单测覆盖，短句致谢 handler 已由 `live_support_events` 接住 |
+| **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——provider ingest 把富模型包成 `LiveEvent` 统一信封发布到 `EventBus`；`EventBus` 提供隔离、归属与 audit。`live_events` 只订阅 `"danmaku"`，`live_support_events` 独立订阅 `"gift"` / `"super_chat"` / `"guard"`，确保每个事件族只有一个生产消费者。**这是「分发给其他开发者各写各事件 handler」的核心契约** | `test_event_bus.py`、listener lifecycle、live events 与 support scheduler 契约共同覆盖；rich event 经 bus 到唯一 handler，支持事件不会重复进入普通弹幕窗口 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel_components.tsx` 的 `ModuleRenderBoundary` 用 try/catch 包每张互动模块卡的同步渲染，单卡失败不黑屏整盘。② `ModuleRegistry.enable/disable` 对真实模块生命周期调用做隔离，单点失败标 degraded + audit | 地基、单测、契约和 panel transpile 已完成。普通功能偏好开关继续使用明确 runtime config gate，不把偏好开关误接成模块卸载；后续只有真实模块需要动态装卸时才使用 lifecycle API |
 
 历史阶段测试基线（2026-06-20；当前基线以 `development.md`「测试门禁」为准）：`uv run pytest plugin/plugins/neko_roast/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_roast 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
@@ -125,7 +125,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 ## 7. 路线图（短线已完，下面是长线，按需推进）
 
-- **P2.5 事件中枢/事件族（地基）**：✅ **已完成当前地基**——接入富模型 `on_event` + `get_score()` 开窗缓冲值优选（`live_events` 中枢，`DANMU_MSG` / `SEND_GIFT` / `SUPER_CHAT_MESSAGE` / `GUARD_BUY` 同窗竞争；首评即时；见 development.md「直播事件中枢」）。**完整版进度**：~~定 `LiveEvent` 统一信封（`type/uid/payload/ts/source/schema_version/raw`）~~ ✅（`contracts.LiveEvent`）；~~`EventBus` 升级为真正的订阅分发（每订阅者隔离+归属+audit）~~ ✅（`core/event_bus.py`，见 development.md「直播事件中枢（EventBus）」）；~~`InteractionModule` 补 `on_enable/on_disable`~~ ✅（`ModuleRegistry.enable/disable` 隔离调用）；~~窗口择优扩到非弹幕事件~~ ✅（gift/SC/guard 参与 `get_score` 竞争）；~~Gift / SC / Guard 短句致谢 handler~~ ✅（`live_support_events`）。**剩**：更细的事件族产品能力，例如 SC 朗读、上舰欢迎、贡献榜或权益流程（P3+）。
+- **P2.5 事件中枢/事件族（地基）**：✅ **已完成当前地基**——接入富模型 `on_event`；普通弹幕由 `live_events` 做 `get_score()` 开窗择优与首评即时，Gift / SC / Guard 由 `live_support_events.scheduler` 独立完成真实性、去重、聚合、优先级与有界排队（见 development.md 对应章节）。`LiveEvent` 统一信封、EventBus 隔离分发和模块 lifecycle 均已落地。**剩**：更细的事件族产品能力，例如 SC 朗读、上舰欢迎、贡献榜或权益流程（P3+）。
 - **P4 档案/记忆**：✅ **安全画像 v1 与普通用户治理已落地**（`viewer_store.py` → `viewer_profiles.json`；个性化默认开启、90 天惰性清理、普通用户开关/清空全部/单 UID 重置印象与删除档案）。当前版本明确不采集 `contribution_rank`、`watch_time`；真实直播只需校准现有画像质量和隐私说明。
 - **P5 私信 / 平台写能力**：不属于当前产品范围。若未来立项，`bili_dm_ingest`（收）与 `bili_write_tools`（发）必须作为独立域重新做权限、登录态、风控和安全评审；现有扫码登录能力已经独立位于 `adapters/bili_auth_service.py`，不得依赖旧插件包。
 - **P6 主播自动化**：不属于当前产品范围。若未来立项，须先拍板 `automation_ops` 的归属、授权模型、可撤销边界和成本；当前不执行浏览器或键鼠自动化。
@@ -137,7 +137,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 1. ~~**值优选策略**：爆量时全评 / `get_score` 优选 / 采样？~~ ✅ **已定**：`get_score` 开窗优选 + 首评即时（P2.5 已落地，见 development.md「直播事件中枢」）。
 2. **`automation_ops` 归属**：仅在未来重新立项主播自动化时再拍板；当前不做浏览器或键鼠自动化。
 3. ~~**登录态 cookie 怎么拿/存**~~ ✅ **已定**：B 站扫码登录凭据只经 `CredentialStore` 加密落盘，公开状态只回显安全账号信息；无账号兜底必须由本次连接显式确认。平台写能力若未来立项仍需独立权限评审。
-4. **退役旧 `bilibili_danmaku`**（与 NEKO Live 同房间会双连冲突）：2026-06-16 只完成了旧 `from_danmaku` 字段错位修复；当前代码中的 README/manifest 并没有真实弃用横幅，插件仍可加载和手动启动。直播连接、解析和扫码登录已迁入，但 47 个旧入口中仍有平台内容读写、历史查询、用户管理和分析/运营能力未完成取舍。先做能力迁移矩阵，再决定逐项吸收、由 NEKO Live 现有能力替代、拆成独立插件，或明确废弃；完成前不得删除 41 个 tracked 文件。
+4. **退役旧 `bilibili_danmaku`**（与 NEKO Live 同房间会双连冲突）：2026-06-16 只完成了旧 `from_danmaku` 字段错位修复；当前代码中的 README/manifest 并没有真实弃用横幅，插件仍可加载和手动启动。直播连接、解析和扫码登录已迁入；47 个公开入口与内部能力的迁移矩阵已于 2026-07-17 完成。当前先处理矩阵中的获批吸收项和独立插件取舍，完成前不得删除 41 个 tracked 文件。
 5. ~~**配置写竞争根治**（host 级，可能与在途 WIP 相关）~~ ✅ **插件侧已根治症状**（`update_config` 内存先行 + 带预算尽力持久化，见 §5 与 development.md「配置持久化与写竞争」）；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
 
 ---
@@ -172,7 +172,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 ### 下一阶段（当前离线收尾完成后）
 
-1. **旧插件能力迁移矩阵与退役评估**：当前只确认登录与直播只读主链路已独立，不能直接删除 `bilibili_danmaku`。下一阶段逐项核对其 47 个入口及内部存储 / 分析能力，记录“已由 NEKO Live 替代 / 应吸收 / 应拆独立插件 / 明确废弃”，并先完成所有获批迁移。最终删除仍须从最新 `main` 建独立分支，不得与功能迁移 PR 堆叠。
+1. ~~**旧插件能力迁移矩阵与退役评估**~~ ✅ **矩阵已完成（2026-07-17）**：已逐项核对 `bilibili_danmaku` 的 47 个公开入口及内部存储 / 分析能力，结果记录在 `bilibili-danmaku-migration-matrix.md`。主播账号身份保护的产品契约已记录，但维护者决定延期；当前下一项是可信支持事件账本的独立设计，通用 B站 内容/写工具仅在维护者确认需要时再拆。最终删除仍须从最新 `main` 建独立分支，不得与功能迁移 PR 堆叠。
 
 ### 真机测试恢复后
 
@@ -202,7 +202,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 5. **P4 档案 / 记忆**：安全画像 v1 已落地弹幕计数、偏好标签计数、常聊话题、接梗提示、互动风格 / 回复偏好、短摘要、避坑提示和运行时派生投影；普通观众页提供精简摘要、详情、重置印象与删除档案，设置页提供默认开启的个性化开关、90 天说明和清空全部档案。`contribution_rank`、`watch_time` 暂不进入当前版本；未来若新增仍须单独确认产品价值、采集可信度和隐私成本，并继续遵守“不存原始弹幕 / raw payload / token / cookie / 可反推私密内容长文本”的边界。
 6. **P5 登录与显式无账号兜底校验已落地；私信 / 写能力不在当前范围**：B 站扫码登录已能加密保存凭据并服务 lookup、头像和监听；未登录时 runtime 只接受本次调用显式确认的受限兜底。未来 `bili_dm_ingest`（收）与 `bili_write_tools`（发）若重新立项，仍须独立做权限、登录态和安全评审，不得因为已有登录就默认开放写能力。
 7. **P6 主播自动化不在当前范围**：未来若重新立项 `automation_ops`，先做授权、撤销、成本和安全边界评审；当前不执行浏览器或键鼠自动化。
-8. **收官：删除 bilibili_danmaku**：当前只完成直播连接/解析/登录迁移，完整功能对等前置尚未满足。先完成 47 个入口与内部分析/存储能力的迁移矩阵和获批迁移；确认剩余能力均已替代或明确废弃后，再从最新 `main` 建独立分支删除 41 个 tracked 文件，并迁移构建注释和通用测试夹具引用。不得把删除混入功能迁移 PR。
+8. **收官：删除 bilibili_danmaku**：47 个入口与内部分析/存储能力的迁移矩阵已完成，但获批迁移和独立插件取舍尚未关闭。确认剩余能力均已替代、迁移或明确废弃后，再从最新 `main` 建独立分支删除 41 个 tracked 文件，并迁移构建注释和通用测试夹具引用。不得把删除混入功能迁移 PR。
 
 ### C. 多平台直播输入 / 抖音只读接入计划（分阶段实施中）
 
@@ -284,7 +284,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 - 2026-07-07 本机联调补充确认：N.E.K.O 后端与 N.E.K.O.-PC Electron 同时运行时，手动 Cookie 导入、状态检查、房间查询、bridge 启动、事件转发和停止回收路径可用；停止后无 `douyinLive.exe` 残留，bridge 端口只剩短暂 `TIME_WAIT`。二进制分发策略继续暂缓，不作为内部 v1 收尾阻塞项。
 - 观众档案规则已定：抖音 profile key 使用 `douyin:<webcastUid>` / 等价稳定 opaque id，`id` / `idStr=111111` 视为平台隐私占位，不得作为档案主键；昵称和头像都是可降级 metadata，不因默认头像或缺头像判定连接失败。
 - 交接后优先跑一次真实 Hosted UI 回归：平台切到 Douyin -> 输入房间 URL -> 查询/监听 -> `receiving` -> 弹幕进入 pipeline -> viewer profile 不串成 `111111` -> 停止后无 `douyinLive.exe` 残留。礼物只需确认 signal 可见，不做礼物答谢。
-- 未完成 / 不阻塞：bridge 二进制分发策略、普通主播登录体验，以及旧 `bilibili_danmaku` 的能力迁移矩阵与后续获批迁移。礼物答谢和普通用户画像治理已经完成；贡献榜、`watch_time` / `contribution_rank` 明确不进入当前版本。
+- 未完成 / 不阻塞：bridge 二进制分发策略、普通主播登录体验，以及旧 `bilibili_danmaku` 矩阵中的后续获批迁移。能力迁移矩阵、礼物答谢和普通用户画像治理已经完成；贡献榜、`watch_time` / `contribution_rank` 明确不进入当前版本。
 
 **实施前需要维护者确认的新增成本点**：
 - 是否接受抖音 v1 依赖内置非官方本地 bridge；这是二进制分发、协议漂移和进程生命周期成本，不是 UI 问题。
@@ -340,4 +340,4 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 1. ⏸ **真实直播验证**：仍是发布门槛，重点看 `live_support_events` 的 Gift / SC / Guard 致谢是否短、是否不索要更多支持、是否不污染普通弹幕接话 / 主动营业节奏；维护者恢复真机测试前不执行。
 2. ✅ **UI 离线收口**：四区导航、控制台主流程、只读数据区块拆分与仅可见时低频刷新契约已完成。进一步拆分必须证明能降低维护或渲染成本，不再为了文件大小继续重构。
 3. ~~**P4 画像治理打磨**~~ ✅ **产品契约与普通用户控制已完成**：当前只需在发布验收中校准现有画像质量；不补 `watch_time`、`contribution_rank`。
-4. **旧 `bilibili_danmaku` 能力盘点与迁移**：直播主链路迁移已完成，但平台内容读写、历史查询、用户管理和独立分析能力尚未逐项处理；先完成迁移矩阵和获批迁移，最终删除再单独走 branch/PR。
+4. **旧 `bilibili_danmaku` 获批迁移与退役**：47 个入口及内部能力矩阵已完成；主播身份保护已记录并延期，当前先做可信支持事件账本设计。通用内容/写工具仅在维护者确认需要时拆独立插件，最终删除另走独立 branch/PR。

@@ -45,8 +45,7 @@ async def run_event_flow(
             is_live_danmaku_with_text=needs_session_gate,
             is_transient_event=is_transient_event,
         ):
-            uid_lock = session.lock_for(identity.uid)
-            await uid_lock.acquire()
+            uid_lock = await session.acquire_uid_lock(identity.uid)
         try:
             already_roasted = False
             if uid_lock is not None:
@@ -151,7 +150,7 @@ async def run_event_flow(
             )
         finally:
             if uid_lock is not None:
-                uid_lock.release()
+                session.release_uid_lock(identity.uid, uid_lock)
     except Exception as exc:
         return fail_pipeline(ctx, event, steps, exc)
     finally:

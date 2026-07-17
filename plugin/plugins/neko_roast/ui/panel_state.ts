@@ -92,6 +92,4 @@ export const sandboxDefaults = {
 
 export const presetViewer = {
   uid: "9000000000000001",
-  nickname: "Demo viewer",
-  danmaku_text: "First time here, can you roast my avatar?",
 }

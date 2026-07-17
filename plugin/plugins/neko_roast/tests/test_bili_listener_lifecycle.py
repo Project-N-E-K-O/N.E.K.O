@@ -28,8 +28,9 @@ class _Audit:
 class _FakeListener:
     instances: list["_FakeListener"] = []
 
-    def __init__(self, room_id: int, **_kwargs: Any) -> None:
+    def __init__(self, room_id: int, **kwargs: Any) -> None:
         self.room_id = room_id
+        self.callbacks = dict(kwargs.get("callbacks") or {})
         self.ready = asyncio.Event()
         self.stopped = asyncio.Event()
         self.finished = asyncio.Event()
@@ -82,6 +83,22 @@ async def test_start_returns_only_after_auth_ready() -> None:
 
     assert await starting is True
     assert module.is_listening() is True
+    await module.stop_listening()
+
+
+@pytest.mark.asyncio
+async def test_listener_uses_rich_event_as_the_only_support_event_callback() -> None:
+    module = _module()
+    starting = asyncio.create_task(module.start_listening(123))
+    await asyncio.sleep(0)
+    listener = _FakeListener.instances[0]
+
+    assert "on_event" in listener.callbacks
+    assert "on_gift" not in listener.callbacks
+    assert "on_sc" not in listener.callbacks
+
+    listener.ready.set()
+    assert await starting is True
     await module.stop_listening()
 
 

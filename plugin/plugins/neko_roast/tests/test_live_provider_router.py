@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import LiveRoomStatus, ViewerEvent, ViewerIdentity
+from plugin.plugins.neko_roast.core.contracts import (
+    LiveRoomStatus,
+    ViewerEvent,
+    ViewerIdentity,
+    ViewerProfile,
+)
 from plugin.plugins.neko_roast.core.live_provider_router import LiveProviderRouter
 from plugin.plugins.neko_roast.core.pipeline_viewers import resolve_viewer_context
 
@@ -176,6 +181,51 @@ async def test_pipeline_viewer_context_uses_selected_live_provider_identity() ->
     assert viewer.profile.uid == "resolved:42"
     assert steps[0].id == "douyin_identity"
     assert steps[1].id == "viewer_profile"
+
+
+@pytest.mark.asyncio
+async def test_live_danmaku_records_profile_once_without_redundant_upsert() -> None:
+    class _Profiles:
+        def __init__(self) -> None:
+            self.upsert_calls = 0
+            self.record_calls = 0
+
+        async def upsert(self, identity: ViewerIdentity) -> ViewerProfile:
+            self.upsert_calls += 1
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname)
+
+        async def record_live_danmaku(
+            self,
+            identity: ViewerIdentity,
+            _danmaku_text: str,
+        ) -> ViewerProfile:
+            self.record_calls += 1
+            return ViewerProfile(
+                uid=identity.uid,
+                nickname=identity.nickname,
+                danmaku_count=1,
+            )
+
+    runtime = _runtime("douyin")
+    runtime.live_provider = LiveProviderRouter(runtime)
+    runtime.viewer_profile = _Profiles()
+    event = ViewerEvent(
+        uid="42",
+        nickname="viewer",
+        danmaku_text="hello",
+        source="live_danmaku",
+    )
+
+    viewer = await resolve_viewer_context(
+        runtime,
+        event,
+        [],
+        is_transient_event=False,
+    )
+
+    assert runtime.viewer_profile.record_calls == 1
+    assert runtime.viewer_profile.upsert_calls == 0
+    assert viewer.profile.danmaku_count == 1
 
 
 def test_router_status_defaults_and_listener_state_are_isolated() -> None:

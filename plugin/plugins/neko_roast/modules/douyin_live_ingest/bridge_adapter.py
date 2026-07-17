@@ -62,6 +62,7 @@ _USER_ID_KEYS = ("uid", "id", "idStr", "id_str", "user_id", "userId", *_STABLE_U
 _USER_NAME_KEYS = ("nickname", "nickName", "nick_name", "user_name", "userName", "name")
 _USER_AVATAR_KEYS = ("avatar_url", "avatar", "avatarUrl", "avatar_thumb", "avatarThumb")
 _GIFT_NAME_KEYS = ("gift_name", "giftName", "gift_name_str", "name", "displayName", "display_name", "describe")
+_UNAMBIGUOUS_GIFT_NAME_KEYS = ("gift_name", "giftName", "gift_name_str")
 _GIFT_COUNT_KEYS = (
     "gift_count",
     "giftCount",
@@ -177,7 +178,10 @@ def _payload_from_message(item: dict[str, Any], *, room_ref: str) -> dict[str, A
         "nickname": _first_from_paths(item, _paths(_USER_NAME_KEYS, _USER_PATH_PARENTS)),
         "text": _first(item, "text", "content", "msg", "message", "danmaku_text", "danmakuText"),
         "avatar_url": _avatar_url(item, event_type=event_type),
-        "gift_name": _gift_name(item),
+        "gift_name": _gift_name(
+            item,
+            allow_ambiguous_top_level=event_type in {"gift", "super_chat", "guard"},
+        ),
         "gift_count": _first_from_paths(item, _paths(_GIFT_COUNT_KEYS, _GIFT_PATH_PARENTS)),
         "gift_value": _first_from_paths(item, _paths(_GIFT_VALUE_KEYS, _GIFT_PATH_PARENTS)),
         "room_id": _first(item, "room_id", "roomId", "webcast_room_id", "webcastRoomId"),
@@ -262,11 +266,23 @@ def _first_contributor_user_id(source: dict[str, Any]) -> Any:
     return None
 
 
-def _gift_name(source: dict[str, Any]) -> Any:
-    value = _first(source, *_GIFT_NAME_KEYS)
+def _gift_name(
+    source: dict[str, Any],
+    *,
+    allow_ambiguous_top_level: bool = False,
+) -> Any:
+    top_level_keys = (
+        _GIFT_NAME_KEYS if allow_ambiguous_top_level else _UNAMBIGUOUS_GIFT_NAME_KEYS
+    )
+    value = _first(source, *top_level_keys)
     if value is not None:
         return value
-    value = _first_from_paths(source, _paths(_GIFT_NAME_KEYS, _GIFT_PATH_PARENTS))
+    nested_paths = tuple(
+        parent + (key,)
+        for parent in _GIFT_PATH_PARENTS
+        for key in _GIFT_NAME_KEYS
+    )
+    value = _first_from_paths(source, nested_paths)
     if value is not None:
         return value
     gift = source.get("gift")

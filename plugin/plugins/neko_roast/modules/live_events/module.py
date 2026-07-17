@@ -3,15 +3,16 @@
 职责（做什么）：
 - 订阅 live provider 发布到 ``EventBus`` 的富模型直播事件，统一通过 ``provider_event``
   helpers 读取 UID、文本、房间、事件类型和打分。
-- 爆量房间冷却期内**缓冲**候选弹幕、按 ``get_score()`` 打分，冷却结束**择优**（舰长/总督/
-  SC、礼物、上舰、粉丝牌、用户等级、长文本优先）取分最高者投 ``pipeline``；空闲态首条弹幕**即时**锐评
+- 爆量房间冷却期内**缓冲**候选弹幕、按 ``get_score()`` 打分，冷却结束**择优**（粉丝牌、
+  用户等级、长文本优先）取分最高者投 ``pipeline``；空闲态首条弹幕**即时**锐评
   （保留已真机验证的「首评观众即开口」DoD）。
 - 把限流从「冷却期 skip 掉所有人、冷却后第一个到达即选中」升级为「冷却期缓冲、到点择优」。
   每个窗口只有 1 条进 pipeline，顺带缓解 ``queue_limit`` 溢出。
 
 不做什么（当前边界）：
-- 只把弹幕/礼物/SC/上舰放进同一窗口择优。进场等事件仍交给各自 P3 handler。
-- 礼物/SC/上舰走 support-event 优先通道；普通弹幕里的“假礼物”仍由 danmaku_response 侧识别为未验证 claim。
+- 只处理普通弹幕。礼物/SC/上舰由 ``live_support_events`` 的独立有界调度器处理，
+  不与普通弹幕争用本窗口；进场等事件仍交给各自 handler。
+- 普通弹幕里的“假礼物”仍由 danmaku_response 侧识别为未验证 claim。
 - 不生成最终开口 prompt、不直接调 ``push_message`` / ``store.set``：胜者经 ``handle_live_payload``
   走既有 ``normalize -> pipeline -> safety_guard -> avatar_roast -> dispatcher`` 全链路；
   房间主题只作为 advisory prompt context 供下游 prompt builder 使用，

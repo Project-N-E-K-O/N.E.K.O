@@ -16,6 +16,7 @@
 - [贡献指南](contributing.md)：给第一次参与 NEKO Live 开发者的一页式入口。负责分支 / PR 起步、低风险任务、高风险 review gate 和提交前检查的短路径；完整规则仍链接到 `development.md` 与 `AGENTS.md`。
 - [Runtime Observability](runtime-observability.md)：运行态观测语言的权威来源。负责 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 和 Dashboard Visibility。
 - [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
+- [旧 `bilibili_danmaku` 能力迁移矩阵](bilibili-danmaku-migration-matrix.md)：逐项记录旧插件 47 个公开入口和内部能力的替代、吸收、独立插件或废弃决策；旧插件退役前必须以此关闭前置项。
 - [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
 - [2026-07-13 UI / UX 研究记录](ui-ux-research-2026-07-13.md)：重构前问题证据、外部案例和重构后的落实状态；只作为研究记录，当前 UI 规范仍以 `ui-architecture.md` 为准。
 - [2026-07-13 UI 设计验收记录](ui-design-qa-2026-07-13.md)：主播控制台重构的历史截图验收结论；只作为验收证据，不覆盖当前 UI 规范或后续实现状态。

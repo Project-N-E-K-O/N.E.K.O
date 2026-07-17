@@ -13,6 +13,35 @@ from plugin.plugins.neko_roast.core.contracts import (
 )
 from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
 from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
+from plugin.plugins.neko_roast.core.pipeline_session import PipelineSessionTracker
+
+
+@pytest.mark.asyncio
+async def test_pipeline_session_releases_idle_uid_lock_entry():
+    session = PipelineSessionTracker()
+
+    lock = await session.acquire_uid_lock("42")
+    assert session._uid_locks
+
+    session.release_uid_lock("42", lock)
+
+    assert session._uid_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_session_keeps_one_lock_for_waiting_same_uid_tasks():
+    session = PipelineSessionTracker()
+    first = await session.acquire_uid_lock("42")
+    waiting = asyncio.create_task(session.acquire_uid_lock("42"))
+    await asyncio.sleep(0)
+
+    assert not waiting.done()
+    session.release_uid_lock("42", first)
+
+    second = await asyncio.wait_for(waiting, timeout=1)
+    assert second is first
+    session.release_uid_lock("42", second)
+    assert session._uid_locks == {}
 
 
 def test_live_status_offline_gate_only_allows_verified_support_signals():

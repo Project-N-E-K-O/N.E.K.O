@@ -85,31 +85,35 @@ async def resolve_viewer_context(
             reason=f"{event.source} uses transient profile",
         )
     else:
-        profile = await ctx.viewer_profile.upsert(identity)
-        if _should_record_live_danmaku(event):
-            recorder = getattr(ctx.viewer_profile, "record_live_danmaku", None)
-            if callable(recorder):
-                try:
-                    recorded_profile = await recorder(identity, event.danmaku_text)
-                except Exception as exc:
-                    message = f"record_live_danmaku_failed: {type(exc).__name__}"
-                    steps.append(
-                        PipelineStep(
-                            "viewer_profile.record_live_danmaku",
-                            "failed",
-                            message,
-                        )
+        recorder = getattr(ctx.viewer_profile, "record_live_danmaku", None)
+        if _should_record_live_danmaku(event) and callable(recorder):
+            try:
+                recorded_profile = await recorder(identity, event.danmaku_text)
+            except Exception as exc:
+                message = f"record_live_danmaku_failed: {type(exc).__name__}"
+                steps.append(
+                    PipelineStep(
+                        "viewer_profile.record_live_danmaku",
+                        "failed",
+                        message,
                     )
-                    record_timeline(
-                        ctx,
-                        event,
-                        stage="viewer_profile.record_live_danmaku",
-                        status="failed",
-                        reason=message,
-                    )
-                else:
-                    if recorded_profile is not None:
-                        profile = recorded_profile
+                )
+                record_timeline(
+                    ctx,
+                    event,
+                    stage="viewer_profile.record_live_danmaku",
+                    status="failed",
+                    reason=message,
+                )
+                profile = await ctx.viewer_profile.upsert(identity)
+            else:
+                profile = (
+                    recorded_profile
+                    if recorded_profile is not None
+                    else await ctx.viewer_profile.upsert(identity)
+                )
+        else:
+            profile = await ctx.viewer_profile.upsert(identity)
         steps.append(PipelineStep("viewer_profile", "ok"))
         record_timeline(ctx, event, stage="viewer_profile", status="ok")
 
