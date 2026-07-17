@@ -583,6 +583,7 @@ Object.assign(AvatarButtonMixin.methods, {
             };
 
             const handleStart = (clientX, clientY, pointerType = 'mouse', sourceEvent = null, startPoint = null) => {
+                if (isDragging) return;
                 const button = _getNekoIdleReturnButtonFromContainer(container);
                 if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
                 clearDragSafetyTimer();

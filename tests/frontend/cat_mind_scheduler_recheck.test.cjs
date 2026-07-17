@@ -37,7 +37,8 @@ class CustomEventLike {
 
 function createRuntime(allowedActionId, options = {}) {
   let now = 1000;
-  const timers = [];
+  const timers = new Map();
+  let nextTimerId = 1;
   const requests = [];
   const gates = {
     returnPending: false,
@@ -54,10 +55,15 @@ function createRuntime(allowedActionId, options = {}) {
   let providerReady = options.providerReady !== false;
   let dryRunCalls = 0;
   const win = new EventTargetLike();
-  win.setTimeout = (callback) => {
-    timers.push(callback);
-    return timers.length;
+  win.setTimeout = (callback, delayMs = 0) => {
+    const id = nextTimerId++;
+    timers.set(id, {
+      callback,
+      dueAt: now + Math.max(0, Number(delayMs) || 0),
+    });
+    return id;
   };
+  win.clearTimeout = (id) => timers.delete(id);
   win.setInterval = () => 1;
   win.clearInterval = () => {};
   const context = {
@@ -85,7 +91,14 @@ function createRuntime(allowedActionId, options = {}) {
 
   const flush = () => {
     let remaining = 500;
-    while (timers.length && remaining-- > 0) timers.shift()();
+    while (remaining-- > 0) {
+      const due = [...timers.entries()]
+        .filter(([, timer]) => timer.dueAt <= now)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt || left[0] - right[0])[0];
+      if (!due) break;
+      timers.delete(due[0]);
+      due[1].callback();
+    }
     assert.ok(remaining > 0, 'scheduler must remain asynchronous and bounded');
   };
   const observe = (type, detail = {}, tier = 'cat1') => {
@@ -122,6 +135,10 @@ function createRuntime(allowedActionId, options = {}) {
     observe,
     enter,
     advanceNeed,
+    advanceTime: (milliseconds) => {
+      now += milliseconds;
+      flush();
+    },
     now: () => now,
     setNow: (value) => { now = value; },
     setProviderReady: (value) => { providerReady = value; },
@@ -260,4 +277,47 @@ test('done before started releases the request without cooldown or completion fe
     runtime.win.nekoCatMind.getDebugSnapshot().scheduler.lastProtocolFailure.type,
     'result_before_started'
   );
+});
+
+test('request lease deadlines release pending state and reconsider retained input on time', () => {
+  const unacknowledged = createRuntime('cat1_social_ping');
+  unacknowledged.enter();
+  unacknowledged.advanceNeed();
+  assert.equal(unacknowledged.requests.length, 1);
+  unacknowledged.observe('cat_hover_reaction');
+  assert.equal(
+    unacknowledged.win.nekoCatMind.getDebugSnapshot().lastDecision.reason,
+    'action_request_pending'
+  );
+  unacknowledged.setProviderReady(false);
+  unacknowledged.advanceTime(4998);
+  assert.ok(unacknowledged.win.nekoCatMind.getState().pendingActionRequest);
+  unacknowledged.advanceTime(1);
+  assert.equal(unacknowledged.win.nekoCatMind.getState().pendingActionRequest, null);
+  assert.equal(
+    unacknowledged.win.nekoCatMind.getDebugSnapshot().scheduler.lastProtocolFailure.type,
+    'request_unacknowledged_timeout'
+  );
+  assert.equal(unacknowledged.requests.length, 1, 'deadline must not self-retry a failed request');
+
+  const accepted = createRuntime('cat1_social_ping');
+  accepted.enter();
+  accepted.advanceNeed();
+  const request = accepted.requests[0];
+  assert.equal(accepted.win.nekoCatMind.acknowledgeActionRequest({
+    requestId: request.requestId,
+    actionId: request.actionId,
+    status: 'accepted',
+    runId: 'accepted-without-start',
+    timestamp: accepted.now(),
+  }), true);
+  accepted.observe('cat_hover_reaction');
+  accepted.setProviderReady(false);
+  accepted.advanceTime(11999);
+  assert.equal(accepted.win.nekoCatMind.getState().pendingActionRequest, null);
+  assert.equal(
+    accepted.win.nekoCatMind.getDebugSnapshot().scheduler.lastProtocolFailure.type,
+    'accepted_not_started_timeout'
+  );
+  assert.equal(accepted.requests.length, 1, 'accepted timeout must not invent a terminal or retry');
 });

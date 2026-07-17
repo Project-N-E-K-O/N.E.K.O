@@ -111,7 +111,8 @@ function createProbe() {
   }));
   flush();
   const recentEvents = () => JSON.parse(JSON.stringify(win.nekoCatMind.getRecentEvents()));
-  return { observe, dispatchReturnBallMove, snapshot, recentEvents, requests };
+  const advanceTime = (milliseconds) => { now += milliseconds; };
+  return { observe, dispatchReturnBallMove, snapshot, recentEvents, requests, advanceTime };
 }
 
 function runScenario(events) {
@@ -127,6 +128,10 @@ function scoreDelta(result, actionId) {
 
 function assertClose(actual, expected) {
   assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} !== ${expected}`);
+}
+
+function mergeInteractionDose(current, dose) {
+  return current + dose * (1 - current) * (1 + 0.8 * current);
 }
 
 test('hover, ordinary drag, and rapid drag produce distinct scored consequences', () => {
@@ -246,6 +251,26 @@ test('duplicate drag terminals settle interaction and physical feedback only onc
     durationMs: 2200,
   });
   assert.deepEqual(runtime.snapshot().fields, settled.fields);
+});
+
+test('delayed end-only terminal does not reuse rapid feedback from a stale gesture', () => {
+  const runtime = createProbe();
+  runtime.observe('drag_start');
+  runtime.observe('rapid_drag');
+  const beforeTerminal = runtime.snapshot().fields;
+
+  runtime.advanceTime(10 * 1000);
+  runtime.observe('drag_end', { activityId: 'delayed-end-only-terminal' });
+  const afterTerminal = runtime.snapshot().fields;
+
+  assertClose(
+    afterTerminal.social_need,
+    mergeInteractionDose(beforeTerminal.social_need, 0.025)
+  );
+  assertClose(
+    afterTerminal.stimulation_need,
+    mergeInteractionDose(beforeTerminal.stimulation_need, 0.18)
+  );
 });
 
 test('NEKO-PC return-ball phases enter the shared Cat Mind scoring path', () => {

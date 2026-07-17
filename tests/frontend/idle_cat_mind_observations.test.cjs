@@ -261,6 +261,41 @@ test('embedded viewport start/move/end phases remain one aggregate gesture', () 
     assert.equal(harness.observations()[0].detail.directApproachDistancePx, 360);
 });
 
+test('delayed explicit phases cannot sample or settle a replacement yarn session', () => {
+    const harness = createHarness();
+    const emitPhase = (sessionId, phase, screenRect, timestamp) => {
+        harness.emit('neko:chat-yarn-user-drag', {
+            phase,
+            sessionId,
+            source: 'react-chat-window',
+            coordinateSpace: 'viewport',
+            moved: phase !== 'start',
+            screenRect,
+            timestamp,
+        });
+    };
+
+    emitPhase('session-a', 'start', FAR_RECT, 1000);
+    emitPhase('session-b', 'start', FAR_RECT, 1100);
+    emitPhase('session-a', 'move', NEAR_RECT, 1200);
+    emitPhase('session-a', 'end', NEAR_RECT, 1300);
+
+    assert.deepEqual(harness.gate(), {
+        yarnDragActive: true,
+        yarnSettling: false,
+        sessionId: 'session-b',
+    });
+    assert.equal(harness.observations().length, 0);
+
+    emitPhase('session-b', 'end', NEAR_RECT, 1400);
+    harness.flushOneRaf();
+    harness.flushOneRaf();
+
+    assert.equal(harness.observations().length, 1);
+    assert.equal(harness.observations()[0].detail.sessionId, 'session-b');
+    assert.equal(harness.observations()[0].detail.pathDistancePx, 360);
+});
+
 test('cancel and blur release the gate without creating intent observations', () => {
     for (const reason of [
         'ball-drag-cancel',

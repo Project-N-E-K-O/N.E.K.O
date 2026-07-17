@@ -63,6 +63,14 @@ function _getNekoCatMindYarnDragPhase(detail) {
     return '';
 }
 
+function _hasNekoCatMindYarnSessionMismatch(detail) {
+    const incomingSessionId = detail && typeof detail.sessionId === 'string'
+        ? detail.sessionId
+        : '';
+    const activeSessionId = _nekoCatMindYarnDragSession && _nekoCatMindYarnDragSession.sessionId;
+    return !!(incomingSessionId && activeSessionId && incomingSessionId !== activeSessionId);
+}
+
 function _getNekoCatMindYarnCoordinateSpace(detail, fallback = 'screen') {
     return detail && detail.coordinateSpace === 'viewport' ? 'viewport' : fallback;
 }
@@ -376,6 +384,11 @@ function _handleNekoCatMindYarnDragPhase(detail, fallbackCoordinateSpace = 'scre
         return;
     }
     const timestamp = Number(detail.timestamp) || Date.now();
+    // Explicit ids belong to the embedded Web producer. Once a newer start has
+    // replaced the active gesture, delayed phases from the old gesture must not
+    // sample or settle the replacement. Desktop/Wayland phases intentionally
+    // omit ids and retain their existing end-only compatibility path.
+    if (phase !== 'start' && _hasNekoCatMindYarnSessionMismatch(detail)) return;
     if (phase === 'end' || phase === 'cancel') {
         const signature = _getNekoCatMindYarnTerminalSignature(phase, detail, rect, coordinateSpace);
         if (_isNekoCatMindDuplicateYarnTerminal(signature, timestamp)) {

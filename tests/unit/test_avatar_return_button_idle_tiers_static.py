@@ -1900,11 +1900,15 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in vrm_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source
 
+    vrm_handle_end_marker = "const handleEnd = (cancelled = false) => {"
     vrm_handle_end = vrm_source[
-        vrm_source.index("const handleEnd = () => {"):
-        vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index("const handleEnd = () => {"))
+        vrm_source.index(vrm_handle_end_marker):
+        vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index(vrm_handle_end_marker))
     ]
     assert vrm_handle_end.index("commitDragPosition();") < vrm_handle_end.index("const moved =")
+    assert "if (isDragging) return;" in vrm_source
+    assert "document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
+    assert "document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
 
 
 def test_return_button_drag_reports_one_terminal_physical_activity_summary():
@@ -3499,6 +3503,13 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         handle_start,
         "container.setAttribute('data-dragging', 'pending')",
         "return button drag start handler",
+    )
+    _assert_source_order(
+        handle_start,
+        "return button drag start re-entry guard",
+        "if (isDragging) return;",
+        "clearDragSafetyTimer();",
+        "startDragActivity(safetyToken, rect.left, rect.top);",
     )
     _assert_source_contains(handle_start, "const safetyToken = dragSafetyToken + 1", "return button drag start handler")
     _assert_source_contains(handle_start, "dragSafetyTimer = setTimeout(() => {", "return button drag start handler")

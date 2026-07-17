@@ -122,6 +122,11 @@ test('VRM return-ball drag dispatches one terminal event with aggregated physica
     preventDefault: () => {},
     stopImmediatePropagation: () => {}
   });
+  const touchEvent = (x, y) => ({
+    target: container,
+    touches: [{ clientX: x, clientY: y }],
+    preventDefault: () => {}
+  });
 
   vm.createContext(context);
   vm.runInContext(sourceBetween(
@@ -166,6 +171,35 @@ test('VRM return-ball drag dispatches one terminal event with aggregated physica
   assert.equal(terminalCalls[1].detail.durationMs, 250);
   assert.equal(terminalCalls[1].detail.movedDistancePx, 0);
   assert.equal(terminalCalls[1].detail.dragCancelled, true);
+
+  const startsBeforeTouch = rawEvents.filter(
+    (event) => event.detail.reason === 'return-ball-drag-start'
+  ).length;
+  now = 3000;
+  containerListeners.get('touchstart')(touchEvent(30, 30));
+  containerListeners.get('touchstart')(touchEvent(31, 31));
+  assert.equal(
+    rawEvents.filter((event) => event.detail.reason === 'return-ball-drag-start').length,
+    startsBeforeTouch + 1,
+    'a second touch must not replace the active drag activity'
+  );
+  documentListeners.get('touchmove')(touchEvent(36, 38));
+  flushAnimationFrames();
+  now = 3100;
+  documentListeners.get('touchcancel')();
+
+  assert.equal(terminalCalls.length, 3);
+  assert.equal(terminalCalls[2].reason, 'return-ball-drag-cancel');
+  assert.match(terminalCalls[2].detail.activityId, /^return-cat-drag-vrm:3000:3$/);
+  assert.equal(terminalCalls[2].detail.dragCancelled, true);
+  assert.equal(terminalCalls[2].detail.pathDistancePx, 10);
+
+  now = 4000;
+  containerListeners.get('touchstart')(touchEvent(40, 40));
+  now = 4100;
+  documentListeners.get('touchend')();
+  assert.equal(terminalCalls.length, 4, 'touchcancel must release the next drag');
+  assert.match(terminalCalls[3].detail.activityId, /^return-cat-drag-vrm:4000:4$/);
 });
 
 test('cat walk producer aggregates actual step path once', () => {

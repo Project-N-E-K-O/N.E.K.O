@@ -204,6 +204,8 @@
         ACTION_IDS.CAT1_PLAY_YARN,
     ]);
     var autonomousClockGeneration = 0;
+    var actionRequestLeaseTimer = 0;
+    var actionRequestLeaseGeneration = 0;
 
     var runtimeState = createInitialRuntimeState();
 
@@ -493,6 +495,7 @@
 
     function resetRuntime(reason) {
         clearAutonomousClock();
+        clearActionRequestLeaseTimer();
         runtimeState = createInitialRuntimeState();
         runtimeState.lastResetReason = typeof reason === 'string' ? reason : '';
         emitStateChange('reset');
@@ -702,6 +705,57 @@
         });
     }
 
+    function clearActionRequestLeaseTimer() {
+        actionRequestLeaseGeneration += 1;
+        if (!actionRequestLeaseTimer) return;
+        if (typeof window.clearTimeout === 'function') {
+            window.clearTimeout(actionRequestLeaseTimer);
+        }
+        actionRequestLeaseTimer = 0;
+    }
+
+    function getActionRequestLeaseDeadline(pending) {
+        if (!pending || typeof pending !== 'object') return null;
+        var acceptedAt = Number(pending.acceptedAt);
+        var requestedAt = Number(pending.timestamp);
+        var accepted = Number.isFinite(acceptedAt) && acceptedAt > 0;
+        var anchor = accepted ? acceptedAt : requestedAt;
+        if (!Number.isFinite(anchor)) return null;
+        return anchor + (accepted ? ACTION_ACCEPTED_START_LEASE_MS : ACTION_REQUEST_LEASE_MS);
+    }
+
+    function armActionRequestLeaseTimer(pending) {
+        clearActionRequestLeaseTimer();
+        if (!runtimeState.active || !pending ||
+            typeof window.setTimeout !== 'function' ||
+            typeof window.clearTimeout !== 'function') {
+            return false;
+        }
+        var deadline = getActionRequestLeaseDeadline(pending);
+        if (!Number.isFinite(deadline)) return false;
+        var requestId = pending.requestId;
+        var runId = pending.runId || '';
+        var generation = actionRequestLeaseGeneration;
+        actionRequestLeaseTimer = window.setTimeout(function () {
+            if (generation !== actionRequestLeaseGeneration) return;
+            actionRequestLeaseTimer = 0;
+            var current = runtimeState.scheduler.pendingActionRequest;
+            if (!runtimeState.active || !current ||
+                current.requestId !== requestId ||
+                (current.runId || '') !== runId) {
+                return;
+            }
+            var timestamp = nowMs();
+            if (timestamp < deadline) return;
+            if (expireStaleActionRequest(timestamp)) {
+                // Only retained input/provider triggers are reconsidered here.
+                // An expired request must not become a self-retrying 5s loop.
+                queueDeferredDecisionIfNeeded();
+            }
+        }, Math.max(0, deadline - nowMs()));
+        return true;
+    }
+
     function acknowledgeActionRequest(detail) {
         var response = detail && typeof detail === 'object' ? detail : {};
         var pending = runtimeState.scheduler.pendingActionRequest;
@@ -724,6 +778,7 @@
                 runId: runId,
                 acceptedAt: timestamp,
             });
+            armActionRequestLeaseTimer(runtimeState.scheduler.pendingActionRequest);
             updateDecisionExecution({
                 state: 'accepted',
                 reason: reason || 'runner_accepted',
@@ -738,6 +793,7 @@
         if (status === 'started') {
             if (!runId || pending.runId !== runId) return false;
             var scoreConfig = getActionScoreConfig(pending.actionId);
+            clearActionRequestLeaseTimer();
             runtimeState.scheduler.pendingActionRequest = null;
             runtimeState.hasStartedAutonomousAction = true;
             runtimeState.scheduler.activeAction = {
@@ -773,6 +829,7 @@
         }
         if (status === 'rejected') {
             if (pending.runId) return false;
+            clearActionRequestLeaseTimer();
             runtimeState.scheduler.pendingActionRequest = null;
             updateDecisionExecution({
                 state: 'rejected',
@@ -815,6 +872,7 @@
             pending.requestId === requestId &&
             pending.runId &&
             pending.runId === runId) {
+            clearActionRequestLeaseTimer();
             scheduler.pendingActionRequest = null;
             scheduler.lastProtocolFailure = {
                 type: 'result_before_started',
@@ -1250,7 +1308,8 @@
         var leaseMs = Number.isFinite(acceptedAt) && acceptedAt > 0
             ? ACTION_ACCEPTED_START_LEASE_MS
             : ACTION_REQUEST_LEASE_MS;
-        if (timestamp - anchor <= leaseMs) return false;
+        if (timestamp - anchor < leaseMs) return false;
+        clearActionRequestLeaseTimer();
         scheduler.pendingActionRequest = null;
         scheduler.lastProtocolFailure = {
             type: Number.isFinite(acceptedAt) && acceptedAt > 0
@@ -1455,6 +1514,7 @@
         if (allowed.length) {
             var request = createActionRequest(base.outcome, allowed[0], triggerTypes, scheduler.lastEvaluatedAt);
             scheduler.pendingActionRequest = Object.assign({}, request);
+            armActionRequestLeaseTimer(scheduler.pendingActionRequest);
             base.reason = 'action_request_dispatched';
             base.request = request;
         }
@@ -1849,13 +1909,18 @@
         }
     }
 
-    function settleInteractionGesture(cancelled, detail) {
+    function settleInteractionGesture(cancelled, observation) {
+        var detail = observation && observation.detail;
         var activityId = getInteractionActivityId(detail);
         // Native, DOM and compatibility producers may report the same terminal
         // fact through more than one alias. Preserve an in-flight newer gesture
         // when such a duplicate arrives, and settle semantic feedback only once.
         if (activityId && hasAccountedInteractionActivity(activityId)) return false;
         var gesture = runtimeState.interactionGesture;
+        var observationAt = Number(observation && observation.timestamp) || nowMs();
+        if (gesture && observationAt - Number(gesture.startedAt || 0) > 10 * 1000) {
+            gesture = null;
+        }
         runtimeState.interactionGesture = null;
         // A stable terminal id is sufficient evidence for end-only platforms.
         // An unidentified orphan terminal is not safe to count as interaction.
@@ -2002,10 +2067,10 @@
         if (type === OBSERVATION_TYPES.DRAG_START) {
             beginInteractionGesture(observation);
         } else if (type === OBSERVATION_TYPES.DRAG_END) {
-            settleInteractionGesture(false, observation.detail);
+            settleInteractionGesture(false, observation);
             applyPhysicalActivity(observation.detail);
         } else if (type === OBSERVATION_TYPES.DRAG_CANCELLED) {
-            settleInteractionGesture(true, observation.detail);
+            settleInteractionGesture(true, observation);
             applyPhysicalActivity(observation.detail);
         } else if (type === OBSERVATION_TYPES.RAPID_DRAG) {
             applyRapidGestureFeedback(observation);
@@ -2143,6 +2208,7 @@
         if (runtimeState.active) {
             return getState();
         }
+        clearActionRequestLeaseTimer();
         runtimeState = createInitialRuntimeState();
         runtimeState.active = true;
         var isStartupDefaultCat = eventDetail.startupDefaultForm === 'cat';
@@ -2195,6 +2261,7 @@
         });
         var summary = Object.freeze(buildReturnSummaryDraft());
         clearAutonomousClock();
+        clearActionRequestLeaseTimer();
         runtimeState = createInitialRuntimeState();
         // PNGTuber has the same return observation but no current
         // app-auto-goodbye greeting consumer. Do not let its draft survive as

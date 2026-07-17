@@ -786,6 +786,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
         document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
         document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
         this._returnButtonDragHandlers = null;
     }
 
@@ -859,6 +860,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     };
 
     const handleStart = (clientX, clientY) => {
+        if (isDragging) return;
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
@@ -963,7 +965,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
     };
 
-    const handleEnd = () => {
+    const handleEnd = (cancelled = false) => {
         if (isDragging) {
             // 取消待执行的 RAF，将 transform 落实到 left/top
             if (dragRAFId) {
@@ -980,11 +982,12 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
             if (dragActivityFacts) {
+                const dragCancelled = cancelled || !moved;
                 dispatchDragTerminal(
-                    moved ? 'return-ball-drag-end' : 'return-ball-drag-cancel',
+                    dragCancelled ? 'return-ball-drag-cancel' : 'return-ball-drag-end',
                     Object.assign({
                         movedDistancePx: moved ? movedDistancePx : 0,
-                        dragCancelled: !moved
+                        dragCancelled: dragCancelled
                     }, dragActivityFacts)
                 );
             }
@@ -1014,11 +1017,12 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     // 保存 document 级别的事件监听器引用，以便后续清理
     this._returnButtonDragHandlers = {
         mouseMove: (e) => handleMove(e.clientX, e.clientY),
-        mouseUp: handleEnd,
+        mouseUp: () => handleEnd(false),
         touchMove: (e) => {
             if (isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
         },
-        touchEnd: handleEnd
+        touchEnd: () => handleEnd(false),
+        touchCancel: () => handleEnd(true)
     };
 
     document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
@@ -1031,6 +1035,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     });
     document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
     document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+    document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
     returnButtonContainer.style.cursor = 'grab';
 };
 

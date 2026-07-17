@@ -292,7 +292,7 @@ queued decision
 ```
 
 - provider `dryRun` 必须只读。provider 拒绝发生在 request 之前；adapter 也可对已发 request 回 `rejected`。两者都不写 cooldown、done/failed/result、五维完成反馈或 episode，也不消费意图。
-- request 没有 ack 时的租约为 `5s`；accepted 后没有 started 时的租约为 `12s`。租约只在下一次异步判断时检查；超时释放 pending 并记录协议失败，不伪造终态。
+- request 没有 ack 时的租约为 `5s`；accepted 后没有 started 时的租约为 `12s`。deadline 到达时由独立 timer 异步释放 pending 并记录协议失败；pending 期间若合并了用户触发，只排入一次后续判断，无输入时不自动重发 request，也不伪造终态或在 timer 回调里同步启动 runner。
 - `accepted` 必须带唯一 `runId`，只绑定 request；`started` 必须匹配同一个 `actionId + requestId + runId`。只有 started 才建立本动作 cooldown、重置 cadence、设置短时投递资格并消费对应 Cat Mind 动作意图。
 - 音频 runner 必须等 `audio.play()` 成功才报告 started；创建 `Audio`、选择素材或显示准备态都不算 started。
 - 严格终态只接受 `source=cat_mind` 且完整匹配 active 三元组的 `done/failed/cancelled/interrupted`。不匹配的 legacy/presentation 结果只留作调试，不结算。
