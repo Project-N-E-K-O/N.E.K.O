@@ -1,6 +1,10 @@
 # Entries & Parameters
 
-An entry point is a "function" your plugin exposes to the outside world. Every executable button users see in Plugin Manager, every tool the AI agent can call, every service other plugins can request — those are all entry points.
+An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the user-plugin Agent route. It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
+
+Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and can be called during a conversation, while user-plugin Agent routing selects a plugin runtime entry.
+
+For Agent routing, entry metadata is considered only after plugin-level filtering. Stage 2 must return an exact `plugin_id` and `entry_id`; an unknown or missing ID gets one corrective retry and is then rejected.
 
 ---
 
@@ -154,7 +158,7 @@ Only fields listed in `llm_result_fields` are sent to the AI. Other fields are s
     id="process",              # Entry ID (defaults to method name)
     name="Process Data",       # Display name
     description="Process and transform data",  # Description (for humans and AI)
-    timeout=60.0,              # Timeout in seconds — auto-cancel if exceeded
+    timeout=60.0,              # Host-side execution timeout in seconds
     kind="service",            # Type tag (default "action")
 )
 async def process(self, data: str):

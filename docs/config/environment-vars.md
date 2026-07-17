@@ -1,43 +1,70 @@
 # Environment Variables
 
-All environment variables use the `NEKO_` prefix.
+Only variables explicitly read by current code are supported. A `NEKO_` prefix is preferred; selected network helpers also accept the bare name for compatibility.
 
-## API keys
+## Ports
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `NEKO_CORE_API_KEY` | Yes (unless using free) | Core Realtime API key |
-| `NEKO_ASSIST_API_KEY_QWEN` | No | Alibaba Cloud (Qwen) assist API key |
-| `NEKO_ASSIST_API_KEY_OPENAI` | No | OpenAI assist API key |
-| `NEKO_ASSIST_API_KEY_GLM` | No | Zhipu (GLM) assist API key |
-| `NEKO_ASSIST_API_KEY_STEP` | No | StepFun assist API key |
-| `NEKO_ASSIST_API_KEY_SILICON` | No | SiliconFlow assist API key |
-| `NEKO_ASSIST_API_KEY_GEMINI` | No | Google Gemini assist API key |
-| `NEKO_MCP_TOKEN` | No | MCP Router authentication token |
-| `NEKO_OPENROUTER_API_KEY` | No | OpenRouter API key |
+| Preferred variable | Default | Service |
+| --- | ---: | --- |
+| `NEKO_MAIN_SERVER_PORT` | 48911 | Main Web/API server |
+| `NEKO_MEMORY_SERVER_PORT` | 48912 | Memory server |
+| `NEKO_MONITOR_SERVER_PORT` | 48913 | Monitor service |
+| `NEKO_COMMENTER_SERVER_PORT` | 48914 | Commenter service |
+| `NEKO_TOOL_SERVER_PORT` | 48915 | Agent/tool server |
+| `NEKO_USER_PLUGIN_SERVER_PORT` | 48916 | User-plugin host |
+| `NEKO_AGENT_MQ_PORT` | 48917 | Agent message transport |
+| `NEKO_MAIN_AGENT_EVENT_PORT` | 48918 | Main/agent event transport |
+| `NEKO_OPENFANG_PORT` | 50051 | OpenFang A2A service |
 
-## Provider selection
+Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` on Windows, macOS Application Support, or `$XDG_CONFIG_HOME/N.E.K.O` on Linux. Explicit environment values win.
 
-| Variable | Default | Options |
-|----------|---------|---------|
-| `NEKO_CORE_API` | `qwen` | `free`, `qwen`, `openai`, `glm`, `step`, `gemini` |
-| `NEKO_ASSIST_API` | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon`, `gemini` |
+## Runtime identity and origins
 
-## Server ports
+| Variable | Meaning |
+| --- | --- |
+| `NEKO_INSTANCE_ID` | Shared instance ID; normally created by the launcher |
+| `NEKO_AUTOSTART_CSRF_TOKEN` | Autostart request token; defaults to the instance ID |
+| `NEKO_AUTOSTART_ALLOWED_ORIGINS` | Comma-separated extra allowed origins |
+| `NEKO_BEHIND_PROXY` | Enables proxy-header handling in supported entrypoints |
+| `NEKO_LOG_LEVEL` | Main-server log level |
+| `NEKO_MERGED` | Launcher merged-mode override |
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `NEKO_MAIN_SERVER_PORT` | `48911` | Main server (Web UI, API) |
-| `NEKO_MEMORY_SERVER_PORT` | `48912` | Memory server |
-| `NEKO_MONITOR_SERVER_PORT` | `48913` | Monitor server |
-| `NEKO_COMMENTER_SERVER_PORT` | `48914` | Commenter server |
-| `NEKO_TOOL_SERVER_PORT` | `48915` | Agent/tool server |
-| `NEKO_USER_PLUGIN_SERVER_PORT` | `48916` | User plugin server |
-| `NEKO_AGENT_MQ_PORT` | `48917` | Agent message queue |
-| `NEKO_MAIN_AGENT_EVENT_PORT` | `48918` | Agent event port |
+Most shared boolean helpers accept `1/true/yes/on` and `0/false/no/off`.
+`NEKO_MERGED` itself accepts `1/true/yes` and `0/false/no`.
 
-## Service URLs
+## Runtime topology
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NEKO_MCP_ROUTER_URL` | `http://localhost:3283` | MCP Router endpoint |
+| `NEKO_MERGED` | Source: `0`; frozen package: `1` | `1` runs main, memory, and agent HTTP services in one process while preserving their contracts; `0` keeps three service processes. A partial or mixed existing backend is never reused and forces a three-process launch on isolated fallback ports, even when merged mode would otherwise be selected. |
+
+Keep multi-process mode for development, independent service supervision, or
+agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
+deployments.
+
+## Storage and local vectors
+
+| Variable | Meaning |
+| --- | --- |
+| `NEKO_STORAGE_SELECTED_ROOT` | Launcher-supplied writable data root |
+| `NEKO_STORAGE_ANCHOR_ROOT` | Launcher-supplied anchor root |
+| `NEKO_VECTORS_ENABLED` | Enable local vectors; default true |
+| `NEKO_VECTORS_QUANTIZATION` | `auto`, `int8`, or `fp32` |
+
+Vector settings also accept bare compatibility names.
+The available-RAM gate is currently the fixed `VECTORS_MIN_RAM_GB = 4.0` runtime constant; there is no environment override for it.
+
+## Docker-only API initialization
+
+The Docker entrypoint consumes these while generating its initial `/app/config/core_config.json`:
+
+- `NEKO_CORE_API_KEY`, `NEKO_CORE_API`, `NEKO_ASSIST_API`
+- `NEKO_ASSIST_API_KEY_QWEN`, `_OPENAI`, `_GLM`, `_STEP`, `_SILICON`, `_GROK`, `_DOUBAO`
+- `NEKO_MCP_TOKEN`
+- `NEKO_FORCE_ENV_UPDATE` to request regeneration
+
+These are not a general source-mode API environment. Configure source/desktop providers in the Web UI.
+
+::: warning
+Old `docker/env.template` comments show model variables that `entrypoint.sh` does not consume. Do not rely on a variable unless current runtime code reads it.
+:::

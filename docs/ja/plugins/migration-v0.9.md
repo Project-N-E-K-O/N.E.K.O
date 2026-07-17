@@ -1,6 +1,6 @@
 # Plugin SDK v0.9 移行ガイド
 
-このページは、プラグインシステムの公開面を縮小した後の移行チェックリストです。一部の API はすでに削除済みで、残る `push_message` v1 互換引数は v0.9 で削除されます。
+旧 inbound link のため historical path name を維持しています。現在は current migration checklist です。一部 API は削除済みですが、`push_message` v1 compatibility argument は current source で変換され deprecation warning を出します。filename から正確な removal release を推測しないでください。
 
 ## 概要
 
@@ -11,9 +11,9 @@
 | Bus の `where_*` とリスト集合演算 | 削除済み | `get()`、`filter()` / `where()`、`sort()`、`limit()`、`watch()` を合成 |
 | `get_message_plane_all` | 削除済み | bounded な `await self.bus.messages.get(...)` を使用 |
 | Bus の incremental/local fast path | 削除済み | 標準の bounded/replayable read/watch パイプライン |
-| 高レベル `self.memory` / SDK `MemoryClient` | 削除済み | `self.bus.memory.get(...)` または `await self.ctx.query_memory(...)` |
+| 高レベル `self.memory` / SDK `MemoryClient` | 削除済み | `self.bus.memory.get(...)` は最近のメモリ上の user-context record の読み取りにのみ使用。永続メモリの semantic recall に対応する plugin SDK API はありません |
 | Extension package type、`[plugin.host]`、`plugin.sdk.extension` | 削除済み、互換レイヤーなし | Router を所有する通常 Plugin に統合するか、独立した Plugin に変換 |
-| `push_message` v1 フィールド | 非推奨、v0.9 で削除 | `parts`、`visibility`、`ai_behavior` |
+| `push_message` v1 フィールド | deprecated だが current source では変換される | `parts`、`visibility`、`ai_behavior` を使い、正確な removal release に依存しない |
 
 ## パッケージ種別
 
@@ -80,21 +80,18 @@ callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は
 
 `get_message_plane_all` は Message Plane の `messages` store を page 単位で読み、`max_items` 上限を持つ API でした。incremental な `after_seq` transport path が削除されたため、1 対 1 の代替 API はありません。bounded な `await self.bus.messages.get(max_count=..., ...)` に移行し、必要に応じて structured filter、`sort(by=...)`、`limit()` を使います。
 
-削除された Bus fast path は、BusList `fast_mode`、incremental reload cursor、local message cache、revision/delta shortcut などの高速化分岐です。`watch()` に必要な replay plan と trace は残っており、`get()` / structured `filter(field=value)` / `sort(by=...)` / `limit()` が replayable chain を構成します。これらは旧 `push_message(fast_mode=...)` とは別物です。後者は v1 互換面に属し、v0.9 で削除予定です。v2 は標準の per-message host delivery path を使うため、旧 batching/backpressure 最適化を外す際は high-volume producer を再 benchmark してください。
+削除された Bus fast path は、BusList `fast_mode`、incremental reload cursor、local message cache、revision/delta shortcut などの高速化分岐です。`watch()` に必要な replay plan と trace は残っており、`get()` / structured `filter(field=value)` / `sort(by=...)` / `limit()` が replayable chain を構成します。これらは旧 `push_message(fast_mode=...)` とは別物です。後者は deprecated v1 compatibility surface に属します。v2 は標準の per-message host delivery path を使うため、旧 batching/backpressure 最適化を実際に外す際は high-volume producer を再 benchmark してください。
 
 ## Memory
 
-旧 SDK `MemoryClient` は record read と semantic query を混在させていました。操作を明示的に選択してください。
+旧 SDK `MemoryClient` は異なる 2 つの概念を混在させていました。現在サポートされる代替機能は、host の最近の user-context snapshot の読み取りです。
 
 ```python
 # 1 bucket の最近の record
 records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# semantic lookup
-matches = await self.ctx.query_memory("default", "ユーザーの好みは？")
 ```
 
-`self.bus.memory` による memory record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と SDK/runtime の `MemoryClient` facade です。
+これらは件数制限付きでメモリ上にのみ保持されるユーザー発話イベントで、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。`self.bus.memory` による record の読み取りと型付き record は残ります。削除されたのは高レベルの `self.memory` property と SDK/runtime の `MemoryClient` facade です。`ctx.query_memory(...)` は互換性のため残っていますが、非推奨の placeholder endpoint を呼ぶだけで semantic recall は行いません。現在、公開 plugin SDK に構造化された永続メモリ recall API はありません。
 
 ## `push_message` v2
 

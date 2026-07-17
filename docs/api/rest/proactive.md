@@ -4,6 +4,8 @@
 
 Endpoints for reading and changing the proactive-chat **mode** and the underlying proactive-chat **settings** fields. All writes go through `utils.preferences.save_global_conversation_settings`, so the field whitelist, type validation, and atomic-write logic live in one place.
 
+These four routes are first-party preference endpoints (`GET`/`POST` for `/mode` and `/settings`), not a public scheduling API. They have no separate authentication layer and paths have no trailing slash. Legacy application errors are returned as HTTP `200` with `success: false`; callers must inspect the response body.
+
 ::: info
 This is distinct from `POST /api/proactive_chat` (see the [System API](./system.md)), which *generates* a proactive message. The endpoints here only read and update the proactive-chat configuration.
 :::

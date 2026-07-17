@@ -1,55 +1,46 @@
 # Code Style
 
+The enforced rules live in `pyproject.toml`, `.agent/rules/neko-guide.md`, and CI scripts.
+
 ## Python
 
-- **Python 3.11** — Required; do not use 3.12+ features
-- **Type hints** — Use where practical, especially for public APIs
-- **Async** — Use `async/await` for I/O operations in FastAPI handlers
-- **Imports** — Standard library first, then third-party, then local
-- **Line length** — No strict limit, but keep reasonable (~120 chars)
+- Target Python 3.11.
+- Use `uv run` for Python commands.
+- Keep async request paths non-blocking; offload blocking filesystem/CPU calls where required.
+- Preserve the module-layer order checked by `scripts/check_module_layering.py`.
+- Keep heavyweight SDK imports off the startup import chain.
+- Do not introduce `loguru`, `structlog`, `logbook`, or `tkinter`; CI rejects them.
+- Raw conversation/privacy-sensitive text may only use `print`, never persistent project loggers.
 
-## JavaScript
+Run `uv run ruff check .` and relevant repository check scripts.
 
-- **ES6+** — Use modern syntax (arrow functions, const/let, template literals)
-- **No framework** — The frontend uses vanilla JS by design
-- **i18n** — All user-facing strings should use the locale system
+## Frontend
 
-## API URLs — no trailing slash
+The frontend is hybrid: static/Jinja JavaScript, one React chat application, and a Vue plugin manager. Edit the owner rather than duplicating behavior.
 
-Every backend API endpoint and every frontend caller MUST use the no-trailing-slash form:
+- Chat UI/logic belongs in `frontend/react-neko-chat/`.
+- Both `index.html` and Electron `chat.html` mount the same React component.
+- Do not add new behavior to legacy `#chat-container`.
+- Consider browser `/` and Electron routes such as `/chat` and `/subtitle`.
+- Use the i18n system; update all eight locales in lockstep.
 
-- ✅ `/api/characters`, `/api/live2d/models`, `/api/memory/funnel/{lanlan_name}`
-- ❌ `/api/characters/`, `/api/live2d/models/`
+## Provider symmetry
 
-Rationale (see `.agent/rules/neko-guide.md` for the full incident write-up):
+Provider/backend/feature paths must remain structurally symmetric. If one peer provider is split or gains a lifecycle/config path, inspect and update the corresponding peers rather than leaving an exceptional branch without justification.
 
-1. **Industry convention.** Stripe, GitHub, Google, AWS, and the Microsoft REST API Guidelines all forbid trailing slashes on REST resources. We follow the same convention so callers' instincts match.
-2. **Reverse-proxy safety.** FastAPI/Starlette's `redirect_slashes=True` (default) sends a 307 to the no-slash form with an **absolute** `Location` header built from the request's `Host`. Behind a reverse proxy that doesn't preserve `Host` (or with `proxy_headers` off), that absolute URL points at the internal `127.0.0.1:<port>` and the browser fails with `ERR_CONNECTION_REFUSED`. The bug we shipped in PR #938 (chara_manager regression on LAN reverse proxies) is exactly this. Avoiding the redirect entirely sidesteps the whole class of failure.
+## API paths
 
-Concrete rules:
+Backend decorators and frontend callers use no trailing slash for API resources:
 
-- **Backend** — `APIRouter(prefix="/api/foo")` + `@router.get('')` (NOT `@router.get('/')`). The only exception is the literal root page `@router.get("/")` in `pages_router.py`.
-- **Frontend** — `fetch('/api/foo')`, never `fetch('/api/foo/')`. Prefix builders that concatenate a variable (e.g. `` `/api/foo/${id}` ``, `` '/api/foo/' + encodeURIComponent(name) ``) are fine — the slash is a path separator, the final URL still has no trailing slash.
+- correct: `/api/characters`
+- incorrect: `/api/characters/`
 
-Both rules are enforced by CI:
+Use `@router.get("")` under an `APIRouter` prefix, except for the literal site root. CI checks backend and frontend forms.
 
-- `scripts/check_api_trailing_slash.py` — backend AST check on `main_routers/*.py` and `*_server.py`
-- `scripts/check_frontend_api_trailing_slash.py` — frontend regex check on `static/`, `frontend/`, `templates/`
+## Prompts and i18n
 
-## Commit messages
+Keep multi-language prompt tables in owning `config/prompts_*.py` modules and follow prompt-budget/temperature checks. When translating a system prompt, preserve the exact watermark fragment `======以上为`.
 
-Follow conventional commits when possible:
+## Commits and PRs
 
-```
-feat: add voice preview for custom voices
-fix: resolve WebSocket reconnection on character switch
-docs: update API reference for memory endpoints
-refactor: extract TTS queue logic into separate module
-```
-
-## Pull requests
-
-- Keep PRs focused on a single concern
-- Include a description of what changed and why
-- Reference related issues if applicable
-- Ensure `uv run pytest` passes
+Keep one coherent concern per commit/PR. Explain behavior and validation; do not claim tests or platforms you did not run.

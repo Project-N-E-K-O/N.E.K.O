@@ -1,4 +1,38 @@
 import { defineConfig } from 'vitepress'
+import { readdirSync } from 'node:fs'
+import { dirname, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const SRC_EXCLUDE = new Set(['README_en.md', 'README_ja.md', 'README_ru.md'])
+const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
+
+function collectPageRoutes(directory = DOCS_ROOT): string[] {
+  const routes: string[] = []
+
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory() && SOURCE_DIR_EXCLUDE.has(entry.name)) continue
+
+    const absolutePath = resolve(directory, entry.name)
+    if (entry.isDirectory()) {
+      routes.push(...collectPageRoutes(absolutePath))
+      continue
+    }
+    if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+
+    const sourcePath = relative(DOCS_ROOT, absolutePath).replaceAll('\\', '/')
+    if (SRC_EXCLUDE.has(sourcePath)) continue
+
+    const route = `/${sourcePath}`
+      .replace(/(^|\/)index\.md$/, '$1')
+      .replace(/\.md$/, '')
+    routes.push(route)
+  }
+
+  return routes.sort()
+}
+
+const availablePageRoutes = collectPageRoutes()
 
 /* ------------------------------------------------------------------ */
 /*  Shared sidebar definitions (reused across locales)                */
@@ -45,22 +79,25 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Architecture',
       overview: 'Overview', three: 'Three-Server Design', data: 'Data Flow',
       session: 'Session Management', memory: 'Memory System', agent: 'Agent System',
-      tts: 'TTS Pipeline',
+      tts: 'TTS Pipeline', taskHud: 'Task HUD System',
     },
     'zh-CN': {
       group: '架构设计',
       overview: '概览', three: '三服务器架构', data: '数据流',
       session: '会话管理', memory: '记忆系统', agent: 'Agent 系统',
-      tts: 'TTS 流水线',
+      tts: 'TTS 流水线', taskHud: '任务 HUD 系统',
     },
     ja: {
       group: 'アーキテクチャ',
       overview: '概要', three: '3サーバー設計', data: 'データフロー',
       session: 'セッション管理', memory: 'メモリシステム', agent: 'エージェントシステム',
-      tts: 'TTS パイプライン',
+      tts: 'TTS パイプライン', taskHud: 'タスク HUD システム',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const implementationRecords = lang === 'en'
+    ? [{ text: t.taskHud, link: '/architecture/task-hud-system' }]
+    : []
   const zhCNOnlyItems = lang === 'zh-CN'
     ? [{ text: 'Neko x QwenPaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
     : []
@@ -75,6 +112,7 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.memory, link: `${p}/architecture/memory-system` },
         { text: t.agent, link: `${p}/architecture/agent-system` },
         { text: t.tts, link: `${p}/architecture/tts-pipeline` },
+        ...implementationRecords,
         ...zhCNOnlyItems,
       ],
     },
@@ -85,27 +123,27 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       ref: 'API Reference', overview: 'Overview',
-      rest: 'REST Endpoints', config: 'Config', chars: 'Characters',
+      rest: 'REST Endpoints', config: 'Config', chars: 'Characters', pages: 'Web Pages',
       live2d: 'Live2D Models', vrm: 'VRM Models', mmd: 'MMD Models', pngtuber: 'PNGTuber Models', mem: 'Memory',
-      agent: 'Agent', workshop: 'Steam Workshop', sys: 'System',
+      agent: 'Agent', workshop: 'Steam Workshop', cloudsave: 'Cloud Save', tools: 'Runtime Tools', capture: 'Capture Bridge', sys: 'System',
       music: 'Music', jukebox: 'Jukebox', game: 'Minigames', galgame: 'GalGame', icebreaker: 'Icebreaker', proactive: 'Proactive Chat',
       ws: 'WebSocket', proto: 'Protocol', msg: 'Message Types', audio: 'Audio Streaming',
       internal: 'Internal APIs', memSrv: 'Memory Server', agentSrv: 'Agent Server',
     },
     'zh-CN': {
       ref: 'API 参考', overview: '概览',
-      rest: 'REST 接口', config: '配置', chars: '角色',
+      rest: 'REST 接口', config: '配置', chars: '角色', pages: 'Web 页面',
       live2d: 'Live2D 模型', vrm: 'VRM 模型', mmd: 'MMD 模型', pngtuber: 'PNGTuber 模型', mem: '记忆',
-      agent: 'Agent', workshop: 'Steam 创意工坊', sys: '系统',
+      agent: 'Agent', workshop: 'Steam 创意工坊', cloudsave: '云存档', tools: '运行时工具', capture: '截图桥', sys: '系统',
       music: '音乐', jukebox: '点歌台', game: '小游戏', galgame: 'GalGame', icebreaker: '破冰', proactive: '主动搭话',
       ws: 'WebSocket', proto: '协议', msg: '消息类型', audio: '音频流',
       internal: '内部 API', memSrv: '记忆服务器', agentSrv: 'Agent 服务器',
     },
     ja: {
       ref: 'API リファレンス', overview: '概要',
-      rest: 'REST エンドポイント', config: '設定', chars: 'キャラクター',
+      rest: 'REST エンドポイント', config: '設定', chars: 'キャラクター', pages: 'Web ページ',
       live2d: 'Live2D モデル', vrm: 'VRM モデル', mmd: 'MMD モデル', pngtuber: 'PNGTuber モデル', mem: 'メモリ',
-      agent: 'エージェント', workshop: 'Steam Workshop', sys: 'システム',
+      agent: 'エージェント', workshop: 'Steam Workshop', cloudsave: 'クラウドセーブ', tools: 'ランタイムツール', capture: 'キャプチャブリッジ', sys: 'システム',
       music: '音楽', jukebox: 'ジュークボックス', game: 'ミニゲーム', galgame: 'ギャルゲー', icebreaker: 'アイスブレイク', proactive: 'プロアクティブチャット',
       ws: 'WebSocket', proto: 'プロトコル', msg: 'メッセージ型', audio: 'オーディオストリーミング',
       internal: '内部 API', memSrv: 'メモリサーバー', agentSrv: 'エージェントサーバー',
@@ -123,6 +161,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       items: [
         { text: t.config, link: `${p}/api/rest/config` },
         { text: t.chars, link: `${p}/api/rest/characters` },
+        { text: t.pages, link: `${p}/api/rest/pages` },
         { text: t.live2d, link: `${p}/api/rest/live2d` },
         { text: t.vrm, link: `${p}/api/rest/vrm` },
         { text: t.mmd, link: `${p}/api/rest/mmd` },
@@ -130,6 +169,9 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.mem, link: `${p}/api/rest/memory` },
         { text: t.agent, link: `${p}/api/rest/agent` },
         { text: t.workshop, link: `${p}/api/rest/workshop` },
+        { text: t.cloudsave, link: `${p}/api/rest/cloudsave` },
+        { text: t.tools, link: `${p}/api/rest/tools` },
+        { text: t.capture, link: `${p}/api/rest/capture` },
         { text: t.music, link: `${p}/api/rest/music` },
         { text: t.jukebox, link: `${p}/api/rest/jukebox` },
         { text: t.game, link: `${p}/api/rest/game` },
@@ -198,7 +240,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       toml: 'Plugin Config (plugin.toml)',
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)', lifecycleCfg: 'Lifecycle',
       sdk: 'SDK Reference', migration: 'v0.9 Migration', dec: 'Decorators', ex: 'Examples', adv: 'Advanced Topics',
-      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: 'Best Practices',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent Automation & QwenPaw', best: 'Best Practices',
     },
     'zh-CN': {
       group: '插件开发', overview: '概览',
@@ -206,7 +248,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       toml: '插件配置 (plugin.toml)',
       entries: '入口与参数', router: 'Router（代码拆分）', lifecycleCfg: '生命周期',
       sdk: 'SDK 参考', migration: 'v0.9 迁移', dec: '装饰器', ex: '示例', adv: '进阶话题',
-      hosted: 'Hosted UI', tool: 'LLM Tool Calling', best: '最佳实践',
+      hosted: 'Hosted UI', tool: 'LLM Tool Calling', claw: 'Agent 自动化与 QwenPaw', best: '最佳实践',
     },
     ja: {
       group: 'プラグイン開発', overview: '概要',
@@ -214,7 +256,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       toml: 'プラグイン設定 (plugin.toml)',
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）', lifecycleCfg: 'ライフサイクル',
       sdk: 'SDK リファレンス', migration: 'v0.9 移行', dec: 'デコレーター', ex: 'サンプル', adv: '高度なトピック',
-      hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', best: 'ベストプラクティス',
+      hosted: 'Hosted UI', tool: 'LLM ツール呼び出し', claw: 'Agent Automation & QwenPaw', best: 'ベストプラクティス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -239,6 +281,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.sdk, link: `${p}/plugins/sdk-reference` },
         { text: t.dec, link: `${p}/plugins/decorators` },
         { text: t.tool, link: `${p}/plugins/tool-calling` },
+        ...(lang === 'ja' ? [] : [{ text: t.claw, link: `${p}/plugins/use-claw` }]),
         ...(lang === 'ja' ? [] : [{ text: t.hosted, link: `${p}/plugins/hosted-ui` }]),
         { text: t.ex, link: `${p}/plugins/examples` },
         { text: t.adv, link: `${p}/plugins/advanced` },
@@ -253,20 +296,23 @@ function configSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       group: 'Configuration', overview: 'Overview', env: 'Environment Variables',
       files: 'Config Files', api: 'API Providers', model: 'Model Configuration',
-      prio: 'Config Priority',
+      prio: 'Config Priority', fields: 'Provider Field Reference',
     },
     'zh-CN': {
       group: '配置', overview: '概览', env: '环境变量',
       files: '配置文件', api: 'API 供应商', model: '模型配置',
-      prio: '配置优先级',
+      prio: '配置优先级', fields: 'Provider 字段参考',
     },
     ja: {
       group: '設定', overview: '概要', env: '環境変数',
       files: '設定ファイル', api: 'API プロバイダー', model: 'モデル設定',
-      prio: '設定の優先順位',
+      prio: '設定の優先順位', fields: 'Provider フィールドリファレンス',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
+  const fieldReference = lang === 'en'
+    ? [{ text: t.fields, link: '/api_providers_fields' }]
+    : []
   return [
     {
       text: t.group,
@@ -277,6 +323,7 @@ function configSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.api, link: `${p}/config/api-providers` },
         { text: t.model, link: `${p}/config/model-config` },
         { text: t.prio, link: `${p}/config/config-priority` },
+        ...fieldReference,
       ],
     },
   ]
@@ -321,15 +368,15 @@ function deploymentSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       group: 'Deployment', overview: 'Overview', docker: 'Docker',
-      manual: 'Manual Setup', win: 'Windows Executable',
+      manual: 'Manual Setup', win: 'Windows Executable', embeddings: 'Local Embedding Assets',
     },
     'zh-CN': {
       group: '部署', overview: '概览', docker: 'Docker',
-      manual: '手动部署', win: 'Windows 可执行文件',
+      manual: '手动部署', win: 'Windows 可执行文件', embeddings: '本地嵌入模型资源',
     },
     ja: {
       group: 'デプロイ', overview: '概要', docker: 'Docker',
-      manual: '手動セットアップ', win: 'Windows 実行ファイル',
+      manual: '手動セットアップ', win: 'Windows 実行ファイル', embeddings: 'ローカル埋め込みアセット',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -341,6 +388,7 @@ function deploymentSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.docker, link: `${p}/deployment/docker` },
         { text: t.manual, link: `${p}/deployment/manual` },
         { text: t.win, link: `${p}/deployment/windows-exe` },
+        { text: t.embeddings, link: `${p}/deployment/embedding-models` },
       ],
     },
   ]
@@ -447,7 +495,7 @@ function buildNav(lang: 'en' | 'zh-CN' | 'ja') {
 
 export default defineConfig({
   title: 'Project N.E.K.O.',
-  description: 'Developer documentation for the AI companion metaverse platform',
+  description: 'Code-backed developer documentation for Project N.E.K.O.',
 
   head: [
     ['link', { rel: 'icon', href: '/favicon.ico' }],
@@ -460,8 +508,9 @@ export default defineConfig({
   lastUpdated: true,
   cleanUrls: true,
 
-  // Exclude project README translations from the doc build
-  srcExclude: ['README_en.md', 'README_ja.md', 'README_ru.md'],
+  // Keep this list in sync with SRC_EXCLUDE in
+  // scripts/check_docs_no_relative_paths.py.
+  srcExclude: [...SRC_EXCLUDE],
 
   /* ---- i18n ---- */
   locales: {
@@ -494,7 +543,7 @@ export default defineConfig({
         sidebarMenuLabel: '菜单',
         darkModeSwitchLabel: '深色模式',
         footer: {
-          message: '基于 MIT 许可发布。',
+          message: '基于 Apache License 2.0 发布。',
           copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
         },
       },
@@ -524,7 +573,7 @@ export default defineConfig({
         sidebarMenuLabel: 'メニュー',
         darkModeSwitchLabel: 'ダークモード',
         footer: {
-          message: 'MIT ライセンスの下で公開。',
+          message: 'Apache License 2.0 の下で公開。',
           copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
         },
       },
@@ -533,6 +582,11 @@ export default defineConfig({
 
   /* ---- Default (English) theme ---- */
   themeConfig: {
+    // The stock VitePress locale switcher assumes every page has a mirror.
+    // Keep its hidden fallback links safe; the custom theme uses this route
+    // manifest to preserve corresponding-page switches where a mirror exists.
+    i18nRouting: false,
+    availablePageRoutes,
     logo: '/logo.jpg',
     siteTitle: 'N.E.K.O. Docs',
 
@@ -554,7 +608,7 @@ export default defineConfig({
     },
 
     footer: {
-      message: 'Released under the MIT License.',
+      message: 'Released under the Apache License 2.0.',
       copyright: 'Copyright 2025-present Project N.E.K.O. Contributors',
     },
   },

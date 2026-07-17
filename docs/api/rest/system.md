@@ -2,106 +2,162 @@
 
 **Prefix:** `/api`
 
-Miscellaneous system endpoints for emotion analysis, file utilities, screenshots, and proactive chat.
+This router collects first-party application services that do not belong to a narrower resource router: readiness, notices, activity, prompt flows, screenshots, Steam integration, surveys, translation, proactive delivery, and small handoff helpers.
 
-## Emotion analysis
+::: warning Local application API
+Several endpoints read local files, capture the desktop, change Steam state, or mutate onboarding state. Mutation routes use the project's local-request/CSRF validation, and screenshot routes additionally require a loopback client. Do not expose this router directly to an untrusted network.
+:::
+
+## Readiness, usage, and notices
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/system/status` | Return a `no-store` bootstrap snapshot. `status` is `starting`, `migration_required`, or `ready`, with storage-migration flags. |
+| `GET /api/token-usage` | Return token statistics for query `days` (default 7, capped at 90). |
+| `GET /api/pending-notices` | Peek queued prominent notices and return `{ notices, cursor }` without deleting them. |
+| `POST /api/pending-notices/ack` | Drain only notices at or before body `cursor`, avoiding loss of notices queued after the read. |
+| `POST /api/activity_signal` | Accept the bounded OS/activity heartbeat payload used by the frontend and feed it to the activity tracker. |
+
+The status probe deliberately returns HTTP 200 with `ready: false` while startup information is unavailable; it is a bootstrap sentinel, not a deep health check.
+
+## Changelog and survey
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/changelog` | Return changelog entries newer than query `since`; query `lang` selects a validated locale with fallback. |
+| `GET /api/survey` | Return the current-version localized survey for eligible Steam users, or `has_survey: false`. DNT/reporting opt-out disables delivery. |
+| `POST /api/survey/submit` | Submit or skip the current-version survey. Answers are size/type capped and upload is best-effort; `uploaded` reports remote success. |
+
+`POST /survey/submit` requires a valid local mutation request. The server uses its own app version rather than trusting a client-supplied survey version.
+
+## Emotion and translation
 
 ### `POST /api/emotion/analysis`
 
-Analyze the emotional tone of text.
+Analyzes a text response for the named character and normalizes it to the project's emotion labels. The flexible JSON body includes `text` and `lanlan_name`; the response contains the normalized emotion and confidence. The route may use configured model analysis and degrade to bounded heuristic inference when necessary.
 
-**Body:**
+### `POST /api/translate`
 
-```json
-{
-  "text": "I'm so happy to see you!",
-  "lanlan_name": "character_name"
-}
-```
-
-**Response:** Emotion label used for Live2D/VRM expression mapping.
-
-## File utilities
-
-### `GET /api/file-exists`
-
-Check if a file exists at the given path.
-
-**Query:** `path` — File path to check.
-
-### `GET /api/find-first-image`
-
-Find the first image file in a directory.
-
-**Query:** `directory` — Directory path to search.
-
-### `GET /api/meme/proxy-image`
-
-Proxy a remote image (e.g. a meme) to bypass CORS restrictions, with SSRF protection and caching.
-
-**Query:** `url` — Remote image URL to proxy (must be http/https).
-
-### `GET /api/steam/proxy-image`
-
-Proxy access to a local image file (notably the Steam Workshop directory), supporting absolute and relative paths.
-
-**Query:** `image_path` — Local file path to the image.
-
-## Steam achievements
-
-### `POST /api/steam/set-achievement-status/{name}`
-
-Unlock a Steam achievement. The achievement name is passed as a path parameter `{name}`.
-
-**Path parameter:** `name` — The Steam achievement name (e.g. `ACH_FIRST_DIALOGUE`).
-
-## Proactive chat
-
-### `POST /api/proactive_chat`
-
-Generate a proactive message from the character (used for idle conversation).
-
-**Body:**
+First-party subtitle translation endpoint:
 
 ```json
 {
-  "lanlan_name": "character_name",
-  "context": "optional context about what's happening"
+  "text": "Hello",
+  "target_lang": "ja",
+  "source_lang": "en",
+  "skip_google": false
 }
 ```
 
-**Response:** `action` is `chat` when a proactive line is delivered and `pass` when the
-turn is skipped. Proactive `pass`/`chat`/error responses include a stable
-machine-readable `reason_code`, such as `CHAT_DELIVERED`, `PASS_BUSY`,
-`PASS_SOURCE_EMPTY`, `PASS_DUPLICATE`, `DELIVERY_PREEMPTED`, or `ERROR_TIMEOUT`.
-They also include `stage`, a coarse process stage such as `entry_guard`,
-`activity_gate`, `source_selection`, `model_decision`, `generation`, `dedup`,
-`delivery`, or `runtime_error`.
+`source_lang` is optional and auto-detected. The response contains `success`, `translated_text`, normalized source/target languages, and when relevant `google_failed`. Translation failure returns the original text in the application envelope.
 
-::: info
-Proactive messages are rate-limited: maximum 10 per character per hour.
-:::
+## Local file and image helpers
 
-::: info
-Internally, proactive chat runs a two-phase pipeline: a Phase 1 LLM call screens candidate web content (and extracts music/meme keywords) before the Phase 2 persona-aware reply is generated. There is no separately addressable web-screening endpoint.
-:::
+| Method and path | Purpose and boundary |
+|---|---|
+| `GET /api/file-exists` | Required query `path`; returns `{ exists }`. It rejects explicit traversal components but intentionally supports normal absolute user/Workshop paths. |
+| `GET /api/find-first-image` | Required query **`folder`**. Searches only approved application/assets/user-data roots for a fixed preview filename list and images under 1 MiB. |
+| `GET /api/meme/proxy-image` | Required remote `url`; proxies HTTP(S) images with SSRF checks, content limits, and caching. |
+| `GET /api/steam/proxy-image` | Required local `image_path`; serves approved local/Workshop images after containment and type checks. |
 
-## Screenshots
+Missing input normally returns `400`; forbidden paths/targets use `403`; absent local files use `404`; upstream image failures can use `4xx`/`5xx` according to the proxy stage.
 
-### `POST /api/screenshot`
+## Screenshots and active window
 
-Backend screenshot fallback: when all frontend screen-capture APIs fail, the backend captures the local screen with pyautogui. Loopback-only; disabled when the backend is configured as remote.
+| Method and path | Purpose |
+|---|---|
+| `GET /api/get_window_title` | Return the active window title when the platform integration is available (primarily Windows). |
+| `POST /api/screenshot` | Loopback-only pyautogui fallback capture. Returns a JPEG data URL and byte size. |
+| `POST /api/screenshot/interactive` | Loopback-only native region selection on macOS; on other platforms tells the frontend to perform interactive capture. |
 
-**Response:** `{ "success": true, "data": "data:image/jpeg;base64,...", "size": <bytes> }`
+Screenshot success uses `{ "success": true, "data": "data:image/jpeg;base64,...", "size": 123 }`. Interactive cancellation uses `success: false, canceled: true`. Remote-configured or non-loopback requests are rejected rather than capturing the host desktop.
 
-### `POST /api/screenshot/interactive`
+## Proactive and mini-game events
 
-System-native interactive (region-select) screenshot, preferred by the chat screenshot button. macOS uses `screencapture` region selection; other platforms delegate to the frontend. Loopback-only.
+| Method and path | Purpose |
+|---|---|
+| `POST /api/proactive_chat` | Run the proactive source-selection/generation/delivery pipeline for `lanlan_name`. |
+| `POST /api/proactive/music_played_through` | Record that a recommended song finished, a positive feedback signal for source weighting. |
+| `POST /api/mini_game/invite/respond` | Apply the user's response to an active mini-game invitation state machine. |
 
-**Response:** A JSON envelope (not a raw DataURL).
+Proactive responses use `action: chat` or `action: pass` and stable `reason_code`/`stage` fields for outcomes such as busy, empty source, duplicate, delivery preemption, timeout, or delivered chat. There is no separately callable "phase 1" screening route.
 
-```json
-{ "success": true, "data": "data:image/jpeg;base64,...", "size": <bytes> }
+## Tutorial and autostart prompt state
+
+These are internal endpoints used by the homepage prompt state machines:
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/tutorial-prompt/state` | Read tutorial prompt state. |
+| `POST /api/tutorial-prompt/heartbeat` | Record idle/interaction input and decide whether prompting is due. |
+| `POST /api/tutorial-prompt/shown` | Record that the prompt was shown. |
+| `POST /api/tutorial-prompt/decision` | Record the user's decision. |
+| `POST /api/tutorial-prompt/reset` | Reset tutorial prompt state. |
+| `POST /api/tutorial-prompt/tutorial-started` | Record tutorial start. |
+| `POST /api/tutorial-prompt/tutorial-completed` | Record tutorial completion. |
+| `GET /api/autostart-prompt/state` | Read autostart prompt state. |
+| `POST /api/autostart-prompt/heartbeat` | Record homepage state and decide whether prompting is due. |
+| `POST /api/autostart-prompt/shown` | Record display. |
+| `POST /api/autostart-prompt/decision` | Record the user's autostart decision. |
+
+All POST routes in this group require a validated local mutation request. Their bodies are first-party UI state payloads and are not a stable third-party schema.
+
+## Steam state
+
+| Method and path | Purpose |
+|---|---|
+| `POST /api/steam/set-achievement-status/{name}` | Unlock/set the named configured achievement. |
+| `POST /api/steam/update-playtime` | Accumulate the bounded playtime delta and store Steam stats. |
+| `GET /api/steam/list-achievements` | List configured achievement state; primarily a diagnostic endpoint. |
+
+Steamworks-unavailable operations return a failure envelope; invalid local mutation requests are rejected before Steam state changes.
+
+## Yui guide handoff
+
+| Method and path | Purpose |
+|---|---|
+| `POST /api/yui-guide/handoff/create` | Create a short-lived, signed, in-memory one-time handoff token. Required: `target_page`; optional source/target path and resume metadata. |
+| `POST /api/yui-guide/handoff/consume` | Consume a token using required `token`, `signature`, and `expected_page`; optional `consumer_id`. |
+
+Responses are `no-store`. Invalid input is `400`, signature/origin/page mismatch is `403`, missing/expired token is `404`, and replay/conflict is `409`.
+
+## Implementation-verified route inventory
+
+```text
+POST /api/activity_signal
+GET  /api/changelog
+GET  /api/survey
+POST /api/survey/submit
+POST /api/emotion/analysis
+GET  /api/file-exists
+GET  /api/find-first-image
+GET  /api/meme/proxy-image
+POST /api/mini_game/invite/respond
+POST /api/proactive_chat
+POST /api/proactive/music_played_through
+GET  /api/tutorial-prompt/state
+POST /api/tutorial-prompt/heartbeat
+POST /api/tutorial-prompt/shown
+POST /api/tutorial-prompt/decision
+POST /api/tutorial-prompt/reset
+GET  /api/autostart-prompt/state
+POST /api/autostart-prompt/heartbeat
+POST /api/autostart-prompt/shown
+POST /api/autostart-prompt/decision
+POST /api/tutorial-prompt/tutorial-started
+POST /api/tutorial-prompt/tutorial-completed
+GET  /api/get_window_title
+POST /api/screenshot
+POST /api/screenshot/interactive
+GET  /api/system/status
+GET  /api/token-usage
+GET  /api/pending-notices
+POST /api/pending-notices/ack
+POST /api/steam/set-achievement-status/{name}
+POST /api/steam/update-playtime
+GET  /api/steam/list-achievements
+GET  /api/steam/proxy-image
+POST /api/translate
+POST /api/yui-guide/handoff/create
+POST /api/yui-guide/handoff/consume
 ```
-
-On a canceled selection: `{ "success": false, "canceled": true }`. On a non-localhost / remote-configured backend: `{ "success": false, "error": "..." }`.

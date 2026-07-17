@@ -69,6 +69,32 @@ keyword: pass the dutchie
     assert parsed["music_pass"] is False
 
 
+def test_parse_unified_phase1_accepts_chinese_title_alias_for_web():
+    parsed = sr_parsing._parse_unified_phase1_result(
+        """
+[WEB]
+标题: 只讨论外形，你最喜欢哪个黄金裔？
+来源: 贴吧
+"""
+    )
+
+    assert parsed["web"]["title"] == "只讨论外形，你最喜欢哪个黄金裔？"
+    assert parsed["web"]["source"] == "贴吧"
+
+
+def test_parse_unified_phase1_accepts_english_title_alias_for_web():
+    parsed = sr_parsing._parse_unified_phase1_result(
+        """
+[WEB]
+Title: Steam Deck community setup thread
+Source: Tieba
+"""
+    )
+
+    assert parsed["web"]["title"] == "Steam Deck community setup thread"
+    assert parsed["web"]["source"] == "Tieba"
+
+
 def test_strip_proactive_screen_tag_leak_removes_screen_source_label():
     cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(
         "[Screen]\n看这满屏的符咒，是在给那画中仙重塑筋骨？"

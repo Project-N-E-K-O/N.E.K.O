@@ -5,7 +5,7 @@
 新規ユーザーのオンボーディング（「アイスブレイク」）用エンドポイントです。アイスブレイクはミニゲームではなくオンボーディングの会話であり、ゲームルートのライフサイクルとは別に独自の状態を保持します。コンテキストの追記や固定のオンボーディング台詞の発話は行えますが、`/api/game/route/active` がミニゲームウィンドウの起動中を報告することは決してありません。
 
 ::: info
-すべての書き込み系エンドポイント（`/route/start`、`/route/end`、`/context`、`/choice`、`/speak`）はローカル書き込み用エンドポイントであり、バックエンドの他部分と同じ CSRF / ローカルリクエスト検証で保護されています。検証に失敗すると `{ "ok": false, "reason": "csrf_validation_failed" }` を返します。
+すべての書き込み系エンドポイント（`/route/start`、`/route/end`、`/context`、`/free-text/interpret`、`/choice`、`/speak`）はローカル書き込み用エンドポイントであり、バックエンドの他部分と同じ CSRF / ローカルリクエスト検証で保護されています。検証に失敗すると `{ "ok": false, "reason": "csrf_validation_failed" }` を返します。
 :::
 
 ::: info
@@ -151,6 +151,14 @@
   "state": "<ルート状態>"
 }
 ```
+
+### `POST /api/icebreaker/free-text/interpret`
+
+自由文回答を active な onboarding choice の一つへ対応付けます。JSON 必須 field は `lanlan_name`、`session_id`、`user_text`、空でない `options`。任意 context は `assistant_line`、直近自由文 turn、derail streak です。
+
+Route が active で `session_id` が一致する必要があります。validation、stale session、model 未設定、timeout、parse failure は `{ "ok": false, "reason": "..." }`、成功時は正規化した option と method metadata を返します。
+
+---
 
 ### `POST /api/icebreaker/choice`
 

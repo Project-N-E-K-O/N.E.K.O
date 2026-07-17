@@ -1,34 +1,24 @@
 # Prerequisites
 
-## Required
+## Required for source development
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Python | 3.11.x | Must be exactly 3.11 (not 3.12+) |
-| uv | Latest | Python package manager ([install](https://docs.astral.sh/uv/getting-started/installation/)) |
-| Git | 2.x+ | For cloning the repository |
+| Tool | Requirement | Source |
+| --- | --- | --- |
+| Python | exactly 3.11.x | `pyproject.toml` |
+| uv | a current compatible release | `uv.lock` and workflows |
+| Git | a maintained release | repository operations |
+| Node.js + npm | `^20.19.0 || >=22.12.0` for plugin manager | `frontend/plugin-manager/package.json` |
 
-## Optional
+Install Python dependencies with `uv sync`; do not use a hand-maintained `pip install -r requirements.txt` flow. Frontend and docs builds use committed lockfiles and `npm ci`.
 
-| Requirement | When needed |
-|-------------|------------|
-| Node.js 20+ | Frontend development or building docs |
-| Docker | Containerized deployment |
-| Steam client | Steam Workshop features |
+## Feature-specific tools
 
-## API Keys
+- Docker Engine + Compose for containers
+- Steam client/SDK environment for Steam integration tests
+- Platform build dependencies for Nuitka/Electron packaging
+- Playwright Chromium for browser/frontend tests
+- Provider credentials only for runtime paths or tests that call those providers
 
-N.E.K.O. requires at least one AI API provider. You can start with the **free** tier (no key needed) or configure your own:
+A free route may exist in current provider data, but availability and limits are external state, not a development prerequisite or documentation promise.
 
-| Provider | What you get | Sign up |
-|----------|-------------|---------|
-| Free (built-in) | Basic voice chat | No signup needed |
-| Qwen (recommended) | Full features, generous free tier | [Alibaba Cloud Bailian](https://bailian.console.aliyun.com/) |
-| OpenAI | Full features | [OpenAI Platform](https://platform.openai.com/) |
-| GLM | Free tier available | [Zhipu Open Platform](https://open.bigmodel.cn/) |
-| Step | Voice-optimized | [StepFun](https://platform.stepfun.com/) |
-| Gemini | Google's models | [Google AI Studio](https://aistudio.google.com/) |
-
-::: tip
-New Alibaba Cloud users get substantial free credits after identity verification. This is the recommended option for most developers.
-:::
+Use a case-preserving filesystem, enable long paths on Windows, and keep the checkout writable. Model preparation, frontend builds, tests, and packaging create local artifacts.

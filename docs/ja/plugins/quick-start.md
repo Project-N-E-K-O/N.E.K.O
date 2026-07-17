@@ -1,120 +1,97 @@
 # プラグイン クイックスタート
 
-## ステップ 1: プラグインディレクトリの作成
+このガイドでは、Plugin Manager から実行できる `Hello World` plugin を作ります。
 
-```bash
-mkdir -p plugin/plugins/hello_world
+## 前提条件
+
+- N.E.K.O が正常に起動すること
+- Python の class と function の基本を理解していること
+
+## 作るもの
+
+名前を受け取り greeting を返す runtime entry を 1 つ持つ `Hello World` plugin を作ります。完成後は Plugin Manager から start、execute、reload できます。
+
+## 1. ディレクトリを作る
+
+repository の `plugin/plugins/` の下に `hello_world/` を作ります。
+
+```text
+plugin/plugins/hello_world/
+├── plugin.toml
+└── __init__.py
 ```
 
-## ステップ 2: `plugin.toml` の作成
+## 2. `plugin.toml` を作る
 
 ```toml
 [plugin]
 id = "hello_world"
-name = "Hello World Plugin"
-description = "A simple example plugin"
-version = "1.0.0"
-entry = "plugins.hello_world:HelloWorldPlugin"
+name = "Hello World"
+description = "My first plugin — greets people by name"
+version = "0.1.0"
+entry = "plugin.plugins.hello_world:HelloWorldPlugin"
 
 [plugin.sdk]
 recommended = ">=0.1.0,<0.2.0"
 supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
 ```
 
-### 設定フィールド
+- `id` は一意な plugin ID です。directory 名と同じ `hello_world` にすることを推奨します。
+- `[plugin].entry` は host-loading entry で、`module.path:ClassName` 形式です。
+- `auto_start = true` なら N.E.K.O 起動時に process を開始します。
 
-| フィールド | 必須 | 説明 |
-|-----------|------|------|
-| `id` | はい | 一意のプラグイン識別子 |
-| `name` | いいえ | 表示名 |
-| `description` | いいえ | プラグインの説明 |
-| `version` | いいえ | プラグインバージョン |
-| `entry` | はい | エントリーポイント：`module_path:ClassName` |
+`[plugin].entry` は runtime operation の ID ではありません。次の `greet` は `@plugin_entry(id="greet")` から作られます。
 
-### SDK バージョンフィールド
-
-| フィールド | 説明 |
-|-----------|------|
-| `recommended` | 推奨 SDK バージョン範囲 |
-| `supported` | 最小サポート範囲（満たさない場合は拒否） |
-| `untested` | 許可されるが読み込み時に警告 |
-| `conflicts` | 拒否されるバージョン範囲 |
-
-## ステップ 3: `__init__.py` の作成
+## 3. `__init__.py` を作る
 
 ```python
-from plugin.sdk.plugin import (
-    NekoPluginBase, neko_plugin, plugin_entry, lifecycle,
-    Ok, Err,
-)
-from typing import Any
+from typing import Annotated
+
+from plugin.sdk.plugin import NekoPluginBase, Ok, neko_plugin, plugin_entry
+
 
 @neko_plugin
 class HelloWorldPlugin(NekoPluginBase):
-    """Hello World プラグインのサンプル。"""
+    """My first plugin."""
 
-    def __init__(self, ctx: Any):
-        super().__init__(ctx)
-        self.logger = ctx.logger
-        self.counter = 0
-
-    @lifecycle(id="startup")
-    def on_startup(self, **_):
-        self.logger.info("HelloWorldPlugin started!")
-        return Ok({"status": "ready"})
-
-    @lifecycle(id="shutdown")
-    def on_shutdown(self, **_):
-        self.logger.info("HelloWorldPlugin stopped!")
-        return Ok({"status": "stopped"})
-
-    @plugin_entry(
-        id="greet",
-        name="Greet",
-        description="Return a greeting message",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Name to greet",
-                    "default": "World"
-                }
-            }
-        }
-    )
-    def greet(self, name: str = "World", **_):
-        self.counter += 1
-        message = f"Hello, {name}! (call #{self.counter})"
-        self.logger.info(f"Greeting: {message}")
-        return Ok({"message": message, "count": self.counter})
+    @plugin_entry(id="greet", name="Greet", description="Say hello to someone")
+    async def greet(self, name: Annotated[str, "Name to greet"] = "World"):
+        return Ok({"message": f"Hello, {name}!"})
 ```
 
-### 重要なポイント
+| Code | Meaning |
+|---|---|
+| `@neko_plugin` | class を plugin として宣言 |
+| `NekoPluginBase` | config、storage、bus などを提供する base class |
+| `@plugin_entry(...)` | runtime entry `greet` を公開 |
+| `Annotated[...]` | parameter の schema description |
+| `Ok({...})` | successful `Result` |
 
-- **`@neko_plugin`** — 必須のクラスデコレーター、クラスをプラグインとして登録します
-- **`NekoPluginBase`** — すべてのプラグインが継承する必要があるベースクラス
-- **`@plugin_entry`** — 外部から呼び出し可能なエントリーポイントを定義します
-- **`@lifecycle`** — ライフサイクルイベント（`startup`、`shutdown`、`reload`）を処理します
-- **`Ok(...)` / `Err(...)`** — 型安全なエラーハンドリングのための Result 型を返します
-- **`**_`** — 追加パラメーターをキャプチャするため、エントリーポイントのシグネチャに常に含めてください
+Agent の user-plugin route がこの operation を選ぶ場合、結果は `plugin_id="hello_world"` と `entry_id="greet"` です。host は候補に対して両方を検証します。これは `@llm_tool` を main_server の tool registry に登録する仕組みとは別です。
 
-## ステップ 4: テスト
+## 4. 起動して実行する
 
-プラグインサーバーを起動した後、HTTP でプラグインを呼び出します：
+1. N.E.K.O を起動または再起動します。
+2. main interface から **Plugin Manager** を開きます。
+3. `Hello World` を開き、`Greet` entry を実行します。
+4. parameter を入力し、`Ok` result を確認します。
 
-```bash
-curl -X POST http://localhost:48916/plugin/trigger \
-  -H "Content-Type: application/json" \
-  -d '{
-    "plugin_id": "hello_world",
-    "entry_id": "greet",
-    "args": {"name": "N.E.K.O"}
-  }'
-```
+すでに N.E.K.O が起動している場合は、Plugin Manager を refresh して plugin を start できます。未公開の internal endpoint を直接呼ぶ手順には依存しません。
+
+## 5. 変更を reload する
+
+`__init__.py` を変更したら Plugin Manager の **Reload** を使います。現在の reload は `shutdown` 後に process を再起動し、`startup` を実行します。`reload` lifecycle ID 自体は compatibility のため受理されますが、Reload button はその hook を dispatch しません。
 
 ## 次のステップ
 
-- [SDK リファレンス](./sdk-reference) — `NekoPluginBase`、Result 型、ランタイムヘルパーについて学ぶ
-- [デコレーター](./decorators) — フックを含むすべてのデコレータータイプ
-- [サンプル](./examples) — 完全に動作するプラグインのサンプル
+| 目的 | ドキュメント |
+|---|---|
+| parameter と runtime entry | [エントリーとパラメーター](./entries) |
+| lifecycle と decorator | [デコレーター](./decorators) |
+| conversation-time LLM tool | [LLM Tool Calling](./tool-calling) |
+| SDK API | [SDK リファレンス](./sdk-reference) |
+| error handling | [ベストプラクティス](./best-practices) |

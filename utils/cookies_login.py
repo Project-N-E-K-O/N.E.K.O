@@ -49,7 +49,8 @@ COOKIE_FILES = {
     "kuaishou": CONFIG_DIR / 'kuaishou_cookies.json', 
     'weibo': CONFIG_DIR / 'weibo_cookies.json',
     'reddit': CONFIG_DIR / 'reddit_cookies.json',
-    'twitter': CONFIG_DIR / 'twitter_cookies.json'
+    'twitter': CONFIG_DIR / 'twitter_cookies.json',
+    'youtube': CONFIG_DIR / 'youtube_cookies.json'
 }
 
 class LoginStatus:
@@ -70,6 +71,12 @@ def mask_string(s: str) -> str:
 
 def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     """Core credential integrity check, preventing incomplete cookies from causing account anomalies or risk control"""
+    if platform == 'youtube':
+        if not cookies.get('SAPISID'):
+            logger.warning("⚠️ 安全拦截：YouTube Cookie 缺少 SAPISID！")
+            return False
+        return True
+
     required_keys = {
         'netease': ['MUSIC_U'],
         'bilibili': ['SESSDATA'],
@@ -344,6 +351,16 @@ def get_twitter_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
         save_cookies_to_file('twitter', cookies)  # noqa: ASYNC_BLOCK — CLI-only path; outer fn already blocks on input()
     return cookies
 
+def get_youtube_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
+    print("\n" + "-" * 40)
+    print("【YouTube 手动导入】(必须包含 SAPISID 字段)")
+    cookie_string = input("👉 请粘贴 Cookie: ").strip()
+    print("\033[F\033[K" + "👉 请粘贴 Cookie: [已接收，已脱敏掩码]")
+    cookies = parse_cookie_string(cookie_string)
+    if cookies:
+        save_cookies_to_file('youtube', cookies)
+    return cookies
+
 def get_netease_cookies(_method: str = "manual") -> Optional[Dict[str, str]]:
     print("\n" + "-" * 40)
     print("【网易云音乐手动导入】(需包含 MUSIC_U 字段)")
@@ -366,7 +383,8 @@ class PlatformLoginManager:
             "kuaishou": {'name': '快手', 'methods': ['manual'], 'func': get_kuaishou_cookies},
             'weibo': {'name': '微博', 'methods': ['manual'], 'func': get_weibo_cookies},
             'reddit': {'name': 'Reddit', 'methods': ['manual'], 'func': get_reddit_cookies},
-            'twitter': {'name': 'Twitter/X', 'methods': ['manual'], 'func': get_twitter_cookies}
+            'twitter': {'name': 'Twitter/X', 'methods': ['manual'], 'func': get_twitter_cookies},
+            'youtube': {'name': 'YouTube', 'methods': ['manual'], 'func': get_youtube_cookies}
         }
     
     def login_platform(self, platform: str, method: str) -> Optional[Dict[str, str]]:

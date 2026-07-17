@@ -1,6 +1,10 @@
 # エントリーとパラメーター
 
-エントリーポイントは、プラグインが外部に公開する「関数」です。Plugin Manager に表示される実行ボタン、AI エージェントが呼び出せるツール、他のプラグインが依頼できるサービスは、すべてエントリーポイントです。
+entry point は、ロード済み plugin が Plugin Manager、他 plugin、user-plugin Agent route に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
+
+`plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録されて会話中に呼ばれますが、user-plugin Agent routing が選ぶのは plugin runtime entry です。
+
+Agent routing は plugin-level filtering の後に entry metadata を評価します。Stage 2 は実在する `plugin_id` と `entry_id` を正確に返す必要があり、missing/unknown ID は correction retry 1 回の後に拒否されます。
 
 ---
 
@@ -156,7 +160,7 @@ async def search(self, query: str):
     id="process",              # エントリー ID（省略時はメソッド名）
     name="Process Data",       # 表示名
     description="Process and transform data",  # 人間と AI 向けの説明
-    timeout=60.0,              # タイムアウト秒数。超えると自動キャンセル
+    timeout=60.0,              # host-side execution timeout（秒）
     kind="service",            # 種別タグ（デフォルトは "action"）
 )
 async def process(self, data: str):

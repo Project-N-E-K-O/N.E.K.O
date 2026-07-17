@@ -1,7 +1,6 @@
 @import 'katex/dist/katex.min.css';
 
 :root {
-  --neko-chat-tool-cursor: auto;
   color: #1f2329;
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   line-height: 1.5;
@@ -27,13 +26,6 @@ body,
 
 body {
   min-width: 320px;
-}
-
-html.neko-tool-cursor-active,
-html.neko-tool-cursor-active *,
-html.neko-tool-cursor-active *::before,
-html.neko-tool-cursor-active *::after {
-  cursor: var(--neko-chat-tool-cursor) !important;
 }
 
 button,
@@ -74,8 +66,8 @@ svg {
   position: relative;
 }
 
-.avatar-cursor-overlay {
-  --avatar-cursor-overlay-scale: 1;
+.avatar-tool-visual-overlay {
+  --avatar-tool-visual-overlay-scale: 1;
   position: fixed;
   top: 0;
   left: 0;
@@ -84,23 +76,23 @@ svg {
   will-change: transform;
 }
 
-.avatar-cursor-overlay.is-compact {
-  --avatar-cursor-overlay-scale: 0.56;
+.avatar-tool-visual-overlay.is-compact {
+  --avatar-tool-visual-overlay-scale: 0.56;
 }
 
-.avatar-cursor-overlay-stage {
+.avatar-tool-visual-overlay-stage {
   opacity: 0;
-  transform: scale(var(--avatar-cursor-overlay-scale));
+  transform: scale(var(--avatar-tool-visual-overlay-scale));
   will-change: transform, opacity;
   transition: opacity 120ms cubic-bezier(0.22, 0.78, 0.2, 1);
 }
 
-.avatar-cursor-overlay.is-visible .avatar-cursor-overlay-stage {
+.avatar-tool-visual-overlay.is-visible .avatar-tool-visual-overlay-stage {
   opacity: 1;
-  transform: scale(var(--avatar-cursor-overlay-scale));
+  transform: scale(var(--avatar-tool-visual-overlay-scale));
 }
 
-.avatar-cursor-overlay-image {
+.avatar-tool-visual-overlay-image {
   display: block;
   object-fit: contain;
   pointer-events: none;
@@ -108,17 +100,17 @@ svg {
   will-change: transform;
 }
 
-.avatar-cursor-overlay-image-lollipop {
+.avatar-tool-visual-overlay-image-lollipop {
   width: 74px;
   height: 108px;
 }
 
-.avatar-cursor-overlay-image-fist {
+.avatar-tool-visual-overlay-image-fist {
   width: 78px;
   height: 80px;
 }
 
-.fist-floating-drop {
+.avatar-tool-random-scatter-particle {
   --drop-drift-x: 0px;
   --drop-drift-y: -96px;
   --drop-rotation: 0deg;
@@ -132,23 +124,23 @@ svg {
   opacity: 1;
   will-change: transform;
   transform: translate3d(0, 0, 0);
-  animation: fist-drop-burst 0.92s cubic-bezier(0.16, 0.78, 0.22, 1) forwards;
+  animation: avatar-tool-random-scatter-translate 0.92s cubic-bezier(0.16, 0.78, 0.22, 1) forwards;
   animation-delay: var(--drop-delay);
 }
 
-.fist-floating-drop-image {
+.avatar-tool-random-scatter-particle-image {
   display: block;
   width: 30px;
   height: 30px;
   object-fit: contain;
   transform: translate3d(0, 0, 0) rotate(var(--drop-rotation)) scale(calc(var(--drop-scale) * 0.72));
   will-change: transform;
-  animation: fist-drop-spin 0.92s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
+  animation: avatar-tool-random-scatter-spin 0.92s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
   animation-delay: var(--drop-delay);
   pointer-events: none;
 }
 
-@keyframes fist-drop-burst {
+@keyframes avatar-tool-random-scatter-translate {
   0% {
     transform: translate3d(0, 6px, 0);
   }
@@ -158,7 +150,7 @@ svg {
   }
 }
 
-@keyframes fist-drop-spin {
+@keyframes avatar-tool-random-scatter-spin {
   0% {
     transform: translate3d(0, 0, 0) rotate(calc(var(--drop-rotation) - 30deg)) scale(calc(var(--drop-scale) * 0.68));
   }
@@ -176,7 +168,7 @@ svg {
   }
 }
 
-.lollipop-floating-heart {
+.avatar-tool-fixed-particle {
   --heart-drift-x: 0px;
   --heart-drift-y: -96px;
   --heart-sway-x: 10px;
@@ -190,11 +182,11 @@ svg {
   opacity: 0;
   will-change: transform, opacity;
   transform: translate3d(0, 0, 0);
-  animation: lollipop-heart-rise 2.1s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
+  animation: avatar-tool-fixed-particle-rise 2.1s cubic-bezier(0.18, 0.72, 0.22, 1) forwards;
   animation-delay: var(--heart-delay);
 }
 
-.lollipop-floating-heart-glyph {
+.avatar-tool-fixed-particle-glyph {
   display: block;
   color: rgba(255, 126, 168, 0.92);
   font-size: 22px;
@@ -204,11 +196,11 @@ svg {
     0 0 14px rgba(255, 184, 204, 0.2);
   transform: translate3d(0, 0, 0) scale(calc(var(--heart-scale) * 0.72));
   will-change: transform;
-  animation: lollipop-heart-sway 2.1s ease-in-out forwards;
+  animation: avatar-tool-fixed-particle-sway 2.1s ease-in-out forwards;
   animation-delay: var(--heart-delay);
 }
 
-@keyframes lollipop-heart-rise {
+@keyframes avatar-tool-fixed-particle-rise {
   0% {
     opacity: 0;
     transform: translate3d(0, 10px, 0);
@@ -228,7 +220,7 @@ svg {
   }
 }
 
-@keyframes lollipop-heart-sway {
+@keyframes avatar-tool-fixed-particle-sway {
   0% {
     transform: translate3d(0, 0, 0) scale(calc(var(--heart-scale) * 0.52));
   }
@@ -254,11 +246,17 @@ svg {
   }
 }
 
-.hammer-cursor-overlay {
-  --hammer-overlay-scale: 1;
-  --hammer-overlay-anchor-fix-x: 0px;
-  --hammer-overlay-anchor-fix-y: 0px;
-  --hammer-overlay-visual-scale: 1;
+.avatar-tool-impact-effect {
+  --avatar-tool-impact-effect-scale: 1;
+  --avatar-tool-impact-effect-anchor-fix-x: 0px;
+  --avatar-tool-impact-effect-anchor-fix-y: 0px;
+  --avatar-tool-impact-effect-visual-scale: 1;
+  --avatar-tool-impact-origin-x: 80.19px;
+  --avatar-tool-impact-origin-y: 68px;
+  --avatar-tool-impact-translate-x: 19.62px;
+  --avatar-tool-impact-translate-y: -9.01px;
+  --avatar-tool-impact-rotation: 34.258deg;
+  --avatar-tool-impact-scale: 0.999333;
   position: fixed;
   top: 0;
   left: 0;
@@ -267,31 +265,31 @@ svg {
   will-change: transform;
 }
 
-.hammer-cursor-overlay.is-compact {
-  --hammer-overlay-visual-scale: 0.52;
+.avatar-tool-impact-effect.is-compact {
+  --avatar-tool-impact-effect-visual-scale: 0.52;
 }
 
-.hammer-cursor-overlay.is-easter-egg {
-  --hammer-overlay-scale: 5;
-  --hammer-overlay-anchor-fix-x: 322.11px;
-  --hammer-overlay-anchor-fix-y: 259.27px;
+.avatar-tool-impact-effect.is-easter-egg {
+  --avatar-tool-impact-effect-scale: 5;
+  --avatar-tool-impact-effect-anchor-fix-x: 322.11px;
+  --avatar-tool-impact-effect-anchor-fix-y: 259.27px;
 }
 
-.hammer-cursor-overlay-stage {
+.avatar-tool-impact-effect-stage {
   opacity: 0;
-  transform: scale(calc(var(--hammer-overlay-visual-scale) * 0.82));
+  transform: scale(calc(var(--avatar-tool-impact-effect-visual-scale) * 0.82));
   will-change: transform, opacity;
   transition:
     opacity 200ms cubic-bezier(0.22, 0.78, 0.2, 1),
     transform 200ms cubic-bezier(0.2, 0.82, 0.22, 1);
 }
 
-.hammer-cursor-overlay.is-visible .hammer-cursor-overlay-stage {
+.avatar-tool-impact-effect.is-visible .avatar-tool-impact-effect-stage {
   opacity: 1;
-  transform: scale(var(--hammer-overlay-visual-scale));
+  transform: scale(var(--avatar-tool-impact-effect-visual-scale));
 }
 
-.hammer-cursor-overlay-compact-image {
+.avatar-tool-impact-effect-pointer-image {
   display: block;
   width: 100px;
   height: 96px;
@@ -301,7 +299,7 @@ svg {
   filter: drop-shadow(0 4px 8px rgba(22, 34, 58, 0.16));
 }
 
-.hammer-cursor-overlay-visual {
+.avatar-tool-impact-effect-visual {
   position: relative;
   width: 136px;
   height: 130px;
@@ -309,20 +307,20 @@ svg {
   filter: drop-shadow(0 4px 8px rgba(22, 34, 58, 0.16));
 }
 
-.hammer-cursor-overlay-visual.is-idle {
-  transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+.avatar-tool-impact-effect-visual.is-idle {
+  transform: translate3d(var(--avatar-tool-impact-effect-anchor-fix-x), var(--avatar-tool-impact-effect-anchor-fix-y), 0) rotate(0deg) scale(var(--avatar-tool-impact-effect-scale));
 }
 
-.hammer-cursor-overlay-visual.is-active {
-  animation: hammer-inner-cycle 620ms linear forwards;
+.avatar-tool-impact-effect-visual.is-active {
+  animation: avatar-tool-impact-effect-cycle 620ms linear forwards;
   filter: drop-shadow(0 13px 22px rgba(22, 34, 58, 0.3));
 }
 
-.hammer-cursor-overlay-visual.is-impact {
+.avatar-tool-impact-effect-visual.is-impact {
   filter: drop-shadow(0 9px 18px rgba(22, 34, 58, 0.26));
 }
 
-.hammer-cursor-overlay-image {
+.avatar-tool-impact-effect-image {
   position: absolute;
   inset: 0;
   display: block;
@@ -335,51 +333,54 @@ svg {
   transition: none;
 }
 
-.hammer-cursor-overlay-image-primary {
+.avatar-tool-impact-effect-image-primary {
   opacity: 1;
 }
 
-.hammer-cursor-overlay-image-secondary {
+.avatar-tool-impact-effect-image-secondary {
   opacity: 0;
-  transform-origin: 80.19px 68px;
-  transform: translate3d(19.62px, -9.01px, 0) rotate(34.258deg) scale(0.999333);
+  transform-origin: var(--avatar-tool-impact-origin-x) var(--avatar-tool-impact-origin-y);
+  transform:
+    translate3d(var(--avatar-tool-impact-translate-x), var(--avatar-tool-impact-translate-y), 0)
+    rotate(var(--avatar-tool-impact-rotation))
+    scale(var(--avatar-tool-impact-scale));
 }
 
-.hammer-cursor-overlay-visual.is-impact .hammer-cursor-overlay-image-primary {
+.avatar-tool-impact-effect-visual.is-impact .avatar-tool-impact-effect-image-primary {
   opacity: 0;
 }
 
-.hammer-cursor-overlay-visual.is-impact .hammer-cursor-overlay-image-secondary {
+.avatar-tool-impact-effect-visual.is-impact .avatar-tool-impact-effect-image-secondary {
   opacity: 1;
 }
 
-@keyframes hammer-inner-cycle {
+@keyframes avatar-tool-impact-effect-cycle {
   0% {
-    transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(var(--avatar-tool-impact-effect-anchor-fix-x), var(--avatar-tool-impact-effect-anchor-fix-y), 0) rotate(0deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   52% {
-    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) + 18px), calc(var(--hammer-overlay-anchor-fix-y) - 12px), 0) rotate(42deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(calc(var(--avatar-tool-impact-effect-anchor-fix-x) + 18px), calc(var(--avatar-tool-impact-effect-anchor-fix-y) - 12px), 0) rotate(42deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   66% {
-    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 22px), calc(var(--hammer-overlay-anchor-fix-y) + 10px), 0) rotate(-86deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(calc(var(--avatar-tool-impact-effect-anchor-fix-x) - 22px), calc(var(--avatar-tool-impact-effect-anchor-fix-y) + 10px), 0) rotate(-86deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   81% {
-    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 20px), calc(var(--hammer-overlay-anchor-fix-y) + 9px), 0) rotate(-82deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(calc(var(--avatar-tool-impact-effect-anchor-fix-x) - 20px), calc(var(--avatar-tool-impact-effect-anchor-fix-y) + 9px), 0) rotate(-82deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   90% {
-    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 14px), calc(var(--hammer-overlay-anchor-fix-y) + 3px), 0) rotate(-58deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(calc(var(--avatar-tool-impact-effect-anchor-fix-x) - 14px), calc(var(--avatar-tool-impact-effect-anchor-fix-y) + 3px), 0) rotate(-58deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   96% {
-    transform: translate3d(calc(var(--hammer-overlay-anchor-fix-x) - 6px), calc(var(--hammer-overlay-anchor-fix-y) - 1px), 0) rotate(-18deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(calc(var(--avatar-tool-impact-effect-anchor-fix-x) - 6px), calc(var(--avatar-tool-impact-effect-anchor-fix-y) - 1px), 0) rotate(-18deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 
   100% {
-    transform: translate3d(var(--hammer-overlay-anchor-fix-x), var(--hammer-overlay-anchor-fix-y), 0) rotate(0deg) scale(var(--hammer-overlay-scale));
+    transform: translate3d(var(--avatar-tool-impact-effect-anchor-fix-x), var(--avatar-tool-impact-effect-anchor-fix-y), 0) rotate(0deg) scale(var(--avatar-tool-impact-effect-scale));
   }
 }
 
@@ -3506,20 +3507,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(0, 210, 255, 0.96);
 }
 
+/* 只呼吸 opacity，不呼吸 filter：drop-shadow 参与动画时每帧都要重光栅化
+   （无法走合成器捷径），在 120Hz 屏上是持续的 raster+GPU 开销。脉动的光晕感
+   由 ::after 的 opacity/transform 呼吸层承担，::before 保持基础态的静态阴影。 */
 @keyframes compact-history-handle-breathe {
   0%,
   100% {
     opacity: 0.72;
-    filter:
-      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
   }
 
   50% {
     opacity: 1;
-    filter:
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
-      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
   }
 }
 
@@ -5242,12 +5240,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: 44px;
 }
 
-.avatar-tool-manager-tool-image.avatar-tool-icon-hammer,
-.avatar-tool-manager-drag-ghost .avatar-tool-icon-hammer {
-  transform: scale(1.38) translate(-14%, 10%);
-  transform-origin: center center;
-}
-
 @media (max-width: 640px) {
   .compact-input-tool-fan .avatar-tool-quickbar {
     left: calc(var(--compact-tool-wheel-center-x) - 105px);
@@ -6202,13 +6194,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     visibility: hidden !important;
   }
 
-  .avatar-cursor-overlay-stage,
-  .hammer-cursor-overlay-stage,
-  .fist-floating-drop,
-  .fist-floating-drop-image,
-  .lollipop-floating-heart,
-  .lollipop-floating-heart-glyph,
-  .hammer-cursor-overlay-visual.is-active,
+  .avatar-tool-visual-overlay-stage,
+  .avatar-tool-impact-effect-stage,
+  .avatar-tool-random-scatter-particle,
+  .avatar-tool-random-scatter-particle-image,
+  .avatar-tool-fixed-particle,
+  .avatar-tool-fixed-particle-glyph,
+  .avatar-tool-impact-effect-visual.is-active,
   .message-row-user,
   .message-row-assistant,
   .compact-export-history-message,

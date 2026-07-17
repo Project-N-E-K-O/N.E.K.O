@@ -42,6 +42,9 @@ from utils.frontend_utils import get_timestamp
 from utils.language_utils import get_global_language
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
+from utils.cloudsave_runtime import assert_cloudsave_writable
+from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -51,6 +54,190 @@ from .runtime import app
 
 class HistoryRequest(BaseModel):
     input_history: str
+
+
+class ExternalMemoryImportRequest(BaseModel):
+    character_name: str
+    source_format: str
+    imported_files: list[str]
+    candidates: list[dict]
+    warning_count: int = 0
+
+
+@app.post("/internal/memory/import_external_markdown")
+async def import_external_markdown(request: ExternalMemoryImportRequest):
+    """Persist already-previewed OpenClaw/Hermes entries via live managers.
+
+    The persona and facts persistence paths are **asymmetric**, because their
+    downstream budgets differ:
+
+    - **facts** take the ``_apersist_new_facts(semantic_dedup=False)`` pure-append
+      path -- the facts pool has no hard token ceiling for system-prompt rendering;
+      entries are recalled on demand at retrieval time, so keeping each one is fine.
+    - **persona** must first go through one LLM fusion via ``afuse_external_facts``.
+      When persona is rendered into the system prompt, all non-protected entries
+      compete for a single **strict token ceiling**; ``USER.md`` / ``SOUL.md`` are
+      dozens of lines of free-form Markdown, and appending them verbatim would
+      quickly overflow that pool and crowd out the impressions the character has
+      naturally accumulated in conversation. Fusion summarises / merges / dedupes
+      the material and truncates it to the per-entity budget before persisting.
+      Candidates are grouped by entity (master / neko) and fused separately.
+
+    On fusion failure (``ExternalMemoryFusionError``) there is **no fallback** to
+    per-entry appends (that would bypass the budget and overflow the pool) -- the
+    user's material is kept and ``external_import_partial`` is returned so the
+    frontend can retry; retries are idempotent (same fingerprint -> skip the whole
+    batch / changed -> replace-then-fuse).
+    """
+    name = validate_lanlan_name(request.character_name)
+    if request.source_format not in {"openclaw", "hermes"}:
+        raise HTTPException(status_code=400, detail="Invalid source_format")
+    if not request.candidates or len(request.candidates) > MAX_ENTRIES:
+        raise HTTPException(status_code=400, detail="Invalid candidate count")
+    if runtime.fact_store is None or runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    assert_cloudsave_writable(
+        runtime._config_manager,
+        operation="import",
+        target=f"memory/{name}/external-markdown",
+    )
+
+    imported_at = datetime.now().astimezone().isoformat()
+    # persona 候选按 entity(master / neko) 分组，各自送 LLM 融合；facts 走纯追加。
+    persona_candidates_by_entity: dict[str, list[dict]] = {}
+    extracted_facts: list[dict] = []
+    for candidate in request.candidates:
+        if not isinstance(candidate, dict):
+            raise HTTPException(status_code=400, detail="Invalid candidate")
+        text = str(candidate.get("text") or "").strip()
+        entity = str(candidate.get("entity") or "master")
+        target = candidate.get("target")
+        source_file = str(candidate.get("source_file") or "")
+        if (
+            not text or len(text) > MAX_ENTRY_CHARS
+            or entity not in {"master", "neko", "relationship"}
+            or target not in {"persona", "facts"}
+            or not source_file
+        ):
+            raise HTTPException(status_code=400, detail="Invalid candidate fields")
+        source_section = str(candidate.get("source_section") or "")
+        event_date = candidate.get("event_date")
+        if target == "persona":
+            # 带齐 provenance（source_file / source_section / event_date）传给融合层：
+            # source_section 用于融合 prompt 分节，source_file 进 Phase 3 落盘 metadata，
+            # 指纹由 afuse_external_facts 内部按候选文本自算（幂等重导）。
+            persona_candidates_by_entity.setdefault(entity, []).append({
+                "text": text,
+                "entity": entity,
+                "source_file": source_file,
+                "source_section": source_section,
+                "event_date": event_date,
+            })
+        else:
+            extracted_facts.append({
+                "text": text,
+                "entity": entity,
+                "importance": 7,
+                "source": "user_observation",
+                "_external_import": {
+                    "format": request.source_format,
+                    "file": source_file,
+                    "section": source_section,
+                    "event_date": event_date,
+                    "imported_at": imported_at,
+                },
+            })
+
+    # ── persona 阶段：按 entity 分别 LLM 融合（不降级纯追加，见端点 docstring）──
+    added_persona = 0
+    skipped_persona = 0
+    try:
+        for entity, entity_candidates in persona_candidates_by_entity.items():
+            fusion_result = await runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            added_persona += fusion_result["added"]
+            skipped_persona += fusion_result["skipped"]
+    except ExternalMemoryImportTooLargeError:
+        # 确定性失败：候选超单次融合输入池，重试同一份必然再失败（没记指纹）→ 返回
+        # 不可重试的 too_large 错误码，让前端提示「拆分 workspace」而非「重试完成」。
+        logger.warning(
+            "External Markdown import: persona too large for single fusion: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=413,
+            content={
+                "detail": "External memory import is too large for a single fusion pass",
+                "error_code": "external_import_too_large",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+    except Exception:
+        # 任何 persona 阶段失败（融合终态失败 ExternalMemoryFusionError / asave_persona
+        # 崩溃等）都保留已落盘素材、返回 partial（added_persona = 已成功融合并保存的
+        # entity 计数），前端据此幂等重试。绝不回退成逐条 append 撑爆 persona 池；异常
+        # 已 logger.exception 兜底，第二个 entity 上崩溃不再漏成 generic 500（Codex P2）。
+        logger.exception(
+            "External Markdown import: persona stage failed: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+
+    try:
+        new_facts = await runtime.fact_store._apersist_new_facts(
+            name,
+            extracted_facts,
+            default_source="user_observation",
+            semantic_dedup=False,
+        )
+    except Exception:
+        logger.exception(
+            "External Markdown import stopped after persona persistence: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+    added_facts = len(new_facts)
+    skipped_facts = len(extracted_facts) - added_facts
+    return {
+        "status": "success",
+        "character_name": name,
+        "source_format": request.source_format,
+        "imported_files": request.imported_files,
+        "added_persona": added_persona,
+        "added_facts": added_facts,
+        "skipped_duplicates": skipped_persona + skipped_facts,
+        "warning_count": max(0, request.warning_count),
+    }
 
 
 # /new_dialog QPS 观测：每角色累计调用次数，由 _periodic_new_dialog_qps_log_loop
@@ -737,4 +924,3 @@ async def last_conversation_gap(lanlan_name: str):
     except Exception as e:
         logger.exception(f"查询对话间隔失败: {e}")
         return JSONResponse({"gap_seconds": -1, "error": "server_error"}, status_code=500)
-
