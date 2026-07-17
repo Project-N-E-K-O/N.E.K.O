@@ -110,9 +110,9 @@ async def push_activity_signal(request: Request):
     push channel as HTTP for the "backend doesn't run on the user's
     machine" deployments. The frontend (Electron preload reading
     ``powerMonitor.getSystemIdleTime`` + npm ``active-win`` +
-    ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~6s``; the
+    ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~5s``; the
     tracker treats anything fresher than ``_EXTERNAL_SIGNAL_TTL_SECONDS``
-    (20s) as the authoritative OS view, falling back to the local
+    (15s) as the authoritative OS view, falling back to the local
     collector when the heartbeat stops. Same fresh-then-fallback path
     feeds both the async ``get_snapshot`` and the sync variant — see
     ``tracker._select_system_snapshot``.
@@ -252,10 +252,10 @@ async def push_activity_signal(request: Request):
             status_code=400,
         )
 
-    # Per-lanlan throttle — kept below the frontend's 6s heartbeat. The
-    # 20s TTL keeps the last accepted snapshot fresh through two missed
-    # heartbeats (next attempt at ~18s) plus normal scheduling jitter.
-    # Spam control, not auth — the character lookup below is the real
+    # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL
+    # is 15s (3× this interval) so even if 2 of every 3 pushes get
+    # rate-limited the tracker stays inside its freshness window. Spam
+    # control, not auth — the character lookup below is the real
     # integrity check.
     now = time.time()
     last_push = _ACTIVITY_SIGNAL_THROTTLE.get(lanlan_name)
