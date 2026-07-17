@@ -98,12 +98,33 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   const titleMatches = [...html.matchAll(/<title>([\s\S]*?)<\/title>/gi)]
   const htmlLang = html.match(/<html\b[^>]*\blang="([^"]+)"/i)?.[1] ?? ''
   const description = decodeHtml(metaContent(metaTags, 'name', 'description'))
-  const robots = metaContent(metaTags, 'name', 'robots')
+  const robotsTags = metaTags.filter((tag) => tag.name === 'robots')
+  const robots = robotsTags[0]?.content ?? ''
+  const robotsDirectives = new Set(
+    robots
+      .toLowerCase()
+      .split(',')
+      .map((directive) => directive.trim())
+      .filter(Boolean),
+  )
   const canonicalLinks = linkTags.filter((tag) => tag.rel === 'canonical')
   const canonical = canonicalLinks[0]?.href ?? ''
 
+  if (robotsTags.length !== 1) {
+    fail(file, `expected one robots meta tag, found ${robotsTags.length}`)
+  }
+  if (
+    Number(robotsDirectives.has('index')) +
+      Number(robotsDirectives.has('noindex')) !==
+    1
+  ) {
+    fail(file, 'robots must contain exactly one of index or noindex')
+  }
+
   if (isNotFound) {
-    if (!robots.includes('noindex')) fail(file, '404 page must be noindex')
+    if (!robotsDirectives.has('noindex')) {
+      fail(file, '404 page must be noindex')
+    }
     continue
   }
 
@@ -129,7 +150,7 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
     fail(file, `canonical must use ${SITE_ORIGIN}: ${canonical || '(missing)'}`)
   }
 
-  const noindex = robots.includes('noindex')
+  const noindex = robotsDirectives.has('noindex')
   if (noindex) {
     noindexCount += 1
     if (sitemapUrls.has(canonical)) {
