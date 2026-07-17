@@ -1,5 +1,5 @@
-from plugin.plugins.neko_roast.core.contracts import ViewerEvent
-from plugin.plugins.neko_roast.core.pipeline_routing import (
+from plugin.plugins.neko_live.core.contracts import ViewerEvent
+from plugin.plugins.neko_live.core.pipeline_routing import (
     entrance_pacing_interval_seconds,
     is_live_danmaku_with_text,
     route_for_event,

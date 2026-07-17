@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import ViewerIdentity
-from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
+from plugin.plugins.neko_live.core.contracts import ViewerIdentity
+from plugin.plugins.neko_live.stores.viewer_store import ViewerStore
 
 
 class _FakePlugin:
@@ -123,7 +123,7 @@ def test_failed_atomic_replace_removes_temporary_file(tmp_path, monkeypatch):
     def _fail_replace(_source, _target):
         raise OSError("replace failed")
 
-    monkeypatch.setattr("plugin.plugins.neko_roast.stores.viewer_store.os.replace", _fail_replace)
+    monkeypatch.setattr("plugin.plugins.neko_live.stores.viewer_store.os.replace", _fail_replace)
 
     assert store._write_json(target, {"42": {"uid": "42"}}) is False
     assert not target.exists()

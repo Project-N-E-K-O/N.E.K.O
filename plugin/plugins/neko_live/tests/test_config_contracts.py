@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core import active_topic_rules
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core import active_topic_rules
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     InteractionResult,
     PipelineStep,
@@ -17,15 +17,15 @@ from plugin.plugins.neko_roast.core.contracts import (
     parse_room_id,
     utc_now_iso,
 )
-from plugin.plugins.neko_roast.core.contracts_public import public_dict, public_text
-from plugin.plugins.neko_roast.core.live_output_quality import needs_quality_fallback, safe_fallback_reply
-from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
-from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
-from plugin.plugins.neko_roast.core.runtime_live_input import record_result
-from plugin.plugins.neko_roast.modules.active_engagement import ActiveEngagementModule
-from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
-from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
-from plugin.plugins.neko_roast.modules.warmup_hosting import WarmupHostingModule
+from plugin.plugins.neko_live.core.contracts_public import public_dict, public_text
+from plugin.plugins.neko_live.core.live_output_quality import needs_quality_fallback, safe_fallback_reply
+from plugin.plugins.neko_live.core.permission_gate import PermissionGate
+from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.runtime_live_input import record_result
+from plugin.plugins.neko_live.modules.active_engagement import ActiveEngagementModule
+from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
+from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_live.modules.warmup_hosting import WarmupHostingModule
 
 
 class _SecretLike:

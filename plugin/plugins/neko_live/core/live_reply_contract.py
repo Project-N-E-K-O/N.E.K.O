@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 
 REPLY_CONTRACT_NAME = "short_tts_line"
-PLUGIN_OUTPUT_POLICY_KEY = "neko_roast_output_policy"
+PLUGIN_OUTPUT_POLICY_KEY = "neko_live_output_policy"
 REPLY_TARGET_CHARS = 14
 DEFAULT_DISPATCH_REPLY_CHARS = 28
 DANMAKU_EXPANDED_REPLY_CHARS = 56
@@ -40,7 +40,7 @@ class LiveReplyContract:
     response_module_hint: str
     max_reply_chars: int
     reply_contract: str = REPLY_CONTRACT_NAME
-    plugin: str = "neko_roast"
+    plugin: str = "neko_live"
     demo: bool = False
 
     def to_metadata(self) -> dict[str, Any]:
@@ -72,7 +72,7 @@ def build_plugin_output_policy(*, response_module_hint: str, max_reply_chars: in
     """
     module = str(response_module_hint or "").strip()
     return {
-        "owner": "neko_roast",
+        "owner": "neko_live",
         "host_role": "opaque_transport",
         "speech_strategy": "plugin_prompt_contract",
         "response_module_hint": module,

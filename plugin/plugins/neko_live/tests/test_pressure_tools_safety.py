@@ -4,15 +4,15 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
+from plugin.plugins.neko_live.tools.live_random_danmaku_pressure import (
     parse_args as parse_random_args,
 )
-from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import run as run_random
-from plugin.plugins.neko_roast.tools.live_silence_pressure import (
+from plugin.plugins.neko_live.tools.live_random_danmaku_pressure import run as run_random
+from plugin.plugins.neko_live.tools.live_silence_pressure import (
     parse_args as parse_silence_args,
 )
-from plugin.plugins.neko_roast.tools.live_silence_pressure import run as run_silence
-from plugin.plugins.neko_roast.tools.pressure_guard import (
+from plugin.plugins.neko_live.tools.live_silence_pressure import run as run_silence
+from plugin.plugins.neko_live.tools.pressure_guard import (
     EXIT_CONNECTION,
     EXIT_PREFLIGHT,
     PressureError,
@@ -201,7 +201,7 @@ def test_trip_during_pressure_is_not_resumed_or_queue_cleared(
             return {"result": {"success": True}}
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.tools.live_silence_pressure.HostedClient",
+        "plugin.plugins.neko_live.tools.live_silence_pressure.HostedClient",
         Client,
     )
     args = parse_silence_args(
@@ -224,8 +224,8 @@ def test_trip_during_pressure_is_not_resumed_or_queue_cleared(
 @pytest.mark.parametrize(
     ("runner", "parse_args", "client_target", "warning_prefix"),
     [
-        (run_silence, parse_silence_args, "plugin.plugins.neko_roast.tools.live_silence_pressure.HostedClient", "[pressure]"),
-        (run_random, parse_random_args, "plugin.plugins.neko_roast.tools.live_random_danmaku_pressure.HostedClient", "[mass]"),
+        (run_silence, parse_silence_args, "plugin.plugins.neko_live.tools.live_silence_pressure.HostedClient", "[pressure]"),
+        (run_random, parse_random_args, "plugin.plugins.neko_live.tools.live_random_danmaku_pressure.HostedClient", "[mass]"),
     ],
 )
 def test_pressure_cleanup_failure_does_not_mask_primary_failure(

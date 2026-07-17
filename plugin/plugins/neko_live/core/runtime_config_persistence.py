@@ -39,18 +39,18 @@ async def persist_config_update(runtime: Any, clean: dict[str, Any]) -> None:
         None,
     )
     if callable(update_own_config):
-        await update_own_config({"neko_roast": clean}, timeout=10.0)
+        await update_own_config({"neko_live": clean}, timeout=10.0)
         return
 
     config_api = getattr(runtime.plugin, "config", None)
     ensure_active = getattr(config_api, "profile_ensure_active", None)
     if callable(ensure_active):
-        await ensure_active("default", {"neko_roast": clean}, timeout=10.0)
+        await ensure_active("default", {"neko_live": clean}, timeout=10.0)
     update = getattr(config_api, "update", None)
     if not callable(update):
         raise RuntimeError("plugin config update API is unavailable")
     try:
-        await update({"neko_roast": clean})
+        await update({"neko_live": clean})
     except ValueError as exc:
         if "no active profile" not in str(exc):
             raise

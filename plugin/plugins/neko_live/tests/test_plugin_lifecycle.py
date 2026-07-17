@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast import NekoRoastPlugin
-from plugin.plugins.neko_roast.core import runtime as runtime_module
+from plugin.plugins.neko_live import NekoLivePlugin
+from plugin.plugins.neko_live.core import runtime as runtime_module
 
 
 @pytest.mark.asyncio
@@ -31,8 +31,8 @@ async def test_startup_syncs_live_instructions_instead_of_unconditional_inject(m
             calls.append(("sync_developer", force))
             return "developer_not_injected"
 
-    monkeypatch.setattr("plugin.plugins.neko_roast.core.runtime.RoastRuntime", Runtime)
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    monkeypatch.setattr("plugin.plugins.neko_live.core.runtime.RoastRuntime", Runtime)
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
 
     result = await plugin.startup()
 
@@ -67,7 +67,7 @@ async def test_config_change_syncs_live_instructions_instead_of_unconditional_in
             calls.append(("sync_developer", force))
             return "developer_not_injected"
 
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     plugin.runtime = Runtime()
 
     result = await plugin.on_config_change()
@@ -80,7 +80,7 @@ async def test_config_change_syncs_live_instructions_instead_of_unconditional_in
 
 @pytest.mark.asyncio
 async def test_config_change_without_runtime_stays_pending():
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
 
     result = await plugin.on_config_change()
 
@@ -106,7 +106,7 @@ async def test_startup_syncs_prompt_context_without_forcing_empty_restores(monke
             calls.append(("developer", announce, force))
 
     monkeypatch.setattr(runtime_module, "RoastRuntime", FakeRuntime)
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     monkeypatch.setattr(plugin, "register_dynamic_entry", lambda *args, **kwargs: None)
     monkeypatch.setattr(plugin, "_sync_developer_entries", lambda: None)
 
@@ -140,7 +140,7 @@ async def test_update_config_second_developer_sync_only_announces(monkeypatch):
             if force or injections == 0:
                 injections += 1
 
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     plugin.runtime = FakeRuntime()
     monkeypatch.setattr(plugin, "_sync_developer_entries", lambda: None)
 
@@ -161,7 +161,7 @@ async def test_clear_sandbox_data_stays_available_outside_developer_mode():
             self.clear_calls += 1
             return {"records": 2, "preview_files": 1}
 
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     runtime = FakeRuntime()
     plugin.runtime = runtime
 
@@ -185,7 +185,7 @@ async def test_set_live_room_entry_returns_platform_room_ref():
         def live_connection_snapshot(self) -> dict:
             return {"platform": "douyin", "room_ref": "room-42", "room_id": 0}
 
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     runtime = Runtime()
     plugin.runtime = runtime
 
@@ -210,7 +210,7 @@ async def test_command_loop_start_restarts_idle_hosting_loop():
         def _start_idle_hosting_loop(self) -> None:
             self.starts += 1
 
-    plugin = NekoRoastPlugin(SimpleNamespace(logger=None))
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     runtime = Runtime()
     plugin.runtime = runtime
 

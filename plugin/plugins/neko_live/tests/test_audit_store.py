@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from plugin.plugins.neko_roast.stores.audit_store import AuditStore
+from plugin.plugins.neko_live.stores.audit_store import AuditStore
 
 
 class _SecretLike:

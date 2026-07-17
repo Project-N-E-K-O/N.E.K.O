@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     InteractionResult,
     LiveRoomStatus,
@@ -19,15 +19,15 @@ from plugin.plugins.neko_roast.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.runtime_config_activation import activate_config
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.core.runtime_live_listener import stop_live_listener
-from plugin.plugins.neko_roast.core.runtime_live_input import (
+from plugin.plugins.neko_live.core.runtime_config_activation import activate_config
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime_live_listener import stop_live_listener
+from plugin.plugins.neko_live.core.runtime_live_input import (
     _public_lookup_room_ref,
     _signal_event_type,
     remember_live_danmaku_seen,
 )
-from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
 
 
 class ConfigApi:
@@ -38,7 +38,7 @@ class ConfigApi:
         self.resume_update: asyncio.Event | None = None
 
     async def dump(self, timeout: float = 0) -> dict:
-        return {"neko_roast": {}}
+        return {"neko_live": {}}
 
     async def update(self, payload: dict) -> None:
         if self.update_entered is not None:
@@ -927,8 +927,8 @@ async def test_update_config_normalizes_douyin_room_ref_before_persist(runtime: 
 
     assert config.live_room_ref == "room-42"
     assert config.live_room_id == 0
-    assert persisted["neko_roast"]["live_room_ref"] == "room-42"
-    assert persisted["neko_roast"]["live_room_id"] == 0
+    assert persisted["neko_live"]["live_room_ref"] == "room-42"
+    assert persisted["neko_live"]["live_room_id"] == 0
     assert "must-not-leak" not in str(persisted)
 
 
@@ -949,7 +949,7 @@ async def test_update_config_preserves_douyin_target_on_partial_rate_limit_updat
     assert config.live_room_ref == "room-42"
     assert config.live_room_id == 0
     assert config.rate_limit_seconds == 10
-    assert persisted["neko_roast"] == {"rate_limit_seconds": 10}
+    assert persisted["neko_live"] == {"rate_limit_seconds": 10}
 
 
 @pytest.mark.asyncio
@@ -965,8 +965,8 @@ async def test_update_config_clears_room_target_when_switching_to_douyin(runtime
     assert config.live_platform == "douyin"
     assert config.live_room_ref == ""
     assert config.live_room_id == 0
-    assert persisted["neko_roast"]["live_room_ref"] == ""
-    assert persisted["neko_roast"]["live_room_id"] == 0
+    assert persisted["neko_live"]["live_room_ref"] == ""
+    assert persisted["neko_live"]["live_room_id"] == 0
 
 
 @pytest.mark.asyncio
@@ -1066,7 +1066,7 @@ async def test_connect_live_room_switches_active_room_without_double_start(runti
     assert runtime.bili_live_ingest.started == [100, 200]
     assert runtime.bili_live_ingest.stopped == 1
     assert runtime.bili_live_ingest.room_id == 200
-    persisted = runtime.plugin.config.updates[-1]["neko_roast"]
+    persisted = runtime.plugin.config.updates[-1]["neko_live"]
     assert persisted["live_room_ref"] == "200"
     assert persisted["live_room_id"] == 200
 
@@ -1149,8 +1149,8 @@ async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: 
 
     await runtime.update_config({"dry_run": False})
 
-    assert runtime.plugin.config.ensure_payloads == [{"neko_roast": {"dry_run": False}}]
-    assert runtime.plugin.config.updates == [{"neko_roast": {"dry_run": False}}]
+    assert runtime.plugin.config.ensure_payloads == [{"neko_live": {"dry_run": False}}]
+    assert runtime.plugin.config.updates == [{"neko_live": {"dry_run": False}}]
 
 
 @pytest.mark.asyncio
@@ -1651,7 +1651,7 @@ def test_public_lookup_room_ref_does_not_stringify_objects() -> None:
 
 
 def test_danmaku_mention_parser_distinguishes_neko_cjk_address_from_viewer_nickname() -> None:
-    from plugin.plugins.neko_roast.core import danmaku_text_rules
+    from plugin.plugins.neko_live.core import danmaku_text_rules
 
     assert danmaku_text_rules.is_viewer_to_viewer_mention_text("@neko\u505a\u8fd9\u4e2a") is False
     assert danmaku_text_rules.is_viewer_to_viewer_mention_text("@\u732b\u732b\u5199\u9996\u8bd7") is False

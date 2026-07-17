@@ -24,7 +24,7 @@ uv run python launcher.py
 npm start
 ```
 
-打开 NEKO Live 面板后，如果插件没有自动启动，先启动 `neko_roast` 插件。
+打开 NEKO Live 面板后，如果插件没有自动启动，先启动 `neko_live` 插件。
 
 ## 开播前检查
 
@@ -113,7 +113,7 @@ npm start
 
 1. 在控制台点击“结束直播”并确认。
 2. 如已关闭 `dry_run`，切回 `dry_run=true`。
-3. 停止 `neko_roast` 插件。
+3. 停止 `neko_live` 插件。
 4. 关闭前端和后端。
 
 提交前不要带入本地运行态文件，例如 `plugin.toml.lock`、临时截图或直播间实测房号。

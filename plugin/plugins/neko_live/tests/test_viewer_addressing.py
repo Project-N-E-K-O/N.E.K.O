@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from plugin.plugins.neko_roast.core.contracts import ViewerProfile
-from plugin.plugins.neko_roast.core.viewer_addressing import viewer_address_name
+from plugin.plugins.neko_live.core.contracts import ViewerProfile
+from plugin.plugins.neko_live.core.viewer_addressing import viewer_address_name
 
 
 def test_regular_viewer_poetic_nickname_uses_short_address():

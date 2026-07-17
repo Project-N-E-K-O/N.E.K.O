@@ -8,19 +8,19 @@ Direct Douyin WebSocket/protobuf/ack/heartbeat transport is intentionally not ke
 
 ## Owner And Contracts
 
-- Module owner: `plugin.plugins.neko_roast.modules.douyin_live_ingest.DouyinLiveIngestModule`
-- Public projection helper: `plugin.plugins.neko_roast.modules.douyin_live_ingest.public_projection`
-- Room target parser: `plugin.plugins.neko_roast.modules.douyin_live_ingest.room_ref`
-- Room metadata parser: `plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast`
-- Bridge connection plan projection: `plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_plan`
-- Bridge backend spec: `plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_backend`
-- Bundled bridge supervisor: `plugin.plugins.neko_roast.modules.douyin_live_ingest.embedded_bridge`
-- External bridge wrapper: `plugin.plugins.neko_roast.modules.douyin_live_ingest.external_bridge`
-- Transport event contract: `plugin.plugins.neko_roast.modules.douyin_live_ingest.transport_event`
-- Replaceable bridge contract: `plugin.plugins.neko_roast.modules.live_bridge`
-- Retry state projection: `plugin.plugins.neko_roast.modules.douyin_live_ingest.retry_policy`
-- Event normalization: `plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model`
-- Identity resolver: `plugin.plugins.neko_roast.modules.douyin_identity`
+- Module owner: `plugin.plugins.neko_live.modules.douyin_live_ingest.DouyinLiveIngestModule`
+- Public projection helper: `plugin.plugins.neko_live.modules.douyin_live_ingest.public_projection`
+- Room target parser: `plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref`
+- Room metadata parser: `plugin.plugins.neko_live.modules.douyin_live_ingest.webcast`
+- Bridge connection plan projection: `plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_plan`
+- Bridge backend spec: `plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_backend`
+- Bundled bridge supervisor: `plugin.plugins.neko_live.modules.douyin_live_ingest.embedded_bridge`
+- External bridge wrapper: `plugin.plugins.neko_live.modules.douyin_live_ingest.external_bridge`
+- Transport event contract: `plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event`
+- Replaceable bridge contract: `plugin.plugins.neko_live.modules.live_bridge`
+- Retry state projection: `plugin.plugins.neko_live.modules.douyin_live_ingest.retry_policy`
+- Event normalization: `plugin.plugins.neko_live.modules.douyin_live_ingest.event_model`
+- Identity resolver: `plugin.plugins.neko_live.modules.douyin_identity`
 
 Input contracts:
 
@@ -151,11 +151,11 @@ Bridge connection plans are intentionally minimal public metadata. They may expo
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_douyin_bridge.py plugin/plugins/neko_roast/tests/test_event_bus.py -q
-uv run pytest plugin/plugins/neko_roast/tests/test_module_registry.py plugin/plugins/neko_roast/tests/test_output_contract.py -q
-uv run pytest plugin/plugins/neko_roast/tests/test_live_events.py plugin/plugins/neko_roast/tests/test_live_status_rules.py plugin/plugins/neko_roast/tests/test_runtime_live_controls.py -q
-uv run pytest plugin/plugins/neko_roast/tests/test_smoke.py plugin/plugins/neko_roast/tests/test_config_contracts.py plugin/plugins/neko_roast/tests/test_plugin_lifecycle.py -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_douyin_bridge.py plugin/plugins/neko_live/tests/test_event_bus.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_module_registry.py plugin/plugins/neko_live/tests/test_output_contract.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_live_events.py plugin/plugins/neko_live/tests/test_live_status_rules.py plugin/plugins/neko_live/tests/test_runtime_live_controls.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_smoke.py plugin/plugins/neko_live/tests/test_config_contracts.py plugin/plugins/neko_live/tests/test_plugin_lifecycle.py -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 The tests cover decision-point documentation, forbidden transport imports and artifacts, room target parsing, credential separation, metadata and bridge-plan projection, bundled bridge process supervision, replaceable local bridge startup, retry-state redaction, fixture/bridge event normalization, safe gift publication and shared support-event routing boundaries, status-only event boundaries, identity sanitization, provider-router compatibility, and Bilibili non-regression boundaries.

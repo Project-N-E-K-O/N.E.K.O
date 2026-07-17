@@ -143,7 +143,7 @@ def _priority_for_request(request: InteractionRequest, *, demo: bool = False) ->
 
 def _coalesce_key_for_request(request: InteractionRequest, *, demo: bool = False) -> str:
     if demo:
-        return f"neko_roast_demo:{request.identity.uid}:{request.event.seen_at}"
+        return f"neko_live_demo:{request.identity.uid}:{request.event.seen_at}"
     source = str(request.event.source or "").strip()
     if source in _NEKO_ROAST_HOSTING_SOURCES:
         target = str(request.event.target_lanlan or "").strip() or str(request.identity.uid or "").strip()
@@ -157,7 +157,7 @@ def _coalesce_key_for_request(request: InteractionRequest, *, demo: bool = False
             or request.event.seen_at
             or "default"
         ).strip()
-        return f"neko_roast:auto_host:{target or 'default'}:{source}:{beat}"
+        return f"neko_live:auto_host:{target or 'default'}:{source}:{beat}"
     return ""
 
 
@@ -336,7 +336,7 @@ class NekoDispatcher:
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
         result = self.plugin.push_message(
-            source="neko_roast",
+            source="neko_live",
             ai_behavior="read",
             parts=[{"type": "text", "text": text}],
             metadata=metadata,
@@ -377,11 +377,11 @@ class NekoDispatcher:
 
     async def push_developer_announcement(self, text: str) -> str:
         target_lanlan = resolve_plugin_target_lanlan(self.plugin)
-        metadata = {"plugin": "neko_roast", "developer_mode": True}
+        metadata = {"plugin": "neko_live", "developer_mode": True}
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
         result = self.plugin.push_message(
-            source="neko_roast",
+            source="neko_live",
             visibility=[],
             ai_behavior="respond",
             parts=[{"type": "text", "text": text}],
@@ -455,7 +455,7 @@ class NekoDispatcher:
             request,
         )
         result = self.plugin.push_message(
-            source="neko_roast",
+            source="neko_live",
             visibility=[],
             ai_behavior="respond",
             parts=parts,

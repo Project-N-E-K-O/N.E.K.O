@@ -1,6 +1,6 @@
 import pytest
 
-from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
+from plugin.plugins.neko_live.core.module_registry import ModuleRegistry
 
 @pytest.mark.asyncio
 async def test_module_toggle_failure_keeps_previous_state_and_success_clears_degraded():

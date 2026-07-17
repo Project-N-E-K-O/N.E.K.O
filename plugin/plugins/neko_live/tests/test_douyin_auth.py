@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.core import runtime_douyin_auth
-from plugin.plugins.neko_roast.core.runtime_douyin_auth import normalize_cookie
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast import DouyinWebcastInfo
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core import runtime_douyin_auth
+from plugin.plugins.neko_live.core.runtime_douyin_auth import normalize_cookie
+from plugin.plugins.neko_live.modules.douyin_live_ingest.webcast import DouyinWebcastInfo
 
 
 class _ConfigApi:
     async def dump(self, timeout: float = 0) -> dict:
-        return {"neko_roast": {}}
+        return {"neko_live": {}}
 
 
 class _Plugin:

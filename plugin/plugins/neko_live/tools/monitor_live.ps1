@@ -28,8 +28,8 @@ function Write-MonitorHelp {
 NEKO Live monitor
 
 Usage:
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_roast\tools\monitor_live.ps1 -Once -ExpectRealOutput -BackendLogPath <backend-log>
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_live\tools\monitor_live.ps1 -Once
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\plugin\plugins\neko_live\tools\monitor_live.ps1 -Once -ExpectRealOutput -BackendLogPath <backend-log>
 
 Important options:
   -Once              Print one snapshot and exit.
@@ -478,7 +478,7 @@ function Read-Context {
         return Get-Content -LiteralPath $ContextJsonPath -Raw | ConvertFrom-Json
     }
 
-    $uri = "$BaseUrl/plugin/neko_roast/hosted-ui/context?kind=panel&id=main"
+    $uri = "$BaseUrl/plugin/neko_live/hosted-ui/context?kind=panel&id=main"
     return Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 5
 }
 
@@ -1085,7 +1085,7 @@ function Get-BackendLogSignals {
     $contaminationLines = @(
         $logLines | Where-Object {
             $_ -match "(?i)(warthunder|proactive\s+bridge\s+output|proactive.*queued)" -and
-            $_ -notmatch "(?i)(plugin=neko_roast|proactive_message enqueued callback)"
+            $_ -notmatch "(?i)(plugin=neko_live|proactive_message enqueued callback)"
         }
     )
     $contaminationText = $contaminationLines -join "`n"
@@ -1193,7 +1193,7 @@ function Write-Snapshot {
         $context = Read-Context
     } catch {
         $script:LastSnapshotOk = $false
-        Write-Output ("[neko_roast] context=failed error=$(Format-Error $_.Exception.Message)")
+        Write-Output ("[neko_live] context=failed error=$(Format-Error $_.Exception.Message)")
         return
     }
     $script:LastSnapshotOk = $true
@@ -2048,7 +2048,7 @@ function Write-Snapshot {
     }
 
     $parts = @(
-        "[neko_roast]",
+        "[neko_live]",
         "checkout=$(Get-CheckoutStatus $context)",
         "dry_run=$(Get-Field $config.dry_run)",
         "mode=$(Get-Field $config.live_mode)",

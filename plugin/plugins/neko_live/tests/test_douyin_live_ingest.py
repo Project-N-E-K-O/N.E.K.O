@@ -10,13 +10,13 @@ from urllib.parse import quote
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent
-from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.modules.douyin_identity import DouyinIdentityModule
-from plugin.plugins.neko_roast.modules.douyin_live_ingest import DouyinLiveIngestModule
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_adapter import DouyinLiveBridgeAdapter
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model import (
+from plugin.plugins.neko_live.core.contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent
+from plugin.plugins.neko_live.core.event_bus import EventBus
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.modules.douyin_identity import DouyinIdentityModule
+from plugin.plugins.neko_live.modules.douyin_live_ingest import DouyinLiveIngestModule
+from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_adapter import DouyinLiveBridgeAdapter
+from plugin.plugins.neko_live.modules.douyin_live_ingest.event_model import (
     DouyinLiveProviderEvent,
     is_routable_event_type,
     is_status_only_event_type,
@@ -24,36 +24,36 @@ from plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model import (
     to_live_event,
     to_provider_event,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.public_projection import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.public_projection import (
     is_public_hostname,
     safe_public_bool,
     safe_public_float,
     safe_public_int,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.retry_policy import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.retry_policy import (
     DouyinReconnectPolicy,
     DouyinReconnectState,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.room_ref import DouyinRoomRef, parse_douyin_room_ref
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.transport_event import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import DouyinRoomRef, parse_douyin_room_ref
+from plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event import (
     DouyinTransportEvent,
     DouyinTransportStartRequest,
     DouyinTransportState,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.webcast import (
     DouyinWebcastInfo,
     fetch_webcast_info,
     parse_webcast_info,
     room_page_url,
 )
-from plugin.plugins.neko_roast.modules.live_bridge.process_supervisor import BridgeProcessState
-from plugin.plugins.neko_roast.modules.live_events import LiveEventsModule
-from plugin.plugins.neko_roast.modules.live_support_events import LiveSupportEventsModule
+from plugin.plugins.neko_live.modules.live_bridge.process_supervisor import BridgeProcessState
+from plugin.plugins.neko_live.modules.live_events import LiveEventsModule
+from plugin.plugins.neko_live.modules.live_support_events import LiveSupportEventsModule
 
 
 class _ConfigApi:
     async def dump(self, timeout: float = 0) -> dict:
-        return {"neko_roast": {}}
+        return {"neko_live": {}}
 
 
 class _Plugin:
@@ -1492,7 +1492,7 @@ def test_fetch_webcast_info_bounds_urlopen_timeout(monkeypatch):
         return _Response()
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
         fake_urlopen,
     )
 
@@ -1527,7 +1527,7 @@ def test_fetch_webcast_info_rejects_unsafe_cookie_headers(monkeypatch):
         return _Response()
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
         fake_urlopen,
     )
 
@@ -1549,7 +1549,7 @@ def test_fetch_webcast_info_returns_status_for_http_error(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
         fake_urlopen,
     )
 
@@ -1568,7 +1568,7 @@ def test_fetch_webcast_info_returns_status_for_url_error(monkeypatch):
         raise urllib.error.URLError("connection failed token=must-not-leak")
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
         fake_urlopen,
     )
 
@@ -1892,7 +1892,7 @@ async def test_douyin_start_listening_builds_bridge_connection_plan_without_meta
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
 
@@ -1954,7 +1954,7 @@ async def test_douyin_start_listening_delegates_to_external_bridge_boundary(monk
             return DouyinTransportState(state="disconnected")
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
     runtime.douyin_live_ingest._bridge_transport = _FakeTransport()
@@ -2294,7 +2294,7 @@ async def test_douyin_start_listening_uses_external_bridge_without_direct_attemp
             return DouyinTransportState(state="disconnected")
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
     runtime.douyin_live_ingest._bridge_transport = _BridgeTransport()
@@ -2337,7 +2337,7 @@ async def test_douyin_start_listening_reports_external_bridge_error(monkeypatch,
             return DouyinTransportState(state="disconnected")
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
     runtime.douyin_live_ingest._bridge_transport = _FailingBridgeTransport()
@@ -2367,7 +2367,7 @@ async def test_douyin_start_listening_does_not_require_plugin_cookie(monkeypatch
         raise AssertionError("non-string cookie must not reach metadata fetch")
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
 
@@ -2411,7 +2411,7 @@ async def test_douyin_connect_snapshot_exposes_unsupported_bridge_plan(monkeypat
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
 
@@ -2456,7 +2456,7 @@ async def test_douyin_stop_listening_clears_transient_connection_error(monkeypat
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
 
@@ -2643,7 +2643,7 @@ async def test_douyin_lookup_audit_uses_safe_normalized_room_ref(monkeypatch, tm
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
 
@@ -2687,7 +2687,7 @@ async def test_douyin_lookup_uses_webcast_fetch_result(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.douyin_live_ingest.fetch_webcast_info",
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.fetch_webcast_info",
         fake_fetch,
     )
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}

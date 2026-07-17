@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_roast.tests.monitor_contexts import (
+from plugin.plugins.neko_live.tests.monitor_contexts import (
     _context_from_other_checkout,
     _context_with_latency,
     _context_with_latest_route_and_signal,
     _solo_quiet_context,
 )
-from plugin.plugins.neko_roast.tests.monitor_live_test_utils import _run_monitor, _run_monitor_args
-from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
+from plugin.plugins.neko_live.tests.monitor_live_test_utils import _run_monitor, _run_monitor_args
+from plugin.plugins.neko_live.tools.live_random_danmaku_pressure import (
     HostedClient as RandomPressureHostedClient,
     build_test_config as build_random_pressure_config,
     parse_args as parse_random_pressure_args,
@@ -20,14 +20,14 @@ from plugin.plugins.neko_roast.tools.live_random_danmaku_pressure import (
     run as run_random_pressure,
     submit_one,
 )
-from plugin.plugins.neko_roast.tools.live_silence_pressure import (
+from plugin.plugins.neko_live.tools.live_silence_pressure import (
     compact_result as compact_silence_result,
     parse_args as parse_silence_pressure_args,
     require_action_success as require_silence_action_success,
     run as run_silence_pressure,
 )
-from plugin.plugins.neko_roast.tools.live_silence_pressure import summarize_context as summarize_silence_context
-from plugin.plugins.neko_roast.tools.pressure_guard import prepare_log_path
+from plugin.plugins.neko_live.tools.live_silence_pressure import summarize_context as summarize_silence_context
+from plugin.plugins.neko_live.tools.pressure_guard import prepare_log_path
 
 
 def test_monitor_live_script_defaults_to_plugin_host_port() -> None:
@@ -129,7 +129,7 @@ def test_silence_pressure_stops_before_triggers_when_safe_setup_is_rejected(
             return {"result": {"success": True}}
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.tools.live_silence_pressure.HostedClient",
+        "plugin.plugins.neko_live.tools.live_silence_pressure.HostedClient",
         FakeClient,
     )
     args = parse_silence_pressure_args(
@@ -179,7 +179,7 @@ def test_random_pressure_refuses_to_replace_existing_room_listener(
             return {"result": {"success": True}}
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.tools.live_random_danmaku_pressure.HostedClient",
+        "plugin.plugins.neko_live.tools.live_random_danmaku_pressure.HostedClient",
         FakeClient,
     )
     args = parse_random_pressure_args(
@@ -597,13 +597,13 @@ def test_monitor_live_script_uses_solo_readiness_profile_count_when_recent_profi
     assert "profile_count=5" in completed.stdout
 
 
-def test_monitor_live_script_does_not_flag_neko_roast_proactive_as_contamination(tmp_path: Path) -> None:
+def test_monitor_live_script_does_not_flag_neko_live_proactive_as_contamination(tmp_path: Path) -> None:
     log_path = tmp_path / "backend.log"
     log_path.write_text(
         "\n".join(
             [
                 "[EventBus] proactive_message enqueued callback (passive); next user turn will carry it",
-                "proactive bridge forwarded: plugin=neko_roast event=proactive_message",
+                "proactive bridge forwarded: plugin=neko_live event=proactive_message",
             ]
         ),
         encoding="utf-8",

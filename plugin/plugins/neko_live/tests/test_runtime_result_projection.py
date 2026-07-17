@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     InteractionResult,
     PipelineStep,
@@ -10,8 +10,8 @@ from plugin.plugins.neko_roast.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
 
 
 def test_record_result_keeps_fake_support_claim_as_danmaku_signal(runtime: RoastRuntime) -> None:

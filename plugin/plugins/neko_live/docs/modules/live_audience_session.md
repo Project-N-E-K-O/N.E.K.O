@@ -43,9 +43,9 @@ Pipeline traces, recent results, UID lookup, and sandbox records remain develope
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_live_audience_session.py plugin/plugins/neko_roast/tests/test_runtime_live_controls.py plugin/plugins/neko_roast/tests/test_smoke.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_live_audience_session.py plugin/plugins/neko_live/tests/test_runtime_live_controls.py plugin/plugins/neko_live/tests/test_smoke.py -q
+uv run pytest plugin/plugins/neko_live/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 Tests cover EventBus aggregation, lifecycle reset/retention, bounded viewer projections, dashboard projection, listener start/stop integration, modular/compat panel parity, and the eight-locale UI contract.

@@ -1202,7 +1202,7 @@ function profileTone(group: string, key: string): "success" | "warning" | "dange
 }
 
 /* bundled source: ui/panel.tsx */
-const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"
+const ONBOARDING_STORAGE_KEY = "neko-live:onboarding:v2"
 
 function CompactTabs(props: { id: string; items: Array<{ id: string; label: any; content: any }> }) {
   const { id, items } = props
@@ -1280,7 +1280,7 @@ function formatLocaleDateTime(value: number, locale?: string): string {
   }
 }
 
-export default function NekoRoastPanel(props: CompatPluginSurfaceProps<DashboardState>) {
+export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}
   const config = safeState.config || {}

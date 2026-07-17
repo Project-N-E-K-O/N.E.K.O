@@ -26,9 +26,9 @@ The catalogs read plugin-owned JSON and static public strings. They do not read 
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_active_topic_core.py plugin/plugins/neko_roast/tests/test_live_hosting_flow.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_active_topic_core.py plugin/plugins/neko_live/tests/test_live_hosting_flow.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 Tests cover shared-facade availability, catalog key integrity, malformed-material rejection, and empty-runtime degradation.

@@ -23,9 +23,9 @@ Hosting material is read from plugin-owned live content and recent plugin runtim
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_live_hosting_flow.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_live_hosting_flow.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 The focused tests cover standalone module imports, material safety filtering, and recent-title similarity.

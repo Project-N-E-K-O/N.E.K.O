@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from plugin.plugins.neko_roast.stores.credential_store import CredentialStore
+from plugin.plugins.neko_live.stores.credential_store import CredentialStore
 
 
 class _FakePlugin:

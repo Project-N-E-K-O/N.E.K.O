@@ -8,10 +8,10 @@ It also owns the live-room danmaku context used by prompt builders. While events
 
 ## Owner And Contracts
 
-- Module owner: `plugin.plugins.neko_roast.modules.live_events.LiveEventsModule`
+- Module owner: `plugin.plugins.neko_live.modules.live_events.LiveEventsModule`
 - Private collaborators:
-  - `plugin.plugins.neko_roast.modules.live_events.provider_event`
-  - `plugin.plugins.neko_roast.modules.live_events.room_topic.RoomTopicContext`
+  - `plugin.plugins.neko_live.modules.live_events.provider_event`
+  - `plugin.plugins.neko_live.modules.live_events.room_topic.RoomTopicContext`
 - Input contract: `LiveEvent.raw` is a provider event exposing safe scalar fields such as `event_type` / `type`, `uid`, `nickname`, `text` / `danmaku_text`, `avatar_url`, `room_ref`, `room_id`, `score`, and optional gift summary fields. It may be an object-style event or an already-sanitized dict event; dict events may use common snake_case or camelCase summary keys such as `gift_name` / `giftName`. Explicit `event_type` / `type` aliases must be strings; object-shaped values are ignored instead of stringified. Common event aliases such as `chat` / `danmu` -> `danmaku` and `sc` / `superchat` -> `super_chat` are normalized by the provider helper. Bilibili `LiveDanmaku` is still accepted through `msg_type` compatibility helpers, but callers should not depend on Bilibili-only types.
 - Output contract: selected danmaku calls `ctx.handle_live_payload(payload)`. Low-value danmaku may be intentionally skipped before pipeline, but the room-topic context is still updated first.
 - Support-event boundary: `gift`, `super_chat`, and `guard` bypass this selection hub and are owned by the separate bounded scheduler in `live_support_events`.
@@ -84,7 +84,7 @@ Public numeric fields such as `room_id`, `guard_level`, `gift_count`, `gift_valu
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_live_events.py plugin/plugins/neko_roast/tests/test_douyin_bridge.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_live_events.py plugin/plugins/neko_live/tests/test_douyin_bridge.py -q
 ```
 
 The tests cover immediate dispatch, cooldown-window selection, rich danmaku routing, reset/cancel cleanup, failure-state cleanup, room-topic prompt context, low-quality filtering, reply tactics, transient viewer hints, room-topic prompt field redaction, public `uid` / `room_ref` filtering, public avatar URL projection, public numeric projection, public danmaku text redaction and length bounds, event-type alias normalization, object and dict provider-event routing, Douyin provider-event routing without Bilibili-only types, and status-only event boundaries.

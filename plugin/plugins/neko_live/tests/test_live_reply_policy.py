@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from plugin.plugins.neko_roast.core import live_reply_policy
+from plugin.plugins.neko_live.core import live_reply_policy
 
 
 def test_live_reply_policy_is_plugin_owned():
-    import plugin.plugins.neko_roast.core.live_reply_policy as policy_module
+    import plugin.plugins.neko_live.core.live_reply_policy as policy_module
 
     source = policy_module.__loader__.get_source(policy_module.__name__)
 
@@ -20,15 +20,15 @@ def test_live_reply_policy_builds_structured_reply_metadata():
     )
 
     assert metadata == {
-        "plugin": "neko_roast",
+        "plugin": "neko_live",
         "uid": "42",
         "live_mode": "solo_stream",
         "demo": False,
         "live_reply_contract": "short_tts_line",
         "max_reply_chars": 72,
         "response_module_hint": "active_engagement",
-        "neko_roast_output_policy": {
-            "owner": "neko_roast",
+        "neko_live_output_policy": {
+            "owner": "neko_live",
             "host_role": "opaque_transport",
             "speech_strategy": "plugin_prompt_contract",
             "response_module_hint": "active_engagement",
@@ -61,9 +61,9 @@ def test_live_reply_policy_marks_output_policy_as_plugin_owned():
         response_module_hint="danmaku_response",
     )
 
-    policy = metadata["neko_roast_output_policy"]
+    policy = metadata["neko_live_output_policy"]
 
-    assert policy["owner"] == "neko_roast"
+    assert policy["owner"] == "neko_live"
     assert policy["host_role"] == "opaque_transport"
     assert policy["speech_strategy"] == "plugin_prompt_contract"
     assert policy["max_reply_chars"] == 28

@@ -5,16 +5,16 @@ import json
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import ViewerIdentity, ViewerProfile, utc_now_iso
-from plugin.plugins.neko_roast.core.viewer_preferences import (
+from plugin.plugins.neko_live.core.contracts import ViewerIdentity, ViewerProfile, utc_now_iso
+from plugin.plugins.neko_live.core.viewer_preferences import (
     infer_viewer_preferences,
     viewer_preference_prompt_block,
     viewer_profile_projection,
 )
-from plugin.plugins.neko_roast.modules._prompt_context_blocks import (
+from plugin.plugins.neko_live.modules._prompt_context_blocks import (
     viewer_preference_context_block,
 )
-from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
+from plugin.plugins.neko_live.stores.viewer_store import ViewerStore
 
 
 class _FakePlugin:

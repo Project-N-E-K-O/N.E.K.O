@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     RoastConfig,
     SafetyDecision,
@@ -11,9 +11,9 @@ from plugin.plugins.neko_roast.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
-from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
-from plugin.plugins.neko_roast.core.pipeline_session import PipelineSessionTracker
+from plugin.plugins.neko_live.core.permission_gate import PermissionGate
+from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline_session import PipelineSessionTracker
 
 
 @pytest.mark.asyncio

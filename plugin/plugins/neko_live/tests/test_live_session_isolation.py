@@ -5,20 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionResult,
     LiveEvent,
     LiveRoomStatus,
     ViewerEvent,
     ViewerIdentity,
 )
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.core.runtime_live_listener import (
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime_live_listener import (
     start_live_listener,
     stop_live_listener,
 )
-from plugin.plugins.neko_roast.core.runtime_live_session import invalidate_live_session
-from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.core.runtime_live_session import invalidate_live_session
+from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
 
 
 @pytest.mark.asyncio

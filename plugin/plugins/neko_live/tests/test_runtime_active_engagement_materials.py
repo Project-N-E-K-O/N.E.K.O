@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionResult,
     PipelineStep,
     ViewerEvent,
 )
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.modules.active_engagement import ActiveEngagementModule
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.modules.active_engagement import ActiveEngagementModule
 
 
 def _created_at_age(seconds: int) -> str:

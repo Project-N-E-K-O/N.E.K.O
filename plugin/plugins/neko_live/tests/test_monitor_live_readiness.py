@@ -3,13 +3,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from plugin.plugins.neko_roast.tests.monitor_contexts import (
+from plugin.plugins.neko_live.tests.monitor_contexts import (
     _context_with_latency,
     _context_with_latest_route_and_signal,
     _solo_idle_context,
     _solo_quiet_context,
 )
-from plugin.plugins.neko_roast.tests.monitor_live_test_utils import _run_monitor, _run_monitor_args
+from plugin.plugins.neko_live.tests.monitor_live_test_utils import _run_monitor, _run_monitor_args
 
 
 

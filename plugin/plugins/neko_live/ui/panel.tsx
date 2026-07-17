@@ -68,7 +68,7 @@ import {
 } from "./panel_helpers"
 import { LiveExplainSection, LiveSessionSection, RecentResultsTable, ViewerProfilesTable } from "./panel_data_sections"
 
-const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"
+const ONBOARDING_STORAGE_KEY = "neko-live:onboarding:v2"
 
 function CompactTabs(props: { id: string; items: Array<{ id: string; label: any; content: any }> }) {
   const { id, items } = props
@@ -146,7 +146,7 @@ function formatLocaleDateTime(value: number, locale?: string): string {
   }
 }
 
-export default function NekoRoastPanel(props: PluginSurfaceProps<DashboardState>) {
+export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>) {
   const { state, t } = props
   const safeState = state || {}
   const config = safeState.config || {}

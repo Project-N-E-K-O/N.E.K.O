@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import InteractionResult
-from plugin.plugins.neko_roast.core.runtime_active_engagement import (
+from plugin.plugins.neko_live.core.contracts import InteractionResult
+from plugin.plugins.neko_live.core.runtime_active_engagement import (
     maybe_trigger_active_engagement,
     trigger_active_engagement,
 )

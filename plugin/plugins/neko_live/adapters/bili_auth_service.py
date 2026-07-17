@@ -1,8 +1,8 @@
 """B站 扫码登录服务（P5 登录态）。
 
-移植自旧插件 `bilibili_danmaku/bili_auth_service.py`（依赖注入式、与 neko_roast 解耦）：
+移植自旧插件 `bilibili_danmaku/bili_auth_service.py`（依赖注入式、与 neko_live 解耦）：
 只编排 `bilibili_api.login_v2` 的二维码登录状态机，凭据的加载/加密保存/重载由注入的三个
-回调负责（在 neko_roast 里由 `stores/credential_store.py` + runtime 提供）。返回状态字典。
+回调负责（在 neko_live 里由 `stores/credential_store.py` + runtime 提供）。返回状态字典。
 """
 
 from __future__ import annotations

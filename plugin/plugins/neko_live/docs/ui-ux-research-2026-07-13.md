@@ -1,7 +1,7 @@
 # NEKO Live UI / UX Research Log
 
 Date: 2026-07-13  
-Scope: `plugin/plugins/neko_roast` only  
+Scope: `plugin/plugins/neko_live` only
 Audience: product, UI, runtime, privacy, and test maintainers
 
 This document records confirmed product and UX problems before the UI refactor. It separates code-backed facts from product recommendations so that later implementation does not silently change runtime behavior.

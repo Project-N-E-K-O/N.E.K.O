@@ -28,8 +28,8 @@ async def reload_config(runtime: Any) -> RoastConfig:
         dumped = await runtime.plugin.config.dump(timeout=5.0)
         if isinstance(dumped, dict):
             data = (
-                dumped.get("neko_roast", {})
-                if isinstance(dumped.get("neko_roast"), dict)
+                dumped.get("neko_live", {})
+                if isinstance(dumped.get("neko_live"), dict)
                 else {}
             )
     except Exception as exc:

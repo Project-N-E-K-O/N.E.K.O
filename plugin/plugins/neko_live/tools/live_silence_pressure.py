@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from plugin.plugins.neko_roast.tools.pressure_guard import (
+from plugin.plugins.neko_live.tools.pressure_guard import (
     EXIT_RUN,
     PressureError,
     compare_and_restore_config,
@@ -34,7 +34,7 @@ from plugin.plugins.neko_roast.tools.pressure_guard import (
 )
 
 
-PLUGIN_ID = "neko_roast"
+PLUGIN_ID = "neko_live"
 SURFACE_ID = "main"
 KIND = "panel"
 LOCALE = "zh-CN"
@@ -496,7 +496,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--log",
-        default=str(Path("_local_artifacts") / "neko_roast" / "pressure" / "live_silence_pressure.jsonl"),
+        default=str(Path("_local_artifacts") / "neko_live" / "pressure" / "live_silence_pressure.jsonl"),
     )
     log_mode = parser.add_mutually_exclusive_group()
     log_mode.add_argument("--append", action="store_true", help="Append to an existing pressure log.")

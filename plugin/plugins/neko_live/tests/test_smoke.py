@@ -4,8 +4,8 @@ import json
 import tomllib
 from pathlib import Path
 
-from plugin.plugins.neko_roast import NekoRoastPlugin
-from plugin.plugins.neko_roast.core.runtime_dashboard_actions import dashboard_actions
+from plugin.plugins.neko_live import NekoLivePlugin
+from plugin.plugins.neko_live.core.runtime_dashboard_actions import dashboard_actions
 from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR
 from plugin.sdk.shared.constants import EVENT_META_ATTR
 
@@ -17,17 +17,17 @@ def _panel_ui_source(root: Path) -> str:
     )
 
 
-def test_neko_roast_manifest_smoke():
+def test_neko_live_manifest_smoke():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
 
-    assert manifest["plugin"]["id"] == "neko_roast"
-    assert manifest["plugin"]["entry"] == "plugin.plugins.neko_roast:NekoRoastPlugin"
-    assert manifest["neko_roast"]["roast_strength"] == "normal"
-    assert manifest["neko_roast"]["live_room_ref"] == ""
-    assert manifest["neko_roast"]["live_room_id"] == 0
-    assert manifest["neko_roast"]["live_mode"] == "co_stream"
+    assert manifest["plugin"]["id"] == "neko_live"
+    assert manifest["plugin"]["entry"] == "plugin.plugins.neko_live:NekoLivePlugin"
+    assert manifest["neko_live"]["roast_strength"] == "normal"
+    assert manifest["neko_live"]["live_room_ref"] == ""
+    assert manifest["neko_live"]["live_room_id"] == 0
+    assert manifest["neko_live"]["live_mode"] == "co_stream"
     panel_entry = manifest["plugin"]["ui"]["panel"][0]["entry"]
     assert panel_entry == "ui/panel_compat.tsx"
     assert (root / panel_entry).is_file()
@@ -40,7 +40,7 @@ def test_dashboard_actions_are_exposed_plugin_entries() -> None:
     projected = {item["entry_id"] for item in dashboard_actions()}
     entry_ids = set()
     ui_action_ids = set()
-    for member in vars(NekoRoastPlugin).values():
+    for member in vars(NekoLivePlugin).values():
         entry_meta = getattr(member, EVENT_META_ATTR, None)
         if entry_meta is not None and entry_meta.event_type == "plugin_entry":
             entry_ids.add(entry_meta.id)
@@ -56,7 +56,7 @@ def test_hosted_ui_manifest_entry_is_main_branch_compatible():
     root = Path(__file__).resolve().parents[1]
     source = (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
-    assert "export default function NekoRoastPanel" in source
+    assert "export default function NekoLivePanel" in source
     assert 'from "@neko/plugin-ui"' in source
     assert "from \"./" not in source
     assert "from './" not in source
@@ -101,7 +101,7 @@ def test_dry_run_defaults_off_and_is_hidden_from_normal_panel():
     with (root / "plugin.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
 
-    assert manifest["neko_roast"]["dry_run"] is False
+    assert manifest["neko_live"]["dry_run"] is False
     assert "dry_run: false" in (root / "ui" / "panel_state.ts").read_text(encoding="utf-8")
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -134,7 +134,7 @@ def test_developer_tools_default_off_until_explicitly_enabled():
     with (root / "plugin.toml").open("rb") as handle:
         manifest = tomllib.load(handle)
 
-    assert manifest["neko_roast"]["developer_tools_enabled"] is False
+    assert manifest["neko_live"]["developer_tools_enabled"] is False
     assert "developer_tools_enabled: false" in (root / "ui" / "panel_state.ts").read_text(encoding="utf-8")
     assert "developer_tools_enabled: false" in (root / "ui" / "panel_compat.tsx").read_text(encoding="utf-8")
 
@@ -159,7 +159,7 @@ def test_first_use_guide_is_local_resettable_and_mirrored() -> None:
 
     for name in ("panel.tsx", "panel_compat.tsx"):
         source = (root / "ui" / name).read_text(encoding="utf-8")
-        assert 'const ONBOARDING_STORAGE_KEY = "neko-roast:onboarding:v2"' in source
+        assert 'const ONBOARDING_STORAGE_KEY = "neko-live:onboarding:v2"' in source
         assert "window.localStorage.getItem(ONBOARDING_STORAGE_KEY)" in source
         assert "window.localStorage.setItem(ONBOARDING_STORAGE_KEY, \"done\")" in source
         assert "function resetOnboarding()" in source
@@ -893,7 +893,7 @@ def test_independent_mode_plan_keeps_solo_validation_checklist():
 
 
 def test_trigger_idle_hosting_is_exposed_as_hosted_ui_action():
-    meta = getattr(NekoRoastPlugin.trigger_idle_hosting, UI_ACTION_META_ATTR, None)
+    meta = getattr(NekoLivePlugin.trigger_idle_hosting, UI_ACTION_META_ATTR, None)
 
     assert meta is not None
     assert meta["id"] == "trigger_idle_hosting"
@@ -902,7 +902,7 @@ def test_trigger_idle_hosting_is_exposed_as_hosted_ui_action():
 
 
 def test_trigger_warmup_hosting_is_exposed_as_hosted_ui_action():
-    meta = getattr(NekoRoastPlugin.trigger_warmup_hosting, UI_ACTION_META_ATTR, None)
+    meta = getattr(NekoLivePlugin.trigger_warmup_hosting, UI_ACTION_META_ATTR, None)
 
     assert meta is not None
     assert meta["id"] == "trigger_warmup_hosting"
@@ -911,7 +911,7 @@ def test_trigger_warmup_hosting_is_exposed_as_hosted_ui_action():
 
 
 def test_trigger_active_engagement_is_exposed_as_hosted_ui_action():
-    meta = getattr(NekoRoastPlugin.trigger_active_engagement, UI_ACTION_META_ATTR, None)
+    meta = getattr(NekoLivePlugin.trigger_active_engagement, UI_ACTION_META_ATTR, None)
 
     assert meta is not None
     assert meta["id"] == "trigger_active_engagement"
@@ -920,9 +920,9 @@ def test_trigger_active_engagement_is_exposed_as_hosted_ui_action():
 
 
 def test_viewer_profile_destructive_entries_are_not_exposed_as_hosted_ui_actions():
-    meta = getattr(NekoRoastPlugin.clear_viewer_profiles, UI_ACTION_META_ATTR, None)
-    delete_meta = getattr(NekoRoastPlugin.delete_viewer_profile, UI_ACTION_META_ATTR, None)
-    reset_meta = getattr(NekoRoastPlugin.reset_viewer_impression, UI_ACTION_META_ATTR, None)
+    meta = getattr(NekoLivePlugin.clear_viewer_profiles, UI_ACTION_META_ATTR, None)
+    delete_meta = getattr(NekoLivePlugin.delete_viewer_profile, UI_ACTION_META_ATTR, None)
+    reset_meta = getattr(NekoLivePlugin.reset_viewer_impression, UI_ACTION_META_ATTR, None)
 
     assert meta is None
     assert delete_meta is None
@@ -936,7 +936,7 @@ def test_douyin_cookie_actions_are_exposed_as_hosted_ui_actions():
         ("douyin_cookie_validate", "douyin_cookie_validate"),
         ("douyin_cookie_delete", "douyin_cookie_delete"),
     ):
-        meta = getattr(getattr(NekoRoastPlugin, method_name), UI_ACTION_META_ATTR, None)
+        meta = getattr(getattr(NekoLivePlugin, method_name), UI_ACTION_META_ATTR, None)
 
         assert meta is not None
         assert meta["id"] == action_id

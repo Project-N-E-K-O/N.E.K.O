@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_backend import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_backend import (
     DouyinBridgeBackend,
     default_douyin_bridge_backend,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.embedded_bridge import DouyinEmbeddedBridgeSupervisor
-from plugin.plugins.neko_roast.modules.live_bridge.process_supervisor import BridgeProcessSupervisor
-from plugin.plugins.neko_roast.modules.live_bridge.transport import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.embedded_bridge import DouyinEmbeddedBridgeSupervisor
+from plugin.plugins.neko_live.modules.live_bridge.process_supervisor import BridgeProcessSupervisor
+from plugin.plugins.neko_live.modules.live_bridge.transport import (
     LiveBridgeEvent,
     LiveBridgeStartRequest,
     LiveBridgeState,

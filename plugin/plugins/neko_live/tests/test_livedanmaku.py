@@ -12,14 +12,14 @@ import asyncio
 import json
 import sys
 
-from plugin.plugins.neko_roast.modules.bili_live_ingest.danmaku_core import (
+from plugin.plugins.neko_live.modules.bili_live_ingest.danmaku_core import (
     PROTOCOL_VERSION_BROTLI,
     DanmakuListener,
     WS_FALLBACK_URLS,
     WS_MAIN_URL,
     _decompress,
 )
-from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import (
+from plugin.plugins.neko_live.modules.bili_live_ingest.livedanmaku import (
     LiveDanmaku,
     MessageType,
 )

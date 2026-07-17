@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core import (
+from plugin.plugins.neko_live.core import (
     active_topic_candidate_picker,
     active_topic_live_thread_source,
     active_topic_material_family,
@@ -24,12 +24,12 @@ from plugin.plugins.neko_roast.core import (
     live_content_active_catalog,
     live_content_host_catalog,
 )
-from plugin.plugins.neko_roast.core.active_topic_selector import ActiveTopicSelector
+from plugin.plugins.neko_live.core.active_topic_selector import ActiveTopicSelector
 
 
 def test_active_topic_slice_imports_without_later_material_or_content_slices() -> None:
     runtime_api = importlib.import_module(
-        "plugin.plugins.neko_roast.core.runtime_active_topic_api"
+        "plugin.plugins.neko_live.core.runtime_active_topic_api"
     )
 
     assert runtime_api.RuntimeActiveTopicApiMixin
@@ -391,7 +391,7 @@ async def test_empty_or_exhausted_candidates_refresh_cache(
         lambda _selector, _candidates, fallback: fallback,
     )
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.core.active_topic_builder.build_topic",
+        "plugin.plugins.neko_live.core.active_topic_builder.build_topic",
         lambda _selector, chosen, _fallback, _shape: chosen,
     )
 

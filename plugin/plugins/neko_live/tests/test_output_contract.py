@@ -1,22 +1,22 @@
 import pytest
 
-from plugin.plugins.neko_roast.adapters.neko_dispatcher import _coalesce_key_for_request
-from plugin.plugins.neko_roast.core import (
+from plugin.plugins.neko_live.adapters.neko_dispatcher import _coalesce_key_for_request
+from plugin.plugins.neko_live.core import (
     danmaku_text_rules,
     live_output_policy,
     live_reply_policy,
 )
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.live_output_quality import (
+from plugin.plugins.neko_live.core.live_output_quality import (
     looks_like_unfulfilled_content_request,
 )
-from plugin.plugins.neko_roast.core.live_output_shape import shape_reply_text
-from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_live.core.live_output_shape import shape_reply_text
+from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
 
 
 def _hosting_request(*, source: str, beat_key: str) -> InteractionRequest:

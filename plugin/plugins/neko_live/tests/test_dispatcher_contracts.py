@@ -2,20 +2,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
-from plugin.plugins.neko_roast.adapters.output_contract_bridge import (
+from plugin.plugins.neko_live.adapters.neko_dispatcher import NekoDispatcher
+from plugin.plugins.neko_live.adapters.output_contract_bridge import (
     metadata_for_request,
     response_module_hint,
 )
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     RoastConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
-from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
+from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
 
 def test_output_contract_bridge_maps_manual_live_simulation_like_live_danmaku():
     avatar_request = InteractionRequest(
@@ -290,8 +290,8 @@ async def test_dispatcher_marks_live_requests_with_short_reply_contract():
     assert plugin.metadata["live_reply_contract"] == "short_tts_line"
     assert plugin.metadata["max_reply_chars"] == 32
     assert plugin.metadata["response_module_hint"] == "avatar_roast"
-    assert plugin.metadata["neko_roast_output_policy"]["host_role"] == "opaque_transport"
-    assert plugin.metadata["neko_roast_output_policy"]["speech_strategy"] == "plugin_prompt_contract"
+    assert plugin.metadata["neko_live_output_policy"]["host_role"] == "opaque_transport"
+    assert plugin.metadata["neko_live_output_policy"]["speech_strategy"] == "plugin_prompt_contract"
 
 @pytest.mark.asyncio
 async def test_dispatcher_marks_manual_live_simulation_like_live_danmaku():
@@ -522,7 +522,7 @@ async def test_dispatcher_coalesces_auto_hosting_prompts_in_plugin_scope():
     await NekoDispatcher(plugin).push_roast(request)
 
     assert plugin.priority == 3
-    assert plugin.coalesce_key == "neko_roast:auto_host:悠怡:active_engagement:topic-1"
+    assert plugin.coalesce_key == "neko_live:auto_host:悠怡:active_engagement:topic-1"
 
 
 @pytest.mark.asyncio
@@ -590,7 +590,7 @@ async def test_dispatcher_allows_expanded_danmaku_reply_for_joke_request():
     assert plugin.metadata["response_module_hint"] == "danmaku_response"
     assert plugin.metadata["reply_length_mode"] == "expanded"
     assert plugin.metadata["max_reply_chars"] == 56
-    assert plugin.metadata["neko_roast_output_policy"]["max_reply_chars"] == 56
+    assert plugin.metadata["neko_live_output_policy"]["max_reply_chars"] == 56
     assert "Expanded viewer requests may use up to two short sentences" in plugin.parts[0]["text"]
     assert "the line itself must contain the requested joke" in plugin.parts[0]["text"]
     assert "For danmaku_response: answer only the current danmaku" in plugin.parts[0]["text"]
@@ -627,7 +627,7 @@ async def test_dispatcher_allows_expanded_danmaku_reply_for_casual_content_reque
     assert plugin.metadata["response_module_hint"] == "danmaku_response"
     assert plugin.metadata["reply_length_mode"] == "expanded"
     assert plugin.metadata["max_reply_chars"] == 56
-    assert plugin.metadata["neko_roast_output_policy"]["max_reply_chars"] == 56
+    assert plugin.metadata["neko_live_output_policy"]["max_reply_chars"] == 56
 
 
 @pytest.mark.asyncio
@@ -670,7 +670,7 @@ async def test_dispatcher_carries_room_bridge_danmaku_reply_contract():
     assert plugin.metadata["response_module_hint"] == "danmaku_response"
     assert plugin.metadata["reply_length_mode"] == "room_bridge"
     assert plugin.metadata["max_reply_chars"] == 48
-    assert plugin.metadata["neko_roast_output_policy"]["max_reply_chars"] == 48
+    assert plugin.metadata["neko_live_output_policy"]["max_reply_chars"] == 48
     assert plugin.metadata["danmaku_profile"] == "normal_line"
     assert plugin.metadata["room_theme"] == "choice / preference prompt"
     assert plugin.metadata["danmaku_anchor_hint"] == "我还是想"
@@ -738,7 +738,7 @@ async def test_dispatcher_allows_longer_host_reply_contracts():
     assert plugin.metadata["live_reply_contract"] == "short_tts_line"
     assert plugin.metadata["max_reply_chars"] == 72
     assert plugin.metadata["response_module_hint"] == "active_engagement"
-    assert plugin.metadata["neko_roast_output_policy"]["owner"] == "neko_roast"
+    assert plugin.metadata["neko_live_output_policy"]["owner"] == "neko_live"
 
 @pytest.mark.asyncio
 async def test_dispatcher_dry_run_summary_includes_short_reply_contract():

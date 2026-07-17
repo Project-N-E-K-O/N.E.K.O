@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from plugin.plugins.neko_roast.core import live_status
-from plugin.plugins.neko_roast.core.contracts import RoastConfig
+from plugin.plugins.neko_live.core import live_status
+from plugin.plugins.neko_live.core.contracts import RoastConfig
 
 
 def test_live_status_summary_blocks_until_stream_is_connected_and_output_ready():

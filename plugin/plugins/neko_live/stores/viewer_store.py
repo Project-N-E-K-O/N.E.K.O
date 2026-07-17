@@ -67,7 +67,7 @@ class ViewerStore:
             pass
         # 兜底：绝不写进 cwd（会污染工作目录/仓库）；退到进程临时目录。
         # 生产中 data_path() 必然可用、不会走到这，仅防御损坏的宿主/测试桩。
-        return Path(tempfile.gettempdir()) / "neko_roast"
+        return Path(tempfile.gettempdir()) / "neko_live"
 
     def _configured_dir(self) -> str:
         if not self._dir_provider:

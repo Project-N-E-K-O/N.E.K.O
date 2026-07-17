@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import LiveEvent
-from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.modules.live_audience_session import LiveAudienceSessionModule
-from plugin.plugins.neko_roast.stores.audit_store import AuditStore
+from plugin.plugins.neko_live.core.contracts import LiveEvent
+from plugin.plugins.neko_live.core.event_bus import EventBus
+from plugin.plugins.neko_live.modules.live_audience_session import LiveAudienceSessionModule
+from plugin.plugins.neko_live.stores.audit_store import AuditStore
 
 
 @pytest.mark.asyncio

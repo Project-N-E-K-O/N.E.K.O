@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     InteractionResult,
     PipelineStep,
@@ -12,8 +12,8 @@ from plugin.plugins.neko_roast.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
-from plugin.plugins.neko_roast.core.runtime_timeline import record_timeline, timeline_for_trace
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime_timeline import record_timeline, timeline_for_trace
 
 
 @pytest.mark.asyncio

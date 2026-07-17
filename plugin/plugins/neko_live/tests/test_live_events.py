@@ -14,21 +14,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     LiveEvent,
     RoastConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.core.safety_guard import SafetyGuard
-from plugin.plugins.neko_roast.modules.bili_live_ingest.livedanmaku import LiveDanmaku, MessageType
-from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
-from plugin.plugins.neko_roast.modules.live_events import LiveEventsModule
-from plugin.plugins.neko_roast.modules.live_events.room_topic import RoomTopicContext
-from plugin.plugins.neko_roast.modules.live_support_events import LiveSupportEventsModule
-from plugin.plugins.neko_roast.modules.live_events.provider_event import (
+from plugin.plugins.neko_live.core.event_bus import EventBus
+from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_live.modules.bili_live_ingest.livedanmaku import LiveDanmaku, MessageType
+from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_live.modules.live_events import LiveEventsModule
+from plugin.plugins.neko_live.modules.live_events.room_topic import RoomTopicContext
+from plugin.plugins.neko_live.modules.live_support_events import LiveSupportEventsModule
+from plugin.plugins.neko_live.modules.live_events.provider_event import (
     event_avatar_url,
     event_guard_level,
     event_nickname,

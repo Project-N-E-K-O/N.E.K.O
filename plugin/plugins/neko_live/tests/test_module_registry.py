@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-from plugin.plugins.neko_roast.core.module_registry import ModuleRegistry
-from plugin.plugins.neko_roast.modules._base import BaseModule, ReservedModule
-from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
+from plugin.plugins.neko_live.core.module_registry import ModuleRegistry
+from plugin.plugins.neko_live.modules._base import BaseModule, ReservedModule
+from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
 
 
 class _BoomSetup(BaseModule):

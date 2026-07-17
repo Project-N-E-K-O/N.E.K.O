@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.adapters.bili_auth_service import BiliAuthService
-from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.adapters.bili_auth_service import BiliAuthService
+from plugin.plugins.neko_live.adapters.neko_dispatcher import NekoDispatcher
+from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     RoastConfig,
     SafetyDecision,
@@ -13,9 +13,9 @@ from plugin.plugins.neko_roast.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.permission_gate import PermissionGate
-from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
-from plugin.plugins.neko_roast.modules.bili_identity import BiliIdentityModule
+from plugin.plugins.neko_live.core.permission_gate import PermissionGate
+from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
 
 
 @pytest.mark.asyncio
@@ -465,7 +465,7 @@ def test_bili_identity_avatar_fetch_uses_validated_resolved_ip(monkeypatch):
         return Connection()
 
     monkeypatch.setattr(
-        "plugin.plugins.neko_roast.modules.bili_identity.socket.getaddrinfo",
+        "plugin.plugins.neko_live.modules.bili_identity.socket.getaddrinfo",
         fake_getaddrinfo,
     )
     monkeypatch.setattr(

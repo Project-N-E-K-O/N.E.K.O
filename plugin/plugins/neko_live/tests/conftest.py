@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
 
 
 class ConfigApi:
@@ -16,7 +16,7 @@ class ConfigApi:
         self.resume_update: asyncio.Event | None = None
 
     async def dump(self, timeout: float = 0) -> dict:
-        return {"neko_roast": {}}
+        return {"neko_live": {}}
 
     async def update(self, payload: dict) -> None:
         if self.update_entered is not None:

@@ -87,7 +87,7 @@ class RoastRuntime(
         await self.reload_douyin_credential()
         await self.registry.setup_all(self)
         self._start_idle_hosting_loop()
-        self.audit.record("runtime_start", "neko_roast runtime ready")
+        self.audit.record("runtime_start", "neko_live runtime ready")
 
     async def stop(self) -> None:
         if self._stopping:
@@ -118,7 +118,7 @@ class RoastRuntime(
                 )
         self.audit.record(
             "runtime_stop",
-            "neko_roast runtime stopped",
+            "neko_live runtime stopped",
             level="warning" if failures else "info",
             detail={"failed_steps": failures},
         )

@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.modules.bili_live_ingest import BiliLiveIngestModule
-from plugin.plugins.neko_roast.modules.bili_live_ingest import danmaku_core
-from plugin.plugins.neko_roast.modules.bili_live_ingest.danmaku_core import (
+from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
+from plugin.plugins.neko_live.modules.bili_live_ingest import danmaku_core
+from plugin.plugins.neko_live.modules.bili_live_ingest.danmaku_core import (
     OPERATION_AUTH_REPLY,
     DanmakuListener,
     _pack,

@@ -1,4 +1,4 @@
-"""Neko Roast plugin entry."""
+"""NEKO Live plugin entry."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko
 
 
 @neko_plugin
-class NekoRoastPlugin(NekoPluginBase):
-    name = "neko_roast"
+class NekoLivePlugin(NekoPluginBase):
+    name = "neko_live"
     passive = True
 
     def __init__(self, ctx: Any):
@@ -22,7 +22,7 @@ class NekoRoastPlugin(NekoPluginBase):
         try:
             from .core.runtime import RoastRuntime
         except ModuleNotFoundError as exc:
-            if exc.name != "plugin.plugins.neko_roast.core.runtime":
+            if exc.name != "plugin.plugins.neko_live.core.runtime":
                 raise
             return Ok({"status": "ready", "runtime": "pending"})
         self.runtime = RoastRuntime(self)
@@ -88,7 +88,7 @@ class NekoRoastPlugin(NekoPluginBase):
 
     def _runtime(self) -> RoastRuntime:
         if self.runtime is None:
-            raise RuntimeError("NekoRoast runtime is not started")
+            raise RuntimeError("NEKO Live runtime is not started")
         return self.runtime
 
     def _sync_developer_entries(self) -> None:

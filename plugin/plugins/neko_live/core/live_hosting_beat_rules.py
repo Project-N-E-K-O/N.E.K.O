@@ -24,7 +24,7 @@ def _raw_idle_hosting_beat_candidates() -> list[dict[str, Any]]:
     try:
         from .live_content import idle_hosting_beat_candidates
     except ModuleNotFoundError as exc:
-        if exc.name != "plugin.plugins.neko_roast.core.live_content":
+        if exc.name != "plugin.plugins.neko_live.core.live_content":
             raise
         return []
     return idle_hosting_beat_candidates()

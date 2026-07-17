@@ -1,6 +1,7 @@
 [plugin]
-id = "neko_roast"
+id = "neko_live"
 name = "NEKO Live"
+previous_ids = ["neko_roast"]
 description = "NEKO 的直播互动中心：连接支持的平台直播互动，承载弹幕、观众档案与锐评流程。"
 short_description = "NEKO 的直播互动中心。"
 keywords = [
@@ -16,7 +17,7 @@ keywords = [
 ]
 passive = true
 version = "0.1.0"
-entry = "plugin.plugins.neko_roast:NekoRoastPlugin"
+entry = "plugin.plugins.neko_live:NekoLivePlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"
@@ -77,7 +78,7 @@ enabled = true
 enabled = true
 auto_start = false
 
-[neko_roast]
+[neko_live]
 live_platform = "bilibili"
 live_room_ref = ""
 live_room_id = 0

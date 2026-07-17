@@ -6,14 +6,14 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import (
+from plugin.plugins.neko_live.core.contracts import (
     LiveRoomStatus,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_roast.core.live_provider_router import LiveProviderRouter
-from plugin.plugins.neko_roast.core.pipeline_viewers import resolve_viewer_context
+from plugin.plugins.neko_live.core.live_provider_router import LiveProviderRouter
+from plugin.plugins.neko_live.core.pipeline_viewers import resolve_viewer_context
 
 
 class _Ingest:

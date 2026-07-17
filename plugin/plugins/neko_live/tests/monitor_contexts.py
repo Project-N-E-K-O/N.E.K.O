@@ -119,7 +119,7 @@ def _context_with_latest_route_and_signal(*, latest_age_seconds: int = 12) -> di
 def _context_from_other_checkout() -> dict:
     context = _context_with_latest_route_and_signal()
     context["plugin"] = {
-        "config_path": r"D:\Users\zheng\Documents\Code\other\N.E.K.O\plugin\plugins\neko_roast\plugin.toml"
+        "config_path": r"D:\Users\zheng\Documents\Code\other\N.E.K.O\plugin\plugins\neko_live\plugin.toml"
     }
     return context
 

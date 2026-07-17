@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from plugin.plugins.neko_roast.core.active_hook_answers import is_active_hook_answer_event
-from plugin.plugins.neko_roast.core.contracts import RoastConfig, ViewerEvent
-from plugin.plugins.neko_roast.core.pipeline import RoastPipeline
-from plugin.plugins.neko_roast.core.pipeline_routing import route_for_event
+from plugin.plugins.neko_live.core.active_hook_answers import is_active_hook_answer_event
+from plugin.plugins.neko_live.core.contracts import RoastConfig, ViewerEvent
+from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline_routing import route_for_event
 from types import SimpleNamespace
 
 

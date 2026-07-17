@@ -5,9 +5,9 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.core.active_topic_candidate_picker import choose_fallback_candidate
-from plugin.plugins.neko_roast.core.active_topic_selector import ActiveTopicSelector
-from plugin.plugins.neko_roast.core.recent_output_families import spent_output_families
+from plugin.plugins.neko_live.core.active_topic_candidate_picker import choose_fallback_candidate
+from plugin.plugins.neko_live.core.active_topic_selector import ActiveTopicSelector
+from plugin.plugins.neko_live.core.recent_output_families import spent_output_families
 
 
 class FakeRuntime:

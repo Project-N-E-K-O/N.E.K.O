@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from plugin.plugins.neko_roast.modules.live_support_events.scheduler import (
+from plugin.plugins.neko_live.modules.live_support_events.scheduler import (
     SupportEventScheduler,
     SupportPriority,
     classify_support_priority,

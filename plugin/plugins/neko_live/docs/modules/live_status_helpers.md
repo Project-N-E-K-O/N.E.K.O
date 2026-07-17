@@ -27,9 +27,9 @@ Timing helpers read compact recent-result metadata and health-row ages. A `dry_r
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_live_status_rules.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_live_status_rules.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 Focused tests verify that dry-run results do not count as delivered hosting output and that an idle-hosting streak can hand control to active engagement.

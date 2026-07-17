@@ -8,7 +8,7 @@ The module asks for one short appreciative line. It must not ask viewers for mor
 
 ## Owner And Contracts
 
-- Module owner: `plugin.plugins.neko_roast.modules.live_support_events.LiveSupportEventsModule`
+- Module owner: `plugin.plugins.neko_live.modules.live_support_events.LiveSupportEventsModule`
 - Input contract: a `LiveEvent` whose authoritative outer `type` is `gift`, `super_chat`, or `guard`; provider `raw` data may enrich fields but cannot downgrade that verified outer type.
 - Output contract: returns an `InteractionRequest` for the normal pipeline and dispatcher path.
 - Metadata contract: request metadata exposes `support_event_type`, `support_event_tier`, and `support_event_label`.
@@ -57,9 +57,9 @@ Ordinary danmaku is never promoted to this module from text alone. Text that mer
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_runtime_live_controls.py::test_handle_live_payload_routes_gift_to_support_events plugin/plugins/neko_roast/tests/test_runtime_live_controls.py::test_handle_live_payload_routes_support_events_through_pipeline -q
-uv run pytest plugin/plugins/neko_roast/tests/test_live_events.py plugin/plugins/neko_roast/tests/test_bili_listener_lifecycle.py -q
-uv run pytest plugin/plugins/neko_roast/tests/test_live_support_scheduler.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_runtime_live_controls.py::test_handle_live_payload_routes_gift_to_support_events plugin/plugins/neko_live/tests/test_runtime_live_controls.py::test_handle_live_payload_routes_support_events_through_pipeline -q
+uv run pytest plugin/plugins/neko_live/tests/test_live_events.py plugin/plugins/neko_live/tests/test_bili_listener_lifecycle.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_live_support_scheduler.py -q
 ```
 
 The broader solo-stream simulation covers Gift and SC flowing through `live_support_events` together with ordinary danmaku and hosting routes.

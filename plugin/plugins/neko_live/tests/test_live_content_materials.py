@@ -1,13 +1,13 @@
 from json import dumps
 
-from plugin.plugins.neko_roast.core.live_content import (
+from plugin.plugins.neko_live.core.live_content import (
     active_engagement_fallback_topic_candidates,
     idle_hosting_beat_candidates,
 )
-from plugin.plugins.neko_roast.core.live_content_active_catalog import (
+from plugin.plugins.neko_live.core.live_content_active_catalog import (
     ACTIVE_ENGAGEMENT_FALLBACK_TOPIC_CANDIDATES,
 )
-from plugin.plugins.neko_roast.core.live_content_host_catalog import (
+from plugin.plugins.neko_live.core.live_content_host_catalog import (
     DEFAULT_IDLE_HOSTING_BEAT_CATALOG_PATH,
     IDLE_HOSTING_BEAT_CANDIDATES,
     load_idle_hosting_beat_catalog,

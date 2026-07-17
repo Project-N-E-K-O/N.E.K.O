@@ -1,6 +1,6 @@
-# NEKO Live 开发者指南（neko_roast）
+# NEKO Live 开发者指南（neko_live）
 
-> 面向**接手 / 参与 `neko_roast`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
+> 面向**接手 / 参与 `neko_live`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
@@ -10,11 +10,11 @@
 
 ## 1. 这是什么
 
-`neko_roast`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
+`neko_live`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
 全生命周期接进猫娘——开播 → 直播间互动（弹幕 / 进场 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化。
 
 「首评新观众锐评」（观众首条弹幕 → 猫按人设锐评其昵称 + 头像）只是**第一个落地的垂直切片**。
-所有未来能力以 neko_roast 的**内部模块**形式集成，不做跨插件宿主。
+所有未来能力以 neko_live 的**内部模块**形式集成，不做跨插件宿主。
 
 **当前状态**：核心闭环（真实直播监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard）已真机验证并进入主线；P5 登录态、Phase 1 文档治理、Phase 2A Review Gate 与主播面板重构已落地。当前普通面板为“控制台 / 直播间互动 / 观众 / 设置”四区，开发者工具按模式条件显示。
 
@@ -42,8 +42,8 @@
 ## 4. 目录结构速览
 
 ```text
-neko_roast/
-├─ __init__.py            插件入口（NekoRoastPlugin）+ @ui.action / @plugin_entry 动作
+neko_live/
+├─ __init__.py            插件入口（NekoLivePlugin）+ @ui.action / @plugin_entry 动作
 ├─ core/                  骨架：pipeline / safety_guard / runtime / contracts / event_bus /
 │                         module_registry / permission_gate / instructions，以及 NEKO Live
 │                         的 live_reply_policy / recent_context / live_status /
@@ -66,13 +66,13 @@ neko_roast/
 ## 5. 开发环境 & 运行态
 
 - **后端** `http://127.0.0.1:48916`（主服务 48911）；**前端** 在 `NEKO-PC/` 下 `npm start`。
-- 插件 `auto_start=false`：后端起来后必须 `POST /plugin/neko_roast/start` 才注册 hosted-ui 路由（否则 404）。
+- 插件 `auto_start=false`：后端起来后必须 `POST /plugin/neko_live/start` 才注册 hosted-ui 路由（否则 404）。
 - **改 `.py` 后**：`POST .../stop` 再 `.../start` 重载子进程即可；**但新增 `@ui.action`/`@plugin_entry`
   动作要全量重启后端**（surface 暴露校验在主进程，`/start` 不刷新，见 devlog）。
 - **改 `ui/*.tsx` / `ui/*.ts` / `i18n`**：**不用 rebuild 前端**（plugin-manager 用 sucrase 运行时转译），UI 里重开面板即生效。
 - **动作调用**：`POST .../hosted-ui/action/<id>`，body `{"args":{...},"kind":"panel","surface_id":"main"}`。
-- **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_roast/config/hot-update`，
-  body `{"config":{"neko_roast":{...}},"mode":"temporary"}`（内存热更、不落盘）。
+- **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_live/config/hot-update`，
+  body `{"config":{"neko_live":{...}},"mode":"temporary"}`（内存热更、不落盘）。
 - ⚠️ 产品配置中 `dry_run` 默认关闭，连接真房间后猫会**真开口**。开发者、试播人员或压力测试脚本需要无声验链时，必须先主动切到 `dry_run=true`；测试房 `81004`。压力工具仍坚持自身默认 dry-run，不能据此推断产品开关默认值。
 
 ## 6. 核心契约：加一个事件 handler（最常见的扩展）
@@ -132,8 +132,8 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 权威测试门禁见 `development.md`「测试门禁」和 `AGENTS.md`「Required Checks」。仓库根 `N.E.K.O/` 下的常用命令是：
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 文档-only PR 可以在 PR 描述中说明未运行代码测试；任何触碰 Python、UI、i18n、契约、配置 schema、manifest 或 runtime 行为的 PR 必须按门禁执行。改了 `panel.tsx` 还要同步完整 `panel_compat.tsx`，并确认 sucrase 转译通过（前端 plugin-manager 用生产同款选项 `transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线以 `development.md` 为准。
@@ -145,7 +145,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 - 四条不变量 + 凭据红线（见 §3）。
 - 新能力加成模块，不要在 `__init__.py` 堆大块内联；事件 handler 走 `subscribe` + pipeline，不碰 `push_message`。
 - 不整体拷贝旧插件 `bilibili_danmaku` / `bilibili_dm` 大文件；复用只拆小模块 + 补测试。
-- **勿与 neko_roast 同直播间双连**旧插件。
+- **勿与 neko_live 同直播间双连**旧插件。
 - `developer_tools_enabled` 是开发者模式唯一总控；权限以后端检查为准，不只靠前端禁用。
 - 涉及内存 / CPU / token / 依赖 / IO / 核心逻辑复杂度的改动，先按 `development.md`「成本类改动先讨论」列 Decision Points，拍板后再实现。
 - **没有对应文档的新功能视为未完成**（见 `development.md`「文档更新要求」）。

@@ -65,7 +65,7 @@ async def inject_developer_instructions(runtime: Any, *, force: bool = False) ->
         runtime.audit.record("developer_instructions_inject_failed", message, level="warning")
         return message
     runtime.developer_instructions_injected = True
-    runtime.audit.record("developer_instructions_injected", output, detail={"source": "neko_roast"})
+    runtime.audit.record("developer_instructions_injected", output, detail={"source": "neko_live"})
     return output
 
 
@@ -79,7 +79,7 @@ async def restore_developer_instructions(runtime: Any, *, force: bool = False) -
         runtime.audit.record("developer_instructions_restore_failed", message, level="warning")
         return message
     runtime.developer_instructions_injected = False
-    runtime.audit.record("developer_instructions_restored", output, detail={"source": "neko_roast"})
+    runtime.audit.record("developer_instructions_restored", output, detail={"source": "neko_live"})
     return output
 
 
@@ -90,7 +90,7 @@ async def announce_developer_mode(runtime: Any) -> str:
         message = str(exc).strip() or f"developer_mode_announce_failed: {type(exc).__name__}"
         runtime.audit.record("developer_mode_announce_failed", message, level="warning")
         return message
-    runtime.audit.record("developer_mode_announced", output, detail={"source": "neko_roast"})
+    runtime.audit.record("developer_mode_announced", output, detail={"source": "neko_live"})
     return output
 
 
@@ -105,7 +105,7 @@ async def restore_instructions(runtime: Any, *, force: bool = False) -> str:
         return message
     runtime.instructions_injected = False
     runtime.instructions_signature = ""
-    runtime.audit.record("instructions_restored", output, detail={"source": "neko_roast"})
+    runtime.audit.record("instructions_restored", output, detail={"source": "neko_live"})
     return output
 
 
@@ -121,7 +121,7 @@ async def inject_live_scene_instructions(runtime: Any, *, signature: str) -> str
         return message
     runtime.instructions_injected = True
     runtime.instructions_signature = signature
-    runtime.audit.record("instructions_injected", output, detail={"source": "neko_roast"})
+    runtime.audit.record("instructions_injected", output, detail={"source": "neko_live"})
     return output
 
 

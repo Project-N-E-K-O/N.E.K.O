@@ -4,7 +4,7 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
-from plugin.plugins.neko_roast.core.live_hosting_director import LiveHostingDirector
+from plugin.plugins.neko_live.core.live_hosting_director import LiveHostingDirector
 
 
 class Audit:

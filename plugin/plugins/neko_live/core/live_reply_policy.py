@@ -1,7 +1,7 @@
 """Compatibility facade for plugin-owned NEKO Live output policy.
 
 Keep this import path for existing plugin-side callers and tests. The
-implementation is local to ``plugin.plugins.neko_roast`` so the plugin no
+implementation is local to ``plugin.plugins.neko_live`` so the plugin no
 longer depends on host/core NEKO Live special cases.
 """
 

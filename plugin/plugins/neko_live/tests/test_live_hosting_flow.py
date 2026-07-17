@@ -2,29 +2,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.active_hook_answers import (
+from plugin.plugins.neko_live.core.active_hook_answers import (
     is_active_hook_answer_event,
 )
-from plugin.plugins.neko_roast.core import live_hosting_director
-from plugin.plugins.neko_roast.core.contracts import ViewerEvent
-from plugin.plugins.neko_roast.core.live_hosting_beat_picker import (
+from plugin.plugins.neko_live.core import live_hosting_director
+from plugin.plugins.neko_live.core.contracts import ViewerEvent
+from plugin.plugins.neko_live.core.live_hosting_beat_picker import (
     next_idle_hosting_beat,
 )
-from plugin.plugins.neko_roast.core.live_hosting_beat_rules import (
+from plugin.plugins.neko_live.core.live_hosting_beat_rules import (
     idle_hosting_beat_candidates,
 )
-from plugin.plugins.neko_roast.core.live_hosting_loop import (
+from plugin.plugins.neko_live.core.live_hosting_loop import (
     _maybe_trigger_active_engagement,
 )
-from plugin.plugins.neko_roast.core.live_hosting_beat_state import (
+from plugin.plugins.neko_live.core.live_hosting_beat_state import (
     record_chosen_idle_hosting_beat,
 )
-from plugin.plugins.neko_roast.core.live_material_rules import (
+from plugin.plugins.neko_live.core.live_material_rules import (
     is_clean_live_material,
     is_similar_live_material_title,
 )
-from plugin.plugins.neko_roast.modules.active_engagement import ActiveEngagementModule
-from plugin.plugins.neko_roast.modules.warmup_hosting import WarmupHostingModule
+from plugin.plugins.neko_live.modules.active_engagement import ActiveEngagementModule
+from plugin.plugins.neko_live.modules.warmup_hosting import WarmupHostingModule
 
 
 def test_hosting_modules_import_with_host_content_catalog():

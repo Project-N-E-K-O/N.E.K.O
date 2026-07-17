@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import LiveEvent, ViewerEvent, ViewerIdentity
-from plugin.plugins.neko_roast.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.contracts import LiveEvent, ViewerEvent, ViewerIdentity
+from plugin.plugins.neko_live.core.runtime import RoastRuntime
 
 
 class ConfigApi:
     async def dump(self, timeout: float = 0) -> dict:
-        return {"neko_roast": {}}
+        return {"neko_live": {}}
 
     async def update(self, payload: dict) -> None:
         return None

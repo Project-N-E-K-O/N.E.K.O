@@ -23,7 +23,7 @@ def test_plugin_runtime_artifacts_are_ignored_for_distribution():
     git = _require_git_checkout()
 
     for path in (
-        "plugin/plugins/neko_roast/plugin.toml.lock",
+        "plugin/plugins/neko_live/plugin.toml.lock",
         ".codex-live-screen.png",
     ):
         completed = subprocess.run(
@@ -37,11 +37,11 @@ def test_plugin_runtime_artifacts_are_ignored_for_distribution():
         assert completed.returncode == 0, completed.stderr or path
 
 
-def test_neko_roast_runtime_lock_is_not_tracked():
+def test_neko_live_runtime_lock_is_not_tracked():
     git = _require_git_checkout()
 
     completed = subprocess.run(
-        [git, "ls-files", "plugin/plugins/neko_roast/plugin.toml.lock"],
+        [git, "ls-files", "plugin/plugins/neko_live/plugin.toml.lock"],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,

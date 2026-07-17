@@ -11,14 +11,14 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from plugin.plugins.neko_roast.core.contracts import LiveEvent
-from plugin.plugins.neko_roast.core.event_bus import EventBus
-from plugin.plugins.neko_roast.modules.bili_live_ingest import (
+from plugin.plugins.neko_live.core.contracts import LiveEvent
+from plugin.plugins.neko_live.core.event_bus import EventBus
+from plugin.plugins.neko_live.modules.bili_live_ingest import (
     SUPPORT_EVENT_DEDUPE_LIMIT,
     BiliLiveIngestModule,
 )
-from plugin.plugins.neko_roast.modules.bili_live_ingest.danmaku_core import DanmakuListener
-from plugin.plugins.neko_roast.modules.live_events.provider_event import event_support_fields
+from plugin.plugins.neko_live.modules.bili_live_ingest.danmaku_core import DanmakuListener
+from plugin.plugins.neko_live.modules.live_events.provider_event import event_support_fields
 
 
 class _Audit:
@@ -132,7 +132,7 @@ def test_super_chat_jpn_routes_to_super_chat_bus_key():
 
 
 def test_avatar_roast_module_imports_with_its_prompt_dependencies():
-    from plugin.plugins.neko_roast.modules.avatar_roast import AvatarRoastModule
+    from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
 
     assert AvatarRoastModule.id == "avatar_roast"
 

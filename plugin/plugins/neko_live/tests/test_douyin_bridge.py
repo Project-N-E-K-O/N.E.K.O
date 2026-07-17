@@ -4,30 +4,30 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.core.pipeline_routing import support_event_type
-from plugin.plugins.neko_roast.core.runtime_douyin_auth import normalize_cookie
-from plugin.plugins.neko_roast.core.runtime_live_input_api import RuntimeLiveInputApiMixin
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.transport_event import (
+from plugin.plugins.neko_live.core.pipeline_routing import support_event_type
+from plugin.plugins.neko_live.core.runtime_douyin_auth import normalize_cookie
+from plugin.plugins.neko_live.core.runtime_live_input_api import RuntimeLiveInputApiMixin
+from plugin.plugins.neko_live.modules.douyin_live_ingest.transport_event import (
     DouyinTransportStartRequest,
     DouyinTransportState,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest import DouyinLiveIngestModule
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.bridge_adapter import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest import DouyinLiveIngestModule
+from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_adapter import (
     DouyinLiveBridgeAdapter,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.event_model import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.event_model import (
     platform_uid,
     safe_avatar_url,
 )
-from plugin.plugins.neko_roast.modules.douyin_live_ingest.room_ref import (
+from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import (
     parse_douyin_room_ref,
 )
-from plugin.plugins.neko_roast.modules.live_bridge import (
+from plugin.plugins.neko_live.modules.live_bridge import (
     LiveBridgeStartRequest,
     LiveBridgeTransport,
 )
-from plugin.plugins.neko_roast.modules.live_bridge import process_supervisor as supervisor_module
-from plugin.plugins.neko_roast.modules.live_bridge.process_supervisor import (
+from plugin.plugins.neko_live.modules.live_bridge import process_supervisor as supervisor_module
+from plugin.plugins.neko_live.modules.live_bridge.process_supervisor import (
     BridgeProcessSupervisor,
     cleanup_stale_windows_processes,
 )

@@ -35,9 +35,9 @@ Personalized viewer memory defaults to enabled. The switch controls only safe-de
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_viewer_store.py plugin/plugins/neko_roast/tests/test_credential_store.py plugin/plugins/neko_roast/tests/test_audit_store.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_viewer_store.py plugin/plugins/neko_live/tests/test_credential_store.py plugin/plugins/neko_live/tests/test_audit_store.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 Tests cover JSON persistence and fallback, disabled-memory behavior, 90-day retention, profile reset/delete/clear behavior, prompt gating, encrypted namespace isolation, and redaction of secrets in text and nested structured audit detail.

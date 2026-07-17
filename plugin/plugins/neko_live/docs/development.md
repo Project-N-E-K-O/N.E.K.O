@@ -1,12 +1,12 @@
 # NEKO Live 开发文档
 
-本文档面向后续参与 `neko_roast` 的开发者，记录**已落地设计**。它是架构边界、模块边界、协作规范、测试门禁和文档要求的 Canonical Source。配套 `live-center-roadmap.md` 只记录阶段目标、完成状态和下一阶段顺序。
+本文档面向后续参与 `neko_live` 的开发者，记录**已落地设计**。它是架构边界、模块边界、协作规范、测试门禁和文档要求的 Canonical Source。配套 `live-center-roadmap.md` 只记录阶段目标、完成状态和下一阶段顺序。
 
 对旧插件 `bilibili_danmaku` 的**直播主链路选择性复用已经完成**：连接+解析层已独立迁入 `modules/bili_live_ingest/`，扫码登录已独立迁入 `adapters/bili_auth_service.py`；旧插件自带的 LLM / orchestrator / memory 没有直接进入 NEKO Live（输出继续走 NEKO 统一 `dispatcher` → `main_server` 人设）。NEKO Live 当前不存在对旧插件包的运行时导入。旧插件 47 个公开入口及内部能力的逐项决策见 `bilibili-danmaku-migration-matrix.md`；矩阵完成不等于迁移完成，获批吸收项和独立插件取舍关闭前不得删除旧插件目录。
 
 ## 命名与范围
 
-当前产品名是 **NEKO Live**。`neko_roast` 是历史包名和内部代号，不作为用户可见产品名扩展。历史代号「猫娘锐评」只用于解释 v0.1 起点；新增文档、UI 文案、i18n 和 manifest 应使用 **NEKO Live**。
+当前产品名是 **NEKO Live**。`neko_live` 是历史包名和内部代号，不作为用户可见产品名扩展。历史代号「猫娘锐评」只用于解释 v0.1 起点；新增文档、UI 文案、i18n 和 manifest 应使用 **NEKO Live**。
 
 “直播中心 / Live Center”是架构定位，表示把主播直播的生命周期接进 NEKO；“弹幕锐评”是当前已落地的 v0.1 功能模块。后续新增模块时不要把产品名、架构定位和单个功能模块混用。
 
@@ -14,7 +14,7 @@
 
 更新日期：2026-07-03
 
-核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_roast` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
+核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_live` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
 
 协作基线：Phase 1 已落地 Canonical Source、PR 拆分规则和 Reviewer Checklist；Phase 2A 已落地模块 Owner Model 与 Protected Modules / Review Gate。Reviewer Checklist 的唯一 Canonical Source 是 `AGENTS.md`。
 
@@ -243,7 +243,7 @@ platform ingest
 
 ## 协作规范
 
-`neko_roast` 已进入多人协作阶段。后续改动必须先按 Feature → Slice → PR 拆分，保持每个 PR 可独立 review、测试和回滚。
+`neko_live` 已进入多人协作阶段。后续改动必须先按 Feature → Slice → PR 拆分，保持每个 PR 可独立 review、测试和回滚。
 
 ### 成本类改动先讨论
 
@@ -400,12 +400,12 @@ Protected Modules 是需要核心维护者 review 的高风险区域。触碰这
 - `core/live_hosting_beats.py` 只做 host beat 选择和近期素材避让，不创建 `ViewerEvent`、不记录 `InteractionResult`、不触发 pipeline。
 - `core/live_hosting_events.py` 只做 warmup/idle hosting 事件和 gate skip result，不选择 host beat、不触发 pipeline、不管理 loop。
 - `core/live_hosting_loop.py` only owns loop start/stop/cancel and trigger ordering; it must not construct events, select beats, build requests, dispatch outputs, or record results.
-- `adapters/output_contract_bridge.py` 不得引用宿主最终输出函数；插件只提供 `neko_roast` 私有策略 metadata，宿主核心只负责透明传输。
+- `adapters/output_contract_bridge.py` 不得引用宿主最终输出函数；插件只提供 `neko_live` 私有策略 metadata，宿主核心只负责透明传输。
 
 修改 Protected Modules、拆分模块或调整分发边界时，至少跑：
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_module_registry.py plugin/plugins/neko_roast/tests/test_config_contracts.py plugin/plugins/neko_roast/tests/test_output_contract.py plugin/plugins/neko_roast/tests/test_smoke.py -q
+uv run pytest plugin/plugins/neko_live/tests/test_module_registry.py plugin/plugins/neko_live/tests/test_config_contracts.py plugin/plugins/neko_live/tests/test_output_contract.py plugin/plugins/neko_live/tests/test_smoke.py -q
 ```
 
 如果触碰直播链路或素材选择，还要跑对应定向测试和全量插件测试。
@@ -416,14 +416,14 @@ uv run pytest plugin/plugins/neko_roast/tests/test_module_registry.py plugin/plu
 
 - `plugin/plugins/*/plugin.toml.lock` 是插件运行态锁文件，不提交、不打包。
 - `.codex-live-screen.png` 是本地直播 / UI 验证截图，不提交、不打包。
-- `plugin/plugins/neko_roast/plugin.toml.lock` 当前不得出现在 git index 中。
+- `plugin/plugins/neko_live/plugin.toml.lock` 当前不得出现在 git index 中。
 
 修改 `.gitignore`、插件分发脚本、插件 manifest 或本地运行态文件路径时，至少运行：
 
 ```powershell
-git ls-files --error-unmatch plugin/plugins/neko_roast/plugin.toml.lock .codex-live-screen.png
-git check-ignore -v plugin/plugins/neko_roast/plugin.toml.lock .codex-live-screen.png
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+git ls-files --error-unmatch plugin/plugins/neko_live/plugin.toml.lock .codex-live-screen.png
+git check-ignore -v plugin/plugins/neko_live/plugin.toml.lock .codex-live-screen.png
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 第一条命令预期以非零状态退出，表示运行态文件没有进入 Git index；第二条必须列出匹配的 ignore 规则。
@@ -693,7 +693,7 @@ Idle Hosting 不是简单定时器输出。每次 `idle_hosting` 事件会附带
 Live Feel Pack v1.5 增加三个监控信号：`recent_topic_skip_viewer_to_viewer_mention` 用来确认主动营业是否过滤了观众互相 `@`；`recent_topic_skip_recent_danmaku_source_streak` 用来确认是否因为 recent danmaku 连续主导而回退到其他素材；`latest_topic_shape_guard_reason` 用来确认主动营业是否因为连续相同形态 / 意图而切换 topic shape。对应 `alerts` 分别是 `topic_viewer_mention`、`topic_source_streak` 和 `topic_shape_guard`。Live Feel Pack v1.8 追加 `recent_topic_skip_similar_topic_title` / `topic_similar_title`，用于确认主动营业是否因为标题换皮但内容太像而跳过候选，避免长直播后半段反复围绕同一类话题开场。
 监控里的 `recent_*` 路由计数表示最近尝试数，包含 skipped / failed；`recent_actual_*` 表示最近实际 pushed / dry_run 的路由数。判断开场暖场、冷场陪播、主动营业是否真的输出，以及判断 `proactive_in_engaged`、`active_blocks_idle`、`warmup_repeat`、`warmup_missing`、`idle_missing`、`active_missing`、`avatar_roast_share` 和 `avatar_bias` 时，应优先看 actual 口径，避免把被跳过或失败的尝试误认为猫猫已经说过。`active_blocks_idle` 表示冷场陪播已经 eligible 且 `active_idle_wait` 已归零，但 director 仍选择主动营业，应优先检查主动营业和冷场陪播的让位关系。
 
-Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 `live_reply_contract=short_tts_line`、`max_reply_chars=...`、`response_module_hint=...` 和插件私有的 `neko_roast_output_policy`。这些字段由插件内 `adapters/output_contract_bridge.py` / `core/live_reply_contract.py` 统一生成：当前只用于插件 prompt 约束、dry-run 摘要、hosted UI / monitor 复盘和调试定位。主程序核心可用能力仅限通用插件基础设施：`push_message(parts, ai_behavior="respond")` 触发猫猫回应、`target_lanlan` 定向到当前猫娘 session、metadata 透明透传到 proactive bridge / recent result、`hosted-ui/context` 给面板取宿主上下文。插件不得通过导入 `main_logic`、修改 `send_lanlan_response()`、新增 host output contract、改写 mirror / memory / TTS 最终出口来实现直播专用发言治理；猫娘怎么说、说多长、如何防复读、如何兜底低质量回复，都必须留在 `neko_roast` 的 prompt、素材选择、viewer profile、recent-output 负例和 monitor 复盘里。
+Dispatcher 会在真实输出请求 metadata 与 `dry_run(...)` 摘要中标记 `live_reply_contract=short_tts_line`、`max_reply_chars=...`、`response_module_hint=...` 和插件私有的 `neko_live_output_policy`。这些字段由插件内 `adapters/output_contract_bridge.py` / `core/live_reply_contract.py` 统一生成：当前只用于插件 prompt 约束、dry-run 摘要、hosted UI / monitor 复盘和调试定位。主程序核心可用能力仅限通用插件基础设施：`push_message(parts, ai_behavior="respond")` 触发猫猫回应、`target_lanlan` 定向到当前猫娘 session、metadata 透明透传到 proactive bridge / recent result、`hosted-ui/context` 给面板取宿主上下文。插件不得通过导入 `main_logic`、修改 `send_lanlan_response()`、新增 host output contract、改写 mirror / memory / TTS 最终出口来实现直播专用发言治理；猫娘怎么说、说多长、如何防复读、如何兜底低质量回复，都必须留在 `neko_live` 的 prompt、素材选择、viewer profile、recent-output 负例和 monitor 复盘里。
 
 插件侧仍需要在 prompt、素材选择和 monitor 中处理两类直播现场高风险草稿：一是结尾停在“选 A 还是选 B”这类未完成二选一的问题；二是生成了低置信度教程、游戏攻略、惩罚审判、公开处刑、泛泛喊弹幕互动，或把核电站 / 代码 / 电路 / 泰拉瑞亚等素材硬编成“你是打算...”式含糊技术问句等不适合独播场景的句子。历史 monitor 设计（当前切片未分发脚本） 只能把后端日志里的 `neko_live_reply_shape_reason` / `NEKO Live ...` 当成历史兼容或外部实验信号；当前验收以插件 recent result、metadata、真实输出长度和人工复盘为准继续收敛素材和提示词。
 
@@ -750,7 +750,7 @@ danmaku_core._dispatch_message(DANMU_MSG)
 
 **读写了哪些用户数据**：中枢本身不落任何用户数据——只在内存里短暂持有「当前分最高的一条候选」，投递后即清。头像不经中枢（弹幕不含头像，由下游 `bili_identity` 按 UID 抓）。档案 / 审计 / 总结的写入仍由既有边界负责。
 
-**测试命令与主要场景**：`plugin/plugins/neko_roast/tests/test_live_events.py` 覆盖空闲态首条即时、冷却期开窗按 `get_score` 择优、整窗只投 1 条、本地冷却防并发双锐评、空 uid / 空文本丢弃、`reset` 取消开窗和 cooldown 时序。支持事件接线、优先级、聚合与队列边界由 `test_live_support_scheduler.py` 覆盖。契约测试锁住「富模型 `on_event` → EventBus → 对应单一消费者 → pipeline」打通。
+**测试命令与主要场景**：`plugin/plugins/neko_live/tests/test_live_events.py` 覆盖空闲态首条即时、冷却期开窗按 `get_score` 择优、整窗只投 1 条、本地冷却防并发双锐评、空 uid / 空文本丢弃、`reset` 取消开窗和 cooldown 时序。支持事件接线、优先级、聚合与队列边界由 `test_live_support_scheduler.py` 覆盖。契约测试锁住「富模型 `on_event` → EventBus → 对应单一消费者 → pipeline」打通。
 
 **已知限制**：① `live_events` 只负责普通弹幕择优；支持事件由 `live_support_events` 处理。② 「首评即时」下，空闲态第一条弹幕即使紧随其后到了更高分弹幕也不会被改选——这是用「临场感」换来的，已拍板取舍。③ 窗口择优依赖 `get_score()` 的打分权重（见 `livedanmaku.get_score`），权重调整会改变择优结果。
 
@@ -907,9 +907,9 @@ Danmaku Response Review Pack v1 把直播复盘字段收拢到 recent result / m
 
 Danmaku Selection Pack v1 把“猫猫是否要回这一条普通弹幕”收进 `live_events`。`room_topic.remember_live_event()` 必须先记录房间上下文，随后 `live_events` 才能按插件内策略跳过低价值弹幕；跳过只写 privacy-safe audit `live_event_reply_skipped` 和 status，不进入 pipeline、不调用 dispatcher、不写原始弹幕文本。公开配置仍只使用既有 `activity_level`：`standard` / `active` 派生 `reply_selection_policy=selected`，只跳过 `666`、纯反应、重复数字等低信息弹幕；`quiet` 派生 `reply_selection_policy=quiet`，额外跳过低优先级普通短句，但问题、内容请求、问候、舰长/高分事件仍放行。不要新增和 `activity_level` 重叠的 `reply_selection_mode` 配置项；`reply_selection_policy` 只是 Dashboard / Monitor 复盘字段。稳定 skip reason 是 `selection.low_value_danmaku` 和 `selection.quiet_low_priority`。
 
-所有直播开口 prompt 必须复用 `anti_repeat_rules()`：先对照 NEKO Live 的 recent-output 记忆，避免复用上一句的开头、句式、包袱、话题切法、奖励梗、计划、观众问卷或主持节拍，也不能把上一句换词改写成新回复。插件侧 `recent_interaction_context()` 只能作为“已用素材 / 已用主持节拍”的 blocklist，不能当成下一句的脚本前缀或继续话题；`viewer_session_context()` 同样只能用于同一观众的轻量连续感和防复读，不能默认续写该观众上一轮话题，除非当前弹幕明确要求继续；若当前草稿和 recent context 共享同一主题、开头或 joke shape，应换角度或只回答当前弹幕。recent context 里出现的 `topic_family`、`host_beat_family`、`fun_axis`、`shape`、`intent` 也必须按已用素材处理，不能只避开原句却继续复用同一类“主播力 / 小鱼干 / 暗号 / 小电台 / 二选一”主持手法。插件通过 `live_reply_contract=short_tts_line`、`neko_roast_output_policy`、recent-output negative examples 和 `anti_repeat_rules()` 在请求侧追加同样的 anti-repeat 约束：模型不要继续、复述或改写最近 12 条 NEKO Live 输出。文本 / 语音 proactive 直播回调会把 NEKO Live metadata 透明传给宿主；当前插件只把它视为插件私有提示、复盘和调试字段，不直接改写宿主普通 AI turn、流式缓冲、mirror、memory 或最终 TTS 发送路径。
+所有直播开口 prompt 必须复用 `anti_repeat_rules()`：先对照 NEKO Live 的 recent-output 记忆，避免复用上一句的开头、句式、包袱、话题切法、奖励梗、计划、观众问卷或主持节拍，也不能把上一句换词改写成新回复。插件侧 `recent_interaction_context()` 只能作为“已用素材 / 已用主持节拍”的 blocklist，不能当成下一句的脚本前缀或继续话题；`viewer_session_context()` 同样只能用于同一观众的轻量连续感和防复读，不能默认续写该观众上一轮话题，除非当前弹幕明确要求继续；若当前草稿和 recent context 共享同一主题、开头或 joke shape，应换角度或只回答当前弹幕。recent context 里出现的 `topic_family`、`host_beat_family`、`fun_axis`、`shape`、`intent` 也必须按已用素材处理，不能只避开原句却继续复用同一类“主播力 / 小鱼干 / 暗号 / 小电台 / 二选一”主持手法。插件通过 `live_reply_contract=short_tts_line`、`neko_live_output_policy`、recent-output negative examples 和 `anti_repeat_rules()` 在请求侧追加同样的 anti-repeat 约束：模型不要继续、复述或改写最近 12 条 NEKO Live 输出。文本 / 语音 proactive 直播回调会把 NEKO Live metadata 透明传给宿主；当前插件只把它视为插件私有提示、复盘和调试字段，不直接改写宿主普通 AI turn、流式缓冲、mirror、memory 或最终 TTS 发送路径。
 
-同一条隔离规则只能在插件侧尽力规避：带 `live_reply_contract=short_tts_line` 的直播请求会携带 `neko_roast_output_policy` 和 recent-output 负例，提醒模型不要把直播短播报当作下一轮普通聊天上下文；插件不修改宿主 memory / analyzer / turn end 路径。
+同一条隔离规则只能在插件侧尽力规避：带 `live_reply_contract=short_tts_line` 的直播请求会携带 `neko_live_output_policy` 和 recent-output 负例，提醒模型不要把直播短播报当作下一轮普通聊天上下文；插件不修改宿主 memory / analyzer / turn end 路径。
 
 热切新 session 期间的 `message_cache_for_new_session` 属于宿主侧风险边界：NEKO Live 短播报不能作为新 session 的普通上下文预热材料；插件当前不直接写这条宿主路径，只在自身 recent-output / voice-echo 复盘口径里保留直播材料。
 
@@ -947,7 +947,7 @@ NEKO 输出由 `adapters/neko_dispatcher.py` 中的 `NekoDispatcher.push_roast()
 
 ```python
 plugin.push_message(
-    source="neko_roast",
+    source="neko_live",
     visibility=[],
     ai_behavior="respond",
     parts=parts,
@@ -963,13 +963,13 @@ Hosted UI action 会补 `_ctx.lanlan_name`，插件进程复用 `ctx._current_la
 
 ## 交接清单
 
-当前交接重点是 `neko_roast` 插件内的直播发言质量层，不包含抖音 transport，也不要求宿主核心新增直播专用输出逻辑。
+当前交接重点是 `neko_live` 插件内的直播发言质量层，不包含抖音 transport，也不要求宿主核心新增直播专用输出逻辑。
 
 1. 热梗知识库由 `data/meme_knowledge.json` 维护，加载/检索入口是 `core/meme_knowledge.py`。当前库 36 条，只做离线静态检索和 prompt 可选提示；不要联网抓热榜，不要把梗写成强制台词，不要把命中结果当成新的路由或记忆。
 2. 冷场陪播素材由 `data/idle_hosting_beats.json` 维护，加载入口是 `core/live_content_host_catalog.py`，选择/轮转仍归 `core/live_hosting_beats.py`。当前库 32 条；legacy `live_content_host_catalog_*` 只作为坏 JSON、缺字段或重复 key 时的兜底。
 3. `meme_query` 是冷场 beat 上的可选调味字段，最多给 `idle_hosting` prompt 一条热梗提示。它不能改变 host beat 的主方向，不能绕过 Safety / dry_run / Dispatcher，也不能替代当前弹幕语义。
 4. 观测字段只用于复盘：`meme_hint_ids` / `meme_hint_tags` 解释本次提示命中了哪些梗，`host_beat_*` / `topic_*` / `*_family` 解释直播话术形态和复读风险。任何新字段都应先确认 `runtime-observability.md` 是否已经定义语义。
-5. 素材改动的最低验证是 JSON 解析 + 当前素材选择 / 输出合约测试：`uv run python -m json.tool plugin/plugins/neko_roast/data/meme_knowledge.json`、`uv run python -m json.tool plugin/plugins/neko_roast/data/idle_hosting_beats.json`、`uv run pytest plugin/plugins/neko_roast/tests/test_active_topic_core.py plugin/plugins/neko_roast/tests/test_output_contract.py -q`。触碰选择逻辑、prompt 合约或 runtime metadata 时，再加对应 runtime / contract 测试和 CLI check。
+5. 素材改动的最低验证是 JSON 解析 + 当前素材选择 / 输出合约测试：`uv run python -m json.tool plugin/plugins/neko_live/data/meme_knowledge.json`、`uv run python -m json.tool plugin/plugins/neko_live/data/idle_hosting_beats.json`、`uv run pytest plugin/plugins/neko_live/tests/test_active_topic_core.py plugin/plugins/neko_live/tests/test_output_contract.py -q`。触碰选择逻辑、prompt 合约或 runtime metadata 时，再加对应 runtime / contract 测试和 CLI check。
 6. 下一任优先看五份文档：`quickstart.md` 看直播现场操作和素材维护速查，`independent-mode-product-plan.md` 看产品验收口径，`runtime-observability.md` 看 Monitor / Dashboard 字段语义，`live-center-roadmap.md` 看阶段状态，本文看模块边界和测试门禁。
 
 ## 冗余代码判定
@@ -1042,20 +1042,20 @@ Hosted UI manifest 入口位于 `ui/panel_compat.tsx`，这是由模块化源码
 
 - 优先软适配（调稳定 entry / 订阅标准事件出口）；确需吞并则**拆成小模块 + 补测试**证明边界仍成立。
 - 不直接复制旧插件大文件；不引入其 LLM / 编排 / 记忆。
-- **勿与 neko_roast 同直播间双连**旧插件（双 WS 冲突）。
+- **勿与 neko_live 同直播间双连**旧插件（双 WS 冲突）。
 
 ## 测试门禁
 
 Python 命令必须通过 `uv run` 执行。文档-only PR 可以不跑完整插件测试，但必须在 PR 描述中说明“仅文档变更，未运行代码测试”。任何触碰 Python、UI、i18n、契约、配置 schema、manifest 或 runtime 行为的 PR，至少运行：
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
-截至 2026-07-17：`uv run pytest plugin/plugins/neko_roast/tests -q` → **1375 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+截至 2026-07-17：`uv run pytest plugin/plugins/neko_live/tests -q` → **1375 passed**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
-> 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_roast 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
+> 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_live 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 
 触碰 UI 或打包兼容入口时，还必须确认 `ui/panel_compat.tsx` 保持完整面板功能：允许 `@neko/plugin-ui` import / hooks，但不得包含相对 import、`window.NekoUiKit` 或 `__modules`。`test_hosted_ui_manifest_entry_is_main_branch_compatible` 是这条规则的 smoke gate；不要用最小 fallback 面板替代完整入口。
 
@@ -1112,9 +1112,9 @@ Cookies are encrypted by `CredentialStore` and never enter event payloads, publi
 Focused validation:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests/test_douyin_bridge.py -q
-uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests/test_douyin_bridge.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 The bundled bridge metadata is Windows-only and does not include a fallback network client. To roll back, unregister `douyin_live_ingest` and `douyin_identity`, stop the local bridge supervisor, and leave the encrypted `douyin_credential.*` files unused. Bili ingest, EventBus, pipeline, safety, dispatcher, and viewer stores remain unchanged.

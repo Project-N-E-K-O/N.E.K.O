@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from plugin.plugins.neko_roast.core import recent_context
+from plugin.plugins.neko_live.core import recent_context
 
 
 def test_spent_output_text_ignores_synthetic_dispatch_markers():

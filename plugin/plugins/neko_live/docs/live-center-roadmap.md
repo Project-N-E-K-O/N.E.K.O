@@ -1,4 +1,4 @@
-# NEKO Live（neko_roast）开发总结与路线图
+# NEKO Live（neko_live）开发总结与路线图
 
 > 本文只记录阶段定位、完成状态和下一阶段路线。架构规范、协作规范和测试门禁以 `development.md` 为准；文档职责矩阵以 `docs/README.md` 为准；宿主 / SDK 历史问题以 `devlog.md` 为准。
 > 更新日期：2026-07-15
@@ -7,9 +7,9 @@
 
 ## 1. 定位
 
-`neko_roast` 的产品名是 **NEKO Live**，历史代号是「猫娘锐评」，架构定位是**直播中心 (Live Center)**：把主播直播的全生命周期接进 NEKO——开播 → 直播间互动（弹幕 / 进场 / 关注 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化（猫猫操控电脑）。
+`neko_live` 的产品名是 **NEKO Live**，历史代号是「猫娘锐评」，架构定位是**直播中心 (Live Center)**：把主播直播的全生命周期接进 NEKO——开播 → 直播间互动（弹幕 / 进场 / 关注 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化（猫猫操控电脑）。
 
-"首评观众锐评"（观众首次发弹幕 → 猫娘按人设锐评其 B站昵称+头像）只是**第一个落地的垂直切片**。所有未来能力以 neko_roast 的**内部模块**形式集成，不做跨插件宿主。
+"首评观众锐评"（观众首次发弹幕 → 猫娘按人设锐评其 B站昵称+头像）只是**第一个落地的垂直切片**。所有未来能力以 neko_live 的**内部模块**形式集成，不做跨插件宿主。
 
 ---
 
@@ -52,14 +52,14 @@ Independent Mode 的产品命题、Slice 顺序、MVP、非目标和内测节奏
 17. 2026-06-29 已补 Live Feel Pack v1.10：插件侧复盘口径不只看逐字相似，也应识别高信号内容家族换皮复读，例如小鱼干 / 奖励、特别企划、主播力自测、一个字 / 一个词 / 暗号回调、安静冷场，以及带明显短片段重叠的二选一、房间氛围、桌面场景、轻吐槽、小挑战。prompt 侧也会把 `topic_family`、`host_beat_family`、`spent_output_family`、`fun_axis`、`shape`、`intent` 视为已用素材，普通弹幕回应的真实输出也会被归类成已用旧梗，`idle_hosting` / `active_engagement` 选素材时也会优先避开最近真实输出已经用过的 spent-output family，避免“换了词但还是同一套主持手法”。下一场直播重点观察：`log_reply_repeat` 是否能抓到换皮复读，以及猫猫是否减少绕回旧梗。
 18. 2026-06-29 已补 Live Feel Pack v1.11：长直播防复读窗口继续加长；当前插件侧保留 recent-output 复盘口径，callback negative examples 扩到最近 12 条；`idle_hosting` / `active_engagement` 的 key、fun axis、shape、intent、host material family 记账窗口也加长，减少 30~60 分钟后又绕回旧主持手法的概率。主动营业 fallback 在严格避让后仍会优先选择未用过的 key，避免因为标题相似就直接复用同一个兜底话题。下一场直播重点观察：猫猫是否还会隔十几句后回到“小鱼干 / 小电台 / 主播力 / 一个词 / 二选一”等旧梗。
 19. 2026-06-29 已补 Live Feel Pack v1.12：把“观众接话模板复读”单独纳入插件侧复盘口径、未来输出合约和运行时素材族检测。即使不是逐字复读，只要连续绕回“想听什么 / 想看什么 / 聊点什么 / 发弹幕 / 接一句 / 互动 / 扣 1 / 吱一声 / 冒个泡 / 给点反应 / 还在吗 / 有人吗 / 在不在”等观众召唤套路，也应被视为 audience-prompt family 的换皮复读；真实输出里的这类句子也会标记为 `spent_output_family=audience_prompt`，让 `idle_hosting` / `active_engagement` 下一轮选素材时优先避开。下一场直播重点观察：猫猫是否减少“换个说法让大家发弹幕”的主持模板感。
-20. 2026-06-29 已补 Live Feel Pack v1.13：插件侧通过 `live_reply_contract=short_tts_line`、`neko_roast_output_policy`、recent-output negative examples 和 monitor 复盘口径减少直播短回复污染下一轮生成；宿主普通 AI turn 文本隔离不属于当前插件改动范围，插件不直接修改主程序核心。下一场直播重点观察：后半场是否减少“接着上一句展开”“围绕上一句换皮续写”的污染感。
+20. 2026-06-29 已补 Live Feel Pack v1.13：插件侧通过 `live_reply_contract=short_tts_line`、`neko_live_output_policy`、recent-output negative examples 和 monitor 复盘口径减少直播短回复污染下一轮生成；宿主普通 AI turn 文本隔离不属于当前插件改动范围，插件不直接修改主程序核心。下一场直播重点观察：后半场是否减少“接着上一句展开”“围绕上一句换皮续写”的污染感。
 21. 2026-06-29 已补 Live Feel Pack v1.14：把 `cross_server` 普通 memory / analyzer 汇合点和热切新 session 的 `message_cache_for_new_session` 记录为宿主侧风险边界。带 `live_reply_contract=short_tts_line` 的 `gemini_response` 和 turn end 可能污染普通上下文，但插件只提供 metadata、recent-output 约束和监控线索，不直接写这些宿主路径。
 22. 2026-06-29 已补 Live Feel Pack v1.15：`active_engagement` 的近期弹幕和 B 站公开素材会先做轻量 topic profile，识别它更适合二选一、轻吐槽、小挑战还是氛围立场，并把 `preferred_shape`、`fun_axis`、`reply_affordance` 和 hint 一起传给 prompt。这样主动营业不再只拿“一个标题”硬转话题，而是优先形成一个可被观众一两个字接住的互动格式。下一场直播重点观察：热榜 / 近期素材触发时，猫猫是否更少泛问“聊什么”，更多给出具体 A/B、小挑战或轻吐槽钩子。
 23. 2026-06-29 已补 Live Feel Pack v1.16：`idle_hosting` 和 `active_engagement` 的素材都增加 `live_column`，用于标记 NEKO 自有小栏目格式，例如 micro poll、tiny verdict、tiny radio、room thermometer、one-word callback。该字段会进入 prompt、recent result 和 recent interaction context，方便下次直播复盘猫猫到底在用哪类主持格式；它不新增 UI 页面、不改变触发频率，也不允许绕过 Safety / dry_run / dispatcher。下一场直播重点观察：无弹幕窗口和主动营业是否更像“NEKO 自己的小栏目”，而不是普通主持人泛问。
 24. 2026-06-29 已补 Live Feel Pack v1.17：继续扩无弹幕窗口和主动营业的内容质量池，冷场陪播素材当时不少于 24 条、当前已扩为 JSON 维护 32 条，主动营业 fallback 素材不少于 36 条，并新增 NEKO 小法庭、尾巴状态、桌面守护神、两字暗号、灯光滤镜、猫猫天气预报等更具体的低门槛接话格式。下一场直播重点观察：无人发言时是否不再反复绕回同一种小电台 / 选题 / 召唤观众话术，以及观众是否更容易用一两个字接上。
 25. 2026-06-29 已补 Live Feel Pack v1.18：冷场陪播从“随机抽素材”推进为轻量连续策略：第一次冷场优先 `settle`，第二次优先 `column`，第三次及以后优先 `callback`，再交给已有 idle-to-active 交接阀判断是否切主动营业。主动营业结果也新增 `topic_pack`，用于区分 micro poll、NEKO verdict、room mood、room observation、viewer callback、micro challenge 等节目包。下一场直播重点观察：连续无弹幕时猫猫是否有层次地从轻观察走到小栏目 / 回调，而不是同一种话术反复抽卡。
 26. 2026-06-29 已补 Danmaku Response Quality v2：`danmaku_response` prompt 会标记当前弹幕的轻量 `danmaku_profile`，区分 `viewer_to_viewer_mention`、`question`、`emoji_or_reaction`、`short_line`、`normal_line` 和 `empty`。普通弹幕接话现在更强调“只接当前这句”：短反应不展开，问题先直接回答，`@其他观众` 不当成喊 NEKO，`@猫猫` 仍正常接住，同一观众历史只作为防复读材料。recent result 与 `monitor_live.ps1` 会输出 `latest_danmaku_profile` / `latest_danmaku_reply_shape`，方便直播中确认分类是否符合预期。下一场直播重点观察：普通后续弹幕是否更短、更贴当前句，是否减少把观众互相 @ 或旧话题误接成新回复。
-27. 2026-07-02 已补 Runtime Timeline / `trace_id` / Monitor emission / CI gate 收口：事件级 `trace_id` 已贯穿 live payload、`ViewerEvent`、`InteractionResult`、recent result 与 `live_explain`；Dashboard 与 monitor 均可看到 privacy-safe timeline stage/status/route/reason；`live_support_events` 已让 Gift / SC / Guard 进入短句致谢 handler；测试大文件已按责任域拆分，主仓 `Plugin Tests` workflow 新增 `NEKO Roast gate (Windows)`，自动跑 `uv run pytest plugin/plugins/neko_roast/tests -q` 与 CLI check。下一步不再补链路地基，优先做真实直播验证、UI 模块化、P4 画像治理收口和旧 `bilibili_danmaku` 最终删除前置清理。
+27. 2026-07-02 已补 Runtime Timeline / `trace_id` / Monitor emission / CI gate 收口：事件级 `trace_id` 已贯穿 live payload、`ViewerEvent`、`InteractionResult`、recent result 与 `live_explain`；Dashboard 与 monitor 均可看到 privacy-safe timeline stage/status/route/reason；`live_support_events` 已让 Gift / SC / Guard 进入短句致谢 handler；测试大文件已按责任域拆分，主仓 `Plugin Tests` workflow 新增 `NEKO Roast gate (Windows)`，自动跑 `uv run pytest plugin/plugins/neko_live/tests -q` 与 CLI check。下一步不再补链路地基，优先做真实直播验证、UI 模块化、P4 画像治理收口和旧 `bilibili_danmaku` 最终删除前置清理。
 28. 2026-07-03 已补观众画像治理 v0.3：`viewer_store` 长期保存安全派生印象字段（常聊话题、接梗提示、互动风格、回复偏好、短摘要、避坑提示），prompt 私有提示和 Dashboard 只读投影均不保存 / 展示原始弹幕、raw payload、头像 bytes/base64、cookie/token/signature；开发者模式新增单 UID 档案删除与印象重置动作，并在观众档案表逐行提供二次确认按钮，便于修正错误画像而不必清空整场测试数据。画像质量层已补 `profile_freshness` / `memory_use_rule`：单次话题或玩梗只算证据，不进稳定 top topic/joke；过期画像会降权，prompt 要求当前弹幕优先、不要当众复述档案。下一步继续做真实直播验证、画像管理 UI 体验打磨、`watch_time` / `contribution_rank` 等非 raw 指标，以及旧插件最终退役前置清理。
 29. 2026-07-07 已补 Live Feel Pack v1.19 / 交接素材包：热梗知识库移入 `data/meme_knowledge.json`，当前 36 条，由 `core/meme_knowledge.py` 做插件内离线检索，供 `danmaku_response` 和冷场 `meme_query` 作为可选调味提示，并通过 `meme_hint_ids` / `meme_hint_tags` 暴露调试 metadata；冷场陪播素材移入 `data/idle_hosting_beats.json`，当前 32 条，由 `core/live_content_host_catalog.py` 加载，坏 JSON、缺字段或重复 key 会跳过/回退到 legacy Python 素材。该包不联网、不改宿主核心、不强制猫猫用梗；下一步交接重点是素材人工维护、真实直播复盘与 UI/画像治理，不推进抖音 transport。
 30. 2026-07-07 已完成回复链路收缩交接：直播专用最终输出治理不再推进到主程序核心，插件只通过 `NekoDispatcher`、prompt contract、request metadata、recent-output 负例和 Dashboard / Monitor 只读投影约束直播效果；`live_events` 内置选择性回复，`activity_level=quiet` 会派生更严格的 `reply_selection_policy=quiet`，`standard/active` 仍只跳过低价值弹幕，不新增与直播风格重复的 `reply_selection_mode`。交接入口见 `handoff-2026-07-07.md`；下一步先真实直播复盘低价值弹幕过滤、头像/UID 过度锐评、prompt token 和延迟，再决定 UI 是否展示更多只读解释字段。
@@ -82,7 +82,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **DoD** | **真实直播间新观众首条弹幕 → 猫猫全自动开口锐评其昵称+头像** | 真机：dry_run 关 → main 日志见 vision 模型 + send_lanlan_response |
 | **P2-T2.1 限流** | `safety_guard.before_output(event)` 按 `rate_limit_seconds` 控最小锐评间隔（直播态生效、沙盒豁免） | 单测 + 真机 |
 | **富模型修复** | `livedanmaku.from_danmaku`：`info[7]`（int 大航海等级）被当列表 → 任意弹幕 TypeError 被吞、`on_event("DANMU_MSG")` 永不触发，已修 + 全下标加守卫 | `tests/test_livedanmaku.py` 9 用例 |
-| **人气值 UI** | 后端透传的 `viewer_count` 之前没在面板渲染 → `panel.tsx` 加"人气值"卡 + 8 locale | **无需 rebuild 前端**：panel.tsx 由 plugin-manager 用 sucrase **运行时转译**（`hosted/tsxRuntime.ts`），后端已确认供含人气值卡的源码（`hosted-ui/source` 含 `viewer_count`/`panel.stats.viewers`）→ UI 里(重)开 neko_roast 面板即见；待肉眼确认 |
+| **人气值 UI** | 后端透传的 `viewer_count` 之前没在面板渲染 → `panel.tsx` 加"人气值"卡 + 8 locale | **无需 rebuild 前端**：panel.tsx 由 plugin-manager 用 sucrase **运行时转译**（`hosted/tsxRuntime.ts`），后端已确认供含人气值卡的源码（`hosted-ui/source` 含 `viewer_count`/`panel.stats.viewers`）→ UI 里(重)开 neko_live 面板即见；待肉眼确认 |
 | **P2.5 事件中枢** | 激活 `live_events` 普通弹幕中枢：富模型 `on_event` 接入 + `get_score` 开窗择优 + 首评即时；轻量重复回调退役防双锐评；新增 `safety_guard.output_cooldown_remaining()` 对齐窗口与限流冷却。Gift / SC / Guard 已拆到 `live_support_events.scheduler`，不再和普通弹幕同窗竞争 | 单测与契约覆盖弹幕中枢、支持事件独立接线、真实性、去重、连击、优先级及队列边界；真机已验证弹幕窗口择优，支持事件仍需后续受控样本校准 |
 | **配置写竞争（插件侧免疫 + host 修复已进）** | `runtime.update_config` 反转为「先内存生效 → 带预算（4s）尽力持久化、超时/失败不回滚不阻塞」+ `asyncio.Lock` 串行化；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支，插件侧兜底继续保留 | 契约新增 2 用例（`update_config`/`connect` 持久化卡死不阻塞）；host/core 切片 `plugin/tests/unit/core/test_host_storage_layout_env.py` + `plugin/tests/unit/sdk/plugin/test_sdk_v2_plugin_base.py` 已用于验证修复依据；**真机✓**（原 500 的 `update_config{dry_run}`→OK 4.1s+`config_persist_timeout`，`connect`→OK 4.5s 真连上） |
 | **旧 bilibili_danmaku 待退役** | 连接、解析与扫码登录能力已独立迁入 NEKO Live，当前无运行时导入；但旧插件仍是可加载、可手动启动的完整插件，README/manifest 尚无真实弃用横幅，并保留平台内容读取、弹幕/评论/动态/私信写入、历史查询、用户管理和独立分析能力。旧目录有 41 个 tracked 文件，另有构建注释和通用测试夹具引用 | 只能确认直播主链路已独立，不能宣称完整功能对等；删除前须先完成能力清单与逐项迁移/替代/放弃决策 |
@@ -94,7 +94,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | **事件中枢地基（EventBus 真订阅分发）** | 把接入与处理解耦——provider ingest 把富模型包成 `LiveEvent` 统一信封发布到 `EventBus`；`EventBus` 提供隔离、归属与 audit。`live_events` 只订阅 `"danmaku"`，`live_support_events` 独立订阅 `"gift"` / `"super_chat"` / `"guard"`，确保每个事件族只有一个生产消费者。**这是「分发给其他开发者各写各事件 handler」的核心契约** | `test_event_bus.py`、listener lifecycle、live events 与 support scheduler 契约共同覆盖；rich event 经 bus 到唯一 handler，支持事件不会重复进入普通弹幕窗口 |
 | **可靠性收尾（兜底层②④收口）** | ① UI 错误边界：`panel_components.tsx` 的 `ModuleRenderBoundary` 用 try/catch 包每张互动模块卡的同步渲染，单卡失败不黑屏整盘。② `ModuleRegistry.enable/disable` 对真实模块生命周期调用做隔离，单点失败标 degraded + audit | 地基、单测、契约和 panel transpile 已完成。普通功能偏好开关继续使用明确 runtime config gate，不把偏好开关误接成模块卸载；后续只有真实模块需要动态装卸时才使用 lifecycle API |
 
-历史阶段测试基线（2026-06-20；当前基线以 `development.md`「测试门禁」为准）：`uv run pytest plugin/plugins/neko_roast/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_roast 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
+历史阶段测试基线（2026-06-20；当前基线以 `development.md`「测试门禁」为准）：`uv run pytest plugin/plugins/neko_live/tests -q` → **546 passed**；CLI check **0 error**（6 条模板 warning 允许）。`Plugin Tests` workflow 已在 `roast` 分支通过，新增 `NEKO Roast gate (Windows)` 自动运行 neko_live 测试套件与 CLI check；后续改动按 `development.md` 的协作规范拆分 Slice，不混入非本插件改动。
 
 ---
 
@@ -102,7 +102,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 本节只保留路线图相关的决策摘要。宿主 / SDK 侧历史问题、配置写竞争、storage layout、message plane 等事故记录以 `devlog.md` 和 `development.md` 对应章节为准。
 
-- **吞并策略**：取 `bilibili_danmaku` 的**连接+解析层**（`danmaku_core`/`livedanmaku`，含匿名 WS、WBI 签名、临时 buvid3 反 -352 风控、zlib/brotli 解压、心跳、多服务器故障转移、断线重连）；**弃**其自带 LLM/orchestrator/memory（neko_roast 走 `dispatcher → main_server` 统一人设）。参照系：弹幕姬 `copyliu/bililive_dm` 的小插件契约（4 事件 + 统一模型 + 故障隔离）作为未来扩展点设计蓝本。
+- **吞并策略**：取 `bilibili_danmaku` 的**连接+解析层**（`danmaku_core`/`livedanmaku`，含匿名 WS、WBI 签名、临时 buvid3 反 -352 风控、zlib/brotli 解压、心跳、多服务器故障转移、断线重连）；**弃**其自带 LLM/orchestrator/memory（neko_live 走 `dispatcher → main_server` 统一人设）。参照系：弹幕姬 `copyliu/bililive_dm` 的小插件契约（4 事件 + 统一模型 + 故障隔离）作为未来扩展点设计蓝本。
 - **弹幕不含头像**：B站 DANMU_MSG 无头像 URL；头像由下游 `bili_identity` **按 UID 抓取**。
 - **配置写竞争（反复咬人）**：host 的 `update_own_config` 持久化曾偶发卡 10s 超时（咬过 dev 模式切换、disconnect）。`connect/disconnect_live_room` 已改为**内存直设 `live_enabled`**（gate/safety 共享同一 config 对象，即时生效）绕开；host/core 修复 `Fix plugin host config and data root handling (#1884)` / `08b317f6` 已进入当前 `Roast` 分支。
   - **2026-06-16 P2.5 真机验证时复现并确认更严重**：在「只重后端不重前端」的环境下（正是 §6 警告的触发条件），`update_config{dry_run}` 和 `connect_live_room`（其内部 `set_live_room` 仍走 `update_config` 持久化 `live_room_id`）**稳定** 500 / `Entry timed out after 10.0s`，且 `runtime.update_config` 的 except 内存兜底**没机会跑**（host 在兜底前就杀了 entry，audit 无 `config_persist_failed`）。即 connect 当前也会被这个 race 卡住，不止「偶发」。
@@ -193,7 +193,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 
 3. **host/core 修复已进当前分支，做插件侧回归收口（详见 `docs/devlog.md`）**
    - **配置写竞争**：插件侧已免疫（`update_config` 内存先行 + 带预算持久化，见 §5 / development.md「配置持久化与写竞争」）；#1884 已进入当前 `Roast`，后续改动只需保持插件侧兜底不退化。
-   - **`PluginStore.store.enabled` 构造期冻结**：#1884 已让 runtime helpers 可在 effective config 就绪后刷新；neko_roast 仍保留观众档案本地 JSON 边界，不回切 PluginStore。
+   - **`PluginStore.store.enabled` 构造期冻结**：#1884 已让 runtime helpers 可在 effective config 就绪后刷新；neko_live 仍保留观众档案本地 JSON 边界，不回切 PluginStore。
    - **插件数据跟随 selected_root**：#1884 已在插件子进程启动前刷新 storage layout env；插件侧已完成默认目录、自定义目录失败回退、实际路径状态和失败 tmp 清理回归。`viewer_store_dir` 自定义入口按当前产品范围继续屏蔽，不因回归通过自动恢复 UI。
 
 ### B. 功能路线（详见 §7）
@@ -267,7 +267,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
    - **当前进度**：已完成 Hosted UI 平台选择、B 站/抖音认证区切换、抖音 Cookie 导入/状态/手动校验/删除 action 暴露、抖音直播间 URL 输入、平台切换时清空旧房间目标并关闭监听开关，以及 8 locale 文案同步；真实抖音监听走内置本地 bridge 路径，失败时通过 `unsupported` / `disconnected` + 脱敏 `last_error` 降级。
 
 8. **验证与回归**
-   - 基础门禁：`uv run pytest plugin/plugins/neko_roast/tests -q`、`uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast`。
+   - 基础门禁：`uv run pytest plugin/plugins/neko_live/tests -q`、`uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live`。
    - 分层测试：provider router 兼容、配置迁移、room parser、通用事件模型、凭据加密、抖音 ingest fixture、安全礼物摘要与共享 support route、断线/失效降级、connection snapshot 脱敏可见。
    - 手动 dry-run：B 站原链路不退化；抖音无 cookie 提示清楚；抖音有效 cookie 能接入弹幕；礼物只在被 Selection 选中后走 `live_support_events`；断开后 safety guard 变 disconnected。
    - **当前进度**：已补 Hosted UI connect action 契约测试，覆盖从面板传入完整抖音直播 URL 后，后端归一化为安全 `room_ref`、启动抖音 provider、公开 snapshot/config/audit 不泄漏 URL query 的路径；已跑通抖音 ingest / bridge / router、live events / live status / runtime controls、smoke / config / lifecycle 回归，以及 Hosted TSX parser 单测与 Node gate。同 checkout 真实 Hosted UI E2E 已通过：抖音平台切换、房间查询、完整直播 URL 归一为安全房间号、bridge-only 监听启动到 `receiving` 状态均可用。B 站手动 dry-run 已切回 `bilibili` 房间 `6` 验证查询和监听可进入 `receiving`，随后恢复到抖音房间。真实抖音房间 `300294032039` 已捕到 bridge contribution 形态礼物，进入 `gift_signal` / `live_event_signal.unsupported_gift`，未触发 AI，且贡献用户 UID 优先来自 `userContributeList` 而不是主播/接收方 id；`monitor_live.ps1` 已补 `recent_observed_signal_*` / `recent_skipped_signal_*` 与 `latest_gift_*`，能区分“礼物已看见”和“没有进入输出链”。本轮额外验证了热重载 / 父进程异常退出后残留的旧 `douyinLive.exe` 会在下一次 start 前按同 executable path 清理，正常 `disconnect_live_room` 也会关闭当前 bridge 进程；随后对房间 `300294032039` 做 12 次 / 约 2 分钟短长连 monitor 采样，连接保持 `connected=True` 且无 monitor alerts，bridge 进程保持单实例并有 localhost established 连接。
@@ -329,8 +329,8 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | 可靠性工程 | A− | 五层兜底是真功夫：`safety_guard`（滑窗失败计数→自动急停 / 队列溢出→降级 / 限流）、`pipeline`（每步审计 + `finally` 清队列）、`dispatcher`（dry_run + 头像压不进预算则降级纯文字）|
 | 代码质量 | B+ | `pipeline`/`safety_guard`/`dispatcher` 教科书级；Hosted UI 已从单一 `panel.tsx` 入口拆出 `panel_components.tsx` 与 `panel_helpers.ts`，但仍需继续控制面板复杂度 |
 | 文档 | A | 「无文档=未完成」真在执行；但偏厚、跨文档有同事实冗余 |
-| 测试 | B+ | 截至该快照，`plugin/plugins/neko_roast/tests` 为 546 passed；原 100KB+ 测试大文件已按 config / pipeline / runtime active engagement / monitor 主题拆分，最大测试文件约 56KB；硬骨头（真连 B站 / 视觉 / 消息面 / 面板渲染）仍主要靠真机验证 |
-| 工程治理 | B | `Plugin Tests` workflow 已新增 `NEKO Roast gate (Windows)`，在 `roast` 分支自动跑 neko_roast 测试套件与 CLI check；PR 评审轨迹与发布节奏仍需后续补齐 |
+| 测试 | B+ | 截至该快照，`plugin/plugins/neko_live/tests` 为 546 passed；原 100KB+ 测试大文件已按 config / pipeline / runtime active engagement / monitor 主题拆分，最大测试文件约 56KB；硬骨头（真连 B站 / 视觉 / 消息面 / 面板渲染）仍主要靠真机验证 |
+| 工程治理 | B | `Plugin Tests` workflow 已新增 `NEKO Roast gate (Windows)`，在 `roast` 分支自动跑 neko_live 测试套件与 CLI check；PR 评审轨迹与发布节奏仍需后续补齐 |
 | 功能完成度 | Independent Mode 验证期 | 「首评锐评」闭环已稳定，后续弹幕接话、Idle/Warmup Hosting、Active Engagement、Runtime Timeline、Gift/SC/Guard 短句致谢均已接入；下一步看真实直播验证和产品体验收口 |
 
 **优点（有代码支撑）**：可靠性刻进代码而非口号；对抗真实世界的疤痕（-352 风控、配置写竞争免疫、消息面吞图 bug 修复）；契约测试锁架构红线；克制复用 + 隐私自觉（凭据加密不落 log/UI、头像 bytes 不落盘）。

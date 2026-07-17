@@ -5,16 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugin.plugins.neko_roast.adapters.neko_dispatcher import NekoDispatcher
-from plugin.plugins.neko_roast.core.contracts import RoastConfig, ViewerEvent, ViewerIdentity, ViewerProfile
-from plugin.plugins.neko_roast.core.meme_knowledge import (
+from plugin.plugins.neko_live.adapters.neko_dispatcher import NekoDispatcher
+from plugin.plugins.neko_live.core.contracts import RoastConfig, ViewerEvent, ViewerIdentity, ViewerProfile
+from plugin.plugins.neko_live.core.meme_knowledge import (
     DEFAULT_MEME_KNOWLEDGE_PATH,
     load_meme_knowledge,
     meme_knowledge_metadata,
     render_meme_knowledge_block,
     retrieve_meme_knowledge,
 )
-from plugin.plugins.neko_roast.modules.danmaku_response import DanmakuResponseModule
+from plugin.plugins.neko_live.modules.danmaku_response import DanmakuResponseModule
 
 
 def test_meme_knowledge_retrieves_matching_entry() -> None:

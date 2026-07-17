@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from plugin.plugins.neko_roast.core.contracts import ViewerIdentity
-from plugin.plugins.neko_roast.stores.viewer_store import ViewerStore
+from plugin.plugins.neko_live.core.contracts import ViewerIdentity
+from plugin.plugins.neko_live.stores.viewer_store import ViewerStore
 
 
 class _FakePlugin:
