@@ -48,10 +48,10 @@ def resolve_provider_policy(
     transport: AsrTransport = (
         "segmented" if meta.category in {"dummy", "segmented_request"} else "streaming"
     )
-    endpoint_authority: AsrEndpointAuthority = (
-        "provider" if endpointing_mode == "provider" else "smart_turn"
-    )
-    smart_turn_required = transport == "segmented" or endpoint_authority == "smart_turn"
+    # Provider-native endpoints are physical-segment hints only. SmartTurn is
+    # the sole logical-turn authority for every independent ASR route.
+    endpoint_authority: AsrEndpointAuthority = "smart_turn"
+    smart_turn_required = True
     return AsrProviderPolicy(
         transport=transport,
         endpoint_authority=endpoint_authority,

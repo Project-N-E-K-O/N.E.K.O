@@ -105,6 +105,7 @@ class _VoiceTurnAdapter:
         self._resources_closed = False
         self._closed = False
         self._commit_dispatched: set[_Identity] = set()
+        self._smart_turn_pin_count = 0
 
     async def start(self) -> None:
         if self._closed:
@@ -141,6 +142,18 @@ class _VoiceTurnAdapter:
         if callbacks:
             await asyncio.gather(*callbacks)
 
+    def pin_smart_turn(self) -> None:
+        self._ensure_running()
+        self._smart_turn_pin_count += 1
+        self._cancel_smart_turn_unload()
+
+    def unpin_smart_turn(self) -> None:
+        if self._smart_turn_pin_count <= 0:
+            return
+        self._smart_turn_pin_count -= 1
+        if self._smart_turn_pin_count == 0 and self._identity is not None:
+            self._schedule_smart_turn_unload(self._identity)
+
     async def push_audio(
         self,
         *,
@@ -170,7 +183,19 @@ class _VoiceTurnAdapter:
         await self._queue.put(
             _ResetItem((generation, buffer_epoch, utterance_id), completed)
         )
-        await completed
+        consumer = self._consumer_task
+        if consumer is None:
+            raise RuntimeError("ASR_VOICE_TURN_CLOSED: adapter is not running")
+        done, _pending = await asyncio.wait(
+            {completed, consumer},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if completed in done:
+            await completed
+            return
+        if not completed.done():
+            completed.cancel()
+        raise RuntimeError("ASR_VOICE_TURN_FAILED: adapter stopped during reset")
 
     async def close(self) -> None:
         close_task = self._close_task
@@ -248,7 +273,6 @@ class _VoiceTurnAdapter:
             self._identity = item.identity
         if item.identity != self._identity:
             return
-        self._cancel_smart_turn_unload()
         self._coordinator.push_audio(item.pcm16)
         if not self._vad_load_attempted:
             self._vad_load_attempted = True
@@ -276,6 +300,7 @@ class _VoiceTurnAdapter:
             in (SpeechActivityEvent.SPEECH_STARTED, SpeechActivityEvent.SPEECH_RESUMED)
             for event in events
         ):
+            self._cancel_smart_turn_unload()
             self._cancel_fallback()
 
         if (
@@ -328,7 +353,8 @@ class _VoiceTurnAdapter:
         await asyncio.to_thread(self._gate.reset)
         self._identity = identity
         self._commit_dispatched.clear()
-        self._schedule_smart_turn_unload(identity)
+        if self._smart_turn_pin_count == 0:
+            self._schedule_smart_turn_unload(identity)
 
     async def _process_close(self) -> None:
         self._closed = True
@@ -427,6 +453,9 @@ class _VoiceTurnAdapter:
             task.cancel()
 
     def _schedule_smart_turn_unload(self, identity: _Identity) -> None:
+        if self._smart_turn_pin_count > 0:
+            return
+
         async def unload_after_warm_ttl() -> None:
             try:
                 await asyncio.sleep(self._smart_turn_warm_seconds)

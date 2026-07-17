@@ -386,22 +386,23 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
 
 
 @pytest.mark.parametrize(
-    ("provider_key", "endpointing_mode", "expects_smart_turn"),
+    ("provider_key", "endpointing_mode"),
     [
-        ("dummy", "manual", True),
-        ("qwen", "manual", True),
-        ("qwen", "provider", False),
-        ("openai", "manual", True),
-        ("glm", "manual", True),
-        ("gemini", "manual", True),
-        ("soniox", "provider", False),
-        ("soniox", "manual", True),
+        ("dummy", "manual"),
+        ("qwen", "manual"),
+        ("qwen", "provider"),
+        ("openai", "manual"),
+        ("step", "manual"),
+        ("grok", "provider"),
+        ("glm", "manual"),
+        ("gemini", "manual"),
+        ("soniox", "provider"),
+        ("soniox", "manual"),
     ],
 )
-def test_builder_preserves_manual_smart_turn_boundary(
+def test_builder_requires_smart_turn_for_every_provider_mode(
     provider_key,
     endpointing_mode,
-    expects_smart_turn,
 ):
     callback = AsyncMock()
     selection = asr_client._AsrSelection(
@@ -418,7 +419,7 @@ def test_builder_preserves_manual_smart_turn_boundary(
         on_connection_error=callback,
     )
 
-    assert (session._voice_turn_factory is not None) is expects_smart_turn
+    assert session._voice_turn_factory is not None
 
 
 @pytest.mark.parametrize("provider_key", ["dummy", "qwen", "openai", "glm", "gemini"])
@@ -492,7 +493,7 @@ def test_dummy_selection_reads_dev_override_once_and_uses_smart_turn(monkeypatch
     assert session._voice_turn_factory is not None
 
 
-def test_smart_turn_factory_is_disabled_for_provider_endpoint(monkeypatch):
+def test_provider_endpoint_still_installs_smart_turn_factory(monkeypatch):
     callback = AsyncMock()
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.setattr(
@@ -523,7 +524,7 @@ def test_smart_turn_factory_is_disabled_for_provider_endpoint(monkeypatch):
         on_connection_error=callback,
     )
 
-    assert session._voice_turn_factory is None
+    assert session._voice_turn_factory is not None
 
 
 def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
@@ -642,6 +643,7 @@ async def test_connect_ready_status_and_idempotent_close(monkeypatch):
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
         on_status_message=statuses.put,
+        external_endpointing_runtime=True,
     )
 
     await session.connect()
@@ -665,6 +667,7 @@ async def test_dummy_handles_multiple_utterances(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.signal_user_activity_end()
@@ -690,6 +693,7 @@ async def test_pcm_16k_and_48k_are_accepted_and_rate_is_locked(monkeypatch):
             config=AsrSessionConfig(input_sample_rate_hz=sample_rate),
             on_input_transcript=transcripts.put,
             on_connection_error=AsyncMock(),
+            external_endpointing_runtime=True,
         )
         await session.connect()
         await session.stream_audio(b"\x00\x00" * sample_count)
@@ -742,6 +746,7 @@ async def test_pcm_validation_and_empty_chunk(monkeypatch):
         "qwen",
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"")
@@ -760,6 +765,7 @@ async def test_duplicate_final_is_delivered_once(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
@@ -779,6 +785,7 @@ async def test_delayed_final_is_dropped_after_clear_and_close(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
@@ -806,6 +813,7 @@ async def test_callback_failure_does_not_break_session(monkeypatch):
         "qwen",
         on_input_transcript=failing_callback,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     for _ in range(2):
@@ -848,6 +856,7 @@ async def test_update_session_is_locked_after_connect(monkeypatch):
         "qwen",
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.update_session({"language": "en-US", "instructions": "ignored"})
     with pytest.raises(ValueError, match="unknown session field"):
@@ -1315,6 +1324,7 @@ async def test_dummy_close_cancels_long_delayed_final(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=errors,
+        external_endpointing_runtime=True,
     )
 
     await session.connect()
@@ -1343,6 +1353,7 @@ async def test_transcript_callback_can_close_session(monkeypatch):
         "qwen",
         on_input_transcript=close_from_callback,
         on_connection_error=errors,
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)

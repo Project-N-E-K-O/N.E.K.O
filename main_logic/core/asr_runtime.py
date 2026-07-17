@@ -20,7 +20,7 @@ from main_logic.asr_client.audio_pipeline import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
 )
-from main_logic.asr_client.detector_runtime import DetectorRuntime
+from main_logic.asr_client.detector_runtime import DetectorRuntime, SmartTurnLease
 from main_logic.asr_client.lifecycle_contracts import (
     FinalKey,
     VoiceIngressToken,
@@ -64,6 +64,7 @@ class AsrRuntimeMixin:
         self._asr_close_tasks: set[asyncio.Task[None]] = set()
         self._asr_lifecycle: VoiceInputLifecycleController | None = None
         self._asr_detector: DetectorRuntime | None = None
+        self._asr_smart_turn_lease: SmartTurnLease | None = None
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
         self._asr_session_factory = None
         self._asr_transport_selection = None
@@ -172,6 +173,51 @@ class AsrRuntimeMixin:
         self._asr_accepted_final_keys[key] = None
         while len(self._asr_accepted_final_keys) > 256:
             self._asr_accepted_final_keys.popitem(last=False)
+        return True
+
+    async def _ensure_smart_turn_ready(
+        self,
+        lifecycle: VoiceInputLifecycleController,
+        epoch: int,
+    ) -> bool:
+        if epoch != self._asr_session_epoch or self._asr_lifecycle is not lifecycle:
+            return False
+        turn_token = self._capture_turn_token(lifecycle)
+        detector = self._asr_detector
+        if detector is None:
+            await self._handle_independent_asr_error(
+                epoch,
+                self._asr_provider or "unknown",
+                status_code="ASR_BLOCKED_ENDPOINTING",
+            )
+            return False
+        lease = self._asr_smart_turn_lease
+        if (
+            lease is not None
+            and lease.token == turn_token
+            and detector.endpointing_ready(turn_token)
+        ):
+            return True
+        if lease is not None:
+            await lease.release()
+            self._asr_smart_turn_lease = None
+        lease = await detector.prepare_endpointing(turn_token)
+        if (
+            lease is None
+            or epoch != self._asr_session_epoch
+            or self._asr_lifecycle is not lifecycle
+            or not detector.endpointing_ready(turn_token)
+        ):
+            if lease is not None:
+                await lease.release()
+            if epoch == self._asr_session_epoch:
+                await self._handle_independent_asr_error(
+                    epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_BLOCKED_ENDPOINTING",
+                )
+            return False
+        self._asr_smart_turn_lease = lease
         return True
 
     async def _handle_audio_ingress_backpressure(
@@ -461,6 +507,7 @@ class AsrRuntimeMixin:
         if lifecycle is not None:
             lifecycle.stop()
         detector, self._asr_detector = self._asr_detector, None
+        self._asr_smart_turn_lease = None
         if detector is not None:
             await detector.close()
         audio_pipeline = self._voice_input_audio_pipeline
@@ -565,6 +612,24 @@ class AsrRuntimeMixin:
                     )
                 ):
                     self._ensure_transport_restart_task()
+                return True
+            if lifecycle is None or detector is None:
+                await self._handle_independent_asr_error(
+                    self._asr_session_epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_BLOCKED_ENDPOINTING",
+                )
+                return True
+            turn_token = self._capture_turn_token(lifecycle)
+            if (
+                lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+                or not detector.endpointing_ready(turn_token)
+            ):
+                await self._handle_independent_asr_error(
+                    self._asr_session_epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_BLOCKED_ENDPOINTING",
+                )
                 return True
             asr_session = self._asr_session
             if asr_session is None or not getattr(asr_session, "is_ready", True):
@@ -671,6 +736,18 @@ class AsrRuntimeMixin:
                         self._asr_pending_speech_confirmed
                         and lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
                     ):
+                        detector = self._asr_detector
+                        turn_token = self._capture_turn_token(lifecycle)
+                        if (
+                            detector is None
+                            or not detector.endpointing_ready(turn_token)
+                        ):
+                            await self._handle_independent_asr_error(
+                                self._asr_session_epoch,
+                                self._asr_provider or "unknown",
+                                status_code="ASR_BLOCKED_ENDPOINTING",
+                            )
+                            return
                         lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
                         self._asr_pending_speech_confirmed = False
                         self._asr_turn_audio_started_at = time.monotonic()
@@ -681,6 +758,13 @@ class AsrRuntimeMixin:
                             self._asr_session_epoch
                         )
                         if payload:
+                            if not detector.endpointing_ready(turn_token):
+                                await self._handle_independent_asr_error(
+                                    self._asr_session_epoch,
+                                    self._asr_provider or "unknown",
+                                    status_code="ASR_BLOCKED_ENDPOINTING",
+                                )
+                                return
                             await candidate.stream_audio(
                                 payload,
                                 sample_rate_hz=16_000,
@@ -729,6 +813,9 @@ class AsrRuntimeMixin:
         self._asr_pending_speech_confirmed = False
         self._asr_turn_endpointed_at = None
         self._asr_accepted_final_keys.clear()
+        lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
+        if lease is not None:
+            await lease.release()
         for task_name in ("_asr_transport_task", "_asr_warm_expiry_task"):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
@@ -1087,21 +1174,21 @@ class AsrRuntimeMixin:
             if state in {
                 VoiceLifecycleState.LOCAL_LISTEN,
                 VoiceLifecycleState.DEEP_SLEEP,
+                VoiceLifecycleState.WARM_IDLE,
             }:
                 warm_task = self._asr_warm_expiry_task
                 if warm_task is not None:
                     warm_task.cancel()
                     self._asr_warm_expiry_task = None
+                if state is VoiceLifecycleState.WARM_IDLE:
+                    lifecycle.metrics.warm_hit_count += 1
                 lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
                 state = lifecycle.snapshot.state
-            if state in {
-                VoiceLifecycleState.PREWARMING,
-                VoiceLifecycleState.WARM_IDLE,
-            }:
+            if state is VoiceLifecycleState.PREWARMING:
+                if not await self._ensure_smart_turn_ready(lifecycle, epoch):
+                    return
                 asr_session = self._asr_session
                 if asr_session is not None and getattr(asr_session, "is_ready", True):
-                    if state is VoiceLifecycleState.WARM_IDLE:
-                        lifecycle.metrics.warm_hit_count += 1
                     lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
                 else:
                     self._asr_pending_speech_confirmed = True
@@ -1182,6 +1269,14 @@ class AsrRuntimeMixin:
             return
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             turn_token = self._capture_turn_token(lifecycle)
+            detector = self._asr_detector
+            if detector is None or not detector.endpointing_ready(turn_token):
+                await self._handle_independent_asr_error(
+                    epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_BLOCKED_ENDPOINTING",
+                )
+                return
             final_key = FinalKey.from_turn(turn_token)
             if not self._asr_transcript_dispatcher.try_reserve(final_key):
                 await self._handle_independent_asr_error(
@@ -1211,6 +1306,8 @@ class AsrRuntimeMixin:
             return
         self._asr_turn_audio_started_at = time.monotonic()
         self._asr_first_partial_recorded = False
+        if not await self._ensure_smart_turn_ready(lifecycle, epoch):
+            return
         await self._send_asr_lifecycle_state(VoiceLifecycleState.ACTIVE)
         await self._prepare_independent_asr_turn(epoch)
         asr_session = self._asr_session
@@ -1225,6 +1322,15 @@ class AsrRuntimeMixin:
             )
             return
         try:
+            detector = self._asr_detector
+            turn_token = self._capture_turn_token(lifecycle)
+            if detector is None or not detector.endpointing_ready(turn_token):
+                await self._handle_independent_asr_error(
+                    epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_BLOCKED_ENDPOINTING",
+                )
+                return
             await asr_session.stream_audio(payload, sample_rate_hz=16_000)
             self._sync_provider_wire_metrics(
                 asr_session,
@@ -1340,6 +1446,10 @@ class AsrRuntimeMixin:
 
         assert lifecycle_ref is not None
         assert envelope is not None
+        lease = self._asr_smart_turn_lease
+        if lease is not None and lease.token == envelope.turn_token:
+            self._asr_smart_turn_lease = None
+            await lease.release()
         self._asr_transcript_dispatcher.submit(envelope)
         await self._send_asr_lifecycle_state(VoiceLifecycleState.WARM_IDLE)
 
@@ -1453,6 +1563,7 @@ class AsrRuntimeMixin:
         if lifecycle is not None:
             lifecycle.stop()
         detector, self._asr_detector = self._asr_detector, None
+        self._asr_smart_turn_lease = None
         if detector is not None:
             task = asyncio.create_task(detector.close())
             self._asr_close_tasks.add(task)

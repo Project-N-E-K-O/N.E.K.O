@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from main_logic.voice_turn.contracts import SmartTurnConfig, SpeechActivityEvent
 from main_logic.voice_turn.coordinator import TurnCoordinator
@@ -12,6 +13,7 @@ from main_logic.voice_turn.silero_vad import SileroActivityGate, SileroVad
 from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
 from ._voice_turn import _VoiceTurnAdapter
+from .lifecycle_contracts import VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
 
 
@@ -20,6 +22,27 @@ class DetectorFeedResult:
     events: tuple[SpeechActivityEvent, ...]
     throttle_available: bool
     endpointing_available: bool = True
+
+
+class SmartTurnReadiness(Enum):
+    UNLOADED = "unloaded"
+    LOADING = "loading"
+    READY = "ready"
+    FAILED = "failed"
+    UNLOADING = "unloading"
+
+
+@dataclass(slots=True)
+class SmartTurnLease:
+    token: VoiceTurnToken
+    _runtime: "DetectorRuntime"
+    _released: bool = False
+
+    async def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        await self._runtime.release_endpointing(self.token)
 
 
 class DetectorRuntime:
@@ -57,6 +80,7 @@ class DetectorRuntime:
         self._speech_active = False
         self._events: list[SpeechActivityEvent] = []
         self._semantic_adapter: _VoiceTurnAdapter | None = None
+        self._semantic_coordinator: TurnCoordinator | None = None
         self._semantic_started = False
         self._semantic_generation = 0
         self._semantic_turn_id = 1
@@ -65,6 +89,8 @@ class DetectorRuntime:
         self._defer_turn_complete = False
         self._deferred_turn_complete = False
         self._failure_watch_task: asyncio.Task[None] | None = None
+        self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
+        self._smart_turn_token: VoiceTurnToken | None = None
         if provider_policy is not None and provider_policy.endpoint_authority == "smart_turn":
             if on_turn_complete is None:
                 raise ValueError("SmartTurn DetectorRuntime requires on_turn_complete")
@@ -76,6 +102,7 @@ class DetectorRuntime:
                 ),
                 config,
             )
+            self._semantic_coordinator = semantic_coordinator
 
             async def commit(_generation: int, _buffer_epoch: int, _turn_id: int) -> None:
                 if self._defer_turn_complete:
@@ -106,6 +133,77 @@ class DetectorRuntime:
                 on_activity=activity,
                 smart_turn_required=True,
             )
+
+    @property
+    def smart_turn_readiness(self) -> SmartTurnReadiness:
+        return self._smart_turn_readiness
+
+    async def prepare_endpointing(
+        self,
+        token: VoiceTurnToken,
+    ) -> SmartTurnLease | None:
+        """Load and pin SmartTurn before any provider wire audio is allowed."""
+
+        async with self._lock:
+            adapter = self._semantic_adapter
+            coordinator = self._semantic_coordinator
+            if self._closed or adapter is None or coordinator is None:
+                self._smart_turn_readiness = SmartTurnReadiness.FAILED
+                return None
+            if (
+                self._smart_turn_token == token
+                and self._smart_turn_readiness is SmartTurnReadiness.READY
+                and not adapter.failed
+            ):
+                return SmartTurnLease(token, self)
+            if self._smart_turn_token is not None:
+                return None
+            self._smart_turn_readiness = SmartTurnReadiness.LOADING
+            if not self._semantic_started:
+                await adapter.start()
+                self._semantic_started = True
+                self._failure_watch_task = asyncio.create_task(
+                    self._watch_semantic_failure(adapter),
+                    name="detector-runtime-smart-turn-watch",
+                )
+            adapter.pin_smart_turn()
+            loaded = await coordinator.prepare_predictor()
+            if not loaded or adapter.failed:
+                adapter.unpin_smart_turn()
+                self._smart_turn_readiness = SmartTurnReadiness.FAILED
+                return None
+            self._smart_turn_token = token
+            self._smart_turn_readiness = SmartTurnReadiness.READY
+            return SmartTurnLease(token, self)
+
+    def endpointing_ready(self, token: VoiceTurnToken) -> bool:
+        adapter = self._semantic_adapter
+        return bool(
+            not self._closed
+            and adapter is not None
+            and not adapter.failed
+            and self._smart_turn_readiness is SmartTurnReadiness.READY
+            and self._smart_turn_token == token
+        )
+
+    async def release_endpointing(self, token: VoiceTurnToken) -> None:
+        async with self._lock:
+            if self._smart_turn_token != token:
+                return
+            self._smart_turn_token = None
+            adapter = self._semantic_adapter
+            if adapter is not None:
+                adapter.unpin_smart_turn()
+
+    async def invalidate(self, token: VoiceTurnToken) -> None:
+        async with self._lock:
+            if self._smart_turn_token != token:
+                return
+            self._smart_turn_token = None
+            adapter = self._semantic_adapter
+            if adapter is not None:
+                adapter.unpin_smart_turn()
+            self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
 
     async def feed(
         self,
@@ -198,6 +296,9 @@ class DetectorRuntime:
             if self._closed:
                 return
             if self._semantic_adapter is not None and self._semantic_started:
+                if self._smart_turn_token is not None:
+                    self._smart_turn_token = None
+                    self._semantic_adapter.unpin_smart_turn()
                 self._defer_turn_complete = False
                 self._deferred_turn_complete = False
                 self._semantic_generation += 1
@@ -244,7 +345,10 @@ class DetectorRuntime:
             if watch_task is not None:
                 watch_task.cancel()
             if self._semantic_adapter is not None:
+                self._smart_turn_token = None
+                self._smart_turn_readiness = SmartTurnReadiness.UNLOADING
                 await self._semantic_adapter.close()
+                self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
                 return
             await asyncio.to_thread(self._vad.close)
 
@@ -254,6 +358,7 @@ class DetectorRuntime:
             if getattr(failure, "stage", None) in {"vad_load", "vad_feed"}:
                 self._available = False
                 return
+            self._smart_turn_readiness = SmartTurnReadiness.FAILED
             callback = self._on_endpointing_failure
             if callback is not None and not self._closed:
                 await callback()
