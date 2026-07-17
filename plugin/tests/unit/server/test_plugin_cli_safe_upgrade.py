@@ -41,6 +41,9 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
         '[plugin]\nid = "demo"\nversion = "1.0.0"\n',
         encoding="utf-8",
     )
+    profile = tmp_path / "profiles" / "demo"
+    profile.mkdir(parents=True)
+    (profile / "default.toml").write_text("version = 1\n", encoding="utf-8")
     calls: list[str] = []
     start_attempts = 0
 
@@ -59,6 +62,8 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
             '[plugin]\nid = "demo"\nversion = "2.0.0"\n',
             encoding="utf-8",
         )
+        profile.mkdir()
+        (profile / "default.toml").write_text("version = 2\n", encoding="utf-8")
         return {"ok": True}
 
     async def validate_new() -> None:
@@ -85,9 +90,11 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
             stop=stop,
             start=start,
             cleanup_backup=cleanup_backup,
+            additional_targets=(profile,),
         )
 
     assert 'version = "1.0.0"' in (target / "plugin.toml").read_text(encoding="utf-8")
+    assert (profile / "default.toml").read_text(encoding="utf-8") == "version = 1\n"
     assert "stop:demo" in calls
     assert "start:demo" in calls
     assert not list(tmp_path.glob("demo.bak.*"))

@@ -18,7 +18,12 @@ pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
 
 
-def _make_plugin_dir(tmp_path: Path, plugin_id: str = "route_demo") -> Path:
+def _make_plugin_dir(
+    tmp_path: Path,
+    plugin_id: str = "route_demo",
+    *,
+    version: str = "0.0.1",
+) -> Path:
     plugin_dir = tmp_path / plugin_id
     plugin_dir.mkdir(parents=True, exist_ok=True)
     (plugin_dir / "plugin.toml").write_text(
@@ -27,7 +32,7 @@ def _make_plugin_dir(tmp_path: Path, plugin_id: str = "route_demo") -> Path:
                 "[plugin]",
                 f'id = "{plugin_id}"',
                 'name = "Route Demo"',
-                'version = "0.0.1"',
+                f'version = "{version}"',
                 'type = "plugin"',
                 "",
                 f"[{plugin_id}]",
@@ -536,6 +541,71 @@ async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
     assert response.status_code == 200
     assert response.json()["action"] == "upgrade"
     assert response.json()["plugin_id"] == "simple_plugin"
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_route_upgrades_in_place_after_confirmation(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "route_upgrade_demo"
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    v1_source = _make_plugin_dir(
+        tmp_path / "v1-source",
+        plugin_id=plugin_id,
+        version="1.0.0",
+    )
+    v2_source = _make_plugin_dir(
+        tmp_path / "v2-source",
+        plugin_id=plugin_id,
+        version="2.0.0",
+    )
+    v1_package = packages_root / f"{plugin_id}-1.0.0.neko-plugin"
+    v2_package = packages_root / f"{plugin_id}-2.0.0.neko-plugin"
+    pack_plugin(v1_source, v1_package)
+    pack_plugin(v2_source, v2_package)
+    user_root = tmp_path / "user-plugins"
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=tmp_path / "profiles",
+    )
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        install_response = await client.post(
+            "/plugin-cli/install",
+            json={"package": str(v1_package)},
+        )
+        assert install_response.status_code == 200, install_response.text
+        assert install_response.json()["operation"] == "install"
+
+        plan_response = await client.post(
+            "/plugin-cli/install-plan",
+            json={"package": str(v2_package)},
+        )
+        assert plan_response.status_code == 200, plan_response.text
+        plan = plan_response.json()
+        assert plan["action"] == "upgrade"
+
+        upgrade_response = await client.post(
+            "/plugin-cli/install",
+            json={
+                "package": str(v2_package),
+                "confirm_upgrade": True,
+                "confirmation_token": plan["confirmation_token"],
+            },
+        )
+
+    assert upgrade_response.status_code == 200, upgrade_response.text
+    assert upgrade_response.json()["operation"] == "upgrade"
+    installed_manifest = (user_root / plugin_id / "plugin.toml").read_text(encoding="utf-8")
+    assert 'version = "2.0.0"' in installed_manifest
+    assert not (user_root / f"{plugin_id}_1").exists()
 
 
 @pytest.mark.asyncio

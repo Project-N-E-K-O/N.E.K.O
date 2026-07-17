@@ -125,6 +125,28 @@ async def run_rollback(
     return restored
 
 
+async def _rollback_targets(
+    *,
+    targets: tuple[Path, ...],
+    backups: dict[Path, Path],
+) -> bool:
+    restored = True
+    for target in reversed(targets):
+        try:
+            await remove_directory(target)
+            backup = backups.get(target)
+            if backup is not None:
+                await restore_directory(backup, target)
+        except Exception as exc:
+            restored = False
+            logger.error(
+                "plugin upgrade target rollback failed target={} err_type={}",
+                target.name,
+                type(exc).__name__,
+            )
+    return restored
+
+
 async def perform_safe_upgrade(
     *,
     plan: object,
@@ -135,6 +157,7 @@ async def perform_safe_upgrade(
     stop: Callable[[str], Awaitable[None]],
     start: Callable[[str], Awaitable[None]],
     cleanup_backup: Callable[[Path], Awaitable[None]],
+    additional_targets: tuple[Path, ...] = (),
 ) -> SafeUpgradeResult:
     if getattr(plan, "action", "") != "upgrade":
         raise ValueError("safe upgrade requires an upgrade install plan")
@@ -148,12 +171,21 @@ async def perform_safe_upgrade(
     if was_running:
         await stop(plugin_id)
 
+    targets = (target_dir, *additional_targets)
+    backups: dict[Path, Path] = {}
     backup_dir = backup_path_for(target_dir)
     try:
-        await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target_dir.rename, backup_dir)
+        for target in targets:
+            if not target.exists():
+                continue
+            if not target.is_dir():
+                raise NotADirectoryError(target)
+            backup = backup_dir if target == target_dir else backup_path_for(target)
+            await asyncio.to_thread(backup.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target.rename, backup)
+            backups[target] = backup
     except Exception as exc:
-        recovered = True
+        recovered = await _rollback_targets(targets=targets, backups=backups)
         if was_running:
             try:
                 await start(plugin_id)
@@ -178,14 +210,15 @@ async def perform_safe_upgrade(
             stage = "restart"
             await start(plugin_id)
         stage = "cleanup"
-        try:
-            await cleanup_backup(backup_dir)
-        except Exception as exc:  # cleanup must not roll back a valid upgrade
-            logger.warning(
-                "plugin backup cleanup failed plugin_id={} err_type={}",
-                plugin_id,
-                type(exc).__name__,
-            )
+        for backup in backups.values():
+            try:
+                await cleanup_backup(backup)
+            except Exception as exc:  # cleanup must not roll back a valid upgrade
+                logger.warning(
+                    "plugin backup cleanup failed plugin_id={} err_type={}",
+                    plugin_id,
+                    type(exc).__name__,
+                )
         return SafeUpgradeResult(
             operation="upgrade",
             restarted=was_running,
@@ -194,13 +227,17 @@ async def perform_safe_upgrade(
             backup_dir=backup_dir,
         )
     except Exception as exc:
-        restored = await run_rollback(
-            plugin_id=plugin_id,
-            target_dir=target_dir,
-            backup_dir=backup_dir,
-            restart=was_running,
-            start=start,
-        )
+        restored = await _rollback_targets(targets=targets, backups=backups)
+        if was_running:
+            try:
+                await start(plugin_id)
+            except Exception as restart_exc:
+                restored = False
+                logger.error(
+                    "plugin rollback restart failed plugin_id={} err_type={}",
+                    plugin_id,
+                    type(restart_exc).__name__,
+                )
         raise SafeUpgradeError(
             stage=stage,
             rollback_status="completed" if restored else "incomplete",
