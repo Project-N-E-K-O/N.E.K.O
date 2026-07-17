@@ -74,7 +74,7 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
-def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
@@ -82,7 +82,8 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
     assert "id: 'cat-audio'" in chat_settings_block
     assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
     assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
+    assert "dependsOnToggleId" not in cat_audio_config
     assert "neko:auto-cat-setting-changed" not in source
 
     cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
