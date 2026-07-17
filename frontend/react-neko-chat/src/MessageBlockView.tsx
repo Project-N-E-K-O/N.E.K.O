@@ -1,4 +1,6 @@
+import type { SyntheticEvent } from 'react';
 import SmartTextBlock from './SmartTextBlock';
+import { isMemeProxyImageUrl, swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
 import {
   type ChatMessage,
@@ -12,6 +14,10 @@ type MessageBlockViewProps = {
   isStreaming?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
+
+function handleImageLoadError(event: SyntheticEvent<HTMLImageElement>, url: string) {
+  swapImageToMemeLoadFailedSticker(event.currentTarget, url);
+}
 
 export function isGuideMessage(message: ChatMessage) {
   return typeof message.id === 'string' && message.id.startsWith('yui-guide-');
@@ -34,12 +40,22 @@ export default function MessageBlockView({
   }
 
   if (block.type === 'image') {
+    const isMemeProxyImage = isMemeProxyImageUrl(block.url);
+    const imageLoadingProps = isMemeProxyImage
+      ? { loading: 'eager' as const, fetchpriority: 'high' as const }
+      : { loading: 'lazy' as const };
+
     return (
       <figure
         className="message-block message-block-image"
         style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
       >
-        <img src={block.url} alt={block.alt || ''} loading="lazy" />
+        <img
+          src={block.url}
+          alt={block.alt || ''}
+          {...imageLoadingProps}
+          onError={(event) => handleImageLoadError(event, block.url)}
+        />
       </figure>
     );
   }
