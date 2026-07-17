@@ -56,7 +56,7 @@ _VOICE_BINARY_HEADER_BYTES = 8
 
 
 def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
-    """解码前端二进制 PCM 帧；禁止把任意二进制误当麦克风音频。"""
+    """Decode and validate a frontend binary PCM frame."""
 
     if len(payload) <= _VOICE_BINARY_HEADER_BYTES:
         raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too short")
