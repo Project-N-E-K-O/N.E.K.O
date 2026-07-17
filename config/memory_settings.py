@@ -343,6 +343,15 @@ MEMORY_LIVENESS_MAX_ATTEMPTS = 5
 - 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
   跨过偶发 transient failure 够用；再多就属于真正 poison。"""
 
+MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS = 3
+"""历史审阅因输出 token 耗尽而暂停前的连续失败次数。
+
+- 只统计 provider 明确返回 ``length`` / ``max_tokens``，或空正文且输出 token
+  已触及 ``LLM_OUTPUT_GUARD_MAX_TOKENS`` 的调用；网络、429、普通 JSON 错误仍走
+  ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的通用 fingerprint 退避。
+- 达到 3 次后按角色暂停 review。新增消息不会解禁；只有当前 review 上下文 token
+  数严格低于失败期间的最小值（通常由 recent compression 造成）才清零恢复。"""
+
 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS = 5 * 60 * 60
 """dead-letter 的时间冷却自愈窗口（秒）。
 
@@ -390,6 +399,28 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 上游：同一 entity 长期累积的 persona/reflection。
 - 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
+
+# ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
+# 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
+# token 上限（PERSONA_RENDER_MAX_TOKENS，non-protected 条目共抢一个池），外部工作
+# 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
+# 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
+# USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），
+# 把内容压进下面的预算，再落盘为 non-protected persona 条目。
+# 两个 entity 各自的融合产出上限（token）。neko(SOUL.md 助手人格) 给得比
+# master(USER.md 用户) 多；两者合计 < PERSONA_RENDER_MAX_TOKENS，给对话中自然
+# 积累的 persona 条目留出竞争空间。
+EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS = 1000
+EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS = 600
+# 喂给融合 LLM 的输入池上限（原始候选拼起来的 token 上界，防超长 prompt）。
+EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS = 6000
+# 融合产出的单条 soft cap（token）：防 LLM 把多条揉成一条超长文本，在渲染层
+# whole-entry 贪心截断里挤掉大量其它条目。
+EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
+# 融合输入里单条候选的面包屑（source_section）前缀 token 上界：面包屑只提供分节
+# 上下文，不钉死的话大量带长标题的候选会把输入池吃光、把后面候选的正文挤出 LLM
+# 输入（尾部截断），导致后段记忆永久漏掉。
+EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
 
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。

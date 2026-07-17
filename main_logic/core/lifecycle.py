@@ -1240,6 +1240,7 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             realtime_config = self._config_manager.get_model_api_config('realtime')
+            nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
                 api_key=realtime_config['api_key'],
@@ -1260,11 +1261,11 @@ class LifecycleMixin:
                 on_tool_call=self._on_tool_call,
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
+                noise_reduction_enabled=nr_enabled,
             )
             # Apply user's noise reduction preference to the AudioProcessor
-            nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
-                new_session._audio_processor.set_enabled(nr_enabled)
+                await new_session.set_audio_noise_reduction_enabled(nr_enabled)
 
         # Bind guarded callbacks BEFORE connect — connect() can invoke
         # on_connection_error during the handshake, and without the guard
@@ -1492,6 +1493,7 @@ class LifecycleMixin:
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
+                nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
@@ -1512,11 +1514,11 @@ class LifecycleMixin:
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
+                    noise_reduction_enabled=nr_enabled,
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
-                nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
-                    self.pending_session._audio_processor.set_enabled(nr_enabled)
+                    await self.pending_session.set_audio_noise_reduction_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()

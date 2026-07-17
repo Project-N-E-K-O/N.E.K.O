@@ -99,6 +99,13 @@ class VisionScreenClassifier:
             self._input_name = str(inputs[0].name)
         return True
 
+    def close(self) -> None:
+        """Release the classifier and loader references to native sessions."""
+        with self._session_lock:
+            self._session = None
+            self._input_name = ""
+        self._loader.close()
+
     def classify(self, image: VisionInput) -> dict[str, Any] | None:
         self.last_error = ""
         with self._session_lock:

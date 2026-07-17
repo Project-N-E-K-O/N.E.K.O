@@ -1286,6 +1286,53 @@ async def test_reload_config_live_no_restart_for_pure_data_keys():
 # ---------------------------------------------------------------------------
 
 
+def test_task_tool_description_preserves_master_words_and_coordinates():
+    """The tool preserves master words without disabling autonomous idle play."""
+    from plugin.plugins.game_agent_minecraft import (
+        MINECRAFT_TASK_DESCRIPTION,
+        MINECRAFT_TASK_SCHEMA,
+    )
+
+    description = MINECRAFT_TASK_DESCRIPTION
+    task_schema_description = (
+        MINECRAFT_TASK_SCHEMA["properties"]["task"]["description"]
+    )
+
+    assert "relay the exact original wording" in description
+    assert "Do not translate, paraphrase" in description
+    assert "NEVER invent, infer, choose, or include in-game coordinates" in description
+    assert "unless master explicitly asked" in description
+    assert "master's most recent message" in description
+    assert "must not come from an earlier master message" in description
+    assert "NEVER call back, recover, retry, or re-dispatch" in description
+    assert "genuinely new autonomous action from the current game state" in description
+    assert "has not already been dispatched" in task_schema_description
+    assert "exact original wording" in task_schema_description
+    assert "genuinely new autonomous action" in task_schema_description
+    assert "current game state" in task_schema_description
+    assert "unless master explicitly asked for coordinates" in task_schema_description
+    assert "English with specific targets" not in description
+    assert "exact coordinates, specific block" not in description
+
+    from plugin.plugins.game_agent_minecraft import prompts
+
+    assert "dispatch a fresh task" not in prompts.t(
+        "COMPLETION_FOLLOWUP_BLOCKED", lang="en"
+    )
+    assert "different coordinates" not in prompts.t(
+        "COMPLETION_FOLLOWUP_BLOCKED", lang="en"
+    )
+    for key in (
+        "COMPLETION_FOLLOWUP_BLOCKED",
+        "COMPLETION_FOLLOWUP_SUCCESS",
+        "COMPLETION_FOLLOWUP_FAILED",
+        "RETROACTIVE_FOLLOWUP",
+    ):
+        cue = prompts.t(key, lang="en")
+        assert "unfinished explicit instruction" not in cue
+        assert "next step" not in cue
+
+
 def test_prompts_have_all_seven_locales():
     """Every entry in PROMPTS must carry a non-empty translation for
     each supported language (zh, en, ja, ko, ru, es, pt). Missing keys
@@ -1825,4 +1872,3 @@ async def test_autonomous_status_rearms_busy_without_pending():
     )
 
     assert service._agent_busy is True
-

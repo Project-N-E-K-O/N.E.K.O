@@ -29,6 +29,8 @@ Important: RNNoise's GRU state drifts while processing background noise,
 and must be reset once end of speech is detected.
 """
 
+from contextlib import suppress
+
 import numpy as np
 from typing import Optional
 from utils.logger_config import get_module_logger
@@ -184,15 +186,18 @@ class _LiteDenoiser:
         if old_state:
             self._lib.destroy(old_state)
 
+    def close(self) -> None:
+        """Destroy the owned native RNNoise state exactly once."""
+        state = self._state
+        self._state = None
+        if state:
+            self._lib.destroy(state)
+
     def __del__(self):
-        lib = getattr(self, "_lib", None)
-        state = getattr(self, "_state", None)
-        if lib is not None and state:
-            try:
-                lib.destroy(state)
-            except Exception:
-                pass
-            self._state = None
+        # Finalization may run during interpreter teardown; never let native
+        # cleanup errors escape or depend on the logging subsystem still existing.
+        with suppress(Exception):
+            self.close()
 
 
 class AudioProcessor:
@@ -480,6 +485,19 @@ class AudioProcessor:
         self._reset_internal_state()
         self._last_speech_time = time.time()
         logger.info("🔄 AudioProcessor state reset (external call)")
+
+    def close(self) -> None:
+        """Release native denoiser and streaming-buffer resources."""
+        denoiser = self._denoiser
+        self._denoiser = None
+        if denoiser is not None:
+            close = getattr(denoiser, "close", None)
+            if callable(close):
+                close()
+        self._downsample_resampler = None
+        self._frame_buffer = np.array([], dtype=np.int16)
+        self._debug_audio_before.clear()
+        self._debug_audio_after.clear()
     
     def request_reset(self) -> None:
         """Request a reset on the next process_chunk call."""
@@ -536,10 +554,22 @@ class AudioProcessor:
         """Enable or disable noise reduction."""
         prev = self.noise_reduce_enabled
         self.noise_reduce_enabled = enabled
-        if enabled and self._denoiser is None:
-            self._init_denoiser()
+        if enabled:
+            if self._denoiser is None:
+                self._init_denoiser()
+            if (
+                self._denoiser is not None
+                and self._frame_buffer.size != self.RNNOISE_FRAME_SIZE
+            ):
+                self._frame_buffer = np.empty(self.RNNOISE_FRAME_SIZE, dtype=np.int16)
+        else:
+            if self._denoiser is not None:
+                self._denoiser.close()
+                self._denoiser = None
+            self._frame_buffer = np.array([], dtype=np.int16)
         if prev != enabled:
-            self._frame_buffer.fill(0)
+            if self._frame_buffer.size:
+                self._frame_buffer.fill(0)
             self._frame_buffer_size = 0
             self._agc_gain = 1.0
         logger.info(f"🎤 Noise reduction {'enabled' if enabled else 'disabled'}")

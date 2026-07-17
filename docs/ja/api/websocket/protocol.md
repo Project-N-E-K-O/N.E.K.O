@@ -1,73 +1,114 @@
-# WebSocket プロトコル
+# WebSocket Protocol
 
-## 接続
+Main server の application WebSocket route は 1 つです。
 
-WebSocket エンドポイントに接続します：
-
-```
-ws://localhost:48911/ws/{lanlan_name}
+```text
+ws://127.0.0.1:48911/ws/{lanlan_name}
 ```
 
-`{lanlan_name}` はキャラクター識別子です（例：`小天`）。
+`{lanlan_name}` は URL encode してください。信頼できる reverse proxy が TLS termination する場合は `wss://` を使います。これは同梱 UI protocol で、独立して versioned された public wire standard ではありません。
 
-### 接続フロー
+## Connection accept
 
-1. クライアントが WebSocket 接続を開く
-2. サーバーがセッション ID（UUID）を割り当て、キャラクターの存在を検証する
-3. クライアントが `start_session` を送信して LLM セッションを初期化する
-4. クライアントがオーディオまたはテキスト入力を含む `stream_data` メッセージを送信する
-5. サーバーがレスポンスをストリーミングで返す（テキスト、オーディオ、ステータス、感情）
-6. クライアントが `end_session` を送信して終了する
-7. サーバーがプレウォーム済みセッションへのホットスワップを実行する
+1. Server は WebSocket を accept し、path character を process 内 session manager と照合します。
+2. Character が不明なら、有効な fallback を持つ `catgirl_switched` を送ってから close する場合があります。custom close code は保証されません。
+3. 有効なら接続を character の session manager へ install。内部 UUID は生成しますが connection ack frame では送信しません。
+4. Client は `greeting_check` などの control action をすぐ送れます。会話 media は先に `start_session` が必要です。
 
-### キープアライブ
+Router では character ごとに最新 connection UUID のみ authoritative です。古い接続が後から frame を送ると `CHARACTER_SWITCHING_TERMINAL` status を受け close されます。First-party multi-window は競合する複数 primary socket ではなく、project の inter-page proxy/sync layer に依存します。
 
-接続タイムアウトを防ぐために定期的に `ping` メッセージを送信します：
+## Frame model
 
-```json
-{ "action": "ping" }
+- Client command は top-level `action` を持つ UTF-8 JSON text frame。
+- Server event は通常 top-level `type` を持つ UTF-8 JSON text frame。
+- TTS audio は例外で、`audio_chunk` JSON header の後に binary frame が 1 つ続きます。
+- Server は client から `receive_text()` します。client binary audio frame は送らないでください。
+- 任意の client JSON に `language` を付けられ、router は `action` dispatch 前に UI language を更新します。
+
+Malformed JSON は connection-level error です。handler は best-effort で `SERVER_ERROR` status を送信し、receive loop を終了して現在 session を cleanup します。
+
+## Session lifecycle
+
+Application WebSocket と provider session の寿命は別です。
+
+```text
+socket open
+    │
+    ├─ start_session ─> session_preparing ─> session_started
+    │                                      └> session_failed
+    │
+    ├─ stream_data / avatar_interaction / control events
+    │
+    ├─ pause_session または end_session ─> provider session end
+    │                                        socket remains open
+    │
+    └─ socket close ─> current provider session / route state cleanup
 ```
 
-サーバーは以下で応答します：
-
-```json
-{ "type": "pong" }
-```
-
-## セッション管理
-
-### セッション開始
+### Start
 
 ```json
 {
   "action": "start_session",
   "input_type": "audio",
-  "new_session": true
+  "new_session": false,
+  "language": "ja"
 }
 ```
 
-| フィールド | 型 | 説明 |
-|-------|------|-------------|
-| `action` | `"start_session"` | 必須 |
-| `input_type` | `"audio"` \| `"text"` | 入力モード |
-| `new_session` | boolean | 新しいセッションを作成するかどうか |
+有効な `input_type` は `audio`、`screen`、`camera`、`text`、`avatar_drop_image`、`user_image`。`text` と 2 種の one-shot image は text/offline mode、`audio`、`screen`、`camera` は realtime/audio mode を選びます。`new_session` は provider-session hint で、connection UUID ではありません。
 
-### セッション終了
+Startup は非同期です。microphone sample の前に一致する `session_started.input_mode` を待ちます。`session_preparing` は progress だけで、`session_failed` は mode が開始しなかったことを示します。通常、失敗前に machine-readable な `status` が届きます。
 
-```json
-{ "action": "end_session" }
-```
+Game route active 中、text/image は game controller に acknowledge/route される場合があり、audio session は game realtime STT provider になります。First-party game integration の挙動です。
 
-ホットスワップメカニズムをトリガーします：現在の LLM セッションが閉じられ、プレウォーム済みのセッションに置き換えられます。
-
-### セッション一時停止
+### Pause と end
 
 ```json
 { "action": "pause_session" }
 ```
 
-WebSocket 接続を維持したまま LLM の処理を一時停止します。
+`pause_session` は manager を idle にして現在 provider session を終了します。再開可能な upstream paused stream は保持しません。
 
-## エラーハンドリング
+```json
+{ "action": "end_session", "reason": "user_stop" }
+```
 
-キャラクター名が無効な場合、サーバーは適切なクローズコードで WebSocket を閉じます。サーバー側でキャラクターが切り替えられた場合、サーバーはクライアントに再接続を指示する `catgirl_switched` メッセージを送信します。
+`end_session` は provider cleanup を schedule し、後で再 start できるよう application WebSocket は維持します。任意 `goodbye_active: true` または `reason: "goodbye"` は silent-goodbye gate も有効化します。いずれも pre-warmed replacement session は保証しません。
+
+Upstream disconnect、config change、timeout では server が `session_ended_by_server` を送る場合があります。
+
+## Keep-alive
+
+Application heartbeat:
+
+```json
+{ "action": "ping" }
+```
+
+```json
+{ "type": "pong" }
+```
+
+間隔は client/proxy timeout に合わせます。backend handler 自体は固定 interval を要求しません。
+
+## Status と error
+
+歴史的 frontend compatibility のため status は nested JSON envelope です。
+
+```json
+{
+  "type": "status",
+  "message": "{\"code\":\"INVALID_INPUT_TYPE\",\"details\":{\"input_type\":\"file\"}}"
+}
+```
+
+`message` をもう一度 JSON parse します。例は `INVALID_INPUT_TYPE`、`UNKNOWN_ACTION`、`SERVER_ERROR`、provider/auth/quota code、`CHARACTER_SWITCHING_TERMINAL`。集合は増えるため unknown code の generic fallback が必要です。
+
+Unknown action は socket を閉じず `UNKNOWN_ACTION` を返します。一方 invalid JSON、superseded connection、character rename/delete、transport disconnect は cleanup につながります。
+
+## Security boundary
+
+Route に独立 auth handshake はありません。local trusted UI を前提に user-controlled text、image、telemetry、capture metadata を受け取ります。48911 は loopback に保つか、認証・Origin 制限 proxy の背後に置いてください。Telemetry dimension、local capture response、character name を trusted input として扱わないでください。
+
+[Message Types](./message-types) と [Audio Streaming](./audio-streaming) も参照してください。

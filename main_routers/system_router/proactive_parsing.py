@@ -44,6 +44,14 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 url = item.get('url', '')
                 if title and url:
                     links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
+            tieba = raw_data.get('tieba', {}) or {}
+            posts = tieba.get('posts', []) or (tieba.get('tieba', {}) or {}).get('posts', [])
+            topics = tieba.get('topics', []) or (tieba.get('tieba', {}) or {}).get('topics', [])
+            for item in list(posts or []) + list(topics or []):
+                title = item.get('title', '')
+                url = item.get('url', '')
+                if title and url:
+                    links.append({'title': title, 'url': url, 'source': '贴吧'})
         
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -52,7 +60,8 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
+                    default_source = 'B站' if raw_data.get('region', 'china') == 'china' else 'YouTube'
+                    links.append({'title': title, 'url': url, 'source': item.get('source') or default_source})
         
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})
@@ -150,7 +159,7 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'^[ \t]*(?:话题|Topic|話題|주제)[ \t]*[：:][ \t]*(.+)',
+        'title': r'^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)',
         'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
         'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
     }

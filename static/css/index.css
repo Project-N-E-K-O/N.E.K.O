@@ -102,9 +102,14 @@ body {
     opacity: 1;
     filter: brightness(0) invert(1);
     /* 将emoji变成纯白色，移除阴影 */
-    animation: pawBounce 1.5s ease-in-out infinite;
     z-index: 1;
     /* 确保猫爪在遮罩层之上 */
+}
+
+/* 弹跳动画只在 toast 可见时运行：默认态 toast 以 opacity:0 隐藏（非 display:none），
+   若动画挂在基础态上会在两个窗口里以显示器刷新率永久空转（合成器无法休眠）。 */
+#status-toast.show::before {
+    animation: pawBounce 1.5s ease-in-out infinite;
 }
 
 /* 小猫爪爪弹跳动画 */
@@ -3104,6 +3109,20 @@ body.react-chat-window-dragging {
 .crop-tool-confirm { color: #34c759; }
 .crop-tool-confirm:hover { background: rgba(52, 199, 89, 0.16); color: #4cd964; }
 .crop-tool-confirm.is-active { background: rgba(52, 199, 89, 0.16); color: #34c759; }
+
+.crop-tool-pin {
+    width: auto;
+    min-width: 48px;
+    padding: 0 10px;
+    color: #8bd8ff;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.crop-tool-pin:hover {
+    background: rgba(68, 183, 254, 0.18);
+    color: #b9e9ff;
+}
 
 .crop-tool-cancel { color: #ff6b7a; }
 .crop-tool-cancel:hover { background: rgba(220, 53, 69, 0.18); color: #ff8a97; }

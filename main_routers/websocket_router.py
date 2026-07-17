@@ -60,6 +60,10 @@ _ws_bg_tasks: set = set()
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
+_CAT_GREETING_MAX_DURATION_SECONDS = 7 * 24 * 3600
+_CAT_GREETING_TIERS = frozenset({"cat1", "cat2", "cat3"})
+_CAT_GREETING_EPISODE_KINDS = frozenset({"rest_after_activity", "rested", "activity"})
+_CAT_GREETING_EPISODE_HIGHLIGHTS = frozenset({"played_yarn", "ate_snack", "small_move", "social_ping"})
 
 
 def _fire_task(coro):
@@ -68,6 +72,57 @@ def _fire_task(coro):
     _ws_bg_tasks.add(task)
     task.add_done_callback(_ws_bg_tasks.discard)
     return task
+
+
+def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None, bool]:
+    """Reduce one untrusted cat-greeting check to canonical inputs.
+
+    The front-end summary is not a second source of truth for dwell duration,
+    entry mode, or visual tier. Only its already-bounded ``episode`` enum and
+    one literal-true delivery gate (a Cat Mind runner actually started) may
+    cross this router; all other summary fields are intentionally ignored.
+    """
+    payload = message if isinstance(message, dict) else {}
+
+    raw_duration = payload.get("cat_duration_seconds")
+    duration = 0.0
+    if not isinstance(raw_duration, bool) and isinstance(raw_duration, (int, float)):
+        try:
+            candidate = float(raw_duration)
+        except (OverflowError, TypeError, ValueError):
+            candidate = 0.0
+        if math.isfinite(candidate):
+            duration = max(0.0, min(candidate, _CAT_GREETING_MAX_DURATION_SECONDS))
+
+    raw_tier = payload.get("tier")
+    tier = raw_tier.strip().lower() if isinstance(raw_tier, str) else ""
+    if tier not in _CAT_GREETING_TIERS:
+        tier = ""
+
+    was_auto = payload.get("was_auto") is True
+    episode = None
+    has_started_autonomous_action = False
+    summary = payload.get("cat_memory_summary")
+    if isinstance(summary, dict):
+        # This does not transport an action name, result, or narrative fact.
+        # It only lets the dedicated return greeting bypass the short-duration
+        # silence gate after a runner has actually entered ``started``.
+        has_started_autonomous_action = summary.get("has_started_autonomous_action") is True
+        raw_episode = summary.get("episode")
+        if isinstance(raw_episode, dict):
+            kind = raw_episode.get("kind")
+            if isinstance(kind, str) and kind in _CAT_GREETING_EPISODE_KINDS:
+                has_highlight = "highlight" in raw_episode
+                highlight = raw_episode.get("highlight")
+                if kind == "rested":
+                    if not has_highlight:
+                        episode = {"kind": kind}
+                elif not has_highlight:
+                    episode = {"kind": kind}
+                elif isinstance(highlight, str) and highlight in _CAT_GREETING_EPISODE_HIGHLIGHTS:
+                    episode = {"kind": kind, "highlight": highlight}
+
+    return duration, tier, was_auto, episode, has_started_autonomous_action
 
 
 async def _publish_agent_intent_restore_signal(lanlan_name: str, *, new_session: bool = False) -> None:
@@ -449,16 +504,28 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
                 # 与 greeting_check 对偶，但独立计时：时长由前端测量传入，不查对话 gap；
                 # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
-                try:
-                    cat_duration = float(message.get("cat_duration_seconds", 0) or 0)
-                except (TypeError, ValueError):
-                    cat_duration = 0.0
-                # sanitize：非负、封顶 7 天，防前端异常值（如丢失 goodbyeEnteredAt → now-0）
-                cat_duration = max(0.0, min(cat_duration, 7 * 24 * 3600))
-                cat_tier = str(message.get("tier") or "").strip().lower()[:16]
-                cat_was_auto = bool(message.get("was_auto"))
-                logger.info(f"[{lanlan_name}] cat_greeting_check: duration={cat_duration:.0f}s tier={cat_tier or '-'} was_auto={cat_was_auto}")
-                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(cat_duration, cat_tier, cat_was_auto))
+                cat_duration, cat_tier, cat_was_auto, episode, has_started_autonomous_action = _normalize_cat_greeting_check(message)
+                raw_summary = message.get("cat_memory_summary") if isinstance(message, dict) else None
+                raw_episode = raw_summary.get("episode") if isinstance(raw_summary, dict) else None
+                logger.info(
+                    "[%s] cat_greeting_check: duration=%.0fs tier=%s was_auto=%s "
+                    "summary_object=%s episode_object=%s episode=%s started_action=%s",
+                    lanlan_name,
+                    cat_duration,
+                    cat_tier or "-",
+                    cat_was_auto,
+                    isinstance(raw_summary, dict),
+                    isinstance(raw_episode, dict),
+                    episode or "-",
+                    has_started_autonomous_action,
+                )
+                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(
+                    cat_duration,
+                    cat_tier,
+                    cat_was_auto,
+                    episode=episode,
+                    has_started_autonomous_action=has_started_autonomous_action,
+                ))
 
             elif action == "ping":
                 # 心跳保活消息，回复pong

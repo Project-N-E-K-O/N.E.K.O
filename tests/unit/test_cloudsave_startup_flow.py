@@ -224,6 +224,421 @@ def test_launcher_env_override_beats_default_process_mode(monkeypatch):
 
 
 @pytest.mark.unit
+def test_runtime_config_reload_preserves_negotiated_fallback_ports(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    network_config = launcher.importlib.import_module("config.network")
+    selected_ports = {
+        "MAIN_SERVER_PORT": 53111,
+        "MEMORY_SERVER_PORT": 53112,
+        "TOOL_SERVER_PORT": 53115,
+        "USER_PLUGIN_SERVER_PORT": 53116,
+        "AGENT_MQ_PORT": 53117,
+        "MAIN_AGENT_EVENT_PORT": 53118,
+    }
+    stale_ports = {name: port - 1000 for name, port in selected_ports.items()}
+
+    for module in (network_config, launcher.config_module):
+        for name, port in stale_ports.items():
+            monkeypatch.setattr(module, name, port)
+        monkeypatch.setattr(module, "INSTANCE_ID", "stale-instance")
+        monkeypatch.setattr(module, "USER_PLUGIN_BASE", "http://127.0.0.1:52116")
+        monkeypatch.setattr(module, "AUTOSTART_ALLOWED_ORIGINS", ())
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "stale-instance")
+    monkeypatch.setattr(launcher, "MAIN_SERVER_PORT", stale_ports["MAIN_SERVER_PORT"])
+    monkeypatch.setattr(launcher, "MEMORY_SERVER_PORT", stale_ports["MEMORY_SERVER_PORT"])
+    monkeypatch.setattr(launcher, "TOOL_SERVER_PORT", stale_ports["TOOL_SERVER_PORT"])
+    monkeypatch.setenv("NEKO_INSTANCE_ID", "fallback-instance")
+    for name, port in selected_ports.items():
+        monkeypatch.setenv(f"NEKO_{name}", str(port))
+
+    launcher._reload_runtime_config_from_env()
+
+    for module in (network_config, launcher.config_module):
+        for name, port in selected_ports.items():
+            assert getattr(module, name) == port
+        assert module.INSTANCE_ID == "fallback-instance"
+        assert module.USER_PLUGIN_BASE == "http://127.0.0.1:53116"
+        assert f"http://127.0.0.1:{selected_ports['MAIN_SERVER_PORT']}" in (
+            module.AUTOSTART_ALLOWED_ORIGINS
+        )
+
+    assert launcher.INSTANCE_ID == "fallback-instance"
+    assert launcher.MAIN_SERVER_PORT == selected_ports["MAIN_SERVER_PORT"]
+    assert launcher.MEMORY_SERVER_PORT == selected_ports["MEMORY_SERVER_PORT"]
+    assert launcher.TOOL_SERVER_PORT == selected_ports["TOOL_SERVER_PORT"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("footprint", ["partial", "mixed"])
+def test_launcher_partial_existing_services_force_multi_mode(monkeypatch, footprint):
+    from launcher_core import runtime as launcher
+
+    public_ports = {
+        "MAIN_SERVER_PORT": 43111,
+        "MEMORY_SERVER_PORT": 43112,
+        "TOOL_SERVER_PORT": 43115,
+    }
+    internal_ports = {
+        "USER_PLUGIN_SERVER_PORT": 43116,
+        "AGENT_MQ_PORT": 43117,
+        "MAIN_AGENT_EVENT_PORT": 43118,
+    }
+    expected_roles = {
+        "MAIN_SERVER_PORT": "main",
+        "MEMORY_SERVER_PORT": "memory",
+        "TOOL_SERVER_PORT": "agent",
+    }
+    conflicting_keys = (
+        {"MEMORY_SERVER_PORT"}
+        if footprint == "partial"
+        else set(public_ports)
+    )
+    health_by_port = {
+        public_ports[key]: {
+            "service": expected_roles[key],
+            "instance_id": "existing-a" if key != "TOOL_SERVER_PORT" else "existing-b",
+        }
+        for key in conflicting_keys
+    }
+    emitted_events = []
+
+    monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: True)
+    monkeypatch.setattr(launcher, "DEFAULT_PORTS", public_ports)
+    monkeypatch.setattr(launcher, "INTERNAL_DEFAULT_PORTS", internal_ports)
+    for name, port in {**public_ports, **internal_ports}.items():
+        monkeypatch.setenv(f"NEKO_{name}", str(port))
+    for name, port in public_ports.items():
+        monkeypatch.setattr(launcher, name, port)
+    monkeypatch.setattr(
+        launcher,
+        "SERVERS",
+        [
+            {"name": "Memory Server", "module": "memory_server", "port": 43112},
+            {"name": "Agent Server", "module": "agent_server", "port": 43115},
+            {"name": "Main Server", "module": "main_server", "port": 43111},
+        ],
+    )
+    monkeypatch.setattr(launcher, "_existing_neko_services", set())
+    monkeypatch.setattr(launcher, "_partial_or_mixed_existing_backend", False)
+    monkeypatch.setattr(launcher, "get_hyperv_excluded_ranges", lambda: [])
+    monkeypatch.setattr(
+        launcher,
+        "_is_port_bindable",
+        lambda port: port not in health_by_port,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_classify_port_conflict",
+        lambda _port, _ranges: ("neko", [123]),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "probe_neko_health",
+        lambda port: health_by_port.get(port),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_pick_fallback_port",
+        lambda preferred, _reserved: preferred + 1000,
+    )
+    monkeypatch.setattr(launcher, "_sync_runtime_config_globals", lambda *_args: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda name, payload: emitted_events.append((name, payload)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "report_startup_failure",
+        pytest.fail,
+    )
+
+    assert launcher.apply_port_strategy() is True
+
+    assert launcher._select_launcher_mode() == (
+        "multi",
+        "partial_existing_services",
+    )
+    assert launcher._partial_or_mixed_existing_backend is True
+    assert launcher._existing_neko_services == set()
+    selected = dict(emitted_events)["port_plan"]["selected"]
+    for key in public_ports:
+        assert selected[key] == public_ports[key] + 1000
+
+
+@pytest.mark.unit
+def test_existing_backend_attach_requires_roles_and_one_instance():
+    from launcher_core import runtime as launcher
+
+    healthy = {
+        "MAIN_SERVER_PORT": {"service": "main", "instance_id": "existing"},
+        "MEMORY_SERVER_PORT": {"service": "memory", "instance_id": "existing"},
+        "TOOL_SERVER_PORT": {"service": "agent", "instance_id": "existing"},
+    }
+    assert launcher._validated_existing_backend_instance(healthy) == "existing"
+
+    partial = dict(healthy)
+    partial.pop("TOOL_SERVER_PORT")
+    assert launcher._validated_existing_backend_instance(partial) is None
+
+    mixed = dict(healthy)
+    mixed["TOOL_SERVER_PORT"] = {"service": "agent", "instance_id": "other"}
+    assert launcher._validated_existing_backend_instance(mixed) is None
+
+    wrong_role = dict(healthy)
+    wrong_role["TOOL_SERVER_PORT"] = {
+        "service": "main",
+        "instance_id": "existing",
+    }
+    assert launcher._validated_existing_backend_instance(wrong_role) is None
+
+
+@pytest.mark.unit
+def test_existing_backend_attach_events_identify_selected_backend(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    health_by_port = {
+        launcher.DEFAULT_PORTS["MAIN_SERVER_PORT"]: {
+            "service": "main",
+            "instance_id": "existing-instance",
+        },
+        launcher.DEFAULT_PORTS["MEMORY_SERVER_PORT"]: {
+            "service": "memory",
+            "instance_id": "existing-instance",
+        },
+        launcher.DEFAULT_PORTS["TOOL_SERVER_PORT"]: {
+            "service": "agent",
+            "instance_id": "existing-instance",
+        },
+    }
+    events = []
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "launcher-instance")
+    monkeypatch.setattr(launcher, "_existing_neko_services", set())
+    monkeypatch.setattr(launcher, "get_hyperv_excluded_ranges", lambda: [])
+    monkeypatch.setattr(launcher, "_is_port_bindable", lambda _port: False)
+    monkeypatch.setattr(
+        launcher,
+        "_classify_port_conflict",
+        lambda _port, _ranges: ("neko", []),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "probe_neko_health",
+        lambda port: health_by_port.get(port),
+    )
+    monkeypatch.setattr(launcher, "_sync_runtime_config_globals", lambda *_args: None)
+    monkeypatch.setattr(
+        launcher,
+        "emit_frontend_event",
+        lambda name, payload: events.append((name, payload)),
+    )
+    for key, port in launcher.DEFAULT_PORTS.items():
+        monkeypatch.setenv(f"NEKO_{key}", str(port))
+
+    assert launcher.apply_port_strategy() == "attach"
+
+    payload_by_event = dict(events)
+    assert payload_by_event["port_plan"]["instance_id"] == "existing-instance"
+    assert payload_by_event["port_plan"]["launcher_instance_id"] == "launcher-instance"
+    assert payload_by_event["attach_existing"]["instance_id"] == "existing-instance"
+
+
+@pytest.mark.unit
+def test_start_server_never_reuses_a_partial_existing_service(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(
+        launcher,
+        "_existing_neko_services",
+        {"MEMORY_SERVER_PORT"},
+    )
+    monkeypatch.setattr(launcher, "check_port", lambda _port: True)
+    monkeypatch.setattr(launcher, "get_port_owners", lambda _port: [123])
+    failures = []
+    monkeypatch.setattr(launcher, "report_startup_failure", failures.append)
+
+    server = {
+        "name": "Memory Server",
+        "module": "memory_server",
+        "port": 43112,
+    }
+    assert launcher.start_server(server) is False
+    assert failures and "already in use" in failures[0]
+
+
+@pytest.mark.unit
+def test_merged_health_requires_expected_services_and_current_instance(monkeypatch):
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "current-instance")
+    apps = [
+        (object(), 43112, "Memory"),
+        (object(), 43115, "Agent"),
+        (object(), 43111, "Main"),
+    ]
+    healthy = {
+        43112: {"service": "memory", "instance_id": "current-instance"},
+        43115: {"service": "agent", "instance_id": "current-instance"},
+        43111: {"service": "main", "instance_id": "current-instance"},
+    }
+
+    assert launcher._merged_health_issues(apps, healthy) == []
+
+    wrong = dict(healthy)
+    wrong[43115] = {"service": "main", "instance_id": "current-instance"}
+    wrong[43111] = {"service": "main", "instance_id": "old-instance"}
+    assert launcher._merged_health_issues(apps, wrong) == [
+        "Agent:43115:wrong_service",
+        "Main:43111:wrong_instance",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_ready_rejects_early_server_exit(monkeypatch):
+    import asyncio
+
+    from launcher_core import runtime as launcher
+
+    monkeypatch.setattr(launcher, "INSTANCE_ID", "current-instance")
+    monkeypatch.setattr(launcher, "probe_neko_health", lambda *_args, **_kwargs: None)
+
+    async def _exit_early():
+        return None
+
+    async def _keep_running():
+        await asyncio.Event().wait()
+
+    tasks = {
+        "Memory": asyncio.create_task(_exit_early()),
+        "Agent": asyncio.create_task(_keep_running()),
+        "Main": asyncio.create_task(_keep_running()),
+    }
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(RuntimeError, match="Memory server task exited"):
+            await launcher._wait_for_merged_servers_ready(
+                [(object(), 43112, "Memory")],
+                tasks,
+                timeout=0.1,
+                poll_interval=0.01,
+            )
+    finally:
+        for task in tasks.values():
+            task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_shutdown_preserves_main_memory_agent_order():
+    import asyncio
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    servers = {
+        name: SimpleNamespace(should_exit=False)
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+    exit_order = []
+
+    async def _serve_until_exit(name):
+        while not servers[name].should_exit:
+            await asyncio.sleep(0)
+        exit_order.append(name)
+
+    tasks = {
+        name: asyncio.create_task(_serve_until_exit(name))
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+
+    failures = await launcher._shutdown_merged_servers_in_order(servers, tasks)
+
+    assert failures == []
+    assert exit_order == ["Main", "Memory", "Agent"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_shutdown_timeout_still_advances_to_later_services():
+    import asyncio
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    servers = {
+        name: SimpleNamespace(should_exit=False)
+        for name in launcher.MERGED_SERVER_SHUTDOWN_ORDER
+    }
+    exit_order = []
+
+    async def _stuck_main():
+        await asyncio.Event().wait()
+
+    async def _serve_until_exit(name):
+        while not servers[name].should_exit:
+            await asyncio.sleep(0)
+        exit_order.append(name)
+
+    tasks = {
+        "Main": asyncio.create_task(_stuck_main()),
+        "Memory": asyncio.create_task(_serve_until_exit("Memory")),
+        "Agent": asyncio.create_task(_serve_until_exit("Agent")),
+    }
+    failures = await launcher._shutdown_merged_servers_in_order(
+        servers,
+        tasks,
+        timeouts={"Main": 0.01, "Memory": 0.1, "Agent": 0.1},
+    )
+
+    assert failures == ["Main:shutdown_timeout"]
+    assert exit_order == ["Memory", "Agent"]
+    await asyncio.gather(*tasks.values(), return_exceptions=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_merged_server_converts_uvicorn_system_exit():
+    from launcher_core import runtime as launcher
+
+    class _Server:
+        async def serve(self):
+            raise SystemExit(2)
+
+    with pytest.raises(RuntimeError, match="Main server exited.*code=2"):
+        await launcher._serve_merged_server(_Server(), "Main")
+
+
+@pytest.mark.unit
+def test_merged_disables_new_and_legacy_uvicorn_signal_hooks():
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from launcher_core import runtime as launcher
+
+    @contextmanager
+    def _capturing():
+        raise AssertionError("signal capture should have been replaced")
+        yield
+
+    server = SimpleNamespace(
+        install_signal_handlers=lambda: (_ for _ in ()).throw(
+            AssertionError("legacy signal hook should have been replaced")
+        ),
+        capture_signals=_capturing,
+    )
+
+    launcher._disable_uvicorn_signal_handlers(server)
+
+    server.install_signal_handlers()
+    with server.capture_signals():
+        pass
+
+
+@pytest.mark.unit
 def test_launcher_suppresses_startup_failure_events_during_expected_shutdown(monkeypatch):
     from launcher_core import runtime as launcher
 

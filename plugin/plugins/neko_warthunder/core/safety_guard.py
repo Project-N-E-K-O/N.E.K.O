@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts import WtConfig
+from .contracts import WtConfig, broadcast_frequency_multiplier
 
 
 @dataclass
@@ -53,7 +53,8 @@ class SafetyGuard:
         if self.config.global_rate_limit_seconds <= 0:
             return 0.0
         cur = time.time() if now is None else now
-        remaining = self.config.global_rate_limit_seconds - (cur - self._last_output_at)
+        limit = self.config.global_rate_limit_seconds * broadcast_frequency_multiplier(self.config.broadcast_frequency)
+        remaining = limit - (cur - self._last_output_at)
         return remaining if remaining > 0 else 0.0
 
     def critical_cooldown_remaining(self, now: float | None = None) -> float:

@@ -66,6 +66,17 @@ def _resp_with_none_content():
     return resp
 
 
+def _resp_with_finish_reason(reason: str):
+    resp = MagicMock()
+    choice = MagicMock()
+    choice.message = MagicMock()
+    choice.message.content = "partial"
+    choice.finish_reason = reason
+    resp.choices = [choice]
+    resp.usage = None
+    return resp
+
+
 class TestAinvokeDefensiveRead:
     @pytest.mark.asyncio
     async def test_none_message_returns_empty_string(self):
@@ -85,6 +96,12 @@ class TestAinvokeDefensiveRead:
         out = await client.ainvoke([{"role": "user", "content": "hi"}])
         assert out.content == ""
 
+    @pytest.mark.asyncio
+    async def test_finish_reason_is_preserved(self):
+        client = _make_client_with_response(_resp_with_finish_reason("length"))
+        out = await client.ainvoke([{"role": "user", "content": "hi"}])
+        assert out.response_metadata["finish_reason"] == "length"
+
 
 class TestInvokeDefensiveRead:
     def test_none_message_returns_empty_string(self):
@@ -101,6 +118,11 @@ class TestInvokeDefensiveRead:
         client = _make_client_with_response(_resp_with_none_content())
         out = client.invoke([{"role": "user", "content": "hi"}])
         assert out.content == ""
+
+    def test_finish_reason_is_preserved(self):
+        client = _make_client_with_response(_resp_with_finish_reason("length"))
+        out = client.invoke([{"role": "user", "content": "hi"}])
+        assert out.response_metadata["finish_reason"] == "length"
 
 
 @pytest.mark.asyncio
@@ -238,6 +260,7 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
     class _Resp:
         content = [_TextBlock()]
         usage = None
+        stop_reason = "max_tokens"
 
     class _Messages:
         def create(self, **kwargs):
@@ -287,6 +310,7 @@ def test_chat_anthropic_defaults_and_forwards_payload_overrides(monkeypatch):
         )
 
         assert response.content == "ok"
+        assert response.response_metadata["finish_reason"] == "length"
         assert captured["max_tokens"] == 1
         assert captured["metadata"] == {"user_id": "user-1"}
         assert captured["thinking"] == {"type": "disabled"}

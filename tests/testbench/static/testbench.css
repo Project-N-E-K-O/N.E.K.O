@@ -1477,6 +1477,71 @@ code, .mono {
 }
 
 /* =====================================================================
+ * Memory export modal (P30 一键脱敏导出)
+ * ===================================================================== */
+
+.memory-export-modal .modal {
+  min-width: 520px;
+  max-width: 640px;
+}
+.memory-export-modal__body h4 {
+  margin: 0 0 6px 0;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.memory-export-modal__radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--density-sm);
+}
+.memory-export-modal__radio {
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.memory-export-modal__radio:hover {
+  background: var(--bg-raised);
+}
+.memory-export-modal__radio-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.memory-export-modal__radio-desc {
+  margin-left: 4px;
+}
+
+/* Redaction explanation: fixed, always-visible yellow callout — this is
+ * "务必阅读" content, so it must never be collapsed. */
+.memory-export-modal__notice {
+  margin: var(--density-sm) 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn, #ffc268);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn, #ffc268) 12%, transparent);
+}
+.memory-export-modal__notice-head {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--warn, #b58900);
+  margin-bottom: 4px;
+}
+.memory-export-modal__notice-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.memory-export-modal__notice-body p {
+  margin: 2px 0;
+}
+.memory-export-modal__err:empty {
+  display: none;
+}
+
+/* =====================================================================
  * Form helpers
  * ===================================================================== */
 
@@ -6322,6 +6387,16 @@ button.is-dirty {
 .mtrace-node-status { fill: var(--text-tertiary); font-size: 9.5px; }
 .mtrace-node--fact .mtrace-node-box { stroke: var(--ok); }
 .mtrace-node--fact .mtrace-node-type { fill: var(--ok); }
+/* Archived fact: absorbed into a reflection and moved to facts_archive.json.
+   Same fact colour family but dashed + de-emphasised — it reads as "off the
+   active pool, materialised only to complete a reflection's source chain". */
+.mtrace-node--fact_archived .mtrace-node-box {
+  stroke: var(--ok);
+  stroke-dasharray: 4 3;
+  opacity: 0.7;
+}
+.mtrace-node--fact_archived .mtrace-node-type { fill: var(--ok); opacity: 0.85; }
+.mtrace-node--fact_archived .mtrace-node-label { fill: var(--text-secondary); }
 .mtrace-node--reflection .mtrace-node-type { fill: var(--link); }
 .mtrace-node--persona_entry .mtrace-node-type { fill: var(--accent); }
 .mtrace-node--correction .mtrace-node-box { stroke: var(--err); stroke-dasharray: 4 3; }
@@ -6785,3 +6860,89 @@ button.is-dirty {
 .mov-verdict.rel-duplicate { border-left: 3px solid var(--warn); }
 .mov-verdict-rel { font-weight: 600; }
 .mov-verdict-pair { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── P32 代码线索 (开发者) 子页 ────────────────────────────────────────
+ * UI 首要职责是压低置信预期 (蓝图 §3): 页首红色不可跳过警告 + 克制的强度 chip. */
+/* 子页作为 .memory-analysis-pane (flex column, 定高) 的直接 flex 子项: flex:1 +
+ * min-height:0 让它被限制到面板高度, overflow-y:auto 使内容超出时页面内部滚动
+ * (原来缺 overflow → 内容被父级 overflow:hidden 截断, 下半页看不到). */
+.memory-code-leads {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--density-sm) var(--density-md);
+}
+
+/* UI-1: 固定、不可折叠的红色危险警告 (务必先读). */
+.code-leads-notice--danger {
+  margin: var(--density-sm) 0 var(--density-md);
+  padding: 10px 12px;
+  border: 1px solid var(--err, #ff6b6b);
+  border-left-width: 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--err, #ff6b6b) 12%, transparent);
+}
+.code-leads-notice-head {
+  font-size: 13px; font-weight: 700; color: var(--err, #ff6b6b);
+  margin-bottom: 6px;
+}
+.code-leads-notice-list { margin: 0; padding-left: 18px; }
+.code-leads-notice-list li {
+  font-size: 12.5px; color: var(--text-secondary); line-height: 1.6;
+}
+.code-leads-doc {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.code-leads-doc:hover { text-decoration: none; }
+
+.code-leads-head { margin: var(--density-md) 0 var(--density-sm); font-size: 14px; }
+.code-leads-list { margin-bottom: var(--density-md); }
+
+/* UI-4: 线索卡. */
+.code-leads-card {
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--density-sm) var(--density-md);
+  margin-bottom: var(--density-sm);
+}
+.code-leads-card-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.code-leads-badge {
+  font-family: var(--mono, monospace); font-weight: 700; font-size: 12px;
+  padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+/* UI-3: 克制的强度 chip — 即便 high 也用中性描边, 不用大红块. */
+.code-leads-strength {
+  font-size: 11.5px; padding: 1px 6px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.code-leads-strength.strength-high { border-color: var(--warn, #ffc268); color: var(--warn, #b58900); }
+.code-leads-strength.strength-medium { border-color: var(--border); color: var(--text-secondary); }
+.code-leads-strength.strength-low { border-color: var(--border); color: var(--text-tertiary); opacity: 0.85; }
+.code-leads-confirm { font-size: 11.5px; }
+.code-leads-invariant { margin: 2px 0; font-size: 13px; color: var(--text-primary); }
+.code-leads-count { margin: 2px 0; font-size: 12px; }
+.code-leads-action { margin: 4px 0; font-size: 12.5px; color: var(--text-primary); }
+.code-leads-subhead { font-size: 12px; color: var(--text-tertiary); margin: 6px 0 2px; }
+.code-leads-suspect ul, .code-leads-missing ul, .code-leads-examples ul { margin: 0; padding-left: 18px; }
+.code-leads-module { font-family: var(--mono, monospace); font-size: 12px; color: var(--text-primary); }
+.code-leads-suspect li, .code-leads-missing li, .code-leads-examples li { font-size: 12px; line-height: 1.5; }
+
+/* UI-5: 状态行 + 排除区. */
+.code-leads-status, .code-leads-excluded {
+  margin-top: var(--density-md);
+  padding: var(--density-sm) var(--density-md);
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+.code-leads-status ul, .code-leads-excluded-list { margin: 2px 0; padding-left: 18px; }
+.code-leads-status li { font-size: 12.5px; line-height: 1.6; }
+.code-leads-status li.is-on { color: var(--ok); }
+.code-leads-status li.is-off { color: var(--text-tertiary); }
+.code-leads-warnings { margin-top: 6px; }
+.code-leads-empty { margin: var(--density-sm) 0; }

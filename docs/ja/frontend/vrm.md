@@ -1,90 +1,70 @@
 # VRM モデル
 
-## 概要
+## ランタイムと形式
 
-N.E.K.O. は Three.js と `@pixiv/three-vrm` を使用した 3D キャラクターレンダリングのために VRM（Virtual Reality Model）形式をサポートしています。
+VRM レンダラーは Three.js と `@pixiv/three-vrm` を使います。モデルは `.vrm`、アニメーションは通常 `@pixiv/three-vrm-animation` で読み込む `.vrma` です。
 
-## モデル管理
+現在の実装は `static/vrm/` の core、manager、init、animation、expression、interaction、cursor-follow、orientation、UI モジュールにあります。VRM キャラクターが有効な場合だけ、`vrm-init.js` が `window.vrmManager` を作成し `#vrm-canvas` を初期化します。
 
-- `/api/model/vrm/upload` から VRM ファイルをアップロード（最大 200MB）
-- `/api/model/vrm/upload_animation` からアニメーションを個別にアップロード
-- `/vrm_emotion_manager` から感情マッピングを設定
+## モデルとアニメーション
 
-## ライティング設定
+`GET /api/model/vrm/models` は `static/vrm/` 直下の同梱ファイル、`/user_vrm` のユーザーファイル、`/workshop/{item_id}/...` のインストール済み Workshop ファイルを統合します。API は公開 URL を返し、絶対ファイルシステムパスを公開しません。
 
-VRM モデルは設定可能なライティングシステムを使用します：
+アニメーションは `static/vrm/animation/` と `/user_vrm/animation/` から列挙されます。アップロードはモデル `.vrm` とアニメーション `.vrma` を受け付け、1 ファイルの上限は 200 MB です。ユーザーモデル削除は設定済み VRM ディレクトリ直下の `.vrm` だけに制限されます。
 
-| ライト | デフォルト | 範囲 | 説明 |
-|-------|---------|-------|-------------|
-| Ambient | 0.83 | 0 - 1.0 | HemisphereLight の強度 |
-| Main | 1.91 | 0 - 2.5 | メインのディレクショナルライト |
-| Fill | 0.0 | 0 - 1.0 | セカンダリフィルライト（デフォルトで無効） |
-| Rim | 0.0 | 0 - 1.5 | エッジ/リムライティング（デフォルトで無効、MToon が処理） |
-| Top | 0.0 | 0 - 1.0 | トップダウンライト（デフォルトで無効） |
-| Bottom | 0.0 | 0 - 0.5 | ボトムアップライト（デフォルトで無効） |
+## ライティング
 
-設定は `PUT /api/characters/catgirl/{name}/lighting` で行います。
+`config/character_defaults.py` のバックエンド既定値は、レンダラースクリプトより先に `window.VRM_DEFAULT_LIGHTING` としてテンプレートへ注入されます。現在のキーは次のとおりです。
 
-## UI コンポーネント
-
-| モジュール | 用途 |
-|--------|---------|
-| `vrm-ui-buttons.js` | VRM 固有のコントロールボタン |
-| `avatar-ui-popup.js` | 共有ポップアップダイアログロジック（MMD/VRM/Live2D） |
-
-## 既知の問題と修正
-
-### SpringBone 物理演算の暴走
-
-VRM の `update(delta)` は delta を **秒** 単位で期待しています。ミリ秒やクランプされていない値を渡すと、髪が上方向に飛び散ります：
-
-```javascript
-let delta = clock.getDelta();
-delta = Math.min(delta, 0.05); // タブ切り替え時の物理演算暴走を防止
-vrm.update(delta);
+```json
+{
+  "ambient": 0.83,
+  "main": 1.91,
+  "fill": 0.0,
+  "rim": 0.0,
+  "top": 0.0,
+  "bottom": 0.0,
+  "exposure": 1.1,
+  "toneMapping": 7,
+  "outlineWidthScale": 1.0
+}
 ```
 
-### コライダーのサイズ過大（ほぼすべての VRM モデルに影響）
+キャラクター別ライティングはこれを上書きできます。バックエンド既定値、テンプレートコンテキスト、`vrm-core.js` の防御的フォールバックを一致させてください。
 
-VRoid Studio からエクスポートされた VRM モデルには、コライダーの半径が約 2 倍大きくなる既知の UniVRM バグ（[#673](https://github.com/vrm-c/UniVRM/issues/673)）があります。これにより髪が水平に固定されたように見えます。**修正方法**：読み込み後にすべてのコライダー半径を 50% 縮小します：
+## 感情マッピング
 
-```javascript
-springBoneManager.colliders.forEach(collider => {
-    if (collider.shape?.radius > 0) {
-        collider._originalRadius = collider.shape.radius;
-        collider.shape.radius *= 0.5;
-    }
-});
+VRM の感情は意味名を順序付きの表情名候補へ割り当てます。
+
+```json
+{
+  "neutral": ["neutral"],
+  "happy": ["happy", "joy", "fun", "smile"],
+  "surprised": ["surprised", "surprise", "shock", "e", "o"]
+}
 ```
 
-### MToon アウトラインの太さ
+サーバーはモデル別マップを `static/vrm/configs/` に保存します。`vrm-expression.js` は保存値を既定値へ上書きマージし、表情名を大文字小文字を無視した完全一致で検索します。管理ページは保存前に `/api/model/vrm/expressions/{model_name}` から実際の表情名を取得できます。
 
-モデルをスケーリングすると、MToon のアウトラインが不均衡に太くなります。スクリーンスペースモードに切り替えてください：
+VRM が有効なとき、`window.LanLan1.setEmotion(name)` は `window.vrmManager.expression.setMood(name)` に委譲されます。non-neutral の mood は実行時遅延後に neutral へ戻ります。
 
-```javascript
-material.outlineWidthMode = 'screenCoordinates';
-material.outlineWidthFactor = 0.005; // 1-2 ピクセルの細いアウトライン
-material.needsUpdate = true;
-```
+## ランタイム保護
 
-| 係数 | 効果 |
-|--------|--------|
-| 0.002 - 0.003 | 非常に細い（約 1px） |
-| 0.005 | 細い（1-2px） |
-| 0.01 | 中程度（2-3px） |
-| 0.02+ | 太い |
+現在のレンダラーは長い停止後のフレーム delta をクランプし、読み込んだ spring-bone collider 半径を縮小し、ライティング設定から MToon アウトライン幅を調整します。これらは内部互換対策で、モデル形式の要件ではありません。再現のためにアップロード VRM を事前編集しないでください。
 
-### カメラドラッグの不一致
+## API 概要
 
-ドラッグに固定の `panSpeed` を使用しないでください。ピクセルからワールドへのマッピングを動的に計算します：
+| メソッド | エンドポイント | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/model/vrm/upload` | `.vrm` モデルを 1 ファイルアップロード |
+| `POST` | `/api/model/vrm/upload_animation` | `.vrma` アニメーションを 1 ファイルアップロード |
+| `GET` | `/api/model/vrm/models` | 同梱、ユーザー、Workshop モデルを一覧 |
+| `GET` | `/api/model/vrm/animations` | 同梱とユーザーアニメーションを一覧 |
+| `GET` | `/api/model/vrm/config` | 公開 VRM URL プレフィックスを返す |
+| `GET`、`POST` | `/api/model/vrm/emotion_mapping/{model_name}` | 表情マップを読み取りまたは保存 |
+| `GET` | `/api/model/vrm/expressions/{model_name}` | モデル内の表情名を確認 |
+| `DELETE` | `/api/model/vrm/model` | 公開 URL でユーザーモデルを削除 |
 
-```javascript
-const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-const pixelToWorld = worldHeight / screenHeight;
-```
+## ホスト境界
 
-完全なリファレンスは [開発者ノート](/ja/contributing/developer-notes#vrm-model-gotchas) を参照してください。
-
-## API エンドポイント
-
-完全な REST エンドポイントリファレンスは [VRM API](/ja/api/rest/vrm) を参照してください。
+VRM は Electron ペットウィンドウを含む `index.html` に描画されます。独立したチャットと字幕テンプレートは第二の VRM シーンを作らず、ネイティブウィンドウは共通のクロスウィンドウブリッジでメインページと連携します。

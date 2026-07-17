@@ -160,6 +160,10 @@ def test_vision_model_loader_caches_and_reloads_sessions(tmp_path, monkeypatch) 
     assert reloaded is not first
     assert created == [str(model_path), str(model_path)]
 
+    loader.close()
+
+    assert loader._sessions == {}
+
 
 def test_vision_model_loader_rejects_path_traversal_model_names(tmp_path, monkeypatch) -> None:
     class _FakeOrt:

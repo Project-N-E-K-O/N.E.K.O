@@ -42,6 +42,19 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 
 > Start with **Plugin**. Migrate a former Extension by merging its Router into the owning Plugin or converting it into a standalone Plugin.
 
+## Loading a plugin is not choosing an entry
+
+Two identifiers named “entry” appear at different layers:
+
+| Layer | Declaration | Purpose |
+|---|---|---|
+| Host loading | `[plugin].entry = "module.path:ClassName"` | Import one `NekoPluginBase` class and start its process |
+| Runtime dispatch | `@plugin_entry(id="search")` | Identify one callable operation inside the loaded plugin |
+
+For user-plugin Agent dispatch, runtime selection is two-stage. Stage 1 is skipped when the total plugin description is below the configured threshold; above it, BM25 and an LLM coarse screen run in parallel and are unioned with regex `keywords` hits. Stage 2 receives full descriptions for the remaining plugins and returns `plugin_id` plus runtime `entry_id`. The host validates both against the exact candidates shown, retries once with a correction hint, and rejects a still-invalid result.
+
+`passive = true` plugins and plugins without Agent-visible entries do not participate in this selection. This routing path is separate from LLM tool registration with `@llm_tool`.
+
 ## Key Features
 
 - **Process isolation** — Plugins and Adapters run in separate processes
@@ -51,7 +64,7 @@ The N.E.K.O. plugin system is a Python-based plugin framework built on **process
 - **Cross-plugin calls** — `self.plugins.call_entry("other_plugin:entry_id")` for inter-plugin communication
 - **System info** — `self.system_info` for querying host system metadata
 - **Plugin store** — `PluginStore` for persistent key-value storage
-- **Bus system** — `self.bus` reads host state through `messages`, `events`, `lifecycle`, `conversations`, and `memory`. Only the first three support `watch()`; `conversations` and `memory` are read-only snapshots. Replayable watcher chains use `get()` → structured `filter(field=value, ...)` → `sort(by=...)` → `limit()` → `watch()` and subscribe only to `add`, `del`, or `change` deltas. There is no publish/emit API. Use `self.bus.memory.get(...)` for recent records and `await self.ctx.query_memory(...)` for semantic lookup.
+- **Bus system** — `self.bus` reads host state through `messages`, `events`, `lifecycle`, `conversations`, and `memory`. Only the first three support `watch()`; `conversations` and `memory` are read-only snapshots. Replayable watcher chains use `get()` → structured `filter(field=value, ...)` → `sort(by=...)` → `limit()` → `watch()` and subscribe only to `add`, `del`, or `change` deltas. There is no publish/emit API. `self.bus.memory.get(...)` reads a bounded, in-memory window of recent user-utterance events (one-hour TTL); it is not the character's persistent memory archive. `self.ctx.query_memory(...)` is a deprecated compatibility call and does not provide semantic recall.
 - **Dynamic entries** — Register/unregister entry points at runtime
 - **Hosted UI** — Build interactive TSX panels and Markdown guides in the Plugin Manager
 - **Static UI** — Serve a legacy web UI from your plugin directory

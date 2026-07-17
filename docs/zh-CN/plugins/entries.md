@@ -1,6 +1,10 @@
 # 入口与参数
 
-入口点是你的插件暴露给外界的"功能"。用户在插件管理面板中看到的每一个可执行按钮，AI agent 能调用的每一个工具，其他插件能请求的每一个服务——都是入口点。
+入口点是已加载插件暴露给插件管理器、其他插件和用户插件 Agent 路由的可调用操作。它由 `@plugin_entry(id=...)` 产生的运行时 `entry_id` 标识。
+
+不要把它与 `plugin.toml` 的 `[plugin].entry` 混淆：后者是宿主导入插件类时使用的 `module.path:ClassName`。也不要与 `@llm_tool` 混淆：LLM 工具注册到 main_server 的 `/api/tools` registry，可在对话中被调用；用户插件 Agent 路由选择的则是插件运行时入口。
+
+Agent 路由先做插件级筛选，再读取入口元数据。第二阶段必须返回精确存在的 `plugin_id` 和 `entry_id`；缺失或未知 ID 只纠正重试一次，随后拒绝执行。
 
 ---
 
@@ -154,7 +158,7 @@ async def search(self, query: str):
     id="process",              # 入口 ID（默认用方法名）
     name="处理数据",            # 显示名称
     description="处理并转换数据", # 描述（给人和 AI 看）
-    timeout=60.0,              # 超时时间（秒），超过就自动取消
+    timeout=60.0,              # 宿主侧执行超时（秒）
     kind="service",            # 类型标记（默认 "action"）
 )
 async def process(self, data: str):

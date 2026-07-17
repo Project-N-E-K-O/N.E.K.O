@@ -1,33 +1,47 @@
+
 # コードスタイル
+
+強制規則の正本は `pyproject.toml`、`.agent/rules/neko-guide.md`、CI スクリプトです。
 
 ## Python
 
-- **Python 3.11** -- 必須。3.12 以降の機能は使用しないこと
-- **型ヒント** -- 特にパブリック API では実用的な範囲で使用する
-- **Async** -- FastAPI ハンドラーの I/O 操作には `async/await` を使用する
-- **インポート** -- 標準ライブラリ、サードパーティ、ローカルの順
-- **行の長さ** -- 厳密な制限なし、ただし妥当な範囲で（約 120 文字）
+- 対象は Python 3.11 です。
+- Python コマンドには `uv run` を使います。
+- 非同期リクエスト経路をブロックせず、必要に応じてファイルシステム／CPU のブロッキング処理をイベントループ外へ移します。
+- `scripts/check_module_layering.py` が検査するモジュール階層を維持します。
+- 重い SDK を起動時の import chain に入れません。
+- `loguru`、`structlog`、`logbook`、`tkinter` は追加禁止で、CI が拒否します。
+- 生の会話やプライバシーに関わるテキストは `print` のみを使い、永続的なプロジェクト logger へ送りません。
 
-## JavaScript
+`uv run ruff check .` と関連するリポジトリ検査を実行します。
 
-- **ES6+** -- モダンな構文を使用する（アロー関数、const/let、テンプレートリテラル）
-- **フレームワーク不使用** -- フロントエンドは設計上 vanilla JS を使用
-- **i18n** -- すべてのユーザー向け文字列はロケールシステムを使用する
+## フロントエンド
 
-## コミットメッセージ
+フロントエンドは、静的／Jinja JavaScript、単一の React チャットアプリ、Vue プラグインマネージャーからなる混合構成です。振る舞いを複製せず、所有実装を編集します。
 
-可能な限り Conventional Commits に従ってください：
+- チャット UI／ロジックは `frontend/react-neko-chat/` にあります。
+- `index.html` と Electron の `chat.html` は同じ React コンポーネントをマウントします。
+- 廃止済みの `#chat-container` に新しい挙動を追加しません。
+- ブラウザーの `/` と Electron の `/chat`、`/subtitle` などを両方考慮します。
+- i18n を使用し、8 locale を同期更新します。
 
-```
-feat: add voice preview for custom voices
-fix: resolve WebSocket reconnection on character switch
-docs: update API reference for memory endpoints
-refactor: extract TTS queue logic into separate module
-```
+## Provider の対称性
 
-## Pull Request
+Provider／backend／feature の経路は構造的に対称でなければなりません。同種 provider の一つを分割したり lifecycle／設定経路を追加したりする場合は、対応する peer も確認し、理由のない例外経路を残しません。
 
-- PR は単一の関心事に集中させる
-- 何を変更したか、なぜ変更したかの説明を含める
-- 該当する場合は関連する Issue を参照する
-- `uv run pytest` が通ることを確認する
+## API パス
+
+バックエンドの decorator とフロントエンド呼び出しでは、API リソース末尾にスラッシュを付けません。
+
+- 正：`/api/characters`
+- 誤：`/api/characters/`
+
+prefix 付き `APIRouter` では、文字どおりのサイトルートを除き `@router.get("")` を使います。CI は前後両方を検査します。
+
+## Prompt と i18n
+
+多言語 prompt table は所有する `config/prompts_*.py` に置き、prompt budget／temperature の検査に従います。system prompt の翻訳では `======以上为` をそのまま保持します。
+
+## Commit と PR
+
+一つの commit／PR は一つのまとまった関心事に絞ります。振る舞いと検証を説明し、実行していないテストや platform を主張しません。

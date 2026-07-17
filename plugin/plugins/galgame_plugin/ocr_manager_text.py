@@ -312,18 +312,15 @@ class TextMixin:
         return backend
 
 
-    def _start_rapidocr_warmup_if_configured(self) -> None:
-        if self._custom_ocr_backend or not bool(self._config.rapidocr_enabled):
+    def _release_rapidocr_backend(self) -> None:
+        backend = self._rapidocr_backend_cache
+        self._rapidocr_backend_cache = None
+        self._rapidocr_backend_cache_key = None
+        if backend is None:
             return
-        selection = self._configured_backend_selection()
-        if selection not in {"auto", "rapidocr"}:
-            return
-        self._rapidocr_backend_for_config().warmup_async(self._logger)
-        if self._writer.bridge_root != self._config.bridge_root:
-            self._writer = OcrReaderBridgeWriter(
-                bridge_root=self._config.bridge_root,
-                time_fn=self._time_fn,
-            )
+        close = getattr(backend, "close", None)
+        if callable(close):
+            close()
 
 
     def _line_changed_repeat_threshold(self) -> int:
@@ -409,8 +406,7 @@ class TextMixin:
         self._backend_plan_cache_key = None
         self._backend_plan_cache_at = 0.0
         self._backend_plan_cache = None
-        self._rapidocr_backend_cache_key = None
-        self._rapidocr_backend_cache = None
+        self._release_rapidocr_backend()
         self._ocr_lang_detector.reset()
         callback = self._rapidocr_lang_changed_callback
         if callable(callback):
