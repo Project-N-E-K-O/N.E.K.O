@@ -502,6 +502,43 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
 
 
 @pytest.mark.asyncio
+async def test_plugin_cli_install_plan_reports_matching_plugin_upgrade(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _copy_fixture_plugin(tmp_path, "simple_plugin")
+    package_path = tmp_path / "simple_plugin.neko-plugin"
+    pack_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    installed = plugins_root / "simple_plugin"
+    shutil.copytree(source, installed)
+    manifest = (installed / "plugin.toml").read_text(encoding="utf-8")
+    (installed / "plugin.toml").write_text(
+        manifest.replace('version = "0.1.0"', 'version = "0.0.9"'),
+        encoding="utf-8",
+    )
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path,
+        user_root=plugins_root,
+        packages_root=tmp_path,
+        profiles_root=tmp_path / "profiles",
+    )
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/install-plan",
+            json={"package": str(package_path)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "upgrade"
+    assert response.json()["plugin_id"] == "simple_plugin"
+
+
+@pytest.mark.asyncio
 async def test_plugin_cli_upload_and_install_failure_cleans_staging_and_saved_package(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

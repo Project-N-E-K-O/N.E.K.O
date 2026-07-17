@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import hashlib
 import shutil
 import tomllib
@@ -26,6 +27,7 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugin_cli.install_plan import build_install_plan
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -119,6 +121,18 @@ class PluginCliService:
 
     async def verify(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._verify_sync, package=package)
+
+    async def plan_install(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None = None,
+    ) -> dict[str, object]:
+        return await asyncio.to_thread(
+            self._plan_install_sync,
+            package=package,
+            plugins_root=plugins_root,
+        )
 
     async def install(
         self,
@@ -867,6 +881,31 @@ class PluginCliService:
             }
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="verify") from exc
+
+    def _plan_install_sync(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None,
+    ) -> dict[str, object]:
+        try:
+            policy = self._path_policy()
+            target_root = (
+                _require_within(
+                    Path(plugins_root).expanduser().resolve(),
+                    policy.user_plugins_root,
+                    field="plugins_root",
+                )
+                if plugins_root
+                else policy.user_plugins_root
+            )
+            plan = build_install_plan(
+                package_path=self._resolve_package_path(package),
+                plugins_root=target_root,
+            )
+            return asdict(plan)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="install-plan") from exc
 
     def _install_sync(
         self,

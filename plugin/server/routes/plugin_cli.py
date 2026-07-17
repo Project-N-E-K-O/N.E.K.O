@@ -59,6 +59,23 @@ class PluginCliInstallRequest(BaseModel):
     on_conflict: str = Field(default="fail", pattern="^fail$")
 
 
+class PluginCliInstallPlanRequest(BaseModel):
+    package: str
+    plugins_root: str | None = None
+
+
+class PluginCliInstallPlanResponse(BaseModel):
+    action: str = Field(pattern="^(install|upgrade|blocked)$")
+    package_type: str = Field(pattern="^(plugin|bundle)$")
+    plugin_id: str
+    directory_name: str
+    current_version: str = ""
+    target_version: str = ""
+    confirmation_token: str = ""
+    reason: str = ""
+    legacy_plugin_ids: list[str] = Field(default_factory=list)
+
+
 class PluginCliAnalyzeRequest(BaseModel):
     plugins: list[str] = Field(default_factory=list)
     plugin_refs: list[PluginCliPluginRef] = Field(default_factory=list)
@@ -292,6 +309,20 @@ async def plugin_cli_install(
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
             on_conflict=payload.on_conflict,
+        )
+    except ServerDomainError as error:
+        raise_http_from_domain(error, logger=logger)
+
+
+@router.post("/plugin-cli/install-plan", response_model=PluginCliInstallPlanResponse)
+async def plugin_cli_install_plan(
+    payload: PluginCliInstallPlanRequest,
+    _: str = require_admin,
+) -> dict[str, object]:
+    try:
+        return await service.plan_install(
+            package=payload.package,
+            plugins_root=payload.plugins_root,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)
