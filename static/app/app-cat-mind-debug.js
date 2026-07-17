@@ -39,6 +39,8 @@
         unknown_action: '未知动作',
         invalid_cat_runtime: '当前不是有效猫形态',
         chat_surface_dragging: '聊天窗口正在拖拽',
+        chat_yarn_dragging: '用户正在拖动毛线球',
+        chat_yarn_settling: '毛线球与猫咪正在落位',
         compact_surface_dragging: '紧凑聊天窗口正在拖拽',
         near_chat_unavailable: '尚未在聊天窗口附近落位',
         small_move_unavailable: '小幅移动当前不可用',
@@ -354,7 +356,7 @@
                 lines.push('触发事实：' + decision.triggerTypes.join(', '));
             }
         }
-        lines.push('', '动作评分（统一需求余量＋节奏－本动作冷却）');
+        lines.push('', '动作评分（需求余量＋节奏＋短时意图－本动作冷却）');
         ACTION_DEFINITIONS.forEach(function (action) {
             var score = scoresByAction[action.id] || candidatesByAction[action.id] || {};
             var candidate = candidatesByAction[action.id];
@@ -372,10 +374,13 @@
                 ' ｜ 距上次真实开始：' + Math.round((Number(score.cadenceElapsedMs) || 0) / 1000) + ' 秒');
             lines.push('  节奏曲线：进度 ' + Math.round((Number(score.cadenceCurveProgress) || 0) * 100) + '%' +
                 ' ｜ S 曲线值：' + formatNumber(score.cadenceCurveFactor));
+            lines.push('  短时意图：强度 ' + formatNumber(score.intentLevel) +
+                ' ｜ 计入分：' + formatNumber(score.intentContribution) +
+                ' ｜ 依据：' + (score.intentReason || '-'));
             lines.push('  冷却扣分：' + formatNumber(score.cooldownPenalty) +
                 (score.cooldownApplied ? ' ｜ 剩余：' + Math.ceil((Number(score.cooldownRemainingMs) || 0) / 1000) + ' 秒' : ' ｜ 未冷却'));
             lines.push('  冷却曲线：剩余比例 ' + Math.round((Number(score.cooldownRecoveryFactor) || 0) * 100) + '%' +
-                ' ｜ S 曲线值：' + formatNumber(score.cooldownCurveFactor));
+                ' ｜ 1.9 次幂曲线值：' + formatNumber(score.cooldownCurveFactor));
             lines.push('  可比效用：' + formatNumber(score.utilityScore) +
                 ' ｜ 最终分：' + (currentScore === null ? '-' : formatNumber(currentScore)));
             lines.push('  本轮可用分（仅 provider 允许后计算）：' +

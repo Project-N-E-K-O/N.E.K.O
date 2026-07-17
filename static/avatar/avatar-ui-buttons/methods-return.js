@@ -54,7 +54,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
-                    _playNekoIdleHoverArt(returnArt, tier);
+                    _playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });
                 }
             });
 
@@ -169,6 +169,7 @@ Object.assign(AvatarButtonMixin.methods, {
             let dragCursorPollInFlight = false;
             let dragCursorPollStopped = true;
             let dragCursorPollToken = 0;
+            let dragActivity = null;
 
             const getDragCropState = () => {
                 try {
@@ -380,8 +381,56 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
             };
 
+            const startDragActivity = (safetyToken, left, top) => {
+                const startedAt = Date.now();
+                dragActivity = {
+                    activityId: `return-cat-drag-dom:${startedAt}:${safetyToken}`,
+                    safetyToken: safetyToken,
+                    startedAt: startedAt,
+                    startX: left,
+                    startY: top,
+                    lastX: left,
+                    lastY: top,
+                    pathDistancePx: 0,
+                    terminalReported: false
+                };
+            };
+
+            const recordDragActivityPoint = (left, top) => {
+                if (!dragActivity || dragActivity.terminalReported ||
+                    !Number.isFinite(left) || !Number.isFinite(top)) {
+                    return;
+                }
+                if (Number.isFinite(dragActivity.lastX) && Number.isFinite(dragActivity.lastY)) {
+                    dragActivity.pathDistancePx += Math.hypot(
+                        left - dragActivity.lastX,
+                        top - dragActivity.lastY
+                    );
+                }
+                dragActivity.lastX = left;
+                dragActivity.lastY = top;
+            };
+
+            const finishDragActivity = (safetyToken) => {
+                if (!dragActivity || dragActivity.safetyToken !== safetyToken || dragActivity.terminalReported) {
+                    return null;
+                }
+                dragActivity.terminalReported = true;
+                return {
+                    activityId: dragActivity.activityId,
+                    pathDistancePx: Math.max(0, dragActivity.pathDistancePx),
+                    displacementPx: Math.hypot(
+                        dragActivity.lastX - dragActivity.startX,
+                        dragActivity.lastY - dragActivity.startY
+                    ),
+                    durationMs: Math.max(0, Date.now() - dragActivity.startedAt)
+                };
+            };
+
             const finishDragState = (moved, safetyToken) => {
                 if (safetyToken !== dragSafetyToken) return;
+                const dragActivityFacts = finishDragActivity(safetyToken);
+                if (!dragActivityFacts) return;
                 if (moved) {
                     const finalLeft = parseFloat(container.style.left);
                     const finalTop = parseFloat(container.style.top);
@@ -401,12 +450,14 @@ Object.assign(AvatarButtonMixin.methods, {
                         movedDistancePx: Math.hypot(
                             (Number.isFinite(dispatchLeft) ? dispatchLeft : containerStartX) - containerStartX,
                             (Number.isFinite(dispatchTop) ? dispatchTop : containerStartY) - containerStartY
-                        )
+                        ),
+                        ...dragActivityFacts
                     });
                 } else {
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-cancel', {
                         movedDistancePx: 0,
-                        dragCancelled: true
+                        dragCancelled: true,
+                        ...dragActivityFacts
                     });
                 }
                 if (moved) {
@@ -469,6 +520,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 const nextVirtualTop = Math.max(offset.y, Math.min(point.virtualY - dragGrabOffsetY, offset.y + window.innerHeight - h));
                 const nextLeft = nextVirtualLeft - offset.x;
                 const nextTop = nextVirtualTop - offset.y;
+                recordDragActivityPoint(nextVirtualLeft, nextVirtualTop);
                 const screenPoint = getDragScreenPointFromVirtualPoint(nextVirtualLeft + w / 2, nextVirtualTop + h / 2, sourceEvent, clientX, clientY);
                 if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
                     container.setAttribute('data-dragging', 'true');
@@ -538,6 +590,9 @@ Object.assign(AvatarButtonMixin.methods, {
                 setReturnClickSuppressed(true);
                 const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
                 if (!isUsableDragPoint(point)) return;
+                const rect = getDragContainerVirtualRect();
+                const safetyToken = dragSafetyToken + 1;
+                startDragActivity(safetyToken, rect.left, rect.top);
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
@@ -547,7 +602,6 @@ Object.assign(AvatarButtonMixin.methods, {
                 dragStartY = point.localY;
                 dragStartVirtualX = point.virtualX;
                 dragStartVirtualY = point.virtualY;
-                const rect = getDragContainerVirtualRect();
                 containerStartX = rect.left;
                 containerStartY = rect.top;
                 dragGrabOffsetX = point.virtualX - rect.left;
@@ -559,7 +613,6 @@ Object.assign(AvatarButtonMixin.methods, {
                 container.style.top = `${containerStartY}px`;
                 container.setAttribute('data-dragging', 'pending');
                 container.style.cursor = 'grabbing';
-                const safetyToken = dragSafetyToken + 1;
                 dragSafetyToken = safetyToken;
                 dragSafetyTimer = setTimeout(() => {
                     dragSafetyTimer = 0;

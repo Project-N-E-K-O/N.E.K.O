@@ -800,6 +800,63 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let pendingClientX = 0;
     let pendingClientY = 0;
     let dragActiveDispatched = false;
+    let dragActivitySequence = 0;
+    let dragActivity = null;
+
+    const startDragActivity = (left, top) => {
+        const startedAt = Date.now();
+        dragActivitySequence += 1;
+        dragActivity = {
+            activityId: `return-cat-drag-vrm:${startedAt}:${dragActivitySequence}`,
+            startedAt: startedAt,
+            startX: left,
+            startY: top,
+            lastX: left,
+            lastY: top,
+            pathDistancePx: 0,
+            terminalReported: false
+        };
+    };
+
+    const recordDragActivityPoint = (left, top) => {
+        if (!dragActivity || dragActivity.terminalReported ||
+            !Number.isFinite(left) || !Number.isFinite(top)) {
+            return;
+        }
+        dragActivity.pathDistancePx += Math.hypot(
+            left - dragActivity.lastX,
+            top - dragActivity.lastY
+        );
+        dragActivity.lastX = left;
+        dragActivity.lastY = top;
+    };
+
+    const finishDragActivity = () => {
+        if (!dragActivity || dragActivity.terminalReported) return null;
+        dragActivity.terminalReported = true;
+        return {
+            activityId: dragActivity.activityId,
+            pathDistancePx: Math.max(0, dragActivity.pathDistancePx),
+            displacementPx: Math.hypot(
+                dragActivity.lastX - dragActivity.startX,
+                dragActivity.lastY - dragActivity.startY
+            ),
+            durationMs: Math.max(0, Date.now() - dragActivity.startedAt)
+        };
+    };
+
+    const dispatchDragTerminal = (reason, extraDetail) => {
+        if (typeof _dispatchNekoIdleReturnBallManualMove === 'function') {
+            _dispatchNekoIdleReturnBallManualMove(returnButtonContainer, reason, extraDetail);
+            return;
+        }
+        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+            detail: Object.assign({
+                reason: reason,
+                container: returnButtonContainer
+            }, extraDetail)
+        }));
+    };
 
     const handleStart = (clientX, clientY) => {
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
@@ -821,6 +878,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const rect = returnButtonContainer.getBoundingClientRect();
         containerStartX = rect.left;
         containerStartY = rect.top;
+        startDragActivity(containerStartX, containerStartY);
 
         // 在拖拽开始时缓存尺寸，避免每帧读取触发 layout
         cachedContainerWidth = rect.width || 64;
@@ -863,6 +921,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
 
         // 使用 transform 移动，仅走 GPU 合成，跳过 layout + paint
         const tx = newX - containerStartX;
@@ -888,6 +947,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
         returnButtonContainer.style.transform = '';
         returnButtonContainer.style.left = `${newX}px`;
         returnButtonContainer.style.top = `${newY}px`;
@@ -913,19 +973,20 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             commitDragPosition();
             const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
             const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
+            const dragActivityFacts = finishDragActivity();
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
-            if (moved) {
-                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
-                    detail: {
-                        reason: 'return-ball-drag-end',
-                        container: returnButtonContainer,
-                        movedDistancePx: movedDistancePx
-                    }
-                }));
+            if (dragActivityFacts) {
+                dispatchDragTerminal(
+                    moved ? 'return-ball-drag-end' : 'return-ball-drag-cancel',
+                    Object.assign({
+                        movedDistancePx: moved ? movedDistancePx : 0,
+                        dragCancelled: !moved
+                    }, dragActivityFacts)
+                );
             }
 
             // 恢复拖拽期间禁用的视觉效果
