@@ -90,6 +90,8 @@
         silenceDetectionTimer: null,
         hasSoundDetected: false,
         isMicMuted: false,
+        micLeaseOwner: 'none',
+        voiceInputLifecycleState: 'off',
         gameRouteActive: false,
         gameRouteGameType: '',
         gameRouteLanlanName: '',

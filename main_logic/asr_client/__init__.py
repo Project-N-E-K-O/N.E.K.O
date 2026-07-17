@@ -35,6 +35,7 @@ from ._registry_meta import (
     AsrEndpointingMode as _AsrEndpointingMode,
 )
 from ._voice_turn import _create_voice_turn_adapter
+from .provider_policy import resolve_provider_policy
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
 from .workers.gemini import gemini_asr_worker as _gemini_asr_worker
 from .workers.glm import glm_asr_worker as _glm_asr_worker
@@ -331,6 +332,10 @@ def _create_asr_session_from_selection(
         raise RuntimeError(f"ASR_BACKEND_NOT_IMPLEMENTED: {provider_key}")
     if provider_key != "dummy" and not selection._api_key:
         raise RuntimeError(f"ASR_CREDENTIALS_MISSING: {provider_key}")
+    provider_policy = resolve_provider_policy(
+        provider_key,
+        session_config.endpointing_mode,
+    )
 
     return _RealtimeAsrSessionImpl(
         worker_fn=worker_fn,
@@ -340,13 +345,18 @@ def _create_asr_session_from_selection(
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
         voice_turn_factory=(
-            partial(_create_voice_turn_adapter, on_activity=on_speech_activity)
+            partial(
+                _create_voice_turn_adapter,
+                on_activity=on_speech_activity,
+                smart_turn_required=provider_policy.smart_turn_required,
+            )
             if (
                 provider_meta.requires_smart_turn
                 and session_config.endpointing_mode == "manual"
             )
             else None
         ),
+        provider_policy=provider_policy,
     )
 
 

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class _VoiceTurnFailure:
     kind: Literal["unavailable", "runtime_error"]
-    stage: Literal["vad_load", "vad_feed", "consumer"]
+    stage: Literal["vad_load", "vad_feed", "smart_turn", "consumer"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +64,15 @@ class _VoiceTurnAdapter:
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
         queue_maxsize: int = 64,
         continuation_timeout_seconds: float = 2.0,
+        smart_turn_required: bool = False,
+        smart_turn_warm_seconds: float = 60.0,
     ) -> None:
         if queue_maxsize <= 0:
             raise ValueError("queue_maxsize must be positive")
         if continuation_timeout_seconds <= 0:
             raise ValueError("continuation_timeout_seconds must be positive")
+        if smart_turn_warm_seconds <= 0:
+            raise ValueError("smart_turn_warm_seconds must be positive")
         self._vad = vad
         self._gate = gate
         self._coordinator = coordinator
@@ -76,9 +80,12 @@ class _VoiceTurnAdapter:
         self._on_activity = on_activity
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=queue_maxsize)
         self._continuation_timeout_seconds = continuation_timeout_seconds
+        self._smart_turn_required = smart_turn_required
+        self._smart_turn_warm_seconds = smart_turn_warm_seconds
         self._consumer_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._fallback_task: asyncio.Task[None] | None = None
+        self._smart_turn_unload_task: asyncio.Task[None] | None = None
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
@@ -213,6 +220,7 @@ class _VoiceTurnAdapter:
             self._identity = item.identity
         if item.identity != self._identity:
             return
+        self._cancel_smart_turn_unload()
         self._coordinator.push_audio(item.pcm16)
         if not self._vad_load_attempted:
             self._vad_load_attempted = True
@@ -249,6 +257,9 @@ class _VoiceTurnAdapter:
             return
 
         if self._semantic_degraded:
+            if self._smart_turn_required:
+                self._report_failure("unavailable", "smart_turn")
+                return
             self._schedule_fallback(item.identity, "semantic_degraded")
             return
 
@@ -271,15 +282,25 @@ class _VoiceTurnAdapter:
             return
         if status is EvaluationStatus.STALE:
             return
+        if self._smart_turn_required:
+            failure_kind = (
+                "unavailable"
+                if status is EvaluationStatus.UNAVAILABLE
+                else "runtime_error"
+            )
+            self._report_failure(failure_kind, "smart_turn")
+            return
         self._enter_semantic_degraded()
         self._schedule_fallback(item.identity, "semantic_degraded")
 
     async def _process_reset(self, identity: _Identity) -> None:
         self._cancel_fallback()
+        self._cancel_smart_turn_unload()
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
         self._identity = identity
         self._commit_dispatched.clear()
+        self._schedule_smart_turn_unload(identity)
 
     async def _process_close(self) -> None:
         self._closed = True
@@ -290,6 +311,7 @@ class _VoiceTurnAdapter:
         if self._resources_closed:
             return
         self._resources_closed = True
+        self._cancel_smart_turn_unload()
         await self._coordinator.close()
         await asyncio.to_thread(self._vad.close)
         for task in tuple(self._callback_tasks):
@@ -330,6 +352,31 @@ class _VoiceTurnAdapter:
         if task is not None:
             task.cancel()
 
+    def _schedule_smart_turn_unload(self, identity: _Identity) -> None:
+        async def unload_after_warm_ttl() -> None:
+            try:
+                await asyncio.sleep(self._smart_turn_warm_seconds)
+                if self._closed or self._failed or identity != self._identity:
+                    return
+                unload = getattr(self._coordinator, "unload_predictor", None)
+                if callable(unload):
+                    await unload()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("ASR SmartTurn idle unload failed")
+
+        self._smart_turn_unload_task = asyncio.create_task(
+            unload_after_warm_ttl(),
+            name="asr-smart-turn-idle-unload",
+        )
+
+    def _cancel_smart_turn_unload(self) -> None:
+        task = self._smart_turn_unload_task
+        self._smart_turn_unload_task = None
+        if task is not None:
+            task.cancel()
+
     def _enter_semantic_degraded(self) -> None:
         if self._semantic_degraded:
             return
@@ -341,12 +388,13 @@ class _VoiceTurnAdapter:
     def _report_failure(
         self,
         kind: Literal["unavailable", "runtime_error"],
-        stage: Literal["vad_load", "vad_feed", "consumer"],
+        stage: Literal["vad_load", "vad_feed", "smart_turn", "consumer"],
     ) -> None:
         if self._failed or self._closed:
             return
         self._failed = True
         self._cancel_fallback()
+        self._cancel_smart_turn_unload()
         failure_future = self._failure_future
         if failure_future is None:
             failure_future = asyncio.get_running_loop().create_future()
@@ -371,6 +419,7 @@ def _create_voice_turn_adapter(
     on_commit: Callable[[int, int, int], Awaitable[None]],
     *,
     on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
+    smart_turn_required: bool = False,
 ) -> _VoiceTurnAdapter:
     config = SmartTurnConfig(enabled=True)
     vad = SileroVad(
@@ -389,4 +438,5 @@ def _create_voice_turn_adapter(
         coordinator=coordinator,
         on_commit=on_commit,
         on_activity=on_activity,
+        smart_turn_required=smart_turn_required,
     )

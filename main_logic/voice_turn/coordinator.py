@@ -24,6 +24,8 @@ class ProbabilityPredictor(Protocol):
 
     def predict_probability(self, audio: np.ndarray) -> float: ...
 
+    def unload(self) -> bool: ...
+
     def close(self) -> None: ...
 
 
@@ -182,6 +184,16 @@ class TurnCoordinator:
             self._latest_request = self._request_seq + 1
             self._state = CoordinatorState.IDLE
             self._buffer.reset()
+
+    async def unload_predictor(self) -> None:
+        """Release SmartTurn after idle without closing the coordinator."""
+
+        async with self._evaluation_lock:
+            if self._closed:
+                return
+            unload = getattr(self._predictor, "unload", None)
+            if callable(unload):
+                await asyncio.to_thread(unload)
 
     async def close(self) -> None:
         async with self._state_lock:

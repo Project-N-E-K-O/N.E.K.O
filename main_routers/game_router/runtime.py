@@ -2242,6 +2242,13 @@ async def route_external_stream_message(lanlan_name: str, message: dict) -> bool
         )
 
     if input_type == "audio":
+        suspend_voice = getattr(
+            mgr,
+            "_suspend_independent_voice_input_for_game",
+            None,
+        )
+        if callable(suspend_voice):
+            await suspend_voice()
         transcript = str(message.get("transcript") or message.get("text") or "").strip()
         if transcript:
             return await route_external_voice_transcript(

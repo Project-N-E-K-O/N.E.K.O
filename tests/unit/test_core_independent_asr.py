@@ -9,6 +9,10 @@ import pytest
 from main_logic import core as core_facade
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin
+from main_logic.asr_client.detector_runtime import DetectorFeedResult
+from main_logic.asr_client.lifecycle_contracts import VoiceRouteMode
+from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from utils import preferences
 
@@ -62,18 +66,157 @@ async def test_independent_route_sends_pcm_to_asr_only() -> None:
     assert runtime._omni_mic_audio_bytes == 0
 
 
-async def test_native_route_leaves_pcm_for_omni_and_counts_on_record() -> None:
+async def test_enforced_lifecycle_suppresses_local_silence_upload() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = type(
+        "Detector",
+        (),
+        {"feed": AsyncMock(return_value=DetectorFeedResult((), True))},
+    )()
+
+    consumed = await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert consumed is True
+    asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_lifecycle.pre_roll_bytes == 320
+
+
+async def test_local_speech_wake_uploads_pre_roll_to_independent_asr() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = type("Detector", (), {})()
+    detector.feed = AsyncMock(
+        side_effect=[
+            DetectorFeedResult((), True),
+            DetectorFeedResult((SpeechActivityEvent.SPEECH_STARTED,), True),
+        ]
+    )
+    runtime._asr_detector = detector
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    await runtime._route_microphone_audio(
+        b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    asr.stream_audio.assert_awaited_once_with(
+        (b"\x01\x00" * 160) + (b"\x02\x00" * 160),
+        sample_rate_hz=16_000,
+    )
+    runtime.session.handle_interruption.assert_awaited_once_with()
+
+
+async def test_detector_failure_fails_open_to_same_independent_asr() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = type(
+        "Detector",
+        (),
+        {"feed": AsyncMock(return_value=DetectorFeedResult((), False))},
+    )()
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    asr.stream_audio.assert_awaited_once_with(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    assert runtime._asr_route_mode == "independent"
+
+
+async def test_game_takeover_clears_provider_audio_and_suspends_lifecycle() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.clear_audio_buffer = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = type("Detector", (), {"reset": AsyncMock()})()
+    runtime._asr_detector = detector
+
+    await runtime._suspend_independent_voice_input_for_game()
+
+    asr.clear_audio_buffer.assert_awaited_once_with()
+    detector.reset.assert_awaited_once_with()
+    assert runtime._asr_lifecycle.snapshot.state.value == "suspended"
+
+    await runtime._resume_independent_voice_input_after_game()
+    assert runtime._asr_lifecycle.snapshot.state.value == "local_listen"
+
+
+async def test_game_takeover_wins_even_if_provider_clear_fails() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.clear_audio_buffer = AsyncMock(
+        side_effect=RuntimeError("provider clear failed")
+    )
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+
+    await runtime._suspend_independent_voice_input_for_game()
+
+    assert runtime._asr_lifecycle.snapshot.state.value == "suspended"
+
+
+async def test_fresh_blocked_route_consumes_pcm_without_omni() -> None:
     runtime = _Runtime()
 
     consumed = await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
     )
-    runtime._record_omni_microphone_audio(320)
 
-    assert consumed is False
+    assert consumed is True
     assert runtime._asr_audio_bytes == 0
-    assert runtime._omni_mic_audio_bytes == 320
+    assert runtime._omni_mic_audio_bytes == 0
 
 
 async def test_native_label_cannot_bypass_required_independent_asr() -> None:
@@ -239,6 +382,18 @@ async def test_close_invalidates_late_final_before_waiting_for_provider() -> Non
     assert runtime._asr_route_mode == "blocked"
 
 
+async def test_close_releases_independent_audio_pipeline() -> None:
+    runtime = _Runtime()
+    pipeline = type("Pipeline", (), {})()
+    pipeline.close = AsyncMock()
+    runtime._voice_input_audio_pipeline = pipeline
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+
+    pipeline.close.assert_awaited_once_with()
+    assert runtime._voice_input_audio_pipeline is not pipeline
+
+
 async def test_close_failure_keeps_the_requested_blocked_route() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -281,6 +436,27 @@ async def test_asr_stream_failure_never_replays_the_failed_frame_to_omni() -> No
     assert runtime._asr_route_mode == "blocked"
     assert runtime._asr_session is None
     assert "sensitive provider body" not in str(runtime.send_status.await_args)
+
+
+async def test_asr_backpressure_reports_specific_blocking_status() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock(
+        side_effect=RuntimeError("ASR_STREAM_BACKPRESSURE: queue full")
+    )
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+
+    await runtime._route_microphone_audio(
+        b"\x00\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+
+    assert "ASR_STREAM_BACKPRESSURE" in runtime.send_status.await_args.args[0]
+    assert runtime._asr_route_mode == "blocked"
 
 
 async def test_independent_asr_setting_is_persisted_as_a_boolean() -> None:
@@ -399,7 +575,7 @@ async def test_startup_close_window_is_blocked_before_settings_resolution(
 
     release_close.set()
     await asyncio.wait_for(start_task, 1)
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
 
 
 async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> None:
@@ -890,7 +1066,7 @@ async def test_hot_swap_starts_independent_asr_after_core_route_change(
     runtime = _Runtime()
     runtime.core_api_type = core_type
     runtime.input_mode = "audio"
-    runtime._asr_route_mode = "native"
+    runtime._asr_route_mode = "blocked"
     runtime._asr_core_type = "free"
     runtime._start_independent_asr_if_enabled = AsyncMock()
 
@@ -899,14 +1075,11 @@ async def test_hot_swap_starts_independent_asr_after_core_route_change(
     runtime._start_independent_asr_if_enabled.assert_awaited_once_with("audio")
 
 
-@pytest.mark.parametrize("route_mode", ["native", "blocked"])
-async def test_hot_swap_does_not_retry_failed_same_core_route(
-    route_mode: str,
-) -> None:
+async def test_hot_swap_does_not_retry_failed_same_core_route() -> None:
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.input_mode = "audio"
-    runtime._asr_route_mode = route_mode
+    runtime._asr_route_mode = "blocked"
     runtime._asr_core_type = "gemini"
     runtime._start_independent_asr_if_enabled = AsyncMock()
 
@@ -980,7 +1153,8 @@ async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> N
     await runtime._start_independent_asr_if_enabled("text")
 
     factory.assert_not_called()
-    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_required is False
 
 
 async def test_free_core_reports_unavailable_and_blocks_omni(monkeypatch) -> None:

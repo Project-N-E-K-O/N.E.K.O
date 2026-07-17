@@ -28,6 +28,8 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 import numpy as np
 import soxr
 
+from .provider_policy import AsrProviderPolicy
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,7 @@ _READY_TIMEOUT_SECONDS = 10.0
 _CALLBACK_DRAIN_TIMEOUT_SECONDS = 5.0
 _WORKER_CLOSE_TIMEOUT_SECONDS = 5.0
 _REQUEST_QUEUE_SIZE = 64
+_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS = 2.0
 _RESPONSE_QUEUE_SIZE = 128
 _CALLBACK_QUEUE_SIZE = 64
 
@@ -235,6 +238,7 @@ class _RealtimeAsrSessionImpl:
         on_connection_error: Callable[[str], Awaitable[None]],
         on_status_message: Callable[[str], Awaitable[None]] | None = None,
         voice_turn_factory: VoiceTurnFactory | None = None,
+        provider_policy: AsrProviderPolicy | None = None,
     ) -> None:
         if not isinstance(config, AsrSessionConfig):
             raise TypeError("ASR_INVALID_CONFIG: config must be AsrSessionConfig")
@@ -252,6 +256,7 @@ class _RealtimeAsrSessionImpl:
         self._on_connection_error = on_connection_error
         self._on_status_message = on_status_message
         self._voice_turn_factory = voice_turn_factory
+        self._provider_policy = provider_policy
         self._voice_turn_adapter: _VoiceTurnAdapterProtocol | None = None
         self._voice_turn_watch_task: asyncio.Task[None] | None = None
 
@@ -266,6 +271,12 @@ class _RealtimeAsrSessionImpl:
         self._committed_utterance_keys: set[_UtteranceKey] = set()
         self._utterance_order: deque[_UtteranceKey] = deque()
         self._pending_finals: dict[_UtteranceKey, str] = {}
+        self._logical_turn_id = 1
+        self._physical_segment_audio_bytes = 0
+        self._logical_segments: dict[int, list[_UtteranceKey]] = {}
+        self._segment_texts: dict[_UtteranceKey, str] = {}
+        self._completed_logical_turns: set[int] = set()
+        self._next_logical_turn_to_publish = 1
 
         self._request_queue: asyncio.Queue[_AsrWorkerRequest] | None = None
         self._response_queue: asyncio.Queue[_AsrWorkerEvent] | None = None
@@ -471,11 +482,22 @@ class _RealtimeAsrSessionImpl:
                     await self._voice_turn_adapter.push_audio(
                         generation=self._generation,
                         buffer_epoch=self._buffer_epoch,
-                        utterance_id=self._utterance_id,
+                        utterance_id=(
+                            self._logical_turn_id
+                            if self._uses_segment_aggregation
+                            else self._utterance_id
+                        ),
                         pcm16=normalized_audio,
                     )
+                self._physical_segment_audio_bytes += len(normalized_audio)
             # Even if soxr is still buffering, valid input belongs to this turn.
             self._utterance_has_audio = True
+            if (
+                self._uses_segment_aggregation
+                and self._physical_segment_audio_bytes
+                >= self._segmented_max_audio_bytes
+            ):
+                await self._commit_physical_segment_locked(logical_complete=False)
 
     async def signal_user_activity_end(self) -> None:
         async with self._operation_lock:
@@ -496,6 +518,8 @@ class _RealtimeAsrSessionImpl:
             self._committed_utterance_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
+            self._logical_turn_id += 1
+            self._clear_segment_aggregation_state()
             self._reset_resampler()
             await self._enqueue_request(
                 _AsrWorkerRequest(
@@ -547,6 +571,7 @@ class _RealtimeAsrSessionImpl:
             self._committed_utterance_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
+            self._clear_segment_aggregation_state()
             self._reset_resampler()
 
             await self._unload_voice_turn_adapter(context="during close")
@@ -640,9 +665,16 @@ class _RealtimeAsrSessionImpl:
         logger.warning(
             "ASR voice turn endpointing failed kind=%s stage=%s",
             kind if kind in ("unavailable", "runtime_error") else "runtime_error",
-            stage if stage in ("vad_load", "vad_feed", "consumer") else "consumer",
+            (
+                stage
+                if stage in ("vad_load", "vad_feed", "smart_turn", "consumer")
+                else "consumer"
+            ),
         )
-        await self._fail("ASR_WORKER_FAILED", "voice turn endpointing failed")
+        await self._fail(
+            "ASR_ENDPOINTING_FAILED",
+            "required voice turn endpointing failed",
+        )
 
     async def _handle_voice_turn_commit(
         self,
@@ -655,13 +687,24 @@ class _RealtimeAsrSessionImpl:
                 self._state is not _SessionState.READY
                 or generation != self._generation
                 or buffer_epoch != self._buffer_epoch
-                or utterance_id != self._utterance_id
-                or not self._utterance_has_audio
+                or utterance_id
+                != (
+                    self._logical_turn_id
+                    if self._uses_segment_aggregation
+                    else self._utterance_id
+                )
+                or (
+                    not self._utterance_has_audio
+                    and not self._logical_segments.get(self._logical_turn_id)
+                )
             ):
                 return
             await self._commit_current_utterance_locked()
 
     async def _commit_current_utterance_locked(self) -> None:
+        if self._uses_segment_aggregation:
+            await self._complete_segmented_logical_turn_locked()
+            return
         generation = self._generation
         buffer_epoch = self._buffer_epoch
         utterance_id = self._utterance_id
@@ -723,6 +766,139 @@ class _RealtimeAsrSessionImpl:
             # utterance without waiting for model/VAD work to drain. This keeps
             # explicit commit responsive while preserving FIFO identity order.
             await asyncio.sleep(0)
+
+    @property
+    def _uses_segment_aggregation(self) -> bool:
+        policy = self._provider_policy
+        return bool(
+            policy is not None
+            and policy.transport == "segmented"
+            and policy.max_segment_ms is not None
+        )
+
+    @property
+    def _segmented_max_audio_bytes(self) -> int:
+        policy = self._provider_policy
+        if policy is None or policy.max_segment_ms is None:
+            return 0
+        return policy.max_segment_ms * 16_000 * 2 // 1_000
+
+    async def _commit_physical_segment_locked(
+        self,
+        *,
+        logical_complete: bool,
+    ) -> None:
+        logical_turn_id = self._logical_turn_id
+        if not self._utterance_has_audio:
+            if logical_complete and self._logical_segments.get(logical_turn_id):
+                self._completed_logical_turns.add(logical_turn_id)
+            return
+
+        generation = self._generation
+        buffer_epoch = self._buffer_epoch
+        utterance_id = self._utterance_id
+        if logical_complete:
+            tail = self._flush_resampler()
+            if tail:
+                await self._enqueue_request(
+                    _AsrWorkerRequest(
+                        kind="audio",
+                        generation=generation,
+                        buffer_epoch=buffer_epoch,
+                        utterance_id=utterance_id,
+                        audio=tail,
+                    )
+                )
+                if self._voice_turn_adapter is not None:
+                    await self._voice_turn_adapter.push_audio(
+                        generation=generation,
+                        buffer_epoch=buffer_epoch,
+                        utterance_id=logical_turn_id,
+                        pcm16=tail,
+                    )
+        key = (generation, buffer_epoch, utterance_id)
+        await self._enqueue_request(
+            _AsrWorkerRequest(
+                kind="commit",
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
+            )
+        )
+        self._logical_segments.setdefault(logical_turn_id, []).append(key)
+        if logical_complete:
+            self._completed_logical_turns.add(logical_turn_id)
+            self._reset_resampler()
+        self._utterance_id += 1
+        self._utterance_has_audio = False
+        self._physical_segment_audio_bytes = 0
+
+    async def _complete_segmented_logical_turn_locked(self) -> None:
+        completed_turn_id = self._logical_turn_id
+        await self._commit_physical_segment_locked(logical_complete=True)
+        if not self._logical_segments.get(completed_turn_id):
+            return
+        self._completed_logical_turns.add(completed_turn_id)
+        ready_texts = self._collect_ready_segmented_transcripts_locked()
+        if ready_texts:
+            assert self._callback_queue is not None
+            for ready_text in ready_texts:
+                await self._callback_queue.put(_CallbackItem(text=ready_text))
+        self._logical_turn_id += 1
+        if self._voice_turn_adapter is None:
+            return
+        adapter = self._voice_turn_adapter
+        next_generation = self._generation
+        next_buffer_epoch = self._buffer_epoch
+        next_logical_turn_id = self._logical_turn_id
+
+        async def reset_voice_turn() -> None:
+            try:
+                await adapter.reset(
+                    generation=next_generation,
+                    buffer_epoch=next_buffer_epoch,
+                    utterance_id=next_logical_turn_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("ASR voice turn reset failed after logical commit")
+
+        asyncio.create_task(
+            reset_voice_turn(),
+            name="asr-voice-turn-reset-after-logical-commit",
+        )
+        await asyncio.sleep(0)
+
+    def _collect_ready_segmented_transcripts_locked(self) -> list[str]:
+        ready_texts: list[str] = []
+        while self._next_logical_turn_to_publish in self._completed_logical_turns:
+            logical_turn_id = self._next_logical_turn_to_publish
+            keys = self._logical_segments.get(logical_turn_id, [])
+            if not keys or any(key not in self._segment_texts for key in keys):
+                break
+            ready_texts.append(
+                " ".join(self._segment_texts.pop(key).strip() for key in keys).strip()
+            )
+            for key in keys:
+                self._active_utterance_keys.discard(key)
+                self._committed_utterance_keys.discard(key)
+                self._pending_finals.pop(key, None)
+                try:
+                    self._utterance_order.remove(key)
+                except ValueError:
+                    pass
+            self._logical_segments.pop(logical_turn_id, None)
+            self._completed_logical_turns.discard(logical_turn_id)
+            self._next_logical_turn_to_publish += 1
+        return [text for text in ready_texts if text]
+
+    def _clear_segment_aggregation_state(self) -> None:
+        self._physical_segment_audio_bytes = 0
+        self._logical_segments.clear()
+        self._segment_texts.clear()
+        self._completed_logical_turns.clear()
+        self._next_logical_turn_to_publish = self._logical_turn_id
 
     async def _run_worker(self) -> None:
         assert self._request_queue is not None
@@ -872,16 +1048,25 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
-                self._pending_finals[key] = text
-                ready_texts: list[str] = []
-                while (
-                    self._utterance_order
-                    and self._utterance_order[0] in self._pending_finals
-                ):
-                    ready_key = self._utterance_order.popleft()
-                    ready_texts.append(self._pending_finals.pop(ready_key))
-                    self._active_utterance_keys.discard(ready_key)
-                    self._committed_utterance_keys.discard(ready_key)
+                if self._uses_segment_aggregation:
+                    if key in self._segment_texts:
+                        logger.warning(
+                            "ASR worker returned a duplicate or conflicting final"
+                        )
+                        return False
+                    self._segment_texts[key] = text
+                    ready_texts = self._collect_ready_segmented_transcripts_locked()
+                else:
+                    self._pending_finals[key] = text
+                    ready_texts = []
+                    while (
+                        self._utterance_order
+                        and self._utterance_order[0] in self._pending_finals
+                    ):
+                        ready_key = self._utterance_order.popleft()
+                        ready_texts.append(self._pending_finals.pop(ready_key))
+                        self._active_utterance_keys.discard(ready_key)
+                        self._committed_utterance_keys.discard(ready_key)
             assert self._callback_queue is not None
             for ready_text in ready_texts:
                 await self._callback_queue.put(_CallbackItem(text=ready_text))
@@ -917,6 +1102,7 @@ class _RealtimeAsrSessionImpl:
         self._committed_utterance_keys.clear()
         self._utterance_order.clear()
         self._pending_finals.clear()
+        self._clear_segment_aggregation_state()
         safe_code = (
             error_code
             if re.fullmatch(r"ASR_[A-Z0-9_]+", error_code or "")
@@ -982,7 +1168,11 @@ class _RealtimeAsrSessionImpl:
         closing_task = asyncio.create_task(self._closing_event.wait())
         watched: set[asyncio.Task[Any]] = {put_task, closing_task, worker_task}
         try:
-            done, _ = await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(
+                watched,
+                timeout=_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
         except BaseException:
             put_task.cancel()
             closing_task.cancel()
@@ -998,6 +1188,24 @@ class _RealtimeAsrSessionImpl:
                     except ValueError:
                         pass
             raise
+
+        if not done:
+            put_task.cancel()
+            closing_task.cancel()
+            await asyncio.gather(put_task, closing_task, return_exceptions=True)
+            if key is not None:
+                if added_active:
+                    self._active_utterance_keys.discard(key)
+                if added_committed:
+                    self._committed_utterance_keys.discard(key)
+                if added_order:
+                    try:
+                        self._utterance_order.remove(key)
+                    except ValueError:
+                        pass
+            raise RuntimeError(
+                "ASR_STREAM_BACKPRESSURE: provider request queue remained full"
+            )
 
         if put_task in done:
             try:

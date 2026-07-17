@@ -61,6 +61,26 @@ def test_close_is_terminal(monkeypatch, tmp_path):
     assert runtime.load() is False
 
 
+def test_unload_releases_session_and_allows_lazy_reload(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        onnx_runtime,
+        "resolve_verified_assets",
+        lambda filenames, override: (
+            tmp_path,
+            object(),
+            {"model.onnx": tmp_path / "model.onnx"},
+        ),
+    )
+    runtime = _Runtime(enabled=True)
+
+    assert runtime.load() is True
+    assert runtime.unload() is True
+    assert runtime.state is RuntimeState.UNLOADED
+    assert runtime._session is None
+    assert runtime.load() is True
+    assert runtime.loads == 2
+
+
 def test_missing_assets_make_runtime_unavailable(monkeypatch):
     def fail_resolve(filenames, override):
         raise AssetManifestError("missing model")

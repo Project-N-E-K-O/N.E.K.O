@@ -161,12 +161,10 @@ class StreamingMixin:
                     for i in range(0, len(combined_audio), large_chunk_size):
                         chunk = combined_audio[i:i + large_chunk_size]
                         try:
-                            if not await self._route_microphone_audio(
+                            await self._route_microphone_audio(
                                 chunk,
                                 sample_rate_hz=16_000,
-                            ):
-                                self._record_omni_microphone_audio(len(chunk))
-                                await self.session.stream_audio(chunk)
+                            )
                             await asyncio.sleep(0.025)
                             total_chunks_sent += 1
                         except Exception as e:
@@ -568,112 +566,46 @@ class StreamingMixin:
                 # 检查WebSocket连接
                 session_ref = self.session
                 audio_epoch = self._audio_stream_epoch
-                if not hasattr(session_ref, 'ws') or not session_ref.ws:
-                    logger.error("💥 Stream: Session websocket not available")
-                    return
+                # Microphone preprocessing and routing are independent from the
+                # Core/Omni transport. A missing Omni WSS must not intercept PCM.
                 try:
-                    if isinstance(data, list):
-                        audio_bytes = struct.pack(f'<{len(data)}h', *data)
-                        
-                        # 🔧 音频预处理：RNNoise降噪 + 降采样到16kHz（在缓存之前）
-                        # 检查是否为48kHz输入（480 samples = 960 bytes per 10ms chunk）
-                        num_samples = len(audio_bytes) // 2
-                        is_48khz = (num_samples == 480)
-                        
-                        processed_audio = audio_bytes  # 默认使用原始音频
-                        if is_48khz and isinstance(session_ref, OmniRealtimeClient):
-                            # 使用session的AudioProcessor处理音频
-                            if hasattr(session_ref, '_audio_processor') and session_ref._audio_processor:
-                                try:
-                                    # Use async wrapper to avoid blocking main loop
-                                    if hasattr(session_ref, 'process_audio_chunk_async'):
-                                        processed_audio = await session_ref.process_audio_chunk_async(audio_bytes)
-                                    else:
-                                        # Fallback (should not happen if client updated)
-                                        processed_audio = session_ref._audio_processor.process_chunk(audio_bytes)
-                                        
-                                    # RNNoise可能返回空字节（缓冲中），跳过
-                                    if len(processed_audio) == 0:
-                                        return
-                                except Exception as e:
-                                    logger.error(f"💥 音频预处理失败: {e}")
-                                    return
-                        if (
-                            self.session is not session_ref
-                            or not self.is_active
-                            or self._audio_stream_epoch != audio_epoch
-                        ):
-                            return
-                        
-                        # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
-                        if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
-                            async with self.hot_swap_cache_lock:
-                                self.hot_swap_audio_cache.append(processed_audio)
-                                if len(self.hot_swap_audio_cache) == 1:
-                                    logger.info("🔄 热切换进行中，开始缓存处理后的音频（16kHz）...")
-                            return
-                        
-                        # 检查session是否被服务器关闭（防刷屏）
-                        if self.session_closed_by_server:
-                            return  # 静默拒绝，不记录log
-                        
-                        # 再次检查session状态（防止在处理过程中session被关闭）
-                        if not session_ref or not hasattr(session_ref, 'ws') or not session_ref.ws:
-                            # 限流log：2秒内只记录一次
-                            current_time = asyncio.get_event_loop().time()
-                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                                logger.warning("⚠️ Session已关闭，跳过音频数据发送")
-                                self.last_audio_send_error_time = current_time
-                            return
-                        
-                        # 检查致命错误状态
-                        if hasattr(session_ref, '_fatal_error_occurred') and session_ref._fatal_error_occurred:
-                            current_time = asyncio.get_event_loop().time()
-                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                                logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
-                                self.last_audio_send_error_time = current_time
-                            return
-
-                        # Exactly one microphone outlet is allowed. Independent
-                        # ASR consumes the frame; native mode leaves it for Omni.
-                        if await self._route_microphone_audio(
-                            processed_audio,
-                            sample_rate_hz=16_000,
-                        ):
-                            return
-
-                        # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
-                        self._record_omni_microphone_audio(len(processed_audio))
-                        await session_ref.stream_audio(processed_audio)
-                    else:
-                        logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")
+                    if not isinstance(data, list):
+                        logger.error(
+                            "Microphone input rejected: expected a PCM sample list"
+                        )
                         return
-
-                except struct.error as se:
-                    logger.error(f"💥 Stream: Struct packing error (audio): {se}")
+                    audio_bytes = struct.pack(f'<{len(data)}h', *data)
+                    source_rate_hz = 48_000 if len(data) == 480 else 16_000
+                    processed_frame = await self._process_microphone_audio(
+                        audio_bytes,
+                        sample_rate_hz=source_rate_hz,
+                    )
+                    if not processed_frame.pcm16:
+                        return
+                    if (
+                        self.session is not session_ref
+                        or not self.is_active
+                        or self._audio_stream_epoch != audio_epoch
+                    ):
+                        return
+                    if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
+                        async with self.hot_swap_cache_lock:
+                            self.hot_swap_audio_cache.append(processed_frame.pcm16)
+                        return
+                    await self._route_microphone_audio(
+                        processed_frame.pcm16,
+                        sample_rate_hz=processed_frame.sample_rate_hz,
+                    )
                     return
-                except web_exceptions.ConnectionClosedOK:
-                    self.session_closed_by_server = True  # 标记连接已关闭
+                except struct.error:
+                    logger.error("Microphone input rejected: invalid PCM samples")
                     return
-                except AttributeError as ae:
-                    # 捕获 'NoneType' object has no attribute 'send' 等错误
-                    self.session_closed_by_server = True
-                    current_time = asyncio.get_event_loop().time()
-                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                        logger.error(f"💥 Stream: Session已关闭或不可用: {ae}")
-                        self.last_audio_send_error_time = current_time
-                    return
-                except Exception as e:
-                    # 检测连接关闭错误
-                    error_str = str(e)
-                    if 'no close frame' in error_str or 'Connection closed' in error_str:
-                        self.session_closed_by_server = True
-                    
-                    # 限流log
-                    current_time = asyncio.get_event_loop().time()
-                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
-                        logger.error(f"💥 Stream: Error processing audio data: {e}")
-                        self.last_audio_send_error_time = current_time
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.error(
+                        "Microphone preprocessing or independent ASR routing failed"
+                    )
                     return
 
             elif input_type in _IMAGE_INPUT_TYPES:

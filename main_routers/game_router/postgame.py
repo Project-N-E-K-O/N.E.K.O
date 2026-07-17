@@ -970,6 +970,13 @@ async def _finalize_game_route_state_inner(
         mgr._takeover_input_dispatcher = None
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
+    resume_voice = getattr(
+        mgr,
+        "_resume_independent_voice_input_after_game",
+        None,
+    )
+    if callable(resume_voice):
+        await resume_voice()
     if mgr and hasattr(mgr, "send_status"):
         try:
             await mgr.send_status(json.dumps({
