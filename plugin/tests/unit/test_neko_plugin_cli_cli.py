@@ -246,6 +246,20 @@ def test_validate_plugin_dir_reports_invalid_utf8_optional_files(tmp_path: Path)
     assert any(".gitignore is not valid UTF-8" in message for message in messages)
 
 
+def test_validate_plugin_dir_accepts_previous_plugin_ids(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    manifest_path.write_text(
+        manifest.replace('name = "CLI Demo"', 'name = "CLI Demo"\nprevious_ids = ["legacy_cli_demo"]'),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir, strict=False)
+
+    assert not any("previous_ids is not a recognized" in message for _level, message in issues)
+
+
 @pytest.mark.parametrize("removed_type", ["script", "extension"])
 def test_validate_plugin_dir_rejects_removed_plugin_types(
     tmp_path: Path,
