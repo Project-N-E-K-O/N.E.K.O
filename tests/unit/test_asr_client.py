@@ -1126,10 +1126,11 @@ async def test_close_unblocks_request_backpressure(monkeypatch):
         on_connection_error=AsyncMock(),
     )
     await session.connect()
-    for _ in range(asr_infra._REQUEST_QUEUE_SIZE):
-        await session.stream_audio(b"\x00\x00")
+    one_second = b"\x00\x00" * 16_000
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_MS // 1_000):
+        await session.stream_audio(one_second)
 
-    blocked_producer = asyncio.create_task(session.stream_audio(b"\x00\x00"))
+    blocked_producer = asyncio.create_task(session.stream_audio(one_second))
     await asyncio.sleep(0)
     assert blocked_producer.done() is False
     await asyncio.wait_for(session.close(), 1)
@@ -1148,11 +1149,12 @@ async def test_sustained_request_backpressure_blocks_the_turn(monkeypatch):
         on_connection_error=AsyncMock(),
     )
     await session.connect()
-    for _ in range(asr_infra._REQUEST_QUEUE_SIZE):
-        await session.stream_audio(b"\x00\x00")
+    one_second = b"\x00\x00" * 16_000
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_MS // 1_000):
+        await session.stream_audio(one_second)
 
     with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
-        await session.stream_audio(b"\x00\x00")
+        await session.stream_audio(one_second)
 
     await session.close()
 

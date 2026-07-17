@@ -530,40 +530,14 @@ class StreamingMixin:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
             
-            # Audio输入：只有OmniRealtimeClient能处理
+            # 麦克风 PCM 只进入独立 ASR，Core 会话类型不参与音频路由。
             if input_type == 'audio':
-                # 检查 session 类型
-                if not isinstance(self.session, OmniRealtimeClient):
-                    # 检查是否允许重建session
-                    if self.session_start_failure_count >= self.session_start_max_failures:
-                        logger.error("💥 Session类型不匹配，但失败次数过多，已停止自动重建")
-                        return
-                    
-                    logger.info(f"语音模式需要 OmniRealtimeClient，但当前是 {type(self.session).__name__}. 自动重建 session。")
-                    # 与上面 text 重建路径对偶：先置 session_ready=False 让 cache
-                    # 路径接住窗口期内的输入，再占用 guard 跨过 end_session，防止
-                    # 并发 _stream_data_now 抢跑 start_session(text) 造成本路径
-                    # 命中 2776 guard 静默失败（ERROR "💥 语音模式Session重建失败"）
-                    # 或落到 _process_stream_data_internal 4975 早退被 silent drop。
-                    async with self.input_cache_lock:
-                        self.session_ready = False
-                    self._starting_session_count += 1
-                    self._starting_input_mode = 'audio'
-                    try:
-                        if self.session:
-                            await self.end_session(reset_starting_count=False)
-                    finally:
-                        self._starting_session_count = max(0, self._starting_session_count - 1)
-                        if self._starting_session_count == 0:
-                            self._starting_input_mode = None
-                    await self.start_session(self.websocket, new=False, input_mode='audio')
+                if getattr(self, "_asr_route_mode", "independent") not in {
+                    "independent",
+                    "blocked",
+                }:
+                    raise RuntimeError("VOICE_ROUTE_MODE_INVALID")
 
-                    # 检查重建是否成功
-                    if not self.session or not self.is_active or not isinstance(self.session, OmniRealtimeClient):
-                        logger.error("💥 语音模式Session重建失败，放弃本次数据流")
-                        return
-                
-                # 检查WebSocket连接
                 session_ref = self.session
                 audio_epoch = self._audio_stream_epoch
                 # Microphone preprocessing and routing are independent from the
@@ -575,7 +549,18 @@ class StreamingMixin:
                         )
                         return
                     audio_bytes = struct.pack(f'<{len(data)}h', *data)
-                    source_rate_hz = 48_000 if len(data) == 480 else 16_000
+                    declared_rate_hz = message.get("sample_rate_hz")
+                    if declared_rate_hz is None:
+                        # 兼容旧版 JSON PCM 帧；新版二进制协议必须显式声明。
+                        source_rate_hz = 48_000 if len(data) == 480 else 16_000
+                    elif declared_rate_hz in {16_000, 48_000}:
+                        source_rate_hz = int(declared_rate_hz)
+                    else:
+                        logger.error(
+                            "Microphone input rejected: unsupported sample rate %r",
+                            declared_rate_hz,
+                        )
+                        return
                     processed_frame = await self._process_microphone_audio(
                         audio_bytes,
                         sample_rate_hz=source_rate_hz,
@@ -595,6 +580,7 @@ class StreamingMixin:
                     await self._route_microphone_audio(
                         processed_frame.pcm16,
                         sample_rate_hz=processed_frame.sample_rate_hz,
+                        speech_probability=processed_frame.speech_probability,
                     )
                     return
                 except struct.error:

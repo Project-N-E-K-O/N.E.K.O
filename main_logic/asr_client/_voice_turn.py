@@ -64,6 +64,7 @@ class _VoiceTurnAdapter:
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
         queue_maxsize: int = 64,
         continuation_timeout_seconds: float = 2.0,
+        max_endpoint_wait_seconds: float = 15.0,
         smart_turn_required: bool = False,
         smart_turn_warm_seconds: float = 60.0,
     ) -> None:
@@ -71,6 +72,12 @@ class _VoiceTurnAdapter:
             raise ValueError("queue_maxsize must be positive")
         if continuation_timeout_seconds <= 0:
             raise ValueError("continuation_timeout_seconds must be positive")
+        if max_endpoint_wait_seconds <= 0:
+            raise ValueError("max_endpoint_wait_seconds must be positive")
+        if max_endpoint_wait_seconds < continuation_timeout_seconds:
+            raise ValueError(
+                "max_endpoint_wait_seconds must not be shorter than continuation timeout"
+            )
         if smart_turn_warm_seconds <= 0:
             raise ValueError("smart_turn_warm_seconds must be positive")
         self._vad = vad
@@ -80,6 +87,7 @@ class _VoiceTurnAdapter:
         self._on_activity = on_activity
         self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=queue_maxsize)
         self._continuation_timeout_seconds = continuation_timeout_seconds
+        self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
         self._smart_turn_warm_seconds = smart_turn_warm_seconds
         self._consumer_task: asyncio.Task[None] | None = None
@@ -93,6 +101,7 @@ class _VoiceTurnAdapter:
         self._semantic_degraded = False
         self._failed = False
         self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
+        self._failure: _VoiceTurnFailure | None = None
         self._resources_closed = False
         self._closed = False
         self._commit_dispatched: set[_Identity] = set()
@@ -115,6 +124,22 @@ class _VoiceTurnAdapter:
             failure_future = asyncio.get_running_loop().create_future()
             self._failure_future = failure_future
         return await failure_future
+
+    @property
+    def failed(self) -> bool:
+        return self._failed
+
+    @property
+    def failure(self) -> _VoiceTurnFailure | None:
+        return self._failure
+
+    async def wait_idle(self) -> None:
+        """等待当前检测批次完成，供外层统一 DetectorRuntime 串行取事件。"""
+
+        await self._queue.join()
+        callbacks = tuple(self._callback_tasks)
+        if callbacks:
+            await asyncio.gather(*callbacks)
 
     async def push_audio(
         self,
@@ -166,6 +191,9 @@ class _VoiceTurnAdapter:
             await self._close_resources()
             return
         if self._failed and not task.done():
+            # SmartTurn 的端点等待任务也可能在 consumer 队列外宣告失败。
+            # 此时 consumer 仍在等下一项，必须显式取消，避免关闭流程永久等待。
+            task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if task.done():
             self._closed = True
@@ -327,6 +355,9 @@ class _VoiceTurnAdapter:
         self._cancel_fallback()
 
         async def fallback() -> None:
+            if reason == "semantic_incomplete" and self._smart_turn_required:
+                await self._strict_incomplete_wait(identity)
+                return
             await asyncio.sleep(self._continuation_timeout_seconds)
             state_matches = (
                 self._coordinator.state is CoordinatorState.WAIT_CONTINUATION
@@ -345,6 +376,49 @@ class _VoiceTurnAdapter:
         self._fallback_task = asyncio.create_task(
             fallback(), name="asr-voice-turn-fallback"
         )
+
+    async def _strict_incomplete_wait(self, identity: _Identity) -> None:
+        """重复语义判断；required SmartTurn 永远不能由静音超时直接提交。"""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._max_endpoint_wait_seconds
+        while True:
+            await asyncio.sleep(self._continuation_timeout_seconds)
+            if (
+                self._closed
+                or self._failed
+                or identity != self._identity
+                or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
+            ):
+                return
+            if loop.time() >= deadline:
+                self._report_failure("unavailable", "smart_turn")
+                return
+            try:
+                result = await self._coordinator.evaluate_buffered()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._report_failure("runtime_error", "smart_turn")
+                return
+            if identity != self._identity or self._closed or self._failed:
+                return
+            status = getattr(result, "status", None)
+            decision = getattr(result, "decision", None)
+            if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
+                self._dispatch_commit(identity)
+                return
+            if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
+                continue
+            if status is EvaluationStatus.STALE:
+                return
+            failure_kind = (
+                "unavailable"
+                if status is EvaluationStatus.UNAVAILABLE
+                else "runtime_error"
+            )
+            self._report_failure(failure_kind, "smart_turn")
+            return
 
     def _cancel_fallback(self) -> None:
         task = self._fallback_task
@@ -393,6 +467,7 @@ class _VoiceTurnAdapter:
         if self._failed or self._closed:
             return
         self._failed = True
+        self._failure = _VoiceTurnFailure(kind, stage)
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
         failure_future = self._failure_future
@@ -400,7 +475,7 @@ class _VoiceTurnAdapter:
             failure_future = asyncio.get_running_loop().create_future()
             self._failure_future = failure_future
         if not failure_future.done():
-            failure_future.set_result(_VoiceTurnFailure(kind, stage))
+            failure_future.set_result(self._failure)
 
     def _dispatch_commit(self, identity: _Identity) -> None:
         if self._closed or identity != self._identity:

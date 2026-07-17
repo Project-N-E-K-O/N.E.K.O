@@ -30,6 +30,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 
 import json
 import math
+import struct
 import uuid
 import asyncio
 import time
@@ -48,6 +49,33 @@ from utils.icebreaker_route_state import (
     finalize_icebreaker_route,
     get_active_icebreaker_route_session_id,
 )
+
+
+_VOICE_BINARY_MAGIC = b"NEKO"
+_VOICE_BINARY_HEADER_BYTES = 8
+
+
+def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
+    """解码前端二进制 PCM 帧；禁止把任意二进制误当麦克风音频。"""
+
+    if len(payload) <= _VOICE_BINARY_HEADER_BYTES:
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too short")
+    magic, sample_rate_hz = struct.unpack_from("<4sI", payload)
+    pcm = payload[_VOICE_BINARY_HEADER_BYTES:]
+    if (
+        magic != _VOICE_BINARY_MAGIC
+        or sample_rate_hz not in {16_000, 48_000}
+        or len(pcm) % 2
+    ):
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: invalid header or PCM")
+    sample_count = len(pcm) // 2
+    samples = list(struct.unpack(f"<{sample_count}h", pcm))
+    return {
+        "action": "stream_data",
+        "input_type": "audio",
+        "sample_rate_hz": sample_rate_hz,
+        "data": samples,
+    }
 
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
@@ -319,7 +347,23 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 「并发开第二个窗口」的情形。
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
         while True:
-            data = await websocket.receive_text()
+            receive = getattr(websocket, "receive", None)
+            if callable(receive):
+                ws_event = await receive()
+                if ws_event.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect(ws_event.get("code", 1000))
+                binary_payload = ws_event.get("bytes")
+                if binary_payload is not None:
+                    message = _decode_binary_audio_frame(binary_payload)
+                else:
+                    data = ws_event.get("text")
+                    if not isinstance(data, str):
+                        raise ValueError("WEBSOCKET_MESSAGE_INVALID")
+                    message = json.loads(data)
+            else:
+                # 兼容只实现 receive_text 的测试 double。
+                data = await websocket.receive_text()
+                message = json.loads(data)
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
             if lanlan_name not in session_id or lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
@@ -329,7 +373,6 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
                 await websocket.close()
                 break
-            message = json.loads(data)
             action = message.get("action")
 
             # 处理语言设置（可以在任何消息中携带）
@@ -437,6 +480,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
                 _fire_task(session_manager[lanlan_name].end_session())
+
+            elif action == "voice_input_control":
+                # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
+                # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
+                await session_manager[lanlan_name]._handle_voice_input_control(
+                    message.get("event", ""),
+                    message.get("lease_generation", -1),
+                )
 
             elif action == "capture_bridge_status":
                 from utils.capture_bridge import mark_capture_client

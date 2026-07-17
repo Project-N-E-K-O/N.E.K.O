@@ -569,36 +569,69 @@ async def test_incomplete_waits_for_continuation_and_resume_cancels_fallback() -
     await adapter.close()
 
 
-async def test_incomplete_falls_back_to_same_identity_after_default_two_second_policy() -> (
-    None
-):
+async def test_required_incomplete_rechecks_and_only_complete_commits() -> None:
     assert (
         inspect.signature(_VoiceTurnAdapter)
         .parameters["continuation_timeout_seconds"]
         .default
         == 2.0
     )
-    committed = asyncio.Event()
     commits: list[tuple[int, int, int]] = []
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         commits.append((generation, buffer_epoch, utterance_id))
-        committed.set()
+
+    coordinator = _FakeCoordinator([_incomplete(), _complete()])
 
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
         gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
-        coordinator=_FakeCoordinator([_incomplete()]),
+        coordinator=coordinator,
         on_commit=commit,
         continuation_timeout_seconds=0.02,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.2,
     )
     await adapter.start()
 
     await adapter.push_audio(
         generation=21, buffer_epoch=22, utterance_id=23, pcm16=b"\x01\x00"
     )
-    await asyncio.wait_for(committed.wait(), 1)
+    await _eventually(lambda: coordinator.evaluate_calls == 1)
+    await asyncio.sleep(0.01)
+    assert commits == []
+    await _eventually(lambda: coordinator.evaluate_calls == 2)
+    await _eventually(lambda: commits == [(21, 22, 23)])
     assert commits == [(21, 22, 23)]
+    await adapter.close()
+
+
+async def test_required_incomplete_blocks_after_max_endpoint_wait_without_commit() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    coordinator = _FakeCoordinator([_incomplete()] * 20)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=coordinator,
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+        max_endpoint_wait_seconds=0.035,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=31, buffer_epoch=32, utterance_id=33, pcm16=b"\x01\x00"
+    )
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+
+    assert failure.stage == "smart_turn"
+    assert commits == []
+    assert coordinator.evaluate_calls >= 2
     await adapter.close()
 
 

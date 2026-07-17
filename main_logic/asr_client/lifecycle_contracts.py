@@ -33,6 +33,8 @@ class VoiceLifecycleEvent(Enum):
     CONNECT_FAILED = "connect_failed"
     RETRY = "retry"
     RETRIES_EXHAUSTED = "retries_exhausted"
+    TURN_SEALED = "turn_sealed"
+    # 兼容旧调用方；新代码应使用 TURN_SEALED，明确区分语义端点和 provider final。
     TURN_ENDPOINTED = "turn_endpointed"
     PROVIDER_FINAL = "provider_final"
     WARM_EXPIRED = "warm_expired"
@@ -85,6 +87,7 @@ _TRANSITIONS: dict[
     (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.SPEECH_CONFIRMED): VoiceLifecycleState.ACTIVE,
     (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.CONNECT_FAILED): VoiceLifecycleState.BACKOFF,
+    (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_SEALED): VoiceLifecycleState.DRAINING,
     (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_ENDPOINTED): VoiceLifecycleState.DRAINING,
     (VoiceLifecycleState.DRAINING, VoiceLifecycleEvent.PROVIDER_FINAL): VoiceLifecycleState.WARM_IDLE,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.SPEECH_CONFIRMED): VoiceLifecycleState.ACTIVE,
