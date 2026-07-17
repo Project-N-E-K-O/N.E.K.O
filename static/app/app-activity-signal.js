@@ -21,7 +21,7 @@
  * Pairs with backend endpoint ``POST /api/activity_signal`` defined in
  * ``main_routers/system_router.py``. Endpoint enforces a 5s rate limit
  * per lanlan_name; this client intentionally waits 6s to leave room for
- * timer / transport jitter. The tracker uses a 15s TTL on each accepted
+ * timer / transport jitter. The tracker uses a 20s TTL on each accepted
  * push, so a stalled heartbeat still falls back to the local collector.
  *
  * Single-window invariant: load this script only from the always-on
@@ -34,9 +34,9 @@
     // ── tuning ──────────────────────────────────────────────────────
     // Stay above backend ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5.0s).
     // Using the exact same 5s boundary caused normal timer / transport
-    // jitter to produce repeated 429 responses. At 6s, one dropped push
-    // still leaves about 12s between accepted updates, inside the
-    // tracker's 15s freshness TTL.
+    // jitter to produce repeated 429 responses. At 6s, two dropped
+    // pushes put the next successful attempt at about 18s, inside the
+    // tracker's 20s freshness TTL with room for normal jitter.
     var HEARTBEAT_INTERVAL_MS = 6000;
     // After this many consecutive failures, throttle the log spam (we
     // keep retrying, just stop printing every time).
@@ -46,7 +46,7 @@
     // a 6s heartbeat that 403s forever is a silent permanent
     // degradation (tracker falls back to local collector but nothing
     // visible alerts the user, and we're burning HTTP cycles for
-    // nothing). 6 ticks × 6s = 36s > 2× the 15s tracker TTL — enough room
+    // nothing). 6 ticks × 6s = 36s is well past the 20s tracker TTL — enough room
     // for the page_config token bootstrap to win any boot-time race
     // before we give up.
     var MAX_CONSECUTIVE_CSRF_FAILURES = 6;
@@ -220,7 +220,7 @@
             var payload = await readSignalsFromBridge();
             if (payload === null) {
                 // Bridge read failed or returned nothing usable. Skip
-                // silently — tracker's 15s TTL will expire and the
+                // silently — tracker's 20s TTL will expire and the
                 // local collector takes over, which is the documented
                 // fallback for this case. ``readSignalsFromBridge``
                 // already incremented ``consecutiveFailures`` if the
@@ -233,7 +233,7 @@
             // — the tracker's ``push_external_system_signal`` defaults
             // absent numerics to 0.0 and flips ``os_signals_available``
             // to true, silently overwriting real state with "idle=0,
-            // cpu=0, no window". Skip and let the 15s TTL hand back to
+            // cpu=0, no window". Skip and let the 20s TTL hand back to
             // the local collector. Backend also rejects empty payloads
             // as a defence-in-depth, but skipping client-side saves an
             // HTTP roundtrip and a rate-limit hit.
@@ -469,7 +469,7 @@
     }
 
     // Pause on tab hide to avoid burning bridge IPC + network for a
-    // hidden window. Resume on visible. The 15s TTL covers brief tab
+    // hidden window. Resume on visible. The 20s TTL covers brief tab
     // switches, so the user won't see stale data on resume — the next
     // tick fires within HEARTBEAT_INTERVAL_MS.
     document.addEventListener('visibilitychange', function () {

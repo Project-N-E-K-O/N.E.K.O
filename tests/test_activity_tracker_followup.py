@@ -62,6 +62,39 @@ def _sys_snap(
     )
 
 
+# ── External signal freshness ───────────────────────────────────────
+
+
+def test_external_snapshot_tolerates_two_missed_six_second_pushes():
+    """Two missed 6s pushes must not force a brief collector fallback."""
+    from main_logic.activity.tracker import (
+        UserActivityTracker,
+        _EXTERNAL_SIGNAL_TTL_SECONDS,
+    )
+
+    base = 1000.0
+    local_snapshot = _sys_snap(title='local fallback', ts=base)
+
+    class _StubCollector:
+        def snapshot(self):
+            return local_snapshot
+
+    tracker = UserActivityTracker(
+        lanlan_name='_test_external_ttl',
+        collector=_StubCollector(),
+    )
+    tracker.push_external_system_signal(
+        window_title='remote desktop',
+        idle_seconds=0.0,
+        now=base,
+    )
+    external_snapshot = tracker._external_system_snap
+
+    assert _EXTERNAL_SIGNAL_TTL_SECONDS == 20.0
+    assert tracker._select_system_snapshot(base + 18.5) is external_snapshot
+    assert tracker._select_system_snapshot(base + 20.001) is local_snapshot
+
+
 # ── #3 Privacy blacklist ────────────────────────────────────────────
 
 

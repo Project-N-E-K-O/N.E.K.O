@@ -102,28 +102,26 @@ _ACTIVITY_GUESS_WINDOW_TRAIL_MAX_AGE_SECONDS = 600.0
 # (which on remote deployments will be in degraded mode) — better to
 # advertise "no signal" than to keep using stale window data.
 #
-# 15s = 3× the 5s heartbeat. The push pipeline stacks two unsynchronised
-# 5s timers — the NEKO-PC bridge sampler (reads OS signals) and the
-# renderer heartbeat (reads the bridge's cached snapshot + POSTs) — so
-# worst-case data age can already approach ~10-12s before any loss. 15s
-# therefore tolerates ~2 consecutive dropped pushes before falling back.
-# Shorter (e.g. 10s) would thrash between fresh/degraded on a single
-# drop over a lossy remote link; 30s keeps trusting a stale "user
-# active" snapshot for too long after the heartbeat dies. 15s balances
-# faster stale-detection against fallback thrash.
-_EXTERNAL_SIGNAL_TTL_SECONDS = 15.0
+# The renderer pushes every 6s while the NEKO-PC bridge refreshes its
+# cached OS signals on a separate ~5s sampler. After an accepted push,
+# two skipped renderer reads put the next successful attempt at ~18s.
+# A 20s TTL preserves that tolerance with ~2s of timer / transport
+# margin. Shorter (e.g. 15s) briefly falls back before that recovery;
+# 30s keeps trusting a stale "user active" snapshot for too long after
+# the heartbeat dies. 20s balances drop tolerance against stale-data
+# detection.
+_EXTERNAL_SIGNAL_TTL_SECONDS = 20.0
 
 # Minimum interval between accepted external-signal pushes for a given
-# lanlan_name. Tuned together with the frontend heartbeat: the Electron
-# preload pushes every ~5s, so anything more frequent is either a buggy
+# lanlan_name. Tuned together with the frontend heartbeat: the renderer
+# pushes every ~6s, so anything more frequent is either a buggy
 # client (re-entering the heartbeat) or spam. Enforced by the
 # ``/api/activity_signal`` endpoint, not the tracker itself — the
 # tracker is happily idempotent and just overwrites the last push.
 #
 # Pairs with TTL above: TTL is the "data freshness" window, this is the
-# "request frequency" cap. TTL is 3× this interval, so the tracker
-# tolerates ~2 consecutive rate-limited/dropped pushes and still has
-# data within the freshness window.
+# "request frequency" cap. The 20s TTL keeps the last accepted snapshot
+# fresh through two missed 6s pushes plus normal scheduling jitter.
 _EXTERNAL_SIGNAL_MIN_INTERVAL = 5.0
 
 
