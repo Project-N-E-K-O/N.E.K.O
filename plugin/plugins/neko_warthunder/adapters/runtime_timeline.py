@@ -22,6 +22,38 @@ _OUTPUT_STAGES = {
     "tts_failed",
 }
 
+_ACTIVITY_STAGES = {
+    "game_context_entered",
+    "game_context_exited",
+    "detector_suppressed",
+    "arbiter_cooldown",
+    "arbiter_scenario_gated",
+    "arbiter_preempted",
+    "arbiter_dropped",
+    "arbiter_suppressed",
+    "dispatcher_dry_run",
+    "dispatcher_pushed",
+    "dispatcher_failed",
+    "dispatcher_suppressed",
+    "test_say_pushed",
+    "test_say_blocked",
+    "test_say_failed",
+    "tts_failed",
+}
+_ACTIVITY_MAX_EVENTS = 20
+_ACTIVITY_KEYS = (
+    "seq",
+    "ts",
+    "stage",
+    "outcome",
+    "reason",
+    "event_id",
+    "edge",
+    "level",
+    "dry_run",
+    "pushed",
+)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -30,6 +62,10 @@ def _now_iso() -> str:
 def _clean_record(data: dict[str, Any]) -> dict[str, Any]:
     banned = {"raw_payload", "prompt", "payload", "battle_state", "push_message"}
     return {k: v for k, v in data.items() if k not in banned and v is not None}
+
+
+def _activity_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {key: record[key] for key in _ACTIVITY_KEYS if key in record}
 
 
 class RuntimeTimeline:
@@ -50,6 +86,7 @@ class RuntimeTimeline:
         self.max_events = max(1, int(max_events or 100))
         self.include_prompt_preview = bool(include_prompt_preview)
         self._records: deque[dict[str, Any]] = deque(maxlen=self.max_events)
+        self._activity_records: deque[dict[str, Any]] = deque(maxlen=_ACTIVITY_MAX_EVENTS)
         self._seq = 0
         self._lock = Lock()
         self._last_event: dict[str, Any] | None = None
@@ -216,6 +253,8 @@ class RuntimeTimeline:
                             self._last_output_status[key] = record.get(key)
                 if self.enabled:
                     self._records.append(record)
+                if stage in _ACTIVITY_STAGES:
+                    self._activity_records.append(_activity_record(record))
         except Exception:
             return
 
@@ -227,6 +266,7 @@ class RuntimeTimeline:
                 "last_event": dict(self._last_event) if self._last_event else None,
                 "last_decision": dict(self._last_decision) if self._last_decision else None,
                 "last_output_status": dict(self._last_output_status) if self._last_output_status else None,
+                "recent_activity": [dict(r) for r in self._activity_records],
                 "recent_timeline": [dict(r) for r in self._records] if self.enabled else [],
             }
 

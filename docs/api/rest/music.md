@@ -4,6 +4,8 @@
 
 Music search, playback, and lyric/media proxy endpoints. Routes are declared with full inline paths (the router itself has no prefix), all sharing the `/api/music` namespace.
 
+The source defines exactly four `GET` routes: `/proxy`, `/domains`, `/search`, and `/play/netease/{song_id}`. This is a first-party playback service, not an unrestricted fetch proxy: `/proxy` accepts only HTTP(S) targets on the runtime music-source whitelist, revalidates every redirect, rejects non-audio content, and enforces the documented 50 MB limit. Do not expose the unauthenticated main-server port to untrusted clients.
+
 ## Proxy
 
 ### `GET /api/music/proxy`

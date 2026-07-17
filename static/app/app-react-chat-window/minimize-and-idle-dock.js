@@ -1060,7 +1060,53 @@
         return prefix + '-' + Date.now() + '-' + I.tutorialChatRequestSeq;
     }
 
+    function isHomeTutorialCompactOverrideActive() {
+        return !!(I.state.homeTutorialInputLocked || I.state.homeTutorialInteractionLocked);
+    }
+
+    I.captureHomeTutorialCompactChatState = function captureHomeTutorialCompactChatState() {
+        if (I.homeTutorialCompactChatStateSnapshot === null) {
+            I.homeTutorialCompactChatStateSnapshot = I.getCurrentCompactChatState();
+        }
+    };
+
+    I.restoreHomeTutorialCompactChatState = function restoreHomeTutorialCompactChatState(releaseSnapshot) {
+        if (I.homeTutorialCompactChatStateSnapshot === null) {
+            return false;
+        }
+        I.state.compactChatState = I.normalizeCompactChatState(I.homeTutorialCompactChatStateSnapshot);
+        if (releaseSnapshot === true) {
+            I.homeTutorialCompactChatStateSnapshot = null;
+        }
+        return true;
+    };
+
+    function restoreHomeTutorialCompactStateAfterToolClose(closingTool) {
+        if (!isHomeTutorialCompactOverrideActive()) {
+            return false;
+        }
+        var props = I.ensureViewProps();
+        var avatarMenuOpen = closingTool !== 'avatar-menu'
+            && props.avatarToolMenuOpenRequest
+            && props.avatarToolMenuOpenRequest.open === true;
+        var compactFanOpen = closingTool !== 'compact-fan'
+            && props.compactToolFanOpenRequest
+            && props.compactToolFanOpenRequest.open === true;
+        if (avatarMenuOpen || compactFanOpen) {
+            return false;
+        }
+        return I.restoreHomeTutorialCompactChatState(false);
+    }
+
     I.setAvatarToolMenuOpen = function setAvatarToolMenuOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            if (isHomeTutorialCompactOverrideActive()) {
+                I.captureHomeTutorialCompactChatState();
+            }
+            I.state.compactChatState = 'input';
+        } else if (open !== true) {
+            restoreHomeTutorialCompactStateAfterToolClose('avatar-menu');
+        }
         I.setViewProps({
             avatarToolMenuOpenRequest: {
                 id: nextTutorialChatRequestId('avatar-tool-menu'),
@@ -1072,6 +1118,14 @@
     }
 
     I.setCompactToolFanOpen = function setCompactToolFanOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            if (isHomeTutorialCompactOverrideActive()) {
+                I.captureHomeTutorialCompactChatState();
+            }
+            I.state.compactChatState = 'input';
+        } else if (open !== true) {
+            restoreHomeTutorialCompactStateAfterToolClose('compact-fan');
+        }
         I.setViewProps({
             compactToolFanOpenRequest: {
                 id: nextTutorialChatRequestId('compact-tool-fan'),
@@ -1708,7 +1762,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         I.pendingChatSurfaceMode = null;
         I.clearIdleDockState();
-        I.deactivateToolCursor();
+        I.deactivateAvatarTool();
         I.hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态

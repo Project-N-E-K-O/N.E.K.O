@@ -21,6 +21,10 @@
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
     const STARTUP_GREETING_RELEASE_FALLBACK_MS = 65000;
     const STARTUP_GREETING_RELEASE_EVENT = 'neko:startup-greeting-release';
+    // Cat-form returns shorter than three minutes stay silent by default. A
+    // summary carrying a strictly verified runner start is the one short-return
+    // exception, mirrored by the backend prompt gate below.
+    const CAT_GREETING_SILENT_BELOW_SECONDS = 180;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
@@ -988,7 +992,7 @@
         })();
     }
 
-    function ensureAssistantTurnStarted(source, serverTurnId) {
+    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta) {
         if (S.assistantTurnId) {
             window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
@@ -1013,7 +1017,8 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
-            source: source || 'visible_gemini_bubble'
+            source: source || 'visible_gemini_bubble',
+            meta: responseMeta
         });
         logAssistantLifecycle('ensureAssistantTurnStarted:emitted', {
             source: source || 'visible_gemini_bubble',
@@ -1640,7 +1645,11 @@
                     if (!S.assistantTurnId
                             && S.assistantTurnAwaitingBubble
                             && getRenderableAssistantChunkText(response.text)) {
-                        ensureAssistantTurnStarted('gemini_response_first_chunk', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'gemini_response_first_chunk',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     var createdVisibleBubble = false;
                     if (typeof window.appendMessage === 'function') {
@@ -1656,7 +1665,11 @@
                         }
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble && createdVisibleBubble) {
-                        ensureAssistantTurnStarted('gemini_response_visible_bubble', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'gemini_response_visible_bubble',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     if (response.turn_id) {
                         window.realisticGeminiCurrentTurnId = response.turn_id;
@@ -1915,7 +1928,11 @@
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('audio_chunk_header_fallback', response.turn_id);
+                        ensureAssistantTurnStarted(
+                            'audio_chunk_header_fallback',
+                            response.turn_id,
+                            response.meta
+                        );
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
@@ -2687,7 +2704,11 @@
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('turn_end_agent_callback_fallback');
+                        ensureAssistantTurnStarted(
+                            'turn_end_agent_callback_fallback',
+                            undefined,
+                            response.meta
+                        );
                     }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
                     if (agentCallbackTurnId) {
@@ -2696,7 +2717,8 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
-                            source: 'turn_end_agent_callback'
+                            source: 'turn_end_agent_callback',
+                            meta: response.meta
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end_agent_callback:clear_pending');
@@ -2727,7 +2749,11 @@
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('turn_end_fallback');
+                        ensureAssistantTurnStarted(
+                            'turn_end_fallback',
+                            undefined,
+                            response.meta
+                        );
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
                     if (assistantTurnId) {
@@ -2736,7 +2762,8 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
-                            source: 'turn_end'
+                            source: 'turn_end',
+                            meta: response.meta
                         });
                     } else {
                         logAssistantLifecycle('ws:turn_end:clear_pending');
@@ -3649,8 +3676,17 @@
             return;
         }
         var durationSeconds = Number(detail.durationSeconds) || 0;
-        if (durationSeconds < 180) {
-            return; // < 3min 静默（前端先挡一道，后端 get_cat_greeting_prompt 再挡一道）
+        var catMemorySummary = detail.catMemorySummary && typeof detail.catMemorySummary === 'object' &&
+            !Array.isArray(detail.catMemorySummary)
+            ? detail.catMemorySummary
+            : null;
+        // A real runner start may return before the old silence threshold.
+        // This flag is delivery-only: completed experience narration still
+        // comes solely from the strict done-only episode summary.
+        var hasStartedAutonomousAction = !!(catMemorySummary &&
+            catMemorySummary.has_started_autonomous_action === true);
+        if (durationSeconds < CAT_GREETING_SILENT_BELOW_SECONDS && !hasStartedAutonomousAction) {
+            return;
         }
         var catLang = '';
         try {
@@ -3659,14 +3695,19 @@
             if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
         } catch (_) { catLang = ''; }
         try {
-            S.socket.send(JSON.stringify({
+            var catGreetingMessage = {
                 action: 'cat_greeting_check',
                 cat_duration_seconds: durationSeconds,
                 tier: detail.tier || '',
                 was_auto: !!detail.wasAuto,
                 language: catLang
-            }));
-            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
+            };
+            if (catMemorySummary) {
+                catGreetingMessage.cat_memory_summary = catMemorySummary;
+            }
+            S.socket.send(JSON.stringify(catGreetingMessage));
+            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') +
+                ' was_auto=' + (!!detail.wasAuto) + ' started_action=' + hasStartedAutonomousAction);
         } catch (e) {
             console.warn('[cat_greeting_check] send failed:', e);
         }

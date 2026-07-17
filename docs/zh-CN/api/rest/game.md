@@ -159,6 +159,14 @@
 
 核心的「捧逗」端点：把事件送给 A 层，再通过 B 层镜像或说出得到的台词。
 
+### `POST /api/game/{game_type}/passive-guard`
+
+运行足球路由使用的受限被动退出分类器。JSON 请求体包含当前 `session_id`、`lanlan_name`，以及前端收集的精简游戏上下文。目前仅实现 `game_type=soccer`。
+
+响应包含 `ok`、`recommendedAction`、`exitPromptType`；成功时还含分类详情。不支持的游戏类型、超时和异常会在应用层信封中安全回退为 `observe_more` 与 `none`，而不是抛 HTTP 错误。
+
+---
+
 ### `POST /api/game/{game_type}/chat`
 
 通用游戏 LLM 对话端点。把游戏事件送给幕后 A 层，拿回一句台词加可选的控制指令。

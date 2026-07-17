@@ -1,52 +1,42 @@
 # Quick Start
 
-This page walks you through a first run of N.E.K.O. after completing the [Development Setup](./dev-setup).
+Complete [Development Setup](./dev-setup) first.
 
-## 1. Start the servers
+## 1. Launch
 
 ```bash
-# In separate terminals:
-uv run python app/memory_server.py
-uv run python -m app.main_server
+uv run python launcher.py
 ```
 
-## 2. Configure an API provider
+The launcher starts the cooperating services and reports selected ports. Use the reported main URL; `http://127.0.0.1:48911` is only the preferred default.
 
-Navigate to `http://localhost:48911/api_key` and configure at least the **Core API** provider.
+## 2. Configure providers
 
-For a quick test without an API key, select **Free** as the Core API provider.
+Open `/api_key` on the main URL. Select a Core provider and, if needed, an Assist provider. Enter credentials for the selected provider and run connectivity checks. Provider/model lists are revision-specific; do not copy old screenshots.
 
-## 3. Interact with the default character
+## 3. Open chat
 
-Open `http://localhost:48911` in your browser. The default character ("小天") will be loaded with a Live2D model.
+A fresh data root is initialized from locale-specific character defaults and the bundled Yui Origin asset. Character identifiers/display names come from active data; the old fixed “小天” claim is no longer valid.
 
-**Text mode:** Type a message in the chat input and press Enter.
+Text chat uses the shared React component. Voice availability depends on the selected core/TTS path and microphone permission.
 
-**Voice mode:** Click the microphone button to start a voice session. Speak naturally — the system uses server-side VAD (Voice Activity Detection) to detect when you finish speaking.
+## 4. Customize and inspect
 
-## 4. Customize the character
-
-Navigate to `http://localhost:48911/character_card_manager` to:
-
-- Change the character's name, gender, age, and personality traits
-- Set a custom Live2D or VRM model
-- Clone a custom voice (upload a ~15-second clean audio sample)
-- Edit the system prompt for full control over behavior
-
-## 5. Explore the Web UI pages
-
-| URL | Purpose |
-|-----|---------|
-| `/` | Main chat interface |
-| `/api_key` | API key configuration |
-| `/model_manager` | Live2D/VRM model management |
-| `/live2d_emotion_manager` | Emotion-to-animation mapping |
+| Route | Purpose |
+| --- | --- |
+| `/character_card_manager` | Character data and avatar selection |
+| `/model_manager` | Avatar model management |
+| `/live2d_emotion_manager` | Live2D emotion mapping |
 | `/vrm_emotion_manager` | VRM emotion mapping |
-| `/voice_clone` | Voice cloning |
-| `/memory_browser` | Browse and edit memories |
+| `/voice_clone` | Provider-dependent voice cloning |
+| `/memory_browser` | Memory outputs and processing state |
+| `/api_key` | Provider and credential settings |
+
+Not every provider or deployment mode supports every feature. Agent and hosted-plugin capabilities require the agent/tool service.
 
 ## Next steps
 
-- [Project Structure](./project-structure) — Understand the codebase layout
-- [Architecture Overview](/architecture/) — How the three servers cooperate
-- [API Reference](/api/) — All REST and WebSocket endpoints
+- [Configuration](/config/)
+- [Architecture](/architecture/)
+- [API Reference](/api/)
+- [Testing](/contributing/testing)

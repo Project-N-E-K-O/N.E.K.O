@@ -146,7 +146,8 @@ class MonitoredPlugin(NekoPluginBase):
     @after_entry(target="*")
     def log_results(self, *, entry_id, result, **_):
         """记录每个入口点的返回结果。"""
-        self.logger.info(f"[{entry_id}] result={result}")
+        # 不要把可能含用户内容的原始结果写进持久日志。
+        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
 
     # --- 入口点 ---
 

@@ -6,6 +6,10 @@
 
 ## 模型
 
+### `GET /api/model/vrm/config`
+
+返回用户 VRM、内置 VRM 和内置动画的运行时路径配置。这是前端集成响应，其中的文件系统路径不是可移植的公共 schema。
+
 ### `GET /api/model/vrm/models`
 
 列出所有可用的 VRM 模型。
@@ -53,3 +57,7 @@
 ### `POST /api/model/vrm/emotion_mapping/{model_name}`
 
 更新特定 VRM 模型的表情映射。
+
+### `GET /api/model/vrm/expressions/{model_name}`
+
+返回通用参考表情列表。处理器**不会**解析指定 VRM 文件；前端加载模型后才发现真实表情。不要把该响应当作模型专属能力探测。

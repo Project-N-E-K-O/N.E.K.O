@@ -249,14 +249,13 @@ recent_events = recent_events.filter(type="note_created").sort(
 # Read recent messages
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# Read memory records from a bucket
+# Read recent user-utterance events from an in-memory bucket
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# Semantic lookup is a separate context operation
-matches = await self.ctx.query_memory("default", "user preferences")
 ```
 
 The list surface is `filter` / `where`, `sort`, `limit`, and `watch`. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only, so watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Watcher subscriptions accept only `add`, `del`, or `change`.
+
+The `memory` bucket is bounded and kept in process for one hour. It is plugin context, not access to the character's persistent facts, reflections, or persona. `ctx.query_memory(...)` is retained only as a deprecated compatibility call to a placeholder endpoint and does not perform semantic recall.
 
 ---
 

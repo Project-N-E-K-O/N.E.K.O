@@ -132,6 +132,7 @@ class FactStore:
         self._facts: dict[str, list[dict]] = {}  # {lanlan_name: [fact, ...]}
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
+        self._persist_alocks: dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -140,6 +141,14 @@ class FactStore:
                 if name not in self._locks:  # double-check
                     self._locks[name] = threading.Lock()
         return self._locks[name]
+
+    def _get_persist_alock(self, name: str) -> asyncio.Lock:
+        """Serialize each character's load/dedup/mutate/save fact pipeline."""
+        if name not in self._persist_alocks:
+            with self._locks_guard:
+                if name not in self._persist_alocks:
+                    self._persist_alocks[name] = asyncio.Lock()
+        return self._persist_alocks[name]
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -506,10 +515,37 @@ class FactStore:
     _SOURCE_VALUES = frozenset({'user_observation', 'ai_disclosure'})
     _SOURCE_DEFAULT = 'user_observation'
 
+    @staticmethod
+    def _apply_external_import_provenance(entry: dict, external_import: dict) -> None:
+        """Stamp external-import provenance onto a fact entry: metadata, tags, the
+        event_start_at derived from event_date, and signal_processed=True
+        (external_import facts skip the Stage-2 evidence loop)."""
+        entry['external_import'] = dict(external_import)
+        entry['tags'] = ['external_import', str(external_import.get('format') or 'unknown')]
+        entry['signal_processed'] = True
+        event_date = external_import.get('event_date')
+        if isinstance(event_date, str) and event_date:
+            entry['event_start_at'] = f"{event_date}T00:00:00"
+
     async def _apersist_new_facts(
         self, lanlan_name: str, extracted: list[dict],
         *,
         default_source: str = 'user_observation',
+        semantic_dedup: bool = True,
+    ) -> list[dict]:
+        async with self._get_persist_alock(lanlan_name):
+            return await self._apersist_new_facts_locked(
+                lanlan_name,
+                extracted,
+                default_source=default_source,
+                semantic_dedup=semantic_dedup,
+            )
+
+    async def _apersist_new_facts_locked(
+        self, lanlan_name: str, extracted: list[dict],
+        *,
+        default_source: str = 'user_observation',
+        semantic_dedup: bool = True,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -519,6 +555,10 @@ class FactStore:
         ``source`` field. Path A callers pass ``'user_observation'`` (also the
         default), path B callers pass ``'ai_disclosure'`` — a source field
         explicitly emitted by the LLM wins over the default.
+
+        External migration batches may set ``semantic_dedup=False`` after
+        preview to avoid one FTS5 search per candidate while holding the
+        persistence lock. Exact SHA-256 deduplication still applies.
 
         Monotonic source upgrade: when SHA-256 hits an existing fact, normally
         skip without writing. **Sole exception**: the existing fact's source is
@@ -594,11 +634,17 @@ class FactStore:
                     # → 升级 source + 重新进 Stage-2 evidence loop
                     existing['source'] = 'user_observation'
                     existing['signal_processed'] = False
+                    # 若这条印证来自外部导入，补上 external_import provenance——否则
+                    # SHA 命中直接 continue 会漏掉标签（external_import 语义会把
+                    # signal_processed 置回 True，不进 Stage-2）(Codex P2)。
+                    external_import = fact.get('_external_import')
+                    if isinstance(external_import, dict):
+                        self._apply_external_import_provenance(existing, external_import)
                     upgraded_count += 1
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
-            if self._time_indexed is not None:
+            if semantic_dedup and self._time_indexed is not None:
                 similar = await self._time_indexed.asearch_facts(lanlan_name, text, 3)
                 is_dup = False
                 for fid, score in similar:
@@ -664,6 +710,9 @@ class FactStore:
                 'embedding_text_sha256': None,
                 'embedding_model_id': None,
             }
+            external_import = fact.get('_external_import')
+            if isinstance(external_import, dict):
+                self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
             existing_hashes.add(content_hash)
             # 同步更新 hash_to_existing：若本 batch 后续还有同 text 的 fact
