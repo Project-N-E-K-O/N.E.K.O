@@ -29,6 +29,7 @@ import numpy as np
 import soxr
 
 from .provider_policy import AsrProviderPolicy
+from .segment_aggregator import SegmentAggregator
 
 
 logger = logging.getLogger(__name__)
@@ -284,10 +285,8 @@ class _RealtimeAsrSessionImpl:
         self._logical_turn_id = 1
         self._physical_segment_audio_bytes = 0
         self._provider_wire_audio_bytes = 0
-        self._logical_segments: dict[int, list[_UtteranceKey]] = {}
-        self._segment_texts: dict[_UtteranceKey, str] = {}
-        self._completed_logical_turns: set[int] = set()
-        self._next_logical_turn_to_publish = 1
+        self._segment_aggregator = SegmentAggregator()
+        self._segment_aggregator.begin_turn(self._logical_turn_id)
 
         self._request_queue: asyncio.Queue[_AsrWorkerRequest] | None = None
         self._response_queue: asyncio.Queue[_AsrWorkerEvent] | None = None
@@ -485,7 +484,9 @@ class _RealtimeAsrSessionImpl:
                 )
 
             normalized_audio = self._convert_audio(audio_chunk)
-            if normalized_audio:
+            if normalized_audio and self._uses_segment_aggregation:
+                await self._append_segmented_audio_locked(normalized_audio)
+            elif normalized_audio:
                 await self._enqueue_request(
                     _AsrWorkerRequest(
                         kind="audio",
@@ -495,33 +496,25 @@ class _RealtimeAsrSessionImpl:
                         audio=normalized_audio,
                     )
                 )
-                if not self._uses_segment_aggregation:
-                    self._provider_wire_audio_bytes += len(normalized_audio)
+                self._provider_wire_audio_bytes += len(normalized_audio)
                 await self._push_voice_turn_audio(
                     generation=self._generation,
                     buffer_epoch=self._buffer_epoch,
-                    utterance_id=(
-                        self._logical_turn_id
-                        if self._uses_segment_aggregation
-                        else self._utterance_id
-                    ),
+                    utterance_id=self._utterance_id,
                     pcm16=normalized_audio,
                 )
-                self._physical_segment_audio_bytes += len(normalized_audio)
             # Even if soxr is still buffering, valid input belongs to this turn.
-            self._utterance_has_audio = True
-            if (
-                self._uses_segment_aggregation
-                and self._physical_segment_audio_bytes
-                >= self._segmented_max_audio_bytes
-            ):
-                await self._commit_physical_segment_locked(logical_complete=False)
+            if not self._uses_segment_aggregation or not normalized_audio:
+                self._utterance_has_audio = True
 
     async def signal_user_activity_end(self) -> None:
         async with self._operation_lock:
             if self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
-            if not self._utterance_has_audio:
+            if not self._utterance_has_audio and not (
+                self._uses_segment_aggregation
+                and self._segment_aggregator.has_segments(self._logical_turn_id)
+            ):
                 return
             await self._commit_current_utterance_locked()
 
@@ -824,7 +817,9 @@ class _RealtimeAsrSessionImpl:
                 )
                 or (
                     not self._utterance_has_audio
-                    and not self._logical_segments.get(self._logical_turn_id)
+                    and not self._segment_aggregator.has_segments(
+                        self._logical_turn_id
+                    )
                 )
             ):
                 return
@@ -920,7 +915,44 @@ class _RealtimeAsrSessionImpl:
         policy = self._provider_policy
         if policy is None or policy.max_segment_ms is None:
             return 0
-        return policy.max_segment_ms * 16_000 * 2 // 1_000
+        return (policy.max_segment_ms * 16_000 * 2 // 1_000) & ~1
+
+    async def _append_segmented_audio_locked(self, audio: bytes) -> None:
+        """Append PCM16 without allowing a physical request to exceed policy."""
+
+        max_bytes = self._segmented_max_audio_bytes
+        if max_bytes <= 0:
+            raise RuntimeError("ASR_INVALID_CONFIG: segmented audio limit is invalid")
+        offset = 0
+        while offset < len(audio):
+            remaining = max_bytes - self._physical_segment_audio_bytes
+            if remaining <= 0:
+                await self._commit_physical_segment_locked(logical_complete=False)
+                remaining = max_bytes
+            part_size = min(len(audio) - offset, remaining) & ~1
+            if part_size <= 0:
+                raise ValueError("ASR_INVALID_PCM: segmented PCM must be 2-byte aligned")
+            part = audio[offset : offset + part_size]
+            await self._enqueue_request(
+                _AsrWorkerRequest(
+                    kind="audio",
+                    generation=self._generation,
+                    buffer_epoch=self._buffer_epoch,
+                    utterance_id=self._utterance_id,
+                    audio=part,
+                )
+            )
+            await self._push_voice_turn_audio(
+                generation=self._generation,
+                buffer_epoch=self._buffer_epoch,
+                utterance_id=self._logical_turn_id,
+                pcm16=part,
+            )
+            self._physical_segment_audio_bytes += part_size
+            self._utterance_has_audio = True
+            offset += part_size
+            if self._physical_segment_audio_bytes == max_bytes:
+                await self._commit_physical_segment_locked(logical_complete=False)
 
     async def _commit_physical_segment_locked(
         self,
@@ -928,33 +960,18 @@ class _RealtimeAsrSessionImpl:
         logical_complete: bool,
     ) -> None:
         logical_turn_id = self._logical_turn_id
-        if not self._utterance_has_audio:
-            if logical_complete and self._logical_segments.get(logical_turn_id):
-                self._completed_logical_turns.add(logical_turn_id)
-            return
-
         generation = self._generation
         buffer_epoch = self._buffer_epoch
         utterance_id = self._utterance_id
         if logical_complete:
             tail = self._flush_resampler()
             if tail:
-                await self._enqueue_request(
-                    _AsrWorkerRequest(
-                        kind="audio",
-                        generation=generation,
-                        buffer_epoch=buffer_epoch,
-                        utterance_id=utterance_id,
-                        audio=tail,
-                    )
-                )
-                self._physical_segment_audio_bytes += len(tail)
-                await self._push_voice_turn_audio(
-                    generation=generation,
-                    buffer_epoch=buffer_epoch,
-                    utterance_id=logical_turn_id,
-                    pcm16=tail,
-                )
+                await self._append_segmented_audio_locked(tail)
+        if not self._utterance_has_audio:
+            if logical_complete:
+                self._segment_aggregator.complete_turn(logical_turn_id)
+            return
+        utterance_id = self._utterance_id
         key = (generation, buffer_epoch, utterance_id)
         await self._enqueue_request(
             _AsrWorkerRequest(
@@ -965,9 +982,10 @@ class _RealtimeAsrSessionImpl:
             )
         )
         self._provider_wire_audio_bytes += self._physical_segment_audio_bytes
-        self._logical_segments.setdefault(logical_turn_id, []).append(key)
+        if not self._segment_aggregator.register_segment(logical_turn_id, key):
+            raise RuntimeError("ASR_SEGMENT_STATE_INVALID: duplicate physical segment")
         if logical_complete:
-            self._completed_logical_turns.add(logical_turn_id)
+            self._segment_aggregator.complete_turn(logical_turn_id)
             self._reset_resampler()
         self._utterance_id += 1
         self._utterance_has_audio = False
@@ -976,9 +994,9 @@ class _RealtimeAsrSessionImpl:
     async def _complete_segmented_logical_turn_locked(self) -> None:
         completed_turn_id = self._logical_turn_id
         await self._commit_physical_segment_locked(logical_complete=True)
-        if not self._logical_segments.get(completed_turn_id):
+        if not self._segment_aggregator.has_segments(completed_turn_id):
             return
-        self._completed_logical_turns.add(completed_turn_id)
+        self._segment_aggregator.complete_turn(completed_turn_id)
         ready_texts = self._collect_ready_segmented_transcripts_locked()
         if ready_texts:
             assert self._callback_queue is not None
@@ -991,6 +1009,7 @@ class _RealtimeAsrSessionImpl:
                     )
                 )
         self._logical_turn_id += 1
+        self._segment_aggregator.begin_turn(self._logical_turn_id)
         if self._voice_turn_adapter is None:
             return
         adapter = self._voice_turn_adapter
@@ -1007,16 +1026,9 @@ class _RealtimeAsrSessionImpl:
         await asyncio.sleep(0)
 
     def _collect_ready_segmented_transcripts_locked(self) -> list[str]:
-        ready_texts: list[str] = []
-        while self._next_logical_turn_to_publish in self._completed_logical_turns:
-            logical_turn_id = self._next_logical_turn_to_publish
-            keys = self._logical_segments.get(logical_turn_id, [])
-            if not keys or any(key not in self._segment_texts for key in keys):
-                break
-            ready_texts.append(
-                " ".join(self._segment_texts.pop(key).strip() for key in keys).strip()
-            )
-            for key in keys:
+        ready_transcripts = self._segment_aggregator.collect_ready()
+        for transcript in ready_transcripts:
+            for key in transcript.segment_ids:
                 self._active_utterance_keys.discard(key)
                 self._committed_utterance_keys.discard(key)
                 self._pending_finals.pop(key, None)
@@ -1024,17 +1036,14 @@ class _RealtimeAsrSessionImpl:
                     self._utterance_order.remove(key)
                 except ValueError:
                     pass
-            self._logical_segments.pop(logical_turn_id, None)
-            self._completed_logical_turns.discard(logical_turn_id)
-            self._next_logical_turn_to_publish += 1
-        return [text for text in ready_texts if text]
+        return [
+            transcript.text for transcript in ready_transcripts if transcript.text
+        ]
 
     def _clear_segment_aggregation_state(self) -> None:
         self._physical_segment_audio_bytes = 0
-        self._logical_segments.clear()
-        self._segment_texts.clear()
-        self._completed_logical_turns.clear()
-        self._next_logical_turn_to_publish = self._logical_turn_id
+        self._segment_aggregator.clear(next_turn_id=self._logical_turn_id)
+        self._segment_aggregator.begin_turn(self._logical_turn_id)
 
     async def _run_worker(self) -> None:
         assert self._request_queue is not None
@@ -1191,12 +1200,11 @@ class _RealtimeAsrSessionImpl:
                 if self._config.endpointing_mode == "provider":
                     await self._notify_turn_endpointed_locked(key)
                 if self._uses_segment_aggregation:
-                    if key in self._segment_texts:
+                    if not self._segment_aggregator.record_transcript(key, text):
                         logger.warning(
                             "ASR worker returned a duplicate or conflicting final"
                         )
                         return False
-                    self._segment_texts[key] = text
                     ready_texts = self._collect_ready_segmented_transcripts_locked()
                     ready_items = [
                         _CallbackItem(
