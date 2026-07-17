@@ -338,6 +338,30 @@ async def test_late_join_during_compacting_becomes_expected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_new_late_join_extends_ack_deadline_once() -> None:
+    coordinator, clock, _events = build_coordinator()
+    await enable_activity_compaction(coordinator)
+    await register_capable_pet(coordinator, "pet-1")
+    await confirm_activity(coordinator, clock)
+    original_deadline = coordinator.snapshot()["compaction_ack_deadline"]
+
+    clock.advance(COMPACTION_ACK_TIMEOUT_SECONDS - 0.5)
+    await register_capable_pet(coordinator, "pet-2")
+    extended_deadline = coordinator.snapshot()["compaction_ack_deadline"]
+
+    assert extended_deadline == pytest.approx(clock() + COMPACTION_ACK_TIMEOUT_SECONDS)
+    assert extended_deadline > original_deadline
+
+    clock.advance(1.0)
+    await register_capable_pet(coordinator, "pet-2")
+    assert coordinator.snapshot()["compaction_ack_deadline"] == extended_deadline
+
+    await coordinator.tick_once()
+    assert coordinator.snapshot()["compaction_phase"] == "compacting"
+    await coordinator.set_enabled(False)
+
+
+@pytest.mark.asyncio
 async def test_protocol_mismatch_fails_closed() -> None:
     coordinator, clock, events = build_coordinator()
     await enable_activity_compaction(coordinator)
@@ -542,6 +566,53 @@ def test_settings_store_save_propagates_write_failure(monkeypatch, tmp_path: Pat
 
     with pytest.raises(OSError, match="disk full"):
         store.save({"activity_response": "observe_only"})
+
+
+@pytest.mark.asyncio
+async def test_user_restore_persistence_failure_preserves_cycle_ownership(tmp_path: Path) -> None:
+    class FailingOnDemandStore(WidgetModeSettingsStore):
+        fail = False
+
+        async def save_async(self, payload: dict) -> None:
+            if self.fail:
+                raise OSError("disk full")
+            await super().save_async(payload)
+
+    clock = Clock()
+    events: list[dict] = []
+
+    async def broadcaster(payload: dict) -> int:
+        events.append(payload)
+        return 1
+
+    store = FailingOnDemandStore(tmp_path / "widget_mode_settings.json")
+    coordinator = WidgetModeCoordinator(
+        store=store,
+        broadcaster=broadcaster,
+        time_fn=clock,
+    )
+    await enable_activity_compaction(coordinator)
+    await register_capable_pet(coordinator)
+    cycle_id = await confirm_activity(coordinator, clock)
+    await coordinator.acknowledge_compaction(
+        compaction_cycle_id=cycle_id,
+        pet_instance_id="pet-1",
+        status="compacted",
+    )
+    clock.advance(RENDERER_SUSPENSION_DELAY_SECONDS)
+    await register_capable_pet(coordinator)
+    await coordinator.tick_once()
+    assert coordinator.snapshot()["compaction_phase"] == "renderer_suspended"
+
+    store.fail = True
+    with pytest.raises(OSError, match="disk full"):
+        await coordinator.mark_user_restore("pet-1")
+
+    state = coordinator.snapshot()
+    assert state["compaction_phase"] == "renderer_suspended"
+    assert state["owned_window_count"] == 1
+    assert state["user_restore_active"] is False
+    assert state["suppressed_until"] is None
 
 
 @pytest.mark.asyncio

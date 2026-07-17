@@ -404,9 +404,17 @@ class WidgetModeCoordinator:
             cycle_id = self._state.get("compaction_cycle_id")
             if capable and phase == "compacting" and cycle_id:
                 expected = set(self._state.get("expected_window_ids") or [])
-                expected.add(window_id)
-                self._state["expected_window_ids"] = sorted(expected)
-                self._state["expected_window_count"] = len(expected)
+                if window_id not in expected:
+                    expected.add(window_id)
+                    self._state["expected_window_ids"] = sorted(expected)
+                    self._state["expected_window_count"] = len(expected)
+                    extended_deadline = now + COMPACTION_ACK_TIMEOUT_SECONDS
+                    current_deadline = self._state.get("compaction_ack_deadline")
+                    if (
+                        not isinstance(current_deadline, (int, float))
+                        or extended_deadline > current_deadline
+                    ):
+                        self._state["compaction_ack_deadline"] = extended_deadline
             active_phase = phase in {"compacting", "compacted", "renderer_suspended"}
             return {
                 "widget_mode_protocol_version": WIDGET_MODE_PROTOCOL_VERSION,
@@ -524,15 +532,21 @@ class WidgetModeCoordinator:
             if not self._state.get("enabled") or self._state.get("compaction_phase") == "idle":
                 return self.snapshot()
             now = self._time()
-            self._state["suppressed_until"] = now + USER_RESTORE_COOLDOWN_SECONDS
-            self._persisted_suppressed_until = self._state["suppressed_until"]
+            suppressed_until = now + USER_RESTORE_COOLDOWN_SECONDS
+            previous_persisted_suppressed_until = self._persisted_suppressed_until
+            self._persisted_suppressed_until = suppressed_until
+            try:
+                await self._persist_locked()
+            except Exception:
+                self._persisted_suppressed_until = previous_persisted_suppressed_until
+                raise
+            self._state["suppressed_until"] = suppressed_until
             self._state["user_restore_active"] = True
             target = str(pet_instance_id or "").strip()
             for window_id, ack in self._window_acks.items():
                 if ack.get("status") == "compacted" and (not target or target == window_id):
                     ack["status"] = "restored"
             self._refresh_owner_counts_locked()
-            await self._persist_locked()
             self._state["last_event"] = {"type": "user_restore", "ts": now}
             if self._state["owned_window_count"] == 0:
                 self._end_cycle_locked(preserve_last_event=True)
