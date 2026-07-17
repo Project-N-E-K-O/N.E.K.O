@@ -117,7 +117,7 @@ def test_upload_and_unpack_legacy_returns_unpack_key(monkeypatch: pytest.MonkeyP
     body = asyncio.run(
         plugin_cli_routes.plugin_cli_upload_and_unpack_legacy(
             _MemoryUploadFile(),  # type: ignore[arg-type]
-            on_conflict="rename",
+            on_conflict="fail",
             _="",
         )
     )
@@ -454,7 +454,7 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
                 "package": str(package_path),
                 "plugins_root": str(plugins_root),
                 "profiles_root": str(profiles_root),
-                "on_conflict": "rename",
+                "on_conflict": "fail",
             },
         )
         assert unpack_response.status_code == 200
@@ -492,7 +492,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.post(
             "/plugin-cli/unpack",
-            json={"package": str(package_path), "on_conflict": "rename"},
+            json={"package": str(package_path)},
         )
 
         assert response.status_code == 200

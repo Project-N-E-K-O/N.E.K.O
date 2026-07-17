@@ -56,7 +56,7 @@ class PluginCliInstallRequest(BaseModel):
     package: str
     plugins_root: str | None = None
     profiles_root: str | None = None
-    on_conflict: str = Field(default="rename", pattern="^(rename|fail)$")
+    on_conflict: str = Field(default="fail", pattern="^fail$")
 
 
 class PluginCliAnalyzeRequest(BaseModel):
@@ -341,7 +341,7 @@ async def plugin_cli_upload(
 @router.post("/plugin-cli/upload-and-install", response_model=PluginCliUploadAndInstallResponse)
 async def plugin_cli_upload_and_install(
     file: UploadFile = File(...),
-    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
+    on_conflict: str = Query(default="fail", pattern="^fail$"),
     _: str = require_admin,
 ) -> dict[str, object]:
     """Upload a plugin package and immediately install it.
@@ -421,7 +421,7 @@ async def plugin_cli_unpack_legacy(
 @router.post("/plugin-cli/upload-and-unpack", include_in_schema=False)
 async def plugin_cli_upload_and_unpack_legacy(
     file: UploadFile = File(...),
-    on_conflict: str = Query(default="rename", pattern="^(rename|fail)$"),
+    on_conflict: str = Query(default="fail", pattern="^fail$"),
     _: str = require_admin,
 ) -> dict[str, object]:
     """Legacy alias for /plugin-cli/upload-and-install. Translates response keys."""

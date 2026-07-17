@@ -1370,10 +1370,10 @@ async def test_install_identity_mismatch_warns_but_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_install_identity_check_uses_plugin_toml_id_when_directory_renamed(
+async def test_install_conflict_fails_without_renaming_executable_directory(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    """rename conflict changes the directory name, not plugin.toml identity."""
+    """Even a legacy rename request must not create an executable plugin copy."""
 
     plugin_id = "e2e_rename_identity"
     version = "1.0.0"
@@ -1424,30 +1424,17 @@ async def test_install_identity_check_uses_plugin_toml_id_when_directory_renamed
             await asyncio.sleep(0.05)
 
     assert final_status is not None
-    assert final_status["status"] == "completed", final_status
-    assert "plugin identity mismatch" not in (
-        final_status.get("install_source_warning") or ""
-    )
-    assert (user_root / f"{plugin_id}_1" / "plugin.toml").is_file()
+    assert final_status["status"] == "failed", final_status
+    assert not (user_root / f"{plugin_id}_1").exists()
 
-    doc = json.loads(lock_path.read_bytes())
-    renamed_entries = [
-        e for e in doc["entries"]
-        if e["directory_name"] == f"{plugin_id}_1" and e["channel"] == "market"
-    ]
-    [entry] = renamed_entries
-    assert entry["plugin_id"] == plugin_id
-
-    installed_resp = await client.get(f"/market/installed?token={token}")
-    assert installed_resp.status_code == 200
-    installed_body = installed_resp.json()
-    [projected] = [
-        item for item in installed_body["installed"]
-        if item["plugin_id"] == plugin_id
-    ]
-    assert Path(projected["path"]).name == f"{plugin_id}_1"
-    assert projected["latest_install_source"] is not None
-    assert projected["latest_install_source"]["version"] == version
+    active_entries = []
+    if lock_path.exists():
+        doc = json.loads(lock_path.read_bytes())
+        active_entries = [
+            e for e in doc["entries"]
+            if e["plugin_id"] == plugin_id and not e.get("removed", False)
+        ]
+    assert active_entries == []
 
 
 @pytest.mark.asyncio
@@ -1642,15 +1629,12 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
 
 
 @pytest.mark.asyncio
-async def test_upgrade_honors_recorded_directory_for_renamed_install(
+async def test_install_conflict_defaults_to_failure_without_lock_entry(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
-    plugin_id = "e2e_upgrade_renamed"
+    plugin_id = "e2e_install_conflict"
     v1_zip, v1_payload_hash = _build_neko_plugin_zip(
         plugin_id=plugin_id, version="1.0.0",
-    )
-    v2_zip, v2_payload_hash = _build_neko_plugin_zip(
-        plugin_id=plugin_id, version="2.0.0",
     )
 
     client: AsyncClient = bridge_e2e_env["client"]
@@ -1688,54 +1672,18 @@ async def test_upgrade_honors_recorded_directory_for_renamed_install(
                 "version": "1.0.0",
                 "channel": "stable",
                 "mode": "install",
-                "on_conflict": "rename",
                 "expected_plugin_toml_id": plugin_id,
             },
         )
         install_status = await _wait_task(resp.json()["task_id"])
 
-    assert install_status["status"] == "completed", install_status
-    renamed_dir = user_root / f"{plugin_id}_1"
-    assert renamed_dir.is_dir()
-
-    [v1_entry] = [
-        e for e in mgr.snapshot().entries
-        if e.directory_name == f"{plugin_id}_1" and not e.removed
-    ]
-    assert v1_entry.plugin_id == plugin_id
-
-    with _serve_bytes(
-        filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
-    ) as package_url:
-        resp = await client.post(
-            f"/market/install?token={token}",
-            json={
-                "package_url": package_url,
-                "package_sha256": hashlib.sha256(v2_zip).hexdigest(),
-                "payload_hash": v2_payload_hash,
-                "plugin_id": plugin_id,
-                "version": "2.0.0",
-                "channel": "stable",
-                "mode": "upgrade",
-                "on_conflict": "fail",
-                "expected_plugin_toml_id": plugin_id,
-            },
-        )
-        upgrade_status = await _wait_task(resp.json()["task_id"])
-
-    assert upgrade_status["status"] == "completed", upgrade_status
+    assert install_status["status"] == "failed", install_status
     assert "0.9.0" in (existing / "plugin.toml").read_text(encoding="utf-8")
-    assert "2.0.0" in (renamed_dir / "plugin.toml").read_text(encoding="utf-8")
-
-    [v2_entry] = [
+    assert not (user_root / f"{plugin_id}_1").exists()
+    assert [
         e for e in mgr.snapshot().entries
         if e.plugin_id == plugin_id and not e.removed
-    ]
-    from plugin.server.application.install_source.models import SourceDetailMarket
-
-    assert v2_entry.directory_name == f"{plugin_id}_1"
-    assert isinstance(v2_entry.source_detail, SourceDetailMarket)
-    assert v2_entry.source_detail.version == "2.0.0"
+    ] == []
 
 
 @pytest.mark.asyncio

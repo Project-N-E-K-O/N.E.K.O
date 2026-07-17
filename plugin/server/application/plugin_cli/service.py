@@ -126,7 +126,7 @@ class PluginCliService:
         package: str,
         plugins_root: str | None = None,
         profiles_root: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
         use_staging: bool = True,
         forced_directory_name: str | None = None,
     ) -> dict[str, object]:
@@ -170,7 +170,7 @@ class PluginCliService:
         filename: str,
         content: bytes | None = None,
         package_path: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
@@ -951,9 +951,8 @@ class PluginCliService:
                 source_dir = Path(item.target_dir)
                 desired_name = forced_directory_name or item.target_plugin_id
                 desired = plugins_root / desired_name
-                final_dir = installer.resolve_target_dir(
+                final_dir = installer.resolve_plugin_target_dir(
                     desired,
-                    on_conflict=on_conflict,
                 )
                 if source_dir.resolve() != final_dir.resolve():
                     final_dir.parent.mkdir(parents=True, exist_ok=True)
