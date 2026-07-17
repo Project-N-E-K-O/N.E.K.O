@@ -184,6 +184,8 @@ from utils.meme_moderation import moderate_meme_image_url
 # utils/llm_client），模块级立即展开会把两个 SDK 拉回 main_server 端口就绪路径。
 # 首次求值发生在 LLM 调用的异常处理处，彼时 SDK 必已随 client 构造加载。
 _PROACTIVE_LLM_RETRY_ERROR_TYPES: tuple[type[BaseException], ...] | None = None
+_MEME_PROXY_CANDIDATE_CHECK_LIMIT = 3
+_MEME_PROXY_CANDIDATE_TIMEOUT_SECONDS = 6.0
 
 
 def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
@@ -194,6 +196,31 @@ def _proactive_llm_retry_error_types() -> tuple[type[BaseException], ...]:
             *chat_retry_error_types(),
         )
     return _PROACTIVE_LLM_RETRY_ERROR_TYPES
+
+
+async def _meme_proxy_candidate_fetchable(url: str) -> tuple[bool, str]:
+    """Return whether the existing meme proxy can fetch this candidate now."""
+    if not url:
+        return False, "missing_url"
+    try:
+        from .meme_proxy import proxy_meme_image
+
+        response = await asyncio.wait_for(
+            proxy_meme_image(url),
+            timeout=_MEME_PROXY_CANDIDATE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return False, type(exc).__name__
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code < 200 or status_code >= 300:
+        return False, f"proxy_status_{status_code}"
+    media_type = str(getattr(response, "media_type", "") or "").lower()
+    if not media_type.startswith("image/"):
+        return False, f"proxy_media_type:{media_type or 'missing'}"
+    if not (getattr(response, "body", b"") or b""):
+        return False, "proxy_empty_body"
+    return True, media_type
 
 
 async def _safe_fire_proactive_done(scope: dict) -> None:
@@ -1958,6 +1985,7 @@ async def proactive_chat(request: Request):
         if meme_content and meme_content.get('success') and meme_content.get('data'):
             meme_data = meme_content.get('data', [])
             if meme_data:
+                proxy_checked_count = 0
                 for candidate_meme in meme_data:
                     meme_title = candidate_meme.get('title', '')
                     meme_url = candidate_meme.get('url', '')
@@ -1995,6 +2023,32 @@ async def proactive_chat(request: Request):
                             "[%s]- 已记录被 moderation 拦截的表情包 source 衰减历史: url_hash=%s",
                             lanlan_name,
                             meme_topic_key[:16],
+                        )
+                        continue
+                    if proxy_checked_count >= _MEME_PROXY_CANDIDATE_CHECK_LIMIT:
+                        logger.info(
+                            "[%s]- Phase 1 表情包代理预检达到上限(%d)，跳过本轮 meme 通道",
+                            lanlan_name,
+                            _MEME_PROXY_CANDIDATE_CHECK_LIMIT,
+                        )
+                        break
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_pre_meme_proxy_check"))
+                        )
+                    proxy_checked_count += 1
+                    proxy_ok, proxy_reason = await _meme_proxy_candidate_fetchable(meme_url)
+                    if mgr.state.is_proactive_preempted():
+                        return await _end_proactive(
+                            JSONResponse(_proactive_preempted_json("phase1_post_meme_proxy_check"))
+                        )
+                    if not proxy_ok:
+                        logger.info(
+                            "[%s]- Phase 1 表情包代理不可取，跳过候选: reason=%s title=%s url=%s",
+                            lanlan_name,
+                            proxy_reason,
+                            meme_title[:30],
+                            meme_url[:100],
                         )
                         continue
                     single_meme_topic = get_meme_topic_line(
