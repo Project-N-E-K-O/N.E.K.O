@@ -109,6 +109,14 @@ async def _wait_until(
         await asyncio.sleep(0)
 
 
+def _count_ws_messages(sent: list[str | bytes], message_type: str) -> int:
+    return sum(
+        1
+        for payload in sent
+        if isinstance(payload, str) and json.loads(payload).get("type") == message_type
+    )
+
+
 async def _stop_worker(
     task: asyncio.Task[None],
     requests: asyncio.Queue[_AsrWorkerRequest],
@@ -259,28 +267,14 @@ async def test_qwen_duplicate_item_created_does_not_consume_next_commit(
 
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 1
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 1
     )
     await websocket.server_send(
         {"type": "input_audio_buffer.committed", "item_id": "qwen-1"}
     )
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 2
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 2
     )
     await websocket.server_send(
         {"type": "conversation.item.created", "item": {"id": "qwen-1"}}
@@ -563,14 +557,7 @@ async def test_step_manual_rejects_overlap_without_dropping_previous_final(
 
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 1
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 1
     )
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
 
@@ -589,14 +576,7 @@ async def test_step_manual_rejects_overlap_without_dropping_previous_final(
 
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=3))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 2
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 2
     )
     await websocket.server_send(
         {
@@ -607,14 +587,7 @@ async def test_step_manual_rejects_overlap_without_dropping_previous_final(
     )
     third = await _next_event(responses, "final")
     assert (third.utterance_id, third.text) == (3, "third")
-    assert (
-        sum(
-            isinstance(payload, str)
-            and json.loads(payload).get("type") == "input_audio_buffer.clear"
-            for payload in websocket.sent
-        )
-        == 1
-    )
+    assert _count_ws_messages(websocket.sent, "input_audio_buffer.clear") == 1
     await _stop_worker(task, requests, responses, utterance_id=4)
 
 
@@ -635,14 +608,7 @@ async def test_step_duplicate_final_does_not_consume_next_commit(monkeypatch) ->
 
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 1
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 1
     )
     await websocket.server_send(
         {
@@ -656,14 +622,7 @@ async def test_step_duplicate_final_does_not_consume_next_commit(monkeypatch) ->
 
     await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
     await _wait_until(
-        lambda: (
-            sum(
-                isinstance(payload, str)
-                and json.loads(payload).get("type") == "input_audio_buffer.commit"
-                for payload in websocket.sent
-            )
-            == 2
-        )
+        lambda: _count_ws_messages(websocket.sent, "input_audio_buffer.commit") == 2
     )
     await websocket.server_send(
         {
