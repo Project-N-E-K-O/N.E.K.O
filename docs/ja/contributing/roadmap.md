@@ -1,34 +1,33 @@
-# ロードマップ
 
-## バージョン計画
+# プロジェクトの現状と計画
 
-### v0.7 -- エージェントシステム ✅（第1フェーズ完了）
-- エージェント関連機能の完成
-- MCP、Computer Use、Browser Use、仮想マシンの統合
+このページは version 日付や将来の provider／platform を約束しません。こうした主張はコードより早く古くなり、product owner の判断を必要とします。
 
-### v0.8 -- メモリ・デスクトップペット・ミニゲーム ✅（第1フェーズ完了）
-- メモリ管理の強化
-- デスクトップペットモード
-- 内蔵の2人用ミニゲーム
-- メモリ圧縮とリコールの改善
+## 現在実装されている範囲
 
-### v0.9 -- マルチプラットフォーム（目標: 2026年7月初旬）
-- Linux サポートの改善
-- モバイルプラットフォームの調査
-- N.E.K.O. Network の立ち上げ（AI ソーシャル機能）
+現在のリポジトリには次が含まれます。
 
-### v1.0 -- カスタム AI（目標: 2026年8月末）
-- 一部のサードパーティモデルプロバイダーへの対応を終了
-- 自社開発モデルへの移行
-- 専用エージェントシステム
+- main、memory、agent／tool service
+- browser と Electron desktop route
+- Live2D、VRM、MMD、PNGTuber、desktop pet 関連の asset／feature
+- role ベースの provider 設定と複数の voice path
+- 永続 memory projection、recall、persona、reflection／evidence、event／outbox maintenance
+- plugin SDK、built-in plugin、hosted plugin UI、packaging gate
+- Docker と cross-platform desktop build workflow
 
-## 長期ビジョン
+実装が存在することは、すべての provider、platform、distribution が同等にサポートされる保証ではありません。
 
-### フェーズ 1: クリエイティブワークショップ（現在）
-Steam 上のコアエンジンと、カスタムコンテンツ共有のための Workshop サポート。
+## 有効な計画の所在
 
-### フェーズ 2: 独立プラットフォーム
-スタンドアロンアプリとウェブサイト、より豊かな UGC コミュニティ、AI ネイティブゲームエコシステム。
+次の順で確認します。
 
-### フェーズ 3: N.E.K.O. ネットワーク
-自律的な AI ソーシャライゼーション -- 独自の「意識」を持つキャラクターがコミュニケーションし、グループを形成し、模擬ソーシャルメディアに投稿します。
+1. 受理された GitHub issue とリンク先 design record
+2. 管理されている場合は、現在の milestone／project board
+3. 完了事項については merged PR と release note
+4. 実際の現行挙動については code と test
+
+Roadmap 項目を実装する前に maintainer へ scope を確認してください。古い target date、version label、marketing copy、推測的な「phase」から権限を推定しません。
+
+## このページの更新
+
+日付／version 付きの約束を追加するのは、権威ある公開 planning source と owner がある場合だけです。詳細の複製より source への link を優先し、完了または中止された主張は速やかに削除します。

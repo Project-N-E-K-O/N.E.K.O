@@ -57,6 +57,11 @@ class _TransportMixin:
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
 
+        # ``close()`` releases RNNoise/soxr state. The client object is reused
+        # across sessions, so recreate that session-owned processor on demand.
+        if self._audio_processor is None:
+            self._audio_processor = self._create_audio_processor()
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -509,12 +514,18 @@ class _TransportMixin:
         # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
         # use_rnnoise_path is true only for 48kHz input when AudioProcessor exists;
         # for 16kHz/mobile input RNNoise doesn't run, so fall back to RMS.
-        _rnnoise_vad_live = use_rnnoise_path and self._audio_processor.noise_reduce_enabled and self._audio_processor._denoiser is not None
+        audio_processor = self._audio_processor
+        use_rnnoise_path = use_rnnoise_path and audio_processor is not None
+        _rnnoise_vad_live = (
+            use_rnnoise_path
+            and audio_processor.noise_reduce_enabled
+            and audio_processor._denoiser is not None
+        )
         self._rnnoise_vad_active = _rnnoise_vad_live
         if not self._has_server_vad:
             if _rnnoise_vad_live:
                 # Priority 2: RNNoise speech probability with sustained threshold
-                if self._audio_processor.speech_probability > 0.4:
+                if audio_processor.speech_probability > 0.4:
                     # B: 单帧 RNNoise 判定为语音就立即打点，独立于 sustain。
                     # _client_vad_active 仍需 500ms sustain，_user_recent_activity
                     # 只看"最近是否发声"，fudge guard 用它兜住首 500ms 和停顿缝隙。
@@ -1202,16 +1213,9 @@ class _TransportMixin:
         self._user_recent_activity_time = 0.0
         self._ai_recent_activity_time = 0.0
 
-        # 保存 debug 音频（RNNoise 处理前后的对比音频）
-        if self._audio_processor is not None:
-            try:
-                self._audio_processor.save_debug_audio()
-            except Exception as e:
-                logger.error(f"Error saving debug audio: {e}")
-
-        # 重置音频处理器状态
-        if self._audio_processor is not None:
-            self._audio_processor.reset()
+        # Wait for any executor-owned chunk to finish before releasing the
+        # session's RNNoise native state and soxr streaming buffers.
+        await self._close_audio_processor()
 
         # Gemini uses different cleanup
         if self._is_gemini:

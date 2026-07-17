@@ -1,40 +1,29 @@
-# 贡献指南
 
-Project N.E.K.O. 是基于 Apache License 2.0 的开源项目。欢迎来自世界各地的开发者、创作者和社区成员贡献力量。
+# 参与贡献
 
-## 如何贡献
+Project N.E.K.O. 接受范围明确的代码、文档、翻译、测试和内容工具贡献。
 
-1. 在 GitHub 上 **Fork** 仓库
-2. **创建分支**用于你的功能或修复
-3. **搭建环境** — Python 3.11 + [uv](https://docs.astral.sh/uv/)、[Node.js](https://nodejs.org/) >= 20.19（前端构建需要，通过 `build_frontend.bat` / `build_frontend.sh` 运行）
-4. 按照[代码风格](./code-style)指南**进行修改**
-5. **测试**你的修改（`uv run pytest`）
-6. **提交 Pull Request** 并附上清晰的描述
+## 工作流程
 
-::: tip AI 辅助开发
-项目内置了面向 AI 编程助手（Claude Code、Cursor 等）的配置。如果你使用这些工具开发，它们会自动加载项目的规则和技能集。详见 [AI 辅助开发](./ai-assisted-dev)，其中也介绍了如何将规则适配到其他 AI 工具。
-:::
+1. Fork 仓库，并从当前 `main` 创建聚焦单一问题的分支。
+2. 阅读 `.agent/rules/neko-guide.md`，以及与任务匹配的 `.agent/skills/*/SKILL.md`。
+3. 使用 Python 3.11 和 `uv sync` 准备环境；使用仓库脚本构建前端。
+4. 在功能所属模块内做最小且结构对偶的修改。
+5. 先运行针对性测试，再运行相关 lint 或构建检查。
+6. 创建 PR，说明行为变化、风险和验证结果。
 
-::: warning Nuitka 打包
-新加 Python 代码目录或动态 import 之前，请先看
-[Nuitka 打包注意事项](./nuitka-packaging)。Nuitka 的 `--include-data-dir`
-默认会静默丢失 `.py` 文件，目录命名错误会让 standalone 构建坏掉但不影响源码模式测试。
-:::
+所有 Python 命令都通过 `uv run` 执行。面向用户的 i18n 修改必须同时更新八个 locale 文件。
 
-## 我们需要
+## PR 门禁
 
-- **后端开发者** — Python、FastAPI、WebSocket、AI/ML 集成
-- **前端开发者** — JavaScript、Live2D/Three.js、CSS
-- **创作者** — Live2D/3D 建模师、配音演员、角色设计师
-- **翻译者** — 帮助扩展国际化覆盖范围
-- **测试者** — Bug 报告和功能反馈
+- 修改 `app/`、`main_logic/` 或 `memory/` 下的 Python 时，PR 描述必须包含 `scripts/check_pr_report.py` 要求的回归报告章节。
+- 计数文件超过 20 个时，必须填写非空的“不拆分理由”。新文件、识别出的测试文件和同步修改的 i18n locale 组按门禁规则排除。
+- 静态分析和插件测试以当前 workflow 为准，不要沿用旧检查清单。
 
-## 社区
+修改相应领域前，请阅读[测试](./testing)、[代码规范](./code-style)和 [Nuitka 打包](./nuitka-packaging)。
 
-- **Discord**：[加入我们](https://discord.gg/5kgHfepNJr)
-- **QQ 群**：1022939659
-- **GitHub Issues**：[报告 Bug 或请求功能](https://github.com/Project-N-E-K-O/N.E.K.O/issues)
+## 报告问题与社区协作
 
-## 许可证
+请通过 [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues) 提交可复现的问题或范围明确的提案。提供运行环境、精确 revision/构建产物、预期与实际行为、脱敏日志以及最小复现。
 
-核心引擎采用 **Apache License 2.0**，将持续保持开源。你的贡献可能会被纳入官方 Steam 和 App Store 发行版。
+贡献受仓库当前 `LICENSE` 约束；不要从本文档推导额外的分发承诺。

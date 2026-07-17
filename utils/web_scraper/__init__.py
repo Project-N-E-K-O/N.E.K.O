@@ -60,11 +60,13 @@ from .trending_content import (
     _fetch_weibo_trending_fallback,
     _format_bilibili_videos,
     _format_reddit_posts,
+    _format_youtube_videos,
     _format_score,
     _format_twitter_trending,
     _format_weibo_trending,
     fetch_bilibili_trending,
     fetch_news_content,
+    fetch_tieba_content,
     fetch_reddit_popular,
     fetch_trending_content,
     fetch_twitter_trending,
@@ -72,11 +74,13 @@ from .trending_content import (
     fetch_weibo_trending,
     fetch_xhh_feed_content,
     format_news_content,
+    format_tieba_content,
     format_trending_content,
     format_video_content,
     format_xhh_feed,
     normalize_xhh_feed,
 )
+from .youtube_feed import fetch_youtube_home_feed
 from .window_context import (
     _SEARCH_TEXT_WS_RE,
     _sanitize_search_text,

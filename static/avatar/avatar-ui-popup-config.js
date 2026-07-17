@@ -26,6 +26,7 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), window.focusModeEnabled, true);
         syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-slop-filter`), window.slopFilterEnabled);
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
@@ -170,6 +171,7 @@ const _mmdPopupConfig = {
         width: 'max-content'
     },
     onMouseTrackingToggle: function(enabled) {
+        window.mouseTrackingEnabled = enabled;
         if (this.cursorFollow) {
             this.cursorFollow.setEnabled(enabled);
         }

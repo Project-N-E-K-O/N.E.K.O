@@ -795,6 +795,22 @@
     );
   }
 
+  function syncSoccerVrmCameraTarget(manager, lookY, dist) {
+    const THREE = window.THREE;
+    const cam = manager?.camera;
+    if (!THREE || !cam || !manager) return null;
+    const cameraTarget = new THREE.Vector3(0, lookY, 0);
+    cam.position.set(0, lookY, dist);
+    cam.lookAt(cameraTarget);
+    cam.updateProjectionMatrix();
+    manager._cameraTarget = cameraTarget;
+    if (manager.controls) {
+      manager.controls.target.copy(cameraTarget);
+      manager.controls.update();
+    }
+    return cameraTarget;
+  }
+
   function fitVrmManagerCamera(manager, containerId, label = 'VRM') {
     const THREE = window.THREE;
     const vrm = manager?.currentModel?.vrm;
@@ -822,10 +838,107 @@
     const visibleH = h * 1.15;
     const dist = visibleH / (2 * Math.tan(fovRad / 2));
     const lookY = visibleH / 2;
-    cam.position.set(0, lookY, dist);
-    cam.lookAt(0, lookY, 0);
-    cam.updateProjectionMatrix();
+    syncSoccerVrmCameraTarget(manager, lookY, dist);
     console.log(`[soccer_demo] fit ${label}: h=`, h.toFixed(2), 'w=', w.toFixed(2), 'dist=', dist.toFixed(2));
+  }
+
+  function isSoccerVrm0(gltf, vrm) {
+    const exts = gltf?.parser?.json?.extensionsUsed || [];
+    if (exts.includes('VRMC_vrm')) return false;
+    if (exts.includes('VRM')) return true;
+    const metaVersion = vrm?.meta?.metaVersion || vrm?.meta?.vrmVersion;
+    return typeof metaVersion === 'string' && metaVersion.startsWith('0');
+  }
+
+  function getSoccerVrmBoneNode(vrm, boneName) {
+    const humanoid = vrm?.humanoid;
+    if (!humanoid) return null;
+    try {
+      if (typeof humanoid.getRawBoneNode === 'function') {
+        const raw = humanoid.getRawBoneNode(boneName);
+        if (raw) return raw;
+      }
+      if (typeof humanoid.getNormalizedBoneNode === 'function') {
+        const normalized = humanoid.getNormalizedBoneNode(boneName);
+        if (normalized) return normalized;
+      }
+    } catch (_) {}
+    return humanoid.humanBones?.[boneName]?.node || null;
+  }
+
+  function countSoccerVrmReversedBonePairs(vrm) {
+    const THREE = window.THREE;
+    if (!THREE || !vrm?.scene) return { reversed: 0, checked: 0 };
+    const pairs = [
+      ['leftEye', 'rightEye'],
+      ['leftUpperArm', 'rightUpperArm'],
+      ['leftLowerArm', 'rightLowerArm'],
+      ['leftHand', 'rightHand'],
+    ];
+    const leftPos = new THREE.Vector3();
+    const rightPos = new THREE.Vector3();
+    let reversed = 0;
+    let checked = 0;
+    vrm.scene.updateMatrixWorld(true);
+    for (const [leftName, rightName] of pairs) {
+      const left = getSoccerVrmBoneNode(vrm, leftName);
+      const right = getSoccerVrmBoneNode(vrm, rightName);
+      if (!left || !right) continue;
+      left.getWorldPosition(leftPos);
+      right.getWorldPosition(rightPos);
+      if (!Number.isFinite(leftPos.x) || !Number.isFinite(rightPos.x)) continue;
+      if (Math.abs(leftPos.x - rightPos.x) < 0.001) continue;
+      checked += 1;
+      if (leftPos.x < rightPos.x) reversed += 1;
+    }
+    return { reversed, checked };
+  }
+
+  function sampleSoccerVrmHeadFaceZ(vrm) {
+    const THREE = window.THREE;
+    if (!THREE || !vrm?.scene) return null;
+    const namePattern = /(head|face|eye|eyeline|eyelash|hitomi|sirome|头|脸|眼|眉|睫|瞳)/i;
+    const point = new THREE.Vector3();
+    let positive = 0;
+    let negative = 0;
+    vrm.scene.updateMatrixWorld(true);
+    vrm.scene.traverse(object => {
+      if (!object?.isMesh || !object.geometry?.attributes?.position) return;
+      const materialNames = Array.isArray(object.material)
+        ? object.material.map(m => m?.name || '').join(' ')
+        : (object.material?.name || '');
+      const label = `${object.name || ''} ${materialNames}`;
+      if (!namePattern.test(label)) return;
+      const pos = object.geometry.attributes.position;
+      const step = Math.max(1, Math.floor(pos.count / 1200));
+      for (let i = 0; i < pos.count; i += step) {
+        point.fromBufferAttribute(pos, i);
+        object.localToWorld(point);
+        if (point.z > 0.001) positive += 1;
+        else if (point.z < -0.001) negative += 1;
+      }
+    });
+    return positive + negative > 0 ? { positive, negative } : null;
+  }
+
+  function shouldNormalizeSoccerVrm0FixedCameraYaw(gltf, vrm) {
+    if (!isSoccerVrm0(gltf, vrm)) return false;
+    const bonePairs = countSoccerVrmReversedBonePairs(vrm);
+    if (bonePairs.reversed >= 2) return true;
+    const headFaceZ = sampleSoccerVrmHeadFaceZ(vrm);
+    return bonePairs.reversed === 1 &&
+      !!headFaceZ &&
+      headFaceZ.negative > headFaceZ.positive * 1.25;
+  }
+
+  function applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager) {
+    const shouldNormalizeYaw = shouldNormalizeSoccerVrm0FixedCameraYaw(gltf, vrm);
+    if (manager) manager.__soccerFixedCameraNormalizeYaw = shouldNormalizeYaw;
+    if (shouldNormalizeYaw && vrm?.scene?.rotation) {
+      vrm.scene.rotation.y = Math.PI;
+      vrm.scene.updateMatrixWorld?.(true);
+    }
+    return shouldNormalizeYaw;
   }
 
   window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager(manager, path, {
@@ -849,6 +962,7 @@
     const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error(`${label}: loaded file is not a valid VRM`);
+    applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager);
 
     if (manager.currentModel?.vrm?.scene) {
       const oldScene = manager.currentModel.vrm.scene;
@@ -3071,6 +3185,7 @@
     const gltf = await new Promise((res, rej) => loader.load(path, res, null, rej));
     const vrm = gltf.userData.vrm;
     if (!vrm) throw new Error('not a valid VRM: ' + path);
+    applySoccerVrm0FixedCameraFacingFix(gltf, vrm, window.vrmManager);
     if (window.vrmManager.currentModel?.vrm?.scene) {
       const oldScene = window.vrmManager.currentModel.vrm.scene;
       window.vrmManager.scene.remove(oldScene);
@@ -3098,9 +3213,7 @@
     const visibleH = h * 1.15;
     const dist = visibleH / (2 * Math.tan(fovRad / 2));
     const lookY = visibleH / 2;
-    cam.position.set(0, lookY, dist);
-    cam.lookAt(0, lookY, 0);
-    cam.updateProjectionMatrix();
+    syncSoccerVrmCameraTarget(window.vrmManager, lookY, dist);
     emitEvent('player-avatar-changed', { type, path });
   }
 

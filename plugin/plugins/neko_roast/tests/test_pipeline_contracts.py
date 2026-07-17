@@ -114,6 +114,62 @@ async def test_pipeline_records_dry_run_as_dispatcher_outcome_not_pushed():
     assert ctx.results[0].status == "dry_run"
     assert not any(step.id == "viewer_profile.mark_roasted" for step in result.steps)
 
+
+@pytest.mark.asyncio
+async def test_pipeline_skips_first_danmaku_when_roast_and_followup_modules_are_disabled():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    class Safety:
+        def before_event(self, _event):
+            return SafetyDecision(True)
+
+        def after_event(self):
+            return None
+
+    class ViewerProfileModule:
+        async def upsert(self, identity):
+            return ViewerProfile(uid=identity.uid, nickname=identity.nickname)
+
+        async def has_roasted(self, _uid):
+            return False
+
+    config = RoastConfig(
+        live_enabled=True,
+        avatar_roast_enabled=False,
+        danmaku_response_enabled=False,
+    )
+    ctx = SimpleNamespace(
+        audit=Audit(),
+        config=config,
+        permission_gate=PermissionGate(config),
+        safety_guard=Safety(),
+        bili_identity=SimpleNamespace(
+            resolve=lambda event: asyncio.sleep(
+                0,
+                result=ViewerIdentity(uid=event.uid, nickname=event.nickname),
+            )
+        ),
+        viewer_profile=ViewerProfileModule(),
+        results=[],
+    )
+    ctx.record_result = ctx.results.append
+
+    result = await RoastPipeline(ctx).handle_event(
+        ViewerEvent(
+            uid="42",
+            nickname="disabled",
+            danmaku_text="hello",
+            source="live_danmaku",
+        )
+    )
+
+    assert result.status == "skipped"
+    assert result.reason == "danmaku_response.disabled"
+    assert any(step.id == "module_gate" for step in result.steps)
+    assert ctx.results == [result]
+
 @pytest.mark.asyncio
 async def test_pipeline_public_result_profile_reflects_successful_first_roast():
     class Audit:

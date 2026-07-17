@@ -1,6 +1,6 @@
 # Plugin SDK: `@llm_tool` decorator
 
-**Status**: introduced this release · stable · no deprecations.
+**Current-source status (verified 2026-07-16)**: available in the public plugin SDK; no related API is deprecated on this page. This is a capability note, not a promise about a particular release train.
 
 ## Summary
 
@@ -50,7 +50,7 @@ yourself.
 
 ## Why
 
-Before this release, plugins that wanted the LLM to call into them had
+Before the SDK helper existed, plugins that wanted the LLM to call into them had
 to use the raw `/api/tools/register` HTTP API directly (see
 `docs/plugins/tool-calling.md`, layer 1). That meant every plugin had
 to:
@@ -177,9 +177,9 @@ Use this when a tool's schema is built at runtime (e.g. from config or
 discovered from an external system). The decorator is preferred
 otherwise.
 
-## Touched files (this release)
+## Current implementation map
 
-* `plugin/sdk/plugin/llm_tool.py` (new) — decorator, metadata, name
+* `plugin/sdk/plugin/llm_tool.py` — decorator, metadata, name
   validation, method collector.
 * `plugin/sdk/plugin/base.py` —
   `register_llm_tool` / `unregister_llm_tool` / `list_llm_tools`
@@ -190,10 +190,10 @@ otherwise.
 * `plugin/core/communication.py` — adds `LLM_TOOL_REGISTER` /
   `LLM_TOOL_UNREGISTER` message routing and host-side handlers that
   drive `main_server` registration.
-* `plugin/server/messaging/llm_tool_registry.py` (new) — process-
+* `plugin/server/messaging/llm_tool_registry.py` — process-
   global tracker + httpx wrappers around `main_server`'s
   `/api/tools/{register,unregister,clear}`.
-* `plugin/server/routes/llm_tools.py` (new) —
+* `plugin/server/routes/llm_tools.py` —
   `/api/llm-tools/callback/{plugin_id}/{tool_name}` route that
   forwards model dispatches into the plugin via `host.trigger`.
 * `plugin/server/routes/__init__.py`, `plugin/server/http_app.py` —

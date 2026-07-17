@@ -23,7 +23,7 @@ def test_xhh_credential_tab_is_present():
 
     assert "switchTab('xhh', this)" in template
     assert 'data-i18n="cookiesLogin.xhh"' in template
-    assert '/static/js/cookies_login.js?v=2.3' in template
+    assert "static_asset_version | default('0')" in template
 
 
 def test_xhh_local_save_failure_message_is_localized():

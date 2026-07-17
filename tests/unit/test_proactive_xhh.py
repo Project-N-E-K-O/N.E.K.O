@@ -235,7 +235,7 @@ async def test_fetch_xhh_feed_reports_empty_payload_as_source_failure():
 
 
 @pytest.mark.asyncio
-async def test_news_aggregates_weibo_and_xhh():
+async def test_news_aggregates_weibo_tieba_and_xhh():
     weibo = {
         "success": True,
         "trending": [{"word": "微博话题", "url": "https://s.weibo.com/topic"}],
@@ -244,12 +244,20 @@ async def test_news_aggregates_weibo_and_xhh():
         "success": True,
         "posts": normalize_xhh_feed(SAMPLE_PAYLOAD, limit=1),
     }
+    tieba = {
+        "success": True,
+        "posts": [{"title": "贴吧话题", "url": "https://tieba.baidu.com/p/1"}],
+        "topics": [],
+    }
     with patch(
         "utils.web_scraper.trending_content.is_china_region",
         return_value=True,
     ), patch(
         "utils.web_scraper.trending_content.fetch_weibo_trending",
         new=AsyncMock(return_value=weibo),
+    ), patch(
+        "utils.web_scraper.trending_content.fetch_tieba_content",
+        new=AsyncMock(return_value=tieba),
     ), patch(
         "utils.web_scraper.trending_content.fetch_xhh_feed_content",
         new=AsyncMock(return_value=xhh),
@@ -258,10 +266,12 @@ async def test_news_aggregates_weibo_and_xhh():
 
     assert result["success"] is True
     assert result["news"] is weibo
+    assert result["tieba"] is tieba
     assert result["xhh"] is xhh
     fetch_xhh.assert_awaited_once_with(3)
     formatted = format_news_content(result)
     assert "微博话题" in formatted
+    assert "贴吧话题" in formatted
     assert "今天玩什么游戏" in formatted
 
 

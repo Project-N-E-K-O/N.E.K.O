@@ -1,166 +1,63 @@
 # PNGTuber 模型
 
-## 概述
+## 运行时
 
-N.E.K.O. 可以渲染轻量级的 2D 图片形象（"PNGTuber" 风格），作为 Live2D、MMD 或 VRM 模型之外的另一种选择。PNGTuber 形象由 `static/pngtuber-core.js`（`PNGTuberManager` 类）驱动，它会根据语音和指针交互在静态图片之间切换（对于导入的分层工程，则绘制一张层叠 canvas）。
+PNGTuber 是由 `static/pngtuber-core.js` 渲染的图片状态角色。`PNGTuberManager` 支持简单图片切换，也支持通过 `layered_canvas_v1` 适配器运行规范化分层模型。它与 Live2D、VRM、MMD 一样接入主页面的角色选择与 `window.LanLan1.setEmotion()` 契约。
 
-与 3D/Live2D 形象不同，PNGTuber 包就是一个图片文件夹外加一个 `model.json` 描述文件——没有骨骼绑定，也不需要 Cubism 运行时。
+## 规范化模型包
 
-## 包格式
-
-PNGTuber 模型是一个包含 `model.json` 文件的文件夹，其 `model_type` 须设为 `pngtuber`。图片引用位于 `pngtuber` 对象下：
+每个导入模型都保存在配置的用户 PNGTuber 目录，并通过 `/user_pngtuber/{folder}/model.json` 提供。最小简单包如下：
 
 ```json
 {
-  "name": "My Avatar",
   "model_type": "pngtuber",
+  "name": "Example",
   "pngtuber": {
     "idle_image": "idle.png",
-    "talking_image": "talking.png",
-    "drag_image": "drag.png",
-    "click_image": "click.png",
-    "happy_image": "happy.png",
-    "sad_image": "sad.png",
-    "angry_image": "angry.png",
-    "surprised_image": "surprised.png"
+    "talking_image": "talking.png"
   }
 }
 ```
 
-### 图片状态键
+`model_type` 必须为 `pngtuber`，`idle_image` 必填。相对图片路径必须留在模型包内。支持 `.png`、`.gif`、`.jpg`、`.jpeg` 与 `.webp`。
 
-| 键 | 用途 |
-|-----|---------|
-| `idle_image` | **必填。** 默认的待机帧。 |
-| `talking_image` | 助手说话时显示。 |
-| `drag_image` | 拖拽形象时显示。 |
-| `click_image` | 点击形象时短暂显示。 |
-| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | 情绪帧（见 [情绪状态](#情绪状态尚未由情绪分析驱动)）。 |
+可选图片状态键包括 `talking_image`、`drag_image`、`click_image`、`happy_image`、`sad_image`、`angry_image` 与 `surprised_image`。运行时会为缺失状态回退，例如 talking 可使用 idle，因此只有 `idle_image` 强制要求。
 
-相对路径在包文件夹内解析；绝对路径（`/…`）与 `http(s)://` URL 原样保留。图片引用会在服务端规范化为 `/user_pngtuber/<folder>/<file>`。
-
-### 允许的扩展名与大小限制
-
-| 约束 | 取值 |
-|------------|-------|
-| 图片扩展名 | `.png`、`.gif`、`.jpg`、`.jpeg`、`.webp` |
-| 单文件上限 | 50 MB |
-| 整包上限 | 250 MB |
-
-服务端会在接受包之前校验：`idle_image` 必须存在，且每个 `*_image` 引用都指向一个存在的、扩展名合法的文件。
-
-## 情绪状态（尚未由情绪分析驱动）
-
-::: warning 诚实说明
-`happy_image` / `sad_image` / `angry_image` / `surprised_image` 这几个键属于包的 schema，且会经过**服务端校验**（上传时检查路径与扩展名），但 PNGTuber 运行时**尚未**根据情绪分析切换到它们。
-
-`PNGTuberManager` 目前只驱动：
-
-- `idle` ↔ `talking`，由助手**语音**开始/结束事件切换。
-- `drag` 与 `click`，由指针**交互**切换。
-
-它没有 Live2D / MMD / VRM 那样的 `setEmotion` 钩子，也没有专门的 PNGTuber 情绪管理页面。这四个情绪图片键会随包一起存储和分发，以便为将来的情绪驱动路径做好准备，但目前提供它们除了能通过校验外没有任何可见效果。
-:::
+布局键包括 `scale`、`offset_x`、`offset_y`、移动端专用缩放/偏移以及 `mirror`。分层导入还使用 `adapter: "layered_canvas_v1"` 与 `layered_metadata`。
 
 ## 导入格式
 
-上传接口会检测包类型并就地规范化。检测出的类型会以 `source_format` 回传。
+导入器按以下顺序检测格式：
 
-| 来源 | 检测方式 | 结果 |
-|--------|-----------|--------|
-| 原生 simple package | 文件夹根目录有 `model.json` | `source_format: simple_package`——直接使用。 |
-| **PNGTuber-Plus** | 存在 `.save` 工程文件 | 转换为 `layered_canvas_v1` 适配器。 |
-| **PNGTube-Remix** | 存在 `.pngremix` 工程文件 | 转换为 `layered_canvas_v1` 适配器。 |
-| veadotube | 存在 `.veadomini` / `.veado` 文件 | **已识别但暂不支持**——上传会被拒绝并附说明性错误。 |
+1. 根目录含 `model.json` 的原生简单包；
+2. PNGTuber Plus `.save` 工程；
+3. PNGTube Remix `.pngRemix` 工程；
+4. veadotube `.veadomini` 或 `.veado` 文件。
 
-### 分层适配器（`layered_canvas_v1`）
+PNGTuber Plus 与 PNGTube Remix 会转换为规范化模型包，并可能产生分层元数据与警告。veadotube 当前只会被识别，随后以不支持格式拒绝。只有图片的文件夹也会被模型包端点拒绝；应使用模型管理器的图片对导入流程，或提供有效 `model.json`。
 
-导入 PNGTuber-Plus 或 PNGTube-Remix 工程时，转换器会生成一份分层元数据文件并把 `adapter` 设为 `layered_canvas_v1`。运行时 `PNGTuberManager` 会把各图层绘制到一张 `<canvas>` 上，而不是切换单个 `<img>`，并额外加入：
+请求可以上传文件夹树。服务器会移除一个共享顶层目录、验证每条相对路径、先写入临时目录，并仅在导入成功后把模型包改名到目标位置。已有模型目录不会被覆盖。
 
-- **眨眼（blink）**——眼睛图层按随机定时器眨眼。
-- **说话弹跳（speech bounce）**——说话时形象上下弹跳/挤压。
+限制为单文件 50 MB、完整模型包 250 MB。
 
-源工程中的热键、物理和多帧动画会保存在元数据中以备将来运行时支持，但目前尚未全部驱动。若元数据加载失败，运行时会回退到普通的单图模式。
+## 状态与情绪行为
 
-## 静态服务
+基础状态为 idle、talking、drag 与 click。语义情绪使用四个可选的 `happy`、`sad`、`angry`、`surprised` 图片或等价分层状态。源导入器支持时，分层适配器可保留第三方可见性状态、热键、开关、精灵图、眨眼与物理元数据。
 
-用户的 PNGTuber 包通过 `/user_pngtuber` 挂载提供，对应磁盘上配置的 PNGTuber 目录。模型文件引用形如 `/user_pngtuber/<folder>/model.json` 与 `/user_pngtuber/<folder>/<image>`。
+规范化 `source_format` 说明模型包如何生成；客户端只应把它用于诊断，不应根据它选择渲染行为。渲染行为由规范化 `pngtuber` 对象与适配器元数据决定。
 
-## API 端点
+## API 摘要
 
-**前缀：** `/api/model/pngtuber`
+所有端点都使用 `/api/model/pngtuber` 前缀。
 
-### `POST /upload_model`
+| 方法 | 端点 | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/model/pngtuber/upload_model` | 上传并规范化文件夹/模型包 |
+| `GET` | `/api/model/pngtuber/models` | 列出有效用户模型包 |
+| `DELETE` | `/api/model/pngtuber/model` | 按 `folder`、`url` 或 `name` 删除模型包 |
 
-以 multipart 文件列表上传一个 PNGTuber 包。每个文件的 `filename` 携带其在包内的相对路径；单一的共享顶层文件夹会被自动剥离。包会先暂存、检测、校验，并（对第三方工程）转换，然后才正式落地。
+成功上传响应包含规范化模型、公共 URL、`source_format`、警告与上传总大小。列表端点会跳过没有有效 PNGTuber `model.json` 的目录。删除只接受直接模型包文件夹或 `/user_pngtuber/{folder}/model.json`；嵌套路径与路径穿越会被拒绝。
 
-**Body**——`multipart/form-data`，含一个 `files` 字段（一个或多个 `UploadFile` 条目）。
+## 宿主边界
 
-**Response**（成功）
-
-```json
-{
-  "success": true,
-  "message": "...",
-  "model_type": "pngtuber",
-  "model_name": "My Avatar",
-  "name": "My Avatar",
-  "folder": "My_Avatar",
-  "url": "/user_pngtuber/My_Avatar/model.json",
-  "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-  "source_format": "simple_package",
-  "warnings": [],
-  "file_size": 123456
-}
-```
-
-失败时返回 `{ "success": false, "error": "..." }`，并附相应的 4xx/5xx 状态码。第三方导入错误还会附带 `source_format` 与 `warnings`。
-
-### `GET /models`
-
-列出所有已安装的用户 PNGTuber 包。
-
-**Response**
-
-```json
-{
-  "success": true,
-  "models": [
-    {
-      "name": "My Avatar",
-      "folder": "My_Avatar",
-      "filename": "My_Avatar",
-      "location": "user",
-      "type": "pngtuber",
-      "model_type": "pngtuber",
-      "url": "/user_pngtuber/My_Avatar/model.json",
-      "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-      "source_format": "simple_package"
-    }
-  ]
-}
-```
-
-没有合法 `model.json` 或 `model_type` 不是 `pngtuber` 的文件夹会被跳过。
-
-### `DELETE /model`
-
-删除一个已安装的 PNGTuber 包。
-
-**Body**
-
-```json
-{ "folder": "My_Avatar" }
-```
-
-标识按**文件夹 slug** 解析（优先级 `folder` → `url` → `name`）：像 `/user_pngtuber/My_Avatar/model.json` 这样的 `model.json` URL 会被解析回其文件夹。建议用 `GET /models` 返回的 `folder` slug（或 `url`）——`name` 是给人看的显示名，可能与 slug 不一致，只有当它恰好等于文件夹名时按 `name` 删才生效。目标会被限制在 PNGTuber 目录内。
-
-**Response**
-
-```json
-{ "success": true, "message": "PNGTuber model My_Avatar deleted" }
-```
-
-::: info
-PNGTuber 的模型管理位于共享的 `/model_manager` 页面。没有单独的 PNGTuber 情绪管理页面；形象的设置菜单链接到角色卡管理、模型管理和声音克隆页面。
-:::
+PNGTuber 在主页面和使用 `index.html` 的 Electron 桌宠窗口中渲染。`/chat` 与 `/subtitle` 不会初始化另一个 PNGTuber 管理器；需要跨窗口反映角色状态时，应与主窗口通信。

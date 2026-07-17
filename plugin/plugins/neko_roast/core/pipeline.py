@@ -71,6 +71,8 @@ class RoastPipeline:
         self.session.record_avatar_roast_sent(now=self._now())
 
     def _avatar_roast_allowed(self, event: ViewerEvent) -> bool:
+        if not bool(getattr(self.ctx.config, "avatar_roast_enabled", True)):
+            return False
         if not is_live_danmaku_with_text(event):
             return True
         if self._live_speaker_burst_active():
@@ -282,6 +284,9 @@ class RoastPipeline:
             already_roasted=already_roasted,
             entrance_pacing_active=self._entrance_pacing_active(),
             active_hook_answer=active_hook_answer,
+            avatar_roast_enabled=bool(
+                getattr(self.ctx.config, "avatar_roast_enabled", True)
+            ),
             avatar_roast_allowed=self._avatar_roast_allowed(event),
             avatar_roast_burst_active=self._live_speaker_burst_active(),
             avatar_roast_batch_welcome=self._batch_welcome_available(),

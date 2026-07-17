@@ -74,7 +74,11 @@ class LiveSupportEventsModule(BaseModule):
         }
 
     def _on_bus_event(self, event: Any) -> None:
-        if not self.enabled or self.ctx is None:
+        if (
+            not self.enabled
+            or self.ctx is None
+            or not bool(getattr(self.ctx.config, "live_support_events_enabled", True))
+        ):
             return
         raw = getattr(event, "raw", None)
         support_event = raw if raw is not None else event

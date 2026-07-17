@@ -159,6 +159,8 @@ class MyRouter(PluginRouter):
 
 A router is not a separate process. It runs in the same process as the main plugin and shares all resources.
 
+It is also not a manifest entry point: `[plugin].entry` must resolve to the owning `NekoPluginBase` class. Pointing it at a `PluginRouter` subclass is rejected by the host. `include_router()` performs binding and entry collection; the `on_mount` / `on_unmount` methods present on the router class are not automatically called by this base-class path.
+
 ---
 
 ## Sharing logic

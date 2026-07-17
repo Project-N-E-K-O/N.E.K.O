@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     pass
 
 from .lifecycle import (
-    _active_character, _close_async_openai_client_from_sync_best_effort,
+    _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_clients_best_effort, _substitute_character_placeholders,
 )
 from .messages import LLMResponse, LLMStreamChunk, _normalize_messages
@@ -699,6 +699,15 @@ class ChatAnthropic:
                 payload["system"] = _substitute_character_placeholders(
                     [{"role": "system", "content": payload["system"]}], active[0], active[1]
                 )[0]["content"]
+
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                payload["messages"] = apply_slop_reduction(payload["messages"], slop_lang)
+            except Exception:
+                # Prompt-only rewriting is best effort and must not break an LLM call.
+                pass
         return payload
 
     def _apply_overrides(self, payload: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
@@ -759,7 +768,15 @@ class ChatAnthropic:
         usage = getattr(resp, "usage", None)
         usage_dict = _anthropic_usage_to_dict(usage)
         _record_anthropic_token_usage(self.model, usage_dict)
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": _anthropic_stop_reason_to_finish_reason(
+                    getattr(resp, "stop_reason", None)
+                ),
+            },
+        )
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         payload = self._build_payload_for_call(messages, overrides)
@@ -772,7 +789,15 @@ class ChatAnthropic:
         usage = getattr(resp, "usage", None)
         usage_dict = _anthropic_usage_to_dict(usage)
         _record_anthropic_token_usage(self.model, usage_dict)
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": _anthropic_stop_reason_to_finish_reason(
+                    getattr(resp, "stop_reason", None)
+                ),
+            },
+        )
 
     async def astream(self, messages: Any, **overrides: Any) -> AsyncIterator[LLMStreamChunk]:
         payload = self._build_payload_for_call(messages, overrides)

@@ -102,9 +102,14 @@ body {
     opacity: 1;
     filter: brightness(0) invert(1);
     /* 将emoji变成纯白色，移除阴影 */
-    animation: pawBounce 1.5s ease-in-out infinite;
     z-index: 1;
     /* 确保猫爪在遮罩层之上 */
+}
+
+/* 弹跳动画只在 toast 可见时运行：默认态 toast 以 opacity:0 隐藏（非 display:none），
+   若动画挂在基础态上会在两个窗口里以显示器刷新率永久空转（合成器无法休眠）。 */
+#status-toast.show::before {
+    animation: pawBounce 1.5s ease-in-out infinite;
 }
 
 /* 小猫爪爪弹跳动画 */
@@ -696,6 +701,25 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
     --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+/*
+ * 只校准 GNOME 原生 58px 毛球路径。左侧接近的终点已经在 JS 中前移 34px；
+ * 右侧的跨窗口视觉位置少 33px，因此待机和侧身素材都要补上这段距离。
+ * 待机规则使用独立站位侧，而不是会在 settle 后重置的 facingRight，避免误伤左侧待机。
+ */
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"][data-neko-cat1-native-yarn-side="right"][data-neko-cat1-substate="idle"]:not(.is-cat1-playing):not(.is-cat1-eating):not(.is-drag-action) > .neko-idle-return-art {
+    left: 33px;
+}
+
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-walking:not(.is-cat1-facing-right) > .neko-idle-return-art,
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-stretching:not(.is-cat1-facing-right) > .neko-idle-return-art {
+    left: calc(12.3046875% + 33px);
+}
+
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-walking.is-cat1-facing-right > .neko-idle-return-art,
+.neko-idle-return-btn[data-neko-cat1-native-yarn-visual-anchor="true"].is-cat1-stretching.is-cat1-facing-right > .neko-idle-return-art {
+    left: -17.96875%;
 }
 
 .neko-idle-return-btn.is-cat1-edge-peek-left > .neko-idle-return-art {
@@ -3047,6 +3071,20 @@ body.react-chat-window-dragging {
 .crop-tool-confirm { color: #34c759; }
 .crop-tool-confirm:hover { background: rgba(52, 199, 89, 0.16); color: #4cd964; }
 .crop-tool-confirm.is-active { background: rgba(52, 199, 89, 0.16); color: #34c759; }
+
+.crop-tool-pin {
+    width: auto;
+    min-width: 48px;
+    padding: 0 10px;
+    color: #8bd8ff;
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.crop-tool-pin:hover {
+    background: rgba(68, 183, 254, 0.18);
+    color: #b9e9ff;
+}
 
 .crop-tool-cancel { color: #ff6b7a; }
 .crop-tool-cancel:hover { background: rgba(220, 53, 69, 0.18); color: #ff8a97; }

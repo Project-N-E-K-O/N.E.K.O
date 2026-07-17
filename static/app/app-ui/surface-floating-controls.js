@@ -78,7 +78,7 @@
         });
 
         // 睡觉按钮（请她离开）
-        window.addEventListener('live2d-goodbye-click', () => {
+        window.addEventListener('live2d-goodbye-click', (event) => {
             const goodbyeTransitionToken = I.reserveNekoModelCatTransition('model-to-cat');
             if (!goodbyeTransitionToken) {
                 console.log('[App] 模型/猫切换进行中，忽略本次请她离开点击');
@@ -86,7 +86,21 @@
             }
             // 第零步：在任何状态变更之前立即捕获模型位置。
             // return-ball 会出现在这个位置；后续 return 时也以它作为模型位移基准。
-            const savedModelRect = I.getActiveModelTransitionRect();
+            const requestedRestoreRect = event && event.detail && event.detail.restoreSavedGoodbyeRect;
+            // 教程结束恢复猫咪态时，用户模型刚被临时重载到教程站位；必须沿用教程前
+            // 猫咪/返回按钮锚点，不能把临时模型位置误存成新的猫咪位置。
+            const savedModelRect = requestedRestoreRect
+                && Number.isFinite(Number(requestedRestoreRect.left))
+                && Number.isFinite(Number(requestedRestoreRect.top))
+                && Number(requestedRestoreRect.width) > 0
+                && Number(requestedRestoreRect.height) > 0
+                ? {
+                    left: Number(requestedRestoreRect.left),
+                    top: Number(requestedRestoreRect.top),
+                    width: Number(requestedRestoreRect.width),
+                    height: Number(requestedRestoreRect.height)
+                }
+                : I.getActiveModelTransitionRect();
 
             // 按钮位置只作为模型 bounds 不可用时的兜底。
             // 其他 handler（VRM/MMD goodbyeHandler）可能先于此处执行并隐藏按钮容器，

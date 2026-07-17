@@ -68,9 +68,19 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 if title and url:
                     xhh_links.append({'title': title, 'url': url, 'source': '小黑盒'})
 
+            tieba_links: list[dict] = []
+            tieba = raw_data.get('tieba', {}) or {}
+            posts = tieba.get('posts', []) or (tieba.get('tieba', {}) or {}).get('posts', [])
+            topics = tieba.get('topics', []) or (tieba.get('tieba', {}) or {}).get('topics', [])
+            for item in list(posts or []) + list(topics or []):
+                title = item.get('title', '') or item.get('topic_name', '') or item.get('word', '')
+                url = item.get('url', '')
+                if title and url:
+                    tieba_links.append({'title': title, 'url': url, 'source': '贴吧'})
+
             # news 共用一个 Phase 1 候选额度；交错合并避免微博先占满 10 条后
-            # 小黑盒只能拿到尾部少量名额。
-            links.extend(_interleave_link_groups([weibo_or_twitter, xhh_links]))
+            # 小黑盒或贴吧只能拿到尾部少量名额。
+            links.extend(_interleave_link_groups([weibo_or_twitter, xhh_links, tieba_links]))
         
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -79,7 +89,8 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
+                    default_source = 'B站' if raw_data.get('region', 'china') == 'china' else 'YouTube'
+                    links.append({'title': title, 'url': url, 'source': item.get('source') or default_source})
 
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})
@@ -106,7 +117,7 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
             # 每个平台先规范化为独立队列，再轮询交错。Phase 1 总候选只有
-            # 12 条，若按平台整段追加，排在末尾的小黑盒等来源会长期进不了候选池。
+            # 12 条，若按平台整段追加，排在后面的来源会长期进不了候选池。
             platform_specs = (
                 [
                     ('bilibili_dynamic', 'dynamics', ('content',), 'B站'),
@@ -161,7 +172,7 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'^[ \t]*(?:话题|Topic|話題|주제)[ \t]*[：:][ \t]*(.+)',
+        'title': r'^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)',
         'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
         'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
     }

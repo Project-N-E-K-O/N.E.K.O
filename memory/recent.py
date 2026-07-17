@@ -30,6 +30,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.language_utils import get_global_language
 from utils.tokenize import acount_tokens
 from config import (
+    LLM_OUTPUT_GUARD_MAX_TOKENS,
     MEMORY_LLM_HARD_TIMEOUT_SECONDS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
@@ -53,6 +54,49 @@ MAX_SUMMARY_TOKENS = RECENT_SUMMARY_MAX_TOKENS
 # 抗碰撞（连续 3 条 mixed user+ai 几乎不会误命中）和定位精度。
 REVIEW_FINGERPRINT_K = 3
 REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
+
+
+async def review_context_token_count(messages: list) -> int:
+    """Return a stable token-size metric without blocking the event loop."""
+    rows = []
+    for message in messages:
+        role = getattr(message, 'type', '') or ''
+        content = getattr(message, 'content', '') or ''
+        if isinstance(message, dict):
+            role = message.get('type', message.get('role', role)) or ''
+            content = message.get('content', content) or ''
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get('text', '') or item))
+                else:
+                    parts.append(str(item))
+            content = '\n'.join(parts)
+        elif not isinstance(content, str):
+            content = str(content)
+        rows.append(f"{role}: {content}")
+    return await acount_tokens('\n\n'.join(rows))
+
+
+def _review_response_hit_output_limit(response) -> bool:
+    """Classify only strong evidence that the provider exhausted output tokens."""
+    metadata = getattr(response, 'response_metadata', None) or {}
+    finish_reason = str(metadata.get('finish_reason') or '').strip().lower()
+    if finish_reason in {'length', 'max_tokens'}:
+        return True
+
+    content = str(getattr(response, 'content', '') or '').strip()
+    if content:
+        return False
+    usage = metadata.get('token_usage') or {}
+    output_tokens = usage.get('completion_tokens')
+    if output_tokens is None:
+        output_tokens = usage.get('output_tokens')
+    try:
+        return int(output_tokens or 0) >= LLM_OUTPUT_GUARD_MAX_TOKENS
+    except (TypeError, ValueError):
+        return False
 
 
 def _msg_fingerprint(m) -> tuple[str, str]:
@@ -287,17 +331,15 @@ class CompressedRecentHistoryManager:
         timeout uses MEMORY_LLM_HARD_TIMEOUT_SECONDS (the upstream forwards with
         a 120s hard cap; must be ≤110). Review is a pure background task (after
         the Phase C redesign it holds no locks, never blocks the user path, and
-        concurrent runs are harmless), so thinking can be enabled freely — the
-        judgment-dense work of rewriting history clearly benefits from it.
+        concurrent runs are harmless), so thinking can remain enabled for the
+        judgment-dense work of rewriting history.
 
-        Phase D: extra_body=None explicitly overrides create_chat_llm's
-        automatic resolution, letting thinking models respond with their
-        default behavior (thinking mode on).
+        ``extra_body=None`` explicitly overrides the provider-aware factory
+        default, leaving thinking models on their native/default behavior.
         max_retries=0 as above: SDK auto-retry off; the business-layer retry is
         the safety net.
         """
         api_config = self._config_manager.get_model_api_config('correction')
-        from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
@@ -1039,7 +1081,7 @@ class CompressedRecentHistoryManager:
                 )
                 review_llm = self._get_review_llm()
                 try:
-                    response_content = (await review_llm.ainvoke(prompt)).content  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
+                    response = await review_llm.ainvoke(prompt)  # noqa: LLM_INPUT_BUDGET  # review prompt built from RECENT_PER_MESSAGE_MAX_TOKENS-capped history.
                 finally:
                     await review_llm.aclose()
 
@@ -1048,8 +1090,12 @@ class CompressedRecentHistoryManager:
                     print(f"⚠️ {lanlan_name} 的记忆整理被取消（LLM调用后，保存前）")
                     return ('failed', None)
 
+                if _review_response_hit_output_limit(response):
+                    print(f"⚠️ {lanlan_name} 的历史审阅输出达到 token 上限，本轮暂停解析")
+                    return ('output_exhausted', None)
+
                 # 确保response_content是字符串
-                response_content = str(response_content).strip()
+                response_content = str(response.content).strip()
 
                 # 清理响应内容（使用正则安全提取）
                 match = re.search(r'```(?:json)?\s*([\s\S]*?)```', response_content)

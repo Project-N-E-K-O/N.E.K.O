@@ -23,14 +23,14 @@ logger = runtime.logger
 
 
 async def _background_preload():
-    """Preload audio processing modules in the background
+    """Preload translation libraries, dashscope, and httpx in the background.
 
     Note: no Event-based synchronization is needed, because Python's import lock
-    automatically waits for the first import to finish. If the user clicks voice
-    before preloading completes, the second import simply blocks until ready.
+    automatically waits for the first import to finish. A concurrent first use
+    simply blocks until the corresponding import is ready.
     """
     try:
-        logger.info("🔄 后台预加载音频处理模块...")
+        logger.info("🔄 后台预加载翻译与网络模块...")
         # 在线程池中执行同步导入（避免阻塞事件循环）
         import concurrent.futures
 
@@ -38,7 +38,7 @@ async def _background_preload():
         with concurrent.futures.ThreadPoolExecutor() as pool:
             await loop.run_in_executor(pool, _sync_preload_modules)
     except Exception as e:
-        logger.warning(f"⚠️ 音频处理模块预加载失败（不影响使用）: {e}")
+        logger.warning(f"⚠️ 翻译与网络模块预加载失败（不影响使用）: {e}")
 
 
 def _sync_preload_modules():
@@ -52,7 +52,6 @@ def _sync_preload_modules():
     - aiohttp: via tts_client.py
 
     Lazily imported modules that genuinely need preloading:
-    - pyrnnoise.rnnoise: lazily loaded in audio_processor.py via _get_rnnoise()
     - dashscope: imported only inside the cosyvoice_vc_tts_worker function in tts_client.py
     - googletrans/translatepy: translation libraries lazily imported in language_utils.py
     - translation_service: the translation service (TranslationService) in language_utils.py
@@ -87,21 +86,7 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
 
-    # 3. pyrnnoise (音频降噪 - 延迟加载，可能较慢)
-    try:
-        from utils.audio_processor import _get_rnnoise, _LiteDenoiser
-
-        rnnoise_mod = _get_rnnoise()
-        if rnnoise_mod:
-            _warmup = _LiteDenoiser(rnnoise_mod)
-            del _warmup
-            logger.debug("  ✓ pyrnnoise loaded and warmed up")
-        else:
-            logger.debug("  ✗ pyrnnoise not available")
-    except Exception as e:
-        logger.debug(f"  ✗ pyrnnoise: {e}")
-
-    # 4. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
+    # 3. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
     try:
         import dashscope  # noqa: F401
 
@@ -109,26 +94,7 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"  ✗ dashscope: {e}")
 
-    # 5. AudioProcessor 预热（numpy buffer + soxr resampler 初始化）
-    try:
-        from utils.audio_processor import AudioProcessor
-        import numpy as np
-
-        # 创建临时实例预热 numpy/soxr
-        _warmup_processor = AudioProcessor(
-            input_sample_rate=48000,
-            output_sample_rate=16000,
-            noise_reduce_enabled=False,  # 不需要 RNNoise，前面已预热
-        )
-        # 模拟处理一小块音频，预热 numpy 和 soxr 的 JIT
-        _dummy_audio = np.zeros(480, dtype=np.int16).tobytes()
-        _ = _warmup_processor.process_chunk(_dummy_audio)
-        del _warmup_processor, _dummy_audio
-        logger.debug("  ✓ AudioProcessor warmed up")
-    except Exception as e:
-        logger.debug(f"  ✗ AudioProcessor warmup: {e}")
-
-    # 6. httpx SSL 上下文预热（首次创建 AsyncClient 会初始化 SSL）
+    # 4. httpx SSL 上下文预热（首次创建 AsyncClient 会初始化 SSL）
     try:
         import httpx
         import asyncio

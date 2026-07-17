@@ -1,6 +1,7 @@
 import pytest
 
 from config.prompts.prompts_avatar_interaction import (
+    _AVATAR_INTERACTION_TOUCH_ZONE_FACTS,
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
@@ -40,13 +41,13 @@ def test_avatar_interaction_memory_meta_promotes_fist_and_hammer_summaries():
         "intensity": "burst",
     }, MASTER)
 
-    assert fist_normal["memory_note"] == f"[{MASTER}摸了摸你的头]"
-    assert fist_rapid["memory_note"] == f"[{MASTER}连续摸了摸你的头]"
+    assert fist_normal["memory_note"] == f"[{MASTER}用猫爪轻轻碰了你]"
+    assert fist_rapid["memory_note"] == f"[{MASTER}用猫爪连续轻轻碰了你几下]"
     assert fist_rapid["memory_dedupe_rank"] > fist_normal["memory_dedupe_rank"]
     assert fist_rapid["memory_dedupe_key"] == fist_normal["memory_dedupe_key"] == "fist_touch"
 
-    assert hammer_normal["memory_note"] == f"[{MASTER}用锤子敲了敲你的头]"
-    assert hammer_burst["memory_note"] == f"[{MASTER}连续敲了你好几下]"
+    assert hammer_normal["memory_note"] == f"[{MASTER}用锤子敲了你一下]"
+    assert hammer_burst["memory_note"] == f"[{MASTER}连续用锤子敲了你好几下]"
     assert hammer_burst["memory_dedupe_rank"] > hammer_normal["memory_dedupe_rank"]
     assert hammer_burst["memory_dedupe_key"] == hammer_normal["memory_dedupe_key"] == "hammer_bonk"
 
@@ -57,19 +58,19 @@ def test_avatar_interaction_memory_window_allows_rank_upgrade_within_window():
 
     first_persisted = _should_persist_avatar_interaction_memory(
         cache,
-        f"[{MASTER}摸了摸你的头]",
+        f"[{MASTER}用猫爪轻轻碰了你]",
         "fist_touch",
         1,
     )
     upgraded_persisted = _should_persist_avatar_interaction_memory(
         cache,
-        f"[{MASTER}连续摸了摸你的头]",
+        f"[{MASTER}用猫爪连续轻轻碰了你几下]",
         "fist_touch",
         2,
     )
     duplicate_summary_persisted = _should_persist_avatar_interaction_memory(
         cache,
-        f"[{MASTER}连续摸了摸你的头]",
+        f"[{MASTER}用猫爪连续轻轻碰了你几下]",
         "fist_touch",
         2,
     )
@@ -77,6 +78,95 @@ def test_avatar_interaction_memory_window_allows_rank_upgrade_within_window():
     assert first_persisted is True
     assert upgraded_persisted is True
     assert duplicate_summary_persisted is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tool_id", ["fist", "hammer"])
+def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_id):
+    locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+    action_id = "poke" if tool_id == "fist" else "bonk"
+
+    for locale in locales:
+        instructions = []
+        memory_notes = []
+        for touch_zone, expected_fact in _AVATAR_INTERACTION_TOUCH_ZONE_FACTS[
+            locale
+        ].items():
+            payload = {
+                "tool_id": tool_id,
+                "action_id": action_id,
+                "intensity": "normal",
+                "touch_zone": touch_zone,
+            }
+            instruction = _build_avatar_interaction_instruction(
+                locale, "YUI", MASTER, payload
+            )
+            memory_note = _build_avatar_interaction_memory_meta(
+                locale, payload, MASTER
+            )["memory_note"]
+
+            assert expected_fact in instruction
+            assert expected_fact.rstrip(".。") in memory_note
+            instructions.append(instruction)
+            memory_notes.append(memory_note)
+
+        assert len(set(instructions)) == 4
+        assert len(set(memory_notes)) == 4
+
+
+@pytest.mark.unit
+def test_avatar_touch_zone_is_not_invented_when_missing_or_unsupported():
+    fist = {
+        "tool_id": "fist",
+        "action_id": "poke",
+        "intensity": "normal",
+    }
+    lollipop = {
+        "tool_id": "lollipop",
+        "action_id": "offer",
+        "intensity": "normal",
+        "touch_zone": "head",
+    }
+
+    fist_instruction = _build_avatar_interaction_instruction("zh", "YUI", MASTER, fist)
+    fist_memory = _build_avatar_interaction_memory_meta("zh", fist, MASTER)[
+        "memory_note"
+    ]
+    lollipop_instruction = _build_avatar_interaction_instruction(
+        "zh", "YUI", MASTER, lollipop
+    )
+    lollipop_memory = _build_avatar_interaction_memory_meta("zh", lollipop, MASTER)[
+        "memory_note"
+    ]
+
+    assert "这次互动的位置" not in fist_instruction
+    assert "这次互动的位置" not in fist_memory
+    assert "这次互动的位置" not in lollipop_instruction
+    assert "这次互动的位置" not in lollipop_memory
+
+
+@pytest.mark.unit
+def test_avatar_instruction_is_one_direct_fact_and_ignores_text_context():
+    locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
+    payload = {
+        "tool_id": "fist",
+        "action_id": "poke",
+        "intensity": "rapid",
+        "reward_drop": True,
+        "touch_zone": "face",
+    }
+
+    for locale in locales:
+        expected = _build_avatar_interaction_instruction(locale, "YUI", MASTER, payload)
+        with_compatibility_draft = _build_avatar_interaction_instruction(
+            locale,
+            "YUI",
+            MASTER,
+            {**payload, "text_context": "这段历史草稿不得进入模型事件事实"},
+        )
+
+        assert with_compatibility_draft == expected
+        assert "\n" not in expected
 
 
 # ─────────────────────────────────────────────────────────────────────────────

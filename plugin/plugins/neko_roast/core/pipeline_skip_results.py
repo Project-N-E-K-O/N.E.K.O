@@ -90,6 +90,35 @@ def skip_already_roasted(
     return result
 
 
+def skip_module_disabled(
+    ctx: Any,
+    event: ViewerEvent,
+    identity: ViewerIdentity,
+    profile: ViewerProfile,
+    steps: list[PipelineStep],
+    module_id: str,
+) -> InteractionResult:
+    reason = f"{module_id}.disabled"
+    steps.append(PipelineStep("module_gate", "skipped", reason))
+    result = InteractionResult(
+        False,
+        "skipped",
+        event,
+        identity=identity,
+        profile=profile,
+        reason=reason,
+        steps=steps,
+    )
+    ctx.audit.record(
+        "pipeline_module_disabled",
+        reason,
+        level="info",
+        detail={"source": event.source, "module": module_id},
+    )
+    ctx.record_result(result)
+    return result
+
+
 def skip_before_output(
     ctx: Any,
     event: ViewerEvent,

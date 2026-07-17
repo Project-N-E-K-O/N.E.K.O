@@ -1,155 +1,29 @@
 # Linux 桌面运行时
 
-本文整理 Linux 桌面版 AppImage / Steam 包的排障线索，主要面向维护者和 issue triage。适用场景包括 KDE / Wayland 点击穿透异常、透明窗口拦截输入、Toast 不可点击，以及中文/日文/韩文输入法无法提交文字。
+Linux 桌面问题横跨两层：
 
-相关 issue：[#396](https://github.com/Project-N-E-K-O/N.E.K.O/issues/396)、[#1276](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1276)、[#1279](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1279)。
+| 层 | 所有权 |
+| --- | --- |
+| 打包 Python 后端 | 服务、存储、import、后端日志 |
+| workflow 选定 N.E.K.O.-PC revision 的 Electron shell | AppImage、窗口、透明区、输入法 |
 
-## 运行时分层
-
-Linux 桌面发行包通常由两层组成：
-
-| 层级 | 典型职责 |
-|------|----------|
-| Python 后端包 | API 服务、存储、Steamworks、日志、运行时诊断 |
-| Electron 桌面壳 | AppImage 入口、Chromium 参数、透明窗口、桌面输入法集成 |
-
-调试 Linux 桌面专属问题时，先判断问题属于哪一层。文本无法进入 Electron 输入框、透明窗口挡住下层应用、Toast 可见但点不到，通常属于 Electron / AppImage 层；服务启动、存储迁移、Steamworks、Python import 报错，则通常属于后端包。
-
-## 快速环境快照
-
-先让反馈者提供这些信息：
+没有先确认进程与 artifact revision，不要用后端改动修 Electron 窗口/输入问题。
 
 ```bash
-echo "XDG_SESSION_TYPE=$XDG_SESSION_TYPE"
-echo "XDG_CURRENT_DESKTOP=$XDG_CURRENT_DESKTOP"
-echo "WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
-echo "DISPLAY=$DISPLAY"
-echo "GTK_IM_MODULE=$GTK_IM_MODULE"
-echo "GTK_IM_MODULE_FILE=$GTK_IM_MODULE_FILE"
-echo "QT_IM_MODULE=$QT_IM_MODULE"
-echo "XMODIFIERS=$XMODIFIERS"
-echo "SteamAppId=$SteamAppId"
+printf 'session=%s desktop=%s wayland=%s display=%s\n' \
+  "$XDG_SESSION_TYPE" "$XDG_CURRENT_DESKTOP" "$WAYLAND_DISPLAY" "$DISPLAY"
+env | grep -E '^(GTK_IM_MODULE|GTK_IM_MODULE_FILE|QT_IM_MODULE|XMODIFIERS|LANG|LC_)='
 ```
 
-对正在运行的桌面壳进程，检查真实环境变量和启动参数。要采样 **Electron 主浏览器进程**，既不要采样 `projectneko_server` 等后端 helper，也不要采样 Electron 子进程。透明窗口和 GTK 输入法模块都驻留在主浏览器进程里，renderer/GPU/zygote 子进程（带 `--type=...`）并不持有它们；而 `pgrep -n`（取最新 PID）通常会命中子进程，导致下面的检查误报「输入法/input-shape 未加载」。匹配时要锁定 N.E.K.O 的 AppImage/AppRun（不要用泛词 `electron`，否则会误命中 VS Code、Discord 等其他 Electron 应用），再保留命令行不含 `--type=` 的进程：
+选择 Electron 主 browser 进程，而不是 `--type=renderer`、GPU/zygote 子进程或 `projectneko_server` helper。可附命令行和相关环境，但不得发布 `/proc/<pid>/environ` 中的 token/API Key。
+
+同一 artifact 比较 Wayland 与 X11/XWayland。若 X11 正常而 Wayland 拦截点击，应收敛到 Electron/compositor 输入区域，记录桌面环境、compositor、`--ozone-platform` 和命中区域。
+
+输入法问题要区分候选窗与文字真正提交到 React 输入框，并记录 Steam 进程环境与 Fcitx5/IBus/GTK/GLib。不要把全局替换系统库或扩大 `LD_LIBRARY_PATH` 当通用修复。
+
+后端在 import 前检查文件系统编码。非 UTF-8 时 `launcher_core/bootstrap.py` 设置 `PYTHONUTF8=1` 并只 re-exec 一次。
 
 ```bash
-mains=()
-for p in $(pgrep -f 'AppRun|AppImage|N[.]E[.]K[.]O|n[.]e[.]k[.]o'); do
-  tr '\0' '\n' < "/proc/$p/cmdline" | grep -q -- '--type=' || mains+=("$p")
-done
-if [ "${#mains[@]}" -eq 0 ]; then
-  echo "N.E.K.O desktop shell (main Electron process) was not found" >&2
-  exit 1
-elif [ "${#mains[@]}" -gt 1 ]; then
-  echo "找到多个候选，请挑一个、手动设 pid=<PID> 后重跑：" >&2
-  for p in "${mains[@]}"; do
-    printf '  %s  %s\n' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline")" >&2
-  done
-  exit 1
-fi
-pid="${mains[0]}"
-# 保留 AppRun/AppImage 是为了兜住「Steam 启动、命令行不含字面 app 名」的情况，
-# 但它们也可能命中无关应用。若唯一匹配看起来不像 N.E.K.O，就告警，让人先核对
-# 下面打印的 cmdline 再采信诊断结果。
-if ! tr '\0' '\n' < "/proc/$pid/cmdline" | grep -qiE 'n[.]?e[.]?k[.]?o'; then
-  echo "警告：pid $pid 仅由泛化的 AppRun/AppImage 规则命中，请确认下面的 cmdline 确属 N.E.K.O。" >&2
-fi
-tr '\0' '\n' < "/proc/$pid/environ" | sort | grep -E 'DISPLAY|WAYLAND|GTK_IM|QT_IM|XMODIFIERS|Steam'
-tr '\0' ' ' < "/proc/$pid/cmdline"; echo
+locale
+uv run python -c "import sys; print(sys.getfilesystemencoding(), sys.flags.utf8_mode)"
 ```
-
-检查输入法相关动态库是否实际加载：
-
-```bash
-grep -E 'im-fcitx|Fcitx5GClient|gtk|glib|ibus' "/proc/$pid/maps" | sort -u
-```
-
-## X11 与 Wayland 点击穿透
-
-Linux 透明窗口点击穿透需要按合成器分别处理。
-
-在 X11 / XWayland 下，可靠路径通常是 X11 input shape，例如 `ShapeInput` helper。它可以让可见的宠物或交互矩形接收事件，而透明区域的点击继续落到下层窗口。
-
-在 Wayland 下，Electron 的 `setIgnoreMouseEvents` 和 `setShape` 对全屏透明宠物窗口可能不够可靠。受影响的 KDE Plasma 环境中，即使应用持续更新 input region，合成器仍可能把鼠标事件交给透明 Electron surface，导致 N.E.K.O. 下方窗口全部点不到。遇到 Wayland 下全局挡点击时，不要先假设 renderer 的命中矩形错误，应先和 X11 / XWayland 行为对比。
-
-建议排查顺序：
-
-1. 用发行包默认方式复现。
-2. 让 Electron 壳强制 X11 / XWayland，例如 `--ozone-platform=x11`。
-3. 确认进程是否有 X11 display，以及是否出现预期的 X11 input-shape helper 日志。
-4. 如果 X11 正常、Wayland 全局挡点击，把 issue 收敛到 Wayland 合成器 / Electron input-region 行为，不要混入后端启动问题。
-
-## Steam 与 CJK 输入法
-
-Steam 版 CJK 输入可能出现“普通终端启动正常，Steam 启动不正常”的情况。Steam runtime 会影响继承环境变量和动态库解析，Chromium 也可能回退到 XIM。
-
-Fcitx 的基础输入法环境应包含：
-
-```bash
-export GTK_IM_MODULE=fcitx
-export QT_IM_MODULE=fcitx
-export XMODIFIERS=@im=fcitx
-export SDL_IM_MODULE=fcitx
-export INPUT_METHOD=fcitx
-```
-
-对 X11 / XWayland 桌面包，优先使用原生 GTK IM module，而不是只依赖 XIM。XIM 可能能调出候选框，但文字 commit 仍然进不了 Electron 文本输入框。Fcitx5 原生路径成功时，Electron 进程中通常能看到 `im-fcitx5.so` 和 `libFcitx5GClient.so.2`。
-
-如果只在 Steam 内原生 Fcitx 加载失败，应检查 GLib 版本不匹配——但要在 **Steam runtime 的**库解析环境下跑，而不是普通终端。`ldd -r` 是按当前环境解析 relocation 的，在普通终端跑可能给出假「干净」结果，恰好掩盖本节要诊断的「仅 Steam 下不匹配」。从 Steam 启动的 N.E.K.O 进程（上面快照里的 `$pid`）导入 `LD_LIBRARY_PATH`，或直接从 Steam 启动的 shell 里跑：
-
-```bash
-export LD_LIBRARY_PATH="$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^LD_LIBRARY_PATH=//p')"
-ldd -r /path/to/im-fcitx5.so | grep -E 'not found|undefined symbol|glib|gobject'
-```
-
-已见过的失败特征包括：
-
-```text
-undefined symbol: g_once_init_leave_pointer
-Loading IM context type 'fcitx' failed
-GLib version too old
-```
-
-这些报错表示模块已被找到，但无法在 Steam runtime 可见的库集合里初始化。稳妥的发行包修复不应依赖任意宿主机 GTK / Fcitx 模块，因为它可能由比 Steam runtime 更新的 GLib 编译。可行方向包括：
-
-1. 在 Electron 壳中打包兼容的 GTK IM module 及必要依赖库。
-2. 启动时生成指向该模块的 `GTK_IM_MODULE_FILE` cache。
-3. 收窄 `LD_LIBRARY_PATH`，只优先必要的兼容库。
-4. 尽早记录选中的 IM module 路径和初始化失败原因，避免用户只看到“无法输入中文”。
-
-## 文件系统编码与非 ASCII 路径
-
-Python 后端在启动时可能因 `UnicodeEncodeError` 崩溃——当它创建或打开含非 ASCII 字符的路径时，最常见的是角色目录，例如 `memory/玖儿/...`。报错栈会指向一个看似无害的 `os.makedirs()` 或 `open()`。
-
-根因是解释器的**文件系统编码**（`sys.getfilesystemencoding()`），而不是传给 `open()` 的编码。AppImage 内嵌的 Python（或任何精简 Linux 运行环境）在 `C`/`POSIX` locale 下启动、且 PEP 538 locale coercion 找不到 `C.UTF-8` 目标时，会退化成 `ascii`。一旦文件系统编码是 `ascii`，任何带非 ASCII 路径的文件系统调用都会失败。注意：
-
-- 系统层正确设置 `LANG=zh_CN.UTF-8` 也**没用**，因为启动壳往往没把 locale 透传进内嵌解释器。
-- `sys.getdefaultencoding()` 与此无关——它在 Python 3 永远是 UTF-8，且不影响路径处理。
-- 文件系统编码在解释器启动时即固定，运行时无法更改。
-
-修复方式是 **UTF-8 Mode**（PEP 540），由环境变量 `PYTHONUTF8=1` 开启。它是运行时环境变量，无需重新编译内嵌 Python。两层防御应同时成立：
-
-1. **Electron 壳层** —— `backend-runtime.js` 在 spawn 后端时往其环境里设了 `PYTHONUTF8=1`（以及 `PYTHONIOENCODING=utf-8`）。这是 AppImage 路径的主修复。
-2. **Python 启动器自愈** —— `launcher.py` 在入口处检查 `sys.getfilesystemencoding()`；若非 UTF-8，则设 `PYTHONUTF8=1` 并用 `os.execv` 把自身重启一次（同 PID，壳层对进程的跟踪不受影响）。这覆盖旧壳层、Steam 构建，以及不经过 `backend-runtime.js` 的直接启动。
-
-若报告仍出现此崩溃，先确认该构建确实带齐这两层——早于壳层 env 注入的 AppImage，只有在重新构建、或更新到带自愈的启动器之后才被覆盖。
-
-## Bug Report 应包含的信息
-
-点击穿透问题建议包含：
-
-- 桌面环境和 session 类型。
-- X11 / XWayland 与 Wayland 行为是否不同。
-- Electron 启动参数，尤其是 `--ozone-platform`。
-- input-shape 或 mouse-through 初始化附近日志。
-
-输入法问题建议包含：
-
-- 输入法框架和版本，例如 Fcitx5 或 IBus。
-- 上文列出的进程环境变量。
-- 候选框是否能出现。
-- commit 后的文字是否进入聊天输入框。
-- 若使用 `GTK_IM_MODULE=fcitx` 或 `ibus`，提供所选 GTK IM module 的 `ldd -r` 输出。
-
-把这两类问题拆开记录会让修复更安全：点击穿透主要是窗口 / 合成器行为，CJK 输入主要是 AppImage / Steam 环境和原生库加载行为。

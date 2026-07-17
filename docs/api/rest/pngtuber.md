@@ -4,6 +4,8 @@
 
 Manages PNGTuber avatars — 2D image-based avatars whose appearance is driven by swapping image states (idle, talking, reactions). Endpoints cover package upload, listing, and deletion.
 
+These are three first-party local model-management routes: `POST /api/model/pngtuber/upload_model`, `GET /api/model/pngtuber/models`, and `DELETE /api/model/pngtuber/model`. Upload/delete write the user model directory, use `{ "success": false, "error": "..." }` on failure, and have no separate authentication layer. Paths have no trailing slash.
+
 ## Model package
 
 A PNGTuber model is a folder (uploaded as a multi-file package) containing a `model.json` with `model_type` set to `"pngtuber"`. The `pngtuber` config block maps avatar states to image files. An `idle_image` is required; all other states are optional.
@@ -61,12 +63,44 @@ Validation requires `model_type` to be `"pngtuber"` and a non-empty `idle_image`
 
 #### Import adapters
 
-When the package is not already a native `model.json`, the uploader detects the source format and converts it in place:
+When the package is not already a native `model.json`, the uploader detects the source format and converts it in place. The detected format is echoed back as `source_format`:
 
-- **`simple_package`** — native N.E.K.O package: a root `model.json` with `model_type: "pngtuber"`. Used as-is.
-- **PNGTuber-Plus** (`.save`) → `source_format: "pngtuber_plus_save"`, converted through the **`layered_canvas_v1`** adapter. Speech and blink layers are enabled first; physics and multi-frame animation are preserved as metadata for later runtime support.
-- **PNGTube-Remix** (`.pngRemix`) → `source_format: "pngtube_remix_pngremix"`, converted through the **`layered_canvas_v1`** adapter. Speech and blink layers are enabled first; hotkeys, physics, and mesh are preserved as metadata.
-- **veadotube** (`.veadomini` / `.veado`) → recognized but **not supported**; the upload is rejected with `source_format: "veadotube"` and a request for a sample to adapt against.
+- `source_format: "simple_package"` — native N.E.K.O package: a root `model.json` with `model_type: "pngtuber"`. Used as-is; drives idle/talking/drag/click plus lightweight emotion images.
+- `source_format: "pngtuber_plus_save"` — PNGTuber-Plus (`.save`), converted through the **`layered_canvas_v1`** adapter (`adapter_version: 2`): costumes, toggles, talk/blink, multi-frame sprite sheets, the Plus node tree, rectangular clip and approximate physics.
+- `source_format: "pngtube_remix_pngremix"` — PNGTube-Remix (`.pngRemix`), converted through the **`layered_canvas_v1`** adapter (`adapter_version: 2`): state switching, `emotion_mappings`, sprite sheets, `effective_z_index` ordering, `physics_v2` and usable mesh deformation.
+- `source_format: "veadotube"` — veadotube (`.veadomini` / `.veado`); recognized but **not supported**. The upload is rejected with a request for a sample to adapt against.
+- `source_format: "image_pair_candidate"` — image files with no `model.json` or project file; rejected and pointed at the two-image importer.
+
+#### Capability and failure matrix
+
+`window.pngtuberManager.getDebugState()` reports the live capabilities per `source_format`. Emotions are driven by `window.applyEmotion('happy')`, which routes to `pngtuberManager.setEmotion` for `pngtuber` models.
+
+| Capability | `simple_package` | `pngtuber_plus_save` | `pngtube_remix_pngremix` |
+|------------|:----------------:|:--------------------:|:------------------------:|
+| idle / talking swap | ✅ | ✅ | ✅ |
+| Emotion via `window.applyEmotion('happy')` | ✅ image swap | ✅ layered state | ✅ layered state |
+| Blink + speech bounce | — | ✅ | ✅ |
+| Costume hotkeys / toggles | — | ✅ | — |
+| Sprite-sheet frames | — | ✅ | ✅ |
+| `physics_v2` | — | approximate | ✅ |
+| Mesh deformation (`meshRuntime`) | — | — | ✅ when real geometry ships |
+
+`meshRuntime` only reads `true` in the debug state when the Remix project ships real vertices / triangles / UVs; otherwise `meshMetadata` stays `true`, `meshRuntime` stays `false`, and the reason is listed under `unsupportedFeatures`.
+
+Failure responses:
+
+- `source_format: "veadotube"` → recognized but rejected; awaits a real sample.
+- `source_format: "image_pair_candidate"` → rejected; use the two-image importer or add a `model.json`.
+- Multiple ambiguous `.save` files → HTTP 400 with `source_format: "pngtuber_plus_save"` and the candidate list in `warnings`.
+- Unparseable `.pngRemix` → PNGTube-Remix conversion failure (`source_format: "pngtube_remix_pngremix"`), never a missing-`model.json` error.
+
+#### Acceptance checks
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+uv run pytest tests\unit\test_pngtuber_static_contracts.py tests\unit\test_card_maker_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
 
 ## List
 
@@ -112,3 +146,5 @@ The target is resolved by **folder slug**: the handler reads `folder`, falling b
 Prefer deleting by the `folder` slug returned from `GET /models`, or by the model.json `url`. Avoid relying on `name`: `GET /models` returns `name` as the display name and `folder` as the on-disk slug, and the two can differ — passing the display `name` only works when it happens to equal the folder slug, so use it as a last-resort fallback that may be ambiguous. The resolved path must stay inside the PNGTuber directory.
 
 **Response:** `{ "success": true, "message": "..." }`. Missing identifier or out-of-bounds path returns `400`; a non-existent model returns `404`.
+
+Unexpected import, listing, or filesystem failures return HTTP `500`. Treat this as a first-party file-management API and do not expose it to untrusted clients.

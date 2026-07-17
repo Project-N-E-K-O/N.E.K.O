@@ -68,6 +68,8 @@ class DouyinLiveIngestModule(BaseModule):
         self._bridge_transport = DouyinExternalBridgeTransport()
         self._bridge_supervisor = DouyinEmbeddedBridgeSupervisor()
         self._lifecycle_lock = asyncio.Lock()
+        self._generation = 0
+        self._stop_requested = True
 
     async def teardown(self) -> None:
         await self.stop_listening()
@@ -108,6 +110,9 @@ class DouyinLiveIngestModule(BaseModule):
             return await self._start_listening_locked(room_ref)
 
     async def _start_listening_locked(self, room_ref: Any) -> bool:
+        self._generation += 1
+        generation = self._generation
+        self._stop_requested = False
         parsed = parse_douyin_room_ref(room_ref)
         self._room_ref = parsed.room_ref
         self._connection_plan = None
@@ -121,20 +126,20 @@ class DouyinLiveIngestModule(BaseModule):
         if prepared is not None:
             self._apply_transport_state(prepared)
             return False
-        state = await self._start_external_bridge(parsed.room_ref, self._credential_cookie())
-        self._apply_transport_state(state)
+        state = await self._start_external_bridge(parsed.room_ref, self._credential_cookie(), generation)
+        self._apply_transport_state(state, generation=generation)
         if not self.is_listening():
             await self._bridge_supervisor.stop()
         return self.is_listening()
 
-    async def _start_external_bridge(self, room_ref: str, cookie: str) -> DouyinTransportState:
+    async def _start_external_bridge(self, room_ref: str, cookie: str, generation: int) -> DouyinTransportState:
         return await self._bridge_transport.start(
             DouyinTransportStartRequest(
                 room_ref=room_ref,
                 cookie=cookie,
                 connection_plan=self._connection_plan,
-                emit=self.publish_transport_event,
-                on_state=self._apply_transport_state,
+                emit=lambda event: self._publish_transport_event_for_generation(event, generation),
+                on_state=lambda state: self._apply_transport_state(state, generation=generation),
             )
         )
 
@@ -160,12 +165,23 @@ class DouyinLiveIngestModule(BaseModule):
             await self._stop_listening_locked()
 
     async def _stop_listening_locked(self) -> None:
+        self._stop_requested = True
+        self._generation += 1
         await self._bridge_transport.stop()
         await self._bridge_supervisor.stop()
         self._state = "disconnected"
         self._last_error = ""
         self._connection_plan = None
         self._reconnect.reset()
+
+    def _publish_transport_event_for_generation(
+        self,
+        event: DouyinTransportEvent,
+        generation: int,
+    ) -> LiveEvent | None:
+        if generation != self._generation or self._stop_requested:
+            return None
+        return self.publish_transport_event(event)
 
     def normalize(self, payload: Any) -> ViewerEvent:
         safe = safe_payload(payload)
@@ -206,12 +222,16 @@ class DouyinLiveIngestModule(BaseModule):
         return self.publish_provider_event(event.safe_payload(), ts=safe_transport_event_time(event.ts))
 
     def publish_provider_event(self, payload: dict[str, Any], *, ts: float | None = None) -> LiveEvent | None:
-        if self.ctx is None:
+        if self.ctx is None or not self._owns_active_target():
             return None
         event = to_provider_event(payload, room_ref=self._room_ref)
         if not event.room_ref:
             self._state = "disconnected"
             self._last_error = "douyin room_ref is required before publishing events"
+            return None
+        if self._room_ref and safe_room_ref(event.room_ref) != safe_room_ref(self._room_ref):
+            self._state = "disconnected"
+            self._last_error = "douyin room_ref mismatch before publishing events"
             return None
         if is_status_only_event_type(event.event_type):
             self._mark_status_only_event(event.event_type, ts)
@@ -258,15 +278,33 @@ class DouyinLiveIngestModule(BaseModule):
         self._last_status_only_event_type = self._last_event_type
         self._status_only_count += 1
 
-    def _apply_transport_state(self, state: DouyinTransportState) -> None:
+    def _apply_transport_state(self, state: DouyinTransportState, *, generation: int | None = None) -> None:
+        if generation is not None and generation != self._generation:
+            return
         self._state = state.safe_state()
         self._last_error = state.safe_error()
+        if self._state in {"connected", "receiving"}:
+            self._reconnect.reset()
         sync_runtime_state = getattr(self.ctx, "_sync_douyin_listener_state", None)
         if callable(sync_runtime_state):
             sync_runtime_state(self._state)
         event_type = _internal_event_type(state.last_event_type)
         if event_type != "unknown":
             self._mark_event_seen(event_type, safe_transport_event_time(state.last_event_at))
+
+    def _owns_active_target(self) -> bool:
+        if self.ctx is None or getattr(self.ctx, "_stopping", False) is True:
+            return False
+        provider = getattr(self.ctx, "live_provider", None)
+        if provider is None:
+            return True
+        if getattr(provider, "platform", "") != "douyin":
+            return False
+        configured = getattr(provider, "configured_room_ref", None)
+        if not callable(configured):
+            return True
+        configured_room = safe_room_ref(configured())
+        return not configured_room or configured_room == safe_room_ref(self._room_ref)
 
 
 def _public_event_type(value: Any) -> str:

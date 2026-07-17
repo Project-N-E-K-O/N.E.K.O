@@ -20,6 +20,11 @@ def assemble_runtime_modules(runtime: Any) -> None:
     runtime.douyin_live_ingest = _create_module("douyin_live_ingest", "DouyinLiveIngestModule", "Douyin live ingest")
     runtime.douyin_identity = _create_module("douyin_identity", "DouyinIdentityModule", "Douyin identity")
     runtime.live_provider = LiveProviderRouter(runtime)
+    runtime.live_audience_session = _create_module(
+        "live_audience_session",
+        "LiveAudienceSessionModule",
+        "Live audience session",
+    )
     runtime.viewer_profile = _create_module("viewer_profile", "ViewerProfileModule", "Viewer profile")
     runtime.avatar_roast = _create_module("avatar_roast", "AvatarRoastModule", "Avatar roast")
     runtime.danmaku_response = _create_module("danmaku_response", "DanmakuResponseModule", "Danmaku response")
@@ -42,6 +47,7 @@ def registered_modules(runtime: Any) -> tuple[Any, ...]:
         runtime.douyin_live_ingest,
         runtime.bili_identity,
         runtime.douyin_identity,
+        runtime.live_audience_session,
         runtime.viewer_profile,
         runtime.avatar_roast,
         runtime.danmaku_response,
