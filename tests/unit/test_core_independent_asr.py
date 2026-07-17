@@ -449,6 +449,21 @@ async def test_hard_mute_is_backend_authoritative_and_rejects_stale_lease_events
     assert runtime._voice_input_suppressed is False
 
 
+async def test_new_websocket_connection_resets_mic_lease_generation_once() -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_generation = 12
+
+    assert runtime._begin_voice_input_connection("socket-a") is True
+    assert runtime._voice_lease_generation == -1
+    assert await runtime._handle_voice_input_control("hard_mute", 1) is True
+
+    assert runtime._begin_voice_input_connection("socket-a") is False
+    assert await runtime._handle_voice_input_control("hard_unmute", 1) is False
+
+    assert runtime._begin_voice_input_connection("socket-b") is True
+    assert await runtime._handle_voice_input_control("hard_unmute", 1) is True
+
+
 async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime = _Runtime()
     runtime._asr_provider = "glm"

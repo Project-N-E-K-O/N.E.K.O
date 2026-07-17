@@ -72,6 +72,7 @@ class AsrRuntimeMixin:
         self._asr_turn_endpointed_at: float | None = None
         self._asr_first_partial_recorded = False
         self._voice_lease_generation = -1
+        self._voice_lease_connection_id = ""
         self._voice_input_suppressed = False
         self._voice_input_suppression_reasons: set[str] = set()
 
@@ -746,6 +747,16 @@ class AsrRuntimeMixin:
                     "[%s] detector reset failed after game release",
                     self.lanlan_name,
                 )
+
+    def _begin_voice_input_connection(self, connection_id: str) -> bool:
+        """Start a lease generation scope for the current WebSocket."""
+
+        normalized = str(connection_id or "").strip()
+        if not normalized or normalized == self._voice_lease_connection_id:
+            return False
+        self._voice_lease_connection_id = normalized
+        self._voice_lease_generation = -1
+        return True
 
     async def _handle_voice_input_control(
         self,

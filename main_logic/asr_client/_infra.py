@@ -225,6 +225,8 @@ class _SessionState(Enum):
 @dataclass(frozen=True, slots=True)
 class _CallbackItem:
     text: str
+    generation: int
+    buffer_epoch: int
 
 
 class _RealtimeAsrSessionImpl:
@@ -265,6 +267,7 @@ class _RealtimeAsrSessionImpl:
         self._provider_policy = provider_policy
         self._voice_turn_adapter: _VoiceTurnAdapterProtocol | None = None
         self._voice_turn_watch_task: asyncio.Task[None] | None = None
+        self._voice_turn_reset_task: asyncio.Task[None] | None = None
 
         self._state = _SessionState.NEW
         self._generation = 0
@@ -494,17 +497,16 @@ class _RealtimeAsrSessionImpl:
                 )
                 if not self._uses_segment_aggregation:
                     self._provider_wire_audio_bytes += len(normalized_audio)
-                if self._voice_turn_adapter is not None:
-                    await self._voice_turn_adapter.push_audio(
-                        generation=self._generation,
-                        buffer_epoch=self._buffer_epoch,
-                        utterance_id=(
-                            self._logical_turn_id
-                            if self._uses_segment_aggregation
-                            else self._utterance_id
-                        ),
-                        pcm16=normalized_audio,
-                    )
+                await self._push_voice_turn_audio(
+                    generation=self._generation,
+                    buffer_epoch=self._buffer_epoch,
+                    utterance_id=(
+                        self._logical_turn_id
+                        if self._uses_segment_aggregation
+                        else self._utterance_id
+                    ),
+                    pcm16=normalized_audio,
+                )
                 self._physical_segment_audio_bytes += len(normalized_audio)
             # Even if soxr is still buffering, valid input belongs to this turn.
             self._utterance_has_audio = True
@@ -547,7 +549,8 @@ class _RealtimeAsrSessionImpl:
                 )
             )
             if self._voice_turn_adapter is not None:
-                await self._voice_turn_adapter.reset(
+                await self._reset_voice_turn_adapter(
+                    self._voice_turn_adapter,
                     generation=self._generation,
                     buffer_epoch=self._buffer_epoch,
                     utterance_id=self._utterance_id,
@@ -650,6 +653,101 @@ class _RealtimeAsrSessionImpl:
         except Exception:
             logger.exception("ASR voice turn adapter failed to close %s", context)
 
+    async def _fail_voice_turn_operation(self, operation: str) -> RuntimeError:
+        logger.warning("ASR voice turn %s failed", operation)
+        await self._fail(
+            "ASR_ENDPOINTING_FAILED",
+            "required voice turn endpointing failed",
+        )
+        return RuntimeError(
+            "ASR_ENDPOINTING_FAILED: required voice turn endpointing failed"
+        )
+
+    async def _push_voice_turn_audio(
+        self,
+        *,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+        pcm16: bytes,
+    ) -> None:
+        adapter = self._voice_turn_adapter
+        if adapter is None:
+            return
+        try:
+            await adapter.push_audio(
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
+                pcm16=pcm16,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = await self._fail_voice_turn_operation("audio push")
+            raise failure from exc
+
+    async def _reset_voice_turn_adapter(
+        self,
+        adapter: _VoiceTurnAdapterProtocol,
+        *,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+    ) -> None:
+        try:
+            await adapter.reset(
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = await self._fail_voice_turn_operation("reset")
+            raise failure from exc
+
+    def _schedule_voice_turn_reset(
+        self,
+        adapter: _VoiceTurnAdapterProtocol,
+        *,
+        generation: int,
+        buffer_epoch: int,
+        utterance_id: int,
+        name: str,
+    ) -> None:
+        previous = self._voice_turn_reset_task
+
+        async def run_reset() -> None:
+            try:
+                if previous is not None and previous is not asyncio.current_task():
+                    await previous
+                if (
+                    adapter is not self._voice_turn_adapter
+                    or self._state is not _SessionState.READY
+                ):
+                    return
+                await self._reset_voice_turn_adapter(
+                    adapter,
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=utterance_id,
+                )
+            except asyncio.CancelledError:
+                raise
+            except RuntimeError:
+                # _reset_voice_turn_adapter already moved the session to FAILED.
+                return
+
+        task = asyncio.create_task(run_reset(), name=name)
+        self._voice_turn_reset_task = task
+
+        def clear_finished_reset(finished: asyncio.Task[None]) -> None:
+            if self._voice_turn_reset_task is finished:
+                self._voice_turn_reset_task = None
+
+        task.add_done_callback(clear_finished_reset)
+
     async def _unload_voice_turn_adapter(self, *, context: str) -> None:
         adapter, self._voice_turn_adapter = self._voice_turn_adapter, None
         watch_task, self._voice_turn_watch_task = (
@@ -657,6 +755,19 @@ class _RealtimeAsrSessionImpl:
             None,
         )
         current_task = asyncio.current_task()
+        reset_task, self._voice_turn_reset_task = (
+            self._voice_turn_reset_task,
+            None,
+        )
+        if reset_task is not None and reset_task is not current_task:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(reset_task),
+                    timeout=_CALLBACK_DRAIN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                reset_task.cancel()
+                await asyncio.gather(reset_task, return_exceptions=True)
         if watch_task is not None and watch_task is not current_task:
             watch_task.cancel()
             await asyncio.gather(watch_task, return_exceptions=True)
@@ -756,13 +867,13 @@ class _RealtimeAsrSessionImpl:
                     audio=tail,
                 )
             )
-            if self._voice_turn_adapter is not None:
-                await self._voice_turn_adapter.push_audio(
-                    generation=generation,
-                    buffer_epoch=buffer_epoch,
-                    utterance_id=utterance_id,
-                    pcm16=tail,
-                )
+            self._provider_wire_audio_bytes += len(tail)
+            await self._push_voice_turn_audio(
+                generation=generation,
+                buffer_epoch=buffer_epoch,
+                utterance_id=utterance_id,
+                pcm16=tail,
+            )
         if self._config.endpointing_mode == "provider":
             self._utterance_has_audio = False
             self._reset_resampler()
@@ -783,21 +894,12 @@ class _RealtimeAsrSessionImpl:
             next_generation = self._generation
             next_buffer_epoch = self._buffer_epoch
             next_utterance_id = self._utterance_id
-
-            async def reset_voice_turn() -> None:
-                try:
-                    await adapter.reset(
-                        generation=next_generation,
-                        buffer_epoch=next_buffer_epoch,
-                        utterance_id=next_utterance_id,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("ASR voice turn reset failed after commit")
-
-            asyncio.create_task(
-                reset_voice_turn(), name="asr-voice-turn-reset-after-commit"
+            self._schedule_voice_turn_reset(
+                adapter,
+                generation=next_generation,
+                buffer_epoch=next_buffer_epoch,
+                utterance_id=next_utterance_id,
+                name="asr-voice-turn-reset-after-commit",
             )
             # Let reset enqueue behind the audio that belongs to the completed
             # utterance without waiting for model/VAD work to drain. This keeps
@@ -847,13 +949,12 @@ class _RealtimeAsrSessionImpl:
                     )
                 )
                 self._physical_segment_audio_bytes += len(tail)
-                if self._voice_turn_adapter is not None:
-                    await self._voice_turn_adapter.push_audio(
-                        generation=generation,
-                        buffer_epoch=buffer_epoch,
-                        utterance_id=logical_turn_id,
-                        pcm16=tail,
-                    )
+                await self._push_voice_turn_audio(
+                    generation=generation,
+                    buffer_epoch=buffer_epoch,
+                    utterance_id=logical_turn_id,
+                    pcm16=tail,
+                )
         key = (generation, buffer_epoch, utterance_id)
         await self._enqueue_request(
             _AsrWorkerRequest(
@@ -882,7 +983,13 @@ class _RealtimeAsrSessionImpl:
         if ready_texts:
             assert self._callback_queue is not None
             for ready_text in ready_texts:
-                await self._callback_queue.put(_CallbackItem(text=ready_text))
+                await self._callback_queue.put(
+                    _CallbackItem(
+                        text=ready_text,
+                        generation=self._generation,
+                        buffer_epoch=self._buffer_epoch,
+                    )
+                )
         self._logical_turn_id += 1
         if self._voice_turn_adapter is None:
             return
@@ -890,21 +997,11 @@ class _RealtimeAsrSessionImpl:
         next_generation = self._generation
         next_buffer_epoch = self._buffer_epoch
         next_logical_turn_id = self._logical_turn_id
-
-        async def reset_voice_turn() -> None:
-            try:
-                await adapter.reset(
-                    generation=next_generation,
-                    buffer_epoch=next_buffer_epoch,
-                    utterance_id=next_logical_turn_id,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("ASR voice turn reset failed after logical commit")
-
-        asyncio.create_task(
-            reset_voice_turn(),
+        self._schedule_voice_turn_reset(
+            adapter,
+            generation=next_generation,
+            buffer_epoch=next_buffer_epoch,
+            utterance_id=next_logical_turn_id,
             name="asr-voice-turn-reset-after-logical-commit",
         )
         await asyncio.sleep(0)
@@ -992,7 +1089,11 @@ class _RealtimeAsrSessionImpl:
         while True:
             item = await self._callback_queue.get()
             try:
-                await self._on_input_transcript(item.text)
+                if (
+                    item.generation == self._generation
+                    and item.buffer_epoch == self._buffer_epoch
+                ):
+                    await self._on_input_transcript(item.text)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1097,20 +1198,34 @@ class _RealtimeAsrSessionImpl:
                         return False
                     self._segment_texts[key] = text
                     ready_texts = self._collect_ready_segmented_transcripts_locked()
+                    ready_items = [
+                        _CallbackItem(
+                            text=ready_text,
+                            generation=event.generation,
+                            buffer_epoch=event.buffer_epoch,
+                        )
+                        for ready_text in ready_texts
+                    ]
                 else:
                     self._pending_finals[key] = text
-                    ready_texts = []
+                    ready_items = []
                     while (
                         self._utterance_order
                         and self._utterance_order[0] in self._pending_finals
                     ):
                         ready_key = self._utterance_order.popleft()
-                        ready_texts.append(self._pending_finals.pop(ready_key))
+                        ready_items.append(
+                            _CallbackItem(
+                                text=self._pending_finals.pop(ready_key),
+                                generation=ready_key[0],
+                                buffer_epoch=ready_key[1],
+                            )
+                        )
                         self._active_utterance_keys.discard(ready_key)
                         self._committed_utterance_keys.discard(ready_key)
             assert self._callback_queue is not None
-            for ready_text in ready_texts:
-                await self._callback_queue.put(_CallbackItem(text=ready_text))
+            for ready_item in ready_items:
+                await self._callback_queue.put(ready_item)
             return False
         if event.kind == "error":
             if (

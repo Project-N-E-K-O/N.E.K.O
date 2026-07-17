@@ -4,6 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
 STATE = ROOT / "static" / "app" / "app-state.js"
+WEBSOCKET = ROOT / "static" / "app" / "app-websocket.js"
 
 
 def test_mic_lease_state_and_priority_are_explicit() -> None:
@@ -78,3 +79,27 @@ def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:
     assert "new ArrayBuffer" in handler
     assert "setUint32(4, targetSampleRate, true)" in handler
     assert "Array.from(audioData)" not in handler
+
+
+def test_websocket_reconnect_resets_and_replays_authoritative_mic_lease() -> None:
+    capture = CAPTURE.read_text(encoding="utf-8")
+    websocket = WEBSOCKET.read_text(encoding="utf-8")
+
+    assert "function syncVoiceInputControlState" in capture
+    sync_block = capture.split("function syncVoiceInputControlState", 1)[1].split(
+        "function setVoiceInputLifecycleState", 1
+    )[0]
+    assert "voiceLeaseGeneration = 0" in sync_block
+    assert "hard_mute" in sync_block
+    assert "game_takeover" in sync_block
+    assert "focus_suppress" in sync_block
+    assert "hard_unmute" in sync_block
+    assert "game_release" in sync_block
+    assert "focus_resume" in sync_block
+    assert "voice-input-socket-open" in capture
+
+    onopen = websocket.split("S.socket.onopen = function () {", 1)[1].split(
+        "// Start heartbeat", 1
+    )[0]
+    assert "voice-input-socket-open" in onopen
+    assert "_thisSocket" in onopen

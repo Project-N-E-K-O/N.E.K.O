@@ -53,6 +53,7 @@ from utils.icebreaker_route_state import (
 
 _VOICE_BINARY_MAGIC = b"NEKO"
 _VOICE_BINARY_HEADER_BYTES = 8
+_VOICE_BINARY_MAX_DURATION_MS = 1_000
 
 
 def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
@@ -68,6 +69,9 @@ def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
         or len(pcm) % 2
     ):
         raise ValueError("VOICE_BINARY_FRAME_INVALID: invalid header or PCM")
+    max_pcm_bytes = sample_rate_hz * 2 * _VOICE_BINARY_MAX_DURATION_MS // 1_000
+    if len(pcm) > max_pcm_bytes:
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too large")
     sample_count = len(pcm) // 2
     samples = list(struct.unpack(f"<{sample_count}h", pcm))
     return {
@@ -328,6 +332,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
     mgr = session_manager[lanlan_name]
     mgr.websocket = websocket
+    mgr._begin_voice_input_connection(str(this_session_id))
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
     if mgr.pending_agent_callbacks:
