@@ -95,6 +95,8 @@ class TtsRuntimeMixin:
 
     async def _enqueue_audio_stream_data(self, message: dict):
         self._ensure_asr_runtime_state()
+        if not self._voice_input_accepts_pcm():
+            return
         lifecycle = self._asr_lifecycle
         if lifecycle is None:
             return

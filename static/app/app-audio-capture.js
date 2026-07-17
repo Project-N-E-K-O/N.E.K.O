@@ -13,21 +13,38 @@
     const C = window.appConst;
     const MIC_LEASE = Object.freeze({
         NONE: 'none',
-        HARD_MUTED: 'hard_muted',
         GAME: 'game',
         CORE: 'core'
     });
     let voiceLeaseGeneration = 0;
-    let backendFocusSuppressed = false;
+    let lastVoiceLeaseFingerprint = '';
 
-    function sendVoiceInputControl(event) {
+    function currentVoiceInputControlState() {
+        return {
+            owner: resolveMicLeaseOwner(),
+            hard_muted: S.isMicMuted === true,
+            focus_suppressed: (
+                S.focusModeEnabled === true
+                && S.isPlaying === true
+            )
+        };
+    }
+
+    function sendVoiceInputControlState(force) {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+        const state = currentVoiceInputControlState();
+        const fingerprint = JSON.stringify(state);
+        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
         voiceLeaseGeneration += 1;
         S.socket.send(JSON.stringify({
             action: 'voice_input_control',
-            event,
+            event: 'lease_sync',
+            owner: state.owner,
+            hard_muted: state.hard_muted,
+            focus_suppressed: state.focus_suppressed,
             lease_generation: voiceLeaseGeneration
         }));
+        lastVoiceLeaseFingerprint = fingerprint;
         return true;
     }
 
@@ -35,29 +52,10 @@
         if (socket && socket !== S.socket) return false;
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
 
-        // 每条 WebSocket 都有独立的 lease generation。先显式释放旧状态，
-        // 再重放当前优先级状态，避免重连后前后端认知分叉。
+        // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
         voiceLeaseGeneration = 0;
-        backendFocusSuppressed = false;
-        const owner = resolveMicLeaseOwner();
-        if (owner === MIC_LEASE.NONE) return true;
-
-        sendVoiceInputControl('hard_unmute');
-        sendVoiceInputControl('game_release');
-        sendVoiceInputControl('focus_resume');
-        if (owner === MIC_LEASE.HARD_MUTED) {
-            sendVoiceInputControl('hard_mute');
-        } else if (owner === MIC_LEASE.GAME) {
-            sendVoiceInputControl('game_takeover');
-        }
-        const focusSuppressed = (
-            owner === MIC_LEASE.CORE
-            && S.focusModeEnabled === true
-            && S.isPlaying === true
-        );
-        if (focusSuppressed) sendVoiceInputControl('focus_suppress');
-        backendFocusSuppressed = focusSuppressed;
-        return true;
+        lastVoiceLeaseFingerprint = '';
+        return sendVoiceInputControlState(true);
     }
 
     function setVoiceInputLifecycleState(state) {
@@ -81,13 +79,13 @@
         if (!Object.values(MIC_LEASE).includes(owner)) {
             throw new Error(`Invalid microphone lease owner: ${owner}`);
         }
-        if (S.micLeaseOwner === owner) return owner;
-        const previousOwner = S.micLeaseOwner;
-        S.micLeaseOwner = owner;
-        window.dispatchEvent(new CustomEvent('mic-lease-changed', {
-            detail: { owner }
-        }));
-        if (owner === MIC_LEASE.NONE || owner === MIC_LEASE.HARD_MUTED) {
+        if (S.micLeaseOwner !== owner) {
+            S.micLeaseOwner = owner;
+            window.dispatchEvent(new CustomEvent('mic-lease-changed', {
+                detail: { owner }
+            }));
+        }
+        if (owner === MIC_LEASE.NONE || S.isMicMuted === true) {
             setVoiceInputLifecycleState('off');
         } else if (owner === MIC_LEASE.GAME) {
             setVoiceInputLifecycleState('suspended');
@@ -97,41 +95,27 @@
         ) {
             setVoiceInputLifecycleState('local_listen');
         }
-        if (owner === MIC_LEASE.HARD_MUTED) {
-            sendVoiceInputControl('hard_mute');
-        } else if (owner === MIC_LEASE.GAME) {
-            sendVoiceInputControl('game_takeover');
-        } else if (owner === MIC_LEASE.CORE && previousOwner === MIC_LEASE.HARD_MUTED) {
-            sendVoiceInputControl('hard_unmute');
-        } else if (owner === MIC_LEASE.CORE && previousOwner === MIC_LEASE.GAME) {
-            sendVoiceInputControl('game_release');
-        }
+        sendVoiceInputControlState(false);
         return owner;
     }
 
     function resolveMicLeaseOwner() {
         if (!S.isRecording) return MIC_LEASE.NONE;
-        if (S.isMicMuted) return MIC_LEASE.HARD_MUTED;
         if (S.gameVoiceSttGateActive) return MIC_LEASE.GAME;
         return MIC_LEASE.CORE;
     }
 
     function refreshMicLease() {
-        return setMicLeaseOwner(resolveMicLeaseOwner());
+        const owner = setMicLeaseOwner(resolveMicLeaseOwner());
+        sendVoiceInputControlState(false);
+        return owner;
     }
 
     function canUploadOrdinaryMicFrame() {
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
-        const focusSuppressed = S.focusModeEnabled === true && S.isPlaying === true;
-        if (focusSuppressed !== backendFocusSuppressed) {
-            if (sendVoiceInputControl(
-                focusSuppressed ? 'focus_suppress' : 'focus_resume'
-            )) {
-                backendFocusSuppressed = focusSuppressed;
-            }
-        }
-        if (focusSuppressed) return false;
-        return true;
+        const state = currentVoiceInputControlState();
+        sendVoiceInputControlState(false);
+        return !state.hard_muted && !state.focus_suppressed;
     }
 
     // ======================== DOM 辅助 ========================

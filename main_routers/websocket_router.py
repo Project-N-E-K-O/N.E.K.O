@@ -487,6 +487,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await session_manager[lanlan_name]._handle_voice_input_control(
                     message.get("event", ""),
                     message.get("lease_generation", -1),
+                    owner=message.get("owner"),
+                    hard_muted=message.get("hard_muted"),
+                    focus_suppressed=message.get("focus_suppressed"),
                 )
 
             elif action == "capture_bridge_status":
