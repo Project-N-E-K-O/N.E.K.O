@@ -12,7 +12,7 @@ _UID_RE = re.compile(r"(?:space\.bilibili\.com/)?(\d+)")
 _DEMO_TARGETS = {"__demo__", "demo", "neko_live_demo", "内置案例", "测试案例"}
 _DEMO_UID = "9000000000000001"
 _DEMO_NICKNAME = "粉桃猫猫观察员"
-_DEMO_AVATAR_URL = "neko-roast://fixtures/demo-avatar"
+_DEMO_AVATAR_URL = "neko-live://fixtures/demo-avatar"
 _DEMO_DANMAKU = "初见，猫猫可以锐评一下我的头像吗"
 
 

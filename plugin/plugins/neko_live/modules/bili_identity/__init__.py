@@ -160,7 +160,7 @@ class BiliIdentityModule(BaseModule):
 
     @staticmethod
     def _fetch_avatar(url: str, timeout: float) -> tuple[bytes, str]:
-        if url == "neko-roast://fixtures/demo-avatar":
+        if url == "neko-live://fixtures/demo-avatar":
             return BiliIdentityModule._load_demo_avatar()
         parsed, resolved_ip, port = BiliIdentityModule._resolve_avatar_endpoint(url)
         connection = BiliIdentityModule._open_avatar_connection(parsed, resolved_ip, port, timeout)

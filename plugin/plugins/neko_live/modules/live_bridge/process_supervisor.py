@@ -195,7 +195,7 @@ Get-CimInstance Win32_Process |
 def _ownership_marker_path(executable_path: Path) -> Path:
     normalized = str(executable_path.resolve()).casefold().encode("utf-8")
     digest = hashlib.sha256(normalized).hexdigest()[:20]
-    return Path(tempfile.gettempdir()) / "neko-roast-live-bridge" / f"{digest}.pid"
+    return Path(tempfile.gettempdir()) / "neko-live-bridge" / f"{digest}.pid"
 
 
 def _process_pid(process: Any) -> int:

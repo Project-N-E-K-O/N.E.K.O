@@ -76,7 +76,7 @@ function CompactTabs(props: { id: string; items: Array<{ id: string; label: any;
   const activeItem = items.find((item) => item.id === activeId) || items[0]
 
   return (
-    <div className="neko-roast-compact-tabs" style={{ display: "grid", gap: "10px" }}>
+    <div className="neko-live-compact-tabs" style={{ display: "grid", gap: "10px" }}>
       <div role="tablist" aria-label={id} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "5px" }}>
         {items.map((item, index) => {
           const active = item.id === activeItem?.id
@@ -1136,10 +1136,10 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   // Streamer-first console: routine live operations stay on one compact page.
   const consoleSection = (
     <div
-      className="neko-roast-console-layout"
+      className="neko-live-console-layout"
       style={{ display: "grid", gridTemplateRows: "auto", minHeight: "360px", overflow: "visible", paddingBottom: "120px", scrollPaddingBottom: "120px" }}
     >
-      <div className="neko-roast-console-scroll" style={{ minHeight: 0, overflow: "visible" }}>
+      <div className="neko-live-console-scroll" style={{ minHeight: 0, overflow: "visible" }}>
         <Stack>
       <Grid cols={3}>
         <Card title={t("panel.platform.title")}>
@@ -1443,7 +1443,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         </Stack>
       </div>
       <div
-        className="neko-roast-live-fab"
+        className="neko-live-live-fab"
         aria-label={t("panel.console.runtimeTitle")}
         style={{ position: "fixed", right: "20px", bottom: "20px", zIndex: 20, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
       >
@@ -2243,9 +2243,9 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const currentOnboarding = onboardingSteps[Math.min(onboardingStep, onboardingSteps.length - 1)]
 
   return (
-    <Page className="neko-roast-page" title={t("panel.title")} subtitle={t("panel.subtitle")}>
+    <Page className="neko-live-page" title={t("panel.title")} subtitle={t("panel.subtitle")}>
       <style>{`
-        .neko-page.neko-roast-page {
+        .neko-page.neko-live-page {
           animation-fill-mode: backwards !important;
         }
       `}</style>

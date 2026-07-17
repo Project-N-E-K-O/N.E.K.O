@@ -18,4 +18,4 @@
 
 # NEKO Live plugin. CN-Zephyr has upstream write access and owns review of
 # plugin contracts, runtime behavior, Hosted UI, privacy, and distribution.
-/plugin/plugins/neko_roast/  @CN-Zephyr
+/plugin/plugins/neko_live/  @CN-Zephyr

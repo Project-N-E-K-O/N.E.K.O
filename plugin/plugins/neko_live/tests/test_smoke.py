@@ -265,25 +265,25 @@ def test_console_uses_floating_live_control_with_ordered_readiness_tooltip() -> 
         runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
-        dock_source = source.split('className="neko-roast-live-fab"', 1)[1].split(">\n        {", 1)[0]
+        dock_source = source.split('className="neko-live-live-fab"', 1)[1].split(">\n        {", 1)[0]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
-        assert 'className="neko-roast-console-layout"' in source
-        assert '<Page className="neko-roast-page"' in source
-        assert ".neko-page.neko-roast-page" in source
+        assert 'className="neko-live-console-layout"' in source
+        assert '<Page className="neko-live-page"' in source
+        assert ".neko-page.neko-live-page" in source
         assert "animation-fill-mode: backwards !important" in source
         assert 'gridTemplateRows: "auto"' in source
         assert 'paddingBottom: "120px"' in source
         assert 'scrollPaddingBottom: "120px"' in source
-        assert 'className="neko-roast-console-scroll"' in source
+        assert 'className="neko-live-console-scroll"' in source
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
         assert 'position: "fixed"' in dock_source
         assert 'right: "20px"' in dock_source
         assert 'bottom: "20px"' in dock_source
         assert 'position: "sticky"' not in dock_source
-        assert 'className="neko-roast-console-dock"' not in source
+        assert 'className="neko-live-console-dock"' not in source
         assert "<Tooltip" in source
         assert 'placement="top"' in source
         assert 'content={readinessTooltip}' in source
@@ -360,7 +360,7 @@ def test_nested_navigation_uses_compact_accessible_pills() -> None:
         source = (root / "ui" / name).read_text(encoding="utf-8")
 
         assert 'function CompactTabs(' in source
-        assert 'className="neko-roast-compact-tabs"' in source
+        assert 'className="neko-live-compact-tabs"' in source
         assert 'role="tablist"' in source
         assert 'role="tab"' in source
         assert 'role="tabpanel"' in source
