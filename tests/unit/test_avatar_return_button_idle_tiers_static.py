@@ -1901,12 +1901,18 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source
 
     vrm_handle_end_marker = "const handleEnd = (cancelled = false) => {"
+    vrm_handle_start = _source_slice_between(
+        vrm_source,
+        "const handleStart = (clientX, clientY) => {",
+        vrm_handle_end_marker,
+        "VRM return-button drag start handler",
+    )
     vrm_handle_end = vrm_source[
         vrm_source.index(vrm_handle_end_marker):
         vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index(vrm_handle_end_marker))
     ]
     assert vrm_handle_end.index("commitDragPosition();") < vrm_handle_end.index("const moved =")
-    assert "if (isDragging) return;" in vrm_source
+    assert "if (isDragging) return;" in vrm_handle_start
     assert "document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
     assert "document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
 
