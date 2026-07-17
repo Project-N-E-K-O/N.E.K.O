@@ -113,7 +113,7 @@ class SegmentAggregator:
             for segment_id in segment_ids:
                 self._segment_turns.pop(segment_id, None)
             self._turns.pop(turn_id, None)
-            self._next_turn_to_publish += 1
+            self._advance_publish_cursor()
         return ready
 
     def discard_turn(self, turn_id: int) -> None:
@@ -122,6 +122,14 @@ class SegmentAggregator:
             return
         for segment_id in turn.segment_ids:
             self._segment_turns.pop(segment_id, None)
+        if turn_id == self._next_turn_to_publish:
+            self._advance_publish_cursor()
+
+    def _advance_publish_cursor(self) -> None:
+        self._next_turn_to_publish = min(
+            self._turns,
+            default=self._turn_id + 1,
+        )
 
     def add_transcript(
         self,

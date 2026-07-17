@@ -886,6 +886,30 @@ async def test_unexpected_consumer_failure_is_terminal() -> None:
     await adapter.close()
 
 
+async def test_commit_callback_failure_is_terminal_and_consumed() -> None:
+    async def fail_commit(*_identity: int) -> None:
+        raise RuntimeError("commit failed")
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=_FakeCoordinator([_complete()]),
+        on_commit=fail_commit,
+    )
+    await adapter.start()
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=2,
+        utterance_id=3,
+        pcm16=b"\x00\x00",
+    )
+
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+
+    assert (failure.kind, failure.stage) == ("runtime_error", "consumer")
+    await adapter.close()
+
+
 async def test_each_session_owns_independent_lazy_runtime_lifecycle() -> None:
     vad_a, vad_b = _FakeVad(), _FakeVad()
     gate_a, gate_b = _FakeGate(), _FakeGate()

@@ -38,6 +38,7 @@ class AudioDecision:
     disposition: AudioDisposition
     pre_roll: bytes = b""
     shadow_disposition: AudioDisposition | None = None
+    backpressure: bool = False
 
 
 class VoiceInputLifecycleController:
@@ -191,6 +192,14 @@ class VoiceInputLifecycleController:
             )
             if dropped:
                 self.metrics.buffer_overflow_count += 1
+                self._pending_turn.clear()
+                self._pending_turn_speech = False
+                self._pending_turn_id = None
+                self.metrics.add_suppressed_audio(duration_ms)
+                return AudioDecision(
+                    AudioDisposition.BLOCK,
+                    backpressure=True,
+                )
             self.metrics.add_suppressed_audio(duration_ms)
             return AudioDecision(AudioDisposition.BUFFER)
 
