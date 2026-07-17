@@ -213,7 +213,7 @@ class DetectorRuntime:
             self._speech_active = False
 
     async def release_deferred_turn(self) -> None:
-        """旧 final 后允许下一轮 SmartTurn COMPLETE 正式 seal/commit。"""
+        """Release a deferred SmartTurn completion after the prior final."""
 
         callback: Callable[[], Awaitable[None]] | None = None
         async with self._lock:

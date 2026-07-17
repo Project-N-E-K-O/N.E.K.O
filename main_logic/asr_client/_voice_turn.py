@@ -134,7 +134,7 @@ class _VoiceTurnAdapter:
         return self._failure
 
     async def wait_idle(self) -> None:
-        """等待当前检测批次完成，供外层统一 DetectorRuntime 串行取事件。"""
+        """Wait for the current detector batch and callbacks to finish."""
 
         await self._queue.join()
         callbacks = tuple(self._callback_tasks)
@@ -378,7 +378,7 @@ class _VoiceTurnAdapter:
         )
 
     async def _strict_incomplete_wait(self, identity: _Identity) -> None:
-        """重复语义判断；required SmartTurn 永远不能由静音超时直接提交。"""
+        """Re-evaluate incomplete semantics without silence-timeout commit."""
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._max_endpoint_wait_seconds

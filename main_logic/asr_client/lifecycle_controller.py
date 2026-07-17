@@ -223,7 +223,7 @@ class VoiceInputLifecycleController:
         return AudioDecision(AudioDisposition.FORWARD)
 
     def drain_active_start_audio(self) -> bytes:
-        """建连成功后立即取出 pre-roll + pending-connect，不等待下一帧。"""
+        """Drain pre-roll and pending-connect audio as transport becomes active."""
 
         if self._state is not VoiceLifecycleState.ACTIVE:
             return b""
@@ -234,7 +234,7 @@ class VoiceInputLifecycleController:
         return payload
 
     def record_provider_wire_audio(self, duration_ms: int) -> None:
-        """仅由 transport 在实际进入 provider 请求边界后记账。"""
+        """Record audio only after transport crosses the provider boundary."""
 
         self.metrics.add_provider_wire_audio(duration_ms)
 
@@ -248,14 +248,14 @@ class VoiceInputLifecycleController:
         return matches
 
     def mark_pending_turn_speech(self) -> None:
-        """记录 DRAINING 期间已确认的新一轮语音，不触碰旧 transport。"""
+        """Mark confirmed next-turn speech while the previous turn drains."""
 
         if self._state is not VoiceLifecycleState.DRAINING:
             raise RuntimeError("VOICE_PENDING_TURN_REQUIRES_DRAINING")
         self._pending_turn_speech = True
 
     def begin_pending_turn(self) -> bytes:
-        """在旧 final 后原子地激活并取出下一轮待发送音频。"""
+        """Activate and drain the pending turn after the prior final."""
 
         if self._state is not VoiceLifecycleState.WARM_IDLE:
             raise RuntimeError("VOICE_PENDING_TURN_REQUIRES_WARM_IDLE")
@@ -268,7 +268,7 @@ class VoiceInputLifecycleController:
         return payload
 
     def discard_unconfirmed_pending_audio(self) -> None:
-        """丢弃 seal 后仅有环境音、但没有确认新语音的暂存。"""
+        """Discard post-seal audio that never became confirmed speech."""
 
         if self._pending_turn_speech:
             return
@@ -298,12 +298,12 @@ class VoiceInputLifecycleController:
             self._independent_asr_fail_open = True
 
     def invalidate_transport(self) -> None:
-        """仅推进 transport generation，不终止本地语音监听。"""
+        """Advance transport generation without stopping local listening."""
 
         self._transport_generation += 1
 
     def invalidate_audio(self) -> None:
-        """硬静音/Focus 抑制使所有旧 PCM 和 turn 身份立即失效。"""
+        """Invalidate buffered PCM and turn identity after input suppression."""
 
         self._turn_id += 1
         self._completed_turn_id = self._turn_id

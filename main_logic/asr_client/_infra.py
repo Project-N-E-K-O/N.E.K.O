@@ -308,7 +308,7 @@ class _RealtimeAsrSessionImpl:
 
     @property
     def provider_wire_audio_ms(self) -> int:
-        """只统计已进入 provider 请求边界的音频，不含 segmented 本地缓存。"""
+        """Count audio that crossed the provider request boundary."""
 
         return self._provider_wire_audio_bytes * 1_000 // (16_000 * 2)
 
@@ -723,7 +723,7 @@ class _RealtimeAsrSessionImpl:
             await self._commit_current_utterance_locked()
 
     async def _notify_turn_endpointed_locked(self, key: _UtteranceKey) -> None:
-        """在 transport commit/final 前只发布一次语义 seal 事件。"""
+        """Publish one semantic seal event before transport commit or final."""
 
         if key in self._endpointed_turn_keys:
             return

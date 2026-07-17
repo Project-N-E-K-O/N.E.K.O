@@ -484,7 +484,7 @@ class AsrRuntimeMixin:
         self._asr_transport_task = task
 
     async def connect_transport(self) -> None:
-        """只建立独立 ASR transport；DetectorRuntime 始终由语音会话持有。"""
+        """Connect only the independent ASR transport."""
 
         await self.restart_transport(max_attempts=1)
 
@@ -577,7 +577,7 @@ class AsrRuntimeMixin:
             )
 
     async def close_transport_only(self) -> None:
-        """进入 DEEP_SLEEP：关闭云端 transport，保留麦克风和本地检测。"""
+        """Enter deep sleep while preserving microphone detection."""
 
         warm_task = self._asr_warm_expiry_task
         if warm_task is not None and warm_task is not asyncio.current_task():
@@ -600,7 +600,7 @@ class AsrRuntimeMixin:
                 )
 
     async def close_voice_input_session(self) -> None:
-        """用户停止：释放 detector、buffer、transport 和麦克风管线。"""
+        """Release the complete voice-input session after user stop."""
 
         await self._close_independent_asr(next_route_mode="blocked")
 
@@ -752,7 +752,7 @@ class AsrRuntimeMixin:
         event: str,
         lease_generation: int,
     ) -> bool:
-        """应用单调 MicLease 事件；迟到事件不能恢复旧音频或旧 turn。"""
+        """Apply monotonic MicLease events and reject stale generations."""
 
         self._ensure_asr_runtime_state()
         try:
@@ -907,7 +907,7 @@ class AsrRuntimeMixin:
         await self._prepare_independent_asr_turn(epoch)
 
     async def _prepare_independent_asr_turn(self, epoch: int) -> None:
-        """准备一个已分配身份的新 turn；不参与音频端点判断。"""
+        """Prepare an identified turn without deciding its endpoint."""
 
         if epoch != self._asr_session_epoch or self._asr_turn_prepared:
             return
@@ -935,7 +935,7 @@ class AsrRuntimeMixin:
             logger.warning("[%s] independent ASR turn preparation failed", self.lanlan_name)
 
     async def _handle_independent_asr_endpoint(self, epoch: int) -> None:
-        """语义端点立即 seal 当前 turn；provider final 只负责完成它。"""
+        """Seal the current turn immediately at its semantic endpoint."""
 
         if epoch != self._asr_session_epoch:
             return
@@ -949,7 +949,7 @@ class AsrRuntimeMixin:
             await self._send_asr_lifecycle_state(VoiceLifecycleState.DRAINING)
 
     async def _activate_pending_independent_turn(self, epoch: int) -> None:
-        """旧 final 完成后，串行启动 DRAINING 期间缓存的下一轮。"""
+        """Start the pending turn after the previous final completes."""
 
         if epoch != self._asr_session_epoch:
             return
