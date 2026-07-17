@@ -1,3 +1,5 @@
+import shutil
+import subprocess
 from pathlib import Path
 from tests.static_app_parts import read_js_parts
 
@@ -11,6 +13,19 @@ AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
 
 def _read_avatar_ui_buttons_source() -> str:
     return read_avatar_ui_buttons_source()
+
+
+def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
+    node_path = shutil.which("node")
+    if not node_path:
+        raise AssertionError("node is required to run avatar journey harness tests")
+    return subprocess.run(
+        [node_path, "-e", script],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
@@ -405,7 +420,40 @@ def test_cat1_compact_top_edge_to_minimized_side_transition_forces_walk():
     assert journey_sync_block.index("const switchingFromCompactTopEdgeToMinimizedSide =") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
-def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
+def test_cat1_regular_walk_start_distance_uses_cat_and_yarn_centers():
+    source = _read_avatar_ui_buttons_source()
+    helper_source = "function _getNekoIdleRectCenterDistancePx" + source.split(
+        "function _getNekoIdleRectCenterDistancePx",
+        1,
+    )[1].split("function _makeNekoIdleCat1CurrentSideTarget", 1)[0]
+    script = f"""
+        const assert = require('node:assert/strict');
+        {helper_source}
+
+        const yarnRect = {{ left: 470, top: 300, width: 51, height: 51 }};
+        const overlappingCatRect = {{ left: 364.5, top: 264.5, width: 122, height: 122 }};
+        assert.equal(_getNekoIdleRectCenterDistancePx(overlappingCatRect, yarnRect), 70);
+        assert.equal(_getNekoIdleRectCenterDistancePx(overlappingCatRect, yarnRect) < 180, true);
+
+        for (const size of [96, 108, 122]) {{
+            const catRect = {{ left: 100 - size / 2, top: 100 - size / 2, width: size, height: size }};
+            const nearYarn = {{ left: 279 - 25.5, top: 100 - 25.5, width: 51, height: 51 }};
+            const farYarn = {{ left: 281 - 25.5, top: 100 - 25.5, width: 51, height: 51 }};
+            assert.equal(_getNekoIdleRectCenterDistancePx(catRect, nearYarn), 179);
+            assert.equal(_getNekoIdleRectCenterDistancePx(catRect, farYarn), 181);
+        }}
+
+        const diagonalCat = {{ left: 39, top: 39, width: 122, height: 122 }};
+        const diagonalYarn = {{ left: 182.5, top: 218.5, width: 51, height: 51 }};
+        const boundaryDistance = _getNekoIdleRectCenterDistancePx(diagonalCat, diagonalYarn);
+        assert.equal(boundaryDistance, 180);
+        assert.equal(boundaryDistance >= 180, true);
+    """
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr
+
+
+def test_cat1_settled_minimized_side_uses_center_distance_for_regular_walk_delay_when_ball_moves():
     source = _read_avatar_ui_buttons_source()
 
     journey_sync_block = source.split("function _syncNekoIdleCat1Journey", 1)[1].split(
@@ -413,12 +461,19 @@ def test_cat1_settled_minimized_side_uses_regular_walk_delay_when_ball_moves():
         1,
     )[0]
     assert "const followingMovedMinimizedSideTarget =" not in journey_sync_block
-    assert "target.distance >= profile.target.enterDistancePx" in journey_sync_block
+    assert "const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);" in journey_sync_block
+    assert "const walkStartDistancePx = Number.isFinite(centerDistancePx)" in journey_sync_block
+    assert ": target.distance;" in journey_sync_block
+    assert "walkStartDistancePx < profile.target.enterDistancePx" in journey_sync_block
+    assert "walkStartDistancePx >= profile.target.enterDistancePx" in journey_sync_block
+    assert "target.distance >= profile.target.enterDistancePx" not in journey_sync_block
     assert "if (switchingFromCompactTopEdgeToMinimizedSide) {" in journey_sync_block
     assert "if (switchingFromCompactTopEdgeToMinimizedSide ||" not in journey_sync_block
     assert "state.pendingWalkReady = true;" in journey_sync_block
     assert "state.pendingWalkDelayMs = 0;" in journey_sync_block
-    assert journey_sync_block.index("target.distance >= profile.target.enterDistancePx") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
+    assert "state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx" in journey_sync_block
+    assert "compactTopEdgeTarget && target.distance > profile.target.exitDistancePx" in journey_sync_block
+    assert journey_sync_block.index("walkStartDistancePx >= profile.target.enterDistancePx") < journey_sync_block.index("_scheduleNekoIdleCat1WalkStart(button, target);")
 
 
 def test_cat1_settled_minimized_side_bypasses_small_desktop_move_filter():

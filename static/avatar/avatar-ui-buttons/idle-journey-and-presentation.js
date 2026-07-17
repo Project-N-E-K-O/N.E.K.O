@@ -445,6 +445,15 @@ function _isNekoIdleRectCenterInsideRect(innerRect, outerRect) {
         innerCenterY >= outerTop && innerCenterY <= outerBottom;
 }
 
+function _getNekoIdleRectCenterDistancePx(firstRect, secondRect) {
+    if (!firstRect || !secondRect) return NaN;
+    const dx = Number(secondRect.left) + Number(secondRect.width) / 2 -
+        (Number(firstRect.left) + Number(firstRect.width) / 2);
+    const dy = Number(secondRect.top) + Number(secondRect.height) / 2 -
+        (Number(firstRect.top) + Number(firstRect.height) / 2);
+    return Number.isFinite(dx) && Number.isFinite(dy) ? Math.hypot(dx, dy) : NaN;
+}
+
 // #1754：贴球后“原地以当前朝向站住”的侧目标（distance 0、moveFacingRight null，不再走动）。
 function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
     const facingRight = !!(options && options.facingRight);
@@ -1575,6 +1584,13 @@ function _syncNekoIdleCat1Journey(button, tier) {
     const switchingFromCompactTopEdgeToMinimizedSide =
         previousTargetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE &&
         target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE;
+    const containerRect = typeof container.getBoundingClientRect === 'function'
+        ? container.getBoundingClientRect()
+        : null;
+    const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);
+    const walkStartDistancePx = Number.isFinite(centerDistancePx)
+        ? centerDistancePx
+        : target.distance;
     if (compactTopEdgeTarget) {
         _cancelNekoIdleCat1PairMove(state);
         if (target.distance <= profile.target.exitDistancePx) {
@@ -1582,7 +1598,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
         }
     }
 
-    if (target.distance < profile.target.enterDistancePx && state.substate !== profile.walkingSubstate && !compactTopEdgeTarget) {
+    if (walkStartDistancePx < profile.target.enterDistancePx && state.substate !== profile.walkingSubstate && !compactTopEdgeTarget) {
         _cancelNekoIdleReturnPendingWalk(state);
     }
 
@@ -1591,7 +1607,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
         return;
     }
 
-    if (target.distance >= profile.target.enterDistancePx ||
+    if (walkStartDistancePx >= profile.target.enterDistancePx ||
         (compactTopEdgeTarget && target.distance > profile.target.exitDistancePx) ||
         (switchingFromCompactTopEdgeToMinimizedSide && target.distance > profile.target.exitDistancePx)) {
         state.actionSettled = false;
