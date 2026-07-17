@@ -28,7 +28,7 @@ def test_default_config_matches_phase3_contract() -> None:
         (VoiceLifecycleState.OFF, VoiceLifecycleEvent.MIC_OPENED, VoiceLifecycleState.LOCAL_LISTEN),
         (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.SOFT_WAKE, VoiceLifecycleState.PREWARMING),
         (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.SPEECH_CONFIRMED, VoiceLifecycleState.ACTIVE),
-        (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_ENDPOINTED, VoiceLifecycleState.DRAINING),
+        (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_SEALED, VoiceLifecycleState.DRAINING),
         (VoiceLifecycleState.DRAINING, VoiceLifecycleEvent.PROVIDER_FINAL, VoiceLifecycleState.WARM_IDLE),
         (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.WARM_EXPIRED, VoiceLifecycleState.DEEP_SLEEP),
         (VoiceLifecycleState.DEEP_SLEEP, VoiceLifecycleEvent.SOFT_WAKE, VoiceLifecycleState.PREWARMING),

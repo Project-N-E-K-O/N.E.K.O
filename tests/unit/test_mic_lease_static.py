@@ -54,3 +54,27 @@ def test_mic_lease_projects_local_off_and_suspended_lifecycle_states() -> None:
     assert "setVoiceInputLifecycleState('off')" in setter
     assert "setVoiceInputLifecycleState('suspended')" in setter
     assert "setVoiceInputLifecycleState('local_listen')" in setter
+
+
+def test_mic_lease_changes_are_sent_to_backend_with_generation() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+
+    assert "action: 'voice_input_control'" in source
+    assert "lease_generation" in source
+    assert "hard_mute" in source
+    assert "hard_unmute" in source
+    assert "game_takeover" in source
+    assert "game_release" in source
+    assert "focus_suppress" in source
+    assert "focus_resume" in source
+
+
+def test_worklet_uses_binary_pcm_frame_instead_of_json_sample_array() -> None:
+    source = CAPTURE.read_text(encoding="utf-8")
+    handler = source.split("S.workletNode.port.onmessage = (event) => {", 1)[1].split(
+        "};", 1
+    )[0]
+
+    assert "new ArrayBuffer" in handler
+    assert "setUint32(4, targetSampleRate, true)" in handler
+    assert "Array.from(audioData)" not in handler

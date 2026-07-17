@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 _READY_TIMEOUT_SECONDS = 10.0
 _CALLBACK_DRAIN_TIMEOUT_SECONDS = 5.0
 _WORKER_CLOSE_TIMEOUT_SECONDS = 5.0
+# 活跃音频队列按时长限额；chunk 数量只保留为兼容常量，不参与容量判断。
 _REQUEST_QUEUE_SIZE = 64
+_ACTIVE_QUEUE_MAX_AUDIO_MS = 2_000
 _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS = 2.0
 _RESPONSE_QUEUE_SIZE = 128
 _CALLBACK_QUEUE_SIZE = 64
@@ -237,6 +239,7 @@ class _RealtimeAsrSessionImpl:
         on_input_transcript: Callable[[str], Awaitable[None]],
         on_connection_error: Callable[[str], Awaitable[None]],
         on_status_message: Callable[[str], Awaitable[None]] | None = None,
+        on_turn_endpointed: Callable[[], Awaitable[None]] | None = None,
         voice_turn_factory: VoiceTurnFactory | None = None,
         provider_policy: AsrProviderPolicy | None = None,
     ) -> None:
@@ -248,6 +251,8 @@ class _RealtimeAsrSessionImpl:
             raise TypeError("ASR_INVALID_CONFIG: callbacks must be callable")
         if on_status_message is not None and not callable(on_status_message):
             raise TypeError("ASR_INVALID_CONFIG: status callback must be callable")
+        if on_turn_endpointed is not None and not callable(on_turn_endpointed):
+            raise TypeError("ASR_INVALID_CONFIG: endpoint callback must be callable")
 
         self._worker_fn = worker_fn
         self._api_key = api_key
@@ -255,6 +260,7 @@ class _RealtimeAsrSessionImpl:
         self._on_input_transcript = on_input_transcript
         self._on_connection_error = on_connection_error
         self._on_status_message = on_status_message
+        self._on_turn_endpointed = on_turn_endpointed
         self._voice_turn_factory = voice_turn_factory
         self._provider_policy = provider_policy
         self._voice_turn_adapter: _VoiceTurnAdapterProtocol | None = None
@@ -269,10 +275,12 @@ class _RealtimeAsrSessionImpl:
         self._resampler: soxr.ResampleStream | None = None
         self._active_utterance_keys: set[_UtteranceKey] = set()
         self._committed_utterance_keys: set[_UtteranceKey] = set()
+        self._endpointed_turn_keys: set[_UtteranceKey] = set()
         self._utterance_order: deque[_UtteranceKey] = deque()
         self._pending_finals: dict[_UtteranceKey, str] = {}
         self._logical_turn_id = 1
         self._physical_segment_audio_bytes = 0
+        self._provider_wire_audio_bytes = 0
         self._logical_segments: dict[int, list[_UtteranceKey]] = {}
         self._segment_texts: dict[_UtteranceKey, str] = {}
         self._completed_logical_turns: set[int] = set()
@@ -298,6 +306,12 @@ class _RealtimeAsrSessionImpl:
     def is_ready(self) -> bool:
         return self._state is _SessionState.READY
 
+    @property
+    def provider_wire_audio_ms(self) -> int:
+        """只统计已进入 provider 请求边界的音频，不含 segmented 本地缓存。"""
+
+        return self._provider_wire_audio_bytes * 1_000 // (16_000 * 2)
+
     async def connect(
         self,
         instructions: str = "",
@@ -314,7 +328,7 @@ class _RealtimeAsrSessionImpl:
                 )
 
             self._state = _SessionState.CONNECTING
-            self._request_queue = asyncio.Queue(maxsize=_REQUEST_QUEUE_SIZE)
+            self._request_queue = asyncio.Queue()
             self._response_queue = asyncio.Queue(maxsize=_RESPONSE_QUEUE_SIZE)
             self._callback_queue = asyncio.Queue(maxsize=_CALLBACK_QUEUE_SIZE)
             self._ready_future = asyncio.get_running_loop().create_future()
@@ -478,6 +492,8 @@ class _RealtimeAsrSessionImpl:
                         audio=normalized_audio,
                     )
                 )
+                if not self._uses_segment_aggregation:
+                    self._provider_wire_audio_bytes += len(normalized_audio)
                 if self._voice_turn_adapter is not None:
                     await self._voice_turn_adapter.push_audio(
                         generation=self._generation,
@@ -516,6 +532,7 @@ class _RealtimeAsrSessionImpl:
             self._utterance_has_audio = False
             self._active_utterance_keys.clear()
             self._committed_utterance_keys.clear()
+            self._endpointed_turn_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
             self._logical_turn_id += 1
@@ -569,6 +586,7 @@ class _RealtimeAsrSessionImpl:
             self._utterance_has_audio = False
             self._active_utterance_keys.clear()
             self._committed_utterance_keys.clear()
+            self._endpointed_turn_keys.clear()
             self._utterance_order.clear()
             self._pending_finals.clear()
             self._clear_segment_aggregation_state()
@@ -699,7 +717,26 @@ class _RealtimeAsrSessionImpl:
                 )
             ):
                 return
+            await self._notify_turn_endpointed_locked(
+                (generation, buffer_epoch, utterance_id)
+            )
             await self._commit_current_utterance_locked()
+
+    async def _notify_turn_endpointed_locked(self, key: _UtteranceKey) -> None:
+        """在 transport commit/final 前只发布一次语义 seal 事件。"""
+
+        if key in self._endpointed_turn_keys:
+            return
+        self._endpointed_turn_keys.add(key)
+        callback = self._on_turn_endpointed
+        if callback is None:
+            return
+        try:
+            await callback()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ASR turn endpoint callback failed")
 
     async def _commit_current_utterance_locked(self) -> None:
         if self._uses_segment_aggregation:
@@ -809,6 +846,7 @@ class _RealtimeAsrSessionImpl:
                         audio=tail,
                     )
                 )
+                self._physical_segment_audio_bytes += len(tail)
                 if self._voice_turn_adapter is not None:
                     await self._voice_turn_adapter.push_audio(
                         generation=generation,
@@ -825,6 +863,7 @@ class _RealtimeAsrSessionImpl:
                 utterance_id=utterance_id,
             )
         )
+        self._provider_wire_audio_bytes += self._physical_segment_audio_bytes
         self._logical_segments.setdefault(logical_turn_id, []).append(key)
         if logical_complete:
             self._completed_logical_turns.add(logical_turn_id)
@@ -1048,6 +1087,8 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
+                if self._config.endpointing_mode == "provider":
+                    await self._notify_turn_endpointed_locked(key)
                 if self._uses_segment_aggregation:
                     if key in self._segment_texts:
                         logger.warning(
@@ -1130,6 +1171,45 @@ class _RealtimeAsrSessionImpl:
                     logger.warning("ASR callback drain timed out after failure")
             await self._shutdown()
 
+    def _queued_audio_ms(self) -> int:
+        queue = self._request_queue
+        if queue is None:
+            return 0
+        # asyncio.Queue 没有公开快照接口；这里仅在 session 自己的 operation
+        # lock 内读取其 deque，不修改内部结构。
+        queued = getattr(queue, "_queue", ())
+        audio_bytes = sum(
+            len(item.audio)
+            for item in queued
+            if isinstance(item, _AsrWorkerRequest) and item.kind == "audio"
+        )
+        return audio_bytes * 1_000 // (16_000 * 2)
+
+    async def _wait_for_audio_queue_capacity(
+        self,
+        request: _AsrWorkerRequest,
+    ) -> None:
+        request_ms = len(request.audio) * 1_000 // (16_000 * 2)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
+        while self._queued_audio_ms() + request_ms > _ACTIVE_QUEUE_MAX_AUDIO_MS:
+            if self._closing_event.is_set() or self._state is not _SessionState.READY:
+                raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "ASR_STREAM_BACKPRESSURE: active audio queue exceeded "
+                    f"{_ACTIVE_QUEUE_MAX_AUDIO_MS}ms"
+                )
+            try:
+                await asyncio.wait_for(
+                    self._closing_event.wait(),
+                    timeout=min(0.01, remaining),
+                )
+            except asyncio.TimeoutError:
+                continue
+            raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
+
     async def _enqueue_request(self, request: _AsrWorkerRequest) -> None:
         worker_task = self._worker_task
         if (
@@ -1140,6 +1220,9 @@ class _RealtimeAsrSessionImpl:
             or worker_task.done()
         ):
             raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
+
+        if request.kind == "audio":
+            await self._wait_for_audio_queue_capacity(request)
 
         key: _UtteranceKey | None = None
         added_active = False

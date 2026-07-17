@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
-from main_logic.voice_turn.contracts import SpeechActivityEvent
+from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.voice_turn.contracts import (
+    EvaluationStatus,
+    SpeechActivityEvent,
+    TurnDecision,
+)
+from main_logic.voice_turn.coordinator import CoordinatorState
 
 
 class _Vad:
@@ -45,6 +53,35 @@ class _FailingGate(_Gate):
         raise RuntimeError("feed failed")
 
 
+class _SemanticCoordinator:
+    def __init__(self) -> None:
+        self.state = CoordinatorState.IDLE
+        self.audio: list[bytes] = []
+
+    def push_audio(self, pcm16: bytes) -> None:
+        self.audio.append(pcm16)
+
+    async def on_activity_event(self, event: SpeechActivityEvent) -> None:
+        if event is SpeechActivityEvent.CANDIDATE_PAUSE:
+            self.state = CoordinatorState.PAUSE_CANDIDATE
+
+    async def evaluate_buffered(self):
+        self.state = CoordinatorState.PAUSE_CANDIDATE
+        return SimpleNamespace(
+            status=EvaluationStatus.OK,
+            decision=TurnDecision.COMPLETE,
+        )
+
+    async def reset(self) -> None:
+        self.state = CoordinatorState.IDLE
+
+    async def close(self) -> None:
+        self.state = CoordinatorState.CLOSED
+
+    async def unload_predictor(self) -> None:
+        return None
+
+
 async def test_detector_loads_silero_off_loop_and_returns_activity() -> None:
     vad = _Vad()
     gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
@@ -71,6 +108,66 @@ async def test_detector_failure_requests_independent_asr_fail_open() -> None:
     assert first.throttle_available is False
     assert second.throttle_available is False
     assert first.events == second.events == ()
+
+
+async def test_rnnoise_soft_gate_skips_silero_until_probable_voice() -> None:
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(vad=_Vad(), gate=gate, rnnoise_onset_probability=0.4)
+
+    quiet = await detector.feed(b"\x01\x00", speech_probability=0.1)
+    speech = await detector.feed(b"\x02\x00", speech_probability=0.8)
+
+    assert quiet.events == ()
+    assert quiet.throttle_available is True
+    assert gate.inputs == [b"\x02\x00"]
+    assert speech.events == (SpeechActivityEvent.SPEECH_STARTED,)
+
+
+async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> None:
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(vad=_Vad(), gate=gate)
+
+    await detector.feed(b"\x01\x00", speech_probability=0.8)
+    await detector.feed(b"\x02\x00", speech_probability=0.0)
+
+    assert gate.inputs == [b"\x01\x00", b"\x02\x00"]
+
+
+async def test_unified_detector_owns_smart_turn_and_emits_semantic_completion() -> None:
+    completed = asyncio.Event()
+    completion_count = 0
+
+    async def on_complete() -> None:
+        nonlocal completion_count
+        completion_count += 1
+        completed.set()
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.CANDIDATE_PAUSE,)),
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=27_000,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=on_complete,
+    )
+
+    result = await detector.feed(b"\x01\x00" * 160)
+    await asyncio.wait_for(completed.wait(), 1)
+
+    assert result.events == (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    assert result.throttle_available is True
+
+    await detector.feed(b"\x02\x00" * 160)
+    assert completion_count == 1
+    await detector.release_deferred_turn()
+    assert completion_count == 2
+    await detector.close()
 
 
 def test_custom_vad_requires_matching_gate() -> None:

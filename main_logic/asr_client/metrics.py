@@ -19,6 +19,13 @@ class VoiceLifecycleMetrics:
     reconnect_count: int = 0
     stale_callback_count: int = 0
     omni_mic_audio_bytes: int = 0
+    provider_wire_audio_ms: int = 0
+    connect_latency_ms: int = 0
+    first_partial_latency_ms: int = 0
+    final_latency_ms: int = 0
+    warm_hit_count: int = 0
+    smart_turn_load_ms: int = 0
+    smart_turn_inference_ms: int = 0
 
     @property
     def throttle_ratio(self) -> float:
@@ -32,6 +39,11 @@ class VoiceLifecycleMetrics:
 
     def add_cloud_audio(self, duration_ms: int) -> None:
         self.cloud_audio_ms += max(0, int(duration_ms))
+
+    def add_provider_wire_audio(self, duration_ms: int) -> None:
+        value = max(0, int(duration_ms))
+        self.provider_wire_audio_ms += value
+        self.cloud_audio_ms += value
 
     def add_suppressed_audio(self, duration_ms: int, *, shadow: bool = False) -> None:
         value = max(0, int(duration_ms))

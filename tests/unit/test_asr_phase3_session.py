@@ -125,12 +125,14 @@ async def test_session_fans_same_normalized_pcm_to_worker_and_voice_turn():
     assert session._request_queue is not None
     await asyncio.wait_for(session._request_queue.join(), 1)
     assert adapter.audio == [(0, 0, 1, pcm)]
+    assert session.provider_wire_audio_ms == 10
     await session.close()
     assert adapter.closed
 
 
 async def test_voice_turn_commit_is_identity_checked_and_commits_once():
     observed = []
+    endpointed: list[str] = []
 
     async def worker(request_queue, response_queue, api_key, config):
         del api_key, config
@@ -160,6 +162,7 @@ async def test_voice_turn_commit_is_identity_checked_and_commits_once():
         config=AsrSessionConfig(),
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
+        on_turn_endpointed=AsyncMock(side_effect=lambda: endpointed.append("sealed")),
         voice_turn_factory=factory,
     )
     await session.connect()
@@ -170,6 +173,7 @@ async def test_voice_turn_commit_is_identity_checked_and_commits_once():
     assert session._request_queue is not None
     await asyncio.wait_for(session._request_queue.join(), 1)
     assert [item.kind for item in observed].count("commit") == 1
+    assert endpointed == ["sealed"]
     assert adapter.resets[-1] == (0, 0, 2)
     await session.close()
 
@@ -392,6 +396,7 @@ async def test_segmented_forced_splits_wait_for_logical_turn_completion():
     adapter = None
     callbacks: list[str] = []
     requests = []
+    endpointed: list[str] = []
 
     async def worker(request_queue, response_queue, api_key, config):
         del api_key, config
@@ -435,6 +440,7 @@ async def test_segmented_forced_splits_wait_for_logical_turn_completion():
         config=AsrSessionConfig(),
         on_input_transcript=on_transcript,
         on_connection_error=AsyncMock(),
+        on_turn_endpointed=AsyncMock(side_effect=lambda: endpointed.append("sealed")),
         voice_turn_factory=factory,
         provider_policy=AsrProviderPolicy(
             transport="segmented",
@@ -455,6 +461,7 @@ async def test_segmented_forced_splits_wait_for_logical_turn_completion():
     await asyncio.sleep(0)
 
     assert callbacks == []
+    assert endpointed == []
     assert [request.utterance_id for request in requests if request.kind == "commit"] == [
         1,
         2,
@@ -463,6 +470,7 @@ async def test_segmented_forced_splits_wait_for_logical_turn_completion():
 
     await adapter.on_commit(0, 0, 1)
     await asyncio.wait_for(_wait_until(lambda: bool(callbacks)), 1)
+    assert endpointed == ["sealed"]
     assert callbacks == ["part-1 part-2"]
     await session.close()
 
@@ -532,6 +540,40 @@ async def test_segmented_final_segment_is_aggregated_with_forced_segments():
 
     assert callbacks == ["segment-1 segment-2"]
     assert adapter.resets[-1] == (0, 0, 2)
+    await session.close()
+
+
+async def test_segmented_local_buffering_is_not_counted_as_provider_wire_audio():
+    adapter = None
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FakeVoiceTurnAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=1_000,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x01\x00" * 160)
+
+    assert session.provider_wire_audio_ms == 0
+    assert adapter is not None
+    await adapter.on_commit(0, 0, 1)
+    assert session.provider_wire_audio_ms == 10
     await session.close()
 
 

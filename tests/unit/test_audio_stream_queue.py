@@ -1,5 +1,6 @@
 import asyncio
 import os
+import struct
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -200,6 +201,24 @@ async def test_independent_asr_route_does_not_send_microphone_audio_to_omni():
     mgr._record_omni_microphone_audio.assert_not_called()
 
 
+async def test_binary_audio_sample_rate_contract_reaches_audio_pipeline():
+    mgr = _make_routable_audio_manager(True)
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 480,
+        },
+    )
+
+    mgr._process_microphone_audio.assert_awaited_once_with(
+        struct.pack("<480h", *([1] * 480)),
+        sample_rate_hz=16_000,
+    )
+
+
 async def test_blocked_route_never_sends_microphone_audio_to_omni():
     mgr = _make_routable_audio_manager(True)
 
@@ -233,9 +252,30 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
     mgr._route_microphone_audio.assert_awaited_once_with(
         b"\x02\x00" * 160,
         sample_rate_hz=16_000,
+        speech_probability=0.8,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_independent_audio_route_does_not_require_omni_session_container():
+    mgr = _make_routable_audio_manager(True)
+    mgr.session = type("TextOnlyCore", (), {})()
+    mgr.start_session = AsyncMock()
+    mgr.end_session = AsyncMock()
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._route_microphone_audio.assert_awaited_once_with(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.5,
+    )
+    mgr.start_session.assert_not_awaited()
+    mgr.end_session.assert_not_awaited()
 
 
 async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():

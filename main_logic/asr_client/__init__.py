@@ -281,6 +281,8 @@ def create_asr_session(
     on_connection_error: Callable[[str], Awaitable[None]],
     on_status_message: Callable[[str], Awaitable[None]] | None = None,
     on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
+    on_turn_endpointed: Callable[[], Awaitable[None]] | None = None,
+    external_endpointing_runtime: bool = False,
     user_region: str | None = None,
 ) -> RealtimeAsrSession:
     """Create an isolated ASR session or fail fast for unsupported routes."""
@@ -296,6 +298,8 @@ def create_asr_session(
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
         on_speech_activity=on_speech_activity,
+        on_turn_endpointed=on_turn_endpointed,
+        external_endpointing_runtime=external_endpointing_runtime,
     )
 
 
@@ -308,6 +312,8 @@ def _create_asr_session_from_selection(
     on_connection_error: Callable[[str], Awaitable[None]],
     on_status_message: Callable[[str], Awaitable[None]] | None = None,
     on_speech_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
+    on_turn_endpointed: Callable[[], Awaitable[None]] | None = None,
+    external_endpointing_runtime: bool = False,
 ) -> RealtimeAsrSession:
     """Build one session from an already-resolved, immutable selection."""
 
@@ -344,6 +350,7 @@ def _create_asr_session_from_selection(
         on_input_transcript=on_input_transcript,
         on_connection_error=on_connection_error,
         on_status_message=on_status_message,
+        on_turn_endpointed=on_turn_endpointed,
         voice_turn_factory=(
             partial(
                 _create_voice_turn_adapter,
@@ -353,6 +360,7 @@ def _create_asr_session_from_selection(
             if (
                 provider_meta.requires_smart_turn
                 and session_config.endpointing_mode == "manual"
+                and not external_endpointing_runtime
             )
             else None
         ),

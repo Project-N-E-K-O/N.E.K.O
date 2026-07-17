@@ -17,6 +17,19 @@
         GAME: 'game',
         CORE: 'core'
     });
+    let voiceLeaseGeneration = 0;
+    let backendFocusSuppressed = false;
+
+    function sendVoiceInputControl(event) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+        voiceLeaseGeneration += 1;
+        S.socket.send(JSON.stringify({
+            action: 'voice_input_control',
+            event,
+            lease_generation: voiceLeaseGeneration
+        }));
+        return true;
+    }
 
     function setVoiceInputLifecycleState(state) {
         const allowed = new Set([
@@ -36,6 +49,7 @@
             throw new Error(`Invalid microphone lease owner: ${owner}`);
         }
         if (S.micLeaseOwner === owner) return owner;
+        const previousOwner = S.micLeaseOwner;
         S.micLeaseOwner = owner;
         window.dispatchEvent(new CustomEvent('mic-lease-changed', {
             detail: { owner }
@@ -49,6 +63,15 @@
             || S.voiceInputLifecycleState === 'suspended'
         ) {
             setVoiceInputLifecycleState('local_listen');
+        }
+        if (owner === MIC_LEASE.HARD_MUTED) {
+            sendVoiceInputControl('hard_mute');
+        } else if (owner === MIC_LEASE.GAME) {
+            sendVoiceInputControl('game_takeover');
+        } else if (owner === MIC_LEASE.CORE && previousOwner === MIC_LEASE.HARD_MUTED) {
+            sendVoiceInputControl('hard_unmute');
+        } else if (owner === MIC_LEASE.CORE && previousOwner === MIC_LEASE.GAME) {
+            sendVoiceInputControl('game_release');
         }
         return owner;
     }
@@ -66,7 +89,15 @@
 
     function canUploadOrdinaryMicFrame() {
         if (refreshMicLease() !== MIC_LEASE.CORE) return false;
-        if (S.focusModeEnabled === true && S.isPlaying === true) return false;
+        const focusSuppressed = S.focusModeEnabled === true && S.isPlaying === true;
+        if (focusSuppressed !== backendFocusSuppressed) {
+            if (sendVoiceInputControl(
+                focusSuppressed ? 'focus_suppress' : 'focus_resume'
+            )) {
+                backendFocusSuppressed = focusSuppressed;
+            }
+        }
+        if (focusSuppressed) return false;
         return true;
     }
 
@@ -900,11 +931,24 @@
                 }
 
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: Array.from(audioData),
-                        input_type: 'audio'
-                    }));
+                    // 8-byte header: ASCII "NEKO" + little-endian sample rate，
+                    // 后续直接附 PCM16，避免每帧 JSON 数组的带宽与 GC 开销。
+                    const pcm16 = audioData instanceof Int16Array
+                        ? audioData
+                        : new Int16Array(audioData);
+                    const frame = new ArrayBuffer(8 + pcm16.byteLength);
+                    const header = new DataView(frame);
+                    header.setUint8(0, 0x4E);
+                    header.setUint8(1, 0x45);
+                    header.setUint8(2, 0x4B);
+                    header.setUint8(3, 0x4F);
+                    header.setUint32(4, targetSampleRate, true);
+                    new Uint8Array(frame, 8).set(new Uint8Array(
+                        pcm16.buffer,
+                        pcm16.byteOffset,
+                        pcm16.byteLength
+                    ));
+                    S.socket.send(frame);
                 }
             };
 
