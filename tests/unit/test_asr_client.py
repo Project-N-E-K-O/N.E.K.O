@@ -38,17 +38,12 @@ async def _scripted_worker(request_queue, response_queue, api_key, config):
                 await response_queue.put(
                     _AsrWorkerEvent(kind="partial", text="draft", **common)
                 )
-                if request.utterance_id == 1:
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text="   ", **common)
-                    )
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text="conflict", **common)
-                    )
-                else:
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text=" second ", **common)
-                    )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text=" first ", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text="conflict", **common)
+                )
             elif api_key == "error":
                 await response_queue.put(
                     _AsrWorkerEvent(
@@ -1103,6 +1098,44 @@ async def test_optional_partial_callback_receives_preview_without_history_write(
     assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     assert previews.empty()
     assert transcripts.empty()
+    await session.close()
+
+
+async def test_empty_final_is_delivered_as_turn_completion() -> None:
+    async def empty_worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            if request.kind == "commit":
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="final",
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=request.utterance_id,
+                        text="",
+                    )
+                )
+            elif request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
+
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=empty_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+
+    assert await asyncio.wait_for(transcripts.get(), 1) == ""
     await session.close()
 
 

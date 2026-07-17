@@ -341,6 +341,7 @@ def _make_routable_audio_manager(route_result: bool):
             pcm16=b"\x01\x00" * 160,
             sample_rate_hz=16_000,
             speech_probability=0.5,
+            rnnoise_available=True,
         )
     )
 
@@ -410,6 +411,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
             pcm16=b"\x02\x00" * 160,
             sample_rate_hz=16_000,
             speech_probability=0.8,
+            rnnoise_available=True,
         )
     )
 
@@ -423,6 +425,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         b"\x02\x00" * 160,
         sample_rate_hz=16_000,
         speech_probability=0.8,
+        rnnoise_available=True,
     )
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
@@ -458,6 +461,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
         speech_probability=0.5,
+        rnnoise_available=True,
     )
     mgr.start_session.assert_not_awaited()
     mgr.end_session.assert_not_awaited()

@@ -1582,6 +1582,8 @@ async def test_soniox_empty_fin_clears_pending_finalize(monkeypatch) -> None:
         _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=1)
     )
     await asyncio.wait_for(requests.join(), 1)
+    empty_final = await _next_event(responses, "final")
+    assert empty_final.text == ""
     await first.server_end()
     await _wait_until(lambda: len(connector.calls) == 2)
     assert not any(

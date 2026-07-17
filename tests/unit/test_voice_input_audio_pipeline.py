@@ -8,6 +8,7 @@ class _Processor:
         self.inputs: list[bytes] = []
         self.closed = False
         self.speech_probability = 0.75
+        self.rnnoise_available = True
 
     def process_chunk(self, pcm16: bytes) -> bytes:
         self.inputs.append(pcm16)
@@ -43,6 +44,7 @@ async def test_pipeline_owns_48k_processor_and_exposes_rnnoise_probability() -> 
     assert frame.pcm16 == b"\x02\x00" * 160
     assert frame.sample_rate_hz == 16_000
     assert frame.speech_probability == 0.75
+    assert frame.rnnoise_available is True
     await pipeline.close()
     assert processor.closed is True
 

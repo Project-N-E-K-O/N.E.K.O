@@ -67,6 +67,7 @@ class _VoiceTurnAdapter:
         max_endpoint_wait_seconds: float = 15.0,
         smart_turn_required: bool = False,
         smart_turn_warm_seconds: float = 60.0,
+        fallback_evaluation_interval_ms: int = 500,
     ) -> None:
         if queue_maxsize <= 0:
             raise ValueError("queue_maxsize must be positive")
@@ -80,6 +81,8 @@ class _VoiceTurnAdapter:
             )
         if smart_turn_warm_seconds <= 0:
             raise ValueError("smart_turn_warm_seconds must be positive")
+        if fallback_evaluation_interval_ms <= 0:
+            raise ValueError("fallback_evaluation_interval_ms must be positive")
         self._vad = vad
         self._gate = gate
         self._coordinator = coordinator
@@ -90,6 +93,7 @@ class _VoiceTurnAdapter:
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
         self._smart_turn_warm_seconds = smart_turn_warm_seconds
+        self._fallback_evaluation_interval_ms = fallback_evaluation_interval_ms
         self._consumer_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._fallback_task: asyncio.Task[None] | None = None
@@ -98,6 +102,9 @@ class _VoiceTurnAdapter:
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
         self._vad_available = False
+        self._vad_degraded = False
+        self._fallback_speech_started = False
+        self._fallback_audio_ms = 0
         self._semantic_degraded = False
         self._failed = False
         self._failure_future: asyncio.Future[_VoiceTurnFailure] | None = None
@@ -133,6 +140,10 @@ class _VoiceTurnAdapter:
     @property
     def failure(self) -> _VoiceTurnFailure | None:
         return self._failure
+
+    @property
+    def throttle_available(self) -> bool:
+        return not self._vad_degraded
 
     async def wait_idle(self) -> None:
         """Wait for the current detector batch and callbacks to finish."""
@@ -274,21 +285,36 @@ class _VoiceTurnAdapter:
         if item.identity != self._identity:
             return
         self._coordinator.push_audio(item.pcm16)
+        if self._vad_degraded:
+            await self._process_without_vad(item)
+            return
         if not self._vad_load_attempted:
             self._vad_load_attempted = True
             try:
                 self._vad_available = await asyncio.to_thread(self._vad.load)
             except Exception:
-                self._report_failure("runtime_error", "vad_load")
+                if self._smart_turn_required:
+                    self._vad_degraded = True
+                    await self._process_without_vad(item)
+                else:
+                    self._report_failure("runtime_error", "vad_load")
                 return
         if not self._vad_available:
-            self._report_failure("unavailable", "vad_load")
+            if self._smart_turn_required:
+                self._vad_degraded = True
+                await self._process_without_vad(item)
+            else:
+                self._report_failure("unavailable", "vad_load")
             return
 
         try:
             events = await asyncio.to_thread(self._gate.feed, item.pcm16)
         except Exception:
-            self._report_failure("runtime_error", "vad_feed")
+            if self._smart_turn_required:
+                self._vad_degraded = True
+                await self._process_without_vad(item)
+            else:
+                self._report_failure("runtime_error", "vad_feed")
             return
         for event in events:
             if self._on_activity is not None:
@@ -346,6 +372,42 @@ class _VoiceTurnAdapter:
         self._enter_semantic_degraded()
         self._schedule_fallback(item.identity, "semantic_degraded")
 
+    async def _process_without_vad(self, item: _AudioItem) -> None:
+        """Keep SmartTurn authoritative when Silero cannot provide candidates."""
+
+        started_now = False
+        if not self._fallback_speech_started:
+            self._fallback_speech_started = True
+            started_now = True
+            event = SpeechActivityEvent.SPEECH_STARTED
+            if self._on_activity is not None:
+                await self._on_activity(event)
+            await self._coordinator.on_activity_event(event)
+        self._fallback_audio_ms += len(item.pcm16) * 1_000 // (16_000 * 2)
+        if started_now:
+            return
+        if self._fallback_audio_ms < self._fallback_evaluation_interval_ms:
+            return
+        self._fallback_audio_ms = 0
+        result = await self._coordinator.evaluate_buffered()
+        if item.identity != self._identity:
+            return
+        status = getattr(result, "status", None)
+        decision = getattr(result, "decision", None)
+        if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
+            self._dispatch_commit(item.identity)
+            return
+        if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
+            return
+        if status is EvaluationStatus.STALE:
+            return
+        failure_kind = (
+            "unavailable"
+            if status is EvaluationStatus.UNAVAILABLE
+            else "runtime_error"
+        )
+        self._report_failure(failure_kind, "smart_turn")
+
     async def _process_reset(self, identity: _Identity) -> None:
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
@@ -353,6 +415,8 @@ class _VoiceTurnAdapter:
         await asyncio.to_thread(self._gate.reset)
         self._identity = identity
         self._commit_dispatched.clear()
+        self._fallback_speech_started = False
+        self._fallback_audio_ms = 0
         if self._smart_turn_pin_count == 0:
             self._schedule_smart_turn_unload(identity)
 

@@ -71,6 +71,7 @@ class AsrRuntimeMixin:
         self._asr_transport_task: asyncio.Task[None] | None = None
         self._asr_transport_lock = asyncio.Lock()
         self._asr_warm_expiry_task: asyncio.Task[None] | None = None
+        self._asr_final_watchdog_task: asyncio.Task[None] | None = None
         self._asr_pending_speech_confirmed = False
         self._asr_sealed_turn_token: VoiceTransportToken | None = None
         self._asr_audio_generation = 0
@@ -92,6 +93,7 @@ class AsrRuntimeMixin:
         self._voice_lease_requires_abort = False
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = set()
+        self._voice_input_resource_optimization_enabled = True
 
     def _ensure_asr_runtime_state(self) -> None:
         # A number of focused unit tests intentionally construct the manager via
@@ -284,6 +286,13 @@ class AsrRuntimeMixin:
         try:
             settings = await _core_facade.aload_global_conversation_settings()
             enabled = bool(settings.get("independentAsrEnabled", False))
+            optimization_value = settings.get(
+                "voice_input_resource_optimization_enabled",
+                settings.get("voiceInputResourceOptimizationEnabled", True),
+            )
+            self._voice_input_resource_optimization_enabled = (
+                optimization_value is not False
+            )
         except Exception:
             await self._send_asr_status(
                 "ASR_INDEPENDENT_FAILED", core_type or "unknown"
@@ -429,6 +438,9 @@ class AsrRuntimeMixin:
             self._asr_lifecycle = VoiceInputLifecycleController(
                 provider_policy=policy,
                 shadow_mode=False,
+                resource_optimization_enabled=(
+                    self._voice_input_resource_optimization_enabled
+                ),
             )
             self._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
             self._asr_lifecycle.metrics.connect_latency_ms = int(
@@ -466,6 +478,7 @@ class AsrRuntimeMixin:
             )
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = active_selection
+            self._schedule_transport_warm_expiry(epoch)
             await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
             await self._send_asr_status("ASR_INDEPENDENT_READY", provider)
         except asyncio.CancelledError:
@@ -522,7 +535,11 @@ class AsrRuntimeMixin:
         self._asr_turn_prepared = False
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
-        for task_name in ("_asr_transport_task", "_asr_warm_expiry_task"):
+        for task_name in (
+            "_asr_transport_task",
+            "_asr_warm_expiry_task",
+            "_asr_final_watchdog_task",
+        ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
             if task is not None and task is not asyncio.current_task():
@@ -555,6 +572,7 @@ class AsrRuntimeMixin:
         *,
         sample_rate_hz: int,
         speech_probability: float | None = None,
+        rnnoise_available: bool | None = None,
     ) -> bool:
         """Return True when this frame must not be sent to Omni."""
 
@@ -572,6 +590,7 @@ class AsrRuntimeMixin:
                 detector_result = await detector.feed(
                     pcm16,
                     speech_probability=speech_probability,
+                    rnnoise_available=rnnoise_available,
                 )
                 if not detector_result.endpointing_available:
                     await self._handle_independent_asr_error(
@@ -588,6 +607,18 @@ class AsrRuntimeMixin:
                             event,
                             self._asr_session_epoch,
                         )
+                if (
+                    not detector_result.throttle_available
+                    or not self._voice_input_resource_optimization_enabled
+                ) and lifecycle.snapshot.state in {
+                    VoiceLifecycleState.LOCAL_LISTEN,
+                    VoiceLifecycleState.WARM_IDLE,
+                    VoiceLifecycleState.DEEP_SLEEP,
+                }:
+                    await self._handle_independent_asr_activity(
+                        SpeechActivityEvent.SPEECH_STARTED,
+                        self._asr_session_epoch,
+                    )
             decision = (
                 lifecycle.accept_audio(pcm16, sample_rate_hz=sample_rate_hz)
                 if lifecycle is not None
@@ -816,7 +847,11 @@ class AsrRuntimeMixin:
         lease, self._asr_smart_turn_lease = self._asr_smart_turn_lease, None
         if lease is not None:
             await lease.release()
-        for task_name in ("_asr_transport_task", "_asr_warm_expiry_task"):
+        for task_name in (
+            "_asr_transport_task",
+            "_asr_warm_expiry_task",
+            "_asr_final_watchdog_task",
+        ):
             task = getattr(self, task_name, None)
             setattr(self, task_name, None)
             if task is not None and task is not asyncio.current_task():
@@ -846,7 +881,10 @@ class AsrRuntimeMixin:
         lifecycle = self._asr_lifecycle
         if lifecycle is not None:
             lifecycle.invalidate_transport()
-            if lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE:
+            if lifecycle.snapshot.state in {
+                VoiceLifecycleState.LOCAL_LISTEN,
+                VoiceLifecycleState.WARM_IDLE,
+            }:
                 lifecycle.transition(VoiceLifecycleEvent.WARM_EXPIRED)
                 await self._send_asr_lifecycle_state(VoiceLifecycleState.DEEP_SLEEP)
         if asr_session is not None:
@@ -868,7 +906,7 @@ class AsrRuntimeMixin:
         if task is not None:
             task.cancel()
         lifecycle = self._asr_lifecycle
-        if lifecycle is None:
+        if lifecycle is None or not self._voice_input_resource_optimization_enabled:
             return
         ttl_ms = lifecycle.provider_policy.warm_transport_ms
 
@@ -880,7 +918,11 @@ class AsrRuntimeMixin:
                 current = self._asr_lifecycle
                 if (
                     current is not None
-                    and current.snapshot.state is VoiceLifecycleState.WARM_IDLE
+                    and current.snapshot.state
+                    in {
+                        VoiceLifecycleState.LOCAL_LISTEN,
+                        VoiceLifecycleState.WARM_IDLE,
+                    }
                 ):
                     await self.close_transport_only()
             except asyncio.CancelledError:
@@ -889,6 +931,40 @@ class AsrRuntimeMixin:
         self._asr_warm_expiry_task = asyncio.create_task(
             expire(),
             name="independent-asr-warm-expiry",
+        )
+
+    def _schedule_provider_final_watchdog(
+        self,
+        epoch: int,
+        lifecycle: VoiceInputLifecycleController,
+        sealed_token: VoiceTransportToken,
+    ) -> None:
+        task = self._asr_final_watchdog_task
+        if task is not None:
+            task.cancel()
+        timeout_ms = lifecycle.provider_policy.provider_final_timeout_ms
+
+        async def expire() -> None:
+            try:
+                await asyncio.sleep(timeout_ms / 1_000)
+                if (
+                    epoch != self._asr_session_epoch
+                    or self._asr_lifecycle is not lifecycle
+                    or self._asr_sealed_turn_token != sealed_token
+                    or lifecycle.snapshot.state is not VoiceLifecycleState.DRAINING
+                ):
+                    return
+                await self._handle_independent_asr_error(
+                    epoch,
+                    self._asr_provider or "unknown",
+                    status_code="ASR_PROVIDER_FINAL_TIMEOUT",
+                )
+            except asyncio.CancelledError:
+                return
+
+        self._asr_final_watchdog_task = asyncio.create_task(
+            expire(),
+            name="independent-asr-provider-final-watchdog",
         )
 
     def _record_omni_microphone_audio(self, byte_count: int) -> None:
@@ -1289,6 +1365,11 @@ class AsrRuntimeMixin:
             lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
             self._asr_sealed_turn_token = self._capture_transport_token(lifecycle)
             self._asr_turn_endpointed_at = time.monotonic()
+            self._schedule_provider_final_watchdog(
+                epoch,
+                lifecycle,
+                self._asr_sealed_turn_token,
+            )
             await self._send_asr_lifecycle_state(VoiceLifecycleState.DRAINING)
 
     async def _activate_pending_independent_turn(self, epoch: int) -> None:
@@ -1399,13 +1480,14 @@ class AsrRuntimeMixin:
         provider: str,
     ) -> None:
         clean = str(text or "").strip()
-        if not clean or epoch != self._asr_session_epoch:
+        if epoch != self._asr_session_epoch:
             return
 
         lifecycle_ref: VoiceInputLifecycleController | None = None
         detector_ref: DetectorRuntime | None = None
         has_pending_turn = False
         envelope: TranscriptEnvelope | None = None
+        accepted_turn_token: VoiceTurnToken | None = None
         async with self._asr_final_lock:
             if epoch != self._asr_session_epoch:
                 return
@@ -1428,6 +1510,7 @@ class AsrRuntimeMixin:
                     (time.monotonic() - self._asr_turn_endpointed_at) * 1_000
                 )
             has_pending_turn = lifecycle_ref.has_pending_turn
+            accepted_turn_token = sealed_token.turn
             lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
             detector_ref = self._asr_detector
             self._asr_turn_prepared = False
@@ -1435,22 +1518,31 @@ class AsrRuntimeMixin:
             self._asr_sealed_turn_token = None
             self._asr_turn_endpointed_at = None
             self._asr_reserved_final_key = None
-            envelope = TranscriptEnvelope(
-                turn_token=sealed_token.turn,
-                core_session_ref=self.session,
-                provider=provider,
-                text=clean,
-            )
+            watchdog = self._asr_final_watchdog_task
+            self._asr_final_watchdog_task = None
+            if watchdog is not None and watchdog is not asyncio.current_task():
+                watchdog.cancel()
+            if clean:
+                envelope = TranscriptEnvelope(
+                    turn_token=sealed_token.turn,
+                    core_session_ref=self.session,
+                    provider=provider,
+                    text=clean,
+                )
+            else:
+                lifecycle_ref.metrics.false_wake_count += 1
+                self._asr_transcript_dispatcher.release(final_key)
             if not has_pending_turn:
                 self._schedule_transport_warm_expiry(epoch)
 
         assert lifecycle_ref is not None
-        assert envelope is not None
+        assert accepted_turn_token is not None
         lease = self._asr_smart_turn_lease
-        if lease is not None and lease.token == envelope.turn_token:
+        if lease is not None and lease.token == accepted_turn_token:
             self._asr_smart_turn_lease = None
             await lease.release()
-        self._asr_transcript_dispatcher.submit(envelope)
+        if envelope is not None:
+            self._asr_transcript_dispatcher.submit(envelope)
         await self._send_asr_lifecycle_state(VoiceLifecycleState.WARM_IDLE)
 
         if (
@@ -1557,6 +1649,12 @@ class AsrRuntimeMixin:
         self._asr_provider = None
         self._asr_required = True
         self._asr_route_mode = "blocked"
+        watchdog, self._asr_final_watchdog_task = (
+            self._asr_final_watchdog_task,
+            None,
+        )
+        if watchdog is not None and watchdog is not asyncio.current_task():
+            watchdog.cancel()
         await self._send_asr_lifecycle_state(VoiceLifecycleState.BLOCKED)
         lifecycle = self._asr_lifecycle
         self._asr_lifecycle = None

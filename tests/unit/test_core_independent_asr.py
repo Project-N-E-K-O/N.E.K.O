@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import time
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -396,6 +397,78 @@ async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
 
 
+async def test_empty_final_completes_turn_without_core_injection() -> None:
+    runtime = _Runtime()
+    await _start_and_seal_turn(runtime)
+
+    await runtime._handle_independent_asr_final(
+        "",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
+    assert runtime._asr_lifecycle.metrics.false_wake_count == 1
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {"is_ready": True, "close": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    policy = replace(
+        resolve_provider_policy("qwen", "manual"),
+        provider_final_timeout_ms=10,
+    )
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+
+    await _start_and_seal_turn(runtime)
+    await asyncio.sleep(0.03)
+
+    assert runtime._asr_route_mode == "blocked"
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> None:
+    runtime = _Runtime()
+    runtime._voice_input_resource_optimization_enabled = False
+    asr = type("Asr", (), {"is_ready": True, "stream_audio": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+        resource_optimization_enabled=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        rnnoise_available=False,
+    )
+
+    asr.stream_audio.assert_awaited_once()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_detector.endpointing_ready(
+        runtime._capture_turn_token(runtime._asr_lifecycle)
+    )
+    assert runtime._omni_mic_audio_bytes == 0
+
+
 async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -477,6 +550,29 @@ async def test_transport_only_close_enters_deep_sleep_without_closing_detector()
     assert runtime._asr_route_mode == "independent"
     asr.close.assert_awaited_once_with()
     detector.close.assert_not_awaited()
+
+
+async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    policy = replace(
+        resolve_provider_policy("qwen", "manual"),
+        warm_transport_ms=10,
+    )
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+
+    runtime._schedule_transport_warm_expiry(runtime._asr_session_epoch)
+    await asyncio.sleep(0.03)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP
+    asr.close.assert_awaited_once_with()
 
 
 async def test_deep_sleep_speech_reconnects_and_flushes_pending_audio() -> None:
@@ -935,6 +1031,10 @@ async def test_asr_backpressure_reports_specific_blocking_status() -> None:
 
 async def test_independent_asr_setting_is_persisted_as_a_boolean() -> None:
     assert "independentAsrEnabled" in preferences._ALLOWED_CONVERSATION_SETTINGS
+    assert (
+        "voice_input_resource_optimization_enabled"
+        in preferences._ALLOWED_CONVERSATION_SETTINGS
+    )
 
 
 async def test_start_uses_current_core_route_only_after_provider_ready(monkeypatch) -> None:

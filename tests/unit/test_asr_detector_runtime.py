@@ -133,6 +133,20 @@ async def test_rnnoise_soft_gate_skips_silero_until_probable_voice() -> None:
     assert speech.events == (SpeechActivityEvent.SPEECH_STARTED,)
 
 
+async def test_rnnoise_unavailable_does_not_look_like_zero_probability() -> None:
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(vad=_Vad(), gate=gate, rnnoise_onset_probability=0.4)
+
+    result = await detector.feed(
+        b"\x01\x00",
+        speech_probability=0.0,
+        rnnoise_available=False,
+    )
+
+    assert gate.inputs == [b"\x01\x00"]
+    assert result.events == (SpeechActivityEvent.SPEECH_STARTED,)
+
+
 async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> None:
     gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
     detector = DetectorRuntime(vad=_Vad(), gate=gate)
@@ -233,6 +247,41 @@ async def test_smart_turn_prepare_failure_never_becomes_ready() -> None:
     assert await detector.prepare_endpointing(token) is None
     assert detector.smart_turn_readiness is SmartTurnReadiness.FAILED
     assert detector.endpointing_ready(token) is False
+    await detector.close()
+
+
+async def test_silero_unavailable_keeps_periodic_smart_turn_authority() -> None:
+    completed = asyncio.Event()
+    detector = DetectorRuntime(
+        vad=_Vad(available=False),
+        gate=_Gate(),
+        provider_policy=AsrProviderPolicy(
+            transport="streaming",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=None,
+            warm_transport_ms=25_000,
+            replay_policy="preconnect_only",
+        ),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=lambda: completed.set() or asyncio.sleep(0),
+    )
+    token = VoiceTurnToken(
+        VoiceIngressToken(1, "socket", 1, 1, 1),
+        turn_id=1,
+    )
+    lease = await detector.prepare_endpointing(token)
+    assert lease is not None
+
+    result = await detector.feed(b"\x01\x00" * 8_000)
+    await detector.feed(b"\x02\x00" * 160)
+    await asyncio.wait_for(completed.wait(), 1)
+
+    assert result.throttle_available is False
+    assert result.endpointing_available is True
+    assert result.events == (SpeechActivityEvent.SPEECH_STARTED,)
+    assert detector.endpointing_ready(token) is True
+    await lease.release()
     await detector.close()
 
 

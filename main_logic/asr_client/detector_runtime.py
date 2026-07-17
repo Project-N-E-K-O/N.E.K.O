@@ -210,6 +210,7 @@ class DetectorRuntime:
         pcm16: bytes,
         *,
         speech_probability: float | None = None,
+        rnnoise_available: bool | None = None,
     ) -> DetectorFeedResult:
         if not isinstance(pcm16, bytes) or len(pcm16) % 2:
             raise ValueError("DetectorRuntime requires complete PCM16 bytes")
@@ -217,11 +218,14 @@ class DetectorRuntime:
             return DetectorFeedResult((), self._available)
         if speech_probability is not None and not 0.0 <= speech_probability <= 1.0:
             raise ValueError("speech_probability must be within [0, 1]")
+        if rnnoise_available is None:
+            rnnoise_available = speech_probability is not None
         async with self._lock:
             if self._closed or not self._available:
                 return DetectorFeedResult((), False)
             if (
-                speech_probability is not None
+                rnnoise_available
+                and speech_probability is not None
                 and not self._speech_active
                 and speech_probability < self._rnnoise_onset_probability
             ):
@@ -264,7 +268,7 @@ class DetectorRuntime:
                     for event in events
                 ):
                     self._speech_active = True
-                return DetectorFeedResult(events, True)
+                return DetectorFeedResult(events, adapter.throttle_available)
             if not self._load_attempted:
                 self._load_attempted = True
                 try:

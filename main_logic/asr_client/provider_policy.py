@@ -21,6 +21,7 @@ class AsrProviderPolicy:
     max_segment_ms: int | None
     warm_transport_ms: int
     replay_policy: AsrReplayPolicy
+    provider_final_timeout_ms: int = 10_000
 
     def __post_init__(self) -> None:
         if self.max_segment_ms is not None and self.max_segment_ms <= 0:
@@ -29,6 +30,8 @@ class AsrProviderPolicy:
             raise ValueError("warm_transport_ms must not be negative")
         if self.transport == "segmented" and not self.smart_turn_required:
             raise ValueError("segmented ASR must require SmartTurn")
+        if self.provider_final_timeout_ms <= 0:
+            raise ValueError("provider_final_timeout_ms must be positive")
 
 
 def resolve_provider_policy(
