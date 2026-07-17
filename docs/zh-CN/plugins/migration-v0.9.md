@@ -1,6 +1,6 @@
 # 插件 SDK v0.9 迁移指南
 
-本文是插件系统接口收敛后的迁移清单。部分接口已经直接移除；剩余的 `push_message` v1 兼容参数将在 v0.9 移除。
+为保留旧链接，本页继续使用历史路径名。它现在是一份当前迁移清单：部分接口已经移除，`push_message` v1 兼容参数在当前源码中仍会转换并发出弃用警告。不要从文件名推断确切移除版本。
 
 ## 一览
 
@@ -11,9 +11,9 @@
 | Bus 的 `where_*` 与列表集合运算 | 已移除 | 组合 `get()`、`filter()` / `where()`、`sort()`、`limit()`、`watch()` |
 | `get_message_plane_all` | 已移除 | 使用有界的 `await self.bus.messages.get(...)` 查询 |
 | Bus 增量/本地 fast path | 已移除 | 使用标准的、有界且可重放的 read/watch 管线 |
-| 高层 `self.memory` / SDK `MemoryClient` | 已移除 | 使用 `self.bus.memory.get(...)` 或 `await self.ctx.query_memory(...)` |
+| 高层 `self.memory` / SDK `MemoryClient` | 已移除 | `self.bus.memory.get(...)` 仅用于读取近期的内存用户上下文记录；插件 SDK 暂无持久记忆语义召回的替代接口 |
 | Extension 插件类型、`[plugin.host]`、`plugin.sdk.extension` | 已移除，不提供兼容层 | 将 Router 合并进所属普通 Plugin，或把该包改造成独立 Plugin |
-| `push_message` v1 字段 | 已弃用，v0.9 移除 | 使用 `parts`、`visibility`、`ai_behavior` |
+| `push_message` v1 字段 | 已弃用，但当前源码仍会转换 | 使用 `parts`、`visibility`、`ai_behavior`；不要依赖确切移除版本 |
 
 ## 包类型
 
@@ -80,21 +80,18 @@ watcher.start()
 
 `get_message_plane_all` 原本按页读取 Message Plane 的 `messages` store，并受 `max_items` 上限约束。由于增量 `after_seq` 传输路径已经删除，它没有一对一替代接口。请改用有界的 `await self.bus.messages.get(max_count=..., ...)`，再按需使用结构化过滤、`sort(by=...)` 与 `limit()`。
 
-已删除的 Bus fast path 是加速分支，例如 BusList `fast_mode`、增量 reload 游标、本地消息缓存和 revision/delta 快捷路径。`watch()` 所需的 replay plan 与 trace 仍然保留；`get()` / 结构化 `filter(field=value)` / `sort(by=...)` / `limit()` 构成可重放链。它们与旧的 `push_message(fast_mode=...)` 参数不是同一条路径。后者属于 v1 兼容接口，也将在 v0.9 移除；v2 改走标准的逐条宿主投递路径，因此移除旧批处理/背压优化时应重新压测高频生产者。
+已删除的 Bus fast path 是加速分支，例如 BusList `fast_mode`、增量 reload 游标、本地消息缓存和 revision/delta 快捷路径。`watch()` 所需的 replay plan 与 trace 仍然保留；`get()` / 结构化 `filter(field=value)` / `sort(by=...)` / `limit()` 构成可重放链。它们与旧的 `push_message(fast_mode=...)` 参数不是同一条路径。后者属于已弃用的 v1 兼容接口；v2 改走标准的逐条宿主投递路径，因此真正移除旧批处理/背压优化时应重新压测高频生产者。
 
 ## Memory
 
-旧 SDK `MemoryClient` 把记录读取和语义检索混在一起。现在应明确选择操作：
+旧 SDK `MemoryClient` 混淆了两种不同概念。当前受支持的替代能力是读取宿主的近期用户上下文快照：
 
 ```python
 # 读取一个 bucket 的最近记录
 records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# 语义检索
-matches = await self.ctx.query_memory("default", "用户偏好是什么？")
 ```
 
-通过 `self.bus.memory` 读取 memory 记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及 SDK/runtime 的 `MemoryClient` 门面。
+这些记录是有容量上限、只驻留内存且 TTL 为一小时的用户话语事件，并不是角色持久化的事实、反思或人格。通过 `self.bus.memory` 读取记录和使用其类型化记录的能力仍然保留；删除的是高层 `self.memory` 属性以及 SDK/runtime 的 `MemoryClient` 门面。`ctx.query_memory(...)` 仍为兼容而存在，但它访问的是已弃用的占位端点，不提供语义召回。目前公开插件 SDK 没有结构化的持久记忆召回接口。
 
 ## `push_message` v2
 

@@ -50,6 +50,28 @@ def test_storage_location_locale_namespace_matches_used_keys():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("locale_name", "expected_cleanup", "expected_defer"),
+    (
+        ("en.json", "Clean up old data", "Not now"),
+        ("es.json", "Limpiar datos antiguos", "Ahora no"),
+        ("ja.json", "古いデータを削除", "今はしない"),
+        ("ko.json", "이전 데이터 정리", "나중에"),
+        ("pt.json", "Limpar dados antigos", "Agora não"),
+        ("ru.json", "Очистить старые данные", "Не сейчас"),
+        ("zh-CN.json", "清理旧数据", "暂时不处理"),
+        ("zh-TW.json", "清理舊資料", "暫時不處理"),
+    ),
+)
+def test_storage_location_completion_actions_match_locale(locale_name, expected_cleanup, expected_defer):
+    payload = json.loads((LOCALES_DIR / locale_name).read_text(encoding="utf-8"))
+    storage = payload.get("storage", {})
+
+    assert storage.get("cleanupRetainedRoot") == expected_cleanup
+    assert storage.get("deferRetainedRootCleanup") == expected_defer
+
+
+@pytest.mark.unit
 def test_storage_location_cloudsave_local_state_error_code_is_translated():
     source = STORAGE_LOCATION_JS.read_text(encoding="utf-8")
 

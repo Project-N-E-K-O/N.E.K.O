@@ -49,18 +49,33 @@ services:
 
     # 卷挂载配置
     volumes:
-      # 1. 持久化配置目录
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      # 1. 持久化配置目录（XDG_DATA_HOME 规范路径）
+      - ./N.E.K.O:/home/neko/.local/share/N.E.K.O
 
       # 2. 日志目录
       - ./logs:/app/logs
 
       # 3. SSL证书目录
-      - ./ssl:/root/ssl
+      - ./ssl:/home/neko/ssl
+
+    # 环境变量
+    environment:
+      # OpenFang A2A 监听端口（容器内部使用 127.0.0.1，无需对外暴露）
+      - OPENFANG_PORT=50051
 
     # 网络配置
     networks:
       - neko-network
+
+  # ============================================================================
+  # OpenFang（专属桌面）— Rust A2A agent daemon
+  # 已编译至 neko-main 容器镜像中（openfang-builder 构建阶段）
+  # 自动在容器内以 127.0.0.1:50051 启动，无需额外服务配置
+  # 若需从宿主机访问 OpenFang Web 控制台，取消下面注释暴露端口：
+  # ports:
+  #   - "4200:4200"
+  # 并设置环境变量 OPENFANG_LISTEN=0.0.0.0:4200
+  # ============================================================================
 
 # 网络定义
 networks:

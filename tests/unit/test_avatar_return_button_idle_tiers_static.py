@@ -1434,12 +1434,14 @@ def test_cat1_edge_peek_only_applies_after_drag_release():
     start_pair_move_block = _source_slice_between(
         source,
         "function _startNekoIdleCat1PairMove(button)",
-        "function _scheduleNekoIdleCat1PairMove(button)",
+        "function _refreshNekoIdleCat1Observer",
         "cat1 pair move start",
     )
     _assert_source_order(
         start_pair_move_block,
         "cat1 edge peek blocks already queued pair move",
+        "const isCatMindRun = catMindRunOptions.source === 'cat_mind';",
+        "if (!isCatMindRun) return false;",
         "const state = _getNekoIdleCat1Journey(button);",
         "if (_isNekoIdleCat1EdgePeekActive(button)) {",
         "_cancelNekoIdleCat1Journey(button, { resetArt: false, preserveObservers: true });",
@@ -2687,7 +2689,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     sleep_play_block = _source_slice_between(
         source,
         "function _playNekoIdleSleepSound(tier, token)",
-        "function _scheduleNekoIdleSleepSoundInterval(tier, intervalStartedAt)",
+        "function _syncNekoIdleSleepSoundForTier(tier)",
         "sleep sound playback",
     )
     _assert_source_order(
@@ -2702,7 +2704,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     ambient_play_block = _source_slice_between(
         source,
         "function _playNekoIdleCat1AmbientSound(token)",
-        "function _scheduleNekoIdleCat1AmbientSoundInterval(intervalStartedAt)",
+        "function _stopNekoIdleCat1AmbientSound(options = {})",
         "cat1 ambient sound playback",
     )
     _assert_source_order(
@@ -2953,7 +2955,7 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
         "sleep sound sync block",
     )
     assert "if (!isNekoIdleCatAudioEnabled()) {" in sleep_sync_block
-    assert "_stopNekoIdleSleepSound();" in sleep_sync_block
+    assert "_stopNekoIdleSleepSound({ reason: 'audio-disabled' });" in sleep_sync_block
     assert "[_NEKO_IDLE_TIER_CAT2]" in source
     assert "[_NEKO_IDLE_TIER_CAT3]" in source
     assert "srcs: Object.freeze([" in source
@@ -2967,10 +2969,9 @@ def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
     assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
     assert "audio.__nekoIdlePlayStarted = playStarted;" in source
     assert "audio.dispatchEvent(new Event('error'));" in source
-    assert "Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS" in source
-    assert "_scheduleNekoIdleSleepSoundInterval(tier, startedAt + _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS)" in source
+    assert "function _scheduleNekoIdleSleepSoundInterval" not in source
     assert "_syncNekoIdleSleepSoundForTier(detail.tier)" in source
-    assert "_stopNekoIdleSleepSoundAudio()" in source
+    assert "_stopNekoIdleSleepSoundAudio({ reason: 'tier-change' });" in source
     assert "_clearNekoIdleSleepSoundTimer()" in source
 
 
@@ -2990,9 +2991,8 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3'" in source
     assert "_NEKO_IDLE_CAT1_RAPID_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-funny.mp3'" in source
     assert "const _nekoIdleCat1RapidDragSoundState = {" in source
-    assert "Math.random() * _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS" in source
+    assert "function _scheduleNekoIdleCat1AmbientSoundInterval" not in source
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
-    assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
     assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
     assert "_playNekoIdleCat1SoundReaction()" in source
     assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
@@ -3026,7 +3026,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
         "cat1 ambient sync block",
     )
     assert "if (!isNekoIdleCatAudioEnabled()) {" in ambient_sync_block
-    assert "_stopNekoIdleCat1AmbientSound();" in ambient_sync_block
+    assert "_stopNekoIdleCat1AmbientSound({ reason: 'audio-disabled' });" in ambient_sync_block
 
     rapid_drag_sound_block = _source_slice_between(
         source,
@@ -3065,8 +3065,8 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
-    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = -5' in source
-    assert '_NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35' in source
+    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = 24' in source
+    assert '_NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0' in source
     assert 'function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)' in source
     assert 'if (facingRight) return 0;' in source
     assert 'chatRect.right + profile.target.gapPx - approachOffsetPx' in source
@@ -3077,7 +3077,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX' in source
     assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700' in source
-    assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 180' in source
     assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC = 1100' in source
@@ -3146,7 +3146,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'pairMoveTimer' in source
     assert 'pairMoveFrame' in source
     assert 'pairMovePlan' in source
-    assert '_scheduleNekoIdleCat1PairMove' in source
+    assert 'function _scheduleNekoIdleCat1PairMove' not in source
     assert '_startNekoIdleCat1PairMove' in source
     assert '_stepNekoIdleCat1PairMove' in source
     assert '_finishNekoIdleCat1PairMove' in source
@@ -3203,7 +3203,8 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_applyNekoIdleCat1PairMovePlan(plan, progress)' in source
     assert 'plan.catStartTop + offsetY' in source
     assert 'plan.chatStartScreenTop + offsetY' in source
-    assert 'if (!_startNekoIdleCat1PairMove(button))' in source
+    assert "const isCatMindRun = catMindRunOptions.source === 'cat_mind';" in source
+    assert "if (!isCatMindRun) return false;" in source
     assert '_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)' in source
     assert '_setNekoIdleReturnArtSource(art, state.profile.assets.walking()' in source
     assert 'state.substate === profile.idleSubstate && state.actionSettled' in source

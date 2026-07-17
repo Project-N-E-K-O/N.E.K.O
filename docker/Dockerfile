@@ -34,7 +34,28 @@ RUN npm ci && npm run build-only
 WORKDIR /src/frontend/react-neko-chat
 RUN npm ci && npm run build
 
-# --- Stage 2: Runtime ---
+# --- Stage 2: Download OpenFang (pre-built Rust A2A agent daemon binary) ---
+FROM alpine:latest AS openfang-downloader
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG TARGETARCH
+
+# 可覆盖 OpenFang 版本标签（默认 v0.6.9）
+ARG OPENFANG_TAG=v0.6.9
+
+# 根据 Docker 架构映射到 Rust target triple，下载对应预编译二进制
+RUN apk add --no-cache curl ca-certificates && \
+    case "$TARGETARCH" in \
+      amd64) triple="x86_64-unknown-linux-gnu" ;; \
+      arm64) triple="aarch64-unknown-linux-gnu" ;; \
+      *) echo "Unsupported arch: $TARGETARCH"; exit 1 ;; \
+    esac && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    curl -fsSL "https://github.com/RightNow-AI/openfang/releases/download/${OPENFANG_TAG}/openfang-${triple}.tar.gz" | tar xz -C /usr/local/bin openfang && \
+    chmod +x /usr/local/bin/openfang
+
+# --- Stage 3: Runtime ---
 FROM debian:bookworm
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
@@ -91,9 +112,9 @@ RUN groupadd -r nginx && \
     mkdir -p /var/log/nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
     groupadd -r neko && \
-    useradd -r -g neko -d /app -s /bin/bash neko && \
-    mkdir -p /app/logs /app/N.E.K.O /root/ssl /opt/ms-playwright && \
-    chown -R neko:neko /app /opt/ms-playwright
+    useradd -r -g neko -d /home/neko -s /bin/bash neko && \
+    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
+    chown -R neko:neko /home/neko /app /opt/ms-playwright
 
 # 3. Create Python symlinks
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
@@ -158,7 +179,10 @@ RUN cd /app && \
 COPY --from=frontend-builder /src/frontend/plugin-manager/dist /app/frontend/plugin-manager/dist
 COPY --from=frontend-builder /src/static/react/neko-chat /app/static/react/neko-chat
 
-# 7b. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
+# 7b. Copy OpenFang binary (Rust A2A agent daemon)
+COPY --from=openfang-downloader /usr/local/bin/openfang /usr/local/bin/openfang
+
+# 7c. Extract yui-origin Live2D model (assets/yui-origin.tar.gz → static/yui-origin/)
 RUN cd /app && tar -xzmf assets/yui-origin.tar.gz -C static/ && \
     test -f static/yui-origin/yui-origin.moc3
 

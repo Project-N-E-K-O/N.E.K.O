@@ -1,115 +1,53 @@
 # Docker Deployment
 
-## Quick start
+The maintained Compose file is `docker/docker-compose.yml`. It runs N.E.K.O. behind Nginx and publishes HTTP on host port 48911 and HTTPS on 48912.
+
+## Start a published image
 
 ```bash
-# Clone the repository
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O/docker
-
-# Configure environment
 cp env.template .env
-# Edit .env with your API keys
-
-# Start
-docker-compose up -d
+# Review .env and keep only values supported by current code.
+docker compose up -d
 ```
 
-Access the Web UI at `http://localhost:48911`.
+Open `http://127.0.0.1:48911`. The checked-out Compose file defines the registry/proxy default. Pin `NEKO_IMAGE` or `NEKO_IMAGE_VERSION` for reproducibility. `latest` is the standard-image alias; `latest-full` is the full-image alias.
 
-## docker-compose.yml
+::: warning Initial configuration
+The entrypoint generates `/app/config/core_config.json` only when absent or when `NEKO_FORCE_ENV_UPDATE` is set. API environment variables are initialization inputs, not a live universal override. Confirm effective values in the Web UI.
+:::
 
-```yaml
-version: '3.8'
+## Persistent mounts
 
-services:
-  neko-main:
-    # Image version is selectable via env vars (latest = newest release)
-    image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
-    container_name: neko
-    restart: unless-stopped
-    ports:
-      - "48911:80"    # HTTP
-      - "48912:443"   # HTTPS
-    volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
-      - ./logs:/app/logs
-      - ./ssl:/root/ssl
-    networks:
-      - neko-network
+| Host path | Container path | Purpose |
+| --- | --- | --- |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | User configuration, characters, memories, feature data |
+| `./logs` | `/app/logs` | Logs |
+| `./ssl` | `/home/neko/ssl` | TLS certificate/key |
 
-networks:
-  neko-network:
-    driver: bridge
-```
+Back up the first mount before upgrades. Never expose the data or private-key directories through a web server.
 
-Configuration is supplied through the `.env` file you created above (`cp env.template .env`); `entrypoint.sh` reads the `NEKO_*` variables at startup. See [Environment variables](#environment-variables) for the full list.
+## Build locally
 
-## Environment variables
-
-Create a `.env` file from the template:
+The Compose service declares `image:`, not `build:`. Build from the repository root explicitly:
 
 ```bash
-# Required
-NEKO_CORE_API_KEY=sk-your-key-here
-NEKO_CORE_API=qwen
-
-# Optional
-NEKO_ASSIST_API=qwen
-NEKO_ASSIST_API_KEY_QWEN=sk-your-assist-key
+docker build -f docker/Dockerfile -t neko-local:standard .
+docker build -f docker/Dockerfile.full -t neko-local:full .
 ```
 
-See [Environment Variables](/config/environment-vars) for the full reference.
+Set `NEKO_IMAGE=neko-local:standard` or `neko-local:full` before `docker compose up`. `docker compose build` does nothing useful here unless a reviewed `build:` definition is added.
 
-## Nginx proxy
+## Proxy and diagnostics
 
-The Docker container includes Nginx as a reverse proxy:
-
-- Proxies to the main server on the internal port
-- WebSocket support for real-time chat
-- Static file caching (30-day expiry)
-- Health check at `/health`
-
-## Data persistence
-
-| Mount | Container path | Purpose |
-|-------|----------------|---------|
-| `./N.E.K.O` | `/root/Documents/N.E.K.O` | Config, characters, memories |
-| `./logs` | `/app/logs` | Application logs |
-| `./ssl` | `/root/ssl` | SSL certificates |
-
-## Provider quick start
-
-**Qwen (recommended):**
-```bash
-NEKO_CORE_API_KEY=sk-xxxxx
-NEKO_CORE_API=qwen
-```
-
-**Free (no key needed):**
-```bash
-NEKO_CORE_API_KEY=free-access
-NEKO_CORE_API=free
-```
-
-**OpenAI:**
-```bash
-NEKO_CORE_API_KEY=sk-xxxxx
-NEKO_CORE_API=openai
-```
-
-## Troubleshooting
+The entrypoint starts the Python services and container-local OpenFang, then configures Nginx and WebSocket routes. Its generated certificate is self-signed, not public-trust TLS. Supply a managed certificate or terminate TLS at a trusted proxy for real remote deployment.
 
 ```bash
-# View logs
+docker compose ps
 docker logs neko
-
-# Enter container
 docker exec -it neko bash
-
-# Check config
-docker exec neko cat /root/Documents/N.E.K.O/core_config.json
-
-# Check environment
-docker exec neko env | grep NEKO_
+curl -f http://127.0.0.1:48911/health
 ```
+
+See [Environment Variables](/config/environment-vars) for variables verified in current code.

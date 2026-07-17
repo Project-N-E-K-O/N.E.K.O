@@ -79,6 +79,7 @@ def recent_danmaku_topic_candidates(selector: Any) -> list[dict[str, Any]]:
             continue
         candidate = {
             "source": "recent_danmaku",
+            "privacy_classification": "viewer_derived",
             "key": f"danmaku:{compact}",
             "title": compact,
             "hint": "Anchor this recent danmaku first, then make one small reply hook without pretending a new viewer spoke.",

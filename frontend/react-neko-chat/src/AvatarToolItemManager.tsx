@@ -109,6 +109,15 @@ function getToolLabel(tool: AvatarToolItem): string {
   return i18n(tool.labelKey, tool.labelFallback);
 }
 
+function getToolImageStyle(tool: AvatarToolItem): CSSProperties | undefined {
+  const visual = tool.managerIconVisual;
+  if (!visual) return undefined;
+  return {
+    transform: `scale(${visual.scale}) translate(${visual.translateXPercent}%, ${visual.translateYPercent}%)`,
+    transformOrigin: 'center center',
+  };
+}
+
 function createSlots(toolIds: AvatarToolId[]): AvatarToolSlotValue[] {
   const sanitized = sanitizeAvatarToolIds(toolIds);
   return Array.from({ length: MAX_ACTIVE_AVATAR_TOOLS }, (_, index) => sanitized[index] ?? null);
@@ -716,8 +725,9 @@ export default function AvatarToolItemManager({
                       onPointerCancel={cancelDrag}
                     >
                       <img
-                        className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                        className="avatar-tool-manager-tool-image"
                         src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                        style={getToolImageStyle(tool)}
                         alt=""
                         aria-hidden="true"
                       />
@@ -764,8 +774,9 @@ export default function AvatarToolItemManager({
                     onPointerCancel={cancelDrag}
                   >
                     <img
-                      className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                      className="avatar-tool-manager-tool-image"
                       src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                      style={getToolImageStyle(tool)}
                       alt=""
                       aria-hidden="true"
                     />
@@ -811,8 +822,8 @@ export default function AvatarToolItemManager({
           }}
         >
           <img
-            className={`avatar-tool-icon avatar-tool-icon-${dragTool.id}`}
             src={withAvatarToolAssetVersion(dragTool.iconImagePath)}
+            style={getToolImageStyle(dragTool)}
             alt=""
           />
         </div>

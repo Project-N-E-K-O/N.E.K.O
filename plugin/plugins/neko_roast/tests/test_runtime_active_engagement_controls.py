@@ -315,6 +315,19 @@ async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: R
     assert any(step.id == "active_engagement" and step.status == "ok" for step in result.steps)
     assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
 
+
+@pytest.mark.asyncio
+async def test_active_engagement_control_blocks_manual_and_automatic_triggers(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.active_engagement_enabled = False
+
+    result = await runtime.trigger_active_engagement()
+
+    assert result.status == "skipped"
+    assert result.reason == "active_engagement.disabled"
+    assert await runtime.maybe_trigger_active_engagement() is None
+
 @pytest.mark.asyncio
 async def test_active_engagement_valid_recent_danmaku_clears_prior_skip_reason(
     runtime: RoastRuntime,

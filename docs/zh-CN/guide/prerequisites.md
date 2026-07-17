@@ -1,34 +1,16 @@
-# 前置要求
+# 前置条件
 
-## 必需
+| 工具 | 源码开发要求 | 来源 |
+| --- | --- | --- |
+| Python | 必须为 3.11.x | `pyproject.toml` |
+| uv | 当前兼容版本 | `uv.lock` 与 workflow |
+| Git | 仍受维护的版本 | 仓库操作 |
+| Node.js + npm | plugin manager 要求 `^20.19.0 || >=22.12.0` | package.json |
 
-| 要求 | 版本 | 备注 |
-|------|------|------|
-| Python | 3.11.x | 必须为 3.11（不支持 3.12+） |
-| uv | 最新版 | Python 包管理器（[安装](https://docs.astral.sh/uv/getting-started/installation/)） |
-| Git | 2.x+ | 用于克隆仓库 |
+Python 依赖使用 `uv sync`；不要把手工 `pip install -r requirements.txt` 当项目安装流程。前端和文档使用已提交 lockfile 与 `npm ci`。
 
-## 可选
+按功能还可能需要 Docker Engine + Compose、Steam 环境、平台打包依赖、Playwright Chromium，或真实调用外部 Provider 的测试密钥。
 
-| 要求 | 使用场景 |
-|------|---------|
-| Node.js 20+ | 前端开发或构建文档 |
-| Docker | 容器化部署 |
-| Steam 客户端 | Steam 创意工坊功能 |
+当前 Provider 数据可能有免费路由，但可用性与限制属于外部状态，不是开发前置条件或本站承诺。
 
-## API 密钥
-
-N.E.K.O. 至少需要一个 AI API 提供商。你可以使用**免费**方案（无需密钥）或配置自己的密钥：
-
-| 提供商 | 可获得的服务 | 注册地址 |
-|--------|------------|---------|
-| 免费（内置） | 基础语音聊天 | 无需注册 |
-| Qwen（推荐） | 全部功能，免费额度充足 | [阿里云百炼](https://bailian.console.aliyun.com/) |
-| OpenAI | 全部功能 | [OpenAI Platform](https://platform.openai.com/) |
-| GLM | 有免费额度 | [智谱开放平台](https://open.bigmodel.cn/) |
-| Step | 语音优化 | [阶跃星辰](https://platform.stepfun.com/) |
-| Gemini | Google 的模型 | [Google AI Studio](https://aistudio.google.com/) |
-
-::: tip
-阿里云新用户完成实名认证后可获得大量免费额度，推荐大多数开发者使用。
-:::
+Windows 建议开启长路径，检出目录必须可写。模型准备、前端构建、测试和打包都会生成本地产物。

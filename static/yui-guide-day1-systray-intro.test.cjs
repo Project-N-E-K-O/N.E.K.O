@@ -122,7 +122,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
     /box-shadow/
   );
   assert.match(yuiGuideCssSource, /@media \(max-width: 620px\)/);
-  assert.match(launcherSpecSource, /add_data\('static\/assets', 'static\/assets'\)/);
+  assert.match(launcherSpecSource, /add_data\('static', 'static'\)/);
 
   const zhCn = JSON.parse(zhCnLocaleSource);
   assert.equal(zhCn.tutorial.systray.location.title, '📍 托盘图标位置');
@@ -133,7 +133,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.equal(zhCn.tutorial.systray.location.alt, '系统托盘位置示意图');
   assert.equal(zhCn.tutorial.systray.menu.title, '📋 托盘菜单');
   assert.equal(zhCn.tutorial.systray.resetPosition, '重置角色位置');
-  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-07-08-model-type-3d-label-i18n'/);
+  assert.match(i18nBootstrapSource, /LOCALE_VERSION = '2026-07-17-external-import-eta-i18n'/);
 
   for (const [code, source] of Object.entries(localeSources)) {
     const locale = JSON.parse(source);

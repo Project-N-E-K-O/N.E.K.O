@@ -50,6 +50,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import socket
@@ -63,6 +64,7 @@ from urllib.parse import parse_qs, urlparse
 
 # set_player_name 的“无请求”哨兵（None 是合法值=清除昵称，故需独立哨兵）
 _UNSET = object()
+_ACTION_HEADER = "X-Neko-Warthunder-Action"
 
 from dataclasses import asdict
 
@@ -643,8 +645,29 @@ class _Handler(BaseHTTPRequestHandler):
         return self.server.service  # type: ignore[attr-defined]
 
     def _cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        origin = str(self.headers.get("Origin") or "").strip()
+        allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        if origin and origin in allowed_origins:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", _ACTION_HEADER)
+            self.send_header("Vary", "Origin")
+
+    def _host_allowed(self) -> bool:
+        bind_host = str(getattr(self.server, "bind_host", "")).strip().lower()
+        if not _is_loopback_host(bind_host):
+            return True
+        try:
+            request_host = urlparse(f"//{self.headers.get('Host', '')}").hostname or ""
+        except ValueError:
+            return False
+        return _is_loopback_host(request_host)
+
+    def _action_allowed(self) -> bool:
+        if self.headers.get(_ACTION_HEADER) == "1":
+            return True
+        self._send_json({"error": "action_header_required"}, 403)
+        return False
 
     def _send_json(self, obj: Any, code: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -665,12 +688,23 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_OPTIONS(self) -> None:
+        if not self._host_allowed():
+            self._send_json({"error": "host_not_allowed"}, 403)
+            return
+        origin = str(self.headers.get("Origin") or "").strip()
+        allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        if origin and origin not in allowed_origins:
+            self._send_json({"error": "origin_not_allowed"}, 403)
+            return
         self.send_response(204)
         self._cors()
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self) -> None:
+        if not self._host_allowed():
+            self._send_json({"error": "host_not_allowed"}, 403)
+            return
         path = urlparse(self.path).path.rstrip("/") or "/"
 
         if path in ("/", "/health", "/api/health"):
@@ -696,6 +730,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/identity":
             # 查看/设置“自己是谁”。?name=昵称 设手动昵称(权威)；?clear=1 清除回退自动。
             q = parse_qs(urlparse(self.path).query)
+            if ("clear" in q or q.get("name")) and not self._action_allowed():
+                return
             requested: Any = "(unchanged)"
             if "clear" in q:
                 self.service.set_player_name(None)
@@ -728,6 +764,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/record":
             # 调试开关：?on=1 开始转存 / ?on=0 停止 / 无参=查状态
             q = parse_qs(urlparse(self.path).query)
+            if "on" in q and not self._action_allowed():
+                return
             rec = self.service.recorder
             if "on" in q:
                 want = q["on"][0].strip().lower() in ("1", "true", "yes", "on")
@@ -780,14 +818,29 @@ class _Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 
-def create_http_server(host: str, port: int):
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or "").strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def create_http_server(host: str, port: int, *, cors_origins: list[str] | tuple[str, ...] = ()):
     server_class = ThreadingHTTPServer
     if ":" in host:
         class IPv6ThreadingHTTPServer(ThreadingHTTPServer):
             address_family = socket.AF_INET6
 
         server_class = IPv6ThreadingHTTPServer
-    return server_class((host, port), _Handler)
+    server = server_class((host, port), _Handler)
+    server.bind_host = host  # type: ignore[attr-defined]
+    server.cors_origins = frozenset(  # type: ignore[attr-defined]
+        str(origin).strip() for origin in cors_origins if str(origin).strip()
+    )
+    return server
 
 
 def main() -> None:
@@ -799,6 +852,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="战雷遥测后台服务（分频轮询）")
     parser.add_argument("--host", default=DEFAULT_BIND_HOST, help="服务监听地址（默认仅本机）")
     parser.add_argument("--port", type=int, default=8112, help="对外服务端口（默认 8112）")
+    parser.add_argument(
+        "--cors-origin",
+        action="append",
+        default=[],
+        help="允许读取遥测的浏览器 Origin；可重复指定，默认不允许跨域",
+    )
     parser.add_argument("--wt-host", default="127.0.0.1", help="游戏 8111 地址")
     parser.add_argument("--wt-port", type=int, default=WT_PORT, help="游戏遥测端口（默认 8111）")
     parser.add_argument("--fast-interval", type=float, default=0.1, help="姿态/仪表轮询间隔（默认 0.1s）")
@@ -810,9 +869,11 @@ def main() -> None:
     parser.add_argument("--profiles", default=None, help="机型告警配置文件路径")
     parser.add_argument("--player-name", default=None,
                         help="玩家名(不含战队标签)的初始权威值；留空则自动识别，"
-                             "也可运行时用 GET /api/identity?name=xxx 设置")
+                             "也可运行时用 GET /api/identity?name=xxx 设置，修改请求需携带 "
+                             "X-Neko-Warthunder-Action: 1")
     parser.add_argument("--record", action="store_true",
-                        help="启动即开启数据转存（调试开关；也可运行时 GET /api/record?on=1 切换）")
+                        help="启动即开启数据转存（调试开关；也可运行时 GET /api/record?on=1 切换，"
+                             "修改请求需携带 X-Neko-Warthunder-Action: 1）")
     parser.add_argument("--record-dir", default="records", help="转存数据根目录（默认 records）")
     parser.add_argument("--record-interval", type=float, default=1.0,
                         help="快照转存间隔（秒，默认 1.0；抓超速/失速等快瞬变可设 0.2）")
@@ -845,7 +906,7 @@ def main() -> None:
         print(f"  [录制] 已开启 -> {st['session_dir']}")
     service.start()
 
-    httpd = create_http_server(args.host, args.port)
+    httpd = create_http_server(args.host, args.port, cors_origins=args.cors_origin)
     httpd.service = service  # type: ignore[attr-defined]
 
     print(f"战雷遥测服务已启动：http://{args.host}:{args.port}")
@@ -872,6 +933,7 @@ def main() -> None:
         print("\n正在关闭…")
     finally:
         httpd.shutdown()
+        httpd.server_close()
         service.stop()
         print("已停止。")
 

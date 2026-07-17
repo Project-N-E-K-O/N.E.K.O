@@ -1,46 +1,9 @@
 # 設定の優先順位
 
-N.E.K.O. はレイヤード優先順位システムで設定値を解決します。優先度の高いソースが低いものをオーバーライドします。
+Project 全体の「environment > user file > Provider file > code」という規則はありません。
 
-## 優先順位
+`utils/config_manager/` は code defaults、選択済み Provider profile、writable `core_config.json` から runtime settings を組み立てます。`config/api_providers.json` が欠損/不正なら code fallback を使い、Assist JSON は同じ key の code default に重ねます。
 
-```
-┌─────────────────────────────────┐  最高優先度
-│  1. 環境変数                     │  NEKO_* プレフィックス
-│     （シェルまたは .env で設定）   │
-├─────────────────────────────────┤
-│  2. ユーザー設定ファイル           │  core_config.json
-│  （プラットフォーム app-data/N.E.K.O/）│  user_preferences.json
-├─────────────────────────────────┤
-│  3. API プロバイダー設定           │  config/api_providers.json
-│     （プロジェクトディレクトリ）     │
-├─────────────────────────────────┤
-│  4. コードのデフォルト値           │  config/__init__.py
-│     （ハードコードされたフォールバック）│
-└─────────────────────────────────┘  最低優先度
-```
+Ports は `config/network.py` が順に `NEKO_<PORT_NAME>`、互換用の裸 `<PORT_NAME>`、Electron `port_config.json`、code default を読みます。競合時は launcher が fallback port を選ぶ場合があります。
 
-ユーザー設定ファイルはプラットフォームの app-data ディレクトリに保存されます。Windows では `%LOCALAPPDATA%/N.E.K.O/`、macOS では `~/Library/Application Support/N.E.K.O/`、Linux では `~/.local/share/N.E.K.O/` です。`~/Documents/N.E.K.O/` は現在レガシーフォールバックとしてのみ使用されます。
-
-## 解決の例
-
-要約モデルの場合：
-
-1. `core_config.json` のカスタム要約モデル URL/名前を確認
-2. 選択された Assist プロバイダーの `api_providers.json` 内の `summary_model` を確認
-3. `config/__init__.py` の `DEFAULT_SUMMARY_MODEL = "qwen-plus"` にフォールバック
-
-## 各レイヤーの使い分け
-
-| レイヤー | 最適な用途 |
-|----------|-----------|
-| 環境変数 | Docker デプロイ、CI/CD、シークレット管理 |
-| ユーザー設定ファイル | Web UI による設定（自動管理） |
-| API プロバイダー設定 | プロバイダーごとのデフォルトモデル割り当て |
-| コードのデフォルト値 | 他に何も設定されていない場合のフォールバック値 |
-
-## Docker 固有の注意事項
-
-Docker デプロイでは、環境変数が主要な設定メカニズムです。`entrypoint.sh` スクリプトは起動時に `NEKO_*` 環境変数から `core_config.json` を自動的に生成します。
-
-詳細は [Docker デプロイ](/ja/deployment/docker) を参照してください。
+Docker の `entrypoint.sh` は `/app/config/core_config.json` がない時、または `NEKO_FORCE_ENV_UPDATE` 指定時だけ API 関連 `NEKO_*` から生成します。これは初期化で、source runtime 全体への live overlay ではありません。起動後に Web UI で有効値を確認してください。

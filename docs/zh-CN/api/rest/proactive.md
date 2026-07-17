@@ -4,6 +4,8 @@
 
 用于读取和修改主动搭话**模式**及其底层的主动搭话**设置**字段。所有写入都经过 `utils.preferences.save_global_conversation_settings`，因此字段白名单、类型校验和原子写逻辑都集中在一处维护。
 
+这是四个第一方偏好设置路由（`/mode` 和 `/settings` 各有 `GET`/`POST`），不是公共调度 API。它们没有单独认证层，路径末尾没有 `/`。遗留应用错误会以 HTTP `200` 和 `success: false` 返回，调用方必须检查响应体。
+
 ::: info
 本组接口与 `POST /api/proactive_chat`（参见[系统 API](./system.md)）不同，后者用于**生成**一条主动搭话消息。这里的接口只读取和更新主动搭话的配置。
 :::

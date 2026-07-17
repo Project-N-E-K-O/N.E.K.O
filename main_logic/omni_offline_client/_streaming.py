@@ -52,6 +52,7 @@ from ._shared import (
 from ._genai_support import (
     _should_use_genai_sdk,
 )
+from ._lifecycle import _with_dialog_slop
 
 class _StreamingMixin:
     def update_max_response_length(self, max_length: int) -> None:
@@ -402,6 +403,7 @@ class _StreamingMixin:
             overrides["max_completion_tokens"] = base_max_tokens + FOCUS_THINKING_EXTRA_TOKENS
         return overrides
 
+    @_with_dialog_slop
     async def stream_text(
         self,
         text: str,

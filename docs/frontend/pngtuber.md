@@ -1,166 +1,63 @@
-# PNGTuber Models
+# PNGTuber models
 
-## Overview
+## Runtime
 
-N.E.K.O. can render lightweight 2D image avatars ("PNGTuber" style) as an alternative to Live2D, MMD, or VRM models. PNGTuber avatars are driven by `static/pngtuber-core.js` (the `PNGTuberManager` class), which swaps between still images (or, for imported layered projects, draws a stacked canvas) in response to speech and pointer interaction.
+PNGTuber avatars are image-state models rendered by `static/pngtuber-core.js`. `PNGTuberManager` supports simple image swapping and normalized layered packages through the `layered_canvas_v1` adapter. The renderer integrates with the same main-page avatar selection and `window.LanLan1.setEmotion()` contract as Live2D, VRM, and MMD.
 
-Unlike the 3D/Live2D avatars, a PNGTuber package is just a folder of images plus a `model.json` descriptor — no rigging, no Cubism runtime.
+## Normalized package
 
-## Package format
-
-A PNGTuber model is a folder containing a `model.json` file with `model_type` set to `pngtuber`. The image references live under the `pngtuber` object:
+Every imported model is stored under the configured user PNGTuber directory and exposed as `/user_pngtuber/{folder}/model.json`. The minimum simple package is:
 
 ```json
 {
-  "name": "My Avatar",
   "model_type": "pngtuber",
+  "name": "Example",
   "pngtuber": {
     "idle_image": "idle.png",
-    "talking_image": "talking.png",
-    "drag_image": "drag.png",
-    "click_image": "click.png",
-    "happy_image": "happy.png",
-    "sad_image": "sad.png",
-    "angry_image": "angry.png",
-    "surprised_image": "surprised.png"
+    "talking_image": "talking.png"
   }
 }
 ```
 
-### Image-state keys
+`model_type` must be `pngtuber`, and `idle_image` is required. Relative image paths must remain inside the package. Supported image extensions are `.png`, `.gif`, `.jpg`, `.jpeg`, and `.webp`.
 
-| Key | Purpose |
-|-----|---------|
-| `idle_image` | **Required.** Default resting frame. |
-| `talking_image` | Shown while the assistant is speaking. |
-| `drag_image` | Shown while the avatar is being dragged. |
-| `click_image` | Shown briefly when the avatar is clicked. |
-| `happy_image` / `sad_image` / `angry_image` / `surprised_image` | Emotion frames (see [Emotion states](#emotion-states-not-yet-driven-by-emotion-analysis)). |
+Optional image-state keys are `talking_image`, `drag_image`, `click_image`, `happy_image`, `sad_image`, `angry_image`, and `surprised_image`. The runtime falls back from missing states—for example, talking can use idle—so only `idle_image` is mandatory.
 
-Relative paths resolve inside the package folder; absolute paths (`/…`) and `http(s)://` URLs are kept as-is. Image references are normalized server-side to `/user_pngtuber/<folder>/<file>`.
-
-### Allowed extensions and size limits
-
-| Constraint | Value |
-|------------|-------|
-| Image extensions | `.png`, `.gif`, `.jpg`, `.jpeg`, `.webp` |
-| Max single file | 50 MB |
-| Max package total | 250 MB |
-
-The server validates that `idle_image` is present and that every `*_image` reference points to an existing file with an allowed extension before the package is accepted.
-
-## Emotion states (not yet driven by emotion analysis)
-
-::: warning Honest status
-The `happy_image` / `sad_image` / `angry_image` / `surprised_image` keys are part of the package schema and are **server-validated** (path and extension are checked on upload), but the PNGTuber runtime does **not** yet switch to them based on emotion analysis.
-
-`PNGTuberManager` only drives:
-
-- `idle` ↔ `talking`, toggled by assistant **speech** start/end events.
-- `drag` and `click`, toggled by pointer **interaction**.
-
-There is no `setEmotion`-style hook equivalent to Live2D / MMD / VRM, and there is no dedicated PNGTuber emotion-manager page. The four emotion image keys are stored and shipped with the package so they are ready for a future emotion-driven path, but supplying them today has no visible effect beyond passing validation.
-:::
+Layout keys include `scale`, `offset_x`, `offset_y`, mobile-specific scale/offset values, and `mirror`. Layered imports additionally use `adapter: "layered_canvas_v1"` and `layered_metadata`.
 
 ## Import formats
 
-The upload endpoint detects the package type and normalizes it in place. The detected type is reported back as `source_format`.
+The importer detects formats in this order:
 
-| Source | Detection | Result |
-|--------|-----------|--------|
-| Native simple package | `model.json` in the folder root | `source_format: simple_package` — used directly. |
-| **PNGTuber-Plus** | a `.save` project file | Converted to the `layered_canvas_v1` adapter. |
-| **PNGTube-Remix** | a `.pngremix` project file | Converted to the `layered_canvas_v1` adapter. |
-| veadotube | a `.veadomini` / `.veado` file | **Recognized but unsupported** — upload is rejected with an explanatory error. |
+1. a native simple package with root `model.json`;
+2. a PNGTuber Plus `.save` project;
+3. a PNGTube Remix `.pngRemix` project;
+4. veadotube `.veadomini` or `.veado` files.
 
-### Layered adapter (`layered_canvas_v1`)
+PNGTuber Plus and PNGTube Remix projects are converted into the normalized package and may produce layered metadata and warnings. veadotube is currently recognized but rejected as unsupported. A folder containing only images is also rejected by the package endpoint; use the model manager's image-pair flow or supply a valid `model.json`.
 
-When a PNGTuber-Plus or PNGTube-Remix project is imported, the converter emits a layered-metadata file and sets `adapter` to `layered_canvas_v1`. At runtime, `PNGTuberManager` draws the layers onto a `<canvas>` instead of swapping a single `<img>`, and adds:
+The request may upload a folder tree. The server removes one shared top-level directory, validates every relative path, writes through a temporary directory, and only renames the package into place after import succeeds. Existing model folders are never overwritten.
 
-- **Blink** — eye layers blink on a randomized timer.
-- **Speech bounce** — the avatar bounces/squishes while talking.
+Limits are 50 MB per file and 250 MB for the complete package.
 
-Hotkeys, physics, and multi-frame animation from the source project are preserved in the metadata for later runtime support but are not all driven yet. If the metadata fails to load, the runtime falls back to plain single-image mode.
+## State and emotion behavior
 
-## Static serving
+The base states are idle, talking, drag, and click. Semantic emotions use the four optional `happy`, `sad`, `angry`, and `surprised` images or equivalent layered states. Layered adapters can preserve third-party visibility states, hotkeys, toggles, sprite sheets, blinking, and physics metadata when the source importer supports them.
 
-User PNGTuber packages are served from the `/user_pngtuber` mount, which maps to the configured PNGTuber directory on disk. Model files are referenced as `/user_pngtuber/<folder>/model.json` and `/user_pngtuber/<folder>/<image>`.
+The normalized `source_format` reports how the package was produced; clients should treat it as diagnostics, not select rendering behavior from it. Rendering behavior is determined by the normalized `pngtuber` object and adapter metadata.
 
-## API endpoints
+## API summary
 
-**Prefix:** `/api/model/pngtuber`
+All endpoints use the `/api/model/pngtuber` prefix.
 
-### `POST /upload_model`
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/model/pngtuber/upload_model` | Upload and normalize a folder/package |
+| `GET` | `/api/model/pngtuber/models` | List valid user packages |
+| `DELETE` | `/api/model/pngtuber/model` | Delete one package by `folder`, `url`, or `name` |
 
-Upload a PNGTuber package as a multipart file list. Each file's `filename` carries its relative path inside the package; a single shared top-level folder is stripped automatically. The package is staged, detected, validated, and (for third-party projects) converted before being committed.
+Successful upload responses include the normalized model, public URL, `source_format`, warnings, and total uploaded size. The list endpoint skips directories without a valid PNGTuber `model.json`. Deletion accepts only a direct package folder or `/user_pngtuber/{folder}/model.json`; nested and traversal paths are rejected.
 
-**Body** — `multipart/form-data` with a `files` field (one or more `UploadFile` entries).
+## Host boundary
 
-**Response** (success)
-
-```json
-{
-  "success": true,
-  "message": "...",
-  "model_type": "pngtuber",
-  "model_name": "My Avatar",
-  "name": "My Avatar",
-  "folder": "My_Avatar",
-  "url": "/user_pngtuber/My_Avatar/model.json",
-  "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-  "source_format": "simple_package",
-  "warnings": [],
-  "file_size": 123456
-}
-```
-
-On failure the response is `{ "success": false, "error": "..." }` with an appropriate 4xx/5xx status. Third-party import errors also include `source_format` and `warnings`.
-
-### `GET /models`
-
-List all installed user PNGTuber packages.
-
-**Response**
-
-```json
-{
-  "success": true,
-  "models": [
-    {
-      "name": "My Avatar",
-      "folder": "My_Avatar",
-      "filename": "My_Avatar",
-      "location": "user",
-      "type": "pngtuber",
-      "model_type": "pngtuber",
-      "url": "/user_pngtuber/My_Avatar/model.json",
-      "pngtuber": { "idle_image": "/user_pngtuber/My_Avatar/idle.png", "...": "..." },
-      "source_format": "simple_package"
-    }
-  ]
-}
-```
-
-Folders without a valid `model.json` or whose `model_type` is not `pngtuber` are skipped.
-
-### `DELETE /model`
-
-Delete an installed PNGTuber package.
-
-**Body**
-
-```json
-{ "folder": "My_Avatar" }
-```
-
-The identifier is resolved as a **folder slug** (precedence `folder` → `url` → `name`): a `model.json` URL such as `/user_pngtuber/My_Avatar/model.json` is resolved back to its folder. Prefer the `folder` slug (or the `url`) from `GET /models` — `name` is the human-readable display name and may differ from the slug, so passing `name` only works when it equals the folder. The target is confined to the PNGTuber directory.
-
-**Response**
-
-```json
-{ "success": true, "message": "PNGTuber model My_Avatar deleted" }
-```
-
-::: info
-PNGTuber model management lives in the shared `/model_manager` page. There is no separate PNGTuber emotion-manager page; the avatar's settings menu links to the character card manager, model manager, and voice clone pages.
-:::
+PNGTuber renders in the main page and Electron pet window that use `index.html`. `/chat` and `/subtitle` do not initialize another PNGTuber manager; they communicate with the main window when avatar state must be reflected across windows.

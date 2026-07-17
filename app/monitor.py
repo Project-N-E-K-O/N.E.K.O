@@ -390,15 +390,25 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
     try:
         # 保持连接直到客户端断开
         while True:
-            # 接收任何类型的消息（文本或二进制），主要用于保持连接
+            # 接收任何类型的消息（文本或二进制），主要用于保持连接。
+            # 注意：断连必须重新抛出——旧实现的裸 except 会把 WebSocketDisconnect
+            # 一并吞掉，随后 receive 永远抛 RuntimeError，协程退化成每个已断开
+            # 客户端一条 10Hz 的永动空转循环。
             try:
                 await websocket.receive_text()
-            except:
+            except WebSocketDisconnect:
+                raise
+            except Exception:
                 # 如果收到的是二进制数据，receive_text() 会失败，尝试 receive_bytes()
                 try:
                     await websocket.receive_bytes()
-                except:
-                    # 如果两者都失败，等待一下再继续
+                except WebSocketDisconnect:
+                    raise
+                except RuntimeError as e:
+                    # starlette: 断开后继续 receive 抛 RuntimeError —— 视作断连收尾
+                    raise WebSocketDisconnect() from e
+                except Exception:
+                    # 两者都失败（非断连原因），等待一下再继续
                     await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         print(f"❌ [CLIENT] 查看客户端已断开: {websocket.client}")
