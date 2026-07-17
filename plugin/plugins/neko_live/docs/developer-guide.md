@@ -167,7 +167,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 
 ## 13. 已知坑 & 宿主侧待办（提前知道少踩）
 
-- **配置写竞争**：host/core 修复 `Fix plugin host config and data root handling (#1884)` 已进入当前 `Roast` 分支；插件侧仍保留“内存先行 + 带预算持久化”的免疫策略，避免未来 host 持久化异常拖垮直播 action。详见 `development.md`「配置持久化与写竞争」。
+- **配置写竞争**：host/core 修复 `Fix plugin host config and data root handling (#1884)` 已由提交 `08b317f6` 落地；插件侧仍保留“内存先行 + 带预算持久化”的免疫策略，避免未来 host 持久化异常拖垮直播 action。详见 `development.md`「配置持久化与写竞争」。
 - **存储宿主历史 bug**：`PluginStore.store.enabled` 构造期冻结、插件数据不跟随 selected_root 已由 #1884 修复；观众档案仍走本地 JSON。插件侧默认目录、自定义目录写失败回退、实际路径状态和失败临时文件清理已完成回归；当前 UI 按产品范围继续不暴露 `viewer_store_dir` 自定义入口。详见 `devlog.md`。
 - **hosted-ui 渲染**：`data:` URL 被剥、SVG 渲不了（见 §9 / `ui-architecture.md` §6）。
 - **新增 action 要全量重启后端**才暴露（见 §5）。

@@ -395,7 +395,8 @@ export default {
       blockedBundleConflict: 'Este paquete contiene un plugin instalado. Actualiza sus plugins uno por uno.',
       blockedDirectoryConflict: 'La carpeta de destino pertenece a otro plugin y no se modificó.',
       blockedLegacyPlugin: 'Todavía hay una versión anterior de este plugin instalada. Desinstala {plugin} antes de continuar.',
-      rollbackCompleted: 'La actualización falló y se restauró la versión anterior.'
+      rollbackCompleted: 'La actualización falló y se restauró la versión anterior.',
+      rollbackIncomplete: 'La actualización falló y la reversión quedó incompleta. Comprueba el estado del plugin antes de continuar.'
     },
     dialog: {
       title: 'Historial de operaciones de paquetes',

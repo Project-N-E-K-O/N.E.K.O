@@ -42,7 +42,7 @@ async def plugin_is_running(plugin_id: str) -> bool:
             plugin_id,
             type(exc).__name__,
         )
-        return False
+        raise
 
 
 async def stop_plugin_for_upgrade(plugin_id: str) -> None:
@@ -91,7 +91,9 @@ async def restore_directory(backup_dir: Path, target_dir: Path) -> None:
 
 
 async def remove_directory(target_dir: Path) -> None:
-    await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+    if not target_dir.exists():
+        return
+    await asyncio.to_thread(shutil.rmtree, target_dir)
 
 
 async def run_rollback(

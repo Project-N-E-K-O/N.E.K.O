@@ -395,7 +395,8 @@ export default {
       blockedBundleConflict: '此整合包包含已安裝的外掛，請逐一升級其中的外掛。',
       blockedDirectoryConflict: '目標目錄屬於另一個外掛，未進行任何變更。',
       blockedLegacyPlugin: '仍安裝著此前版本的外掛。請先解除安裝 {plugin} 再繼續。',
-      rollbackCompleted: '升級失敗，已回復先前的版本。'
+      rollbackCompleted: '升級失敗，已回復先前的版本。',
+      rollbackIncomplete: '升級失敗且回復未完整完成，請先檢查外掛狀態再繼續。'
     },
     dialog: {
       title: '包管理執行記錄',

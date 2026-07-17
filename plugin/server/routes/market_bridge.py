@@ -1528,6 +1528,7 @@ def _finalize_task_failure(
 
 _HUMAN_MESSAGES: dict[str, str] = {
     "upgrade_rollback_completed": "升级失败，已回滚到旧版本",
+    "upgrade_rollback_incomplete": "升级失败，回滚未完整完成，请检查插件状态",
     "plugin_not_installed_for_upgrade": "该插件未安装，无法升级",
     "version_already_at_target": "当前已是目标版本",
     "lock_write_failed": "安装记录写入失败",
@@ -1709,8 +1710,11 @@ async def _do_upgrade(
                 ),
             )
 
-    plugin_dir = (PluginCliPathPolicy.from_settings().user_plugins_root / entry.directory_name).resolve()
+    path_policy = PluginCliPathPolicy.from_settings()
+    plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
+    profile_dir = (path_policy.package_profiles_root / installed_plugin_id).resolve()
     backup_dir = backup_path_for(plugin_dir)
+    profile_backup_dir = backup_path_for(profile_dir)
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
     was_running = await plugin_is_running(installed_plugin_id)
 
@@ -1736,19 +1740,28 @@ async def _do_upgrade(
         )
         await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
+        rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
+        task["rollback"] = {
+            "prepared": True,
+            "backup_dir": str(backup_dir),
+            "restored": False,
+        }
+        if profile_dir.exists():
+            await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
+            rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
+            task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
     except OSError as exc:
-        if was_running:
-            await start_plugin_after_upgrade(installed_plugin_id, strict=False)
+        rollback_ok = await _run_rollback(
+            task if rollback_steps else None,
+            rollback_steps,
+            was_running,
+            installed_plugin_id,
+        )
         raise _TaskError(
-            code="upgrade_rollback_completed",
+            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
             message=f"无法备份旧目录: {exc}",
         ) from exc
-    rollback_steps.append(_make_restore_dir_step(backup_dir, plugin_dir))
-    task["rollback"] = {
-        "prepared": True,
-        "backup_dir": str(backup_dir),
-        "restored": False,
-    }
 
     try:
         # Step 5: download + verify sha256.
@@ -1814,6 +1827,7 @@ async def _do_upgrade(
             _cleanup_download_file(package_path)
 
         rollback_steps.append(_make_remove_dir_step(plugin_dir))
+        rollback_steps.append(_make_remove_dir_step(profile_dir))
 
         # Step 7: lifecycle start.
         if was_running:
@@ -1827,10 +1841,15 @@ async def _do_upgrade(
             await start_plugin_after_upgrade(installed_plugin_id, strict=True)
 
         # Step 8: async cleanup of backup.
-        asyncio.create_task(
-            _async_remove_dir(backup_dir),
-            name=f"market-upgrade-cleanup-{installed_plugin_id}",
-        )
+        for cleanup_label, cleanup_dir in (
+            ("plugin", backup_dir),
+            ("profile", profile_backup_dir),
+        ):
+            if cleanup_dir.exists():
+                asyncio.create_task(
+                    _async_remove_dir(cleanup_dir),
+                    name=f"market-upgrade-cleanup-{cleanup_label}-{installed_plugin_id}",
+                )
 
         task["progress"] = 1.0
         task["stage"] = "completed"
@@ -1841,22 +1860,30 @@ async def _do_upgrade(
             task["install_source_warning"] = result["install_source_warning"]
 
     except _TaskError as exc:
-        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         if rollback_steps and exc.code not in (
             "version_already_at_target",
             "plugin_not_installed_for_upgrade",
         ):
             raise _TaskError(
-                code="upgrade_rollback_completed",
-                message=f"升级失败已回滚: {exc.message}",
+                code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
+                message=(
+                    f"升级失败已回滚: {exc.message}"
+                    if rollback_ok
+                    else f"升级失败且回滚未完整完成: {exc.message}"
+                ),
             ) from exc
         raise
     except Exception as exc:
         # Other (network / sha256 / unpack) failures collapse into one code.
-        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
+        rollback_ok = await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         raise _TaskError(
-            code="upgrade_rollback_completed",
-            message=f"升级失败已回滚: {exc}",
+            code=("upgrade_rollback_completed" if rollback_ok else "upgrade_rollback_incomplete"),
+            message=(
+                f"升级失败已回滚: {exc}"
+                if rollback_ok
+                else f"升级失败且回滚未完整完成: {exc}"
+            ),
         ) from exc
 
 
@@ -2012,7 +2039,7 @@ async def _async_remove_dir(target_dir: Path) -> None:
 
     try:
         await remove_directory(target_dir)
-    except Exception as exc:  # pragma: no cover — ignore_errors=True swallows
+    except Exception as exc:  # pragma: no cover - platform-specific cleanup failure
         logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
 
 
@@ -2021,11 +2048,13 @@ async def _run_rollback(
     rollback_steps: list[Callable[[], Awaitable[None]]],
     was_running: bool,
     plugin_id: str,
-) -> None:
+) -> bool:
     """Execute rollback steps in reverse order, then re-start old plugin.
 
     Each step is wrapped in try/except so one failure does not stop the
-    rest from running. ``_safely_start`` itself is non-throwing.
+    rest from running. The returned value includes the non-strict restart
+    result so callers never report a complete rollback when the old plugin
+    did not resume running.
     """
 
     if task is not None:
@@ -2053,12 +2082,14 @@ async def _run_rollback(
                 exc,
             )
     if was_running:
-        await start_plugin_after_upgrade(plugin_id, strict=False)
+        restarted = await start_plugin_after_upgrade(plugin_id, strict=False)
+        rollback_ok = rollback_ok and restarted
     if task is not None:
         rollback_info = dict(task.get("rollback") or {})
         rollback_info["running"] = False
         rollback_info["restored"] = rollback_ok
         task["rollback"] = rollback_info
+    return rollback_ok
 
 
 def _utc_iso_now() -> str:

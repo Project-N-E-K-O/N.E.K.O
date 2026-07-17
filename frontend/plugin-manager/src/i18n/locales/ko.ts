@@ -395,7 +395,8 @@ export default {
       blockedBundleConflict: '이 번들에는 이미 설치된 플러그인이 있습니다. 플러그인을 하나씩 업그레이드하세요.',
       blockedDirectoryConflict: '대상 디렉터리가 다른 플러그인에 속하므로 변경하지 않았습니다.',
       blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
-      rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.'
+      rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
+      rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.'
     },
     dialog: {
       title: '패키지 작업 기록',

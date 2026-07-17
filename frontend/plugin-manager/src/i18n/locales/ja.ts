@@ -395,7 +395,8 @@ export default {
       blockedBundleConflict: 'このバンドルにはインストール済みのプラグインが含まれます。プラグインを1つずつアップグレードしてください。',
       blockedDirectoryConflict: '対象ディレクトリは別のプラグインに属するため、変更しませんでした。',
       blockedLegacyPlugin: 'このプラグインの以前のバージョンがまだインストールされています。続行する前に {plugin} をアンインストールしてください。',
-      rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。'
+      rollbackCompleted: 'アップグレードに失敗したため、以前のバージョンを復元しました。',
+      rollbackIncomplete: 'アップグレードに失敗し、ロールバックも完了できませんでした。続行する前にプラグインの状態を確認してください。'
     },
     dialog: {
       title: 'パッケージ操作履歴',

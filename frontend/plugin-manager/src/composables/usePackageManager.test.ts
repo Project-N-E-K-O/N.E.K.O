@@ -192,4 +192,26 @@ describe('usePackageManager safe installation flow', () => {
     expect(installPluginPackage).not.toHaveBeenCalled()
     expect(ElMessage.error).toHaveBeenCalledWith('package.install.blockedBundleConflict')
   })
+
+  it('reports an incomplete rollback without claiming the old version was restored', async () => {
+    const manager = usePackageManager()
+    manager.installForm.value.package = 'demo.neko-plugin'
+    vi.mocked(planPluginInstall).mockResolvedValue(upgradePlan)
+    vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
+    vi.mocked(installPluginPackage).mockRejectedValue({
+      response: {
+        data: {
+          detail: {
+            code: 'PLUGIN_UPGRADE_ROLLED_BACK',
+            details: { rollback_status: 'incomplete' },
+          },
+        },
+      },
+    })
+
+    await manager.handleInstall()
+
+    expect(ElMessage.error).toHaveBeenCalledWith('package.install.rollbackIncomplete')
+    expect(ElMessage.error).not.toHaveBeenCalledWith('package.install.rollbackCompleted')
+  })
 })

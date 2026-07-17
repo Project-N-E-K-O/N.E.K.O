@@ -97,7 +97,8 @@ async def test_safe_upgrade_restores_old_directory_after_each_failure(
     assert (profile / "default.toml").read_text(encoding="utf-8") == "version = 1\n"
     assert "stop:demo" in calls
     assert "start:demo" in calls
-    assert not list(tmp_path.glob("demo.bak.*"))
+    assert not list((tmp_path / ".upgrade-backups").glob("demo.bak.*"))
+    assert not list((profile.parent / ".upgrade-backups").glob("demo.bak.*"))
 
 
 @pytest.mark.asyncio
@@ -140,7 +141,7 @@ async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_pat
     assert 'version = "2.0.0"' in (target / "plugin.toml").read_text(encoding="utf-8")
     assert calls[0:2] == ["stop:demo", "start:demo"]
     assert calls[2].startswith("cleanup:demo.bak.")
-    assert not list(tmp_path.glob("demo.bak.*"))
+    assert not result.backup_dir.exists()
 
 
 async def _async_none() -> None:

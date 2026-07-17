@@ -395,7 +395,8 @@ export default {
       blockedBundleConflict: 'This bundle contains an installed plugin. Upgrade its plugins one at a time.',
       blockedDirectoryConflict: 'The destination directory belongs to another plugin and was not changed.',
       blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
-      rollbackCompleted: 'The upgrade failed and the previous version was restored.'
+      rollbackCompleted: 'The upgrade failed and the previous version was restored.',
+      rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.'
     },
     dialog: {
       title: 'Package operation history',

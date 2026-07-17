@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from plugin.neko_plugin_cli.public import build_bundle, build_plugin
-from plugin.server.application.plugin_cli.install_plan import build_install_plan
+from plugin.server.application.plugin_cli.install_plan import build_install_plan, confirmation_token
 
 pytestmark = pytest.mark.plugin_unit
 
@@ -104,3 +105,31 @@ def test_plan_blocks_an_installed_declared_previous_id(tmp_path: Path) -> None:
     assert plan.action == "blocked"
     assert plan.reason == "legacy_plugin_present"
     assert plan.legacy_plugin_ids == ("neko_roast",)
+
+
+def test_confirmation_token_streams_package_instead_of_reading_it_all_at_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_path = tmp_path / "demo.neko-plugin"
+    package_bytes = b"package-content" * 1024
+    package_path.write_bytes(package_bytes)
+    target_dir = _write_plugin(tmp_path / "plugins", "demo", "1.0.0")
+    manifest_bytes = (target_dir / "plugin.toml").read_bytes()
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path == package_path:
+            raise AssertionError("package hash must use bounded reads")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    expected = hashlib.sha256()
+    expected.update(package_bytes)
+    expected.update(b"\0")
+    expected.update(str(target_dir.resolve()).encode("utf-8"))
+    expected.update(b"\0")
+    expected.update(manifest_bytes)
+
+    assert confirmation_token(package_path=package_path, target_dir=target_dir) == expected.hexdigest()

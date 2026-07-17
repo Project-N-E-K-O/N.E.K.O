@@ -29,7 +29,9 @@ class PluginInstallPlan:
 
 def confirmation_token(*, package_path: Path, target_dir: Path) -> str:
     digest = hashlib.sha256()
-    digest.update(package_path.read_bytes())
+    with package_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
     digest.update(b"\0")
     digest.update(str(target_dir.resolve()).encode("utf-8"))
     digest.update(b"\0")

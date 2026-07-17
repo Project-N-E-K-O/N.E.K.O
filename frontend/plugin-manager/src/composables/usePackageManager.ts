@@ -814,7 +814,12 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       const errorCode = (error as any)?.response?.data?.detail?.code
         || (error as any)?.response?.data?.code
       if (errorCode === 'PLUGIN_UPGRADE_ROLLED_BACK') {
-        ElMessage.error(t('package.install.rollbackCompleted'))
+        const rollbackStatus = (error as any)?.response?.data?.detail?.details?.rollback_status
+        ElMessage.error(t(
+          rollbackStatus === 'completed'
+            ? 'package.install.rollbackCompleted'
+            : 'package.install.rollbackIncomplete',
+        ))
       } else if (!installPlan.value) {
         ElMessage.error(t('package.install.planFailed'))
       } else {

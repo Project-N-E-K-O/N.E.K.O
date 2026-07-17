@@ -8,6 +8,8 @@ import pytest
 from plugin.server.application.plugins.upgrade_support import (
     SafeUpgradeError,
     perform_safe_upgrade,
+    plugin_is_running,
+    remove_directory,
     run_rollback,
 )
 
@@ -88,3 +90,43 @@ async def test_backup_failure_restarts_running_plugin_without_installing(
     assert exc_info.value.stage == "backup"
     assert exc_info.value.rollback_status == "completed"
     assert events == ["stop:demo", "start:demo"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_is_running_propagates_registry_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import lifecycle_service
+
+    def fail_probe(plugin_id: str) -> bool:
+        raise RuntimeError(f"registry unavailable for {plugin_id}")
+
+    monkeypatch.setattr(lifecycle_service, "_plugin_is_running_sync", fail_probe)
+
+    with pytest.raises(RuntimeError, match="registry unavailable"):
+        await plugin_is_running("demo")
+
+
+@pytest.mark.asyncio
+async def test_remove_directory_propagates_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.application.plugins import upgrade_support
+
+    target = tmp_path / "demo"
+    target.mkdir()
+    ignore_values: list[bool] = []
+
+    def fail_unless_errors_are_suppressed(path: Path, ignore_errors: bool = False) -> None:
+        assert path == target
+        ignore_values.append(ignore_errors)
+        if not ignore_errors:
+            raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr(upgrade_support.shutil, "rmtree", fail_unless_errors_are_suppressed)
+
+    with pytest.raises(PermissionError, match="cleanup denied"):
+        await remove_directory(target)
+
+    assert ignore_values == [False]
