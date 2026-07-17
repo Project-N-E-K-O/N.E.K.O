@@ -1385,7 +1385,7 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
             kind="commit", generation=8, buffer_epoch=9, utterance_id=6
         )
     )
-    await asyncio.sleep(0.01)
+    await _wait_until(requests.empty)
     assert second_audio not in websocket.sent
 
     await websocket.server_send(
@@ -1398,6 +1398,7 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
     )
     first = await _next_event(responses, "final")
     assert (first.generation, first.buffer_epoch, first.utterance_id) == (3, 4, 5)
+    assert first.text == "first"
 
     await _wait_until(lambda: finalize_count == 2)
     assert second_audio in websocket.sent

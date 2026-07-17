@@ -73,10 +73,10 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 - worker `error` 终止当前 Session，只报告一次连接错误，不自动重连。恢复时由调用方创建新 Session。
 - `close()` 幂等；可预知的未知 Core、未实现 backend、blocked backend 和配置错误在 `create_asr_session()` 阶段同步失败。
 
-## 当前边界
+## 阶段边界与当前集成
 
-当前已提供公共骨架、唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker，以及 GLM/Gemini 分段 ASR worker。WSS worker 在完成凭据联调和 WSS smoke 前保持 `blocked_credentials`；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，并支持对应 smoke 验收。
+以上接口与冻结行为描述 Phase 1/2 建立的公共契约。当前 Phase 3 在该契约上提供唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker、GLM/Gemini 分段 ASR worker 和 Soniox 流式 worker。Step/Grok 在完成凭据联调和 WSS smoke 前保持 `blocked_credentials`；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，Soniox 则以供应商 `<end>` 为权威终点。
 
-本阶段不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关。
+Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 
-本阶段已接入用于 GLM/Gemini 分段 ASR 的 Smart Turn 与 VAD，但不包含 RNNoise、声纹、全局节流、LLM 回复、TTS、工具调用、上下文事件或独立 ASR 云服务。后续真实服务通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。
+Phase 3 已接入独立 ASR 云服务，以及用于 GLM/Gemini 分段 ASR 的 Smart Turn 与 VAD；仍不包含 RNNoise、声纹、全局节流，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。
