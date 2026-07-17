@@ -46,7 +46,6 @@ COOKIE_FILES = {
     'netease': CONFIG_DIR / 'netease_cookies.json',
     'bilibili': CONFIG_DIR / 'bilibili_cookies.json',
     'xhh': CONFIG_DIR / 'xhh_cookies.json',
-    'xhh_key': CONFIG_DIR / 'xhh_key.json',
     "douyin": CONFIG_DIR / 'douyin_cookies.json',
     "kuaishou": CONFIG_DIR / 'kuaishou_cookies.json', 
     'weibo': CONFIG_DIR / 'weibo_cookies.json',
@@ -99,32 +98,15 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
 
 
 def get_cookie_key_file(platform: str) -> Path:
-    if platform == 'xhh':
-        return COOKIE_FILES['xhh_key']
     return CONFIG_DIR / f"{platform}_key.key"
 
 
 def _read_encryption_key(platform: str, key_file: Path) -> bytes:
-    if platform != 'xhh':
-        return key_file.read_bytes()
-
-    payload = json.loads(key_file.read_text(encoding='utf-8'))
-    key = payload.get('key') if isinstance(payload, dict) else None
-    if not isinstance(key, str) or not key.strip():
-        raise ValueError("xhh_key.json 缺少有效的 key 字段")
-    return key.strip().encode('ascii')
+    return key_file.read_bytes()
 
 
 def _write_encryption_key(platform: str, key_file: Path, key: bytes) -> None:
-    if platform == 'xhh':
-        atomic_write_json(
-            key_file,
-            {'key': key.decode('ascii')},
-            ensure_ascii=True,
-            indent=2,
-        )
-    else:
-        key_file.write_bytes(key)
+    key_file.write_bytes(key)
 
     if sys.platform != 'win32':
         os.chmod(key_file, 0o600)

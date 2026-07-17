@@ -65,41 +65,39 @@ def test_xhh_request_params_use_login_manager_entrypoint():
     assert params["nonce"]
 
 
-def test_xhh_encryption_key_uses_json(tmp_path: Path):
-    key_file = tmp_path / "xhh_key.json"
+def test_xhh_encryption_key_uses_raw_key_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(cookies_login, "CONFIG_DIR", tmp_path)
+    key_file = cookies_login.get_cookie_key_file("xhh")
     key = b"test-fernet-key"
 
     _write_encryption_key("xhh", key_file, key)
 
+    assert key_file == tmp_path / "xhh_key.key"
     assert _read_encryption_key("xhh", key_file) == key
-    assert '"key": "test-fernet-key"' in key_file.read_text(encoding="utf-8")
+    assert key_file.read_bytes() == key
+    assert not (tmp_path / "xhh_key.json").exists()
 
 
-def test_xhh_encryption_key_rejects_invalid_json_payload(tmp_path: Path):
-    key_file = tmp_path / "xhh_key.json"
-    key_file.write_text('{"unexpected": "value"}', encoding="utf-8")
-
-    with pytest.raises(ValueError, match="key 字段"):
-        _read_encryption_key("xhh", key_file)
-
-
-def test_xhh_encrypted_credentials_round_trip_with_json_key(
+def test_xhh_encrypted_credentials_round_trip_with_raw_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
     cookie_file = tmp_path / "xhh_cookies.json"
-    key_file = tmp_path / "xhh_key.json"
+    key_file = tmp_path / "xhh_key.key"
     monkeypatch.setattr(cookies_login, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(
         cookies_login,
         "COOKIE_FILES",
-        {"xhh": cookie_file, "xhh_key": key_file},
+        {"xhh": cookie_file},
     )
     credentials = {"user_heybox_id": "123", "user_pkey": "secret"}
 
     assert cookies_login.save_cookies_to_file("xhh", credentials)
     assert key_file.exists()
-    assert not (tmp_path / "xhh_key.key").exists()
+    assert not (tmp_path / "xhh_key.json").exists()
     assert cookies_login.load_cookies_from_file("xhh") == credentials
 
 
