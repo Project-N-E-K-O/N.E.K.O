@@ -3,10 +3,16 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
+from main_logic.asr_client.detector_runtime import (
+    DetectorFeedResult,
+    DetectorRuntime,
+    SmartTurnReadiness,
+)
+from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -54,9 +60,10 @@ class _FailingGate(_Gate):
 
 
 class _SemanticCoordinator:
-    def __init__(self) -> None:
+    def __init__(self, *, available: bool = True) -> None:
         self.state = CoordinatorState.IDLE
         self.audio: list[bytes] = []
+        self.available = available
 
     def push_audio(self, pcm16: bytes) -> None:
         self.audio.append(pcm16)
@@ -71,6 +78,9 @@ class _SemanticCoordinator:
             status=EvaluationStatus.OK,
             decision=TurnDecision.COMPLETE,
         )
+
+    async def prepare_predictor(self) -> bool:
+        return self.available
 
     async def reset(self) -> None:
         self.state = CoordinatorState.IDLE
@@ -167,6 +177,62 @@ async def test_unified_detector_owns_smart_turn_and_emits_semantic_completion() 
     assert completion_count == 1
     await detector.release_deferred_turn()
     assert completion_count == 2
+    await detector.close()
+
+
+async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=AsrProviderPolicy(
+            transport="streaming",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=None,
+            warm_transport_ms=25_000,
+            replay_policy="preconnect_only",
+        ),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(
+        VoiceIngressToken(1, "socket", 1, 1, 1),
+        turn_id=1,
+    )
+
+    lease = await detector.prepare_endpointing(token)
+
+    assert lease is not None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.READY
+    assert detector.endpointing_ready(token) is True
+    await lease.release()
+    assert detector.endpointing_ready(token) is False
+    await detector.close()
+
+
+async def test_smart_turn_prepare_failure_never_becomes_ready() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=27_000,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+        coordinator=_SemanticCoordinator(available=False),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(
+        VoiceIngressToken(1, "socket", 1, 1, 1),
+        turn_id=1,
+    )
+
+    assert await detector.prepare_endpointing(token) is None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.FAILED
+    assert detector.endpointing_ready(token) is False
     await detector.close()
 
 

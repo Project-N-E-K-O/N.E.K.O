@@ -21,11 +21,11 @@ def test_streaming_manual_provider_requires_smart_turn() -> None:
     )
 
 
-def test_provider_endpoint_does_not_require_smart_turn() -> None:
+def test_provider_endpoint_is_only_a_physical_hint_below_smart_turn() -> None:
     policy = resolve_provider_policy("soniox", "provider")
 
-    assert policy.endpoint_authority == "provider"
-    assert policy.smart_turn_required is False
+    assert policy.endpoint_authority == "smart_turn"
+    assert policy.smart_turn_required is True
     assert policy.replay_policy == "provider_managed"
 
 

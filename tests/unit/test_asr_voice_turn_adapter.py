@@ -245,7 +245,7 @@ async def test_first_audio_lazy_loads_vad_off_loop_once() -> None:
     await adapter.close()
 
 
-async def test_reset_unloads_smart_turn_after_warm_ttl_and_audio_cancels_timer() -> None:
+async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     coordinator = _FakeCoordinator()
     gate = _FakeGate()
     adapter = _VoiceTurnAdapter(
@@ -270,7 +270,28 @@ async def test_reset_unloads_smart_turn_after_warm_ttl_and_audio_cancels_timer()
     await _eventually(lambda: len(gate.feed_calls) == 1)
     await asyncio.sleep(0.03)
 
-    assert coordinator.unload_calls == 1
+    assert coordinator.unload_calls == 2
+    await adapter.close()
+
+
+async def test_smart_turn_pin_prevents_unload_until_release() -> None:
+    coordinator = _FakeCoordinator()
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_warm_seconds=0.01,
+    )
+    await adapter.start()
+    adapter.pin_smart_turn()
+
+    await adapter.reset(generation=1, buffer_epoch=1, utterance_id=2)
+    await asyncio.sleep(0.03)
+    assert coordinator.unload_calls == 0
+
+    adapter.unpin_smart_turn()
+    await _eventually(lambda: coordinator.unload_calls == 1)
     await adapter.close()
 
 

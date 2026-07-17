@@ -39,6 +39,46 @@ class _Runtime(AsrRuntimeMixin):
         self.send_status = AsyncMock()
 
 
+class _TestSmartTurnLease:
+    def __init__(self, token) -> None:
+        self.token = token
+        self.released = False
+
+    async def release(self) -> None:
+        self.released = True
+
+
+class _ReadyDetector:
+    def __init__(self, feed_result: DetectorFeedResult | None = None) -> None:
+        self._token = None
+        self._feed_result = feed_result or DetectorFeedResult((), True)
+        self.reset = AsyncMock(side_effect=self._reset)
+        self.close = AsyncMock()
+        self.release_deferred_turn = AsyncMock()
+
+    async def prepare_endpointing(self, token):
+        self._token = token
+        return _TestSmartTurnLease(token)
+
+    def endpointing_ready(self, token) -> bool:
+        return self._token == token
+
+    async def feed(self, _pcm16: bytes, **_kwargs) -> DetectorFeedResult:
+        return self._feed_result
+
+    async def _reset(self) -> None:
+        self._token = None
+
+
+class _FailedSmartTurnDetector(_ReadyDetector):
+    async def prepare_endpointing(self, token):
+        self._token = None
+        return None
+
+    def endpointing_ready(self, token) -> bool:
+        return False
+
+
 def _selection(provider_key: str, endpointing_mode: str = "manual"):
     return type(
         "Selection",
@@ -64,6 +104,15 @@ def _install_ready_lifecycle(
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+
+
+async def _install_active_smart_turn(runtime: _Runtime, provider: str = "qwen") -> None:
+    _install_ready_lifecycle(runtime, provider)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
 
 
 async def _start_and_seal_turn(
@@ -86,6 +135,7 @@ async def test_independent_route_sends_pcm_to_asr_only() -> None:
     asr.stream_audio = AsyncMock()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
+    await _install_active_smart_turn(runtime)
 
     consumed = await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
@@ -98,6 +148,41 @@ async def test_independent_route_sends_pcm_to_asr_only() -> None:
         sample_rate_hz=16_000,
     )
     assert runtime._asr_audio_bytes == 320
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["qwen", "openai", "step", "grok", "soniox", "glm", "gemini"],
+)
+async def test_smart_turn_unavailable_blocks_every_provider_before_wire_audio(
+    provider: str,
+) -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = provider
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(
+            provider,
+            "provider" if provider in {"grok", "soniox"} else "manual",
+        ),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _FailedSmartTurnDetector()
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+
+    asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_route_mode == "blocked"
     assert runtime._omni_mic_audio_bytes == 0
 
 
@@ -141,7 +226,7 @@ async def test_local_speech_wake_uploads_pre_roll_to_independent_asr() -> None:
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
-    detector = type("Detector", (), {})()
+    detector = _ReadyDetector()
     detector.feed = AsyncMock(
         side_effect=[
             DetectorFeedResult((), True),
@@ -173,16 +258,10 @@ async def test_detector_failure_fails_open_to_same_independent_asr() -> None:
     asr.stream_audio = AsyncMock()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
-    runtime._asr_lifecycle = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("qwen", "manual"),
-        shadow_mode=False,
+    await _install_active_smart_turn(runtime)
+    runtime._asr_detector.feed = AsyncMock(
+        return_value=DetectorFeedResult((), False)
     )
-    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
-    runtime._asr_detector = type(
-        "Detector",
-        (),
-        {"feed": AsyncMock(return_value=DetectorFeedResult((), False))},
-    )()
 
     await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
@@ -305,11 +384,7 @@ async def test_speech_started_pauses_and_cancels_realtime_dispatch() -> None:
 async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
     runtime = _Runtime()
     runtime._asr_session = type("Asr", (), {"is_ready": True})()
-    runtime._asr_lifecycle = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("qwen", "manual"),
-        shadow_mode=False,
-    )
-    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    _install_ready_lifecycle(runtime, "qwen")
     epoch = runtime._asr_session_epoch
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.SPEECH_STARTED,
@@ -334,7 +409,7 @@ async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
-    detector = type("Detector", (), {})()
+    detector = _ReadyDetector()
     detector.feed = AsyncMock(return_value=DetectorFeedResult((), True))
     detector.reset = AsyncMock()
     detector.release_deferred_turn = AsyncMock()
@@ -418,7 +493,7 @@ async def test_deep_sleep_speech_reconnects_and_flushes_pending_audio() -> None:
     runtime._asr_lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
     runtime._asr_lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
     runtime._asr_lifecycle.transition(VoiceLifecycleEvent.WARM_EXPIRED)
-    detector = type("Detector", (), {})()
+    detector = _ReadyDetector()
     detector.feed = AsyncMock(
         return_value=DetectorFeedResult((SpeechActivityEvent.SPEECH_STARTED,), True)
     )
@@ -847,6 +922,7 @@ async def test_asr_backpressure_reports_specific_blocking_status() -> None:
     runtime._asr_session = asr
     runtime._asr_provider = "qwen"
     runtime._asr_route_mode = "independent"
+    await _install_active_smart_turn(runtime, "qwen")
 
     await runtime._route_microphone_audio(
         b"\x00\x00" * 160,
@@ -1204,6 +1280,7 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     assert runtime._asr_route_mode == "independent"
     assert runtime._asr_session_epoch == adopted_epoch
 
+    runtime._asr_detector = _ReadyDetector()
     await callbacks["core"]["on_speech_activity"](
         SpeechActivityEvent.SPEECH_STARTED
     )

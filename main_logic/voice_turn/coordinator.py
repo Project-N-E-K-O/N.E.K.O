@@ -89,6 +89,17 @@ class TurnCoordinator:
     async def evaluate_buffered(self) -> TurnEvaluation:
         return await self.evaluate(self._buffer.snapshot_bytes())
 
+    async def prepare_predictor(self) -> bool:
+        """Load SmartTurn without performing endpoint inference."""
+
+        async with self._evaluation_lock:
+            if self._closed:
+                return False
+            try:
+                return bool(await asyncio.to_thread(self._predictor.load))
+            except Exception:
+                return False
+
     async def evaluate(self, audio_tail: bytes) -> TurnEvaluation:
         if len(audio_tail) % 2:
             raise ValueError("Smart Turn input must contain complete PCM16 samples")

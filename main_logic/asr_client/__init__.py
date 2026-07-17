@@ -357,11 +357,7 @@ def _create_asr_session_from_selection(
                 on_activity=on_speech_activity,
                 smart_turn_required=provider_policy.smart_turn_required,
             )
-            if (
-                provider_meta.requires_smart_turn
-                and session_config.endpointing_mode == "manual"
-                and not external_endpointing_runtime
-            )
+            if provider_policy.smart_turn_required and not external_endpointing_runtime
             else None
         ),
         provider_policy=provider_policy,
