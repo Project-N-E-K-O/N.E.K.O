@@ -476,6 +476,80 @@ async def test_segmented_forced_splits_wait_for_logical_turn_completion():
     await session.close()
 
 
+async def test_segmented_single_chunk_is_split_before_provider_enqueue():
+    adapter = None
+    requests = []
+
+    async def worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                requests.append(request)
+                if request.kind == "commit":
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="final",
+                            generation=request.generation,
+                            buffer_epoch=request.buffer_epoch,
+                            utterance_id=request.utterance_id,
+                            text=f"part-{request.utterance_id}",
+                        )
+                    )
+                if request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FakeVoiceTurnAdapter(on_commit)
+        return adapter
+
+    callback = AsyncMock()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=callback,
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=10,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+    )
+    await session.connect()
+
+    await session.stream_audio(b"\x01\x00" * 400)
+    assert session._request_queue is not None
+    await asyncio.wait_for(session._request_queue.join(), 1)
+
+    audio_by_utterance: dict[int, int] = {}
+    for request in requests:
+        if request.kind == "audio":
+            assert request.utterance_id is not None
+            audio_by_utterance[request.utterance_id] = (
+                audio_by_utterance.get(request.utterance_id, 0) + len(request.audio)
+            )
+    assert audio_by_utterance == {1: 320, 2: 320, 3: 160}
+    assert callback.await_count == 0
+
+    assert adapter is not None
+    await adapter.on_commit(0, 0, 1)
+    await asyncio.wait_for(_wait_until(lambda: callback.await_count == 1), 1)
+    callback.assert_awaited_once_with("part-1 part-2 part-3")
+    await session.close()
+
+
 async def test_segmented_final_segment_is_aggregated_with_forced_segments():
     adapter = None
     callbacks: list[str] = []

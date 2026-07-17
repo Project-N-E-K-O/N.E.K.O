@@ -38,3 +38,34 @@ def test_segment_ids_must_be_positive() -> None:
 
     with pytest.raises(ValueError, match="segment_id"):
         aggregator.add_transcript(turn_id, 0, "bad", forced_split=False)
+
+
+def test_registered_segments_publish_only_after_logical_completion() -> None:
+    aggregator = SegmentAggregator()
+    turn_id = aggregator.begin_turn()
+
+    assert aggregator.register_segment(turn_id, "physical-1")
+    assert aggregator.register_segment(turn_id, "physical-2")
+    assert aggregator.record_transcript("physical-2", "world")
+    assert aggregator.collect_ready() == []
+    assert aggregator.record_transcript("physical-1", "hello")
+    assert aggregator.collect_ready() == []
+
+    assert aggregator.complete_turn(turn_id)
+    ready = aggregator.collect_ready()
+    assert len(ready) == 1
+    assert ready[0].segment_ids == ("physical-1", "physical-2")
+    assert ready[0].text == "hello world"
+
+
+def test_empty_physical_segment_still_completes_logical_turn() -> None:
+    aggregator = SegmentAggregator()
+    turn_id = aggregator.begin_turn()
+
+    assert aggregator.register_segment(turn_id, "empty")
+    assert aggregator.record_transcript("empty", "")
+    assert aggregator.complete_turn(turn_id)
+
+    ready = aggregator.collect_ready()
+    assert len(ready) == 1
+    assert ready[0].text == ""
