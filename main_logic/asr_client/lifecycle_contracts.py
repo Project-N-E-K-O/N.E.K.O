@@ -13,6 +13,55 @@ class VoiceRouteMode(Enum):
     BLOCKED = "blocked"
 
 
+@dataclass(frozen=True, slots=True)
+class VoiceIngressToken:
+    """Identity shared by microphone frames before they belong to a turn."""
+
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    route_generation: int
+    audio_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTurnToken:
+    """A candidate/turn identity that preserves pre-roll across confirmation."""
+
+    ingress: VoiceIngressToken
+    turn_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTransportToken:
+    """Bind provider I/O and callbacks to one transport attempt."""
+
+    turn: VoiceTurnToken
+    transport_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinalKey:
+    """Logical final identity; transport retries do not create a new turn."""
+
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    route_generation: int
+    turn_id: int
+
+    @classmethod
+    def from_turn(cls, token: VoiceTurnToken) -> "FinalKey":
+        ingress = token.ingress
+        return cls(
+            session_epoch=ingress.session_epoch,
+            connection_id=ingress.connection_id,
+            lease_generation=ingress.lease_generation,
+            route_generation=ingress.route_generation,
+            turn_id=token.turn_id,
+        )
+
+
 class VoiceLifecycleState(Enum):
     OFF = "off"
     LOCAL_LISTEN = "local_listen"

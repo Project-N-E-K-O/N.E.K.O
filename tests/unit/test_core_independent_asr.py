@@ -48,6 +48,34 @@ def _selection(provider_key: str, endpointing_mode: str = "manual"):
     )()
 
 
+def _install_ready_lifecycle(
+    runtime: _Runtime,
+    provider: str = "qwen",
+) -> None:
+    if runtime._asr_session is None:
+        runtime._asr_session = type("Asr", (), {"is_ready": True})()
+    runtime._asr_provider = provider
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(provider, "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+
+
+async def _start_and_seal_turn(
+    runtime: _Runtime,
+    provider: str = "qwen",
+) -> None:
+    if runtime._asr_lifecycle is None:
+        _install_ready_lifecycle(runtime, provider)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(runtime._asr_session_epoch)
+
+
 async def test_independent_route_sends_pcm_to_asr_only() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -239,6 +267,7 @@ async def test_native_label_cannot_bypass_required_independent_asr() -> None:
 
 async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
     epoch = runtime._asr_session_epoch
 
     await runtime._handle_independent_asr_activity(
@@ -257,6 +286,7 @@ async def test_speech_started_interrupts_and_prepares_turn_once() -> None:
 
 async def test_speech_started_pauses_and_cancels_realtime_dispatch() -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
     arbiter = type("Arbiter", (), {})()
     arbiter.pause_dispatch = MagicMock()
     arbiter.cancel_current = AsyncMock()
@@ -329,6 +359,7 @@ async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -
     assert runtime._asr_lifecycle.pending_turn_bytes == 320
 
     await runtime._handle_independent_asr_final("first", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
     assert runtime._asr_lifecycle.identity.turn_id == old_turn + 1
@@ -468,11 +499,13 @@ async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime = _Runtime()
     runtime._asr_provider = "glm"
     epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "glm")
 
     await asyncio.gather(
         runtime._handle_independent_asr_final(" hello ", epoch, "glm"),
         runtime._handle_independent_asr_final(" hello ", epoch, "glm"),
     )
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     runtime.handle_input_transcript.assert_awaited_once_with(
         "hello",
@@ -483,8 +516,104 @@ async def test_accepted_final_is_recorded_and_injected_once() -> None:
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
+async def test_identical_text_in_consecutive_turns_is_delivered_twice() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    for _ in range(2):
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED,
+            epoch,
+        )
+        await runtime._handle_independent_asr_endpoint(epoch)
+        await runtime._handle_independent_asr_final("嗯", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    assert [
+        call.args[0] for call in runtime.handle_input_transcript.await_args_list
+    ] == ["嗯", "嗯"]
+    assert [call.args[0] for call in runtime.session.create_response.await_args_list] == [
+        "嗯",
+        "嗯",
+    ]
+
+
+async def test_blocked_core_response_does_not_block_next_asr_turn() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+    response_started = asyncio.Event()
+    release_response = asyncio.Event()
+
+    async def block_response(_text: str) -> None:
+        response_started.set()
+        await release_response.wait()
+
+    runtime.session.create_response.side_effect = block_response
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first", epoch, "qwen")
+    await response_started.wait()
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    release_response.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+
+async def test_core_swap_cancels_blocked_old_final_without_touching_new_state() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    old_epoch = runtime._asr_session_epoch
+    old_core_session = runtime.session
+    transcript_started = asyncio.Event()
+    release_transcript = asyncio.Event()
+
+    async def block_transcript(_text: str, **_kwargs: object) -> bool:
+        transcript_started.set()
+        await release_transcript.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = block_transcript
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        old_epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(old_epoch)
+    await runtime._handle_independent_asr_final("old", old_epoch, "qwen")
+    await transcript_started.wait()
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+    new_core_session = type("NewCore", (), {})()
+    new_core_session.create_response = AsyncMock()
+    new_core_session.handle_interruption = AsyncMock()
+    runtime.session = new_core_session
+    _install_ready_lifecycle(runtime, "qwen")
+    new_lifecycle = runtime._asr_lifecycle
+    assert new_lifecycle is not None
+    expected_state = new_lifecycle.snapshot.state
+
+    release_transcript.set()
+    await asyncio.sleep(0)
+
+    old_core_session.create_response.assert_not_awaited()
+    new_core_session.create_response.assert_not_awaited()
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert new_lifecycle.snapshot.state is expected_state
+    assert runtime._asr_sealed_turn_token is None
+
+
 async def test_late_first_final_then_second_final_recovers_in_linear_order() -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
     epoch = runtime._asr_session_epoch
     events: list[str] = []
 
@@ -503,37 +632,41 @@ async def test_late_first_final_then_second_final_recovers_in_linear_order() -> 
         SpeechActivityEvent.SPEECH_STARTED,
         epoch,
     )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_final("first fragment", epoch, "openai")
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.SPEECH_STARTED,
         epoch,
     )
-    await runtime._handle_independent_asr_final("first fragment", epoch, "openai")
+    await runtime._handle_independent_asr_endpoint(epoch)
     await runtime._handle_independent_asr_final("second fragment", epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
 
-    assert events == [
-        "interruption",
-        "prepare",
+    assert events.count("interruption") == 2
+    assert events.count("prepare") == 2
+    assert [event for event in events if event.startswith("transcript:")] == [
         "transcript:first fragment",
-        "response:first fragment",
-        "interruption",
-        "prepare",
         "transcript:second fragment",
+    ]
+    assert [event for event in events if event.startswith("response:")] == [
+        "response:first fragment",
         "response:second fragment",
     ]
 
 
 async def test_three_pending_finals_recover_without_request_multiplication() -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
     epoch = runtime._asr_session_epoch
 
-    for _ in range(3):
+    for text in ("first", "second", "third"):
         await runtime._handle_independent_asr_activity(
             SpeechActivityEvent.SPEECH_STARTED,
             epoch,
         )
-
-    for text in ("first", "second", "third"):
+        await runtime._handle_independent_asr_endpoint(epoch)
         await runtime._handle_independent_asr_final(text, epoch, "openai")
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     assert runtime.session.handle_interruption.await_count == 3
     assert runtime.handle_new_message.await_count == 3
@@ -552,12 +685,14 @@ async def test_three_pending_finals_recover_without_request_multiplication() -> 
 async def test_consumed_or_suppressed_final_does_not_create_response() -> None:
     runtime = _Runtime()
     runtime.handle_input_transcript.return_value = False
+    await _start_and_seal_turn(runtime, "gemini")
 
     await runtime._handle_independent_asr_final(
         "echo",
         runtime._asr_session_epoch,
         "gemini",
     )
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     runtime.session.create_response.assert_not_awaited()
 
@@ -1008,6 +1143,7 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     )
     await callbacks["core"]["on_turn_endpointed"]()
     await callbacks["core"]["on_input_transcript"]("current core final")
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     runtime.handle_input_transcript.assert_awaited_once_with(
         "current core final",
@@ -1020,8 +1156,9 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     await asyncio.sleep(0)
 
     assert runtime._asr_session is None
-    assert runtime._asr_provider is None
-    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_provider == "gemini"
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_session_epoch == adopted_epoch
     core_session.close.assert_awaited_once_with()
 
 
@@ -1125,8 +1262,10 @@ async def test_websocket_core_submits_one_external_turn_after_local_history() ->
     runtime.core_api_type = "qwen"
     runtime.session.submit_external_text_turn = AsyncMock()
     epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
 
     await runtime._handle_independent_asr_final(" hello ", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     runtime.handle_input_transcript.assert_awaited_once_with(
         "hello",
@@ -1432,15 +1571,18 @@ async def test_settings_read_failure_blocks_omni(monkeypatch) -> None:
 async def test_injection_failure_is_reported_once_without_provider_body() -> None:
     runtime = _Runtime()
     runtime.session.create_response.side_effect = RuntimeError("sensitive response")
+    await _start_and_seal_turn(runtime, "gemini")
 
     await runtime._handle_independent_asr_final(
         "hello",
         runtime._asr_session_epoch,
         "gemini",
     )
+    await runtime._wait_asr_transcript_dispatch_idle()
 
-    assert "ASR_INDEPENDENT_INJECTION_FAILED" in runtime.send_status.await_args.args[0]
-    assert "sensitive response" not in str(runtime.send_status.await_args)
+    status_payloads = [call.args[0] for call in runtime.send_status.await_args_list]
+    assert any("ASR_INDEPENDENT_INJECTION_FAILED" in item for item in status_payloads)
+    assert "sensitive response" not in str(status_payloads)
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
@@ -1454,12 +1596,14 @@ async def test_session_swap_during_transcript_drops_old_final_injection() -> Non
         return True
 
     runtime.handle_input_transcript.side_effect = swap_session
+    await _start_and_seal_turn(runtime, "glm")
 
     await runtime._handle_independent_asr_final(
         "belongs to old role",
         runtime._asr_session_epoch,
         "glm",
     )
+    await runtime._wait_asr_transcript_dispatch_idle()
 
     old_session.create_response.assert_not_awaited()
     new_session.create_response.assert_not_awaited()

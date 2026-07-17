@@ -93,13 +93,15 @@ def test_turn_identity_is_allocated_when_speech_starts_not_when_final_arrives() 
     controller.open(route_mode=VoiceRouteMode.INDEPENDENT)
     idle_identity = controller.identity
     controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    candidate_identity = controller.identity
     controller.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
     identity = controller.identity
     controller.transition(VoiceLifecycleEvent.TURN_SEALED)
     controller.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
 
     assert controller.snapshot.state is VoiceLifecycleState.WARM_IDLE
-    assert identity.turn_id == idle_identity.turn_id + 1
+    assert candidate_identity.turn_id == idle_identity.turn_id + 1
+    assert identity.turn_id == candidate_identity.turn_id
     assert controller.identity.turn_id == identity.turn_id
     assert controller.matches(identity) is False
 

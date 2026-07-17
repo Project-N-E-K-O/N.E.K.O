@@ -3,10 +3,14 @@ from __future__ import annotations
 import pytest
 
 from main_logic.asr_client.lifecycle_contracts import (
+    FinalKey,
+    VoiceIngressToken,
     VoiceLifecycleConfig,
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
+    VoiceTransportToken,
+    VoiceTurnToken,
     next_lifecycle_state,
 )
 
@@ -57,3 +61,13 @@ def test_invalid_transition_is_rejected() -> None:
 
 def test_route_mode_has_no_native_or_omni_value() -> None:
     assert {mode.value for mode in VoiceRouteMode} == {"independent", "blocked"}
+
+
+def test_logical_final_key_does_not_depend_on_transport_generation() -> None:
+    ingress = VoiceIngressToken(1, "socket", 2, 3, 4)
+    turn = VoiceTurnToken(ingress, 5)
+
+    first = VoiceTransportToken(turn, 6)
+    retry = VoiceTransportToken(turn, 7)
+
+    assert FinalKey.from_turn(first.turn) == FinalKey.from_turn(retry.turn)
