@@ -4,8 +4,9 @@
 import { get, post } from './index'
 import { API_BASE_URL } from '@/utils/constants'
 
-export type PluginCliConflictStrategy = 'rename' | 'fail'
+export type PluginCliConflictStrategy = 'fail'
 export type PluginCliBuildMode = 'selected' | 'single' | 'bundle' | 'all'
+export type PluginCliInstallAction = 'install' | 'upgrade' | 'blocked'
 
 export interface PluginCliPluginRef {
   root_id: 'builtin' | 'user'
@@ -94,6 +95,25 @@ export interface PluginCliInstallRequest {
   plugins_root?: string
   profiles_root?: string
   on_conflict?: PluginCliConflictStrategy
+  confirm_upgrade?: boolean
+  confirmation_token?: string
+}
+
+export interface PluginCliInstallPlanRequest {
+  package: string
+  plugins_root?: string
+}
+
+export interface PluginCliInstallPlanResponse {
+  action: PluginCliInstallAction
+  package_type: 'plugin' | 'bundle'
+  plugin_id: string
+  directory_name: string
+  current_version: string
+  target_version: string
+  confirmation_token: string
+  reason: string
+  legacy_plugin_ids: string[]
 }
 
 export interface PluginCliInstalledPlugin {
@@ -116,6 +136,9 @@ export interface PluginCliInstallResponse {
   payload_hash_verified: boolean | null
   conflict_strategy: PluginCliConflictStrategy
   installed_plugin_count: number
+  operation: 'install' | 'upgrade'
+  restarted: boolean
+  rollback_status: 'not_needed' | 'completed' | 'incomplete'
 }
 
 export interface PluginCliAnalyzeRequest {
@@ -209,6 +232,13 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
  */
 export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
   return post('/plugin-cli/install', payload)
+}
+
+/**
+ * 检查本地包将执行首次安装、原位升级，还是因冲突被阻止
+ */
+export function planPluginInstall(payload: PluginCliInstallPlanRequest): Promise<PluginCliInstallPlanResponse> {
+  return post('/plugin-cli/install-plan', payload)
 }
 
 /**

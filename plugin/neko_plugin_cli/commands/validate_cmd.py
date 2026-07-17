@@ -117,6 +117,7 @@ def _check_plugin_toml_schema(
         "config_profiles",
         "dependency",
         "dependencies",
+        "previous_ids",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -136,6 +137,7 @@ def _check_plugin_toml_schema(
     _check_optional_bool(plugin_table, "passive", "[plugin].passive", issues)
     _check_string_list(plugin_table.get("keywords"), "[plugin].keywords", issues, required=False)
     _check_plugin_dependency_id_list(plugin_table.get("dependencies"), "[plugin].dependencies", plugin_id, issues)
+    _check_previous_plugin_ids(plugin_table.get("previous_ids"), plugin_id, issues)
 
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
@@ -241,6 +243,33 @@ def _check_plugin_dependency_id_list(
             continue
         if dependency_id == plugin_id:
             issues.append(("error", f"{label}[{index}] must not reference the plugin itself"))
+
+
+def _check_previous_plugin_ids(
+    value: object,
+    plugin_id: str,
+    issues: list[tuple[str, str]],
+) -> None:
+    label = "[plugin].previous_ids"
+    if value is None:
+        return
+    if not isinstance(value, list):
+        issues.append(("error", f"{label} must be a list of plugin id strings"))
+        return
+
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            issues.append(("error", f"{label}[{index}] must be a non-empty plugin id"))
+            continue
+        previous_id = item.strip()
+        if not re.fullmatch(r"^[A-Za-z0-9_-]+$", previous_id):
+            issues.append(("error", f"{label}[{index}] must be a plugin id, got '{previous_id}'"))
+        elif previous_id == plugin_id:
+            issues.append(("error", f"{label}[{index}] must not equal [plugin].id"))
+        elif previous_id in seen:
+            issues.append(("error", f"{label}[{index}] duplicates '{previous_id}'"))
+        seen.add(previous_id)
 
 
 def _check_optional_number(

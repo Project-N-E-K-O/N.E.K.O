@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import secrets
-import shutil
 import tempfile
 import time
 import tomllib
@@ -41,6 +40,14 @@ from plugin.server.application.install_source import (
 )
 from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugins.upgrade_support import (
+    backup_path_for,
+    plugin_is_running,
+    remove_directory,
+    restore_directory,
+    start_plugin_after_upgrade,
+    stop_plugin_for_upgrade,
+)
 from plugin.settings import (
     MARKET_API_URL,
     MARKET_WEB_URL,
@@ -314,7 +321,7 @@ class MarketInstallRequest(BaseModel):
             "不一致会拒绝并回滚"
         ),
     )
-    on_conflict: str = Field(default="rename", pattern=r"^(rename|fail)$")
+    on_conflict: str = Field(default="fail", pattern=r"^(rename|fail)$")
     require_confirm: bool = Field(default=True, description="是否需要用户确认（预留）")
 
     @field_validator("package_sha256", mode="before")
@@ -1703,11 +1710,9 @@ async def _do_upgrade(
             )
 
     plugin_dir = (PluginCliPathPolicy.from_settings().user_plugins_root / entry.directory_name).resolve()
-    backup_dir = plugin_dir.with_name(
-        f"{entry.directory_name}.bak.{_utc_micro_ts()}"
-    )
+    backup_dir = backup_path_for(plugin_dir)
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
-    was_running = await _safely_is_running(installed_plugin_id)
+    was_running = await plugin_is_running(installed_plugin_id)
 
     # Step 3: lifecycle stop.
     if was_running:
@@ -1718,7 +1723,7 @@ async def _do_upgrade(
             progress=0.05,
             message="正在停止旧版本插件...",
         )
-        await _safely_stop(installed_plugin_id)
+        await stop_plugin_for_upgrade(installed_plugin_id)
 
     # Step 4: rename old dir → backup.
     try:
@@ -1729,10 +1734,11 @@ async def _do_upgrade(
             progress=0.08,
             message="正在备份旧版本...",
         )
+        await asyncio.to_thread(backup_dir.parent.mkdir, parents=True, exist_ok=True)
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
     except OSError as exc:
         if was_running:
-            await _safely_start(installed_plugin_id)
+            await start_plugin_after_upgrade(installed_plugin_id, strict=False)
         raise _TaskError(
             code="upgrade_rollback_completed",
             message=f"无法备份旧目录: {exc}",
@@ -1818,7 +1824,7 @@ async def _do_upgrade(
                 progress=0.92,
                 message="正在启动新版本...",
             )
-            await _safely_start(installed_plugin_id)
+            await start_plugin_after_upgrade(installed_plugin_id, strict=True)
 
         # Step 8: async cleanup of backup.
         asyncio.create_task(
@@ -1975,99 +1981,6 @@ def _post_install_payload_check(
 # ─── lifecycle / rollback helpers ─────────────────────────────────────
 
 
-async def _safely_is_running(plugin_id: str) -> bool:
-    """Probe whether ``plugin_id`` is currently running.
-
-    Reads the plugin host registry directly (lock-protected) instead of
-    going through the lifecycle service — we just need a snapshot of
-    the running set, not a heavy RPC. Failure modes (registry not yet
-    initialized, weird plugin id) collapse to "not running" so the
-    upgrade flow does not try to stop something that isn't there.
-    """
-
-    if not plugin_id:
-        return False
-    try:
-        from plugin.server.application.plugins.lifecycle_service import (
-            _plugin_is_running_sync,
-        )
-        return await asyncio.to_thread(_plugin_is_running_sync, plugin_id)
-    except Exception as exc:  # pragma: no cover — defensive
-        logger.warning(
-            "lifecycle is_running probe failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        return False
-
-
-async def _safely_stop(plugin_id: str) -> None:
-    """Best-effort lifecycle stop wrapping ``PluginLifecycleService.stop_plugin``.
-
-    Bridge upgrade calls this **before** renaming the old plugin
-    directory; failures here aren't necessarily fatal (Linux happily
-    renames a dir even when the process holds open files, Windows
-    won't). We surface any error to bridge so it can choose to abort
-    rather than risk corruption.
-    """
-
-    if not plugin_id:
-        return None
-    from plugin.server.application.plugins import PluginLifecycleService
-    from plugin.server.domain.errors import ServerDomainError
-
-    service = PluginLifecycleService()
-    try:
-        await service.stop_plugin(plugin_id)
-    except ServerDomainError as exc:
-        # PLUGIN_NOT_RUNNING (404) is benign — the plugin was already
-        # stopped between our is_running probe and the stop call.
-        if getattr(exc, "code", None) == "PLUGIN_NOT_RUNNING":
-            logger.debug(
-                "lifecycle stop: plugin already stopped plugin_id={}",
-                plugin_id,
-            )
-            return None
-        logger.error(
-            "lifecycle stop failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        raise
-    except Exception as exc:
-        logger.error(
-            "lifecycle stop unexpected error for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        raise
-
-
-async def _safely_start(plugin_id: str) -> None:
-    """Best-effort lifecycle start; never raises (R5.4).
-
-    Wraps the start hook in a try/except so that a failure during
-    rollback does not shadow the original error. Logged at ERROR with
-    the underlying cause so the operator can see why the old version
-    didn't come back up.
-    """
-
-    if not plugin_id:
-        return None
-    from plugin.server.application.plugins import PluginLifecycleService
-
-    service = PluginLifecycleService()
-    try:
-        await service.start_plugin(plugin_id)
-    except Exception as exc:
-        logger.error(
-            "lifecycle start failed for plugin_id={}: {}",
-            plugin_id,
-            exc,
-        )
-        return None
-
-
 def _make_restore_dir_step(
     backup_dir: Path,
     target_dir: Path,
@@ -2075,12 +1988,7 @@ def _make_restore_dir_step(
     """Build a rollback step that renames ``backup_dir`` back to ``target_dir``."""
 
     async def _step() -> None:
-        if not backup_dir.exists():
-            return
-        # Make sure target is clear before rename so we don't EEXIST.
-        if target_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
-        await asyncio.to_thread(os.rename, backup_dir, target_dir)
+        await restore_directory(backup_dir, target_dir)
 
     return _step
 
@@ -2094,7 +2002,7 @@ def _make_remove_dir_step(target_dir: Path) -> Callable[[], Awaitable[None]]:
     """
 
     async def _step() -> None:
-        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await remove_directory(target_dir)
 
     return _step
 
@@ -2103,7 +2011,7 @@ async def _async_remove_dir(target_dir: Path) -> None:
     """Async best-effort rmtree for backup cleanup."""
 
     try:
-        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        await remove_directory(target_dir)
     except Exception as exc:  # pragma: no cover — ignore_errors=True swallows
         logger.warning("backup cleanup failed for {}: {}", target_dir, exc)
 
@@ -2145,26 +2053,12 @@ async def _run_rollback(
                 exc,
             )
     if was_running:
-        await _safely_start(plugin_id)
+        await start_plugin_after_upgrade(plugin_id, strict=False)
     if task is not None:
         rollback_info = dict(task.get("rollback") or {})
         rollback_info["running"] = False
         rollback_info["restored"] = rollback_ok
         task["rollback"] = rollback_info
-
-
-def _utc_micro_ts() -> str:
-    """Generate a microsecond-precision UTC timestamp suitable for filenames.
-
-    Format: ``YYYYMMDDTHHMMSS_uuuuuu`` (no colons / slashes so it works on
-    every OS we support). Backup directory names are derived from this
-    so concurrent upgrades on the same plugin can be distinguished —
-    though the InstallSourceManager lock already serialises lock writes,
-    so concurrent upgrades hitting the *same* timestamp are bounded by
-    bridge-level scheduling.
-    """
-
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%f")
 
 
 def _utc_iso_now() -> str:

@@ -30,7 +30,7 @@ class PackageUnpacker:
         *,
         plugins_root: str | Path | None = None,
         profiles_root: str | Path | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
     ) -> UnpackResult:
         package_path = Path(package_path).expanduser().resolve()
         plugins_root_path = Path(plugins_root).expanduser().resolve() if plugins_root is not None else _DEFAULT_PLUGINS_ROOT
@@ -96,9 +96,15 @@ class PackageUnpacker:
     ) -> dict[str, Path]:
         mapping: dict[str, Path] = {}
         for folder in plugin_folders:
-            target_dir = self.resolve_target_dir(plugins_root / folder, on_conflict=on_conflict)
+            target_dir = self.resolve_plugin_target_dir(plugins_root / folder)
             mapping[folder] = target_dir
         return mapping
+
+    @staticmethod
+    def resolve_plugin_target_dir(target_dir: Path) -> Path:
+        if target_dir.exists():
+            raise FileExistsError(f"plugin target already exists: {target_dir.name}")
+        return target_dir.resolve()
 
     def extract_plugins(self, archive: zipfile.ZipFile, folder_mapping: dict[str, Path]) -> None:
         for name in archive.namelist():
@@ -186,7 +192,7 @@ def unpack_package(
     *,
     plugins_root: str | Path | None = None,
     profiles_root: str | Path | None = None,
-    on_conflict: str = "rename",
+    on_conflict: str = "fail",
 ) -> UnpackResult:
     """Public convenience wrapper for archive extraction into runtime directories."""
 

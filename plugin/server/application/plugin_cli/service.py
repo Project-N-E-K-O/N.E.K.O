@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
 import hashlib
 import shutil
 import tomllib
@@ -26,6 +27,8 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugin_cli.install_plan import build_install_plan
+from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
     ResolvedPluginSource,
@@ -120,25 +123,136 @@ class PluginCliService:
     async def verify(self, *, package: str) -> dict[str, object]:
         return await asyncio.to_thread(self._verify_sync, package=package)
 
+    async def plan_install(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None = None,
+    ) -> dict[str, object]:
+        return await asyncio.to_thread(
+            self._plan_install_sync,
+            package=package,
+            plugins_root=plugins_root,
+        )
+
     async def install(
         self,
         *,
         package: str,
         plugins_root: str | None = None,
         profiles_root: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
         use_staging: bool = True,
         forced_directory_name: str | None = None,
+        confirm_upgrade: bool = False,
+        confirmation_token: str | None = None,
     ) -> dict[str, object]:
-        return await asyncio.to_thread(
-            self._install_sync,
-            package=package,
-            plugins_root=plugins_root,
-            profiles_root=profiles_root,
-            on_conflict=on_conflict,
-            use_staging=use_staging,
-            forced_directory_name=forced_directory_name,
+        plan_dict = await self.plan_install(package=package, plugins_root=plugins_root)
+        action = str(plan_dict["action"])
+        if action == "blocked":
+            raise ServerDomainError(
+                code="PLUGIN_INSTALL_BLOCKED",
+                message="plugin package cannot be installed safely",
+                status_code=409,
+                details=plan_dict,
+            )
+        if action == "install":
+            return await asyncio.to_thread(
+                self._install_sync,
+                package=package,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                on_conflict=on_conflict,
+                use_staging=use_staging,
+                forced_directory_name=forced_directory_name,
+            )
+
+        if not confirm_upgrade or not confirmation_token:
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_CONFIRMATION_REQUIRED",
+                message="plugin upgrade requires explicit confirmation",
+                status_code=409,
+                details=plan_dict,
+            )
+        if confirmation_token != str(plan_dict["confirmation_token"]):
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_PLAN_CHANGED",
+                message="installed plugin changed after upgrade confirmation",
+                status_code=409,
+                details=plan_dict,
+            )
+
+        policy = self._path_policy()
+        target_root = (
+            _require_within(
+                Path(plugins_root).expanduser().resolve(),
+                policy.user_plugins_root,
+                field="plugins_root",
+            )
+            if plugins_root
+            else policy.user_plugins_root
         )
+        target_dir = target_root / str(plan_dict["directory_name"])
+        profiles_root_path = (
+            _require_within(
+                Path(profiles_root).expanduser().resolve(),
+                policy.package_profiles_root,
+                field="profiles_root",
+            )
+            if profiles_root
+            else policy.package_profiles_root
+        )
+        profile_dir = profiles_root_path / str(plan_dict["plugin_id"])
+        plan = build_install_plan(
+            package_path=self._resolve_package_path(package),
+            plugins_root=target_root,
+        )
+
+        async def install_new() -> dict[str, object]:
+            return await asyncio.to_thread(
+                self._install_sync,
+                package=package,
+                plugins_root=plugins_root,
+                profiles_root=profiles_root,
+                on_conflict="fail",
+                use_staging=use_staging,
+                forced_directory_name=forced_directory_name,
+            )
+
+        async def validate_new() -> None:
+            plugin_id = self._read_installed_plugin_toml_id(target_dir)
+            if plugin_id != plan.plugin_id or target_dir.name != plan.directory_name:
+                raise ValueError("installed plugin identity does not match the upgrade plan")
+
+        async def start(plugin_id: str) -> None:
+            await upgrade_support.start_plugin_after_upgrade(plugin_id, strict=True)
+
+        try:
+            result = await upgrade_support.perform_safe_upgrade(
+                plan=plan,
+                target_dir=target_dir,
+                install_new=install_new,
+                validate_new=validate_new,
+                is_running=upgrade_support.plugin_is_running,
+                stop=upgrade_support.stop_plugin_for_upgrade,
+                start=start,
+                cleanup_backup=upgrade_support.remove_directory,
+                additional_targets=(profile_dir,),
+            )
+        except upgrade_support.SafeUpgradeError as exc:
+            raise ServerDomainError(
+                code="PLUGIN_UPGRADE_ROLLED_BACK",
+                message="plugin upgrade failed and rollback was attempted",
+                status_code=500,
+                details={"stage": exc.stage, "rollback_status": exc.rollback_status},
+            ) from exc
+
+        return {
+            **result.install_result,
+            "operation": result.operation,
+            "restarted": result.restarted,
+            "rollback_status": result.rollback_status,
+        }
 
     async def analyze(
         self,
@@ -170,7 +284,7 @@ class PluginCliService:
         filename: str,
         content: bytes | None = None,
         package_path: str | None = None,
-        on_conflict: str = "rename",
+        on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
@@ -868,6 +982,31 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="verify") from exc
 
+    def _plan_install_sync(
+        self,
+        *,
+        package: str,
+        plugins_root: str | None,
+    ) -> dict[str, object]:
+        try:
+            policy = self._path_policy()
+            target_root = (
+                _require_within(
+                    Path(plugins_root).expanduser().resolve(),
+                    policy.user_plugins_root,
+                    field="plugins_root",
+                )
+                if plugins_root
+                else policy.user_plugins_root
+            )
+            plan = build_install_plan(
+                package_path=self._resolve_package_path(package),
+                plugins_root=target_root,
+            )
+            return asdict(plan)
+        except Exception as exc:
+            raise self._domain_error_from_exception(exc, action="install-plan") from exc
+
     def _install_sync(
         self,
         *,
@@ -951,9 +1090,8 @@ class PluginCliService:
                 source_dir = Path(item.target_dir)
                 desired_name = forced_directory_name or item.target_plugin_id
                 desired = plugins_root / desired_name
-                final_dir = installer.resolve_target_dir(
+                final_dir = installer.resolve_plugin_target_dir(
                     desired,
-                    on_conflict=on_conflict,
                 )
                 if source_dir.resolve() != final_dir.resolve():
                     final_dir.parent.mkdir(parents=True, exist_ok=True)
