@@ -61,6 +61,25 @@ PNG_TUBER_UPLOAD_LABELS = {
     "pt.json": ("Importar arquivo de projeto", "Importar pasta"),
 }
 
+RPS_UI_KEYS = (
+    "chat.toolRps",
+    "chat.avatarToolRpsGestureRock",
+    "chat.avatarToolRpsGestureScissors",
+    "chat.avatarToolRpsGesturePaper",
+    "chat.avatarToolRpsResultUserWin",
+    "chat.avatarToolRpsResultAvatarWin",
+    "chat.avatarToolRpsResultDraw",
+    "chat.avatarToolRpsRoundAnnouncement",
+)
+RPS_LOCALE_FILES = {
+    "en.json", "es.json", "ja.json", "ko.json",
+    "pt.json", "ru.json", "zh-CN.json", "zh-TW.json",
+}
+RPS_ANNOUNCEMENT_KEY = "chat.avatarToolRpsRoundAnnouncement"
+RPS_AVATAR_WIN_KEY = "chat.avatarToolRpsResultAvatarWin"
+RPS_AVATAR_WIN_PLACEHOLDERS = ["name"]
+RPS_ANNOUNCEMENT_PLACEHOLDERS = ["userGesture", "name", "avatarGesture", "result"]
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mock_memory_server():
@@ -145,6 +164,72 @@ def test_tutorial_prompt_locale_keys_exist_in_all_locales():
             missing_by_locale[locale_path.name] = missing
 
     assert missing_by_locale == {}
+
+
+@pytest.mark.unit
+def test_avatar_tool_rps_ui_keys_exist_in_all_locales():
+    invalid_by_locale: dict[str, list[str]] = {}
+    locale_paths = sorted(LOCALES_DIR.glob("*.json"))
+    assert {path.name for path in locale_paths} == RPS_LOCALE_FILES
+
+    for locale_path in locale_paths:
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        invalid = []
+        for key in RPS_UI_KEYS:
+            if not _has_nested_key(data, key):
+                invalid.append(key)
+                continue
+            current = data
+            for part in key.split("."):
+                current = current[part]
+            if not isinstance(current, str) or not current.strip():
+                invalid.append(key)
+        if invalid:
+            invalid_by_locale[locale_path.name] = invalid
+
+    assert invalid_by_locale == {}
+
+
+@pytest.mark.unit
+def test_avatar_tool_rps_announcement_placeholders_are_consistent():
+    mismatches: dict[str, dict[str, list[str]]] = {}
+
+    for locale_path in sorted(LOCALES_DIR.glob("*.json")):
+        data = json.loads(locale_path.read_text(encoding="utf-8"))
+        chat = data.get("chat", {})
+        avatar_win_placeholders = re.findall(
+            r"{{\s*([A-Za-z][A-Za-z0-9]*)\s*}}",
+            chat.get("avatarToolRpsResultAvatarWin", ""),
+        )
+        announcement_placeholders = re.findall(
+            r"{{\s*([A-Za-z][A-Za-z0-9]*)\s*}}",
+            chat.get("avatarToolRpsRoundAnnouncement", ""),
+        )
+        invalid = {}
+        if avatar_win_placeholders != RPS_AVATAR_WIN_PLACEHOLDERS:
+            invalid[RPS_AVATAR_WIN_KEY] = avatar_win_placeholders
+        if announcement_placeholders != RPS_ANNOUNCEMENT_PLACEHOLDERS:
+            invalid[RPS_ANNOUNCEMENT_KEY] = announcement_placeholders
+        if invalid:
+            mismatches[locale_path.name] = invalid
+
+    assert mismatches == {}
+
+
+@pytest.mark.unit
+def test_locale_leaf_key_sets_are_consistent():
+    key_sets = {
+        locale_path.name: {
+            key for key, _value in _flatten_leaf_strings(
+                json.loads(locale_path.read_text(encoding="utf-8"))
+            )
+        }
+        for locale_path in sorted(LOCALES_DIR.glob("*.json"))
+    }
+
+    assert "en.json" in key_sets
+    baseline = key_sets["en.json"]
+    assert {name: sorted(keys ^ baseline) for name, keys in key_sets.items() if keys != baseline} == {}
 
 
 @pytest.mark.unit
