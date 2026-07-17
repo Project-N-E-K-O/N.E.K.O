@@ -28,6 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from main_logic.asr_client.hot_swap_audio_buffer import HotSwapAudioFrame
 from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
@@ -111,76 +112,59 @@ class StreamingMixin:
             self.pending_input_data.clear()
     
     async def _flush_hot_swap_audio_cache(self):
-        """After hot-swap completes, push cached audio data to the new session in a loop until the cache is stably empty"""
-        # 设置标志，让新的音频继续缓存而不是直接发送
+        """Flush current-generation hot-swap PCM only to independent ASR."""
         self.is_flushing_hot_swap_cache = True
-        
+
         try:
-            # 检查session是否可用
             if not self.session or not self.is_active:
                 logger.warning("⚠️ 热切换音频缓存刷新时session不可用，丢弃缓存")
                 async with self.hot_swap_cache_lock:
                     self.hot_swap_audio_cache.clear()
                 return
-            
-            # 检查session类型
-            if not isinstance(self.session, OmniRealtimeClient):
-                logger.debug("热切换音频缓存仅适用于语音模式，当前session类型不匹配，跳过flush")
-                async with self.hot_swap_cache_lock:
-                    self.hot_swap_audio_cache.clear()
-                return
-            
+
             max_iterations = 20  # 最多迭代20次，防止无限循环
             iteration = 0
-            total_chunks_sent = 0
-            
+            total_frames_sent = 0
+
             logger.info("🔄 开始循环推送热切换音频缓存...")
-            
+
             while iteration < max_iterations:
-                # 检查并取出当前缓存
                 async with self.hot_swap_cache_lock:
-                    cache_len = len(self.hot_swap_audio_cache)
-                    
-                    if cache_len == 0:
-                        break
-                    else:
-                        audio_chunks = self.hot_swap_audio_cache.copy()
-                        self.hot_swap_audio_cache.clear()
-                
-                # 如果有缓存，合并并发送
-                if cache_len > 0:
-                    logger.info(f"🔄 推送第{iteration+1}批音频缓存: {cache_len} 个chunk")
-                    
-                    # 合并小chunk成大chunk（节流）
-                    combined_audio = b''.join(audio_chunks)
-                    
-                    # 计算每个大chunk的大小（16kHz，约10ms = 160 samples = 320 bytes）
-                    original_chunk_size = 320  # 16kHz: 160 samples × 2 bytes
-                    large_chunk_size = original_chunk_size * self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER
-                    
-                    # 分批发送
-                    for i in range(0, len(combined_audio), large_chunk_size):
-                        chunk = combined_audio[i:i + large_chunk_size]
-                        try:
-                            await self._route_microphone_audio(
-                                chunk,
-                                sample_rate_hz=16_000,
-                            )
-                            await asyncio.sleep(0.025)
-                            total_chunks_sent += 1
-                        except Exception as e:
-                            logger.error(f"💥 推送音频缓存失败: {e}")
-                            return  # 推送失败，放弃
-                
+                    audio_frames = self.hot_swap_audio_cache.drain()
+                if not audio_frames:
+                    break
+
+                logger.info(
+                    "🔄 推送第%s批音频缓存: %s 个frame",
+                    iteration + 1,
+                    len(audio_frames),
+                )
+                for frame in audio_frames:
+                    if not self._ingress_token_matches(frame.token):
+                        continue
+                    try:
+                        await self._route_microphone_audio(
+                            frame.pcm16,
+                            sample_rate_hz=16_000,
+                            speech_probability=frame.speech_probability,
+                            rnnoise_available=frame.rnnoise_available,
+                        )
+                        total_frames_sent += 1
+                    except Exception as exc:
+                        logger.error("💥 推送音频缓存失败: %s", exc)
+                        return
+
                 iteration += 1
-                
+
             if iteration >= max_iterations:
                 logger.warning(f"⚠️ 达到最大迭代次数({max_iterations})，停止推送")
-            
-            logger.info(f"✅ 热切换音频缓存推送完成，共推送约 {total_chunks_sent} 个大chunk，迭代 {iteration} 次")
-            
+
+            logger.info(
+                "✅ 热切换音频缓存推送完成，共推送 %s 个frame，迭代 %s 次",
+                total_frames_sent,
+                iteration,
+            )
         finally:
-            # 无论如何都要清除flag，恢复正常音频输入
             self.is_flushing_hot_swap_cache = False
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
@@ -608,8 +592,25 @@ class StreamingMixin:
                     ):
                         return
                     if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
+                        if ingress_token is None:
+                            return
                         async with self.hot_swap_cache_lock:
-                            self.hot_swap_audio_cache.append(processed_frame.pcm16)
+                            accepted = self.hot_swap_audio_cache.append(
+                                HotSwapAudioFrame(
+                                    pcm16=processed_frame.pcm16,
+                                    token=ingress_token,
+                                    speech_probability=(
+                                        processed_frame.speech_probability
+                                    ),
+                                    rnnoise_available=(
+                                        processed_frame.rnnoise_available
+                                    ),
+                                )
+                            )
+                        if not accepted:
+                            await self._handle_audio_ingress_backpressure(
+                                ingress_token
+                            )
                         return
                     if (
                         ingress_token is not None

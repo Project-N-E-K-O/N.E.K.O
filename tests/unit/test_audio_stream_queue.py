@@ -12,6 +12,10 @@ from main_logic.core import LLMSessionManager
 from main_logic.core.audio_duration_queue import AudioDurationQueue, QueuedMicFrame
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.asr_client.audio_pipeline import ProcessedVoiceFrame
+from main_logic.asr_client.hot_swap_audio_buffer import (
+    HotSwapAudioBuffer,
+    HotSwapAudioFrame,
+)
 from main_logic.asr_client.lifecycle_contracts import (
     VoiceIngressToken,
     VoiceLifecycleEvent,
@@ -102,6 +106,21 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
 
 def _queue_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
+
+
+def _hot_swap_frame(
+    token: VoiceIngressToken,
+    *,
+    samples: int = 160,
+    speech_probability: float | None = 0.5,
+    rnnoise_available: bool = True,
+) -> HotSwapAudioFrame:
+    return HotSwapAudioFrame(
+        pcm16=b"\x01\x00" * samples,
+        token=token,
+        speech_probability=speech_probability,
+        rnnoise_available=rnnoise_available,
+    )
 
 
 def _authorize_core_lease(mgr: LLMSessionManager) -> None:
@@ -513,25 +532,78 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
     assert mgr._asr_required is True
 
 
-async def test_hot_swap_flush_honors_consumed_audio_route():
+async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
     mgr = _make_routable_audio_manager(True)
-    mgr.hot_swap_audio_cache = [b"\x01\x00" * 160]
-    mgr.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5
+    token = _queue_token()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(
+        _hot_swap_frame(
+            token,
+            speech_probability=0.75,
+            rnnoise_available=True,
+        )
+    )
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._ingress_token_matches.assert_called_once_with(token)
+    mgr._route_microphone_audio.assert_awaited_once_with(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=0.75,
+        rnnoise_available=True,
+    )
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_hot_swap_flush_supports_text_only_core_without_omni_pcm():
+    mgr = _make_routable_audio_manager(False)
+    omni_session = mgr.session
+    mgr.session = type("TextOnlyCore", (), {})()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(_queue_token()))
 
     await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
 
     mgr._route_microphone_audio.assert_awaited_once()
+    omni_session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_hot_swap_flush_discards_stale_generation():
+    mgr = _make_routable_audio_manager(True)
+    mgr._ingress_token_matches = MagicMock(return_value=False)
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(_queue_token()))
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
 
 
-async def test_hot_swap_flush_never_falls_back_to_omni_audio():
-    mgr = _make_routable_audio_manager(False)
-    mgr.hot_swap_audio_cache = [b"\x01\x00" * 160]
-    mgr.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5
+async def test_hot_swap_overflow_blocks_whole_candidate():
+    mgr = _make_routable_audio_manager(True)
+    token = _queue_token()
+    mgr.is_hot_swap_imminent = True
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._handle_audio_ingress_backpressure = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=10)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
 
-    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "sample_rate_hz": 16_000, "data": [1] * 160},
+        ingress_token=token,
+    )
 
-    mgr._route_microphone_audio.assert_awaited_once()
+    assert not mgr.hot_swap_audio_cache
+    mgr._handle_audio_ingress_backpressure.assert_awaited_once_with(token)
+    mgr._route_microphone_audio.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()

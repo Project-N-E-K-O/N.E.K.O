@@ -44,6 +44,7 @@ from .streaming import StreamingMixin
 from .notify import NotifyMixin
 from .asr_runtime import AsrRuntimeMixin
 from .audio_duration_queue import AudioDurationQueue
+from main_logic.asr_client.hot_swap_audio_buffer import HotSwapAudioBuffer
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -301,10 +302,9 @@ class LLMSessionManager(
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
         # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
-        self.hot_swap_audio_cache = []  # 热切换期间缓存的音频数据: [bytes, ...]
+        self.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
         self.hot_swap_cache_lock = asyncio.Lock()  # 保护热切换音频缓存的锁
         self.is_flushing_hot_swap_cache = False  # 是否正在推送热切换缓存（推送期间新音频继续缓存）
-        self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5  # 热切换后发送的chunk大小倍数(节流)
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
