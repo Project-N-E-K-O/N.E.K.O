@@ -2608,9 +2608,9 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Widget Mode Beta está activado.",
-            "disabledNotice": "Widget Mode Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Widget Mode Beta. Inténtalo de nuevo más tarde.",
+            "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
+            "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
+            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde.",
             "memoryMetric": "memoria",
             "resourceMetric": "recursos",
             "statusOn": "Activado",
@@ -2625,7 +2625,7 @@
             "details": "Detalles",
             "restoreFailed": "No se pudo restaurar el modelo, así que la forma de gato sigue activa. Haz clic de nuevo en el gato para reintentar.",
             "signalUnavailable": "La señal de actividad no está disponible temporalmente; el candidato actual no se borrará. El diagnóstico de recursos sigue disponible.",
-            "compactionConfirmed": "Widget Mode Beta compactó el modelo actual a forma de gato.",
+            "compactionConfirmed": "Modo de acoplamiento al borde Beta compactó el modelo actual a forma de gato.",
             "compactionFailed": "La compactación no terminó. Se restauró el modelo actual."
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "Modo de acoplamiento al borde Beta",
             "widgetModeTooltip": "Live2D puede asomarse desde seis anclajes del borde. La respuesta a la actividad está desactivada por defecto; CPU, memoria y GPU son solo diagnósticos.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",

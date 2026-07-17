@@ -386,10 +386,18 @@ function showWidgetModeMutationFailure(error) {
     console.warn('[WidgetMode] settings mutation failed:', error);
     const message = window.t
         ? window.t('settings.widgetMode.toggleFailed')
-        : 'Widget Mode 切换失败，请稍后重试。';
+        : '挂边模式 Beta 切换失败，请稍后重试。';
     if (typeof window.showStatusToast === 'function') {
         window.showStatusToast(message, 3000);
     }
+}
+
+let widgetModeMutationQueue = Promise.resolve();
+
+function queueWidgetModeMutation(operation) {
+    const run = function () { return operation(); };
+    widgetModeMutationQueue = widgetModeMutationQueue.then(run, run);
+    return widgetModeMutationQueue;
 }
 
 function createWidgetModeDetailPanel(manager, prefix, mainToggleItem) {
@@ -476,18 +484,22 @@ function createWidgetModeDetailPanel(manager, prefix, mainToggleItem) {
         const api = window.nekoWidgetMode;
         if (!api || typeof api.setSettings !== 'function') {
             render();
-            return;
+            return Promise.resolve(false);
         }
-        void Promise.resolve()
-            .then(function () { return api.setSettings(settings); })
-            .then(function (ok) {
-                render();
-                if (!ok) showWidgetModeMutationFailure(new Error('settings update rejected'));
-            })
-            .catch(function (error) {
-                render();
-                showWidgetModeMutationFailure(error);
-            });
+        return queueWidgetModeMutation(function () {
+            return Promise.resolve()
+                .then(function () { return api.setSettings(settings); })
+                .then(function (ok) {
+                    render();
+                    if (!ok) showWidgetModeMutationFailure(new Error('settings update rejected'));
+                    return ok;
+                })
+                .catch(function (error) {
+                    render();
+                    showWidgetModeMutationFailure(error);
+                    return false;
+                });
+        });
     };
 
     Object.keys(modeButtons).forEach(function (mode) {
@@ -518,7 +530,7 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
     });
     const widgetModeItem = manager._createSettingsToggleItem({
         id: 'widget-mode',
-        label: window.t ? window.t('settings.toggles.widgetMode') : 'Widget Mode Beta',
+        label: window.t ? window.t('settings.toggles.widgetMode') : '挂边模式 Beta',
         labelKey: 'settings.toggles.widgetMode',
         tooltipKey: 'settings.toggles.widgetModeTooltip',
         alwaysTinted: true
@@ -2646,17 +2658,21 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             }
         } else if (toggle.id === 'widget-mode') {
             if (window.nekoWidgetMode && typeof window.nekoWidgetMode.setEnabled === 'function') {
-                void Promise.resolve()
-                    .then(function () { return window.nekoWidgetMode.setEnabled(isChecked); })
-                    .then(function (ok) {
-                        if (!ok) checkbox.checked = !isChecked;
-                        updateStyle();
-                    })
-                    .catch(function (error) {
-                        checkbox.checked = !isChecked;
-                        updateStyle();
-                        showWidgetModeMutationFailure(error);
-                    });
+                return queueWidgetModeMutation(function () {
+                    return Promise.resolve()
+                        .then(function () { return window.nekoWidgetMode.setEnabled(isChecked); })
+                        .then(function (ok) {
+                            if (!ok) checkbox.checked = !isChecked;
+                            updateStyle();
+                            return ok;
+                        })
+                        .catch(function (error) {
+                            checkbox.checked = !isChecked;
+                            updateStyle();
+                            showWidgetModeMutationFailure(error);
+                            return false;
+                        });
+                });
             }
         }
     };
@@ -2679,7 +2695,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         if (checkbox._processing) {
             const elapsed = Date.now() - (checkbox._processingTime || 0);
-            if (elapsed < 500) {
+            if (toggle.id === 'widget-mode' || elapsed < 500) {
                 return;
             }
         }
@@ -2689,14 +2705,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
+        const mutation = handleToggleChange(newChecked);
         refreshDependentToggles();
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
 
-        setTimeout(() => {
+        const clearProcessing = () => {
             checkbox._processing = false;
             checkbox._processingTime = null;
-        }, 500);
+        };
+        if (toggle.id === 'widget-mode' && mutation && typeof mutation.finally === 'function') {
+            void mutation.finally(clearProcessing);
+        } else {
+            setTimeout(clearProcessing, 500);
+        }
     };
 
     toggleItem.addEventListener('keydown', (e) => {

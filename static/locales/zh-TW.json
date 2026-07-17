@@ -2608,9 +2608,9 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "Widget Mode Beta 已開啟。",
-            "disabledNotice": "Widget Mode Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
-            "toggleFailed": "Widget Mode Beta 切換失敗，請稍後重試。",
+            "enabledNotice": "掛邊模式 Beta 已開啟。",
+            "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
+            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。",
             "memoryMetric": "記憶體",
             "resourceMetric": "資源",
             "statusOn": "開啟",
@@ -2625,7 +2625,7 @@
             "details": "詳情",
             "restoreFailed": "模型恢復失敗，目前保持貓貓形態，請再次點擊貓貓重試。",
             "signalUnavailable": "活動訊號暫時無法使用；目前候選不會被誤清空，資源診斷仍然可用。",
-            "compactionConfirmed": "Widget Mode Beta 已將目前模型收縮為貓貓形態。",
+            "compactionConfirmed": "掛邊模式 Beta 已將目前模型收縮為貓貓形態。",
             "compactionFailed": "模型收縮未完成，已恢復目前模型。"
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "表情氣泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "掛邊模式 Beta",
             "widgetModeTooltip": "Live2D 支援左右與四角共六個探身錨點。活動回應預設關閉；CPU、記憶體與 GPU 採樣僅用於診斷。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",

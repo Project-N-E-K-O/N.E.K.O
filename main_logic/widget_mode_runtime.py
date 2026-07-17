@@ -102,6 +102,7 @@ class WidgetModeSettingsStore:
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
         except Exception as exc:
             logger.warning("[WidgetMode] failed to persist settings: %s", exc)
+            raise
 
     async def save_async(self, payload: dict[str, Any]) -> None:
         await asyncio.to_thread(self.save, payload)
@@ -358,10 +359,17 @@ class WidgetModeCoordinator:
         if activity_response not in VALID_ACTIVITY_RESPONSE_POLICIES:
             raise ValueError("activity_response policy is invalid")
         async with self._lock:
+            previous_settings = dict(self._settings)
+            previous_state = dict(self._state)
             self._settings = {"activity_response": activity_response}
             if activity_response == "disabled":
                 self._clear_activity_candidate_locked()
-            await self._persist_locked()
+            try:
+                await self._persist_locked()
+            except Exception:
+                self._settings = previous_settings
+                self._state = previous_state
+                raise
             return self.settings_snapshot()
 
     async def register_window(
@@ -413,32 +421,35 @@ class WidgetModeCoordinator:
     async def unregister_window(self, pet_instance_id: str) -> dict[str, Any]:
         async with self._lock:
             window_id = str(pet_instance_id or "").strip()
-            self._windows.pop(window_id, None)
-            removed_ack = self._window_acks.pop(window_id, None)
-            self._renderer_suspension_acks.pop(window_id, None)
-            phase = self._state.get("compaction_phase")
-            if phase == "compacting":
-                expected = set(self._state.get("expected_window_ids") or [])
-                if window_id in expected:
-                    expected.discard(window_id)
-                    self._state["expected_window_ids"] = sorted(expected)
-                    self._state["expected_window_count"] = len(expected)
-                    self._refresh_ack_counts_locked()
-                    if not expected:
-                        await self._fail_compaction_locked("targets-disconnected")
-                    elif expected.issubset(self._window_acks):
-                        await self._settle_expected_acks_locked(expected)
-            if removed_ack and removed_ack.get("status") == "compacted":
-                self._refresh_owner_counts_locked()
-                if self._state["owned_window_count"] == 0 and phase in {
-                    "compacted",
-                    "renderer_suspended",
-                }:
-                    self._end_cycle_locked()
-            self._state["renderer_suspension_success_count"] = sum(
-                self._renderer_suspension_acks.values()
-            )
+            await self._unregister_window_locked(window_id)
             return self.snapshot()
+
+    async def _unregister_window_locked(self, window_id: str) -> None:
+        self._windows.pop(window_id, None)
+        removed_ack = self._window_acks.pop(window_id, None)
+        self._renderer_suspension_acks.pop(window_id, None)
+        phase = self._state.get("compaction_phase")
+        if phase == "compacting":
+            expected = set(self._state.get("expected_window_ids") or [])
+            if window_id in expected:
+                expected.discard(window_id)
+                self._state["expected_window_ids"] = sorted(expected)
+                self._state["expected_window_count"] = len(expected)
+                self._refresh_ack_counts_locked()
+                if not expected:
+                    await self._fail_compaction_locked("targets-disconnected")
+                elif expected.issubset(self._window_acks):
+                    await self._settle_expected_acks_locked(expected)
+        if removed_ack and removed_ack.get("status") == "compacted":
+            self._refresh_owner_counts_locked()
+            if self._state["owned_window_count"] == 0 and phase in {
+                "compacted",
+                "renderer_suspended",
+            }:
+                self._end_cycle_locked()
+        self._state["renderer_suspension_success_count"] = sum(
+            self._renderer_suspension_acks.values()
+        )
 
     async def acknowledge_compaction(
         self,
@@ -834,6 +845,14 @@ class WidgetModeCoordinator:
             self._state["last_event"] = last_event
 
     async def _maintain_lifecycle_locked(self, now: float) -> None:
+        expired_window_ids = [
+            window_id
+            for window_id, meta in self._windows.items()
+            if now - float(meta.get("last_seen") or 0.0) > WINDOW_REGISTRATION_TTL_SECONDS
+        ]
+        for window_id in expired_window_ids:
+            await self._unregister_window_locked(window_id)
+
         last_seen = self._state.get("activity_last_seen_at")
         if (
             self._state.get("activity_signal_available") is True

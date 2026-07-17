@@ -278,7 +278,17 @@
             const result = await queueCompactLeaseOperation(function () {
                 return bridge.acquireCompactLease(payload);
             });
-            if (!result || result.ok !== true || cycleId !== clientState.currentCycleId) return false;
+            if (!result || result.ok !== true) return false;
+            if (cycleId !== clientState.currentCycleId) {
+                try {
+                    await queueCompactLeaseOperation(function () {
+                        return bridge.releaseCompactLease(payload);
+                    });
+                } catch (releaseError) {
+                    console.warn('[WidgetMode] obsolete compact window lease release failed:', releaseError);
+                }
+                return false;
+            }
             clientState.compactLeaseActive = true;
             clientState.compactLeaseSuspended = false;
             return true;
@@ -538,15 +548,15 @@
         if (!payload || payload.source !== SOURCE || !payload.compaction_cycle_id) return;
         const cycleId = payload.compaction_cycle_id;
         if (clientState.seenCycleIds.has(cycleId)) return;
-        clientState.seenCycleIds.add(cycleId);
-        if (clientState.seenCycleIds.size > 64) {
-            clientState.seenCycleIds.delete(clientState.seenCycleIds.values().next().value);
-        }
         if (!clientState.hostCompatible) {
             clientState.currentCycleId = cycleId;
             await sendCompactionAck('failed');
             resetLocalCycle();
             return;
+        }
+        clientState.seenCycleIds.add(cycleId);
+        if (clientState.seenCycleIds.size > 64) {
+            clientState.seenCycleIds.delete(clientState.seenCycleIds.values().next().value);
         }
         clientState.currentCycleId = cycleId;
         clientState.returnBallMoved = false;
@@ -648,7 +658,7 @@
         if (payload.type === 'widget_mode_compaction_confirmed') {
             showNotice(t(
                 'settings.widgetMode.compactionConfirmed',
-                'Widget Mode Beta 已将当前模型收缩为猫形态。'
+                '挂边模式 Beta 已将当前模型收缩为猫形态。'
             ));
         } else if (payload.type === 'widget_mode_compaction_failed') {
             await restoreLocalCycle('compaction-failed');
@@ -716,12 +726,12 @@
             applyBackendState(data.state);
             if (!next) await restoreLocalCycle('widget-mode-disabled');
             showNotice(next
-                ? t('settings.widgetMode.enabledNotice', 'Widget Mode Beta 已开启。')
-                : t('settings.widgetMode.disabledNotice', 'Widget Mode Beta 已关闭。'));
+                ? t('settings.widgetMode.enabledNotice', '挂边模式 Beta 已开启。')
+                : t('settings.widgetMode.disabledNotice', '挂边模式 Beta 已关闭。'));
             return true;
         } catch (error) {
             console.warn('[WidgetMode] toggle failed:', error);
-            showNotice(t('settings.widgetMode.toggleFailed', 'Widget Mode 切换失败，请稍后重试。'));
+            showNotice(t('settings.widgetMode.toggleFailed', '挂边模式 Beta 切换失败，请稍后重试。'));
             await refreshState();
             return false;
         }

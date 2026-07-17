@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from typing import Any
 
@@ -242,6 +243,8 @@ async def debug_trigger_widget_mode_compaction(
     try:
         percent = float(data.get("percent", 99.0))
     except (TypeError, ValueError):
+        percent = 99.0
+    if not math.isfinite(percent):
         percent = 99.0
     state = await widget_mode_coordinator.trigger_debug_compaction(
         reason=str(data.get("reason") or "debug"),

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import main_routers.widget_mode_router as widget_mode_router_module
 from main_routers.system_router import _shared as system_router_shared
 from main_routers.widget_mode_router import router
+from main_logic.widget_mode_runtime import WidgetModeCoordinator, WidgetModeSettingsStore
 
 
 def _client(*, secure: bool = True) -> TestClient:
@@ -33,28 +34,31 @@ def _register_payload(version: int = 1) -> dict:
     }
 
 
-def test_widget_mode_state_settings_and_enable_contract() -> None:
+def test_widget_mode_state_settings_and_enable_contract(monkeypatch, tmp_path: Path) -> None:
+    coordinator = WidgetModeCoordinator(
+        store=WidgetModeSettingsStore(tmp_path / "widget_mode_settings.json"),
+    )
+    monkeypatch.setattr(widget_mode_router_module, "widget_mode_coordinator", coordinator)
     with _client() as client:
-        try:
-            client.post("/api/widget-mode/enabled", json={"enabled": False})
-            state = client.get("/api/widget-mode/state").json()["state"]
-            assert state["enabled"] is False
-            assert state["resource_pressure_state"] == "normal"
-            assert state["compaction_phase"] == "idle"
+        state = client.get("/api/widget-mode/state").json()["state"]
+        assert state["enabled"] is False
+        assert state["resource_pressure_state"] == "normal"
+        assert state["compaction_phase"] == "idle"
 
-            settings = client.get("/api/widget-mode/settings")
-            assert settings.json() == {"activity_response": "disabled"}
-            updated = client.post(
-                "/api/widget-mode/settings",
-                json={"activity_response": "observe_only"},
-            )
-            assert updated.json() == {"activity_response": "observe_only"}
+        settings = client.get("/api/widget-mode/settings")
+        assert settings.json() == {"activity_response": "disabled"}
+        updated = client.post(
+            "/api/widget-mode/settings",
+            json={"activity_response": "observe_only"},
+        )
+        assert updated.json() == {"activity_response": "observe_only"}
 
-            enabled = client.post("/api/widget-mode/enabled", json={"enabled": "on"})
-            assert enabled.json()["state"]["enabled"] is True
-        finally:
-            client.post("/api/widget-mode/settings", json={"activity_response": "disabled"})
-            client.post("/api/widget-mode/enabled", json={"enabled": False})
+        enabled = client.post("/api/widget-mode/enabled", json={"enabled": "on"})
+        assert enabled.json()["state"]["enabled"] is True
+        client.post("/api/widget-mode/enabled", json={"enabled": False})
+
+    assert coordinator.settings_snapshot() == {"activity_response": "observe_only"}
+    assert (tmp_path / "widget_mode_settings.json").exists()
 
 
 def test_widget_mode_window_protocol_and_stale_ack_contract() -> None:
@@ -92,6 +96,30 @@ def test_widget_mode_debug_endpoint_is_gated(monkeypatch) -> None:
     with _client() as client:
         response = client.post("/api/widget-mode/debug/compaction", json={})
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "percent",
+    ["nan", "inf", "-inf"],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+def test_widget_mode_debug_endpoint_rejects_non_finite_percent(
+    monkeypatch,
+    percent: str,
+) -> None:
+    coordinator = WidgetModeCoordinator()
+    monkeypatch.setattr(widget_mode_router_module, "widget_mode_coordinator", coordinator)
+    monkeypatch.setenv("NEKO_WIDGET_MODE_DEBUG", "1")
+
+    with _client() as client:
+        response = client.post(
+            "/api/widget-mode/debug/compaction",
+            json={"reason": "contract", "percent": percent},
+        )
+        client.post("/api/widget-mode/enabled", json={"enabled": False})
+
+    assert response.status_code == 200
+    assert response.json()["state"]["last_resource_reason"]["percent"] == 99.0
 
 
 def test_widget_mode_router_is_registered_on_main_app() -> None:

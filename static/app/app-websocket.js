@@ -1611,7 +1611,7 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
-                if (typeof response.type === 'string' && response.type.indexOf('widget_mode_') === 0) {
+                if (typeof response.type === 'string' && response.type.startsWith('widget_mode_')) {
                     try {
                         window.dispatchEvent(new CustomEvent('neko:widget-mode-message', {
                             detail: response,

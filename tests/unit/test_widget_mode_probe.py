@@ -85,6 +85,14 @@ def test_probe_parse_args_defaults_to_auto_base_url():
     assert probe.parse_args([]).base_url == "auto"
 
 
+def test_summarize_state_handles_explicit_none_settings():
+    state = clean_state() | {"settings": None}
+
+    summary = probe.summarize_state(state)
+
+    assert "activity_response=None" in summary
+
+
 def test_probe_reports_restart_default_off_failures():
     def fetcher(_base_url, path, _timeout):
         assert path == "/api/widget-mode/state"

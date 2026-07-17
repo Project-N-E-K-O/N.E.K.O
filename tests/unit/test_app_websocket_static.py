@@ -36,7 +36,7 @@ def test_widget_mode_websocket_events_are_relayed_to_frontend():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
     widget_mode_block = source.split(
-        "if (typeof response.type === 'string' && response.type.indexOf('widget_mode_') === 0)",
+        "if (typeof response.type === 'string' && response.type.startsWith('widget_mode_'))",
         1,
     )[1].split(
         "// -------- gemini_response --------",

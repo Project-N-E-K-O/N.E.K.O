@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 import textwrap
@@ -62,6 +63,7 @@ def test_app_widget_mode_frontend_contracts() -> None:
           let paused = 0;
           let resumed = 0;
           let modelReloads = 0;
+          let resolveLeaseAcquire = null;
 
           doc.readyState = 'complete';
           doc.body = {{}};
@@ -105,6 +107,9 @@ def test_app_widget_mode_frontend_contracts() -> None:
             onSystemResume: (callback) => {{ resumeCallback = callback; return () => {{}}; }},
             acquireCompactLease: async (payload) => {{
               leaseCalls.push(['acquire', payload]);
+              if (options.deferLeaseAcquire) {{
+                return new Promise((resolve) => {{ resolveLeaseAcquire = resolve; }});
+              }}
               return options.leaseAcquireFails
                 ? {{ ok: false, code: 'set-bounds-failed' }}
                 : {{ ok: true, status: 'acquired' }};
@@ -151,8 +156,9 @@ def test_app_widget_mode_frontend_contracts() -> None:
               payload = {{
                 protocol_compatible: compatible,
                 widget_mode_capable: compatible,
-                compaction_phase: 'idle',
-                join_as_compacted: false,
+                compaction_cycle_id: options.registrationCycleId || null,
+                compaction_phase: options.registrationCycleId ? 'compacted' : 'idle',
+                join_as_compacted: !!options.registrationCycleId,
               }};
             }} else if (url === '/api/widget-mode/settings' && (init.method || 'GET') === 'GET') {{
               payload = {{ activity_response: 'disabled' }};
@@ -199,6 +205,8 @@ def test_app_widget_mode_frontend_contracts() -> None:
             invalidateLease: () => leaseInvalidatedCallback && leaseInvalidatedCallback({{
               reason: 'display-metrics-changed',
             }}),
+            resolveLeaseAcquire: (result = {{ ok: true, status: 'acquired' }}) =>
+              resolveLeaseAcquire && resolveLeaseAcquire(result),
             flush: async () => {{
               await new Promise((resolve) => setTimeout(resolve, 0));
               await new Promise((resolve) => setTimeout(resolve, 0));
@@ -308,6 +316,28 @@ def test_app_widget_mode_frontend_contracts() -> None:
             call.url === '/api/widget-mode/compaction/ack' && call.body.status === 'compacted'),
             'window lease failure must never ACK compacted');
 
+          const obsoleteLease = createHarness({{ modelType: 'vrm', deferLeaseAcquire: true }});
+          await obsoleteLease.flush();
+          const obsoleteRequest = obsoleteLease.win.nekoWidgetMode.handleLifecycleMessage(
+            request('obsolete-lease-cycle')
+          );
+          await obsoleteLease.flush();
+          await obsoleteLease.win.nekoWidgetMode.setEnabled(false);
+          obsoleteLease.resolveLeaseAcquire();
+          await obsoleteRequest;
+          await obsoleteLease.flush();
+          const obsoleteRelease = obsoleteLease.leaseCalls.find((call) =>
+            call[0] === 'release' && call[1].sessionId === 'obsolete-lease-cycle');
+          assert(obsoleteRelease,
+            'a lease acquired for an obsolete cycle must be released with the original payload');
+
+          const lateJoin = createHarness({{ modelType: 'vrm', registrationCycleId: 'late-cycle' }});
+          await lateJoin.win.nekoWidgetMode.handleLifecycleMessage(request('late-cycle'));
+          await lateJoin.flush();
+          await lateJoin.flush();
+          assert(lateJoin.goodbyeEvents.length === 1,
+            'an early compatibility failure must not suppress the registration late-join replay');
+
           const pauseFailure = createHarness({{ modelType: 'vrm', pauseFails: true }});
           await pauseFailure.flush();
           await pauseFailure.win.nekoWidgetMode.handleLifecycleMessage(request('pause-cycle'));
@@ -393,5 +423,67 @@ def test_app_widget_mode_is_home_only_and_versioned() -> None:
 def test_widget_mode_websocket_capability_and_event_contract() -> None:
     source = (PROJECT_ROOT / "static" / "app" / "app-websocket.js").read_text(encoding="utf-8")
     assert "?widget_mode_capable=1" in source
-    assert "response.type.indexOf('widget_mode_')" in source
+    assert "response.type.startsWith('widget_mode_')" in source
     assert "neko:widget-mode-message" in source
+
+
+def test_widget_mode_product_names_and_fallbacks_are_localized() -> None:
+    app_source = APP_WIDGET_MODE_PATH.read_text(encoding="utf-8")
+    popup_source = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(
+        encoding="utf-8"
+    )
+
+    for fallback in (
+        "挂边模式 Beta 已开启。",
+        "挂边模式 Beta 已关闭。",
+        "挂边模式 Beta 切换失败，请稍后重试。",
+        "挂边模式 Beta 已将当前模型收缩为猫形态。",
+    ):
+        assert fallback in app_source
+    assert "挂边模式 Beta 切换失败，请稍后重试。" in popup_source
+    assert "label: window.t ? window.t('settings.toggles.widgetMode') : '挂边模式 Beta'" in popup_source
+
+    expected_names = {
+        "en": "Edge Dock Mode Beta",
+        "es": "Modo de acoplamiento al borde Beta",
+        "ja": "エッジドックモード Beta",
+        "ko": "가장자리 도킹 모드 Beta",
+        "pt": "Modo de encaixe na borda Beta",
+        "ru": "Режим крепления к краю Beta",
+        "zh-CN": "挂边模式 Beta",
+        "zh-TW": "掛邊模式 Beta",
+    }
+    for locale, product_name in expected_names.items():
+        payload = json.loads(
+            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
+        )
+        settings = payload["settings"]
+        widget_mode = settings["widgetMode"]
+        assert product_name in widget_mode["enabledNotice"]
+        assert product_name in widget_mode["disabledNotice"]
+        assert product_name in widget_mode["toggleFailed"]
+        assert product_name in widget_mode["compactionConfirmed"]
+        assert settings["toggles"]["widgetMode"] == product_name
+
+
+def test_widget_mode_settings_mutations_are_serialized_without_fixed_timer_reentry() -> None:
+    source = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function queueWidgetModeMutation(operation)" in source
+    persist_block = source.split("const persistSettings = function (settings)", 1)[1].split(
+        "Object.keys(modeButtons)",
+        1,
+    )[0]
+    assert "return queueWidgetModeMutation(function ()" in persist_block
+    widget_toggle_block = source.split("} else if (toggle.id === 'widget-mode')", 1)[1].split(
+        "}",
+        1,
+    )[0]
+    assert "return queueWidgetModeMutation(function ()" in widget_toggle_block
+    assert re.search(
+        r"toggle\.id === 'widget-mode'.*mutation.*\.finally\(clearProcessing\)",
+        source,
+        re.DOTALL,
+    )

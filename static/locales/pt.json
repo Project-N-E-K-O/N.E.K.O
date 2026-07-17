@@ -2608,9 +2608,9 @@
             "visionInterval": "Intervalo de Percepção"
         },
         "widgetMode": {
-            "enabledNotice": "O Widget Mode Beta está ativo.",
-            "disabledNotice": "O Widget Mode Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
-            "toggleFailed": "Não foi possível alternar o Widget Mode Beta. Tente novamente mais tarde.",
+            "enabledNotice": "O Modo de encaixe na borda Beta está ativo.",
+            "disabledNotice": "O Modo de encaixe na borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
+            "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde.",
             "memoryMetric": "memória",
             "resourceMetric": "recursos",
             "statusOn": "Ativado",
@@ -2625,7 +2625,7 @@
             "details": "Detalhes",
             "restoreFailed": "O modelo não pôde ser restaurado, então a forma de gato permanece ativa. Clique no gato novamente para tentar de novo.",
             "signalUnavailable": "O sinal de atividade está temporariamente indisponível; o candidato atual não será limpo. O diagnóstico de recursos continua disponível.",
-            "compactionConfirmed": "O Widget Mode Beta compactou o modelo atual para a forma de gato.",
+            "compactionConfirmed": "O Modo de encaixe na borda Beta compactou o modelo atual para a forma de gato.",
             "compactionFailed": "A compactação não foi concluída. O modelo atual foi restaurado."
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "Bolha de Expressão",
             "focusCognition": "Modo de concentração",
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "Modo de encaixe na borda Beta",
             "widgetModeTooltip": "O Live2D pode espiar por seis âncoras da borda. A resposta à atividade vem desativada; CPU, memória e GPU são apenas diagnósticos.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",

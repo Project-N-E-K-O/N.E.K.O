@@ -10,6 +10,7 @@ from main_logic.widget_mode_runtime import (
     COMPACTION_ACK_TIMEOUT_SECONDS,
     DEFAULT_WIDGET_MODE_SETTINGS,
     RENDERER_SUSPENSION_DELAY_SECONDS,
+    WINDOW_REGISTRATION_TTL_SECONDS,
     WIDGET_MODE_PROTOCOL_VERSION,
     WidgetModeCoordinator,
     WidgetModeSettingsStore,
@@ -111,6 +112,22 @@ async def test_settings_persist_only_new_policy(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_settings_rolls_back_when_persistence_fails(tmp_path: Path) -> None:
+    class FailingStore(WidgetModeSettingsStore):
+        async def save_async(self, payload: dict) -> None:
+            raise OSError("disk full")
+
+    coordinator = WidgetModeCoordinator(
+        store=FailingStore(tmp_path / "widget_mode_settings.json"),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        await coordinator.update_settings(activity_response="observe_only")
+
+    assert coordinator.settings_snapshot() == {"activity_response": "disabled"}
+
+
+@pytest.mark.asyncio
 async def test_resource_pressure_is_diagnostic_only() -> None:
     coordinator, _clock, events = build_coordinator(sampler=high_sample)
     await coordinator.set_enabled(True)
@@ -188,6 +205,7 @@ async def test_compaction_ack_creates_owner_then_suspends_and_restores() -> None
     assert events[-1]["type"] == "widget_mode_compaction_confirmed"
 
     clock.advance(RENDERER_SUSPENSION_DELAY_SECONDS)
+    await register_capable_pet(coordinator)
     await coordinator.tick_once()
     assert coordinator.snapshot()["compaction_phase"] == "renderer_suspended"
     assert events[-1]["type"] == "widget_mode_renderer_suspension_requested"
@@ -203,6 +221,28 @@ async def test_compaction_ack_creates_owner_then_suspends_and_restores() -> None
     assert state["compaction_phase"] == "idle"
     assert state["user_restore_active"] is True
     assert state["suppressed_until"] > clock()
+    await coordinator.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_expired_compaction_owner_is_removed_and_cycle_converges() -> None:
+    coordinator, clock, _events = build_coordinator()
+    await enable_activity_compaction(coordinator)
+    await register_capable_pet(coordinator)
+    cycle_id = await confirm_activity(coordinator, clock)
+    await coordinator.acknowledge_compaction(
+        compaction_cycle_id=cycle_id,
+        pet_instance_id="pet-1",
+        status="compacted",
+    )
+
+    clock.advance(WINDOW_REGISTRATION_TTL_SECONDS + 1)
+    await coordinator.tick_once()
+
+    state = coordinator.snapshot()
+    assert state["registered_window_count"] == 0
+    assert state["owned_window_count"] == 0
+    assert state["compaction_phase"] == "idle"
     await coordinator.set_enabled(False)
 
 
@@ -367,6 +407,8 @@ async def test_renderer_suspension_partial_success_is_recorded() -> None:
             status="compacted",
         )
     clock.advance(RENDERER_SUSPENSION_DELAY_SECONDS)
+    await register_capable_pet(coordinator, "pet-1")
+    await register_capable_pet(coordinator, "pet-2")
     await coordinator.tick_once()
     await coordinator.acknowledge_renderer_suspension(
         compaction_cycle_id=cycle_id,
@@ -489,6 +531,19 @@ def test_settings_store_handles_invalid_json_and_round_trip(tmp_path: Path) -> N
     assert store.load_settings() == {"activity_response": "observe_only"}
 
 
+def test_settings_store_save_propagates_write_failure(monkeypatch, tmp_path: Path) -> None:
+    import utils.file_utils as file_utils
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(file_utils, "atomic_write_json", fail_write)
+    store = WidgetModeSettingsStore(tmp_path / "widget_mode_settings.json")
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save({"activity_response": "observe_only"})
+
+
 @pytest.mark.asyncio
 async def test_invalid_policy_and_empty_window_id_are_rejected() -> None:
     coordinator, _clock, _events = build_coordinator()
@@ -535,6 +590,7 @@ async def test_late_join_after_suspension_receives_targeted_request() -> None:
         status="compacted",
     )
     clock.advance(RENDERER_SUSPENSION_DELAY_SECONDS)
+    await register_capable_pet(coordinator, "pet-1")
     await coordinator.tick_once()
     await register_capable_pet(coordinator, "pet-2")
     await coordinator.acknowledge_compaction(

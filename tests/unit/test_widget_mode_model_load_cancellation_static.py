@@ -34,3 +34,10 @@ def test_vrm_and_mmd_expose_their_full_pending_load_lifecycle():
         assert "this._pendingModelLoadCount += 1;" in source
         assert "this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);" in source
         assert "this._isLoadingModel = this._pendingModelLoadCount > 0;" in source
+
+
+def test_live2d_distinguishes_widget_mode_cancellation_from_superseded_loads():
+    source = (ROOT / "static" / "live2d" / "live2d-model.js").read_text(encoding="utf-8")
+
+    assert "cancelError.name = isWidgetMode ? 'WidgetModeLoadCancelled' : 'LoadSuperseded';" in source
+    assert "error.name === 'WidgetModeLoadCancelled' || error.name === 'LoadSuperseded'" in source

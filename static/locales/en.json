@@ -2608,9 +2608,9 @@
             "visionInterval": "Perception Interval"
         },
         "widgetMode": {
-            "enabledNotice": "Widget Mode Beta is on.",
-            "disabledNotice": "Widget Mode Beta is off. Live2D uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Widget Mode Beta. Please try again later.",
+            "enabledNotice": "Edge Dock Mode Beta is on.",
+            "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
+            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later.",
             "memoryMetric": "memory",
             "resourceMetric": "resource",
             "statusOn": "On",
@@ -2625,7 +2625,7 @@
             "details": "Details",
             "restoreFailed": "The model could not be restored, so cat form remains active. Click the cat again to retry.",
             "signalUnavailable": "The activity signal is temporarily unavailable; the current candidate will not be cleared. Resource diagnostics remain available.",
-            "compactionConfirmed": "Widget Mode Beta compacted the current model to cat form.",
+            "compactionConfirmed": "Edge Dock Mode Beta compacted the current model to cat form.",
             "compactionFailed": "Model compaction did not finish. The current model was restored."
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "Edge Dock Mode Beta",
             "widgetModeTooltip": "Live2D can peek from six screen-edge anchors. Activity response is off by default; CPU, memory, and GPU sampling is diagnostic only.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",

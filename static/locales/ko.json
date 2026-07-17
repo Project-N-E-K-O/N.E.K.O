@@ -2608,9 +2608,9 @@
             "visionInterval": "인지 간격"
         },
         "widgetMode": {
-            "enabledNotice": "Widget Mode Beta가 켜졌습니다.",
-            "disabledNotice": "Widget Mode Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
-            "toggleFailed": "Widget Mode Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "enabledNotice": "가장자리 도킹 모드 Beta가 켜졌습니다.",
+            "disabledNotice": "가장자리 도킹 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
+            "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
             "memoryMetric": "메모리",
             "resourceMetric": "리소스",
             "statusOn": "켜짐",
@@ -2625,7 +2625,7 @@
             "details": "세부 정보",
             "restoreFailed": "모델을 복원하지 못해 고양이 형태를 유지합니다. 고양이를 다시 클릭해 재시도하세요.",
             "signalUnavailable": "활동 신호를 일시적으로 사용할 수 없습니다. 현재 후보는 지우지 않으며 리소스 진단은 계속됩니다.",
-            "compactionConfirmed": "Widget Mode Beta가 현재 모델을 고양이 형태로 축소했습니다.",
+            "compactionConfirmed": "가장자리 도킹 모드 Beta가 현재 모델을 고양이 형태로 축소했습니다.",
             "compactionFailed": "모델 축소가 완료되지 않아 현재 모델을 복원했습니다."
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "표정 말풍선",
             "focusCognition": "집중 모드",
             "focusCognitionTooltip": "켜면 당신이 마음을 털어놓거나 복잡한 주제일 때 더 집중해 깊이 생각합니다. 끄면 집중 모드에 들어가지 않습니다.",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "가장자리 도킹 모드 Beta",
             "widgetModeTooltip": "Live2D는 화면 가장자리의 6개 앵커에서 내다볼 수 있습니다. 활동 응답은 기본적으로 꺼져 있으며 CPU, 메모리, GPU 샘플은 진단 전용입니다.",
             "slopFilter": "자연스러운 표현",
             "slopFilterTooltip": "이전 답변에서 반복되거나 틀에 박힌 표현을 줄여 더 자연스럽게 말하도록 합니다.",

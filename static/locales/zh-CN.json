@@ -2608,9 +2608,9 @@
             "visionInterval": "感知间隔"
         },
         "widgetMode": {
-            "enabledNotice": "Widget Mode Beta 已开启。",
-            "disabledNotice": "Widget Mode Beta 已关闭。Live2D 将恢复普通边缘吸附行为。",
-            "toggleFailed": "Widget Mode Beta 切换失败，请稍后重试。",
+            "enabledNotice": "挂边模式 Beta 已开启。",
+            "disabledNotice": "挂边模式 Beta 已关闭。Live2D 将恢复普通边缘吸附行为。",
+            "toggleFailed": "挂边模式 Beta 切换失败，请稍后重试。",
             "memoryMetric": "内存",
             "resourceMetric": "资源",
             "statusOn": "开启",
@@ -2625,7 +2625,7 @@
             "details": "详情",
             "restoreFailed": "模型恢复失败，当前保持猫猫形态，请再次点击猫猫重试。",
             "signalUnavailable": "活动信号暂时不可用；当前候选不会被误清空，资源诊断仍然可用。",
-            "compactionConfirmed": "Widget Mode Beta 已将当前模型收缩为猫猫形态。",
+            "compactionConfirmed": "挂边模式 Beta 已将当前模型收缩为猫猫形态。",
             "compactionFailed": "模型收缩未完成，已恢复当前模型。"
         },
         "toggles": {
@@ -2634,7 +2634,7 @@
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
-            "widgetMode": "Widget Mode Beta",
+            "widgetMode": "挂边模式 Beta",
             "widgetModeTooltip": "Live2D 支持左右和四角共六个探身锚点。活动响应默认关闭；CPU、内存和 GPU 采样仅用于诊断。",
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",

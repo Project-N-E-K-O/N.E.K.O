@@ -106,7 +106,7 @@ def summarize_state(state: dict[str, Any] | None) -> str:
         f"enabled={state.get('enabled')}, "
         f"resource_pressure_state={state.get('resource_pressure_state')}, "
         f"compaction_phase={state.get('compaction_phase')}, "
-        f"activity_response={state.get('settings', {}).get('activity_response')}, "
+        f"activity_response={(state.get('settings') or {}).get('activity_response')}, "
         f"suppressed_until={state.get('suppressed_until')}, "
         f"last_resource_reason={reason_text}"
     )
