@@ -1777,12 +1777,14 @@
                     } else {
                         img.dataset.failed = "true";
                         img.src = MEME_LOAD_FAILED_STICKER_URL;
-                        img.style.objectFit = "contain";
-                        img.style.backgroundColor = "#fff";
-                        img.style.border = "none";
-                        img.style.minWidth = "160px";
-                        img.style.minHeight = "160px";
-                        img.style.cursor = "default";
+                        Object.assign(img.style, {
+                            objectFit: "contain",
+                            backgroundColor: "#fff",
+                            border: "none",
+                            minWidth: "160px",
+                            minHeight: "160px",
+                            cursor: "default"
+                        });
                     }
                 });
 
