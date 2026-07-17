@@ -152,6 +152,27 @@ async def test_live_bridge_transport_receives_json_from_local_websocket():
 
 
 @pytest.mark.asyncio
+async def test_live_bridge_transport_isolates_observer_callback_failures():
+    ws = _FakeWebSocket([json.dumps({"text": "hello"})])
+    transport = LiveBridgeTransport(connect_factory=_FakeConnect(ws))
+
+    def broken_observer(_value):
+        raise RuntimeError("observer failed")
+
+    state = await transport.start(
+        LiveBridgeStartRequest(
+            room_ref="room-42",
+            adapter=_Adapter(),
+            emit=broken_observer,
+            on_state=broken_observer,
+        )
+    )
+    await asyncio.wait_for(transport._task, timeout=1.0)  # noqa: SLF001
+
+    assert state.safe_state() == "connected"
+
+
+@pytest.mark.asyncio
 async def test_live_bridge_transport_rejects_non_local_websocket_before_connecting():
     called = False
 

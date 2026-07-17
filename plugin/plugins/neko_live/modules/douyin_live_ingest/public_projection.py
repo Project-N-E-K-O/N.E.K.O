@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import math
 import re
+import unicodedata
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -79,14 +80,21 @@ def safe_public_float(value: Any) -> float:
 def is_public_hostname(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    hostname = value.strip().lower()
+    hostname = unicodedata.normalize("NFKC", value).strip().lower()
+    hostname = hostname.translate(str.maketrans({"。": ".", "．": ".", "｡": "."})).rstrip(".")
     if not hostname:
+        return False
+    try:
+        hostname = hostname.encode("idna").decode("ascii")
+    except UnicodeError:
         return False
     if hostname == "localhost" or hostname.endswith(".localhost"):
         return False
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
+        if all(ch.isdigit() or ch == "." for ch in hostname):
+            return False
         return "." in hostname
     return not (
         ip.is_private

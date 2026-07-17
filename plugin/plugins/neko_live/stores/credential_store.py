@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,8 @@ class CredentialStore:
         key = Fernet.generate_key()
         data_dir.mkdir(parents=True, exist_ok=True)
         try:
-            with key_path.open("xb") as handle:
+            fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
                 handle.write(key)
             self._chmod600(key_path)
             return Fernet(key)
@@ -94,7 +96,24 @@ class CredentialStore:
             enc = fernet.encrypt(json.dumps(cred, ensure_ascii=False).encode("utf-8"))
             cred_path = self._data_dir() / self._cred_file()
             cred_path.parent.mkdir(parents=True, exist_ok=True)
-            cred_path.write_bytes(enc)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{cred_path.name}.",
+                suffix=".tmp",
+                dir=cred_path.parent,
+            )
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(enc)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                self._chmod600(temp_path)
+                os.replace(temp_path, cred_path)
+            finally:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             self._chmod600(cred_path)
             return True
         except Exception:

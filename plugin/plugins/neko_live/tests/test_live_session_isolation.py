@@ -161,6 +161,7 @@ async def test_room_switch_blocks_old_event_before_dispatch(runtime: RoastRuntim
 @pytest.mark.asyncio
 async def test_room_switch_refreshes_context_before_syncing_instructions(
     runtime: RoastRuntime,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_room_ref = "123"
@@ -193,6 +194,11 @@ async def test_room_switch_refreshes_context_before_syncing_instructions(
 
     runtime.bili_live_ingest.lookup_room_status = lookup_room_status
     runtime.sync_live_instructions = sync_live_instructions  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        runtime,
+        "bili_login_status",
+        lambda: asyncio.sleep(0, result={"logged_in": True}),
+    )
 
     await runtime.update_config(
         {"live_room_id": 456, "live_room_ref": "456", "live_enabled": True}
@@ -318,6 +324,57 @@ async def test_live_event_is_blocked_while_listener_is_not_accepting(
     assert result.status == "skipped"
     assert result.reason == "live_session.stale"
     assert dispatcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_session_is_revalidated_after_waiting_for_uid_lock(
+    runtime: RoastRuntime,
+) -> None:
+    runtime.config.live_room_id = 123
+    runtime.live_room_context = {"live_status": "live"}
+    assert await start_live_listener(runtime, 123) is True
+    runtime.config.roast_once_per_uid = True
+    runtime.bili_identity.resolve = lambda event: asyncio.sleep(
+        0,
+        result=ViewerIdentity(uid=event.uid, nickname=event.nickname),
+    )
+    event = ViewerEvent(
+        uid="9",
+        nickname="viewer",
+        danmaku_text="hello",
+        source="live_danmaku",
+        raw={
+            "event_type": "danmaku",
+            "_live_session_generation": runtime._live_session_generation,
+        },
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_acquire = runtime.pipeline.session.acquire_uid_lock
+    original_has_roasted = runtime.viewer_profile.has_roasted
+    has_roasted_calls = 0
+
+    async def delayed_acquire(uid: str):
+        entered.set()
+        await release.wait()
+        return await original_acquire(uid)
+
+    async def track_has_roasted(uid: str):
+        nonlocal has_roasted_calls
+        has_roasted_calls += 1
+        return await original_has_roasted(uid)
+
+    runtime.pipeline.session.acquire_uid_lock = delayed_acquire  # type: ignore[method-assign]
+    runtime.viewer_profile.has_roasted = track_has_roasted  # type: ignore[method-assign]
+
+    pending = asyncio.create_task(runtime.pipeline.handle_event(event))
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    invalidate_live_session(runtime)
+    release.set()
+    result = await pending
+
+    assert result.reason == "live_session.stale"
+    assert has_roasted_calls == 0
 
 
 @pytest.mark.asyncio

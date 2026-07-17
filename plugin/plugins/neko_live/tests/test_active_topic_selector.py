@@ -136,6 +136,20 @@ def test_active_topic_selector_fallback_relaxes_similarity_before_recent_family(
     assert candidate["key"] == "fresh-mood"
 
 
+def test_fallback_records_when_recent_family_was_avoided():
+    runtime = FakeRuntime()
+    runtime._recent_host_material_families.append("choice_vote")
+
+    candidate = choose_fallback_candidate(
+        ActiveTopicSelector(runtime),
+        [{"key": "fresh-mood", "title": "room mood", "fun_axis": "mood"}],
+        {"key": "fallback", "title": "fallback"},
+    )
+
+    assert candidate["key"] == "fresh-mood"
+    assert runtime._active_engagement_recent_topic_skip_reason == "recent_host_family"
+
+
 def test_spent_output_families_classifies_real_choice_food_drink_text():
     families = spent_output_families(
         "\u591c\u91cc\u9009\u5c0f\u751c\u98df\u8fd8\u662f\u70ed\u996e\uff1f\u5feb\u9009\u4e00\u4e2a\u544a\u8bc9\u6211\u5440\u55b5\uff01"

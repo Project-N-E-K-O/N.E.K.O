@@ -4,6 +4,8 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from plugin.plugins.neko_live.core.live_hosting_director import LiveHostingDirector
 
 
@@ -97,3 +99,19 @@ def test_live_hosting_director_records_idle_skip_through_runtime():
     assert result.status == "skipped"
     assert runtime.recorded[-1].reason == "idle_hosting.not_idle"
     assert runtime.audit.rows[-1] == ("idle_hosting_skipped", "idle_hosting.not_idle")
+
+
+@pytest.mark.asyncio
+async def test_idle_hosting_skip_does_not_consume_a_beat(monkeypatch):
+    runtime = FakeRuntime()
+    runtime.config.live_mode = "co_stream"
+    director = LiveHostingDirector(runtime)
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.core.live_hosting_gates.hosting_live_state",
+        lambda _runtime: {"state": "idle", "idle_hosting_candidate": True},
+    )
+
+    result = await director.trigger_idle_hosting()
+
+    assert result.reason == "idle_hosting.not_solo_stream"
+    assert runtime._idle_hosting_beat_index == 0

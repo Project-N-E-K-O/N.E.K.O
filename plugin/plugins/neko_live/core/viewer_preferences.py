@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from .contracts_public import public_text
@@ -74,7 +75,7 @@ def infer_viewer_preferences(text: str) -> dict[str, Any]:
     tags: list[str] = []
     labels: list[str] = []
     for key, keywords, label in _PREFERENCE_RULES:
-        if any(keyword in lowered or keyword in raw for keyword in keywords):
+        if any(_contains_keyword(raw, lowered, keyword) for keyword in keywords):
             tags.append(key)
             labels.append(label)
 
@@ -119,6 +120,15 @@ def infer_viewer_preferences(text: str) -> dict[str, Any]:
         "response_preference": safe_text(response_preference, max_len=180),
         "avoid_guidance": safe_text(avoid_guidance, max_len=180),
     }
+
+
+def _contains_keyword(raw: str, lowered: str, keyword: str) -> bool:
+    if keyword.isascii() and keyword.isalnum():
+        return re.search(
+            rf"(?<![a-z0-9]){re.escape(keyword.casefold())}(?![a-z0-9])",
+            lowered,
+        ) is not None
+    return keyword in lowered or keyword in raw
 
 
 def looks_like_question(text: str) -> bool:

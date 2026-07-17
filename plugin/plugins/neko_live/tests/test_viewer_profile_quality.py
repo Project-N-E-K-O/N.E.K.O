@@ -39,6 +39,14 @@ def test_viewer_preference_inference_builds_safe_impression_cues():
     assert "music_callback" in music["running_jokes"]
 
 
+def test_ascii_preference_keywords_require_word_boundaries():
+    waiting = infer_viewer_preferences("still waiting")
+    explicit = infer_viewer_preferences("AI plugin config?")
+
+    assert "tech_ai" not in waiting["tags"]
+    assert "tech_ai" in explicit["tags"]
+
+
 def test_viewer_profile_projection_requires_repeat_evidence_for_stable_topics_and_jokes():
     profile = ViewerProfile(
         uid="1001",

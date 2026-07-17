@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+import re
 from typing import Any
 
 from .live_text_guards import looks_like_support_claim_text
@@ -148,18 +149,11 @@ def _topic_units(text: str) -> set[str]:
         ch.casefold() for ch in compact if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
     )
     units: set[str] = set()
-    latin = []
+    for latin_word in re.findall(r"[a-z0-9]+", compact.casefold()):
+        _add_latin_unit(units, latin_word)
     for ch in dense:
-        if ch.isascii() and ch.isalnum():
-            latin.append(ch)
-            continue
-        if latin:
-            _add_latin_unit(units, "".join(latin))
-            latin = []
         if "\u4e00" <= ch <= "\u9fff":
             units.add(ch)
-    if latin:
-        _add_latin_unit(units, "".join(latin))
 
     cjk_chars = [ch for ch in dense if "\u4e00" <= ch <= "\u9fff"]
     for i in range(len(cjk_chars) - 1):

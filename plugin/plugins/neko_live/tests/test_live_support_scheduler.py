@@ -90,7 +90,7 @@ async def test_pending_higher_priority_dispatches_before_pending_light_event():
 
     scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=5)
     scheduler.submit(_payload("active"))
-    await first_started.wait()
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
     scheduler.submit(_payload("light"))
     scheduler.submit(_payload("high", value=10_000, coin_type="gold"))
     release_first.set()
@@ -747,7 +747,7 @@ async def test_provider_event_dedupe_retains_more_than_legacy_2048_entries():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_failure_retries_once_then_audits_and_continues():
+async def test_dispatch_failure_audits_without_duplicate_retry_and_continues():
     audit = _Audit()
     attempts: dict[str, int] = {}
     dispatched: list[str] = []
@@ -765,7 +765,7 @@ async def test_dispatch_failure_retries_once_then_audits_and_continues():
 
     await scheduler.wait_idle()
 
-    assert attempts == {"broken": 2, "healthy": 1}
+    assert attempts == {"broken": 1, "healthy": 1}
     assert dispatched == ["healthy"]
     assert [record["op"] for record in audit.records] == ["support.dispatch_failed"]
     await scheduler.close()
@@ -786,9 +786,9 @@ async def test_dispatch_failure_does_not_escape_when_audit_write_fails():
         queue_limit=5,
     )
 
-    await scheduler._dispatch_with_retry(_payload("broken"))
+    await scheduler._dispatch_once(_payload("broken"))
 
-    assert attempts == 2
+    assert attempts == 1
     await scheduler.close()
 
 

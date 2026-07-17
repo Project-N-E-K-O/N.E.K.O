@@ -1484,7 +1484,7 @@ def test_fetch_webcast_info_bounds_urlopen_timeout(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return None
 
-        def read(self) -> bytes:
+        def read(self, _limit: int = -1) -> bytes:
             return b'{"roomInfo":{"roomId":"7390000000000000000","title":"ok"}}'
 
     def fake_urlopen(request, *, timeout: float):
@@ -1519,7 +1519,7 @@ def test_fetch_webcast_info_rejects_unsafe_cookie_headers(monkeypatch):
         def __exit__(self, exc_type, exc, tb):
             return None
 
-        def read(self) -> bytes:
+        def read(self, _limit: int = -1) -> bytes:
             return b'{"roomInfo":{"roomId":"7390000000000000000","title":"ok"}}'
 
     def fake_urlopen(request, *, timeout: float):
@@ -1633,7 +1633,49 @@ def test_douyin_public_projection_host_helper_rejects_local_or_private_hosts():
     assert is_public_hostname("app.localhost") is False
     assert is_public_hostname("127.0.0.1") is False
     assert is_public_hostname("192.168.1.2") is False
+    assert is_public_hostname("localhost.") is False
+    assert is_public_hostname("127.1") is False
+    assert is_public_hostname("2130706433") is False
+    assert is_public_hostname("ⓛocalhost") is False
     assert is_public_hostname("") is False
+
+
+def test_parse_webcast_info_prefers_candidate_bound_to_requested_room():
+    page = json.dumps(
+        {
+            "rooms": [
+                {"web_rid": "other-room", "room_id": "111", "title": "wrong"},
+                {"web_rid": "target-room", "room_id": "222", "title": "right"},
+            ]
+        }
+    )
+
+    info = parse_webcast_info(page, room_ref="target-room")
+
+    assert info.webcast_room_id == "222"
+    assert info.title == "right"
+
+
+def test_fetch_webcast_info_rejects_oversized_page(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            return b"x" * limit
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.modules.douyin_live_ingest.webcast.urllib.request.urlopen",
+        lambda *_args, **_kwargs: _Response(),
+    )
+
+    info = fetch_webcast_info("target-room")
+
+    assert info.ok is False
+    assert info.message == "douyin room page exceeds size limit"
 
 
 def test_douyin_transport_event_reuses_safe_payload_boundary():

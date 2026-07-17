@@ -36,6 +36,16 @@ def test_audit_store_preserves_normal_public_event_fields() -> None:
     }
 
 
+def test_audit_store_recent_returns_independent_nested_copies() -> None:
+    store = AuditStore()
+    store.record("op", "message", detail={"nested": {"value": "original"}})
+
+    first = store.recent(1)
+    first[0]["detail"]["nested"]["value"] = "mutated"
+
+    assert store.recent(1)[0]["detail"]["nested"]["value"] == "original"
+
+
 def test_audit_store_redacts_credentials_and_never_stringifies_objects() -> None:
     store = AuditStore()
     secret = _SecretLike()

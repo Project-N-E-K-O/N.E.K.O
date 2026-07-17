@@ -127,21 +127,27 @@ class ActiveEngagementModule(BaseModule):
     def _topic_material_block(topic_material: object | None) -> str:
         if not isinstance(topic_material, dict):
             return ""
-        source = str(topic_material.get("source") or "fallback").strip()
-        shape = str(topic_material.get("shape") or "").strip()
-        title = str(topic_material.get("title") or "").strip()
-        fun_axis = str(topic_material.get("fun_axis") or "").strip()
-        family = str(topic_material.get("family") or "").strip()
-        hook = str(topic_material.get("hook") or "").strip()
-        pattern = str(topic_material.get("pattern") or "").strip()
-        intent = str(topic_material.get("intent") or "").strip()
-        live_column = str(topic_material.get("live_column") or "").strip()
-        topic_pack = str(topic_material.get("topic_pack") or "").strip()
-        reply_affordance = str(topic_material.get("reply_affordance") or "").strip()
-        interest = str(topic_material.get("interest") or "").strip()
-        relevance = str(topic_material.get("relevance") or "").strip()
-        risk = str(topic_material.get("risk") or "").strip()
-        hint = str(topic_material.get("hint") or "").strip()
+        def topic_text(key: str, *, max_len: int = 120) -> str:
+            value = topic_material.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                value = str(value)
+            return public_text(value, max_len=max_len)
+
+        source = topic_text("source") or "fallback"
+        shape = topic_text("shape")
+        title = topic_text("title")
+        fun_axis = topic_text("fun_axis")
+        family = topic_text("family")
+        hook = topic_text("hook")
+        pattern = topic_text("pattern")
+        intent = topic_text("intent")
+        live_column = topic_text("live_column")
+        topic_pack = topic_text("topic_pack")
+        reply_affordance = topic_text("reply_affordance")
+        interest = topic_text("interest")
+        relevance = topic_text("relevance", max_len=40)
+        risk = topic_text("risk", max_len=40)
+        hint = topic_text("hint")
         evidence = topic_material.get("evidence")
         lines = [
             "Topic material:",
@@ -178,9 +184,9 @@ class ActiveEngagementModule(BaseModule):
             lines.append(f"- viewer reply path: {reply_affordance}")
         if isinstance(evidence, list):
             safe_evidence = [
-                " ".join(str(item or "").strip().split())
+                public_text(item, max_len=120)
                 for item in evidence[:3]
-                if str(item or "").strip()
+                if public_text(item, max_len=120)
             ]
             if safe_evidence:
                 lines.append("- recent thread evidence:")

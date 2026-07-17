@@ -9,16 +9,17 @@ def idle_hosting_status(
     *,
     live_state: dict[str, Any],
     now: float,
-    last_attempt_at: float,
+    last_attempt_at: float | None,
     min_interval_seconds: float,
     consecutive_failures: int,
     failure_limit: int,
     recent_hosting_output_age: float | None = None,
     host_output_cooldown_seconds: float = 0.0,
 ) -> dict[str, Any]:
-    elapsed = max(0.0, float(now) - float(last_attempt_at or 0.0))
+    normalized_last_attempt_at = float(last_attempt_at or 0.0)
+    elapsed = max(0.0, float(now) - normalized_last_attempt_at)
     cooldown_remaining = 0.0
-    if last_attempt_at > 0:
+    if normalized_last_attempt_at > 0:
         cooldown_remaining = round(max(0.0, float(min_interval_seconds) - elapsed), 1)
 
     candidate = bool(live_state.get("idle_hosting_candidate"))

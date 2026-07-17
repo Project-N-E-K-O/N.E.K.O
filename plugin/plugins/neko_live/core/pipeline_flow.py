@@ -16,6 +16,7 @@ from .pipeline_results import (
 )
 from .pipeline_viewers import resolve_viewer_context
 from .runtime_timeline import record_timeline
+from .runtime_live_session import is_current_live_session_event
 
 
 async def run_event_flow(
@@ -47,6 +48,8 @@ async def run_event_flow(
         ):
             uid_lock = await session.acquire_uid_lock(identity.uid)
         try:
+            if not is_current_live_session_event(ctx, event):
+                return skip_stale_live_event(ctx, event, identity, profile, steps)
             already_roasted = False
             if uid_lock is not None:
                 already_roasted = await session.already_roasted(

@@ -83,7 +83,7 @@ class ViewerStore:
         try:
             return self._memory_enabled_provider() is not False
         except Exception:  # noqa: BLE001
-            return True
+            return False
 
     def _resolve_file(self) -> tuple[Path, bool]:
         """返回 (档案文件路径, 是否用了自定义目录)。纯解析、无副作用（不建目录）。"""

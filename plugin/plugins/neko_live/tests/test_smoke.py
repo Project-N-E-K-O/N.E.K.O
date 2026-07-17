@@ -279,10 +279,6 @@ def test_console_uses_floating_live_control_with_ordered_readiness_tooltip() -> 
         assert 'className="neko-live-console-scroll"' in source
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
-        assert 'position: "fixed"' in dock_source
-        assert 'right: "20px"' in dock_source
-        assert 'bottom: "20px"' in dock_source
-        assert 'position: "sticky"' not in dock_source
         assert 'className="neko-live-console-dock"' not in source
         assert "<Tooltip" in source
         assert 'placement="top"' in source

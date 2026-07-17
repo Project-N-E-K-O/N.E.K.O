@@ -112,7 +112,9 @@ def is_neko_mention_target(
             return True
         if not allow_alias_continuation:
             continue
-        if "\u3040" <= rest[0] <= "\u30ff" or "\u3400" <= rest[0] <= "\u9fff":
+        if "\u3040" <= rest[0] <= "\u30ff":
+            return True
+        if alias != "\u732b\u732b" and "\u3400" <= rest[0] <= "\u9fff":
             return True
         if rest.startswith(live_address_prefixes):
             return True

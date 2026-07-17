@@ -15,6 +15,8 @@ def coerce_recent_reply_values(recent_live_replies: Any) -> list[str]:
         return []
     if isinstance(recent_live_replies, Mapping):
         source = recent_live_replies.values()
+    elif isinstance(recent_live_replies, str):
+        source = [recent_live_replies]
     else:
         try:
             source = list(recent_live_replies)

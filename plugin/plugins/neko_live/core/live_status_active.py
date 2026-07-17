@@ -11,7 +11,7 @@ def active_engagement_status(
     live_status: dict[str, Any],
     live_state: dict[str, Any],
     now: float,
-    last_attempt_at: float,
+    last_attempt_at: float | None,
     min_interval_seconds: float,
     recent_danmaku_output_age: float | None,
     recent_danmaku_wait_seconds: float,
@@ -32,9 +32,10 @@ def active_engagement_status(
         and live_status.get("summary") in {"ready_to_stream", "test_only"}
         and float(live_status.get("cooldown_remaining") or 0.0) <= 0.0
     )
-    elapsed = max(0.0, float(now) - float(last_attempt_at or 0.0))
+    normalized_last_attempt_at = float(last_attempt_at or 0.0)
+    elapsed = max(0.0, float(now) - normalized_last_attempt_at)
     cooldown_remaining = 0.0
-    if last_attempt_at > 0:
+    if normalized_last_attempt_at > 0:
         cooldown_remaining = round(max(0.0, float(min_interval_seconds) - elapsed), 1)
     minimum_interval_remaining = cooldown_remaining
     recent_danmaku_cooldown = 0.0

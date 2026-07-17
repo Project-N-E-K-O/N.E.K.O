@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contracts_public import public_text
+
 
 def runtime_health_rows(runtime: Any) -> list[dict[str, Any]]:
     ingest = _module_status(getattr(runtime, "live_provider", None))
@@ -157,10 +159,7 @@ def _module_status(module: Any) -> dict[str, Any]:
 
 
 def _public_text(value: Any, *, limit: int = 200) -> str:
-    if not isinstance(value, str):
-        return ""
-    text = " ".join(value.split()).strip()
-    return text[:limit]
+    return public_text(value, max_len=limit)
 
 
 def _public_non_negative_int(value: Any) -> int:

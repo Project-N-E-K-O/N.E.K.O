@@ -515,7 +515,10 @@ class NekoLivePlugin(NekoPluginBase):
     @ui.action(id="clear_sandbox_data", label=tr("actions.clear_sandbox_data.label", default="清空沙盒记录"), group="developer", order=30, refresh_context=True)
     @plugin_entry(id="clear_sandbox_data", name=tr("entries.clear_sandbox_data.name", default="清空沙盒记录"), description=tr("entries.clear_sandbox_data.description", default="清空开发者沙盒的临时记录和头像预览缓存，不影响观众档案。"))
     async def clear_sandbox_data(self, **_):
-        return Ok({"cleared": self._runtime().clear_sandbox_data()})
+        runtime = self._runtime()
+        if not runtime.config.developer_tools_enabled:
+            return Err(SdkError("developer mode is disabled"))
+        return Ok({"cleared": runtime.clear_sandbox_data()})
 
     @plugin_entry(id="clear_viewer_profiles", name=tr("entries.clear_viewer_profiles.name", default="清空观众档案"), description=tr("entries.clear_viewer_profiles.description", default="清空观众档案，用于下一场受控直播测试前重置首评状态。"))
     async def clear_viewer_profiles(self, **_):

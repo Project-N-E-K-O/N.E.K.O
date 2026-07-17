@@ -21,11 +21,11 @@ class LiveHostingDirector:
 
     async def trigger_idle_hosting(self, *, automatic: bool = False) -> InteractionResult:
         live_state = live_hosting_gates.hosting_live_state(self.runtime)
-        host_beat = self.next_idle_hosting_beat()
         event = live_hosting_events.idle_hosting_event(
             self.runtime,
             live_state,
-            host_beat,
+            {},
+            automatic=automatic,
         )
         reason = (
             "idle_hosting.disabled"
@@ -35,8 +35,6 @@ class LiveHostingDirector:
             live_state,
             )
         )
-        if not reason and not host_beat:
-            reason = "idle_hosting.no_material"
         if not reason:
             reason = live_hosting_gates.idle_hosting_material_skip_reason(
                 self.runtime,
@@ -44,6 +42,15 @@ class LiveHostingDirector:
             )
         if reason:
             return self.record_idle_hosting_skip(event, reason)
+        host_beat = self.next_idle_hosting_beat()
+        if not host_beat:
+            return self.record_idle_hosting_skip(event, "idle_hosting.no_material")
+        event = live_hosting_events.idle_hosting_event(
+            self.runtime,
+            live_state,
+            host_beat,
+            automatic=automatic,
+        )
         return await self.runtime.pipeline.handle_event(event)
 
     async def maybe_trigger_idle_hosting(self) -> InteractionResult | None:

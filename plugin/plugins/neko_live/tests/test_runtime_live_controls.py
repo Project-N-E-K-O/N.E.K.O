@@ -790,10 +790,17 @@ async def test_lookup_other_room_does_not_replace_configured_room_context(runtim
 
 
 @pytest.mark.asyncio
-async def test_update_config_restarts_listener_when_room_changes(runtime: RoastRuntime) -> None:
+async def test_update_config_restarts_listener_when_room_changes(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
+    monkeypatch.setattr(
+        runtime,
+        "bili_login_status",
+        lambda: asyncio.sleep(0, result={"logged_in": True}),
+    )
 
     await runtime.update_config({"live_room_id": 200, "live_enabled": True})
 
@@ -802,6 +809,64 @@ async def test_update_config_restarts_listener_when_room_changes(runtime: RoastR
     assert runtime.bili_live_ingest.room_id == 200
     assert runtime.config.live_enabled is True
     assert runtime.live_connection_snapshot()["connected"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_config_does_not_bypass_bilibili_auth_for_reconnect(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime.config.live_room_id = 100
+    runtime.config.live_enabled = True
+    await runtime.bili_live_ingest.start_listening(100)
+    monkeypatch.setattr(
+        runtime,
+        "bili_login_status",
+        lambda: asyncio.sleep(0, result={"logged_in": False}),
+    )
+
+    await runtime.update_config({"live_room_id": 200, "live_enabled": True})
+
+    assert runtime.bili_live_ingest.started == [100]
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_state == "auth_required"
+
+
+@pytest.mark.asyncio
+async def test_listener_start_failure_converges_to_disconnected_state(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken_start(_room_ref):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runtime.live_provider, "start_listening", broken_start)
+    runtime.config.live_enabled = True
+    runtime.safety_guard.set_connected(True)
+
+    started = await runtime._start_live_listener(123)
+
+    assert started is False
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.safety_guard.connected is False
+
+
+@pytest.mark.asyncio
+async def test_listener_stop_failure_still_converges_to_disconnected_state(
+    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken_stop():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(runtime.live_provider, "stop_listening", broken_stop)
+    runtime.config.live_enabled = True
+    runtime.safety_guard.set_connected(True)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await runtime._stop_live_listener(mark_disabled=True)
+
+    assert runtime.config.live_enabled is False
+    assert runtime.live_connection_state == "disconnected"
+    assert runtime.safety_guard.connected is False
 
 
 @pytest.mark.asyncio
@@ -1280,6 +1345,23 @@ def test_runtime_health_rows_do_not_stringify_public_projection_objects(runtime:
     assert rows["dispatcher"]["output_channel_detail"] == ""
     assert rows["config_store"]["last_error"] == ""
     assert "health-object-secret" not in str(rows)
+
+
+def test_runtime_health_rows_redact_free_text_secrets(runtime: RoastRuntime) -> None:
+    runtime._config_last_error = "failed with password=hunter2"
+    runtime.dispatcher.output_channel_status = lambda: {
+        "ready": False,
+        "reason": "authorization: Bearer abc123",
+        "detail": "cookie: session=secret",
+    }
+
+    rows = {row["id"]: row for row in runtime.runtime_health_rows()}
+    rendered = json.dumps(rows, ensure_ascii=False)
+
+    assert "hunter2" not in rendered
+    assert "abc123" not in rendered
+    assert "session=secret" not in rendered
+    assert "[redacted]" in rendered
 
 
 def _created_at_age(seconds: int) -> str:

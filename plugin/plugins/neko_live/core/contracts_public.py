@@ -27,7 +27,8 @@ _SENSITIVE_KEY_RE = re.compile(
 )
 _SENSITIVE_TEXT_RE = re.compile(
     r"\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
-    r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token)\b\s*[:=]\s*[^;\s,&]+",
+    r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token|password|passwd|secret|client_secret|"
+    r"api_key|apikey|credentials?)\b\s*[:=]\s*[^;\s,&]+",
     re.IGNORECASE,
 )
 

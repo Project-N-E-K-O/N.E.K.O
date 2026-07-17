@@ -44,7 +44,6 @@ class SafetyGuard:
 
     def update(self, config: RoastConfig) -> None:
         self.config = config
-        self.queue_size = min(self.queue_size, self.config.queue_limit)
 
     def pause(self, reason: str = "manual pause") -> None:
         self.manual_paused = True
@@ -133,6 +132,7 @@ class SafetyGuard:
         return "running"
 
     def snapshot(self) -> dict[str, Any]:
+        safety_guard_failures.prune_failure_buckets(self)
         return {
             "status": self.status(),
             "manual_paused": self.manual_paused,

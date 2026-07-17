@@ -137,6 +137,26 @@ async def test_disabled_viewer_memory_keeps_basic_profile_without_learning_prefe
 
 
 @pytest.mark.asyncio
+async def test_viewer_memory_provider_failure_fails_closed(tmp_path):
+    def broken_provider() -> bool:
+        raise RuntimeError("config unavailable")
+
+    store = ViewerStore(
+        _FakePlugin(tmp_path),
+        audit=None,
+        memory_enabled_provider=broken_provider,
+    )
+
+    profile = await store.record_live_danmaku(
+        ViewerIdentity(uid="1001", nickname="viewer"),
+        "AI plugin config?",
+    )
+
+    assert profile.preference_tags == {}
+    assert profile.favorite_topics == {}
+
+
+@pytest.mark.asyncio
 async def test_disabling_viewer_memory_preserves_existing_impression_without_extending_it(tmp_path):
     memory_enabled = True
     store = ViewerStore(

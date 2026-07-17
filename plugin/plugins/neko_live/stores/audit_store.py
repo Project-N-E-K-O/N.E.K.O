@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from copy import deepcopy
 from typing import Any
 
 from ..core.contracts import utc_now_iso
@@ -45,7 +46,7 @@ class AuditStore:
 
     def recent(self, limit: int | None = None) -> list[dict[str, Any]]:
         cap = limit or self.limit
-        return list(reversed(self._events[-cap:]))
+        return deepcopy(list(reversed(self._events[-cap:])))
 
 
 def _safe_level(value: Any) -> str:

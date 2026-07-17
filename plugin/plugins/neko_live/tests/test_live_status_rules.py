@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from plugin.plugins.neko_live.core import runtime_dashboard
 from plugin.plugins.neko_live.core.live_status_active import active_engagement_status
+from plugin.plugins.neko_live.core.live_status_idle import idle_hosting_status
 from plugin.plugins.neko_live.core.live_status_director import live_director_status
 from plugin.plugins.neko_live.core.live_status_timing import (
     recent_hosting_output_age_sec,
@@ -19,6 +20,33 @@ from plugin.plugins.neko_live.core.runtime_dashboard_api import (
 class _RecentContextRuntime(RuntimeRecentContextApiMixin):
     def __init__(self, recent_results):
         self.recent_results = recent_results
+
+
+def test_live_status_rules_treat_missing_attempt_timestamp_as_never_attempted():
+    active = active_engagement_status(
+        config=SimpleNamespace(live_mode="solo_stream"),
+        live_status={"summary": "ready_to_stream", "cooldown_remaining": 0.0},
+        live_state={"state": "quiet"},
+        now=120.0,
+        last_attempt_at=None,
+        min_interval_seconds=60.0,
+        recent_danmaku_output_age=None,
+        recent_danmaku_wait_seconds=45.0,
+        idle_hosting_wait_remaining=None,
+        idle_grace_seconds=30.0,
+        idle_takeover_streak=0,
+    )
+    idle = idle_hosting_status(
+        live_state={"idle_hosting_candidate": True},
+        now=120.0,
+        last_attempt_at=None,
+        min_interval_seconds=60.0,
+        consecutive_failures=0,
+        failure_limit=3,
+    )
+
+    assert active["cooldown_remaining"] == 0.0
+    assert idle["cooldown_remaining"] == 0.0
 
 
 def test_recent_hosting_output_age_ignores_dry_run_results():

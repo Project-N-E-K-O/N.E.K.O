@@ -461,6 +461,19 @@ def test_spaced_alias_prefixed_nickname_remains_viewer_to_viewer(text: str) -> N
     assert active_topic_mentions.is_viewer_to_viewer_mention_text(text)
 
 
+def test_unspaced_cjk_nickname_starting_with_neko_alias_is_not_misdirected():
+    assert active_topic_mentions.is_viewer_to_viewer_mention_text("@猫猫咖啡馆 你看这个")
+
+
+def test_live_thread_units_preserve_english_word_boundaries():
+    units = active_topic_live_thread_source._topic_units("cats are very cute")
+
+    assert "cats" in units
+    assert "very" in units
+    assert "cute" in units
+    assert "catsareverycute" not in units
+
+
 @pytest.mark.asyncio
 async def test_trending_source_preserves_first_skip_reason() -> None:
     async def fetcher(*_args: object, **_kwargs: object) -> dict[str, object]:
@@ -538,6 +551,30 @@ async def test_cached_trending_candidate_preserves_recent_skip_reason() -> None:
     assert candidates == cached
     assert candidates is not cached
     assert selector._active_engagement_recent_topic_skip_reason == "single_viewer_flood"
+
+
+@pytest.mark.asyncio
+async def test_empty_successful_trending_fetch_is_cached() -> None:
+    calls = 0
+
+    async def fetcher(limit: int = 6) -> dict:
+        nonlocal calls
+        calls += 1
+        return {"success": True, "videos": []}
+
+    selector = SimpleNamespace(
+        _active_engagement_topic_cache=[],
+        _active_engagement_topic_cache_at=0.0,
+        _active_engagement_topic_fetcher=fetcher,
+        _active_engagement_recent_topic_skip_reason="",
+        _runtime=SimpleNamespace(_compact_context_text=lambda text, limit: text[:limit]),
+        is_meaningful_topic_text=lambda _text: True,
+        material_profile=lambda _text: {},
+    )
+
+    assert await active_topic_trending_source.bili_trending_topic_candidates(selector) == []
+    assert await active_topic_trending_source.bili_trending_topic_candidates(selector) == []
+    assert calls == 1
 
 
 @pytest.mark.asyncio

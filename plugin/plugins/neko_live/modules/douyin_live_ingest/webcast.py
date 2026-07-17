@@ -24,6 +24,7 @@ _ROOM_ID_KEYS = ("room_id", "roomId", "webcast_room_id", "webcastRoomId")
 _USER_UNIQUE_ID_KEYS = ("user_unique_id", "userUniqueId", "webcast_user_id", "webcastUserId")
 _DEFAULT_FETCH_TIMEOUT_SECONDS = 8.0
 _MAX_FETCH_TIMEOUT_SECONDS = 15.0
+_MAX_PAGE_BYTES = 4 * 1024 * 1024
 _ESCAPED_ROOM_RE = re.compile(
     r'\\?"room\\?":\{\\?"id_str\\?":\\?"(?P<room_id>\d+)\\?",'
     r'\s*\\?"status\\?":(?P<status>\d+),'
@@ -100,7 +101,14 @@ def fetch_webcast_info(room_ref: Any, *, cookie: str = "", timeout: float = _DEF
     request = urllib.request.Request(room_page_url(room_ref), headers=_headers(cookie))
     try:
         with urllib.request.urlopen(request, timeout=_safe_timeout(timeout)) as response:
-            body = response.read().decode("utf-8", errors="replace")
+            raw_body = response.read(_MAX_PAGE_BYTES + 1)
+            if len(raw_body) > _MAX_PAGE_BYTES:
+                return DouyinWebcastInfo(
+                    ok=False,
+                    room_ref=safe_room_ref(room_ref),
+                    message="douyin room page exceeds size limit",
+                )
+            body = raw_body.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return DouyinWebcastInfo(
             ok=False,
@@ -121,7 +129,7 @@ def fetch_webcast_info(room_ref: Any, *, cookie: str = "", timeout: float = _DEF
 def parse_webcast_info(page_html: Any, *, room_ref: str = "") -> DouyinWebcastInfo:
     public_room_ref = safe_room_ref(room_ref)
     for data in _iter_json_payloads(page_html):
-        candidate = _best_room_candidate(data)
+        candidate = _best_room_candidate(data, room_ref=public_room_ref)
         if candidate:
             return _info_from_candidate(candidate, room_ref=public_room_ref)
     escaped_info = _info_from_escaped_room_store(page_html, room_ref=public_room_ref)
@@ -207,15 +215,23 @@ def _loads_json(text: str) -> Any | None:
         return None
 
 
-def _best_room_candidate(data: Any) -> dict[str, Any] | None:
+def _best_room_candidate(data: Any, *, room_ref: str = "") -> dict[str, Any] | None:
     best: tuple[int, dict[str, Any]] | None = None
     for item in _walk_dicts(data):
+        candidate_refs = _candidate_room_refs(item)
+        if room_ref and candidate_refs and room_ref not in candidate_refs:
+            continue
         score = _candidate_score(item)
         if score <= 0:
             continue
         if best is None or score > best[0]:
             best = (score, item)
     return best[1] if best else None
+
+
+def _candidate_room_refs(item: dict[str, Any]) -> set[str]:
+    keys = ("web_rid", "webRid", "room_ref", "roomRef", "room_slug", "roomSlug")
+    return {value for key in keys if (value := _first_text(item, (key,)))}
 
 
 def _walk_dicts(value: Any):

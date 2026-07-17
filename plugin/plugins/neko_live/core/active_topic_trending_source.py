@@ -10,7 +10,7 @@ from typing import Any
 async def bili_trending_topic_candidates(selector: Any) -> list[dict[str, Any]]:
     now = time.monotonic()
     if (
-        selector._active_engagement_topic_cache
+        selector._active_engagement_topic_cache_at > 0.0
         and now - selector._active_engagement_topic_cache_at < 600.0
     ):
         return list(selector._active_engagement_topic_cache)

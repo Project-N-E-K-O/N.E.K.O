@@ -355,31 +355,27 @@ class SupportEventScheduler:
         try:
             while self._queue:
                 _priority, _sequence, payload = heapq.heappop(self._queue)
-                await self._dispatch_with_retry(payload)
+                await self._dispatch_once(payload)
         finally:
             if self._worker is worker:
                 self._worker = None
             self._refresh_idle()
 
-    async def _dispatch_with_retry(self, payload: dict[str, Any]) -> None:
-        for attempt in range(2):
-            try:
-                await self._dispatch(payload)
-                return
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if attempt == 0:
-                    continue
-                self._record_audit(
-                    "support.dispatch_failed",
-                    "support event dispatch failed",
-                    level="error",
-                    detail={
-                        "event_type": str(payload.get("event_type") or "unknown")[:32],
-                        "error_type": type(exc).__name__,
-                    },
-                )
+    async def _dispatch_once(self, payload: dict[str, Any]) -> None:
+        try:
+            await self._dispatch(payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._record_audit(
+                "support.dispatch_failed",
+                "support event dispatch failed without retry to avoid duplicate output",
+                level="error",
+                detail={
+                    "event_type": str(payload.get("event_type") or "unknown")[:32],
+                    "error_type": type(exc).__name__,
+                },
+            )
 
     def _record_audit(
         self,

@@ -699,8 +699,12 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
         nickname: String(configForm.values.douyin_nickname || "").trim(),
       }))
       setDouyinAuthState(result)
-      configForm.setField("douyin_cookie", "")
-      toast.success(result.saved ? t("panel.douyinAuth.cookieSaved") : t("panel.douyinAuth.cookieSaveFailed"))
+      if (result.saved) {
+        configForm.setField("douyin_cookie", "")
+        toast.success(t("panel.douyinAuth.cookieSaved"))
+      } else {
+        toast.warning(result.message || t("panel.douyinAuth.cookieSaveFailed"))
+      }
       await refreshDashboard(true)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err))
@@ -869,6 +873,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   }
 
   function enableLimitedConnection() {
+    if (authPending || sessionInProgress) return
     setAllowLimitedConnection(true)
     setConsoleDialog("")
     toast.warning(t("panel.console.limitedEnabled"))
@@ -980,7 +985,11 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
   const sessionInProgress = started || !!config.live_enabled || sessionStartAccepted
   useEffect(() => {
     if (started || config.live_enabled) setSessionStartAccepted(false)
-  }, [started, config.live_enabled])
+    else if (
+      !connectPending &&
+      ["disconnected", "failed", "error", "auth_required", "unsupported"].includes(connectionState)
+    ) setSessionStartAccepted(false)
+  }, [started, config.live_enabled, connectPending, connectionState])
   const roomInputRef = String(configForm.values.live_room_ref || configForm.values.live_room_id || configuredRoomRef || "").trim()
   const roomConfigured = !!configuredRoomRef
   const interactionPaused = liveStateName === "paused" || String(safety.status || "") === "paused"
@@ -1247,7 +1256,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
               {!loginLoggedIn ? (
                 <Stack gap={8}>
                   <Alert tone="info">{t("panel.console.loginPrimaryHint")}</Alert>
-                  <Button tone="warning" onClick={enableLimitedConnection}>{t("panel.console.useLimitedConnection")}</Button>
+                  <Button tone="warning" disabled={!!authPending || sessionInProgress} onClick={enableLimitedConnection}>{t("panel.console.useLimitedConnection")}</Button>
                 </Stack>
               ) : null}
             </Stack>
@@ -1449,7 +1458,8 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
       >
         {!started && !canStart && !connectPending ? (
           <Tooltip content={readinessTooltip} placement="top">
-            <button
+            <span tabIndex={0} style={{ display: "inline-flex" }}>
+              <button
               type="button"
               className="neko-button"
               data-tone="default"
@@ -1458,7 +1468,8 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
             >
               <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
               {t("panel.console.preparation.notReady")}
-            </button>
+              </button>
+            </span>
           </Tooltip>
         ) : (
           <button
@@ -1482,7 +1493,9 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
 
   const renderConfigField = (f: any, fi: number) => {
     const name = String((f && f.name) || "")
-    const cur = config[name]
+    const cur = Object.prototype.hasOwnProperty.call(configForm.values, name)
+      ? configForm.values[name]
+      : config[name]
     const label = f && f.label ? t(f.label) : name
     const hint = f && f.hint ? t(f.hint) : ""
     if (f && f.type === "boolean") {

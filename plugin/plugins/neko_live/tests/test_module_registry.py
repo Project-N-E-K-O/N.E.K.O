@@ -53,6 +53,7 @@ def test_production_config_schema_uses_only_rendered_field_contract():
 
     assert schema
     assert {field["type"] for field in schema} <= {"boolean", "select", "text", "string"}
+    assert all({"name", "type", "label", "default"} <= set(field) for field in schema)
     assert all("show_if" not in field for field in schema)
 
 
@@ -139,13 +140,33 @@ def test_snapshot_sanitizes_status_and_config_schema_public_projection():
     assert record["domain"] == ""
     assert record["enabled"] is False
     assert record["status"]["message"] == "ok [redacted]"
-    assert record["status"]["nested"]["secret"] == ""
+    assert record["status"]["nested"]["secret"] == "[redacted]"
     assert record["status"]["nested"]["items"] == ["", ""]
     assert record["status"]["bad_number"] == 0.0
     assert record["config_schema"][0]["default"] == ""
     assert record["config_schema"][0]["options"][0]["label"] == ""
     assert record["config_schema"][0]["raw"] == ""
     assert "must-not-leak" not in dumped
+
+
+def test_snapshot_redacts_values_under_sensitive_field_names():
+    class _SensitiveMeta(BaseModule):
+        id = "sensitive_meta"
+
+        def status(self):
+            return {"token": "plain-secret", "nested": {"password": "also-secret"}}
+
+        def config_schema(self):
+            return [{"name": "cookie", "default": "session-secret"}]
+
+    reg = ModuleRegistry()
+    reg.register(_SensitiveMeta())
+
+    record = reg.snapshot()[0]
+
+    assert record["status"]["token"] == "[redacted]"
+    assert record["status"]["nested"]["password"] == "[redacted]"
+    assert record["config_schema"][0]["default"] == "[redacted]"
 
 
 def test_teardown_failure_is_isolated():

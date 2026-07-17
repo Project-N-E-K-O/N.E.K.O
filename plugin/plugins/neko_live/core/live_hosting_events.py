@@ -11,6 +11,8 @@ def idle_hosting_event(
     runtime: Any,
     live_state: dict[str, Any],
     host_beat: dict[str, Any],
+    *,
+    automatic: bool = False,
 ) -> ViewerEvent:
     return ViewerEvent(
         uid="__neko_idle__",
@@ -19,7 +21,7 @@ def idle_hosting_event(
         source="idle_hosting",
         live_mode=runtime.config.live_mode,
         raw={
-            "trigger": "manual_idle_hosting",
+            "trigger": "auto_idle_hosting" if automatic else "manual_idle_hosting",
             "live_state": dict(live_state),
             "host_beat": host_beat,
         },

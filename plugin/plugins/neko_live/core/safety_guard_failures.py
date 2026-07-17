@@ -40,3 +40,9 @@ def record_failure(guard: Any, kind: FailureKind, message: str) -> None:
 def trim_failure_bucket(guard: Any, bucket: list[float], now: float) -> None:
     window = guard.config.safety_window_seconds
     bucket[:] = [item for item in bucket if now - item <= window]
+
+
+def prune_failure_buckets(guard: Any) -> None:
+    now = time.monotonic()
+    trim_failure_bucket(guard, guard._pipeline_failures, now)
+    trim_failure_bucket(guard, guard._output_failures, now)

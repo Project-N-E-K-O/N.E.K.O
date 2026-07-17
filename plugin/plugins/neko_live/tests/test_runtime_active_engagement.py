@@ -109,3 +109,25 @@ async def test_dry_run_active_engagement_records_attempt_and_respects_interval()
     assert runtime._active_engagement_last_attempt_at == 100.0
     assert await maybe_trigger_active_engagement(runtime) is None
     assert len(runtime.pipeline.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_automatic_active_engagement_records_attempt_before_failed_pipeline():
+    runtime = _Runtime({"candidate": True, "eligible": True, "reason": "eligible"})
+    runtime.pipeline.status = "failed"
+
+    result = await maybe_trigger_active_engagement(runtime)
+
+    assert result is not None
+    assert result.status == "failed"
+    assert runtime._active_engagement_last_attempt_at == 100.0
+    assert runtime.pipeline.events[0].raw["trigger"] == "auto_active_engagement"
+
+
+@pytest.mark.asyncio
+async def test_manual_active_engagement_keeps_manual_trigger_source():
+    runtime = _Runtime({"candidate": True, "eligible": True, "reason": "eligible"})
+
+    await trigger_active_engagement(runtime)
+
+    assert runtime.pipeline.events[0].raw["trigger"] == "manual_active_engagement"

@@ -36,7 +36,20 @@ async def reconcile_live_listener_after_config(
         return
     runtime._accepting_live_events = False
     invalidate_live_session(runtime)
-    await _stop_captured_provider(old_provider or runtime.live_provider)
+    try:
+        await _stop_captured_provider(old_provider or runtime.live_provider)
+    except Exception as exc:
+        runtime.config.live_enabled = False
+        runtime.live_connection_state = "disconnected"
+        runtime.live_connection_auth_mode = "unknown"
+        runtime.safety_guard.set_connected(False)
+        await runtime.restore_instructions(force=True)
+        runtime.audit.record(
+            "live_reconnect_stop_failed",
+            f"previous listener stop failed: {type(exc).__name__}",
+            level="warning",
+        )
+        return
     if disabled or not room_ref:
         runtime.config.live_enabled = False
         runtime.live_connection_state = "disconnected"
@@ -50,6 +63,27 @@ async def reconcile_live_listener_after_config(
         runtime.live_connection_auth_mode = "unknown"
         runtime.safety_guard.set_connected(False)
         return
+    if platform == "bilibili":
+        try:
+            login_status = await runtime.bili_login_status()
+        except Exception:
+            login_status = {}
+        if not isinstance(login_status, dict) or login_status.get("logged_in") is not True:
+            runtime.config.live_enabled = False
+            runtime.live_connection_state = "auth_required"
+            runtime.live_connection_auth_mode = "unknown"
+            runtime.safety_guard.set_connected(False)
+            await runtime.restore_instructions(force=True)
+            runtime.audit.record(
+                "live_reconnect_auth_required",
+                "Bilibili login required before reconnecting after config change",
+                level="warning",
+                detail={"platform": platform, "room_ref": room_ref},
+            )
+            return
+        runtime.live_connection_auth_mode = "authenticated"
+    else:
+        runtime.live_connection_auth_mode = "provider_managed"
     await refresh_live_room_context(runtime, room_ref)
     started = await start_live_listener(runtime, room_ref)
     runtime._accepting_live_events = bool(started)
@@ -78,7 +112,15 @@ async def reconcile_live_listener_after_config(
 
 async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime._accepting_live_events = False
-    started = await runtime.live_provider.start_listening(room_ref)
+    try:
+        started = await runtime.live_provider.start_listening(room_ref)
+    except Exception as exc:
+        started = False
+        runtime.audit.record(
+            "live_listener_start_failed",
+            f"listener start failed: {type(exc).__name__}",
+            level="warning",
+        )
     if started:
         begin_live_session(runtime)
         runtime._live_listener_started_at = float(runtime._live_state_now())
@@ -94,15 +136,19 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
     runtime._accepting_live_events = False
     invalidate_live_session(runtime)
-    await runtime.live_provider.stop_listening()
-    if mark_disabled:
-        runtime.config.live_enabled = False
-        _clear_connected_room_status(runtime)
-        await runtime.restore_instructions(force=True)
-    runtime.live_connection_state = "disconnected"
-    runtime.live_connection_auth_mode = "unknown"
-    runtime._live_listener_started_at = 0.0
-    runtime.safety_guard.set_connected(False)
+    try:
+        await runtime.live_provider.stop_listening()
+    finally:
+        try:
+            if mark_disabled:
+                runtime.config.live_enabled = False
+                _clear_connected_room_status(runtime)
+                await runtime.restore_instructions(force=True)
+        finally:
+            runtime.live_connection_state = "disconnected"
+            runtime.live_connection_auth_mode = "unknown"
+            runtime._live_listener_started_at = 0.0
+            runtime.safety_guard.set_connected(False)
 
 
 async def _stop_captured_provider(provider: Any) -> None:

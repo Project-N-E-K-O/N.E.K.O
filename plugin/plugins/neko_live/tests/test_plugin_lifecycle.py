@@ -152,7 +152,7 @@ async def test_update_config_second_developer_sync_only_announces(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clear_sandbox_data_stays_available_outside_developer_mode():
+async def test_clear_sandbox_data_requires_developer_mode():
     class FakeRuntime:
         config = SimpleNamespace(developer_tools_enabled=False)
         clear_calls = 0
@@ -167,9 +167,8 @@ async def test_clear_sandbox_data_stays_available_outside_developer_mode():
 
     result = await plugin.clear_sandbox_data()
 
-    assert result.is_ok() is True
-    assert result.value == {"cleared": {"records": 2, "preview_files": 1}}
-    assert runtime.clear_calls == 1
+    assert result.is_ok() is False
+    assert runtime.clear_calls == 0
 
 
 @pytest.mark.asyncio

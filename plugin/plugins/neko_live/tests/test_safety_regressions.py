@@ -15,7 +15,68 @@ from plugin.plugins.neko_live.core.contracts import (
 )
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline_failure_results import fail_dispatcher
+from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
 from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
+
+
+def test_safety_config_update_preserves_in_flight_count():
+    audit = SimpleNamespace(record=lambda *_args, **_kwargs: None)
+    guard = SafetyGuard(RoastConfig(queue_limit=5), audit)
+    guard.queue_size = 4
+
+    guard.update(RoastConfig(queue_limit=2))
+
+    assert guard.queue_size == 4
+
+
+def test_safety_snapshot_prunes_expired_failure_records(monkeypatch):
+    audit = SimpleNamespace(record=lambda *_args, **_kwargs: None)
+    guard = SafetyGuard(RoastConfig(safety_window_seconds=10), audit)
+    guard._pipeline_failures = [80.0, 95.0]
+    guard._output_failures = [70.0]
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.core.safety_guard_failures.time.monotonic",
+        lambda: 100.0,
+    )
+
+    snapshot = guard.snapshot()
+
+    assert snapshot["pipeline_failures"] == 1
+    assert snapshot["output_failures"] == 0
+
+
+def test_dispatcher_failure_exposes_only_stable_exception_type():
+    records = []
+    ctx = SimpleNamespace(
+        safety_guard=SimpleNamespace(record_failure=lambda kind, message: records.append((kind, message))),
+        record_result=lambda result: records.append(result),
+    )
+    event = ViewerEvent(uid="1")
+    identity = ViewerIdentity(uid="1", nickname="viewer")
+    profile = ViewerProfile(uid="1", nickname="viewer")
+    request = InteractionRequest(
+        event=event,
+        identity=identity,
+        profile=profile,
+        prompt_text="prompt",
+        live_mode="co_stream",
+        strength="normal",
+    )
+    steps = []
+
+    result = fail_dispatcher(
+        ctx,
+        event,
+        identity,
+        profile,
+        request,
+        steps,
+        RuntimeError("authorization: Bearer secret-token"),
+    )
+
+    assert result.reason == "output_failed:RuntimeError"
+    assert "secret-token" not in str(records)
 
 
 @pytest.mark.asyncio

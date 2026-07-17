@@ -208,11 +208,13 @@ class LiveBridgeTransport:
 
     def _emit(self, request: LiveBridgeStartRequest, event: LiveBridgeEvent) -> None:
         if request.emit is not None:
-            request.emit(event)
+            with suppress(Exception):
+                request.emit(event)
 
     def _notify_state(self, request: LiveBridgeStartRequest, state: LiveBridgeState) -> None:
         if request.on_state is not None:
-            request.on_state(state)
+            with suppress(Exception):
+                request.on_state(state)
 
 
 def local_bridge_url(base_url: Any, room_ref: str) -> str:

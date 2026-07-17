@@ -24,8 +24,7 @@ def fail_dispatcher(
     exc: Exception,
     dispatcher_latency_ms: int | None = None,
 ) -> InteractionResult:
-    raw_message = str(exc).strip()
-    message = raw_message or f"output_failed: {type(exc).__name__}"
+    message = f"output_failed:{type(exc).__name__}"
     ctx.safety_guard.record_failure("output", message)
     steps.append(PipelineStep("neko_dispatcher", "failed", message))
     result = InteractionResult(

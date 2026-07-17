@@ -7,6 +7,8 @@ import math
 import re
 from typing import Any
 
+from .contracts_public import is_sensitive_public_key
+
 _MAX_TEXT = 240
 _MAX_DEPTH = 4
 _SENSITIVE_AUTH_RE = re.compile(r"(?i)\bauthorization\b\s*[:=]\s*[^,;]+")
@@ -81,10 +83,16 @@ def safe_meta(module: Any) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
 
 def _safe_public_dict(value: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
+    named_sensitive_field = is_sensitive_public_key(value.get("name"))
     for key, item in value.items():
         if not isinstance(key, str):
             continue
-        safe[key] = _safe_public_value(item, depth=0)
+        if is_sensitive_public_key(key) or (
+            named_sensitive_field and key in {"default", "value"}
+        ):
+            safe[key] = "[redacted]"
+        else:
+            safe[key] = _safe_public_value(item, depth=0)
     return safe
 
 
@@ -100,11 +108,18 @@ def _safe_public_value(value: Any, *, depth: int) -> Any:
     if depth >= _MAX_DEPTH:
         return None
     if isinstance(value, dict):
-        return {
-            key: _safe_public_value(item, depth=depth + 1)
-            for key, item in value.items()
-            if isinstance(key, str)
-        }
+        safe: dict[str, Any] = {}
+        named_sensitive_field = is_sensitive_public_key(value.get("name"))
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            if is_sensitive_public_key(key) or (
+                named_sensitive_field and key in {"default", "value"}
+            ):
+                safe[key] = "[redacted]"
+            else:
+                safe[key] = _safe_public_value(item, depth=depth + 1)
+        return safe
     if isinstance(value, (list, tuple)):
         return [_safe_public_value(item, depth=depth + 1) for item in value]
     return ""

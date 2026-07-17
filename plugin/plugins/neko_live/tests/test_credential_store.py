@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+import os
+import stat
 
 from plugin.plugins.neko_live.stores.credential_store import CredentialStore
 
@@ -45,6 +47,33 @@ async def test_credential_save_load_roundtrip_and_encrypted_at_rest(tmp_path):
     # 落盘必须是密文：原始明文不出现在文件里
     enc_bytes = (tmp_path / "bili_credential.enc").read_bytes()
     assert b"sess-secret" not in enc_bytes
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
+@pytest.mark.asyncio
+async def test_credential_files_are_created_private(tmp_path):
+    pytest.importorskip("cryptography")
+    store = CredentialStore(_FakePlugin(tmp_path), audit=None)
+
+    assert await store.save({"SESSDATA": "secret"}) is True
+
+    for name in ("bili_credential.key", "bili_credential.enc"):
+        mode = stat.S_IMODE((tmp_path / name).stat().st_mode)
+        assert mode == 0o600
+
+
+@pytest.mark.asyncio
+async def test_credential_replace_failure_preserves_existing_ciphertext(tmp_path, monkeypatch):
+    pytest.importorskip("cryptography")
+    store = CredentialStore(_FakePlugin(tmp_path), audit=None)
+    assert await store.save({"SESSDATA": "old-secret"}) is True
+    original = (tmp_path / "bili_credential.enc").read_bytes()
+
+    monkeypatch.setattr(os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("denied")))
+
+    assert await store.save({"SESSDATA": "new-secret"}) is False
+    assert (tmp_path / "bili_credential.enc").read_bytes() == original
+    assert not list(tmp_path.glob(".bili_credential.enc.*.tmp"))
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Feature-module registry for Neko Roast."""
+"""Feature-module registry for NEKO Live."""
 
 from __future__ import annotations
 

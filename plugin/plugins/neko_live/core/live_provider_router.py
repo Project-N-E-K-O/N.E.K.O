@@ -10,21 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import LiveRoomStatus, ViewerIdentity, normalize_live_platform, parse_room_id
-
-try:
-    from ..modules.douyin_live_ingest.room_ref import parse_douyin_room_ref
-except ImportError:
-    def parse_douyin_room_ref(value: Any) -> Any:
-        room_ref = str(value or "").strip()
-        return type(
-            "ParsedDouyinRoomRef",
-            (),
-            {
-                "ok": bool(room_ref),
-                "room_ref": room_ref,
-                "message": "" if room_ref else "room_ref must not be empty",
-            },
-        )()
+from ..modules.douyin_live_ingest.room_ref import parse_douyin_room_ref
 
 
 class LiveProviderRouter:

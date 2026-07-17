@@ -36,6 +36,7 @@ async def lookup_bili_user(runtime: Any, **kwargs: Any) -> dict[str, Any]:
 
 
 def clear_sandbox_data(runtime: Any) -> dict[str, Any]:
+    require_developer_mode(runtime)
     cleared_records = len(runtime.recent_sandbox_results)
     runtime.recent_sandbox_results.clear()
     cleared_preview_files = 0
