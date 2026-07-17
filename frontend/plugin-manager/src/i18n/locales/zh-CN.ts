@@ -384,6 +384,19 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '重复导入同一插件时会先检查版本，并通过可回滚的安全升级替换原目录，不会生成带后缀的副本。',
+      planFailed: '无法检查安装包。',
+      upgradeTitle: '升级 {plugin}？',
+      upgradeBody: '版本 {current} 将替换为 {target}。正在运行的插件会短暂重启。',
+      upgradeConfirm: '升级插件',
+      upgradeCancelled: '已取消升级。',
+      upgradeSucceeded: '{plugin} 已成功升级。',
+      blockedBundleConflict: '此整合包包含已安装的插件，请逐个升级其中的插件。',
+      blockedDirectoryConflict: '目标目录属于另一个插件，未进行任何更改。',
+      blockedLegacyPlugin: '仍安装着此插件的旧版本。请先卸载 {plugin} 再继续。',
+      rollbackCompleted: '升级失败，已恢复之前的版本。'
+    },
     dialog: {
       title: '包管理执行记录',
       subtitle: '保留最近 {count} 条执行结果'
