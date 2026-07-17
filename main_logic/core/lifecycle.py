@@ -108,38 +108,19 @@ class LifecycleMixin:
                     return
             logger.warning(f"[{self.lanlan_name}] 检测到长时间无语音输入，自动关闭session")
             
-            # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
+            # 静默关闭是权威抑制边界；不能保留一段残缺候选音频。
             async with self.hot_swap_cache_lock:
                 # Re-check: a hot-swap could have completed while we waited for the lock.
                 if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
                     logger.info("⏭️ handle_silence_timeout: expected_session stale after acquiring cache lock, skipping")
                     return
                 if self.hot_swap_audio_cache:
-                    SILENCE_DURATION_BYTES = 120000
-                    total_bytes = sum(len(chunk) for chunk in self.hot_swap_audio_cache)
-                    
-                    if total_bytes > SILENCE_DURATION_BYTES:
-                        bytes_to_remove = SILENCE_DURATION_BYTES
-                        removed_bytes = 0
-                        
-                        while bytes_to_remove > 0 and self.hot_swap_audio_cache:
-                            last_chunk = self.hot_swap_audio_cache[-1]
-                            chunk_size = len(last_chunk)
-                            
-                            if chunk_size <= bytes_to_remove:
-                                self.hot_swap_audio_cache.pop()
-                                bytes_to_remove -= chunk_size
-                                removed_bytes += chunk_size
-                            else:
-                                keep_size = chunk_size - bytes_to_remove
-                                self.hot_swap_audio_cache[-1] = last_chunk[:keep_size]
-                                removed_bytes += bytes_to_remove
-                                bytes_to_remove = 0
-                        
-                        logger.info(f"🗑️ 静默超时：已清空音频缓存的最后 {removed_bytes} 字节（约{removed_bytes/32000:.1f}秒）")
-                    else:
-                        logger.info(f"🗑️ 静默超时：缓存总量不足4秒，全部清空（{total_bytes} 字节）")
-                        self.hot_swap_audio_cache.clear()
+                    cached_duration_ms = self.hot_swap_audio_cache.duration_ms
+                    self.hot_swap_audio_cache.clear()
+                    logger.info(
+                        "🗑️ 静默超时：已清空 %s ms 热切换音频缓存",
+                        cached_duration_ms,
+                    )
             
             # Re-check before websocket side-effects
             if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:

@@ -6,6 +6,7 @@ import pytest
 
 from main_logic import core as core_facade
 from main_logic.core.asr_runtime import AsrRuntimeMixin
+from main_logic.asr_client.detector_runtime import DetectorFeedResult
 from main_logic.asr_client.lifecycle_contracts import VoiceLifecycleState
 
 
@@ -84,6 +85,10 @@ async def test_ready_independent_asr_owns_an_active_lifecycle_controller(
     asr.connect = AsyncMock()
     asr.close = AsyncMock()
     asr.stream_audio = AsyncMock()
+    detector = type("Detector", (), {})()
+    detector.feed = AsyncMock(return_value=DetectorFeedResult((), True))
+    detector.reset = AsyncMock()
+    detector.close = AsyncMock()
     selection = type(
         "Selection",
         (),
@@ -96,7 +101,19 @@ async def test_ready_independent_asr_owns_an_active_lifecycle_controller(
     )
     monkeypatch.setattr(runtime_module, "_resolve_asr_selection", lambda _core: selection)
     monkeypatch.setattr(runtime_module, "_create_asr_session_from_selection", MagicMock(return_value=asr))
+    monkeypatch.setattr(
+        runtime_module,
+        "DetectorRuntime",
+        MagicMock(return_value=detector),
+    )
 
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
     await runtime._start_independent_asr_if_enabled("audio")
     await runtime._route_microphone_audio(
         b"\x01\x00" * 1_600,
