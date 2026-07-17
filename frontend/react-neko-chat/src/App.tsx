@@ -5721,6 +5721,7 @@ function CompactChatApp({
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
         <img
+          key={compactMemeOverlay.url}
           src={compactMemeOverlay.url}
           alt={compactMemeOverlay.alt}
           {...compactMemeOverlayImageLoadingProps}

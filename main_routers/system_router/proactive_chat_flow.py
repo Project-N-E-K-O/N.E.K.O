@@ -203,10 +203,10 @@ async def _meme_proxy_candidate_fetchable(url: str) -> tuple[bool, str]:
     if not url:
         return False, "missing_url"
     try:
-        from .meme_proxy import proxy_meme_image
+        from .meme_proxy import fetch_meme_image_response
 
         response = await asyncio.wait_for(
-            proxy_meme_image(url),
+            fetch_meme_image_response(url, write_cache=False),
             timeout=_MEME_PROXY_CANDIDATE_TIMEOUT_SECONDS,
         )
     except Exception as exc:
