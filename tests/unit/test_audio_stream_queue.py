@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from main_logic.core import LLMSessionManager
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.asr_client.audio_pipeline import ProcessedVoiceFrame
 
 
 async def test_starting_session_audio_does_not_enter_pending_input_data():
@@ -164,6 +165,13 @@ def _make_routable_audio_manager(route_result: bool):
     mgr.hot_swap_cache_lock = asyncio.Lock()
     mgr._route_microphone_audio = AsyncMock(return_value=route_result)
     mgr._record_omni_microphone_audio = MagicMock()
+    mgr._process_microphone_audio = AsyncMock(
+        return_value=ProcessedVoiceFrame(
+            pcm16=b"\x01\x00" * 160,
+            sample_rate_hz=16_000,
+            speech_probability=0.5,
+        )
+    )
 
     class _RealtimeSession(OmniRealtimeClient):
         def __init__(self):
@@ -192,8 +200,8 @@ async def test_independent_asr_route_does_not_send_microphone_audio_to_omni():
     mgr._record_omni_microphone_audio.assert_not_called()
 
 
-async def test_native_route_sends_microphone_audio_to_omni_only():
-    mgr = _make_routable_audio_manager(False)
+async def test_blocked_route_never_sends_microphone_audio_to_omni():
+    mgr = _make_routable_audio_manager(True)
 
     await LLMSessionManager._process_stream_data_internal(
         mgr,
@@ -201,8 +209,33 @@ async def test_native_route_sends_microphone_audio_to_omni_only():
     )
 
     mgr._route_microphone_audio.assert_awaited_once()
-    mgr.session.stream_audio.assert_awaited_once()
-    mgr._record_omni_microphone_audio.assert_called_once()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_independent_audio_route_precedes_omni_websocket_checks():
+    mgr = _make_routable_audio_manager(True)
+    mgr.session.ws = None
+    mgr._process_microphone_audio = AsyncMock(
+        return_value=ProcessedVoiceFrame(
+            pcm16=b"\x02\x00" * 160,
+            sample_rate_hz=16_000,
+            speech_probability=0.8,
+        )
+    )
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._process_microphone_audio.assert_awaited_once()
+    mgr._route_microphone_audio.assert_awaited_once_with(
+        b"\x02\x00" * 160,
+        sample_rate_hz=16_000,
+    )
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
 
 
 async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
@@ -253,6 +286,18 @@ async def test_active_teardown_blocks_audio_while_independent_asr_close_waits():
 
 async def test_hot_swap_flush_honors_consumed_audio_route():
     mgr = _make_routable_audio_manager(True)
+    mgr.hot_swap_audio_cache = [b"\x01\x00" * 160]
+    mgr.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_hot_swap_flush_never_falls_back_to_omni_audio():
+    mgr = _make_routable_audio_manager(False)
     mgr.hot_swap_audio_cache = [b"\x01\x00" * 160]
     mgr.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5
 

@@ -159,6 +159,7 @@ class _FakeCoordinator:
         self.evaluate_calls = 0
         self.reset_calls = 0
         self.close_calls = 0
+        self.unload_calls = 0
         self.state = CoordinatorState.IDLE
         self.evaluate_started = asyncio.Event()
         self.evaluate_release = asyncio.Event()
@@ -205,6 +206,9 @@ class _FakeCoordinator:
         if self.log is not None:
             self.log.append("coordinator-close")
 
+    async def unload_predictor(self) -> None:
+        self.unload_calls += 1
+
 
 async def _noop_commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
     del generation, buffer_epoch, utterance_id
@@ -238,6 +242,35 @@ async def test_first_audio_lazy_loads_vad_off_loop_once() -> None:
     assert vad.load_thread_ids[0] != loop_thread_id
     assert all(thread_id != loop_thread_id for thread_id in gate.feed_thread_ids)
     assert coordinator.pushed_audio == [b"\x01\x00", b"\x02\x00"]
+    await adapter.close()
+
+
+async def test_reset_unloads_smart_turn_after_warm_ttl_and_audio_cancels_timer() -> None:
+    coordinator = _FakeCoordinator()
+    gate = _FakeGate()
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_warm_seconds=0.01,
+    )
+    await adapter.start()
+
+    await adapter.reset(generation=1, buffer_epoch=1, utterance_id=2)
+    await _eventually(lambda: coordinator.unload_calls == 1)
+
+    await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
+    await adapter.push_audio(
+        generation=1,
+        buffer_epoch=1,
+        utterance_id=3,
+        pcm16=b"\x01\x00",
+    )
+    await _eventually(lambda: len(gate.feed_calls) == 1)
+    await asyncio.sleep(0.03)
+
+    assert coordinator.unload_calls == 1
     await adapter.close()
 
 
@@ -651,6 +684,45 @@ async def test_semantic_degraded_fallback_is_cancelled_by_speech_resume() -> Non
     )
     await _eventually(lambda: commits == [(5, 6, 7)])
     assert coordinator.evaluate_calls == 1
+    await adapter.close()
+
+
+async def test_required_smart_turn_failure_blocks_without_silero_commit() -> None:
+    commits: list[tuple[int, int, int]] = []
+
+    async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
+        commits.append((generation, buffer_epoch, utterance_id))
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)]),
+        coordinator=_FakeCoordinator(
+            [_failed_evaluation(EvaluationStatus.UNAVAILABLE)]
+        ),
+        on_commit=commit,
+        continuation_timeout_seconds=0.01,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=31,
+        buffer_epoch=32,
+        utterance_id=33,
+        pcm16=b"\x01\x00",
+    )
+    failure = await asyncio.wait_for(adapter.wait_failure(), 1)
+    await asyncio.sleep(0.03)
+
+    assert commits == []
+    assert (failure.kind, failure.stage) == ("unavailable", "smart_turn")
+    with pytest.raises(RuntimeError, match="ASR_VOICE_TURN_FAILED"):
+        await adapter.push_audio(
+            generation=31,
+            buffer_epoch=32,
+            utterance_id=33,
+            pcm16=b"\x02\x00",
+        )
     await adapter.close()
 
 

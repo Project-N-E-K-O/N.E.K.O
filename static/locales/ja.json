@@ -931,7 +931,7 @@
         "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに",
         "independentAsr": "独立音声認識",
         "independentAsrActive": "独立 ASR を使用中：{{provider}}",
-        "independentAsrFallback": "独立 ASR を利用できないため、この音声セッションの入力を停止しました。新しい音声セッションを開始するか、独立 ASR を無効にして再試行してください。",
+        "independentAsrFallback": "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
         "independentAsrNextSession": "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
         "independentAsrNative": "Omni 標準音声認識を使用中"
     },

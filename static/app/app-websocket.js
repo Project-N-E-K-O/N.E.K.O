@@ -2149,6 +2149,27 @@
                         }
                     } catch (_) { }
 
+                    if (statusCode === 'ASR_LIFECYCLE_STATE') {
+                        var lifecycleState = (statusDetails && statusDetails.state) || '';
+                        var allowedLifecycleStates = [
+                            'off', 'local_listen', 'prewarming', 'active',
+                            'draining', 'warm_idle', 'deep_sleep', 'backoff',
+                            'blocked', 'suspended'
+                        ];
+                        if (allowedLifecycleStates.indexOf(lifecycleState) !== -1) {
+                            S.voiceInputLifecycleState = lifecycleState;
+                            document.documentElement.setAttribute(
+                                'data-voice-input-state',
+                                lifecycleState
+                            );
+                            window.dispatchEvent(new CustomEvent(
+                                'voice-input-lifecycle-changed',
+                                { detail: statusDetails }
+                            ));
+                        }
+                        return;
+                    }
+
                     if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0) {
                         var asrProvider = (statusDetails && statusDetails.provider) || '';
                         S.independentAsrProvider = asrProvider;
@@ -2169,7 +2190,7 @@
                         S.independentAsrActive = false;
                         if (typeof window.showStatusToast === 'function') {
                             window.showStatusToast(
-                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Start a new voice session or disable independent ASR to retry.',
+                                window.t ? window.t('microphone.independentAsrFallback') : 'Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.',
                                 5000
                             );
                         }

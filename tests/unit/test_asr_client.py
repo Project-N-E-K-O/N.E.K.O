@@ -421,6 +421,27 @@ def test_builder_preserves_manual_smart_turn_boundary(
     assert (session._voice_turn_factory is not None) is expects_smart_turn
 
 
+@pytest.mark.parametrize("provider_key", ["dummy", "qwen", "openai", "glm", "gemini"])
+def test_builder_marks_policy_required_smart_turn_as_strict(provider_key):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode="manual",
+        _worker_fn=dummy_asr_worker,
+        _api_key="" if provider_key == "dummy" else "test-key",
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._voice_turn_factory is not None
+    assert session._voice_turn_factory.keywords["smart_turn_required"] is True
+
+
 def test_core_follow_selection_ignores_soniox_and_dev_routing(monkeypatch):
     callback = AsyncMock()
     monkeypatch.setenv("ASR_PROVIDER", "dummy")
@@ -1114,6 +1135,26 @@ async def test_close_unblocks_request_backpressure(monkeypatch):
     await asyncio.wait_for(session.close(), 1)
     with pytest.raises(RuntimeError, match="ASR_SESSION_NOT_READY"):
         await blocked_producer
+
+
+async def test_sustained_request_backpressure_blocks_the_turn(monkeypatch):
+    monkeypatch.setattr(asr_infra, "_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(asr_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 0.02)
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_non_consuming_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    for _ in range(asr_infra._REQUEST_QUEUE_SIZE):
+        await session.stream_audio(b"\x00\x00")
+
+    with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+        await session.stream_audio(b"\x00\x00")
+
+    await session.close()
 
 
 async def test_invalid_ready_generation_times_out(monkeypatch):

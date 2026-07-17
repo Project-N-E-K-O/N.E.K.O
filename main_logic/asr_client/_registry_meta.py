@@ -26,6 +26,7 @@ AsrImplementationStatus = Literal[
     "blocked_credentials",
     "blocked_backend",
 ]
+AsrReplayPolicy = Literal["none", "preconnect_only", "provider_managed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,17 @@ class AsrProviderMeta:
     supported_endpointing_modes: frozenset[AsrEndpointingMode]
     implementation_status: AsrImplementationStatus
     requires_smart_turn: bool = False
+    max_segment_ms: int | None = None
+    warm_transport_ms: int = 25_000
+    replay_policy: AsrReplayPolicy = "preconnect_only"
+
+    def __post_init__(self) -> None:
+        if self.category == "segmented_request" and self.max_segment_ms is None:
+            raise ValueError("segmented providers require max_segment_ms")
+        if self.max_segment_ms is not None and self.max_segment_ms <= 0:
+            raise ValueError("max_segment_ms must be positive")
+        if self.warm_transport_ms < 0:
+            raise ValueError("warm_transport_ms must not be negative")
 
 
 # Business code must route through this table rather than scattering
@@ -101,6 +113,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
         requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
     ),
     "qwen": AsrProviderMeta(
         provider_key="qwen",
@@ -144,6 +159,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
         requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
     ),
     "gemini": AsrProviderMeta(
         provider_key="gemini",
@@ -153,6 +171,9 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="implemented",
         requires_smart_turn=True,
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
     ),
     "soniox": AsrProviderMeta(
         provider_key="soniox",
@@ -162,6 +183,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
         requires_smart_turn=True,
+        replay_policy="provider_managed",
     ),
     "free": AsrProviderMeta(
         provider_key="free",
@@ -170,5 +192,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual"}),
         implementation_status="blocked_backend",
+        max_segment_ms=27_000,
+        warm_transport_ms=0,
+        replay_policy="none",
     ),
 }

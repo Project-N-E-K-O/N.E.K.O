@@ -49,38 +49,47 @@ def test_independent_asr_terminal_status_reports_stopped_voice_input():
     assert "Voice input has stopped for this session" in source
 
 
+def test_voice_lifecycle_status_is_validated_and_exposed_to_ui():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    assert "statusCode === 'ASR_LIFECYCLE_STATE'" in source
+    assert "voiceInputLifecycleState" in source
+    assert "voice-input-lifecycle-changed" in source
+    assert "data-voice-input-state" in source
+
+
 def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
     expected = {
         "en.json": (
-            "Independent ASR unavailable. Voice input has stopped for this session. Start a new voice session or disable independent ASR to retry.",
+            "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
             "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
         ),
         "es.json": (
-            "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Inicia una nueva sesión de voz o desactiva el ASR independiente para volver a intentarlo.",
+            "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
             "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
         ),
         "ja.json": (
-            "独立 ASR を利用できないため、この音声セッションの入力を停止しました。新しい音声セッションを開始するか、独立 ASR を無効にして再試行してください。",
+            "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
             "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
         ),
         "ko.json": (
-            "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 새 음성 세션을 시작하거나 독립 ASR을 비활성화한 후 다시 시도하세요.",
+            "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 독립 ASR 설정을 확인한 다음 새 음성 세션을 시작하세요.",
             "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
         ),
         "pt.json": (
-            "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Inicie uma nova sessão de voz ou desative o ASR independente para tentar novamente.",
+            "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
             "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
         ),
         "ru.json": (
-            "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Начните новый голосовой сеанс или отключите независимый ASR и повторите попытку.",
+            "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
             "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
         ),
         "zh-CN.json": (
-            "独立 ASR 不可用，本次语音输入已停止。请重新开始语音会话，或关闭独立 ASR 后重试。",
+            "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
             "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
         ),
         "zh-TW.json": (
-            "獨立 ASR 無法使用，本次語音輸入已停止。請重新開始語音會話，或關閉獨立 ASR 後重試。",
+            "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
             "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
         ),
     }

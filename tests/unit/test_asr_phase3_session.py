@@ -10,6 +10,7 @@ from main_logic.asr_client._infra import (
     _AsrWorkerEvent,
     _RealtimeAsrSessionImpl,
 )
+from main_logic.asr_client.provider_policy import AsrProviderPolicy
 
 
 pytestmark = pytest.mark.asyncio
@@ -380,11 +381,158 @@ async def test_voice_turn_terminal_failure_fails_session_and_closes_once():
     assert session._voice_turn_adapter is None
     assert session._voice_turn_watch_task is None
     on_error.assert_awaited_once_with(
-        "ASR_WORKER_FAILED: voice turn endpointing failed"
+        "ASR_ENDPOINTING_FAILED: required voice turn endpointing failed"
     )
     await asyncio.wait_for(session.close(), 1)
     assert adapter.close_calls == 1
     assert session._state.value == "closed"
+
+
+async def test_segmented_forced_splits_wait_for_logical_turn_completion():
+    adapter = None
+    callbacks: list[str] = []
+    requests = []
+
+    async def worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                requests.append(request)
+                if request.kind == "commit":
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="final",
+                            generation=request.generation,
+                            buffer_epoch=request.buffer_epoch,
+                            utterance_id=request.utterance_id,
+                            text=f"part-{request.utterance_id}",
+                        )
+                    )
+                if request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="closed",
+                            generation=request.generation,
+                        )
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FakeVoiceTurnAdapter(on_commit)
+        return adapter
+
+    async def on_transcript(text: str) -> None:
+        callbacks.append(text)
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=on_transcript,
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=10,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+    )
+    await session.connect()
+    assert adapter is not None
+
+    await session.stream_audio(b"\x01\x00" * 160)
+    await session.stream_audio(b"\x02\x00" * 160)
+    assert session._request_queue is not None
+    await asyncio.wait_for(session._request_queue.join(), 1)
+    await asyncio.sleep(0)
+
+    assert callbacks == []
+    assert [request.utterance_id for request in requests if request.kind == "commit"] == [
+        1,
+        2,
+    ]
+    assert {item[2] for item in adapter.audio} == {1}
+
+    await adapter.on_commit(0, 0, 1)
+    await asyncio.wait_for(_wait_until(lambda: bool(callbacks)), 1)
+    assert callbacks == ["part-1 part-2"]
+    await session.close()
+
+
+async def test_segmented_final_segment_is_aggregated_with_forced_segments():
+    adapter = None
+    callbacks: list[str] = []
+
+    async def on_transcript(text: str) -> None:
+        callbacks.append(text)
+
+    async def worker(request_queue, response_queue, api_key, config):
+        del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
+        while True:
+            request = await request_queue.get()
+            try:
+                if request.kind == "commit":
+                    await response_queue.put(
+                        _AsrWorkerEvent(
+                            kind="final",
+                            generation=request.generation,
+                            buffer_epoch=request.buffer_epoch,
+                            utterance_id=request.utterance_id,
+                            text=f"segment-{request.utterance_id}",
+                        )
+                    )
+                if request.kind == "shutdown":
+                    await response_queue.put(
+                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+                    )
+                    return
+            finally:
+                request_queue.task_done()
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _FakeVoiceTurnAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=on_transcript,
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+        provider_policy=AsrProviderPolicy(
+            transport="segmented",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=10,
+            warm_transport_ms=0,
+            replay_policy="none",
+        ),
+    )
+    await session.connect()
+    assert adapter is not None
+
+    await session.stream_audio(b"\x01\x00" * 160)
+    await session.stream_audio(b"\x02\x00" * 80)
+    await adapter.on_commit(0, 0, 1)
+    assert session._request_queue is not None
+    await asyncio.wait_for(session._request_queue.join(), 1)
+    assert session._callback_queue is not None
+    await asyncio.wait_for(session._callback_queue.join(), 1)
+
+    assert callbacks == ["segment-1 segment-2"]
+    assert adapter.resets[-1] == (0, 0, 2)
+    await session.close()
 
 
 async def _wait_until(predicate) -> None:

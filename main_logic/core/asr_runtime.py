@@ -15,6 +15,21 @@ from main_logic.asr_client import (
     _resolve_asr_selection,
 )
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
+from main_logic.asr_client.audio_pipeline import (
+    ProcessedVoiceFrame,
+    VoiceInputAudioPipeline,
+)
+from main_logic.asr_client.detector_runtime import DetectorRuntime
+from main_logic.asr_client.lifecycle_contracts import (
+    VoiceLifecycleEvent,
+    VoiceLifecycleState,
+    VoiceRouteMode,
+)
+from main_logic.asr_client.lifecycle_controller import (
+    AudioDisposition,
+    VoiceInputLifecycleController,
+)
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 from ._shared import (
@@ -28,7 +43,9 @@ class AsrRuntimeMixin:
 
     def _init_asr_runtime_state(self) -> None:
         self._asr_session = None
-        self._asr_route_mode = "native"
+        # Microphone audio is fail-closed until an independent ASR session is
+        # fully connected. Text sessions never need a permissive audio route.
+        self._asr_route_mode = "blocked"
         self._asr_required = False
         self._asr_session_epoch = 0
         self._asr_provider = None
@@ -40,6 +57,9 @@ class AsrRuntimeMixin:
         self._asr_received_audio = False
         self._asr_close_tasks: set[asyncio.Task[None]] = set()
         self._asr_last_final: tuple[str, float] | None = None
+        self._asr_lifecycle: VoiceInputLifecycleController | None = None
+        self._asr_detector: DetectorRuntime | None = None
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
 
     def _ensure_asr_runtime_state(self) -> None:
         # A number of focused unit tests intentionally construct the manager via
@@ -51,18 +71,15 @@ class AsrRuntimeMixin:
         """Resolve the hard microphone route before opening the input gate."""
 
         self._ensure_asr_runtime_state()
-        next_route_mode: Literal["native", "blocked"] = (
-            "blocked" if input_mode == "audio" else "native"
-        )
+        await self._close_independent_asr(next_route_mode="blocked")
         self._asr_required = input_mode == "audio"
-        await self._close_independent_asr(next_route_mode=next_route_mode)
         self._asr_audio_bytes = 0
         self._omni_mic_audio_bytes = 0
         if input_mode != "audio":
             return
 
         core_type = str(getattr(self, "core_api_type", "") or "").strip().lower()
-        # Remember attempted native/disabled/failed routes too. Hot-swap
+        # Remember attempted disabled/failed routes too. Hot-swap
         # reconciliation should retry only when the Core route truly changes.
         self._asr_core_type = core_type
 
@@ -75,8 +92,7 @@ class AsrRuntimeMixin:
             )
             return
         if not enabled:
-            self._asr_required = False
-            self._asr_route_mode = "native"
+            await self._send_asr_status("ASR_INDEPENDENT_DISABLED", core_type or "unknown")
             return
         self._asr_required = True
         self._asr_route_mode = "blocked"
@@ -162,6 +178,7 @@ class AsrRuntimeMixin:
             return candidate_session
 
         asr_session = None
+        active_selection = selection
         try:
             asr_session = create_candidate(selection)
             try:
@@ -178,6 +195,7 @@ class AsrRuntimeMixin:
                 asr_session = None
                 core_selection = _resolve_core_follow_selection(core_type)
                 provider = core_selection.provider_key
+                active_selection = core_selection
                 asr_session = create_candidate(core_selection)
                 await asr_session.connect()
             if epoch != self._asr_session_epoch:
@@ -186,6 +204,17 @@ class AsrRuntimeMixin:
             self._asr_session = asr_session
             self._asr_provider = provider
             self._asr_route_mode = "independent"
+            endpointing_mode = getattr(active_selection, "endpointing_mode", None)
+            if endpointing_mode not in {"manual", "provider"}:
+                endpointing_mode = "provider" if provider == "soniox" else "manual"
+            policy = resolve_provider_policy(provider, endpointing_mode)
+            self._asr_lifecycle = VoiceInputLifecycleController(
+                provider_policy=policy,
+                shadow_mode=False,
+            )
+            self._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+            self._asr_detector = DetectorRuntime()
+            await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
             await self._send_asr_status("ASR_INDEPENDENT_READY", provider)
         except asyncio.CancelledError:
             if asr_session is not None:
@@ -206,7 +235,7 @@ class AsrRuntimeMixin:
     async def _close_independent_asr(
         self,
         *,
-        next_route_mode: Literal["native", "blocked"],
+        next_route_mode: Literal["blocked"],
     ) -> None:
         """Invalidate callbacks first, then release the detached provider session."""
 
@@ -219,8 +248,21 @@ class AsrRuntimeMixin:
         self._asr_session = None
         self._asr_provider = None
         self._asr_core_type = None
+        lifecycle = self._asr_lifecycle
+        self._asr_lifecycle = None
+        if lifecycle is not None:
+            lifecycle.stop()
+        detector, self._asr_detector = self._asr_detector, None
+        if detector is not None:
+            await detector.close()
+        audio_pipeline = self._voice_input_audio_pipeline
+        try:
+            await audio_pipeline.close()
+        except Exception:
+            logger.warning("[%s] voice input audio pipeline close failed", self.lanlan_name)
+        self._voice_input_audio_pipeline = VoiceInputAudioPipeline()
         self._asr_route_mode = next_route_mode
-        self._asr_required = next_route_mode != "native"
+        self._asr_required = True
         self._asr_received_audio = False
         self._asr_turn_prepared = False
         self._asr_last_final = None
@@ -237,7 +279,7 @@ class AsrRuntimeMixin:
                 "[%s] microphone route metrics provider=%s asr_audio_bytes=%d "
                 "omni_mic_audio_bytes=%d",
                 self.lanlan_name,
-                provider or "native",
+                provider or "blocked",
                 asr_audio_bytes,
                 omni_audio_bytes,
             )
@@ -251,12 +293,8 @@ class AsrRuntimeMixin:
         """Return True when this frame must not be sent to Omni."""
 
         self._ensure_asr_runtime_state()
-        if self._asr_route_mode == "native":
-            if self._asr_required:
-                self._asr_route_mode = "blocked"
-                return True
-            return False
-        if self._asr_route_mode == "blocked":
+        if self._asr_route_mode != "independent":
+            self._asr_route_mode = "blocked"
             return True
 
         asr_session = self._asr_session
@@ -268,25 +306,77 @@ class AsrRuntimeMixin:
             return True
 
         try:
-            await asr_session.stream_audio(pcm16, sample_rate_hz=sample_rate_hz)
+            lifecycle = self._asr_lifecycle
+            detector = self._asr_detector
+            if lifecycle is not None and detector is not None:
+                detector_result = await detector.feed(pcm16)
+                if not detector_result.throttle_available:
+                    lifecycle.enable_independent_asr_fail_open()
+                else:
+                    for event in detector_result.events:
+                        await self._handle_independent_asr_activity(
+                            event,
+                            self._asr_session_epoch,
+                        )
+            decision = (
+                lifecycle.accept_audio(pcm16, sample_rate_hz=sample_rate_hz)
+                if lifecycle is not None
+                else None
+            )
+            if decision is not None and decision.disposition is AudioDisposition.BLOCK:
+                return True
+            if decision is not None and decision.disposition in {
+                AudioDisposition.BUFFER,
+                AudioDisposition.SUPPRESS,
+            }:
+                return True
+            payload = (
+                decision.pre_roll
+                if decision is not None
+                and decision.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+                else pcm16
+            )
+            if not payload:
+                return True
+            await asr_session.stream_audio(payload, sample_rate_hz=sample_rate_hz)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             self._asr_received_audio = True
+            status_code = (
+                "ASR_STREAM_BACKPRESSURE"
+                if str(exc).startswith("ASR_STREAM_BACKPRESSURE:")
+                else "ASR_INDEPENDENT_STREAM_FAILED"
+            )
             await self._handle_independent_asr_error(
                 self._asr_session_epoch,
                 self._asr_provider or "unknown",
-                status_code="ASR_INDEPENDENT_STREAM_FAILED",
+                status_code=status_code,
             )
             return True
 
         self._asr_received_audio = True
-        self._asr_audio_bytes += len(pcm16)
+        self._asr_audio_bytes += len(payload)
         return True
 
     def _record_omni_microphone_audio(self, byte_count: int) -> None:
         self._ensure_asr_runtime_state()
-        self._omni_mic_audio_bytes += max(0, int(byte_count))
+        if int(byte_count) > 0:
+            raise RuntimeError("OMNI_MICROPHONE_ROUTE_FORBIDDEN")
+
+    async def _process_microphone_audio(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> ProcessedVoiceFrame:
+        """Normalize microphone PCM without consulting an Omni session."""
+
+        self._ensure_asr_runtime_state()
+        return await self._voice_input_audio_pipeline.process(
+            pcm16,
+            sample_rate_hz=sample_rate_hz,
+        )
 
     async def _reconcile_independent_asr_after_core_change(self) -> None:
         """Switch providers only at a completed Omni hot-swap boundary."""
@@ -299,6 +389,62 @@ class AsrRuntimeMixin:
             str(getattr(self, "input_mode", "audio") or "audio")
         )
 
+    async def _suspend_independent_voice_input_for_game(self) -> None:
+        """Give game voice exclusive input ownership and invalidate pending PCM."""
+
+        self._ensure_asr_runtime_state()
+        lifecycle = self._asr_lifecycle
+        if lifecycle is None or lifecycle.snapshot.state in {
+            VoiceLifecycleState.OFF,
+            VoiceLifecycleState.BLOCKED,
+            VoiceLifecycleState.SUSPENDED,
+        }:
+            return
+        lifecycle.transition(VoiceLifecycleEvent.GAME_TAKEOVER)
+        await self._send_asr_lifecycle_state(VoiceLifecycleState.SUSPENDED)
+        self._asr_turn_prepared = False
+        self._asr_received_audio = False
+        asr_session = self._asr_session
+        if asr_session is not None and asr_session.is_ready:
+            try:
+                await asr_session.clear_audio_buffer()
+            except Exception:
+                logger.warning(
+                    "[%s] provider audio clear failed during game takeover",
+                    self.lanlan_name,
+                )
+        detector = self._asr_detector
+        if detector is not None:
+            try:
+                await detector.reset()
+            except Exception:
+                logger.warning(
+                    "[%s] detector reset failed during game takeover",
+                    self.lanlan_name,
+                )
+
+    async def _resume_independent_voice_input_after_game(self) -> None:
+        """Resume with a clean local-listen turn; never replay pre-game audio."""
+
+        self._ensure_asr_runtime_state()
+        lifecycle = self._asr_lifecycle
+        if (
+            lifecycle is None
+            or lifecycle.snapshot.state is not VoiceLifecycleState.SUSPENDED
+        ):
+            return
+        lifecycle.transition(VoiceLifecycleEvent.GAME_RELEASED)
+        await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
+        detector = self._asr_detector
+        if detector is not None:
+            try:
+                await detector.reset()
+            except Exception:
+                logger.warning(
+                    "[%s] detector reset failed after game release",
+                    self.lanlan_name,
+                )
+
     async def _handle_independent_asr_activity(
         self,
         event: SpeechActivityEvent,
@@ -306,6 +452,23 @@ class AsrRuntimeMixin:
     ) -> None:
         if epoch != self._asr_session_epoch:
             return
+        lifecycle = self._asr_lifecycle
+        if lifecycle is not None and event is SpeechActivityEvent.SPEECH_STARTED:
+            previous_state = lifecycle.snapshot.state
+            state = lifecycle.snapshot.state
+            if state in {
+                VoiceLifecycleState.LOCAL_LISTEN,
+                VoiceLifecycleState.DEEP_SLEEP,
+            }:
+                lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+                state = lifecycle.snapshot.state
+            if state in {
+                VoiceLifecycleState.PREWARMING,
+                VoiceLifecycleState.WARM_IDLE,
+            }:
+                lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+            if lifecycle.snapshot.state is not previous_state:
+                await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
         if event is SpeechActivityEvent.SPEECH_RESUMED:
             return
         if event is not SpeechActivityEvent.SPEECH_STARTED or self._asr_turn_prepared:
@@ -419,6 +582,13 @@ class AsrRuntimeMixin:
             finally:
                 self._asr_turn_prepared = False
                 self._asr_received_audio = False
+                lifecycle = self._asr_lifecycle
+                if lifecycle is not None:
+                    if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
+                        lifecycle.transition(VoiceLifecycleEvent.TURN_ENDPOINTED)
+                    if lifecycle.snapshot.state is VoiceLifecycleState.DRAINING:
+                        lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+                    await self._send_asr_lifecycle_state(lifecycle.snapshot.state)
 
     async def _handle_independent_asr_error(
         self,
@@ -437,6 +607,16 @@ class AsrRuntimeMixin:
         self._asr_provider = None
         self._asr_required = True
         self._asr_route_mode = "blocked"
+        await self._send_asr_lifecycle_state(VoiceLifecycleState.BLOCKED)
+        lifecycle = self._asr_lifecycle
+        self._asr_lifecycle = None
+        if lifecycle is not None:
+            lifecycle.stop()
+        detector, self._asr_detector = self._asr_detector, None
+        if detector is not None:
+            task = asyncio.create_task(detector.close())
+            self._asr_close_tasks.add(task)
+            task.add_done_callback(self._asr_close_tasks.discard)
         self._asr_received_audio = False
         self._asr_turn_prepared = False
         self._asr_last_final = None
@@ -464,3 +644,20 @@ class AsrRuntimeMixin:
             )
         except Exception:
             logger.debug("[%s] independent ASR status delivery failed", self.lanlan_name)
+
+    async def _send_asr_lifecycle_state(self, state: VoiceLifecycleState) -> None:
+        try:
+            await self.send_status(
+                json.dumps(
+                    {
+                        "code": "ASR_LIFECYCLE_STATE",
+                        "details": {
+                            "provider": self._asr_provider or "",
+                            "state": state.value,
+                            "route_mode": self._asr_route_mode,
+                        },
+                    }
+                )
+            )
+        except Exception:
+            logger.debug("[%s] ASR lifecycle status delivery failed", self.lanlan_name)

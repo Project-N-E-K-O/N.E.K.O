@@ -11,6 +11,64 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const MIC_LEASE = Object.freeze({
+        NONE: 'none',
+        HARD_MUTED: 'hard_muted',
+        GAME: 'game',
+        CORE: 'core'
+    });
+
+    function setVoiceInputLifecycleState(state) {
+        const allowed = new Set([
+            'off', 'local_listen', 'prewarming', 'active', 'draining',
+            'warm_idle', 'deep_sleep', 'backoff', 'blocked', 'suspended'
+        ]);
+        if (!allowed.has(state) || S.voiceInputLifecycleState === state) return;
+        S.voiceInputLifecycleState = state;
+        document.documentElement.setAttribute('data-voice-input-state', state);
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {
+            detail: { state, route_mode: S.independentAsrActive ? 'independent' : 'blocked' }
+        }));
+    }
+
+    function setMicLeaseOwner(owner) {
+        if (!Object.values(MIC_LEASE).includes(owner)) {
+            throw new Error(`Invalid microphone lease owner: ${owner}`);
+        }
+        if (S.micLeaseOwner === owner) return owner;
+        S.micLeaseOwner = owner;
+        window.dispatchEvent(new CustomEvent('mic-lease-changed', {
+            detail: { owner }
+        }));
+        if (owner === MIC_LEASE.NONE || owner === MIC_LEASE.HARD_MUTED) {
+            setVoiceInputLifecycleState('off');
+        } else if (owner === MIC_LEASE.GAME) {
+            setVoiceInputLifecycleState('suspended');
+        } else if (
+            S.voiceInputLifecycleState === 'off'
+            || S.voiceInputLifecycleState === 'suspended'
+        ) {
+            setVoiceInputLifecycleState('local_listen');
+        }
+        return owner;
+    }
+
+    function resolveMicLeaseOwner() {
+        if (!S.isRecording) return MIC_LEASE.NONE;
+        if (S.isMicMuted) return MIC_LEASE.HARD_MUTED;
+        if (S.gameVoiceSttGateActive) return MIC_LEASE.GAME;
+        return MIC_LEASE.CORE;
+    }
+
+    function refreshMicLease() {
+        return setMicLeaseOwner(resolveMicLeaseOwner());
+    }
+
+    function canUploadOrdinaryMicFrame() {
+        if (refreshMicLease() !== MIC_LEASE.CORE) return false;
+        if (S.focusModeEnabled === true && S.isPlaying === true) return false;
+        return true;
+    }
 
     // ======================== DOM 辅助 ========================
 
@@ -184,6 +242,7 @@
         if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
             return false;
         }
+        setMicLeaseOwner(MIC_LEASE.GAME);
         if (S.gameVoiceSttListening) {
             releaseOrdinaryMicCaptureForGameVoiceSttGate();
             return true;
@@ -345,6 +404,7 @@
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
         }
+        refreshMicLease();
     }
 
     // ======================== 麦克风设备选择 ========================
@@ -835,15 +895,7 @@
             S.workletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                if (S.isMicMuted) {
-                    return;
-                }
-
-                if (S.focusModeEnabled === true && S.isPlaying === true) {
-                    return;
-                }
-
-                if (S.gameVoiceSttGateActive) {
+                if (!canUploadOrdinaryMicFrame()) {
                     return;
                 }
 
@@ -869,6 +921,7 @@
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            refreshMicLease();
 
         } catch (err) {
             console.error('加载AudioWorklet失败:', err);
@@ -1105,6 +1158,7 @@
 
         S.isRecording = false;
         window.isRecording = false;
+        refreshMicLease();
         window.currentGeminiMessage = null;
 
         // 重置语音模式用户转录合并追踪
@@ -1376,6 +1430,7 @@
             return S.isMicMuted;
         }
         S.isMicMuted = !S.isMicMuted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
@@ -1407,6 +1462,7 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
@@ -1458,6 +1514,9 @@
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    mod.refreshMicLease = refreshMicLease;
+    mod.canUploadOrdinaryMicFrame = canUploadOrdinaryMicFrame;
+    mod.setVoiceInputLifecycleState = setVoiceInputLifecycleState;
 
     // ======================== 麦克风设备列表 UI ========================
 

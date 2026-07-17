@@ -144,6 +144,21 @@ class OnnxModelRuntime:
         self._state = RuntimeState.UNAVAILABLE
         self._reason = reason
 
+    def unload(self) -> bool:
+        """Release a healthy session while keeping lazy reload available."""
+
+        with self._load_lock:
+            with self._inference_lock:
+                if self._state is RuntimeState.UNLOADED:
+                    return True
+                if self._state not in (RuntimeState.READY, RuntimeState.DEGRADED):
+                    return False
+                self._session = None
+                self._state = RuntimeState.UNLOADED
+                self._reason = None
+                self._consecutive_errors = 0
+                return True
+
     def close(self) -> None:
         with self._load_lock:
             with self._inference_lock:
