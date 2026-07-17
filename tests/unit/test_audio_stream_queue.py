@@ -258,6 +258,21 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
     mgr._record_omni_microphone_audio.assert_not_called()
 
 
+async def test_fatal_omni_state_does_not_block_independent_asr_audio():
+    mgr = _make_routable_audio_manager(True)
+    mgr.session._fatal_error_occurred = True
+
+    await LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "audio", "data": [1] * 480},
+    )
+
+    mgr._process_microphone_audio.assert_awaited_once()
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+
+
 async def test_independent_audio_route_does_not_require_omni_session_container():
     mgr = _make_routable_audio_manager(True)
     mgr.session = type("TextOnlyCore", (), {})()

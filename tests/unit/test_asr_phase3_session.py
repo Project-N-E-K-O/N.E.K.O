@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -8,6 +8,7 @@ from main_logic.asr_client import create_asr_session
 from main_logic.asr_client._infra import (
     AsrSessionConfig,
     _AsrWorkerEvent,
+    _CallbackItem,
     _RealtimeAsrSessionImpl,
 )
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
@@ -575,6 +576,172 @@ async def test_segmented_local_buffering_is_not_counted_as_provider_wire_audio()
     await adapter.on_commit(0, 0, 1)
     assert session.provider_wire_audio_ms == 10
     await session.close()
+
+
+async def test_clear_drops_final_already_waiting_in_callback_queue():
+    callback = AsyncMock()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=callback,
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    assert session._callback_task is not None
+    session._callback_task.cancel()
+    await asyncio.gather(session._callback_task, return_exceptions=True)
+    assert session._callback_queue is not None
+    await session._callback_queue.put(
+        _CallbackItem(
+            text="stale final",
+            generation=session._generation,
+            buffer_epoch=session._buffer_epoch,
+        )
+    )
+
+    await session.clear_audio_buffer()
+    session._callback_task = asyncio.create_task(session._dispatch_callbacks())
+    await asyncio.wait_for(session._callback_queue.join(), 1)
+
+    callback.assert_not_awaited()
+    await session.close()
+
+
+async def test_resampler_tail_is_included_in_streaming_provider_wire_metric():
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    await session.stream_audio(b"\x01\x00" * 160)
+    before_ms = session.provider_wire_audio_ms
+    session._flush_resampler = MagicMock(return_value=b"\x02\x00" * 160)
+
+    await session.signal_user_activity_end()
+
+    assert session.provider_wire_audio_ms == before_ms + 10
+    await session.close()
+
+
+async def test_voice_turn_push_failure_fails_session_instead_of_staying_ready():
+    on_error = AsyncMock()
+
+    class _PushFailAdapter(_FakeVoiceTurnAdapter):
+        async def push_audio(self, **kwargs) -> None:
+            del kwargs
+            raise RuntimeError("push failed")
+
+    adapter = None
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _PushFailAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+
+    with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_FAILED"):
+        await session.stream_audio(b"\x01\x00" * 160)
+
+    assert session._state.value == "failed"
+    assert adapter is not None and adapter.closed
+    on_error.assert_awaited_once_with(
+        "ASR_ENDPOINTING_FAILED: required voice turn endpointing failed"
+    )
+
+
+async def test_voice_turn_reset_failure_fails_session_instead_of_staying_ready():
+    on_error = AsyncMock()
+
+    class _ResetFailAdapter(_FakeVoiceTurnAdapter):
+        async def reset(self, **kwargs) -> None:
+            del kwargs
+            raise RuntimeError("reset failed")
+
+    adapter = None
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _ResetFailAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=on_error,
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+
+    await session.stream_audio(b"\x01\x00" * 160)
+    await session.signal_user_activity_end()
+    await asyncio.wait_for(
+        _wait_until(lambda: session._state.value == "failed"),
+        1,
+    )
+
+    assert session._state.value == "failed"
+    assert adapter is not None and adapter.closed
+    on_error.assert_awaited_once_with(
+        "ASR_ENDPOINTING_FAILED: required voice turn endpointing failed"
+    )
+
+
+async def test_close_waits_for_managed_voice_turn_reset_before_adapter_close():
+    class _BlockingResetAdapter(_FakeVoiceTurnAdapter):
+        def __init__(self, on_commit):
+            super().__init__(on_commit)
+            self.reset_started = asyncio.Event()
+            self.release_reset = asyncio.Event()
+
+        async def reset(self, **kwargs) -> None:
+            self.reset_started.set()
+            await self.release_reset.wait()
+            await super().reset(**kwargs)
+
+    adapter = None
+
+    def factory(on_commit):
+        nonlocal adapter
+        adapter = _BlockingResetAdapter(on_commit)
+        return adapter
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_recording_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+        voice_turn_factory=factory,
+    )
+    await session.connect()
+    await session.stream_audio(b"\x01\x00" * 160)
+    await session.signal_user_activity_end()
+    assert adapter is not None
+    await asyncio.wait_for(adapter.reset_started.wait(), 1)
+
+    close_task = asyncio.create_task(session.close())
+    await asyncio.sleep(0)
+    assert adapter.closed is False
+    adapter.release_reset.set()
+    await asyncio.wait_for(close_task, 1)
+
+    assert adapter.closed is True
+    assert session._voice_turn_reset_task is None
 
 
 async def _wait_until(predicate) -> None:

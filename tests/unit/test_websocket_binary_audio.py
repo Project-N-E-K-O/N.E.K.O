@@ -32,3 +32,10 @@ def test_binary_audio_frame_decodes_pcm_and_sample_rate() -> None:
 def test_binary_audio_frame_rejects_invalid_contract(payload: bytes) -> None:
     with pytest.raises(ValueError, match="VOICE_BINARY_FRAME_INVALID"):
         _decode_binary_audio_frame(payload)
+
+
+def test_binary_audio_frame_rejects_more_than_one_second_before_pcm_unpack() -> None:
+    payload = struct.pack("<4sI", b"NEKO", 48_000) + (b"\x00\x00" * 48_001)
+
+    with pytest.raises(ValueError, match="VOICE_BINARY_FRAME_INVALID: frame is too large"):
+        _decode_binary_audio_frame(payload)

@@ -246,7 +246,11 @@ class StreamingMixin:
         if self._should_drop_live_vision_stream(input_type):
             return
         # 检查session是否发生致命错误（如1011错误、Response timeout）
-        if self.session and isinstance(self.session, OmniRealtimeClient):
+        if (
+            input_type != "audio"
+            and self.session
+            and isinstance(self.session, OmniRealtimeClient)
+        ):
             if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
                 logger.warning("⚠️ Session已发生致命错误，忽略新的输入数据")
                 return

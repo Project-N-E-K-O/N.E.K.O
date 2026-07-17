@@ -1439,7 +1439,12 @@
 
         // ---- onopen ----
         S.socket.onopen = function () {
+            if (S.socket !== _thisSocket) return;
             console.log(window.t('console.websocketConnected'));
+
+            window.dispatchEvent(new CustomEvent('voice-input-socket-open', {
+                detail: { socket: _thisSocket }
+            }));
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([

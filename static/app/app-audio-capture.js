@@ -31,6 +31,35 @@
         return true;
     }
 
+    function syncVoiceInputControlState(socket) {
+        if (socket && socket !== S.socket) return false;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+
+        // 每条 WebSocket 都有独立的 lease generation。先显式释放旧状态，
+        // 再重放当前优先级状态，避免重连后前后端认知分叉。
+        voiceLeaseGeneration = 0;
+        backendFocusSuppressed = false;
+        const owner = resolveMicLeaseOwner();
+        if (owner === MIC_LEASE.NONE) return true;
+
+        sendVoiceInputControl('hard_unmute');
+        sendVoiceInputControl('game_release');
+        sendVoiceInputControl('focus_resume');
+        if (owner === MIC_LEASE.HARD_MUTED) {
+            sendVoiceInputControl('hard_mute');
+        } else if (owner === MIC_LEASE.GAME) {
+            sendVoiceInputControl('game_takeover');
+        }
+        const focusSuppressed = (
+            owner === MIC_LEASE.CORE
+            && S.focusModeEnabled === true
+            && S.isPlaying === true
+        );
+        if (focusSuppressed) sendVoiceInputControl('focus_suppress');
+        backendFocusSuppressed = focusSuppressed;
+        return true;
+    }
+
     function setVoiceInputLifecycleState(state) {
         const allowed = new Set([
             'off', 'local_listen', 'prewarming', 'active', 'draining',
@@ -43,6 +72,10 @@
             detail: { state, route_mode: S.independentAsrActive ? 'independent' : 'blocked' }
         }));
     }
+
+    window.addEventListener('voice-input-socket-open', function (event) {
+        syncVoiceInputControlState(event && event.detail && event.detail.socket);
+    });
 
     function setMicLeaseOwner(owner) {
         if (!Object.values(MIC_LEASE).includes(owner)) {
