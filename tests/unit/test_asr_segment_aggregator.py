@@ -69,3 +69,30 @@ def test_empty_physical_segment_still_completes_logical_turn() -> None:
     ready = aggregator.collect_ready()
     assert len(ready) == 1
     assert ready[0].text == ""
+
+
+def test_skipped_turn_ids_do_not_stall_publication() -> None:
+    aggregator = SegmentAggregator()
+    first_turn = aggregator.begin_turn(1)
+    assert aggregator.add_transcript(first_turn, "first", "one", forced_split=False) == "one"
+
+    third_turn = aggregator.begin_turn(3)
+
+    assert aggregator.add_transcript(third_turn, "third", "three", forced_split=False) == "three"
+
+
+def test_discarding_publish_cursor_allows_next_turn_to_publish() -> None:
+    aggregator = SegmentAggregator()
+    first_turn = aggregator.begin_turn(1)
+    aggregator.register_segment(first_turn, "stalled")
+    aggregator.complete_turn(first_turn)
+    third_turn = aggregator.begin_turn(3)
+    aggregator.register_segment(third_turn, "ready")
+    aggregator.record_transcript("ready", "three")
+    aggregator.complete_turn(third_turn)
+
+    aggregator.discard_turn(first_turn)
+
+    ready = aggregator.collect_ready()
+    assert [item.turn_id for item in ready] == [third_turn]
+    assert ready[0].text == "three"

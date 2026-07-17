@@ -133,7 +133,7 @@ def test_draining_audio_is_isolated_for_the_next_turn_until_old_final() -> None:
     assert controller.pending_turn_bytes == 0
 
 
-def test_pending_turn_buffer_is_bounded_to_eight_seconds() -> None:
+def test_pending_turn_overflow_discards_entire_candidate() -> None:
     controller = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("openai", "manual"),
         shadow_mode=False,
@@ -143,9 +143,13 @@ def test_pending_turn_buffer_is_bounded_to_eight_seconds() -> None:
     controller.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
     controller.transition(VoiceLifecycleEvent.TURN_SEALED)
 
-    controller.accept_audio(_pcm(9_000), sample_rate_hz=16_000)
+    controller.mark_pending_turn_speech()
+    decision = controller.accept_audio(_pcm(9_000), sample_rate_hz=16_000)
 
-    assert controller.pending_turn_bytes == len(_pcm(8_000))
+    assert decision.disposition is AudioDisposition.BLOCK
+    assert decision.backpressure is True
+    assert controller.pending_turn_bytes == 0
+    assert controller.has_pending_turn is False
     assert controller.metrics.buffer_overflow_count == 1
 
 

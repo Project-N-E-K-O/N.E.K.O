@@ -41,8 +41,8 @@ class SmartTurnLease:
     async def release(self) -> None:
         if self._released:
             return
-        self._released = True
         await self._runtime.release_endpointing(self.token)
+        self._released = True
 
 
 class DetectorRuntime:

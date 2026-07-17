@@ -10,6 +10,7 @@ import pytest
 from main_logic.asr_client.detector_runtime import (
     DetectorFeedResult,
     DetectorRuntime,
+    SmartTurnLease,
     SmartTurnReadiness,
 )
 from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
@@ -222,6 +223,28 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     await lease.release()
     assert detector.endpointing_ready(token) is False
     await detector.close()
+
+
+async def test_cancelled_smart_turn_release_can_be_retried() -> None:
+    token = VoiceTurnToken(
+        VoiceIngressToken(1, "socket", 1, 1, 1),
+        turn_id=1,
+    )
+    runtime = SimpleNamespace(
+        release_endpointing=AsyncMock(
+            side_effect=[asyncio.CancelledError(), None],
+        )
+    )
+    lease = SmartTurnLease(token, runtime)
+
+    with pytest.raises(asyncio.CancelledError):
+        await lease.release()
+    assert lease._released is False
+
+    await lease.release()
+
+    assert lease._released is True
+    assert runtime.release_endpointing.await_count == 2
 
 
 async def test_smart_turn_prepare_failure_never_becomes_ready() -> None:

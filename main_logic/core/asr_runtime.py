@@ -586,12 +586,29 @@ class AsrRuntimeMixin:
         try:
             lifecycle = self._asr_lifecycle
             detector = self._asr_detector
+            ingress_token = (
+                self._capture_ingress_token(lifecycle)
+                if lifecycle is not None
+                else None
+            )
+
+            def ingress_is_current() -> bool:
+                return bool(
+                    lifecycle is not None
+                    and self._asr_lifecycle is lifecycle
+                    and ingress_token is not None
+                    and self._ingress_token_matches(ingress_token)
+                    and self._voice_input_accepts_pcm()
+                )
+
             if lifecycle is not None and detector is not None:
                 detector_result = await detector.feed(
                     pcm16,
                     speech_probability=speech_probability,
                     rnnoise_available=rnnoise_available,
                 )
+                if not ingress_is_current():
+                    return True
                 if not detector_result.endpointing_available:
                     await self._handle_independent_asr_error(
                         self._asr_session_epoch,
@@ -607,6 +624,8 @@ class AsrRuntimeMixin:
                             event,
                             self._asr_session_epoch,
                         )
+                        if not ingress_is_current():
+                            return True
                 if (
                     not detector_result.throttle_available
                     or not self._voice_input_resource_optimization_enabled
@@ -619,12 +638,18 @@ class AsrRuntimeMixin:
                         SpeechActivityEvent.SPEECH_STARTED,
                         self._asr_session_epoch,
                     )
+                    if not ingress_is_current():
+                        return True
+            if lifecycle is not None and not ingress_is_current():
+                return True
             decision = (
                 lifecycle.accept_audio(pcm16, sample_rate_hz=sample_rate_hz)
                 if lifecycle is not None
                 else None
             )
             if decision is not None and decision.disposition is AudioDisposition.BLOCK:
+                if decision.backpressure and ingress_token is not None:
+                    await self._handle_audio_ingress_backpressure(ingress_token)
                 return True
             if decision is not None and decision.disposition in {
                 AudioDisposition.BUFFER,
@@ -679,6 +704,8 @@ class AsrRuntimeMixin:
                 else pcm16
             )
             if not payload:
+                return True
+            if not ingress_is_current():
                 return True
             await asr_session.stream_audio(payload, sample_rate_hz=sample_rate_hz)
             self._sync_provider_wire_metrics(

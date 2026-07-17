@@ -576,8 +576,17 @@ class _VoiceTurnAdapter:
         if identity in self._commit_dispatched:
             return
         self._commit_dispatched.add(identity)
+
+        async def commit() -> None:
+            try:
+                await self._on_commit(*identity)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._report_failure("runtime_error", "consumer")
+
         task = asyncio.create_task(
-            self._on_commit(*identity), name="asr-voice-turn-commit"
+            commit(), name="asr-voice-turn-commit"
         )
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)

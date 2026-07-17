@@ -525,6 +525,47 @@ async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -
     runtime.handle_input_transcript.assert_not_awaited()
 
 
+async def test_draining_pending_turn_overflow_discards_candidate_and_reports_backpressure() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _ReadyDetector()
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_RESUMED,
+        epoch,
+    )
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * (16_000 * 9),
+        sample_rate_hz=16_000,
+    )
+
+    asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_lifecycle.pending_turn_bytes == 0
+    assert runtime._asr_lifecycle.has_pending_turn is False
+    assert any(
+        "ASR_INGRESS_BACKPRESSURE" in call.args[0]
+        for call in runtime.send_status.await_args_list
+    )
+    assert runtime._omni_mic_audio_bytes == 0
+
+
 async def test_transport_only_close_enters_deep_sleep_without_closing_detector() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {"close": AsyncMock()})()
@@ -674,6 +715,58 @@ async def test_hard_mute_is_backend_authoritative_and_rejects_stale_lease_events
         focus_suppressed=False,
     ) is True
     assert runtime._voice_input_suppressed is False
+
+
+async def test_hard_mute_during_detector_await_invalidates_inflight_pcm() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+
+    feed_started = asyncio.Event()
+    release_feed = asyncio.Event()
+
+    class _BlockingDetector(_ReadyDetector):
+        async def feed(self, _pcm16: bytes, **_kwargs) -> DetectorFeedResult:
+            feed_started.set()
+            await release_feed.wait()
+            return DetectorFeedResult((), True)
+
+    runtime._asr_detector = _BlockingDetector()
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        runtime._asr_session_epoch,
+    )
+
+    route_task = asyncio.create_task(
+        runtime._route_microphone_audio(
+            b"\x01\x00" * 160,
+            sample_rate_hz=16_000,
+        )
+    )
+    await asyncio.wait_for(feed_started.wait(), 1)
+    await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="core",
+        hard_muted=True,
+        focus_suppressed=False,
+    )
+    release_feed.set()
+
+    assert await route_task is True
+    asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_audio_bytes == 0
+    assert runtime._omni_mic_audio_bytes == 0
 
 
 async def test_new_websocket_connection_resets_mic_lease_generation_once() -> None:
