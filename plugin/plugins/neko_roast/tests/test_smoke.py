@@ -713,6 +713,32 @@ def test_console_dialogs_keep_independent_drafts_and_scoped_saves():
         assert "function advancedConfigPatch()" not in source
 
 
+def test_console_dialogs_reopen_from_the_successfully_saved_local_config() -> None:
+    root = Path(__file__).resolve().parents[1]
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        save_config = source.split("async function saveConfig", 1)[1].split(
+            "function openConsoleDialog", 1
+        )[0]
+        open_dialog = source.split("function openConsoleDialog", 1)[1].split(
+            "async function saveThemeSettings", 1
+        )[0]
+
+        assert "Object.entries(patchedPayload).forEach" in save_config
+        assert "configForm.setField(key as any, value)" in save_config
+        for field in (
+            "live_mode",
+            "stream_theme",
+            "stream_goal",
+            "stream_columns",
+            "stream_avoid_topics",
+            "activity_level",
+            "rate_limit_seconds",
+        ):
+            assert f"configForm.values.{field}" in open_dialog
+
+
 def test_panel_renders_guarded_viewer_memory_controls():
     root = Path(__file__).resolve().parents[1]
     source = _panel_ui_source(root)

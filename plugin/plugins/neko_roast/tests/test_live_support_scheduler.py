@@ -19,6 +19,11 @@ class _Audit:
         self.records.append({"op": op, "message": message, "level": level, "detail": detail or {}})
 
 
+class _ExplodingAudit:
+    def record(self, *_args, **_kwargs) -> None:
+        raise RuntimeError("audit unavailable")
+
+
 def _payload(event_id: str, *, value: int = 0, coin_type: str = "silver") -> dict:
     return {
         "event_type": "gift",
@@ -212,6 +217,32 @@ async def test_combo_identity_conflict_fails_closed_without_overwriting_first_pa
 
 
 @pytest.mark.asyncio
+async def test_combo_conflict_remains_rejected_when_audit_write_fails():
+    dispatched: list[dict] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload)
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_ExplodingAudit(),
+        queue_limit=5,
+    )
+    first = _combo_payload("evt-1", 1)
+    conflicting = _combo_payload("evt-2", 2)
+    conflicting["gift_name"] = "Different Gift"
+
+    assert scheduler.submit(first) is True
+    assert scheduler.submit(conflicting) is False
+    assert scheduler.submit(_combo_payload("evt-3", 3, combo_end=True)) is True
+    await scheduler.wait_idle()
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["combo_count"] == 3
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_same_provider_event_id_can_advance_active_combo():
     dispatched: list[dict] = []
 
@@ -375,6 +406,103 @@ async def test_full_high_priority_queue_rejects_new_high_without_exceeding_limit
 
 
 @pytest.mark.asyncio
+async def test_milestone_evicts_pending_high_when_queue_is_full():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+    assert scheduler.submit(_payload("high", value=10_000, coin_type="gold")) is True
+    milestone = _payload("milestone")
+    milestone["event_type"] = "super_chat"
+
+    try:
+        assert scheduler.submit(milestone) is True
+        assert scheduler.status()["pending_count"] == 1
+        release_first.set()
+        await scheduler.wait_idle()
+
+        assert dispatched == ["active", "milestone"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_evicted_pending_event_releases_provider_id_for_retry():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+
+    try:
+        assert scheduler.submit(_payload("evicted")) is True
+        assert scheduler.submit(_payload("high", value=10_000, coin_type="gold")) is True
+        release_first.set()
+        await scheduler.wait_idle()
+
+        assert scheduler.submit(_payload("evicted")) is True
+        await scheduler.wait_idle()
+        assert dispatched == ["active", "high", "evicted"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_evicted_pending_combo_releases_tombstone_for_retry():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+    combo_end = _combo_payload("combo", 3, combo_end=True)
+    milestone = _payload("milestone")
+    milestone["event_type"] = "guard"
+
+    try:
+        assert scheduler.submit(combo_end) is True
+        assert scheduler.submit(milestone) is True
+        release_first.set()
+        await scheduler.wait_idle()
+
+        assert scheduler.submit(combo_end) is True
+        await scheduler.wait_idle()
+        assert dispatched == ["active", "milestone", "combo"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_capacity_rejection_does_not_consume_provider_event_id():
     dispatched: list[str] = []
     first_started = asyncio.Event()
@@ -403,6 +531,89 @@ async def test_capacity_rejection_does_not_consume_provider_event_id():
 
 
 @pytest.mark.asyncio
+async def test_rejected_combo_end_is_not_tombstoned_and_can_retry():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=1,
+        combo_idle_seconds=60,
+    )
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+    milestone = _payload("milestone")
+    milestone["event_type"] = "super_chat"
+    assert scheduler.submit(milestone) is True
+    combo_end = _combo_payload("combo-end", 3, combo_end=True)
+
+    try:
+        assert scheduler.submit(combo_end) is False
+        assert scheduler.status()["finalized_combo_count"] == 0
+
+        release_first.set()
+        await scheduler.wait_idle()
+        assert scheduler.submit(combo_end) is True
+        await scheduler.wait_idle()
+
+        assert dispatched == ["active", "milestone", "combo-end"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_idle_combo_is_not_tombstoned_and_can_retry():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_Audit(),
+        queue_limit=1,
+        combo_idle_seconds=0.01,
+    )
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+    milestone = _payload("milestone")
+    milestone["event_type"] = "super_chat"
+    assert scheduler.submit(milestone) is True
+    assert scheduler.submit(_combo_payload("combo-start", 2)) is True
+
+    try:
+        await asyncio.sleep(0.03)
+        assert scheduler.status()["active_combo_count"] == 0
+        assert scheduler.status()["finalized_combo_count"] == 0
+
+        release_first.set()
+        await scheduler.wait_idle()
+        assert scheduler.submit(_combo_payload("combo-retry", 3, combo_end=True)) is True
+        await scheduler.wait_idle()
+
+        assert dispatched == ["active", "milestone", "combo-retry"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
 async def test_light_queue_pressure_aggregates_without_inventing_total_value():
     dispatched: list[dict] = []
     first_started = asyncio.Event()
@@ -417,9 +628,12 @@ async def test_light_queue_pressure_aggregates_without_inventing_total_value():
     scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
     scheduler.submit(_payload("active"))
     await first_started.wait()
-    assert scheduler.submit(_payload("light-1")) is True
-    assert scheduler.submit(_payload("light-2")) is True
-    assert scheduler.submit(_payload("light-2")) is False
+    first = _payload("light-1")
+    second = _payload("light-2")
+    first.pop("provider_event_id")
+    second.pop("provider_event_id")
+    assert scheduler.submit(first) is True
+    assert scheduler.submit(second) is True
     release_first.set()
 
     await scheduler.wait_idle()
@@ -429,6 +643,74 @@ async def test_light_queue_pressure_aggregates_without_inventing_total_value():
     assert "provider_event_id" not in aggregate
     assert aggregate.get("gift_value", 0) == 0
     await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_identified_light_events_do_not_aggregate_and_remain_retryable_after_eviction():
+    dispatched: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        event_id = payload["provider_event_id"]
+        dispatched.append(event_id)
+        if event_id == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+
+    try:
+        assert scheduler.submit(_payload("light-1")) is True
+        assert scheduler.submit(_payload("light-2")) is False
+        assert scheduler.submit(_payload("high", value=10_000, coin_type="gold")) is True
+        release_first.set()
+        await scheduler.wait_idle()
+
+        assert scheduler.submit(_payload("light-1")) is True
+        await scheduler.wait_idle()
+        assert scheduler.submit(_payload("light-2")) is True
+        await scheduler.wait_idle()
+        assert dispatched == ["active", "high", "light-1", "light-2"]
+    finally:
+        release_first.set()
+        await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_light_queue_pressure_does_not_merge_different_viewers():
+    dispatched: list[dict] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload)
+        if payload.get("provider_event_id") == "active":
+            first_started.set()
+            await release_first.wait()
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=1)
+    scheduler.submit(_payload("active"))
+    await first_started.wait()
+    first = _payload("light-1")
+    second = _payload("light-2")
+    second["uid"] = "viewer-2"
+
+    try:
+        assert scheduler.submit(first) is True
+        assert scheduler.submit(second) is False
+        release_first.set()
+        await scheduler.wait_idle()
+
+        queued = dispatched[1]
+        assert queued["uid"] == "viewer-1"
+        assert queued["provider_event_id"] == "light-1"
+        assert "aggregated_event_count" not in queued
+    finally:
+        release_first.set()
+        await scheduler.close()
 
 
 @pytest.mark.asyncio
@@ -486,6 +768,27 @@ async def test_dispatch_failure_retries_once_then_audits_and_continues():
     assert attempts == {"broken": 2, "healthy": 1}
     assert dispatched == ["healthy"]
     assert [record["op"] for record in audit.records] == ["support.dispatch_failed"]
+    await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_failure_does_not_escape_when_audit_write_fails():
+    attempts = 0
+
+    async def dispatch(_payload: dict) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("boom")
+
+    scheduler = SupportEventScheduler(
+        dispatch=dispatch,
+        audit=_ExplodingAudit(),
+        queue_limit=5,
+    )
+
+    await scheduler._dispatch_with_retry(_payload("broken"))
+
+    assert attempts == 2
     await scheduler.close()
 
 
@@ -558,3 +861,19 @@ async def test_wait_idle_waits_for_cancelled_retired_worker_to_finish():
     release.set()
     await asyncio.wait_for(idle_wait, timeout=1)
     await scheduler.close()
+
+
+@pytest.mark.asyncio
+async def test_close_permanently_rejects_future_submissions():
+    dispatched: list[str] = []
+
+    async def dispatch(payload: dict) -> None:
+        dispatched.append(payload["provider_event_id"])
+
+    scheduler = SupportEventScheduler(dispatch=dispatch, audit=_Audit(), queue_limit=5)
+    await scheduler.close()
+
+    assert scheduler.submit(_payload("late")) is False
+    await asyncio.sleep(0)
+    assert dispatched == []
+    assert scheduler.status()["pending_count"] == 0

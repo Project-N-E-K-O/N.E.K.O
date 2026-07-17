@@ -77,6 +77,7 @@ Protected Modules include:
 - Core architecture: `core/contracts.py`, `core/event_bus.py`, `core/module_registry.py`.
 - Event layer: `modules/bili_live_ingest/**`, live protocol parsing, LiveEvent schema, event normalization.
 - Selection: `modules/live_events/**`, score weights, cooldown window, event competition policy.
+- Support events: `modules/live_support_events/**`, verified support evidence, provider-ID dedupe, combo state, bounded priority scheduling, short-thanks request contracts, and session task cleanup.
 - Pipeline / output: `core/pipeline.py`, `core/safety_guard.py`, `adapters/neko_dispatcher.py`.
 - Runtime: `core/runtime.py`, plugin actions, config persistence, hosted-ui context.
 - Stores / privacy: `stores/viewer_store.py`, `stores/audit_store.py`, `stores/credential_store.py`.

@@ -4,7 +4,7 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-07-15 · 当前测试基线 1292 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
+> 更新日期：2026-07-17 · 当前测试基线 1368 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
 
 ---
 
@@ -156,6 +156,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 | 文档 | 是什么 | 何时读 |
 |---|---|---|
 | **developer-guide.md**（本文）| 上手向导 | 第一份，建立心智模型 |
+| `contributing.md` | 一页式贡献流程 | 准备认领任务、开分支或提交 PR 时 |
 | `docs/README.md` | 文档职责矩阵 / Canonical Source | 不确定该改哪份文档时 |
 | `development.md` | 开发规范、架构契约、协作规范、测试门禁 | 实现某功能前查对应章节 |
 | `live-center-roadmap.md` | 阶段目标、完成状态、下一阶段顺序 | 想知道做到哪、接下来做什么 |

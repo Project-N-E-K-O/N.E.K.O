@@ -15,3 +15,7 @@
 /app/         @wehos
 /main_logic/  @wehos
 /memory/      @wehos
+
+# NEKO Live plugin. CN-Zephyr has upstream write access and owns review of
+# plugin contracts, runtime behavior, Hosted UI, privacy, and distribution.
+/plugin/plugins/neko_roast/  @CN-Zephyr

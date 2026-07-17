@@ -13,6 +13,7 @@
 - [开发者指南（从这里开始）](developer-guide.md)：新开发者入口。负责心智模型、最短阅读路径、第一周建议和常见入口导航。
 - [开发文档](development.md)：长期开发规范和架构契约的权威来源。负责模块边界、pipeline、数据边界、测试门禁、协作规范和文档更新要求。
 - [Independent Mode Product Plan](independent-mode-product-plan.md)：Independent Mode 的产品路线权威来源。负责产品命题、当前阶段开发分工、Slice 顺序、MVP、非目标和内测节奏。
+- [贡献指南](contributing.md)：给第一次参与 NEKO Live 开发者的一页式入口。负责分支 / PR 起步、低风险任务、高风险 review gate 和提交前检查的短路径；完整规则仍链接到 `development.md` 与 `AGENTS.md`。
 - [Runtime Observability](runtime-observability.md)：运行态观测语言的权威来源。负责 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 和 Dashboard Visibility。
 - [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
 - [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
@@ -48,6 +49,7 @@
 | 2026-07-07 历史交接状态 | `handoff-2026-07-07.md` | 仅作历史快照；当前状态以对应权威文档和代码为准 |
 | Independent Mode 产品路线、当前阶段开发分工、MVP、内测节奏 | `independent-mode-product-plan.md` | roadmap 只保留阶段指针 |
 | 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
+| 新贡献者分支 / PR 起步、任务选择和交付检查 | `contributing.md` | 完整协作规则仍以 `development.md` / `AGENTS.md` 为准 |
 | 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |
 | 运行态观测语言、Skip Reason、Monitor Signal | `runtime-observability.md` | development / AGENTS 只写入口和必查项 |
 | 协作规范、PR 规则、测试门禁、文档要求 | `development.md` | `AGENTS.md` 保留可执行硬规则摘要 |
@@ -64,6 +66,7 @@
 - 改模块边界、pipeline、数据边界、协作规范、测试门禁：更新 `development.md`。
 - 改 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 或 Dashboard Visibility：更新 `runtime-observability.md`。
 - 改新开发者入口或第一周路径：更新 `developer-guide.md`。
+- 改新贡献者的分支 / PR 起步、任务选择或交付检查短路径：更新 `contributing.md`；规则本身仍更新 `development.md` / `AGENTS.md`。
 - 改阶段目标、完成状态、下一阶段顺序：更新 `live-center-roadmap.md`。
 - 改面板结构、模块 UI 贡献模型、Hosted UI 约束或 `panel_compat.tsx` 兼容入口策略：更新 `ui-architecture.md`。
 - 发现宿主 / SDK 侧历史问题或跨层取舍：更新 `devlog.md`。

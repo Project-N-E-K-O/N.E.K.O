@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import heapq
 import time
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from enum import IntEnum
 from typing import Any, Awaitable, Callable
 
@@ -72,16 +72,18 @@ class SupportEventScheduler:
         self._retired_task_limit = self._combo_limit + 1
         self._sequence = 0
         self._worker: asyncio.Task[None] | None = None
-        self._processed_ids: set[str] = set()
-        self._processed_id_order: deque[str] = deque()
+        self._processed_ids: OrderedDict[str, None] = OrderedDict()
         self._processed_id_limit = 65_536
         self._overflow_count = 0
         self._dropped_count = 0
         self._aggregated_count = 0
+        self._closed = False
         self._idle = asyncio.Event()
         self._idle.set()
 
     def submit(self, payload: dict[str, Any]) -> bool:
+        if self._closed:
+            return False
         if len(self._retired_tasks) >= self._retired_task_limit:
             self._dropped_count += 1
             return False
@@ -100,7 +102,7 @@ class SupportEventScheduler:
     def _enqueue(self, item: dict[str, Any]) -> bool:
         priority = classify_support_priority(item)
         if len(self._queue) >= self._queue_limit:
-            admission = self._make_room(priority)
+            admission = self._make_room(priority, item)
             if admission is _QueueAdmission.REJECTED:
                 return False
             if admission is _QueueAdmission.AGGREGATED:
@@ -112,9 +114,20 @@ class SupportEventScheduler:
             self._worker = asyncio.create_task(self._run())
         return True
 
-    def _make_room(self, priority: SupportPriority) -> _QueueAdmission:
+    def _make_room(
+        self,
+        priority: SupportPriority,
+        item: dict[str, Any],
+    ) -> _QueueAdmission:
         if priority is SupportPriority.LIGHT:
-            light_entries = [entry for entry in self._queue if entry[0] == int(SupportPriority.LIGHT)]
+            incoming_key = self._light_aggregation_key(item)
+            light_entries = [
+                entry
+                for entry in self._queue
+                if entry[0] == int(SupportPriority.LIGHT)
+                and incoming_key is not None
+                and self._light_aggregation_key(entry[2]) == incoming_key
+            ]
             if light_entries:
                 target = min(light_entries, key=lambda entry: entry[1])[2]
                 count = self._non_negative_int(target.get("aggregated_event_count")) or 1
@@ -127,14 +140,17 @@ class SupportEventScheduler:
                 self._dropped_count += 1
             return _QueueAdmission.REJECTED
 
-        allowed = {int(SupportPriority.LIGHT)}
-        if priority in {SupportPriority.HIGH, SupportPriority.MILESTONE}:
-            allowed.add(int(SupportPriority.MEDIUM))
+        allowed = {
+            int(candidate)
+            for candidate in SupportPriority
+            if candidate > priority
+        }
         candidates = [entry for entry in self._queue if entry[0] in allowed]
         if candidates:
             victim = max(candidates, key=lambda entry: (entry[0], -entry[1]))
             self._queue.remove(victim)
             heapq.heapify(self._queue)
+            self._release_evicted_dedupe(victim[2])
             self._dropped_count += 1
             return _QueueAdmission.QUEUED
         if priority in {SupportPriority.HIGH, SupportPriority.MILESTONE}:
@@ -143,12 +159,38 @@ class SupportEventScheduler:
         self._dropped_count += 1
         return _QueueAdmission.REJECTED
 
+    @staticmethod
+    def _light_aggregation_key(payload: dict[str, Any]) -> tuple[str, ...] | None:
+        if str(payload.get("event_type") or "").strip().lower() != "gift":
+            return None
+        if str(payload.get("provider_event_id") or "").strip():
+            return None
+        room = str(payload.get("room_ref") or payload.get("room_id") or "").strip()
+        uid = str(payload.get("uid") or "").strip()
+        gift_name = str(payload.get("gift_name") or "").strip()
+        if not room or not uid or not gift_name:
+            return None
+        return (
+            room,
+            uid,
+            gift_name,
+            str(payload.get("coin_type") or "").strip().lower(),
+            str(payload.get("provider_event_type") or "").strip().upper(),
+        )
+
     def _remember_event_id(self, event_id: str) -> None:
-        self._processed_ids.add(event_id)
-        self._processed_id_order.append(event_id)
-        while len(self._processed_id_order) > self._processed_id_limit:
-            expired = self._processed_id_order.popleft()
-            self._processed_ids.discard(expired)
+        self._processed_ids[event_id] = None
+        self._processed_ids.move_to_end(event_id)
+        while len(self._processed_ids) > self._processed_id_limit:
+            self._processed_ids.popitem(last=False)
+
+    def _release_evicted_dedupe(self, payload: dict[str, Any]) -> None:
+        event_id = str(payload.get("provider_event_id") or "").strip()
+        if event_id:
+            self._processed_ids.pop(event_id, None)
+        combo_key = self._combo_key(payload)
+        if combo_key is not None:
+            self._finalized_combos.pop(combo_key, None)
 
     def _submit_combo(self, item: dict[str, Any]) -> bool:
         key = self._combo_key(item)
@@ -171,13 +213,12 @@ class SupportEventScheduler:
             conflict_field = self._combo_identity_conflict(current, item)
             if conflict_field:
                 self._dropped_count += 1
-                if self._audit is not None:
-                    self._audit.record(
-                        "support.combo_conflict",
-                        "conflicting combo update rejected",
-                        level="warning",
-                        detail={"field": conflict_field},
-                    )
+                self._record_audit(
+                    "support.combo_conflict",
+                    "conflicting combo update rejected",
+                    level="warning",
+                    detail={"field": conflict_field},
+                )
                 return False
             previous_count = max(
                 self._non_negative_int(current.get("gift_count")),
@@ -214,8 +255,7 @@ class SupportEventScheduler:
                 timer.cancel()
                 self._retire_task(timer)
             self._combos.pop(key, None)
-            self._mark_combo_finalized(key, now)
-            return self._enqueue(current)
+            return self._enqueue_finalized_combo(key, current, now)
         self._combo_deadlines[key] = now + self._combo_idle_seconds
         timer = self._combo_tasks.get(key)
         if timer is None or timer.done():
@@ -236,8 +276,7 @@ class SupportEventScheduler:
                 self._combo_deadlines.pop(key, None)
                 payload = self._combos.pop(key, None)
                 if payload is not None:
-                    self._mark_combo_finalized(key, time.monotonic())
-                    self._enqueue(payload)
+                    self._enqueue_finalized_combo(key, payload, time.monotonic())
                 return
         except asyncio.CancelledError:
             raise
@@ -258,6 +297,17 @@ class SupportEventScheduler:
         self._finalized_combos.move_to_end(key)
         while len(self._finalized_combos) > self._finalized_combo_limit:
             self._finalized_combos.popitem(last=False)
+
+    def _enqueue_finalized_combo(
+        self,
+        key: tuple[str, ...],
+        payload: dict[str, Any],
+        now: float,
+    ) -> bool:
+        accepted = self._enqueue(payload)
+        if accepted:
+            self._mark_combo_finalized(key, now)
+        return accepted
 
     @staticmethod
     def _combo_key(payload: dict[str, Any]) -> tuple[str, ...] | None:
@@ -321,16 +371,30 @@ class SupportEventScheduler:
             except Exception as exc:
                 if attempt == 0:
                     continue
-                if self._audit is not None:
-                    self._audit.record(
-                        "support.dispatch_failed",
-                        "support event dispatch failed",
-                        level="error",
-                        detail={
-                            "event_type": str(payload.get("event_type") or "unknown")[:32],
-                            "error_type": type(exc).__name__,
-                        },
-                    )
+                self._record_audit(
+                    "support.dispatch_failed",
+                    "support event dispatch failed",
+                    level="error",
+                    detail={
+                        "event_type": str(payload.get("event_type") or "unknown")[:32],
+                        "error_type": type(exc).__name__,
+                    },
+                )
+
+    def _record_audit(
+        self,
+        op: str,
+        message: str,
+        *,
+        level: str,
+        detail: dict[str, Any],
+    ) -> None:
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(op, message, level=level, detail=detail)
+        except Exception:
+            return
 
     async def wait_idle(self) -> None:
         self._refresh_idle()
@@ -366,7 +430,6 @@ class SupportEventScheduler:
         self._combo_deadlines.clear()
         self._finalized_combos.clear()
         self._processed_ids.clear()
-        self._processed_id_order.clear()
         self._overflow_count = 0
         self._dropped_count = 0
         self._aggregated_count = 0
@@ -381,6 +444,7 @@ class SupportEventScheduler:
         self._refresh_idle()
 
     async def close(self) -> None:
+        self._closed = True
         self.reset()
         while self._retired_tasks:
             await asyncio.gather(*list(self._retired_tasks), return_exceptions=True)

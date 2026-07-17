@@ -1462,6 +1462,7 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
       : patch
     try {
       await props.api.call("update_config", patchedPayload)
+      Object.entries(patchedPayload).forEach(([key, value]) => configForm.setField(key as any, value))
       toast.success(t("panel.messages.saved"))
       await refreshDashboard(true)
       return true
@@ -1478,16 +1479,16 @@ export default function NekoRoastPanel(props: CompatPluginSurfaceProps<Dashboard
     }
     if (dialog === "theme") {
       setThemeDraft({
-        live_mode: String(config.live_mode || "co_stream"),
-        stream_theme: String(config.stream_theme || ""),
-        stream_goal: String(config.stream_goal || ""),
-        stream_columns: String(config.stream_columns || ""),
-        stream_avoid_topics: String(config.stream_avoid_topics || ""),
+        live_mode: String(configForm.values.live_mode || "co_stream"),
+        stream_theme: String(configForm.values.stream_theme || ""),
+        stream_goal: String(configForm.values.stream_goal || ""),
+        stream_columns: String(configForm.values.stream_columns || ""),
+        stream_avoid_topics: String(configForm.values.stream_avoid_topics || ""),
       })
     } else if (dialog === "pacing") {
       setPacingDraft({
-        activity_level: String(config.activity_level || "standard"),
-        rate_limit_seconds: String(config.rate_limit_seconds ?? 20),
+        activity_level: String(configForm.values.activity_level || "standard"),
+        rate_limit_seconds: String(configForm.values.rate_limit_seconds ?? 20),
       })
     } else if (dialog === "room") {
       setRoomDraft(String(config.live_room_ref || config.live_room_id || ""))

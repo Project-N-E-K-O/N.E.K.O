@@ -34,7 +34,7 @@ The release gate must eventually validate two promises:
 
 ## Current Implementation Status
 
-Independent Mode is now past the first implementation and offline acceptance checks. Controlled live-effect validation is still required before release, but the maintainer explicitly paused real-device testing on 2026-07-15. Until that pause is lifted, work should stay on documentation consistency, the legacy `bilibili_danmaku` capability migration matrix, and bounded offline architecture cleanup.
+Independent Mode is now past the first implementation and offline acceptance checks. The current offline closeout covers documentation consistency, bounded architecture cleanup, support-event scheduling hardening, and panel dialog state recovery. Controlled live-effect validation is still required before release, but the maintainer explicitly paused real-device testing on 2026-07-15. The legacy `bilibili_danmaku` capability migration matrix and retirement assessment begin in the next stage rather than being mixed into this closeout.
 
 - Slice 1 base is landed: Live Status, preflight conclusion, and "why not speaking" status are available for streamer trust checks.
 - Slice 2 base is landed: live state inference, manual Idle Hosting trigger, and automatic Idle Hosting trigger are available for solo-stream idle moments.
