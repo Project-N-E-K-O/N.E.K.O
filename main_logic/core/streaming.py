@@ -28,6 +28,7 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (
@@ -195,9 +196,20 @@ class StreamingMixin:
             return
         await self._stream_data_now(message)
 
-    async def _stream_data_now(self, message: dict):
+    async def _stream_data_now(
+        self,
+        message: dict,
+        *,
+        ingress_token: VoiceIngressToken | None = None,
+    ):
         input_type = message.get("input_type")
         if self._should_drop_live_vision_stream(input_type):
+            return
+        if (
+            input_type == "audio"
+            and ingress_token is not None
+            and not self._ingress_token_matches(ingress_token)
+        ):
             return
         # 检查session是否就绪
         async with self.input_cache_lock:
@@ -237,9 +249,17 @@ class StreamingMixin:
                     return
         
         # Session已就绪，直接处理
-        await self._process_stream_data_internal(message)
+        await self._process_stream_data_internal(
+            message,
+            ingress_token=ingress_token,
+        )
     
-    async def _process_stream_data_internal(self, message: dict):
+    async def _process_stream_data_internal(
+        self,
+        message: dict,
+        *,
+        ingress_token: VoiceIngressToken | None = None,
+    ):
         """Internal method: the actual stream_data processing logic"""
         data = message.get("data")
         input_type = message.get("input_type")
@@ -536,6 +556,11 @@ class StreamingMixin:
             
             # 麦克风 PCM 只进入独立 ASR，Core 会话类型不参与音频路由。
             if input_type == 'audio':
+                if (
+                    ingress_token is not None
+                    and not self._ingress_token_matches(ingress_token)
+                ):
+                    return
                 if getattr(self, "_asr_route_mode", "independent") not in {
                     "independent",
                     "blocked",
@@ -572,6 +597,11 @@ class StreamingMixin:
                     if not processed_frame.pcm16:
                         return
                     if (
+                        (
+                            ingress_token is not None
+                            and not self._ingress_token_matches(ingress_token)
+                        )
+                        or
                         self.session is not session_ref
                         or not self.is_active
                         or self._audio_stream_epoch != audio_epoch
@@ -580,6 +610,11 @@ class StreamingMixin:
                     if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
                         async with self.hot_swap_cache_lock:
                             self.hot_swap_audio_cache.append(processed_frame.pcm16)
+                        return
+                    if (
+                        ingress_token is not None
+                        and not self._ingress_token_matches(ingress_token)
+                    ):
                         return
                     await self._route_microphone_audio(
                         processed_frame.pcm16,

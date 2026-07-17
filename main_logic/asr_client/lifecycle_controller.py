@@ -279,6 +279,13 @@ class VoiceInputLifecycleController:
         self._pre_roll_sent_for_turn = True
         return payload
 
+    def discard_pending_turn(self) -> None:
+        """Discard the whole next-turn candidate while preserving a sealed turn."""
+
+        self._pending_turn.clear()
+        self._pending_turn_speech = False
+        self._pending_turn_id = None
+
     def discard_unconfirmed_pending_audio(self) -> None:
         """Discard post-seal audio that never became confirmed speech."""
 
