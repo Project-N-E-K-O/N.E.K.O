@@ -620,6 +620,7 @@ class StreamingMixin:
                         processed_frame.pcm16,
                         sample_rate_hz=processed_frame.sample_rate_hz,
                         speech_probability=processed_frame.speech_probability,
+                        rnnoise_available=processed_frame.rnnoise_available,
                     )
                     return
                 except struct.error:

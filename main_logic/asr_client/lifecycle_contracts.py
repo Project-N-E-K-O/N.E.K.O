@@ -142,6 +142,7 @@ _TRANSITIONS: dict[
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.SPEECH_CONFIRMED): VoiceLifecycleState.ACTIVE,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.WARM_EXPIRED): VoiceLifecycleState.DEEP_SLEEP,
+    (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.WARM_EXPIRED): VoiceLifecycleState.DEEP_SLEEP,
     (VoiceLifecycleState.DEEP_SLEEP, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.BACKOFF, VoiceLifecycleEvent.RETRY): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.BACKOFF, VoiceLifecycleEvent.RETRIES_EXHAUSTED): VoiceLifecycleState.BLOCKED,

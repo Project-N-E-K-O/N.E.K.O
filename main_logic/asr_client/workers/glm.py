@@ -131,11 +131,6 @@ async def _transcribe(
             "GLM returned an invalid transcript response",
         )
     text = payload["text"].strip()
-    if not text:
-        raise _GlmRequestFailure(
-            "ASR_GLM_PROTOCOL_ERROR",
-            "GLM returned an empty transcript",
-        )
     return _AsrWorkerEvent(
         kind="final",
         generation=generation,

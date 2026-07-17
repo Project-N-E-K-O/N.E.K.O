@@ -23,6 +23,7 @@ class ProcessedVoiceFrame:
     pcm16: bytes
     sample_rate_hz: int
     speech_probability: float | None
+    rnnoise_available: bool = False
 
 
 class VoiceInputAudioPipeline:
@@ -53,9 +54,9 @@ class VoiceInputAudioPipeline:
         if self._closed:
             raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
         if not pcm16:
-            return ProcessedVoiceFrame(b"", 16_000, None)
+            return ProcessedVoiceFrame(b"", 16_000, None, False)
         if sample_rate_hz == 16_000:
-            return ProcessedVoiceFrame(pcm16, 16_000, None)
+            return ProcessedVoiceFrame(pcm16, 16_000, None, False)
 
         async with self._lock:
             if self._closed:
@@ -64,7 +65,19 @@ class VoiceInputAudioPipeline:
                 self._processor = self._processor_factory()
             processed = await asyncio.to_thread(self._processor.process_chunk, pcm16)
             probability = float(self._processor.speech_probability)
-        return ProcessedVoiceFrame(processed, 16_000, probability)
+            rnnoise_available = bool(
+                getattr(
+                    self._processor,
+                    "rnnoise_available",
+                    getattr(self._processor, "_denoiser", None) is not None,
+                )
+            )
+        return ProcessedVoiceFrame(
+            processed,
+            16_000,
+            probability if rnnoise_available else None,
+            rnnoise_available,
+        )
 
     async def close(self) -> None:
         async with self._lock:

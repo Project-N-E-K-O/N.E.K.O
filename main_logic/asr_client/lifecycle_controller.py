@@ -49,6 +49,7 @@ class VoiceInputLifecycleController:
         provider_policy: AsrProviderPolicy,
         config: VoiceLifecycleConfig | None = None,
         shadow_mode: bool = True,
+        resource_optimization_enabled: bool = True,
     ) -> None:
         self.provider_policy = provider_policy
         self.config = config or VoiceLifecycleConfig()
@@ -79,7 +80,7 @@ class VoiceInputLifecycleController:
             sample_rate_hz=16_000,
         )
         self._active_start_audio = b""
-        self._independent_asr_fail_open = False
+        self._independent_asr_fail_open = not bool(resource_optimization_enabled)
 
     @property
     def snapshot(self) -> VoiceLifecycleSnapshot:

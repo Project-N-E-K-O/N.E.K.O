@@ -1036,9 +1036,7 @@ class _RealtimeAsrSessionImpl:
                     self._utterance_order.remove(key)
                 except ValueError:
                     pass
-        return [
-            transcript.text for transcript in ready_transcripts if transcript.text
-        ]
+        return [transcript.text for transcript in ready_transcripts]
 
     def _clear_segment_aggregation_state(self) -> None:
         self._physical_segment_audio_bytes = 0
@@ -1172,8 +1170,6 @@ class _RealtimeAsrSessionImpl:
             if event.utterance_id is None:
                 return False
             text = event.text.strip()
-            if not text:
-                return False
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
                 if (

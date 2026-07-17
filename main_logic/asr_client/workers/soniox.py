@@ -253,18 +253,14 @@ async def soniox_asr_worker(
         finalize_completed.set()
         text = "".join(state.final_tokens).strip()
         if not text:
-            if (
+            should_complete_empty = (
                 had_pending_finalize
                 or state.speech_started
                 or state.provisional_tokens
                 or replay_audio
-            ):
-                replay_audio.clear()
-                replay_complete = True
-                provider_wire_audio_bytes = 0
-                reconnect_attempted = False
-                state.reset_for_next()
-            return
+            )
+            if not should_complete_empty:
+                return
         state.completed = True
         await emit_started()
         await response_queue.put(

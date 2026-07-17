@@ -35,6 +35,7 @@ def test_default_config_matches_phase3_contract() -> None:
         (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_SEALED, VoiceLifecycleState.DRAINING),
         (VoiceLifecycleState.DRAINING, VoiceLifecycleEvent.PROVIDER_FINAL, VoiceLifecycleState.WARM_IDLE),
         (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.WARM_EXPIRED, VoiceLifecycleState.DEEP_SLEEP),
+        (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.WARM_EXPIRED, VoiceLifecycleState.DEEP_SLEEP),
         (VoiceLifecycleState.DEEP_SLEEP, VoiceLifecycleEvent.SOFT_WAKE, VoiceLifecycleState.PREWARMING),
         (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.GAME_TAKEOVER, VoiceLifecycleState.SUSPENDED),
         (VoiceLifecycleState.SUSPENDED, VoiceLifecycleEvent.GAME_RELEASED, VoiceLifecycleState.LOCAL_LISTEN),
