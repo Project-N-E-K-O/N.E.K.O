@@ -27,6 +27,7 @@ from typing import Any, Literal
 import websockets
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ..provider_policy import AsrReplayPolicy
 
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,7 @@ async def soniox_asr_worker(
     config: AsrSessionConfig,
     *,
     region: str = "us",
+    replay_policy: AsrReplayPolicy = "provider_managed",
 ) -> None:
     """Stream 16 kHz mono PCM and complete turns at ``<end>`` or manual ``<fin>``."""
 
@@ -149,9 +151,22 @@ async def soniox_asr_worker(
         )
         await response_queue.put(_AsrWorkerEvent(kind="closed", generation=0))
         return
+    if replay_policy not in {"none", "preconnect_only", "provider_managed"}:
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="error",
+                generation=0,
+                error_code="ASR_INVALID_CONFIG",
+                error_message="Soniox replay policy is invalid",
+            )
+        )
+        await response_queue.put(_AsrWorkerEvent(kind="closed", generation=0))
+        return
 
     state = SonioxUtteranceState()
     replay_audio = bytearray()
+    replay_complete = True
+    provider_wire_audio_bytes = 0
     failure_sent = False
     ready_sent = False
     intentional_shutdown = False
@@ -224,7 +239,8 @@ async def soniox_asr_worker(
         )
 
     async def complete_utterance() -> None:
-        nonlocal pending_finalize, reconnect_attempted
+        nonlocal pending_finalize, provider_wire_audio_bytes
+        nonlocal reconnect_attempted, replay_complete
         if state.completed:
             return
         completion_identity = pending_finalize
@@ -244,6 +260,8 @@ async def soniox_asr_worker(
                 or replay_audio
             ):
                 replay_audio.clear()
+                replay_complete = True
+                provider_wire_audio_bytes = 0
                 reconnect_attempted = False
                 state.reset_for_next()
             return
@@ -271,6 +289,8 @@ async def soniox_asr_worker(
             len(text),
         )
         replay_audio.clear()
+        replay_complete = True
+        provider_wire_audio_bytes = 0
         reconnect_attempted = False
         state.reset_for_next()
 
@@ -351,7 +371,8 @@ async def soniox_asr_worker(
 
     async def send_requests(connection, connected_at: float) -> _ConnectionAction:
         nonlocal audio_bytes_sent, audio_frame_count, intentional_shutdown
-        nonlocal pending_finalize
+        nonlocal pending_finalize, provider_wire_audio_bytes
+        nonlocal reconnect_attempted, replay_complete
         while True:
             if pending_finalize is None and deferred_requests:
                 request = deferred_requests.popleft()
@@ -427,12 +448,19 @@ async def soniox_asr_worker(
                     if request.audio:
                         if state.first_audio_at is None:
                             state.first_audio_at = time.monotonic()
-                        replay_audio.extend(request.audio)
-                        if len(replay_audio) > _MAX_REPLAY_BYTES:
-                            del replay_audio[:-_MAX_REPLAY_BYTES]
                         await connection.send(request.audio)
                         audio_frame_count += 1
                         audio_bytes_sent += len(request.audio)
+                        provider_wire_audio_bytes += len(request.audio)
+                        if replay_complete:
+                            if (
+                                len(replay_audio) + len(request.audio)
+                                <= _MAX_REPLAY_BYTES
+                            ):
+                                replay_audio.extend(request.audio)
+                            else:
+                                replay_complete = False
+                                replay_audio.clear()
                     continue
                 if request.kind == "commit":
                     if config.endpointing_mode != "manual":
@@ -456,6 +484,9 @@ async def soniox_asr_worker(
                         deferred_requests.popleft()
                         request_queue.task_done()
                     replay_audio.clear()
+                    replay_complete = True
+                    provider_wire_audio_bytes = 0
+                    reconnect_attempted = False
                     state.reset_transport(
                         generation=request.generation,
                         buffer_epoch=request.buffer_epoch,
@@ -486,7 +517,7 @@ async def soniox_asr_worker(
                 close_timeout=_CLOSE_TIMEOUT_SECONDS,
             )
             await websocket.send(json.dumps(_soniox_config(api_key, config)))
-            if replay_audio:
+            if replay_audio and replay_complete:
                 await websocket.send(bytes(replay_audio))
             if pending_finalize is not None:
                 await websocket.send(json.dumps({"type": "finalize"}))
@@ -526,6 +557,21 @@ async def soniox_asr_worker(
                 return
             if action in {"reconnect", "reset", "rotate"} and not failure_sent:
                 if action == "reconnect":
+                    has_wire_audio = provider_wire_audio_bytes > 0
+                    if has_wire_audio and not replay_complete:
+                        await emit_error(
+                            "ASR_SONIOX_REPLAY_INCOMPLETE",
+                            "Soniox disconnected after replay exceeded its safe limit",
+                        )
+                        return
+                    if replay_policy == "none" or (
+                        replay_policy == "preconnect_only" and has_wire_audio
+                    ):
+                        await emit_error(
+                            "ASR_SONIOX_REPLAY_DISABLED",
+                            "Soniox disconnected and replay is disabled by policy",
+                        )
+                        return
                     if reconnect_attempted:
                         await emit_error(
                             "ASR_SONIOX_DISCONNECTED",

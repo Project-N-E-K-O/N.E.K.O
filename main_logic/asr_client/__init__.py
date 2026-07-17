@@ -269,7 +269,11 @@ def _get_asr_worker(
     if provider_key == "qwen":
         worker_fn = partial(worker_fn, region=route.region or "cn")  # type: ignore[assignment]
     elif provider_key == "soniox":
-        worker_fn = partial(worker_fn, region=soniox_region or "us")  # type: ignore[assignment]
+        worker_fn = partial(
+            worker_fn,
+            region=soniox_region or "us",
+            replay_policy=meta.replay_policy,
+        )  # type: ignore[assignment]
     return worker_fn, api_key, provider_key
 
 

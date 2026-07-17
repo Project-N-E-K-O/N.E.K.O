@@ -1630,6 +1630,65 @@ async def test_soniox_reconnects_once_and_replays_current_audio(monkeypatch) -> 
     await _stop_worker(task, requests, responses, generation=4, buffer_epoch=5)
 
 
+async def test_soniox_blocks_disconnect_when_replay_is_incomplete(monkeypatch) -> None:
+    first = _FakeWebSocket()
+    connector = _FakeConnector(first)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    monkeypatch.setattr(soniox, "_MAX_REPLAY_BYTES", 4)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    pcm = b"\x01\x00" * 3
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio", generation=1, buffer_epoch=2, utterance_id=3, audio=pcm
+        )
+    )
+    await _wait_until(lambda: pcm in first.sent)
+    await first.server_end()
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_SONIOX_REPLAY_INCOMPLETE"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert len(connector.calls) == 1
+
+
+async def test_soniox_replay_policy_can_disable_preconnect_reconnect(
+    monkeypatch,
+) -> None:
+    first = _FakeWebSocket()
+    connector = _FakeConnector(first)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+            replay_policy="none",
+        )
+    )
+    await _next_event(responses, "ready")
+    await first.server_end()
+
+    error = await _next_event(responses, "error")
+    assert error.error_code == "ASR_SONIOX_REPLAY_DISABLED"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
+    assert len(connector.calls) == 1
+
+
 def test_workers_preserve_provider_auto_language_detection() -> None:
     assert qwen._qwen_language_code("auto") is None
     assert step._step_language_code("auto") is None
