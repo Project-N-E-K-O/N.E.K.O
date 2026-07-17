@@ -305,7 +305,6 @@ class OcrReaderManager(
         ] = []
         self._window_inventory_cache_at = 0.0
         self._window_inventory_cache: list[DetectedGameWindow] = []
-        self._start_rapidocr_warmup_if_configured()
 
     def _initialize_vision_classifier(self) -> None:
         self.vision_classifier = None
@@ -378,6 +377,12 @@ class OcrReaderManager(
         return (repo_root / path).resolve()
 
     def close(self) -> None:
+        self._release_rapidocr_backend()
+        classifier = self.vision_classifier
+        self.vision_classifier = None
+        close_classifier = getattr(classifier, "close", None)
+        if callable(close_classifier):
+            close_classifier()
         try:
             self._stop_foreground_advance_monitor(join_timeout=1.0)
         except Exception as exc:
@@ -451,6 +456,10 @@ class OcrReaderManager(
         self._config = config
         self._runtime.enabled = config.ocr_reader_enabled
         if old_vision_key != self._vision_classifier_config_key(config):
+            classifier = self.vision_classifier
+            close_classifier = getattr(classifier, "close", None)
+            if callable(close_classifier):
+                close_classifier()
             self._initialize_vision_classifier()
         if not bool(config.llm_vision_enabled):
             self._clear_vision_snapshot()
@@ -461,8 +470,7 @@ class OcrReaderManager(
             self._backend_plan_cache_key = None
             self._backend_plan_cache_at = 0.0
             self._backend_plan_cache = None
-            self._rapidocr_backend_cache_key = None
-            self._rapidocr_backend_cache = None
+            self._release_rapidocr_backend()
             self._ocr_lang_detector.reset(clear_switch_time=True)
         elif old_auto_detect_lang != bool(getattr(config, "rapidocr_auto_detect_lang", False)):
             self._ocr_lang_detector.reset(clear_switch_time=True)
@@ -482,7 +490,11 @@ class OcrReaderManager(
             self.start_foreground_advance_monitor()
         else:
             self._stop_foreground_advance_monitor()
-        self._start_rapidocr_warmup_if_configured()
+        if self._writer.bridge_root != config.bridge_root:
+            self._writer = OcrReaderBridgeWriter(
+                bridge_root=config.bridge_root,
+                time_fn=self._time_fn,
+            )
 
     def update_advance_speed(self, advance_speed: str) -> None:
         normalized = str(advance_speed or "").strip().lower()

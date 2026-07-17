@@ -1,97 +1,98 @@
 # 智能体系统
 
-智能体系统使 N.E.K.O. 角色能够执行后台任务 —— 浏览网页、控制计算机、委派给独立的智能体通道以及调用外部工具 —— 这些任务由对话上下文触发。
+智能体系统把已完成的对话轮次转换为可选的后台任务。系统分布在两类进程中：主服务器负责聊天会话和面向用户的投递，智能体服务器负责判断请求、分派工具和跟踪任务状态。
 
-## 架构
+## 运行时组件
 
-```
-主服务器                              智能体服务器
-┌────────────────┐                  ┌────────────────────┐
-│ LLMSession     │                  │ TaskExecutor        │
-│ Manager        │  ZeroMQ          │   ├── Planner       │
-│   │            │ ──────────────>  │   ├── Processor     │
-│   │ agent_flags│  PUB/SUB         │   ├── Analyzer      │
-│   │            │                  │   └── Deduper        │
-│   │ callbacks  │ <──────────────  │                      │
-│   │            │  PUSH/PULL       │ 适配器:              │
-└────────────────┘                  │   ├── Computer Use   │
-                                    │   ├── Browser Use    │
-                                    │   ├── OpenClaw       │
-                                    │   ├── OpenFang       │
-                                    │   └── User Plugin    │
-                                    └────────────────────┘
+```text
+主服务器                                      智能体服务器 (:48915)
+┌──────────────────────────┐                 ┌──────────────────────────────┐
+│ LLMSessionManager        │                 │ DirectTaskExecutor           │
+│ cross_server.py          │  分析队列        │  ├─ 统一通道判断              │
+│ MainServerAgentBridge    │ ──────────────> │  ├─ 用户插件判断              │
+│                          │ <────────────── │  └─ 去重 / 任务跟踪           │
+│ pending_agent_callbacks  │  结果 / 事件     │                              │
+└──────────────────────────┘                 │ 通道适配器                    │
+                                             └──────────────────────────────┘
 ```
 
-## 能力标志
+当前执行器是 `brain/task_executor.py` 中的 `DirectTaskExecutor`。旧的 Planner / Processor / Analyzer 分层已经不存在。`TaskDeduper` 仍然保留，但它用于阻止重复分派，并不是执行后的结果分析器。
 
-智能体能力通过 `/api/agent/flags` 端点管理的标志进行切换：
+智能体服务器由 `app/agent_server/__main__.py` 启动。实现拆分在 `api_runtime.py`、`api_routes.py`、`channels/`、`registry.py`、`tracker.py` 和 `results.py` 中。
 
-| 标志 | 默认值 | 说明 |
-|------|--------|------|
-| `agent_enabled` | false | 智能体系统主开关 |
-| `computer_use_enabled` | false | 截图分析、鼠标/键盘操作 |
-| `browser_use_enabled` | false | 网页浏览自动化 |
-| `user_plugin_enabled` | false | 插件 / Model Context Protocol 工具调用 |
-| `openclaw_enabled` | false | OpenClaw 独立智能体通道 |
-| `openfang_enabled` | false | OpenFang 独立智能体通道 |
+## 从对话到任务
 
-## 任务执行流水线
+1. `main_logic/cross_server.py` 在 `turn end` 或 `session end` 时构造有界的近期消息视图，并可附带当前轮次的用户图片。
+2. `publish_analyze_request_reliably()` 发送带 `event_id` 的 `analyze_request`。主服务器短暂等待 `analyze_ack`，超时后重试一次。
+3. 主开关关闭时，智能体服务器会拒绝分析。它还会移除此前已取消的用户轮次，并应用近期任务去重。
+4. `DirectTaskExecutor.analyze_and_execute()` 判断已启用通道。用户插件走独立的发现与两阶段入口选择；其他通道共享统一判断。
+5. 被选中的通道创建 registry 任务、发送 `task_update`、执行工作并发送结构化 `task_result`。
+6. 主服务器把实时任务更新转发给浏览器，并把任务结果放入对应 `LLMSessionManager` 的队列。文本会话可以立即投递回调；语音会话可能延迟到注入或热切换边界。
 
-1. **触发**：主服务器在对话中检测到可执行的请求，通过 ZeroMQ 发布分析请求。
+智能体回调不会再次触发分析，避免结果投递递归产生新任务。
 
-2. **规划**：`Planner` 将请求分解为有序步骤的任务计划。
+## 传输映射
 
-3. **执行**：`Processor` 通过相应的适配器运行每个步骤：
-   - **Computer Use** —— 截取屏幕截图，使用视觉模型分析，执行鼠标/键盘操作
-   - **Browser Use** —— 导航网页、提取内容、填写表单
-   - **OpenClaw / OpenFang** —— 将任务委派给独立的智能体通道
-   - **User Plugin** —— 通过用户安装的插件（Model Context Protocol）调用外部工具
+进程桥接使用同步 ZeroMQ socket，并在后台线程接收，因此也兼容 Windows Proactor 事件循环。
 
-4. **分析**：`Analyzer` 评估任务目标是否已达成。
+| 默认地址 | 模式 | 方向 | 用途 |
+|---|---|---|---|
+| `tcp://127.0.0.1:48961` | PUB / SUB | 主 → Agent | 会话和生命周期事件 |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | 主 → Agent | 可靠的 `analyze_request` 队列 |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Agent → 主 | ACK、状态、任务更新和结果 |
 
-5. **去重**：`Deduper` 防止发送重复结果。
+端口可分别通过 `NEKO_ZMQ_SESSION_PUB_PORT`、`NEKO_ZMQ_ANALYZE_PUSH_PORT` 和 `NEKO_ZMQ_AGENT_PUSH_PORT` 覆盖。智能体 HTTP 控制服务默认监听 `127.0.0.1:48915`，嵌入式用户插件服务默认监听 `127.0.0.1:48916`。
 
-6. **返回**：结果通过 ZeroMQ PUSH/PULL 流式返回主服务器。
+Agent → 主服务器的结果投递没有 HTTP 降级路径。ZeroMQ 桥不可用时，事件不会送达。
 
-## ZeroMQ 套接字映射
+## 能力状态
 
-| 地址 | 类型 | 方向 | 用途 |
-|------|------|------|------|
-| `tcp://127.0.0.1:48961` | PUB/SUB | 主服务器 → 智能体 | 会话事件、任务请求 |
-| `tcp://127.0.0.1:48962` | PUSH/PULL | 智能体 → 主服务器 | 任务结果、状态更新 |
-| `tcp://127.0.0.1:48963` | PUSH/PULL | 主服务器 → 智能体 | 分析请求队列 |
+权威状态通过主服务器的 `/api/agent/*` 代理暴露。前端通过 `/api/agent/command` 修改状态，通过 `/api/agent/state` 刷新状态，不应把本地复选框当作权威来源。
 
-## Computer Use
+| 状态 | 含义 |
+|---|---|
+| `analyzer_enabled` / UI `agent_enabled` | 分析主开关 |
+| `computer_use_enabled` | 视觉驱动的桌面交互 |
+| `browser_use_enabled` | 浏览器自动化 |
+| `user_plugin_enabled` | 已安装用户插件执行 |
+| `openclaw_enabled` | OpenClaw 独立智能体通道 |
+| `openfang_enabled` | OpenFang 多智能体通道 |
 
-Computer Use 适配器（`brain/computer_use.py`）支持基于视觉的计算机交互：
+Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后可以恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。
 
-1. 捕获桌面截图
-2. 发送给视觉模型（如 `qwen3-vl-plus`）进行分析
-3. 根据视觉理解规划鼠标/键盘操作
-4. 通过 `pyautogui` 执行操作
+打开开关本身还不够：API 就绪检查和各通道能力探测仍可能阻止分派。OpenClaw 在启用探测期间还有独立的 readiness 状态。
 
-Computer Use 的模型配置请参阅[模型配置](/zh-CN/config/model-config)参考文档。
+## 路由规则
 
-## Browser Use
+对于非插件通道，第一个可执行的判断结果按以下顺序胜出：
 
-Browser Use 适配器（`brain/browser_use_adapter.py`）封装了 `browser-use` 库用于网页自动化：
+```python
+_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]
+```
 
-- 导航至 URL
-- 提取页面内容
-- 填写表单
-- 点击元素
-- 截取页面截图
+`qwenpaw` 映射到 OpenClaw 适配器。用户插件单独判断，不属于 `_CHANNEL_PRIORITY`。
 
-## OpenClaw
+用户插件路由先执行确定性的筛选（`brain/plugin_filter.py`），再由 LLM 选择插件入口，并严格校验 `plugin_id`、`entry_id` 和参数。插件入口元数据可覆盖执行超时，否则使用项目默认值。
 
-OpenClaw 适配器（`brain/openclaw_adapter.py`）将可执行的任务委派给 OpenClaw 独立智能体通道（在内部以 `qwenpaw` 引用）。
+## 并发、取消和保留
 
-## OpenFang
+- 分析与分派串行执行，避免几乎同时发生的 turn-end 事件创建重复任务。
+- Computer Use 有显式队列，同一时间只运行一个桌面控制任务。Browser 和远程 Agent 适配器各自维护活动任务保护。
+- 取消时先把 registry 条目标记为 `cancelled` 并取消包装任务，再在后台启动 provider 特定的清理。迟到的 provider 结果不得覆盖该终态。
+- 完成、失败和取消的 registry 条目保留五分钟；清理最多每分钟执行一次。
+- 用户插件可以返回 `deferred: true`。任务保持 `running`，直到调用 `/api/agent/tasks/{task_id}/complete`，或一小时 deferred 超时将其标记失败。
 
-OpenFang 适配器（`brain/openfang_adapter.py`）将可执行的任务委派给 OpenFang 独立智能体通道。
+## 实现映射
 
-通道选择优先级在 `brain/task_executor.py` 中定义为 `_CHANNEL_PRIORITY = ["qwenpaw", "openfang", "browser_use", "computer_use"]`。插件 / MCP 工具调用（`user_plugin_enabled`）走独立的分发路径，**不**属于 `_CHANNEL_PRIORITY`。
+| 关注点 | 当前实现 |
+|---|---|
+| turn-end 触发和近期上下文 | `main_logic/cross_server.py` |
+| ZeroMQ 桥及 ACK/重试 | `main_logic/agent_event_bus.py` |
+| 判断和路由 | `brain/task_executor.py` |
+| 插件候选筛选 | `brain/plugin_filter.py` |
+| Agent 生命周期和 HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
+| 通道分派 | `app/agent_server/channels/` |
+| 任务 registry 和保留 | `app/agent_server/registry.py` |
+| 结果投递到聊天 | `main_logic/core/proactive.py` |
 
-## API 端点
-
-完整的端点参考请参阅[智能体 REST API](/zh-CN/api/rest/agent)。
+公共控制端点见[智能体 REST API](/api/rest/agent)，任务可视化见[任务 HUD 系统](/architecture/task-hud-system)。

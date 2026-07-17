@@ -40,7 +40,7 @@ from plugin.sdk.plugin import (
 )
 
 from . import prompts
-from .service import GameAgentService
+from .service import GameAgentService, text_signals_blocked
 
 # JSON Schema reused by the @llm_tool decorator below. Pulled into a
 # module-level constant so the plugin's introspection (status entry,
@@ -50,7 +50,17 @@ MINECRAFT_TASK_SCHEMA: Dict[str, Any] = {
     "properties": {
         "task": {
             "type": "string",
-            "description": "A concrete, directly executable Minecraft goal in English.",
+            "description": (
+                "A plain-language Minecraft instruction. For a master-directed "
+                "action, copy only master's most recent message: it must be a new "
+                "explicit game instruction that has not already been dispatched, "
+                "using the exact original wording without added details. During "
+                "keep-going, a genuinely new autonomous action may instead be "
+                "formed from the current game state, but never by recovering or "
+                "replaying an older instruction or tool call. Never add in-game "
+                "coordinates unless master explicitly asked for coordinates in "
+                "the most recent message."
+            ),
         },
         "overwrite": {
             "type": "boolean",
@@ -73,19 +83,52 @@ MINECRAFT_TASK_DESCRIPTION = (
     "(cue). "
     "Do not infer or claim results from the task text itself — only from "
     "actually-observed cues and screenshots.\n\n"
-    "Use this tool when the user asks the character to do something in "
-    "the game, or when continuing an in-game activity that needs another "
-    "concrete step. Do NOT use it for chat, status questions, or "
-    "abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
+    "CRITICAL — this tool dispatches actions; it is not an awareness or heartbeat "
+    "tool. A screenshot, log, state update, idle reminder, or task-completion cue "
+    "is context only and is NEVER by itself a task to dispatch. Before "
+    "dispatching, account for the current task and recent feedback. If an action "
+    "may still be running, do not send another one.\n\n"
+    "TASK SOURCE AUTHORITY — for a master-directed action, use only master's most "
+    "recent message, and only when it contains a new explicit in-game instruction "
+    "that has not already been dispatched. The task must not come from an earlier "
+    "master message, an earlier tool call, task history, logs, screenshots, "
+    "telemetry, or a completion cue. During keep-going, you may instead form one "
+    "genuinely new autonomous action from the current game state when there is an "
+    "obvious next step. NEVER call back, recover, retry, or re-dispatch an older "
+    "master instruction or tool call, even if it failed or is mentioned by a "
+    "state reminder.\n\n"
+    "MASTER INSTRUCTION FIDELITY — when master (the user) gives an explicit "
+    "instruction in that most recent message, relay the exact original wording "
+    "in ``task``. Do not translate, "
+    "paraphrase, split, optimize, clarify on master's behalf, or add targets, "
+    "quantities, steps, tools, directions, or other details. The exact request "
+    "takes priority over the usual preference for a concrete single-step goal.\n\n"
+    "COORDINATE SAFETY — NEVER invent, infer, choose, or include in-game "
+    "coordinates unless master explicitly asked you to use or provide coordinates. "
+    "Coordinates visible in screenshots, logs, telemetry, or earlier agent output "
+    "do not count as master's request. Preserve relative wording such as 'come "
+    "here' exactly instead of turning it into coordinates.\n\n"
+    "CRITICAL — never parrot the game's own logs. The Minecraft feed you see is "
+    "the agent's internal telemetry: function-call lines (goToCoordinates(...), "
+    "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
+    "picked itself. NEVER copy any of that into a task — echoing a log line back "
+    "as a task creates a dispatch loop. A task must come from master's most recent "
+    "spoken request or a genuinely new autonomous choice based on current game "
+    "state, written as a plain-language goal, never "
+    "the game's raw command syntax or a coordinate you only saw in a log. If the "
+    "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
+    "Use this tool when master's most recent message asks the character to do "
+    "something new and that request has not already been dispatched, or when a "
+    "keep-going turn identifies a genuinely obvious new action from current game "
+    "state. Do NOT dispatch merely because a task finished or new awareness "
+    "context arrived. Do NOT use it for chat, status "
+    "questions, or abstract intent — see ``query_inventory`` for inventory lookups.\n\n"
     "Parameters:\n"
-    "  task (string, required): one concrete executable action in "
-    "English with specific targets — exact coordinates, specific block "
-    "or entity types, specific quantities. Vague intents ('find a good "
-    "place to build a house', 'find a blue block', 'come over here') "
-    "are not executable. Prefer single-step actions (one mine / one "
-    "craft / one walk) over long compound chains; chains complete "
-    "piece by piece and each step's real outcome must be observed "
-    "before claiming the next.\n"
+    "  task (string, required): master's exact original new instruction when "
+    "master-directed; otherwise one genuinely new autonomous action based on "
+    "current game state. Never source it from an older message or tool call, and "
+    "never repeat an already-dispatched command. Never add coordinates unless "
+    "master explicitly requested them in the most recent message.\n"
     "  overwrite (bool, default false): if a previous task is still in "
     "flight, false rejects this call with a 'busy' summary and the "
     "previous task keeps running. Set true when:\n"
@@ -408,14 +451,14 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
             return
         try:
             # ai_behavior="respond" + priority=7: the action just
-            # finished; the dialog LLM should immediately narrate the
-            # outcome to {MASTER_NAME} and (if appropriate) decide a
-            # next concrete action. Without ``respond`` the cue would
-            # only land in context as silent reading material; the
-            # human-facing report would be deferred to the next user
-            # turn, which feels unresponsive. Importance scale is
-            # HIGHER=more important (repo-wide): alert=9 (most important)
-            # > completion=7 > in_progress=4 > keep_going=3.
+            # finished, so the dialog LLM should immediately absorb and, when
+            # useful, narrate the outcome to {MASTER_NAME}. The prompt frames
+            # this as awareness rather than a command to dispatch another task;
+            # the later keep-going turn remains responsible for any genuinely
+            # new autonomous next action. Importance scale is HIGHER=more
+            # important (repo-wide):
+            # alert=9 (most important) > completion=7 > in_progress=4 >
+            # keep-going=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],
@@ -466,11 +509,21 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # dialog LLM can paraphrase. The "received status string" stays
         # the surface text the LLM sees; routing logic below still keys
         # off the original ``ok`` / ``受阻`` sentinel values via the
-        # same-language label, so the three-way branch survives
+        # same-language label, so the status branches below survive
         # localization without growing brittle "if any locale of 受阻"
         # checks.
         blocked_label = prompts.t("STATUS_LABEL_BLOCKED", lang=self._lang)
-        if status == "AGENT_DISCONNECTED" or "not connected" in detail.lower():
+        # Gate the "not connected" text sniff on an actual error envelope.
+        # The genuine transport failure already arrives as
+        # status=="AGENT_DISCONNECTED" (is_error path above), so the substring
+        # is only a belt-and-suspenders for error results whose text says
+        # "not connected". Firing it on ANY detail containing that phrase
+        # would hijack a legitimate completion (e.g. status="ok",
+        # text="the lever is not connected to the piston") — or a new
+        # interrupted/superseded frame — into the disconnect bucket.
+        if status == "AGENT_DISCONNECTED" or (
+            result.get("is_error") and "not connected" in detail.lower()
+        ):
             status = prompts.t("STATUS_LABEL_DISCONNECTED", lang=self._lang)
             detail = prompts.t("STATUS_DETAIL_DISCONNECTED", lang=self._lang)
         # mc-agent quirk: chat-loop returns ``status="ok"`` even when the
@@ -480,23 +533,10 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # "结果 ok" + "find player not found" and concludes "task done"
         # (cf. user-reported "她以为找博士成功了，没改用真 username"
         # bug). Surface the blocked-ness explicitly so she has to plan
-        # around it.
-        elif status.lower() == "ok" and detail:
-            blocked_markers = (
-                "obstacle", "obstructed", "not found", "could not", "couldn't",
-                "unable", "failed", "no path", "blocked", "missing",
-                "cannot", "can't",
-                # status=ok 但实际没目标 / 要更多信息也算受阻：mc-agent 对
-                # 「过来」「跟着我」这类缺玩家名/坐标的指令会回 status=ok +
-                # "Target unavailable. Please provide the exact player name or
-                # coordinates."，旧标记词表漏了 unavailable，导致被当成功 →
-                # 猫娘叙述「我来啦」其实化身没动。
-                "unavailable", "please provide", "provide the exact",
-                "no target", "target not",
-            )
-            d_lower = detail.lower()
-            if any(m in d_lower for m in blocked_markers):
-                status = blocked_label
+        # around it. Marker list is shared with the retroactive cue via
+        # ``text_signals_blocked`` so the two can't drift apart.
+        elif status.strip().lower() == "ok" and text_signals_blocked(detail):
+            status = blocked_label
 
         inv = result.get("inventory")
         inv_line = ""
@@ -513,17 +553,35 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         elif isinstance(inv, dict):
             inv_line = prompts.t("COMPLETION_INV_CURRENT_EMPTY", lang=self._lang)
 
-        # Three-way: actual success ("ok", case-insensitive), rebadged
-        # success-but-blocked (status == blocked_label), or anything
-        # else (disconnect, timeout, interrupted, error, "unknown",
-        # arbitrary is_error strings). The else branch previously cue'd
-        # everything that wasn't 受阻 as "做完 ... 派下一步" which told
-        # the dialog LLM the action succeeded when it actually
-        # disconnected / timed out / crashed — Codex review on PR
-        # #1395 caught this. Whitelist "ok" as success instead of
-        # trying to enumerate every failure.
+        # Four-way: actual success ("ok", case-insensitive), rebadged
+        # success-but-blocked (status == blocked_label), neutral
+        # interrupted/superseded (task stopped short but nothing went
+        # wrong), or genuine failure (disconnect, timeout, "failed",
+        # error, "unknown", arbitrary is_error strings). The catch-all
+        # branch previously cue'd everything that wasn't 受阻 as "做完 ...
+        # 派下一步" which told the dialog LLM the action succeeded when it
+        # actually disconnected / timed out / crashed — Codex review on
+        # PR #1395 caught this, so we whitelist "ok" as success instead
+        # of enumerating every failure. ``interrupted`` (our overwrite/
+        # shutdown/bounce verdict) and ``superseded`` (mc-agent's "a newer
+        # task replaced this") are carved out of the failure bucket: they
+        # are non-completions, not failures, and narrating them as
+        # "没做成——想清楚原因" is wrong (there's no cause; she just moved on).
+        # Normalize once for the buckets: tolerate case + stray whitespace
+        # from mc-agent (e.g. "ok " / " SUPERSEDED" must still classify).
+        # ``is_blocked`` keeps the exact-label compare — blocked_label is a
+        # localized display string set by the rewrite above, never padded.
+        status_lc = status.strip().lower()
         is_blocked = status == blocked_label
-        is_success = status.lower() == "ok"
+        is_success = status_lc == "ok"
+        is_interrupted = status_lc in ("interrupted", "superseded")
+        # [NO-SWITCH-CUE] interrupted/superseded means a newer task already
+        # replaced this one — the LLM (or user) did that on purpose and knows.
+        # Reporting "your task got switched (re-dispatch if you want)" just makes
+        # it fire another minecraft_task → the observed task-switch retry storm.
+        # Emit nothing; the fresh task's own cues/screenshots carry the story.
+        if is_interrupted:
+            return ""
         if is_blocked:
             head_verb = prompts.t("HEAD_VERB_BLOCKED", lang=self._lang)
         elif is_success:

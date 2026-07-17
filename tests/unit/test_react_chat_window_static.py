@@ -271,6 +271,10 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
         "function createResizeEdges",
         1,
     )[0]
+    effective_composer_hidden_block = source.split("function getEffectiveComposerHidden()", 1)[1].split(
+        "function getNekoGoodbyeModeActive",
+        1,
+    )[0]
 
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
@@ -280,7 +284,8 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "&& window.isNekoGoodbyeModeActive()" in source
     assert "function getEffectiveComposerAttachmentsVisible()" in source
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
-    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
+    assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -579,6 +584,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
         1,
     )[0]
     assert "compactInputLocked: next" in input_lock_block
+    assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
     assert "disabled={compactCapsuleEntryLocked}" in capsule_block
     assert "if (compactCapsuleEntryLocked) return;" in capsule_block
@@ -1040,7 +1047,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
-    assert "activeCursorToolId" in geometry_sync_block
+    assert "activeAvatarToolId" in geometry_sync_block
     assert "toolMenuOpen" in geometry_sync_block
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
@@ -1379,6 +1386,8 @@ def test_yui_guide_compact_chat_fixed_layout_is_bridged_to_standalone_chat_body(
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in broadcast_block
     assert "applyYuiGuideCompactChatFixedLayout(event.data.fixed === true);" in broadcast_block
     assert "case 'yui_guide_set_compact_chat_fixed_layout':" in scoped_block
+    # prepare 会建立本轮教程的胶囊恢复快照，也必须拒绝旧 run 的迟到消息。
+    assert "case 'yui_guide_prepare_compact_chat':" in scoped_block
     assert "applyYuiGuideCompactChatFixedLayout(false);" in cleanup_block
 
 
@@ -2123,26 +2132,26 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
     closing_block = css_block(
         reduced_motion_block,
         '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
-        ".avatar-cursor-overlay-stage",
+        ".avatar-tool-visual-overlay-stage",
     )
 
     assert "opacity: 0 !important;" in closing_block
     assert "visibility: hidden !important;" in closing_block
 
 
-def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
+def test_avatar_tool_visuals_stay_above_model_side_menus():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     popup_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
 
-    avatar_cursor_layer = css_z_index(css_block(
+    avatar_tool_visual_layer = css_z_index(css_block(
         styles,
-        ".avatar-cursor-overlay {",
-        ".avatar-cursor-overlay.is-compact",
+        ".avatar-tool-visual-overlay {",
+        ".avatar-tool-visual-overlay.is-compact",
     ))
-    hammer_cursor_layer = css_z_index(css_block(
+    avatar_tool_impact_layer = css_z_index(css_block(
         styles,
-        ".hammer-cursor-overlay {",
-        ".hammer-cursor-overlay.is-compact",
+        ".avatar-tool-impact-effect {",
+        ".avatar-tool-impact-effect.is-compact",
     ))
     model_popup_layer = css_z_index(css_block(
         popup_source,
@@ -2163,8 +2172,8 @@ def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
     )
     max_model_menu_layer = max(model_popup_layer, model_side_panel_layer, interval_side_panel_layer)
 
-    assert avatar_cursor_layer > max_model_menu_layer
-    assert hammer_cursor_layer > max_model_menu_layer
+    assert avatar_tool_visual_layer > max_model_menu_layer
+    assert avatar_tool_impact_layer > max_model_menu_layer
 
 
 def test_avatar_popup_actions_have_stable_input_region_markers():

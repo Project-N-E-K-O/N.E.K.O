@@ -7,17 +7,13 @@ import re
 from typing import Any
 
 from ..core.contracts import utc_now_iso
+from ..core.contracts_public import is_sensitive_public_key, public_topic_material
 
 _MAX_TEXT = 240
 _MAX_DEPTH = 4
 _ALLOWED_LEVELS = {"debug", "info", "warning", "error"}
 _SENSITIVE_AUTH_RE = re.compile(r"\bauthorization\s*:\s*(?:bearer|basic)?\s*[^\s;,]+", re.IGNORECASE)
 _SENSITIVE_COOKIE_HEADER_RE = re.compile(r"\bcookie\s*:\s*[^\r\n]*", re.IGNORECASE)
-_SENSITIVE_KEY_RE = re.compile(
-    r"^(?:authorization|cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|"
-    r"odin_tt|sessionid|sessdata|bili_jct|dedeuserid|buvid3|x-tt-token)$",
-    re.IGNORECASE,
-)
 _SENSITIVE_TEXT_RE = re.compile(
     r"\b(?:cookie|token|access_token|refresh_token|signature|webcast_sign|ttwid|odin_tt|sessionid|"
     r"sessdata|bili_jct|dedeuserid|buvid3|x-tt-token)\b\s*[:=]\s*[^;\s,&]+",
@@ -73,10 +69,13 @@ def _safe_public_dict(value: dict[Any, Any], *, depth: int) -> dict[str, Any]:
         key = _safe_text(raw_key)
         if not key:
             continue
-        if _SENSITIVE_KEY_RE.fullmatch(key):
+        if is_sensitive_public_key(raw_key) or "[redacted]" in key:
             result[key] = "[redacted]"
             continue
-        result[key] = _safe_public_value(raw_value, depth=depth + 1)
+        if key == "topic_material":
+            result[key] = public_topic_material(raw_value, depth=depth + 1)
+        else:
+            result[key] = _safe_public_value(raw_value, depth=depth + 1)
     return result
 
 

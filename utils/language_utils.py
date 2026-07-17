@@ -52,6 +52,20 @@ _global_language_initialized = False
 _global_region: Optional[str] = None  # 'china' 或 'non-china'
 
 
+def _get_language_env_override() -> Optional[str]:
+    """Return a validated ``NEKO_LANGUAGE`` override, or ``None`` for auto detection."""
+    language_override = os.environ.get('NEKO_LANGUAGE', '').strip()
+    if not language_override:
+        return None
+    if is_supported_language_code(language_override):
+        return language_override
+    logger.warning(
+        "NEKO_LANGUAGE=%r 无效，支持 zh/en/ja/ko/ru/es/pt 及对应完整语言代码；回退自动语言检测",
+        language_override,
+    )
+    return None
+
+
 def _matches_lang_code(lang_lower: str, code: str, aliases: Optional[set] = None) -> bool:
     """Check whether a language string matches the given language code; supports exact codes, locale suffixes (`xx-XX`/`xx_XX`) and explicit aliases.
 
@@ -105,10 +119,26 @@ def is_supported_language_code(raw: Any) -> bool:
 def _is_china_region() -> bool:
     """
     Decide whether the current system is in the Chinese region
+
+    ``NEKO_IS_CHINA_REGION`` can explicitly override auto detection:
+    truthy values (1/true/yes/on) force the Chinese region, while falsy
+    values (0/false/no/off) force the non-Chinese region. An unset, empty,
+    or invalid value falls back to locale-based detection.
     
     Returns:
         True for the Chinese region, False otherwise
     """
+    region_override = os.environ.get('NEKO_IS_CHINA_REGION', '').strip().lower()
+    if region_override in {'1', 'true', 'yes', 'on'}:
+        return True
+    if region_override in {'0', 'false', 'no', 'off'}:
+        return False
+    if region_override:
+        logger.warning(
+            "NEKO_IS_CHINA_REGION=%r 无效，支持 1/true/yes/on 或 0/false/no/off；回退系统区域检测",
+            region_override,
+        )
+
     try:
         system_locale = locale.getlocale()[0]
         if system_locale:
@@ -269,6 +299,19 @@ def initialize_global_language() -> str:
         else:
             _global_region = 'non-china'
         logger.info(f"系统区域判断: {_global_region}")
+
+        # 显式环境变量覆盖优先于 Steam 和系统语言，主要用于启动/集成测试。
+        language_override = _get_language_env_override()
+        if language_override:
+            _global_language = normalize_language_code(language_override, format='short')
+            _global_language_full = normalize_language_code(language_override, format='full')
+            _global_language_initialized = True
+            logger.info(
+                "全局语言已由 NEKO_LANGUAGE 强制设置为: %s (full: %s)",
+                _global_language,
+                _global_language_full,
+            )
+            return _global_language
         
         # 优先级1：尝试从 Steam 获取
         steam_lang = _get_steam_language()
@@ -383,6 +426,12 @@ def refresh_global_language(language: str) -> bool:
         argument is invalid.
     """
     global _global_language, _global_language_full, _global_region, _global_language_initialized
+
+    # NEKO_LANGUAGE 是进程级强制覆盖；前端冷启动随后读取到 Steam 语言时，
+    # 不允许该晚到值把显式环境配置覆盖回去。
+    language_override = _get_language_env_override()
+    if language_override:
+        language = language_override
 
     if not language:
         return False

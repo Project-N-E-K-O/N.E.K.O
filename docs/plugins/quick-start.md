@@ -49,8 +49,8 @@ auto_start = true
 ```
 
 Key things:
-- `id` must match the folder name (`hello_world`)
-- `entry` tells N.E.K.O which class to load — format is `module.path:ClassName`
+- `id` is the unique plugin ID. Keep it equal to the folder name (`hello_world`) so profile lookup and tooling do not need to handle a mismatch.
+- `[plugin].entry` tells the host which class to load — format is `module.path:ClassName`. It is not the runtime `entry_id` below.
 - `auto_start = true` means it starts automatically with N.E.K.O
 
 ## Step 3: Create `__init__.py`
@@ -84,6 +84,8 @@ What each line does:
 | `= "World"` | Default value if nothing is passed |
 | `Ok({...})` | Returns a successful result |
 
+The runtime entry ID here is `greet`. When the user-plugin Agent route selects this operation, it returns `plugin_id="hello_world"` and `entry_id="greet"`; the host validates both. This is separate from registering a conversation-time LLM tool with `@llm_tool`.
+
 ## Step 4: Run it
 
 1. Start (or restart) N.E.K.O
@@ -112,7 +114,8 @@ Save → click **Reload** in Plugin Manager → done. No restart needed.
 |---|---|
 | Add more functions and parameters | [SDK Reference](./sdk-reference) |
 | Run code on startup/shutdown | [Decorators](./decorators) |
-| Let the AI call my plugin in chat | [LLM Tool Calling](./tool-calling) |
+| Let the user-plugin Agent route select an entry | [Entries & Parameters](./entries) |
+| Register a conversation-time LLM tool | [LLM Tool Calling](./tool-calling) |
 | Build a UI panel for my plugin | [Hosted UI](./hosted-ui) |
 | See real-world plugin examples | [Examples](./examples) |
 | Handle errors properly | [Best Practices](./best-practices) |

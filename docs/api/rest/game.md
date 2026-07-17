@@ -159,6 +159,14 @@ End the game route, using the same cleanup contract as the public game-end endpo
 
 The core "double act" endpoints: send events to the A layer, then mirror or speak the resulting line through the B layer.
 
+### `POST /api/game/{game_type}/passive-guard`
+
+Runs the bounded passive-exit classifier used by the soccer route. The JSON body carries the active `session_id`, `lanlan_name`, and the compact game context collected by the frontend. At present only `game_type=soccer` is implemented.
+
+The response includes `ok`, `recommendedAction`, and `exitPromptType`; successful classifications also include classifier detail. Unsupported game types and timeout/error fallbacks return `observe_more` and `none` in the application envelope rather than raising an HTTP error.
+
+---
+
 ### `POST /api/game/{game_type}/chat`
 
 Generic game LLM chat endpoint. Send a game event to the behind-the-scenes A layer and get back a spoken line plus optional control instructions.

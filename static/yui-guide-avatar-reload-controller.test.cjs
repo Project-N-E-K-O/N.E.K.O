@@ -165,6 +165,62 @@ test('tutorial avatar reload snapshots proactive chat when override starts, not 
     assert.equal(window.scheduleCalls, 1);
 });
 
+test('tutorial avatar reload does not overwrite proactive state restored by the tutorial lifecycle', async () => {
+    const window = loadReloadControllerWindow();
+    window.proactiveChatEnabled = false;
+    window.appState.proactiveChatEnabled = false;
+    window.proactiveVisionChatEnabled = false;
+    window.appState.proactiveVisionChatEnabled = false;
+    window.NekoHomeTutorialFeatureController = {
+        isActive() {
+            return true;
+        }
+    };
+
+    const host = {
+        constructor: {
+            detectModelPrefix() {
+                return 'live2d';
+            }
+        }
+    };
+    const controller = window.TutorialAvatarReloadController.createController({
+        host,
+        timeoutMs: 200,
+        resolveCurrentName: () => Promise.resolve('LanLan'),
+        fetchCharacters: () => Promise.resolve({
+            '猫娘': {
+                LanLan: {
+                    model_type: 'live2d',
+                    live2d: 'lanlan'
+                }
+            }
+        }),
+        buildSnapshotPayload: () => ({ model_type: 'live2d', live2d: 'lanlan' }),
+        reloadModel: () => Promise.resolve(),
+        setPreparing: () => {},
+        revealPrepared: () => {},
+        applyIdentityOverride: () => {},
+        clearViewportWatcher: () => {}
+    });
+
+    await controller.beginOverride();
+
+    // Skip/angry-exit tears down the feature controller before the model restore.
+    window.proactiveChatEnabled = true;
+    window.appState.proactiveChatEnabled = true;
+    window.proactiveVisionChatEnabled = true;
+    window.appState.proactiveVisionChatEnabled = true;
+    window.NekoHomeTutorialFeatureController = null;
+
+    await controller.restoreOverride();
+
+    assert.equal(window.proactiveChatEnabled, true);
+    assert.equal(window.appState.proactiveChatEnabled, true);
+    assert.equal(window.proactiveVisionChatEnabled, true);
+    assert.equal(window.appState.proactiveVisionChatEnabled, true);
+});
+
 test('tutorial avatar reload can keep prepared model hidden for intro performance reveal', async () => {
     const window = loadReloadControllerWindow();
     const reloadCalls = [];

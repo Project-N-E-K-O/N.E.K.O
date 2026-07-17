@@ -869,7 +869,11 @@ class LifecycleMixin:
         topic_language_seed = None
         if not getattr(self, 'user_language', None):
             topic_language_seed = normalize_language_code(get_global_language_full(), format='full')
-            self.user_language = normalize_language_code(topic_language_seed, format='short')
+            # Seed the FULL code (e.g. 'zh-TW'), consistent with set_user_language's
+            # format='full'; every consumer short-normalizes at its use site. Keeping
+            # the Hant variant here lets resolve_dialog_slop_lang skip the Simplified
+            # slop table for Traditional-Chinese sessions (the short 'zh' hid it).
+            self.user_language = topic_language_seed
             self._conversation_turn_language = topic_language_seed
         self._set_conversation_turn_language(
             self._conversation_turn_language
@@ -1215,6 +1219,9 @@ class LifecycleMixin:
                 max_response_length=guard_max_length,
                 lanlan_name=self.lanlan_name,
                 master_name=self.master_name,
+                # Live resolver so a mid-session language switch is
+                # reflected in slop reduction without re-creating the client.
+                user_language_provider=lambda: self.user_language,
                 on_tool_call=self._on_tool_call,
                 tool_definitions=_initial_tool_defs,
                 # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
@@ -1233,6 +1240,7 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             realtime_config = self._config_manager.get_model_api_config('realtime')
+            nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             new_session = OmniRealtimeClient(
                 base_url=realtime_config.get('base_url', ''),
                 api_key=realtime_config['api_key'],
@@ -1253,11 +1261,11 @@ class LifecycleMixin:
                 on_tool_call=self._on_tool_call,
                 tool_definitions=_initial_tool_defs,
                 livestream_mode=self._is_livestream_active(),
+                noise_reduction_enabled=nr_enabled,
             )
             # Apply user's noise reduction preference to the AudioProcessor
-            nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
             if hasattr(new_session, '_audio_processor') and new_session._audio_processor:
-                new_session._audio_processor.set_enabled(nr_enabled)
+                await new_session.set_audio_noise_reduction_enabled(nr_enabled)
 
         # Bind guarded callbacks BEFORE connect — connect() can invoke
         # on_connection_error during the handshake, and without the guard
@@ -1466,6 +1474,8 @@ class LifecycleMixin:
                     max_response_length=guard_max_length,
                     lanlan_name=self.lanlan_name,
                     master_name=self.master_name,
+                    # 与上方对偶：实时解析 user_language，热切换跨语言也能正确选规则集。
+                    user_language_provider=lambda: self.user_language,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
                     # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
@@ -1483,6 +1493,7 @@ class LifecycleMixin:
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
+                nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 self.pending_session = OmniRealtimeClient(
                     base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
@@ -1503,11 +1514,11 @@ class LifecycleMixin:
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
                     livestream_mode=self._is_livestream_active(),
+                    noise_reduction_enabled=nr_enabled,
                 )
                 # Apply user's noise reduction preference to the AudioProcessor
-                nr_enabled = (await _core_facade.aload_global_conversation_settings()).get('noiseReductionEnabled', True)
                 if hasattr(self.pending_session, '_audio_processor') and self.pending_session._audio_processor:
-                    self.pending_session._audio_processor.set_enabled(nr_enabled)
+                    await self.pending_session.set_audio_noise_reduction_enabled(nr_enabled)
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = await self._build_initial_prompt()
@@ -1742,6 +1753,19 @@ class LifecycleMixin:
                 _selected, _deferred = _select_callbacks_within_token_budget(
                     list(self.pending_extra_replies), AGENT_CALLBACK_TOTAL_MAX_TOKENS
                 )
+                # Pull-model staleness guard (same contract as the voice/text
+                # delivery points): drop extras whose coalesce_key has a newer
+                # submission — the push-side eviction removes queue entries but
+                # cannot reach text already baked into final_prime_text, so the
+                # check must run here, synchronously between select and render
+                # (no await in between; a newer cue landing during the prime
+                # await below is an accepted residual window). Stale extras are
+                # NOT added to _deferred: their newer same-key mirror is (or will
+                # be) queued in their place.
+                _selected = [
+                    e for e in _selected
+                    if not self._coalesce_entry_is_stale(e)
+                ]
                 final_prime_text += _render_pending_extra_replies_by_origin(
                     _selected,
                     lang=_lang,

@@ -91,12 +91,17 @@ class BridgeProcessSupervisor:
         self._process = None
         port = self._port
         self._port = 0
+        stopped = True
         if process is not None and _poll(process) is None:
-            await asyncio.to_thread(_terminate_process, process)
-        if process is not None and self._stale_process_cleaner is not None:
+            stopped = await asyncio.to_thread(_terminate_process, process)
+        if process is not None and stopped and self._stale_process_cleaner is not None:
             with _suppress_process_errors():
                 _remove_owned_process_marker(self._executable_path, _process_pid(process))
-        return BridgeProcessState(ok=False, port=port)
+        return BridgeProcessState(
+            ok=False,
+            port=port,
+            last_error="" if stopped else "bundled bridge process did not stop",
+        )
 
     def _is_running(self) -> bool:
         return self._process is not None and self._port > 0 and _poll(self._process) is None
@@ -117,7 +122,7 @@ def _poll(process: Any) -> Any:
         return 0
 
 
-def _terminate_process(process: Any) -> None:
+def _terminate_process(process: Any) -> bool:
     with _suppress_process_errors():
         process.terminate()
         process.wait(timeout=4)
@@ -125,6 +130,7 @@ def _terminate_process(process: Any) -> None:
         with _suppress_process_errors():
             process.kill()
             process.wait(timeout=2)
+    return _poll(process) is not None
 
 
 def _base_url(port: int) -> str:

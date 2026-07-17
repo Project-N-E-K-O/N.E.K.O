@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from .cache_control import _inject_cache_control
 from .lifecycle import (
-    _active_character, _close_async_openai_client_from_sync_best_effort,
+    _active_character, _dialog_slop_lang, _close_async_openai_client_from_sync_best_effort,
     _close_chat_openai_clients_best_effort, _get_default_ssl_context,
     _substitute_character_placeholders,
 )
@@ -174,6 +174,15 @@ class ChatOpenAI:
                     p["messages"], master, lanlan
                 )
 
+        slop_lang = _dialog_slop_lang.get()
+        if slop_lang:
+            try:
+                from utils.slop_filter import apply_slop_reduction
+                p["messages"] = apply_slop_reduction(p["messages"], slop_lang)
+            except Exception:
+                # Prompt-only rewriting is best effort and must not break an LLM call.
+                pass
+
         # Body-level cache flag: stamp an Anthropic-style cache_control marker
         # onto the cache breakpoint. Gated on the provider opting in via
         # requires_body_flag (no live provider does today, so this is a no-op
@@ -232,7 +241,13 @@ class ChatOpenAI:
         msg = choice.message if choice else None
         content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": getattr(choice, "finish_reason", None) if choice else None,
+            },
+        )
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         """Sync twin of ``ainvoke``. See its docstring for ``overrides``."""
@@ -241,7 +256,13 @@ class ChatOpenAI:
         msg = choice.message if choice else None
         content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
+        return LLMResponse(
+            content=content,
+            response_metadata={
+                "token_usage": usage_dict,
+                "finish_reason": getattr(choice, "finish_reason", None) if choice else None,
+            },
+        )
 
     # --- raw-resp invoke (for callers needing reasoning_content / raw choices) ---
 

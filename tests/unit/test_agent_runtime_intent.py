@@ -187,6 +187,32 @@ def test_pyautogui_display_error_is_not_reported_as_missing(monkeypatch: pytest.
     assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
 
 
+def test_pyautogui_macos_pyobjc_error_has_dedicated_reason(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(
+        cu_module,
+        "_PYAUTOGUI_IMPORT_ERROR",
+        AssertionError("You must first install pyobjc-core and pyobjc"),
+    )
+
+    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
+
+
+def test_pyautogui_generic_import_failure_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
+    from brain import computer_use as cu_module
+
+    monkeypatch.setattr(cu_module, "pyautogui", None)
+    monkeypatch.setattr(
+        cu_module,
+        "_PYAUTOGUI_IMPORT_ERROR",
+        RuntimeError("dlopen failed while importing pyautogui backend"),
+    )
+
+    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_IMPORT_FAILED"
+
+
 def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: pytest.MonkeyPatch):
     from brain import computer_use as cu_module
 

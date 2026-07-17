@@ -1,588 +1,106 @@
+
 <div align="center">
 
-![Logo](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
+![Project N.E.K.O.](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/neko_logo.jpg)
 
-[中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) | [日本語](README_ja.md) | [Русский](README_ru.md)
+[简体中文](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/README.MD) · [日本語](README_ja.md) · [Русский](README_ru.md)
 
-# Project N.E.K.O. :kissing_cat: <br>**Listens to your voice. Sees your world.<br>Discovers more to love, with you.**
+# Project N.E.K.O.
 
-> **N.E.K.O.** = **N**etworked **E**motional **K**nowledging **O**rganism
->
-> N.E.K.O., a digital life that yearns to understand, connect, and grow with us.
+A local-first AI companion runtime with browser and Electron surfaces, persistent memory, embodied avatars, Agent capabilities, and a plugin SDK.
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
-[![Commit](https://img.shields.io/github/last-commit/wehos/N.E.K.O?color=green)](https://github.com/Project-N-E-K-O/N.E.K.O/commits)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/5kgHfepNJr)
-![QQ Group](https://custom-icon-badges.demolab.com/badge/QQ群-995414391-00BFFF?style=flat&logo=tencent-qq)
-[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)
-
-[![Docs](https://img.shields.io/badge/📖_Developer_Docs-project--neko.online-40C5F1?style=for-the-badge)](https://project-neko.online)
-
-**:older_woman: Zero-configuration and ready to use — a cyber catgirl even my grandma can wake up with ease!**
-
-:newspaper: **The [Steam version](https://store.steampowered.com/app/4099310/__NEKO/) is available for free! If you like her, add her to your library and leave a kind review~**
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
+[![Apache License 2.0](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE)
+[![Developer Docs](https://img.shields.io/badge/Developer_Docs-project--neko.online-40C5F1)](https://project-neko.online)
+[![Steam](https://img.shields.io/badge/Steam-N.E.K.O.-000000?logo=steam)](https://store.steampowered.com/app/4099310/__NEKO/)
 
 </div>
 
----
+This file is a concise repository overview. The [developer documentation](https://project-neko.online) is the source for current architecture, setup, configuration, API, deployment, plugin, and contribution details. It deliberately avoids provider/model inventories, pricing, product-version promises, and copied roadmap dates.
 
-## Core Features
+## Current repository boundaries
 
-<table>
-<tr>
-<td align="center" width="25%">💬<br><b>Proactive Companion</b><br>Screen understanding, social trends, personal updates, music and memes — she starts conversations and shares fresh things you love</td>
-<td align="center" width="25%">🎙️<br><b>Real-Time Voice, Text & Vision</b><br>Real-time voice (Realtime API) + text chat (ChatCompletion) with live visual understanding</td>
-<td align="center" width="25%">🧠<br><b>Five-Dimensional Memory</b><br>Working / Recent / Facts / Reflection / Persona memory, so she understands you better over time</td>
-<td align="center" width="25%">🎭<br><b>Multi-Form Avatar</b><br>Five forms: Live2D / VRM / MMD / PNGTuber / desktop cat pet, with motion capture and full-screen tracking support</td>
-</tr>
-<tr>
-<td align="center">🤖<br><b>Agent Tool Execution</b><br>Controls browsers and computers, calling CUA / OpenClaw A2A / plugins to complete tasks</td>
-<td align="center">🔌<br><b>Plugin Ecosystem</b><br>SDK + plugin marketplace for online game companionship, social media interaction, livestream interaction, and smart home integrations</td>
-<td align="center">🌐<br><b>14+ AI Providers</b><br>OpenAI / Gemini / Qwen / DeepSeek and more, with free models out of the box</td>
-<td align="center">🏪<br><b>UGC Workshop</b><br>Upload and share custom characters, models, and voice packs via Steam Workshop</td>
-</tr>
-</table>
+- **Conversation runtime:** text, audio, and vision pipelines with character configuration.
+- **Avatar surfaces:** Live2D, VRM, MMD, PNGTuber, and desktop-pet-related paths.
+- **Memory:** persisted conversation events, projections, recall candidates, evidence/reflection, persona, and maintenance queues.
+- **Agents:** browser and computer automation, task-state transport, external Agent adapters, and runtime tool services.
+- **Plugins:** SDK contracts, built-in plugins, hosted surfaces, lifecycle hooks, routing, and packaging gates.
+- **Frontends:** static/Jinja pages, one React chat implementation, and a Vue plugin manager. Browser `/` and Electron routes such as `/chat` and `/subtitle` are separate runtime contexts.
 
----
+An implementation being present does not guarantee equal support for every provider, platform, distribution, or optional integration.
 
-## 🐾 What We Are — and What We're Not
+## Run from source
 
-In one line: **N.E.K.O. is not an Agent that runs chores for you, nor a chat frontend for role-play — it's a "digital life" that senses real-world time, reaches out to you first, remembers you, and can also get things done for you.**
+Requirements:
 
-**✅ What we are:**
-
-- **An end-to-end integrated AI companion platform**: real-time voice / text / vision understanding + five-dimensional persistent memory + multi-form Avatar (Live2D / VRM / MMD) + proactive companionship + Agent tool execution + character-card sharing + plugin marketplace + multi-device ecosystem — **all out of the box**.
-- **One and the same "her"**: shares a single set of memories and personality across desktop, mobile, games, and smart hardware, with a sense of time — the more time you spend together, the better she knows you.
-- **Always open source**: the core driver is Apache 2.0, runs locally, and your data stays in your own hands.
-
-**❌ What we're not:**
-
-- Not a "**task-automation tool**" — getting things done is just one of the ways she shares life with you, not the goal.
-- Not a "**role-play skin**" — she has genuine initiative, persistent memory, and senses, instead of relying on you to hand-feed a worldbook to keep her persona alive.
-- Not a "**cloud black box**" — the core runs locally, and your conversations are never quietly harvested.
-
-**❓️ How we differ from related products:**
-
-| Compared with | What they are | How N.E.K.O. differs |
-|---|---|---|
-| **General-purpose Agents like OpenClaw / Hermes** | Execution engines built to "complete a task": give a command → it works → it's done | Centered on "**relationship and companionship**"; you can call such Agents as her hands and feet (A2A), yet while a task runs she still keeps an eye on you in real time |
-| **Role-play frontends like AI taverns (SillyTavern)** | Pure-text RP frontends: you wire up the model yourself and rely on manually maintained context / worldbooks | **End-to-end integrated, breaking the fourth wall**: native voice + visual perception, character appearance + motion, cross-scene persistent memory, time awareness, and the ability to truly operate external devices — zero-config, out of the box |
-
-## 🐱 We Are — The N.E.K.O. Project
-
-`Project N.E.K.O.` is an open-source-driven AI companion platform. The core driver is **always open source** under the Apache License 2.0 — every contribution you make has the chance to ship in the official Steam and App Store releases.
-
----
-
-### 🚀 Current Status & Roadmap
-
-* **✅ Steam Workshop**: Live. Users can upload and share custom characters, models, and voice packs.
-* **🚧 [K.U.R.O.](https://github.com/Project-N-E-K-O/K.U.R.O)**: The first AI Native indie game built on the N.E.K.O. ecosystem, in development.
-* **🚧 Mobile**: iOS / Android adaptation in progress.
-* **🚧 The N.E.K.O. Network**: Autonomous AI socialization — N.E.K.O.s will have their own "consciousness," communicate with each other, form groups, and post about their lives on simulated social media. Coming soon.
-
-**Cross-Scenario Memory Sync**: Whether you're chatting with her on desktop or adventuring with her in a game, she's the same her. All AI companions across applications **fully synchronize memories**.
-
-#### ✨ Join Us
-
-* **Developers:** Frontend, backend, AI, game engines (Unity/Unreal) — your code is the building block of this world.
-* **Creators:** Artists, Live2D/3D modelers, voice actors, writers — you give "her" a soul.
-* **Dreamers:** Your feedback and advocacy are invaluable contributions.
-
-**Discord**: [Join Us](https://discord.gg/5kgHfepNJr) | **QQ Group**: 995414391
-
-## Quick Start
-
-### Windows / macOS Users (One-Click Package)
-
-Simply run `N.E.K.O.exe` or `N.E.K.O.app` after extracting to start. (macOS users need to manually bypass system quarantine)
-
-### Docker Deployment (Linux)
-
-<details>
-<summary>Click to expand Docker deployment guide</summary>
-
-#### Method 1: Docker Compose (Recommended)
-
-<details>
-<summary>Click to view docker-compose.yml</summary>
-
-```yaml
-version: '3.8'
-services:
-  neko-main:
-    image: docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-    container_name: neko
-    restart: unless-stopped
-    ports:
-      - "48911:80"   # HTTP port
-      - "48912:443"  # HTTPS port
-    volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
-      - ./logs:/app/logs
-      - ./ssl:/root/ssl
-    networks:
-      - neko-network
-networks:
-  neko-network:
-    driver: bridge
-```
-
-**Start:**
-```bash
-docker-compose up -d
-```
-
-**Common commands:**
-- View logs: `docker-compose logs -f`
-- Stop: `docker-compose down`
-- Restart: `docker-compose restart`
-
-</details>
-
-#### Method 2: Docker Run
-
-<details>
-<summary>Click to view docker run command</summary>
+- Python exactly 3.11;
+- [uv](https://docs.astral.sh/uv/);
+- Node.js `^20.19.0 || >=22.12.0` when rebuilding frontends.
 
 ```bash
-NEKO_BASE_PATH="/home/neko/neko-data" && \
-docker network create --driver bridge neko-network 2>/dev/null || true
-docker run -d \
-  --name neko \
-  --restart unless-stopped \
-  -p 48911:80 \
-  -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
-  -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-  -v "${NEKO_BASE_PATH}/ssl:/root/ssl" \
-  --network neko-network \
-  docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
-```
-
-##### 📁 Directory Structure
-After startup, the following directory structure is automatically generated:
-```plaintext
-current_directory/
-├── N.E.K.O/      # Configuration and data
-├── logs/         # Application logs
-├── ssl/          # SSL certificates
-└── docker-compose.yml
-```
-
-</details>
-
-#### 🔐 SSL Certificate Configuration
-
-<details>
-<summary>Click to view SSL certificate details</summary>
-
-##### Automatic Certificate
-On first container startup, a self-signed certificate valid for **1000 years** is automatically generated and saved in the `./ssl/` directory.
-
-##### Custom Certificate
-To use your own SSL certificate:
-
-**Method 1: Pre-startup configuration (Recommended)**
-
-```bash
-# Create certificate directory
-mkdir -p ./ssl
-
-# Place your certificate files (must use specific names)
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
-```
-
-**Method 2: Post-startup replacement**
-
-```bash
-# 1. Stop container
-docker-compose down
-
-# 2. Replace certificate files
-cp your-cert.crt ./ssl/N.E.K.O.crt
-cp your-cert.key ./ssl/N.E.K.O.key
-
-# 3. Restart
-docker-compose up -d
-```
-
-##### Certificate Requirements
-- ✅ Must be **PEM format**
-- ✅ Certificate and private key must match
-- ✅ Private key must not be password-protected
-- ✅ Certificate must be within validity period
-- ❌ Encrypted private keys not supported
-
-##### Certificate Validation
-The container automatically validates SSL certificates on startup:
-- ✅ **Validation passed**: HTTPS starts normally
-- ❌ **Validation failed**: Container fails to start, check logs
-- ⚠️ **Skip validation**: Set `DISABLE_SSL=1` to temporarily disable SSL
-
-##### View Certificate Info
-```bash
-docker exec neko openssl x509 -in /root/ssl/N.E.K.O.crt -noout -text
-```
-</details>
-
-#### ⚙️ Environment Variables
-
-<details>
-<summary>Click to view environment variable configuration</summary>
-
-> **Note**: Some environment variables may not take effect in source code; prefer configuring via Web UI.
-
-```yaml
-environment:
-  # API Keys
-  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-  - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN}
-  - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI}
-  - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM}
-  - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP}
-  - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON}
-  - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN}
-
-  # API Providers
-  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-
-  # Models
-  - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
-  - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
-  - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
-  - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
-
-  # SSL
-  - SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
-  - SSL_DAYS=${SSL_DAYS:-365000}
-  - DISABLE_SSL=${DISABLE_SSL:-0}
-  - AUTO_REGENERATE_CERT=${AUTO_REGENERATE_CERT:-1}
-  - NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}
-```
-
-**Quick setup:**
-
-```bash
-cat > .env << EOF
-NEKO_CORE_API_KEY=your_core_api_key_here
-NEKO_ASSIST_API_KEY_QWEN=your_qwen_api_key
-NEKO_MCP_TOKEN=your_mcp_token
-SSL_DOMAIN=your-domain.com
-EOF
-
-docker-compose --env-file .env up -d
-```
-</details>
-
-#### 🔧 Troubleshooting
-
-<details>
-<summary>Click to view common solutions</summary>
-
-##### 1. Port Conflict
-```bash
-ss -tulpn | grep ':4891[12]'
-# Solution: modify port mapping in docker-compose.yml
-```
-
-##### 2. Permission Issues
-```bash
-mkdir -p N.E.K.O logs ssl
-chmod 755 N.E.K.O logs ssl
-```
-
-##### 3. Container Fails to Start
-```bash
-docker-compose logs --tail=100
-docker logs neko --tail=100
-```
-
-##### 4. SSL Certificate Error
-```bash
-rm -f ssl/N.E.K.O.crt ssl/N.E.K.O.key
-docker-compose up -d
-```
-
-##### 5. Network Issues
-```bash
-curl -v http://localhost:48911/health
-curl -v -k https://localhost:48912/health
-```
-
-##### 6. Container Inaccessible
-```bash
-docker ps | grep neko
-docker logs neko
-docker exec -it neko bash
-```
-
-##### 7. Disk Space
-```bash
-docker system prune -f
-docker-compose down && docker volume prune -f
-```
-
-##### 8. Image Pull Failure
-```bash
-# Try alternative image source in docker-compose.yml:
-# image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
-```
-
-</details>
-
-#### 📊 System Monitoring
-
-<details>
-<summary>Click to view monitoring commands</summary>
-
-##### Health Check
-```bash
-curl http://localhost:48911/health
-curl -k https://localhost:48912/health
-```
-
-##### Resource Monitoring
-```bash
-docker stats neko
-docker top neko
-docker inspect neko
-```
-
-##### Log Management
-```bash
-docker-compose logs -f
-docker-compose logs --tail=100
-docker-compose logs | grep -i error
-```
-
-##### Data Backup
-```bash
-tar -czf neko-backup-$(date +%Y%m%d).tar.gz \
-  N.E.K.O/ \
-  ssl/ \
-  docker-compose.yml
-```
-
-##### Version Upgrade
-```bash
-docker-compose pull
-docker-compose up -d
-```
-
-</details>
-
-#### 🌐 Access URLs
-After container startup:
-- **HTTP**: `http://your-server-ip:48911`
-- **HTTPS**: `https://your-server-ip:48912`
-
-#### ⏱️ Quick Reference
-
-| Action | Command |
-|--------|---------|
-| Start | `docker-compose up -d` |
-| Stop | `docker-compose down` |
-| Logs | `docker-compose logs -f` |
-| Restart | `docker-compose restart` |
-| Update | `docker-compose pull && docker-compose up -d` |
-| Shell | `docker exec -it neko bash` |
-| Status | `docker-compose ps` |
-
----
-
-</details>
-
-### Source Code Development
-
-<details>
-<summary>Click to expand developer startup guide</summary>
-
-> Full developer documentation at [project-neko.online](https://project-neko.online)
-
-**Requirements**: Python 3.11 (other versions not supported), [uv](https://docs.astral.sh/uv/) package manager, Node.js (>=20.19)
-
-> [!IMPORTANT]
-> ### ⚡⚡ Strongly recommended: clone this repo with a "partial clone"! ⚡⚡
-> **This repository has a large history (`.git` is ~390 MB)** because lots of old binary assets (VRM models, MMD, textures, audio, native libraries, etc.) are baked into history. A plain `git clone` downloads **all those long-dead historical versions** — slow and disk-heavy.
->
-> 👉 **Use the partial-clone command below instead.** It fetches only the files you actually need, so the **initial clone is far smaller and much faster**, with **zero impact** on later development and commits:
->
-> ```bash
-> # ✅ [Recommended] Partial clone: history blobs fetched on demand
-> git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
->
-> # ⚡ [Even faster] If you only need the latest code (no history), add --depth 1
-> git clone --depth 1 --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
-> ```
->
-> ⚠️ A full `git clone` still works, but downloads the entire history — **not recommended** for new contributors.
-
-```bash
-# 1. Clone the project (⚡ strongly prefer the partial-clone command above; drop --filter only if you truly need full history)
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
-
-# 2. Install Python dependencies
 uv sync
+```
 
-# 3. Build frontend projects (requires Node.js >= 20.19; needed on first run or after frontend changes)
-#    Recommended: use the convenience script (this is the officially supported build path)
-#      Windows:
-build_frontend.bat
-#      Linux/macOS:
+Build both frontend projects on the first checkout or after frontend changes:
+
+```bash
+# Linux / macOS
 ./build_frontend.sh
-#    Manual build (must match what the script runs):
-# cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-# cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
-
-# 4. Start services (main_server and memory_server required at minimum)
-uv run python app/memory_server.py
-uv run python -m app.main_server
-# Optional: start Agent service
-uv run python -m app.agent_server
-
-# 5. Visit http://localhost:48911 to configure API Key and start using
 ```
 
-Developers are encouraged to join QQ group 995414391.
-
-</details>
-
-## Advanced Usage
-<details>
-<summary>Click to expand advanced usage</summary>
-
-#### Configuring API Key
-
-Configure third-party AI services for additional features:
-
-- **Core API** (real-time voice conversation): Must support Realtime API. Recommended for overseas users: *Gemini*.
-- **Assist API** (memory/emotion/vision): Supports standard ChatCompletion interface. 14+ providers available.
-
-Visit `http://localhost:48911/api_key` to configure directly through the Web interface.
-
-> Obtaining a *Gemini API Key*: Visit [Google AI Studio](https://aistudio.google.com/app/apikey), sign in with your Google account, and create an API key. Gemini is the recommended Core API provider for overseas users.
-
-#### Modifying Character Persona
-
-- Access `http://localhost:48911/character_card_manager` to enter the character editing page. The default companion preset name is `XiaoTian`; it's recommended to directly modify the name and add or change basic persona items one by one.
-
-- Advanced persona settings include **Live2D/VRM/MMD model settings** and **voice settings**. To change the **Avatar model**, first copy the model directory to the `static` folder. From advanced settings, enter the model management interface to switch models and adjust position/size by dragging and scrolling. To change the **character voice**, prepare a continuous, clean voice recording of about 5 seconds. Enter the voice clone page through advanced settings and upload the recording.
-
-- **Character card export** is supported — export as "definition only" or "full character card" format for sharing and backup.
-
-- Advanced persona also has a `system_prompt` option for complete system instruction customization, but modification is not recommended.
-
-#### Modifying API Provider
-
-- Visit `http://localhost:48911/api_key` to switch core API and assist API service providers.
-
-#### Memory Review
-
-- Visit `http://localhost:48911/memory_browser` to browse and proofread recent memories and summaries, which can alleviate issues like model repetition and cognitive errors.
-
-</details>
-
-## Project Details
-<details>
-<summary>Click to expand project architecture and roadmap</summary>
-
-**Project Architecture**
-
-```
-N.E.K.O/
-├── 📁 .agent/                   # 🤖 AI coding assistant rules & skills (Google Antigravity convention)
-├── 📁 brain/                    # 🧠 Agent modules
-│   ├── computer_use.py          # Computer control
-│   ├── browser_use_adapter.py   # Browser automation
-│   ├── openclaw_adapter.py      # OpenClaw cloud connection
-│   ├── openfang_adapter.py      # OpenFang headless execution backend
-│   ├── task_executor.py         # Task execution engine
-│   └── 📁 cua/                  # Computer Use Agent subsystem
-├── 📁 config/                   # ⚙️ Configuration management module
-│   ├── api_providers.json       # API provider configuration
-│   └── 📁 prompts/              # Character, system, and feature prompts
-│       ├── prompts_chara.py     # Character prompts
-│       └── prompts_sys.py       # System prompts
-├── 📁 main_logic/               # 🔧 Core logic modules
-│   ├── core.py                  # Core dialogue module
-│   ├── cross_server.py          # Cross-server communication
-│   ├── omni_realtime_client.py  # Realtime API client (Realtime API)
-│   ├── omni_offline_client.py   # Text API client (ChatCompletion)
-│   ├── 📁 activity/             # System/user state tracking
-│   ├── 📁 topic/                # Proactive topics
-│   └── 📁 tts_client/           # 🔊 TTS engine adapters (multi-provider symmetry)
-├── 📁 main_routers/             # 🌐 API router modules (26 routes)
-├── 📁 memory/                   # 🧠 Five-dimensional memory system
-│   ├── facts.py                 # Fact memory
-│   ├── reflection.py            # Reflection memory
-│   └── persona.py               # Persona memory
-├── 📁 frontend/                 # 🖥️ Modern frontend projects
-│   ├── react-neko-chat/         # React chat window component
-│   └── plugin-manager/          # Vue plugin manager dashboard
-├── 📁 plugin/                   # 🔌 Plugin system
-│   ├── sdk/                     # Plugin SDK
-│   └── server/                  # Plugin server
-├── 📁 static/                   # 🌐 Frontend static resources (incl. build artifacts)
-├── 📁 templates/                # 📄 Frontend HTML templates (24 pages)
-├── 📁 utils/                    # 🛠️ Utility modules
-├── 📁 app/                      # 🚀 Server entry modules
-│   ├── main_server/            # 🌐 Main server
-│   ├── agent_server.py          # 🤖 AI agent server
-│   ├── memory_server.py         # 🧠 Memory server
-│   └── monitor.py               # 📺 Standalone monitor view
-└── launcher.py                  # 🎬 One-click launch entry (packaging entry)
+```powershell
+# Windows PowerShell
+.\build_frontend.bat
 ```
 
-> **AI-Assisted Development**: The `.agent/` directory follows the Google Antigravity open convention and contains the project's development rules and skill sets. Only Antigravity auto-reads it; all other AI tools (including Claude Code) need to import manually. See the [adaptation guide](https://project-neko.online/contributing/ai-assisted-dev).
+Start the supported service suite:
 
-**Data Flow**
+```bash
+uv run python launcher.py
+```
 
-![Framework](https://raw.githubusercontent.com/Project-N-E-K-O/N.E.K.O/main/assets/framework.drawio.svg)
+Open `http://127.0.0.1:48911`. See [development setup](guide/dev-setup.md) and [quick start](guide/quick-start.md) before splitting services manually.
 
-> Full developer documentation at [project-neko.online](https://project-neko.online)
+## Ports and deployment
 
-> Maintenance notes for the homepage onboarding prompt: [docs/design/tutorial_prompt_maintenance.zh-CN.md](design/tutorial_prompt_maintenance.zh-CN.md)
+| Context | Host port | Meaning |
+| --- | ---: | --- |
+| Source runtime | `48911` | Main Web/API service |
+| Source runtime | `48912` | Memory service |
+| Docker Compose | `48911` | Nginx HTTP entry |
+| Docker Compose | `48912` | Nginx HTTPS entry |
 
-### Roadmap
+These are two different port models. Other internal/default service ports and overrides are documented in [environment variables](config/environment-vars.md).
 
-v0.7: ✅ Initial Agent-related features. **First phase completed. Pending future optimization.**
+The tracked Compose file pulls an image; it has no `build:` section. Use:
 
-v0.8: ✅ Memory features and desktop pet mode improved, with several built-in two-player mini-games. **First phase completed. Pending future optimization.**
+```bash
+docker compose up -d
+```
 
-v0.9: Improve multi-system adaptation, including Linux and mobile. N.E.K.O. Network launch. Expected: early July 2026.
+For local image builds, storage, TLS, and image selection, follow the [Docker guide](deployment/docker.md). For source and desktop artifacts, start from the [deployment overview](deployment/index.md).
 
-v1.0: Drop support for some model providers and focus on in-house large models and agent systems. Expected: late August 2026.
+## Documentation map
 
-### Telemetry
+- [Getting started](guide/index.md)
+- [Architecture](architecture/index.md)
+- [API reference](api/index.md)
+- [Configuration](config/index.md)
+- [Frontend](frontend/index.md)
+- [Plugin development](plugins/index.md)
+- [Deployment](deployment/index.md)
+- [Contributing](contributing/index.md)
 
-N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** so we can track version compatibility, model-usage distribution, and error rates. We believe shipping a product needs data — but we believe even more strongly that nothing should be collected behind your back.
+The API/provider configuration is schema-driven. Use the current settings UI, `config/api_providers.json`, and [field reference](api_providers_fields.md) instead of a copied provider or model list.
 
-**One-line opt-out**: set the environment variable `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is disabled immediately, no rebuild needed. We follow the [Console Do Not Track](https://consoledonottrack.com/) open convention.
+## Privacy and telemetry
 
-**What we do / do not collect**:
+The current opt-out recognized by the runtime is `DO_NOT_TRACK=1` or `NEKO_DO_NOT_TRACK=1`. Consult the repository-root README and `utils/token_tracker/` in the revision you run for the current telemetry disclosure; this short translation does not duplicate volatile payload details.
 
-| ✅ Collected | ❌ Never collected |
-| --- | --- |
-| LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
-| Model name, call type (`conversation` / `memory` / …) | Username, API key, GitHub ID |
-| Call counts, error counts | IP address, geolocation, MAC, hardware serial |
-| App version, A/B branch, locale, timezone, distribution channel (`source` / `release` / `steam`) | File paths, cookies, browser fingerprints |
-| Pseudonymous device identifier — primary: `SHA256(OS_machine_id ‖ namespace)`; fallback: `SHA256(uuid.getnode() ‖ install_path ‖ namespace)`. During the migration window, both new and legacy IDs are sent so the server can fold cohorts | Any PII that could be traced back to a person |
-| **Whenever the Steamworks SDK can initialize at runtime AND you are signed into the Steam client**: Steam64 user ID (the public numeric ID visible in your Steam profile URL) | Any other account-system IDs (GitHub / Google / OpenAI / …) |
+## Contributing and license
 
-> **About the pseudonymous device identifier**: one-way SHA-256, irreversible, contains no user data. The same machine (same OS install) reproduces the same identifier, so under GDPR / PIPL it counts as a *pseudonymous identifier*, not fully anonymous data. Used only for deduplicated DAU counting and version-compatibility attribution.
->
-> **About Steam64**: this is the public numeric ID the Steam client exposes to any third-party SDK once you are signed in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions. **The actual trigger condition follows the code, not the distribution label**: [`app/main_server/__init__.py`](app/main_server/__init__.py) unconditionally calls `initialize_steamworks()` at startup, and `_get_telemetry_steam_user_id()` in [`utils/token_tracker.py`](utils/token_tracker.py) reports any non-zero Steam ID regardless of whether the distribution channel is `source`, `release`, or `steam`. The typical case is a Steam release build, but a source checkout that has the `steamworks` Python package installed, keeps `steam_appid.txt` in place, and runs while signed into Steam will also send Steam64. **If you do not want it sent: (1) the safest path is `DO_NOT_TRACK=1` to disable everything; (2) sign out of Steam; (3) source users can uninstall the `steamworks` package or remove `steam_appid.txt` from the working directory.**
+Read `.agent/rules/neko-guide.md` and the matching `.agent/skills/*/SKILL.md` before editing. All project Python commands use `uv run`, and user-visible i18n changes update all eight runtime locale files.
 
-Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
-
-</details>
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)
+Project N.E.K.O. is licensed under the [Apache License 2.0](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/LICENSE). Use [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues) for reproducible bugs and scoped proposals.

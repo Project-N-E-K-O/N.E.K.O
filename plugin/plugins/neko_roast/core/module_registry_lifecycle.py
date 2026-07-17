@@ -20,12 +20,13 @@ async def setup_all_modules(
             record_failure(ctx, "module_setup_failed", module.id, message)
 
 
-async def teardown_all_modules(modules: dict[str, Any]) -> None:
+async def teardown_all_modules(modules: dict[str, Any], ctx: Any = None) -> None:
     for module in reversed(list(modules.values())):
         try:
             await module.teardown()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            if ctx is not None:
+                record_failure(ctx, "module_teardown_failed", module.id, _error_message(exc))
 
 
 async def toggle_module(

@@ -729,7 +729,9 @@ async def _handle_agent_event(event: dict):
                     if delivery_mode == "passive":
                         # Passive cues keep the direct enqueue-only path:
                         # they must NOT interrupt; the next user turn drains
-                        # them. The pacing manager only governs proactive.
+                        # them. The pacing manager only governs proactive, but
+                        # enqueue_agent_callback still honors coalesce_key so a
+                        # passive stream can dedup queued snapshots by key.
                         mgr.enqueue_agent_callback(callback)
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",

@@ -126,9 +126,7 @@ def test_get_character_data_uses_persona_override_in_runtime_view(monkeypatch):
         # presence proves the persona template was injected at all.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — proves the language branch resolved to "ja" instead of falling back.
-        # "煮干しのご褒美" only appears in classic_genki's ja template (other locales use
-        # "小鱼干"/"fishy reward"/"멸치"/"рыбку").
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -173,8 +171,7 @@ def test_get_character_data_ignores_stale_persona_selection_system_prompt_when_o
         # English IMPORTANT tail (language-agnostic) — proves persona template was injected.
         assert "butler-cat girl" in prompt_map[current_name]
         # JA-only marker — proves the late-binding language branch resolved to "ja".
-        # "かしこまりましたにゃ" (hiragana) only appears in elegant_butler's ja template.
-        assert "かしこまりましたにゃ" in prompt_map[current_name]
+        assert "定型的な敬語" in prompt_map[current_name]
         assert "<NEKO_PERSONA_SELECTION>" not in prompt_map[current_name]
         assert "笨蛋人类" not in prompt_map[current_name]
 
@@ -217,7 +214,7 @@ def test_get_character_data_keeps_custom_system_prompt_when_override_exists(monk
         # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -268,7 +265,7 @@ def test_get_character_data_strips_legacy_persona_block_but_keeps_custom_system_
         # English IMPORTANT tail (language-agnostic) — template was injected.
         assert "sunny cat girl" in prompt_map[current_name]
         # JA-only marker — late-binding resolved to "ja" (see PR #1086 review).
-        assert "煮干しのご褒美" in prompt_map[current_name]
+        assert "決まり文句は台詞集" in prompt_map[current_name]
 
 
 @pytest.mark.unit
@@ -335,13 +332,13 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 _DummyRequest({}, query_params={"language": "ja-JP"}),
             )
             ja_presets_body = _parse_json_response(ja_presets_response)
-            assert "煮干しのご褒美" in ja_presets_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in ja_presets_body["presets"][0]["prompt_guidance"]
 
             ja_header_presets_response = await router_module.list_persona_presets_route(
                 _DummyRequest({}, headers={"Accept-Language": "ja-JP"}),
             )
             ja_header_presets_body = _parse_json_response(ja_header_presets_response)
-            assert "煮干しのご褒美" in ja_header_presets_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in ja_header_presets_body["presets"][0]["prompt_guidance"]
 
             invalid_query_with_header_response = await router_module.list_persona_presets_route(
                 _DummyRequest(
@@ -351,7 +348,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
                 ),
             )
             invalid_query_with_header_body = _parse_json_response(invalid_query_with_header_response)
-            assert "煮干しのご褒美" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
+            assert "決まり文句は台詞集" in invalid_query_with_header_body["presets"][0]["prompt_guidance"]
 
             current_name = config_manager.load_characters()["当前猫娘"]
             save_result = await router_module.update_character_persona_selection(
@@ -368,7 +365,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
             assert override["preset_id"] == "classic_genki"
-            assert "小鱼干奖励喵" in override["prompt_guidance"]
+            assert "固定口头禅不是台词清单" in override["prompt_guidance"]
 
             header_save_result = await router_module.update_character_persona_selection(
                 current_name,
@@ -380,7 +377,7 @@ async def test_character_persona_routes_save_clear_and_track_onboarding_state():
             assert header_save_result["success"] is True
             characters = config_manager.load_characters()
             override = characters["猫娘"][current_name]["_reserved"]["persona_override"]
-            assert "煮干しのご褒美" in override["prompt_guidance"]
+            assert "決まり文句は台詞集" in override["prompt_guidance"]
 
             selection_response = await router_module.get_character_persona_selection(current_name)
             selection_body = _parse_json_response(selection_response)
