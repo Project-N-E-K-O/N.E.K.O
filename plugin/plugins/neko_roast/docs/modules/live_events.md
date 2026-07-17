@@ -8,13 +8,13 @@ It also owns the live-room danmaku context used by prompt builders. While events
 
 ## Owner And Contracts
 
-- Module owner: `plugin.plugins.neko_live.modules.live_events.LiveEventsModule`
+- Module owner: `plugin.plugins.neko_roast.modules.live_events.LiveEventsModule`
 - Private collaborators:
-  - `plugin.plugins.neko_live.modules.live_events.provider_event`
-  - `plugin.plugins.neko_live.modules.live_events.room_topic.RoomTopicContext`
+  - `plugin.plugins.neko_roast.modules.live_events.provider_event`
+  - `plugin.plugins.neko_roast.modules.live_events.room_topic.RoomTopicContext`
 - Input contract: `LiveEvent.raw` is a provider event exposing safe scalar fields such as `event_type` / `type`, `uid`, `nickname`, `text` / `danmaku_text`, `avatar_url`, `room_ref`, `room_id`, `score`, and optional gift summary fields. It may be an object-style event or an already-sanitized dict event; dict events may use common snake_case or camelCase summary keys such as `gift_name` / `giftName`. Explicit `event_type` / `type` aliases must be strings; object-shaped values are ignored instead of stringified. Common event aliases such as `chat` / `danmu` -> `danmaku` and `sc` / `superchat` -> `super_chat` are normalized by the provider helper. Bilibili `LiveDanmaku` is still accepted through `msg_type` compatibility helpers, but callers should not depend on Bilibili-only types.
-- Output contract: selected danmaku calls `ctx.handle_live_payload(payload)`. Low-value danmaku may be intentionally skipped before pipeline, but the room-topic context is still updated first.
-- Support-event boundary: `gift`, `super_chat`, and `guard` bypass this selection hub and are owned by the separate bounded scheduler in `live_support_events`.
+- Output contract: selected danmaku, gift, super_chat, and guard events call `ctx.handle_live_payload(payload)`. Low-value danmaku may be intentionally skipped before pipeline, but the room-topic context is still updated first.
+- Support-event contract: `gift`, `super_chat`, and `guard` are converted to safe payload summaries; downstream routing sends them to `live_support_events` instead of ordinary danmaku / avatar routes.
 - Prompt context contract: `prompt_block_for_event(ViewerEvent) -> str` returns advisory room-topic context for prompt builders.
 - Audit: selected events record `live_event_selected` with the selected candidate and redacted dropped candidate summaries; low-value danmaku skips record `live_event_reply_skipped` with a stable `selection.*` reason and no raw text; flush or signal handling failures record warning audit entries.
 
@@ -35,6 +35,8 @@ live provider
 For normal danmaku, if the safety/local cooldown is clear, the first valid event is dispatched immediately. If cooldown remains, the module opens a short window, keeps the highest-scoring candidate, then dispatches that candidate when the window ends.
 
 During live reply pressure, `live_events` also applies the existing `RoastConfig.queue_limit` before the pipeline. The pressure count is computed from recently pushed live danmaku replies plus the current selection buffer. Once the limit is reached, plain low-priority danmaku is dropped at the selection layer instead of being buffered or forwarded to the host callback queue. Explicit questions, active-engagement answers, guard/high-score events, and support signals remain eligible.
+
+For support-event types, the module forwards only the safe summary payload. The downstream pipeline records normal dry-run / pushed results through `live_support_events`.
 
 For normal danmaku, the same submit path also updates a short rolling context window. The prompt context includes only compact representative examples, theme labels, reply tips, static reply tactics, and transient viewer hints such as "often asks questions" or "likes tech/AI".
 
@@ -74,7 +76,7 @@ Public numeric fields such as `room_id`, `guard_level`, `gift_count`, `gift_valu
 ## Limitations
 
 - Entry events are out of scope for this module.
-- Gift, Super Chat, and guard do not participate in this selection window; `live_support_events` receives and schedules them independently.
+- Gift, Super Chat, and guard candidates still participate in the selection window, but once selected they are routed by the pipeline to `live_support_events` for a short thanks-style reply rather than pretending to be ordinary danmaku.
 - The selection window stores only the current best candidate plus privacy-safe candidate summaries for the current decision chain.
 - The room-topic window keeps a short in-memory danmaku sample for prompt context. It does not create a second output queue and does not write durable viewer preferences itself.
 - Real Douyin WebSocket/protobuf/heartbeat transport is not implemented here. This module only defines how already-sanitized provider events are consumed.
@@ -84,10 +86,10 @@ Public numeric fields such as `room_id`, `guard_level`, `gift_count`, `gift_valu
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests/test_live_events.py plugin/plugins/neko_live/tests/test_douyin_bridge.py -q
+uv run pytest plugin/plugins/neko_roast/tests/test_live_events.py plugin/plugins/neko_roast/tests/test_douyin_bridge.py -q
 ```
 
-The tests cover immediate dispatch, cooldown-window selection, rich danmaku routing, reset/cancel cleanup, failure-state cleanup, room-topic prompt context, low-quality filtering, reply tactics, transient viewer hints, room-topic prompt field redaction, public `uid` / `room_ref` filtering, public avatar URL projection, public numeric projection, public danmaku text redaction and length bounds, event-type alias normalization, object and dict provider-event routing, Douyin provider-event routing without Bilibili-only types, and status-only event boundaries.
+The tests cover immediate dispatch, cooldown-window selection, rich event routing, support-event routing, reset/cancel cleanup, failure-state cleanup, room-topic prompt context, low-quality filtering, reply tactics, transient viewer hints, room-topic prompt field redaction, public `uid` / `room_ref` filtering, public avatar URL projection, public numeric projection, public danmaku text redaction and length bounds, event-type alias normalization, object and dict provider-event routing, Douyin provider-event routing without Bilibili-only types, and status-only event boundaries.
 
 Selection tests also cover `activity_level`-derived reply policy: `standard` / `active` skip only low-value danmaku, while `quiet` skips additional plain low-priority danmaku without blocking question-like input.
 

@@ -24,18 +24,18 @@ uv run python launcher.py
 npm start
 ```
 
-打开 NEKO Live 面板后，如果插件没有自动启动，先启动 `neko_live` 插件。
+打开 NEKO Live 面板后，如果插件没有自动启动，先启动 `neko_roast` 插件。
 
 ## 开播前检查
 
 1. 进入 NEKO Live 控制台。
-2. 登录 B 站账号。无账号连接只用于显式、单次的受限兜底；runtime 会要求本次连接明确确认，并在连接状态中显示 `limited_accountless`，但该路径不作为等价登录的正式验收证据。
-3. 在“确认直播间”弹窗填直播间 ID 或粘贴 `https://live.bilibili.com/<room_id>`。
-4. 点击查询直播间，确认标题和主播是目标房间，再点击确认直播间。
+2. 登录 B 站账号；如果只做弹幕监听，可以先不登录，但头像抓取和直播间查询更容易遇到风控。
+3. 填直播间 ID 或粘贴 `https://live.bilibili.com/<room_id>`。
+4. 点击查询直播间，确认标题和主播是目标房间。
 5. 选择 `猫猫独播`。
-6. 首次验证需要无声验链时，先在“设置 → 帮助与高级”开启开发者模式，再到“开发者工具”使用 `dry_run=true`；普通主播界面不展示该开关。
+6. 首次验证保持 `dry_run=true`。
 7. 清空观众档案，用干净首评窗口测试。
-8. 点击控制台底部的“开始直播”。
+8. 点击开始监听。
 
 顶部 Live Status 应该给出明确结论：
 
@@ -71,9 +71,9 @@ npm start
 
 本 monitor-tooling 切片已在 `tools/monitor_live.ps1` 分发 PowerShell monitor；它是补充证据，不替代 Dashboard、recent results、`live_explain` 和 backend log。试播时保持 NEKO Live 面板打开，每轮场景后刷新一次，并记录：
 
-- 控制台里的连接状态、直播目标、开播结论和本场运行摘要。
-- 观众页里的本场数据、最近互动观众和观众档案。
-- 开发者工具“运行结果”里的 recent results、`live_explain` 时间线、回复形状、`dry_run`、Safety Guard 和 Live Director 状态。
+- 控制台里的连接状态、最近 route / status / reason 和健康行。
+- 观众页里的 recent results、`live_explain` 时间线和回复形状字段。
+- 设置页里的 `dry_run`、Safety Guard 和 Live Director 状态。
 - 真实输出测试对应时段的后端日志；重点核对实际输出长度、watchdog 和其他主动插件输出。
 
 下面的告警名是统一的复盘分类，不是当前可执行脚本的输出。先按对应面板字段和日志证据人工判定；没有异常时不用展开全部 recent result。
@@ -111,9 +111,9 @@ npm start
 
 测试结束后：
 
-1. 在控制台点击“结束直播”并确认。
+1. 在面板停止监听。
 2. 如已关闭 `dry_run`，切回 `dry_run=true`。
-3. 停止 `neko_live` 插件。
+3. 停止 `neko_roast` 插件。
 4. 关闭前端和后端。
 
 提交前不要带入本地运行态文件，例如 `plugin.toml.lock`、临时截图或直播间实测房号。
