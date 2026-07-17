@@ -43,6 +43,7 @@ from .greeting import GreetingMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
 from .asr_runtime import AsrRuntimeMixin
+from .audio_duration_queue import AudioDurationQueue
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
@@ -107,7 +108,10 @@ class LLMSessionManager(
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
-        self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
+        self._audio_stream_queue = AudioDurationQueue(
+            capacity_us=2_000_000,
+            max_frames=256,
+        )
         self._audio_stream_worker_task: Optional[asyncio.Task] = None
         self._audio_stream_dropped_total = 0
         self._audio_stream_epoch = 0

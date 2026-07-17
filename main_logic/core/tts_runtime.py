@@ -47,6 +47,7 @@ from threading import Thread
 from queue import Queue
 from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
 from .notices import enqueue_voice_migration_notice
+from .audio_duration_queue import QueuedMicFrame
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import
@@ -93,35 +94,63 @@ class TtsRuntimeMixin:
         logger.debug("[%s] audio stream worker cancelled reason=%s", self.lanlan_name, reason)
 
     async def _enqueue_audio_stream_data(self, message: dict):
+        self._ensure_asr_runtime_state()
+        lifecycle = self._asr_lifecycle
+        if lifecycle is None:
+            return
+        try:
+            frame = QueuedMicFrame.from_message(
+                message,
+                token=self._capture_ingress_token(lifecycle),
+            )
+        except ValueError:
+            logger.warning("[%s] invalid microphone ingress frame", self.lanlan_name)
+            return
         self._ensure_audio_stream_worker()
-        if self._audio_stream_queue.full():
+        try:
+            self._audio_stream_queue.put_nowait(frame)
+        except asyncio.QueueFull:
+            # Yield once so an already-runnable consumer can make room without
+            # blocking the WebSocket control channel behind microphone frames.
+            await asyncio.sleep(0)
+            if not self._ingress_token_matches(frame.token):
+                return
             try:
-                self._audio_stream_queue.get_nowait()
-                self._audio_stream_queue.task_done()
+                self._audio_stream_queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                self._clear_audio_stream_queue("ingress_backpressure")
                 self._audio_stream_dropped_total += 1
-            except asyncio.QueueEmpty:
-                # Raced with the consumer draining the queue — nothing left to drop.
-                pass
-        await self._audio_stream_queue.put(message)
+                await self._handle_audio_ingress_backpressure(frame.token)
+                return
         qsize = self._audio_stream_queue.qsize()
+        queued_duration_us = self._audio_stream_queue.duration_us
         now = time.time()
-        if qsize >= 250 and now - self._last_audio_stream_backlog_log_time >= 2.0:
+        if (
+            queued_duration_us >= 1_500_000
+            and now - self._last_audio_stream_backlog_log_time >= 2.0
+        ):
             self._last_audio_stream_backlog_log_time = now
             logger.warning(
-                "[%s] audio stream queue backlog qsize=%d max=%d total_dropped=%d",
+                "[%s] audio stream queue backlog qsize=%d duration_ms=%d "
+                "max_duration_ms=%d total_dropped=%d",
                 self.lanlan_name,
                 qsize,
-                self._audio_stream_queue.maxsize,
+                queued_duration_us // 1_000,
+                self._audio_stream_queue.capacity_us // 1_000,
                 self._audio_stream_dropped_total,
             )
 
     async def _audio_stream_worker_loop(self):
         while True:
-            while not self.session_ready and self._starting_session_count > 0:
-                await asyncio.sleep(0.02)
-            message = await self._audio_stream_queue.get()
+            frame = await self._audio_stream_queue.get()
             try:
-                await self._stream_data_now(message)
+                if not self._ingress_token_matches(frame.token):
+                    self._audio_stream_dropped_total += 1
+                    continue
+                await self._process_stream_data_internal(
+                    frame.message,
+                    ingress_token=frame.token,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

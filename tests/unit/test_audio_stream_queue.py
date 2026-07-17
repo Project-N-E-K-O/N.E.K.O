@@ -9,8 +9,16 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager
+from main_logic.core.audio_duration_queue import AudioDurationQueue, QueuedMicFrame
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.asr_client.audio_pipeline import ProcessedVoiceFrame
+from main_logic.asr_client.lifecycle_contracts import (
+    VoiceIngressToken,
+    VoiceLifecycleEvent,
+    VoiceRouteMode,
+)
+from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
+from main_logic.asr_client.provider_policy import resolve_provider_policy
 
 
 async def test_starting_session_audio_does_not_enter_pending_input_data():
@@ -92,21 +100,173 @@ async def test_flush_pending_input_data_routes_audio_through_bounded_queue():
     assert mgr.pending_input_data == []
 
 
-async def test_audio_stream_queue_drops_oldest_when_full():
+def _queue_token() -> VoiceIngressToken:
+    return VoiceIngressToken(1, "socket", 1, 1, 1)
+
+
+def test_audio_stream_queue_uses_ceiling_duration_accounting():
+    frame = QueuedMicFrame.from_message(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 161,
+        },
+        token=_queue_token(),
+        received_at=1.0,
+    )
+
+    assert frame.duration_us == 10_063
+
+
+async def test_audio_stream_queue_clears_whole_candidate_when_full():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.lanlan_name = "Test"
-    mgr._audio_stream_queue = asyncio.Queue(maxsize=2)
+    mgr._init_asr_runtime_state()
+    mgr._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    mgr._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=2,
+    )
     mgr._audio_stream_dropped_total = 0
     mgr._last_audio_stream_backlog_log_time = 0.0
     mgr._ensure_audio_stream_worker = lambda: None
+    mgr._handle_audio_ingress_backpressure = AsyncMock()
 
-    await LLMSessionManager._enqueue_audio_stream_data(mgr, {"seq": 1})
-    await LLMSessionManager._enqueue_audio_stream_data(mgr, {"seq": 2})
-    await LLMSessionManager._enqueue_audio_stream_data(mgr, {"seq": 3})
+    def message(seq: int) -> dict:
+        return {
+            "seq": seq,
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [seq] * 160,
+        }
 
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message(1))
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message(2))
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message(3))
+
+    assert mgr._audio_stream_dropped_total == 3
+    assert mgr._audio_stream_queue.empty()
+    mgr._handle_audio_ingress_backpressure.assert_awaited_once()
+
+
+async def test_active_audio_queue_overflow_blocks_the_whole_turn():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.lanlan_name = "Test"
+    mgr.send_status = AsyncMock()
+    mgr._init_asr_runtime_state()
+    mgr._asr_provider = "qwen"
+    mgr._asr_route_mode = "independent"
+    mgr._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    mgr._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    mgr._asr_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    mgr._asr_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=1,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    mgr._ensure_audio_stream_worker = lambda: None
+    message = {
+        "input_type": "audio",
+        "sample_rate_hz": 16_000,
+        "data": [1] * 160,
+    }
+
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+
+    assert mgr._asr_route_mode == "blocked"
+    assert mgr._asr_lifecycle is None
+    assert mgr._audio_stream_queue.empty()
+    assert any(
+        "ASR_INGRESS_BACKPRESSURE" in call.args[0]
+        for call in mgr.send_status.await_args_list
+    )
+    assert mgr._omni_mic_audio_bytes == 0
+
+
+async def test_audio_worker_drops_stale_ingress_token_before_processing():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._init_asr_runtime_state()
+    mgr._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    mgr._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=4,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._process_stream_data_internal = AsyncMock()
+    frame = QueuedMicFrame.from_message(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        },
+        token=mgr._capture_ingress_token(mgr._asr_lifecycle),
+    )
+    mgr._audio_stream_queue.put_nowait(frame)
+    mgr._asr_audio_generation += 1
+
+    worker = asyncio.create_task(LLMSessionManager._audio_stream_worker_loop(mgr))
+    while not mgr._audio_stream_queue.empty():
+        await asyncio.sleep(0)
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    mgr._process_stream_data_internal.assert_not_awaited()
     assert mgr._audio_stream_dropped_total == 1
-    assert mgr._audio_stream_queue.get_nowait()["seq"] == 2
-    assert mgr._audio_stream_queue.get_nowait()["seq"] == 3
+
+
+async def test_audio_worker_does_not_wait_for_core_session_readiness():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._init_asr_runtime_state()
+    mgr._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    mgr._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=4,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr.session_ready = False
+    mgr._starting_session_count = 1
+    mgr._process_stream_data_internal = AsyncMock()
+    frame = QueuedMicFrame.from_message(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        },
+        token=mgr._capture_ingress_token(mgr._asr_lifecycle),
+    )
+    mgr._audio_stream_queue.put_nowait(frame)
+
+    worker = asyncio.create_task(LLMSessionManager._audio_stream_worker_loop(mgr))
+    while not mgr._audio_stream_queue.empty():
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    worker.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await worker
+
+    mgr._process_stream_data_internal.assert_awaited_once_with(
+        frame.message,
+        ingress_token=frame.token,
+    )
 
 
 async def test_inflight_audio_is_dropped_when_epoch_changes():

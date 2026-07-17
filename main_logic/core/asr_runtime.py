@@ -160,6 +160,51 @@ class AsrRuntimeMixin:
             self._asr_accepted_final_keys.popitem(last=False)
         return True
 
+    async def _handle_audio_ingress_backpressure(
+        self,
+        token: VoiceIngressToken,
+    ) -> None:
+        """Invalidate a whole candidate/turn instead of dropping middle PCM."""
+
+        lifecycle = self._asr_lifecycle
+        if lifecycle is None or not self._ingress_token_matches(token):
+            return
+        state = lifecycle.snapshot.state
+        if state is VoiceLifecycleState.DRAINING:
+            lifecycle.discard_pending_turn()
+            self._asr_pending_speech_confirmed = False
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                self._asr_provider or "unknown",
+            )
+            return
+        if state in {
+            VoiceLifecycleState.LOCAL_LISTEN,
+            VoiceLifecycleState.WARM_IDLE,
+            VoiceLifecycleState.DEEP_SLEEP,
+        }:
+            self._asr_audio_generation += 1
+            lifecycle.invalidate_audio()
+            detector = self._asr_detector
+            if detector is not None:
+                try:
+                    await detector.reset()
+                except Exception:
+                    logger.warning(
+                        "[%s] detector reset failed after ingress backpressure",
+                        self.lanlan_name,
+                    )
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                self._asr_provider or "unknown",
+            )
+            return
+        await self._handle_independent_asr_error(
+            self._asr_session_epoch,
+            self._asr_provider or "unknown",
+            status_code="ASR_INGRESS_BACKPRESSURE",
+        )
+
     async def _start_independent_asr_if_enabled(self, input_mode: str) -> None:
         """Resolve the hard microphone route before opening the input gate."""
 
