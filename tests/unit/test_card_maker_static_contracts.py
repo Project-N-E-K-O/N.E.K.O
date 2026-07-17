@@ -314,15 +314,22 @@ def test_card_maker_registers_variant_stickers():
     template = CARD_MAKER_TEMPLATE.read_text(encoding="utf-8")
 
     for sticker_name in [
-        "chat_sugar1.png",
-        "chat_sugar3.png",
-        "chat_hammer1.png",
-        "chat_hammer2.png",
-        "cat_moneny.png",
-        "cat_claw1.png",
-        "cat_claw2.png",
+        "lollipop-primary-icon.png",
+        "lollipop-tertiary-icon.png",
+        "hammer-primary-icon.png",
+        "hammer-secondary-icon.png",
+        "fist-reward-drop.png",
+        "fist-primary-icon.png",
+        "fist-secondary-icon.png",
     ]:
         assert sticker_name in script
+    assert "/static/assets/avatar-tools/lollipop/primary-icon.png" in script
+    assert "/static/assets/avatar-tools/lollipop/tertiary-icon.png" in script
+    assert "/static/assets/avatar-tools/hammer/primary-icon.png" in script
+    assert "/static/assets/avatar-tools/hammer/secondary-icon.png" in script
+    assert "/static/assets/avatar-tools/fist/reward-drop.png" in script
+    assert "/static/assets/avatar-tools/fist/primary-icon.png" in script
+    assert "/static/assets/avatar-tools/fist/secondary-icon.png" in script
     assert "STICKER_VARIANT_GROUPS" in script
     assert "switchSelectedStickerVariant" in script
     assert 'id="sticker-switch-variant-btn"' in template

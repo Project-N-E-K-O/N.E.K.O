@@ -14,7 +14,7 @@ Serves HTML pages for the Web UI. All pages are rendered with Jinja2 templates.
 | `/character_card_manager` | `character_card_manager.html` | Character settings editor |
 | `/voice_clone` | `voice_clone.html` | Voice cloning interface |
 | `/api_key` | `api_key_settings.html` | API key configuration |
-| `/memory_browser` | `memory_browser.html` | Memory browsing and editing |
+| `/memory_browser` | `memory_browser.html` | Review/edit recent conversation memory and configure memory processing |
 | `/{lanlan_name}` | `index.html` | Character-specific chat (catch-all) |
 
 ::: info

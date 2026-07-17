@@ -1,5 +1,7 @@
 # Hosted Plugin UI with TSX
 
+> This guide is maintained in English and [Simplified Chinese](/zh-CN/plugins/hosted-ui). There is no Japanese mirror yet; Japanese readers should use this page as the current source.
+
 If your plugin needs a visible UI in the Plugin Manager, start here.
 
 Hosted UI is the recommended path for new plugin panels and guide pages. You keep the backend in Python, then describe the frontend as either:

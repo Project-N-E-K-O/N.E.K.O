@@ -4,6 +4,16 @@
 
 Manage MMD (MikuMikuDance) avatar models — PMX/PMD models, VMD animations, and per-model emotion mappings.
 
+These 11 routes back N.E.K.O.'s first-party local model manager. Upload and delete calls write the user MMD directory; built-in project assets are read-only through this API.
+
+| Method | Routes |
+|---|---|
+| `POST` | `/upload`, `/upload_animation`, `/upload_zip`, `/emotion_mapping` |
+| `GET` | `/models`, `/animations`, `/animations/list`, `/config`, `/emotion_mapping` |
+| `DELETE` | `/model`, `/animation` |
+
+Every path in this table is relative to `/api/model/mmd` and has no trailing slash.
+
 ::: info
 MMD expressions are morph-target / blendshape based: an emotion is rendered by driving the model's named morphs. The emotion mapping endpoints below associate emotion labels with a model's morph targets.
 :::
@@ -130,6 +140,10 @@ Create or update the emotion mapping for a model. The mapping is persisted per m
 `model` is required and must not contain path separators; `mapping` must be an object.
 
 **Response:** `{ "success": true, "message": "..." }`
+
+## Error boundary
+
+Application errors use `{ "success": false, "error": "..." }`. Invalid uploads, unsafe paths, unsupported file types, built-in-model deletion, and malformed mapping bodies normally return HTTP `400`; a missing model/animation returns `404`, while storage and unexpected failures return `500`. There is no separate authentication layer on these first-party routes, so do not expose the main-server port to untrusted clients.
 
 ## Delete
 

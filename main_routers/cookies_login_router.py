@@ -96,6 +96,14 @@ class CookieSubmit(BaseModel):
 
 def validate_platform_fields(platform: str, cookies: Dict[str, str]):
     """Unified sanity validation of core fields for each platform."""
+    if platform == "youtube":
+        if not cookies.get("SAPISID"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="格式错误：未检测到必需字段 SAPISID"
+            )
+        return
+
     platform_validations = {
         "netease": ["MUSIC_U"],
         "bilibili": ["SESSDATA"],
@@ -121,7 +129,12 @@ def validate_platform_fields(platform: str, cookies: Dict[str, str]):
 @router.get("/page", response_class=HTMLResponse, summary="凭证管理可视化后台入口")
 async def render_auth_page(request: Request):
     """Credential management page (local access only)."""
-    return templates.TemplateResponse("cookies_login.html", {"request": request})
+    from config import APP_VERSION
+
+    return templates.TemplateResponse("cookies_login.html", {
+        "request": request,
+        "static_asset_version": APP_VERSION,
+    })
 
 # ============ 3. API 核心功能 ============
 

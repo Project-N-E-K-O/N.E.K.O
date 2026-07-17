@@ -36,3 +36,15 @@ test('proactive scheduler re-arms after new-user icebreaker suppression', () => 
     const activeBlock = source.slice(activeStart, activeEnd);
     assert.match(activeBlock, /getNewUserIcebreakerBlockingRetryMs\(\) \|\| getNewUserIcebreakerRetryDelayMs\(\)/);
 });
+
+test('youtube login does not enable the unrelated personal dynamics mode', () => {
+    assert.match(
+        source,
+        /new Set\(\['bilibili', 'douyin', 'kuaishou', 'weibo', 'reddit', 'twitter'\]\)/
+    );
+    const personalPlatformStart = source.indexOf('async function getAvailablePersonalPlatforms()');
+    const personalPlatformEnd = source.indexOf('mod.getAvailablePersonalPlatforms', personalPlatformStart);
+    const personalPlatformBlock = source.slice(personalPlatformStart, personalPlatformEnd);
+    assert.match(personalPlatformBlock, /personalFeedPlatforms\.has\(platform\) && info\.has_cookies/);
+    assert.doesNotMatch(personalPlatformBlock, /personalFeedPlatforms[^;]*youtube/);
+});

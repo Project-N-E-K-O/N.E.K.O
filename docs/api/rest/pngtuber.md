@@ -4,6 +4,8 @@
 
 Manages PNGTuber avatars — 2D image-based avatars whose appearance is driven by swapping image states (idle, talking, reactions). Endpoints cover package upload, listing, and deletion.
 
+These are three first-party local model-management routes: `POST /api/model/pngtuber/upload_model`, `GET /api/model/pngtuber/models`, and `DELETE /api/model/pngtuber/model`. Upload/delete write the user model directory, use `{ "success": false, "error": "..." }` on failure, and have no separate authentication layer. Paths have no trailing slash.
+
 ## Model package
 
 A PNGTuber model is a folder (uploaded as a multi-file package) containing a `model.json` with `model_type` set to `"pngtuber"`. The `pngtuber` config block maps avatar states to image files. An `idle_image` is required; all other states are optional.
@@ -144,3 +146,5 @@ The target is resolved by **folder slug**: the handler reads `folder`, falling b
 Prefer deleting by the `folder` slug returned from `GET /models`, or by the model.json `url`. Avoid relying on `name`: `GET /models` returns `name` as the display name and `folder` as the on-disk slug, and the two can differ — passing the display `name` only works when it happens to equal the folder slug, so use it as a last-resort fallback that may be ambiguous. The resolved path must stay inside the PNGTuber directory.
 
 **Response:** `{ "success": true, "message": "..." }`. Missing identifier or out-of-bounds path returns `400`; a non-existent model returns `404`.
+
+Unexpected import, listing, or filesystem failures return HTTP `500`. Treat this as a first-party file-management API and do not expose it to untrusted clients.

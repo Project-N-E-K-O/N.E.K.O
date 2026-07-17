@@ -1,30 +1,19 @@
 # 設定の概要
 
-N.E.K.O. は複数のソースによるレイヤード設定システムを採用しています。設定値は優先度の高い順に解決されます。
+N.E.K.O. には別々の設定面があり、共通の万能な優先順位はありません。
 
-## 優先順位チェーン
+| 設定面 | 推奨操作 | 情報源 |
+| --- | --- | --- |
+| User settings、characters、API Key | Web UI | 選択された data root の JSON |
+| Provider 定義と model-role defaults | repository data | `config/api_providers.json` と code fallback |
+| Ports と一部 runtime switches | environment / desktop settings | `config/network.py`、`config/memory_settings.py`、`port_config.json` |
 
-1. **環境変数**（最高優先） — `NEKO_*` プレフィックス
-2. **ユーザー設定ファイル** — `core_config.json`、`user_preferences.json`
-3. **API プロバイダー設定** — `api_providers.json`
-4. **コードのデフォルト値**（最低優先） — `config/__init__.py`
+通常は N.E.K.O. を起動して Web UI から設定します。個人の API Key のために同梱ファイルを変更しないでください。
 
-## クイックリファレンス
+- [設定ファイル](./config-files)
+- [API Provider](./api-providers)
+- [モデル設定](./model-config)
+- [環境変数](./environment-vars)
+- [設定優先順位](./config-priority)
 
-| 設定項目 | 設定場所 |
-|----------|----------|
-| API キーとプロバイダー | [環境変数](./environment-vars) または Web UI（`/api_key`） |
-| 設定ファイルの場所 | [設定ファイル](./config-files) |
-| 利用可能な AI プロバイダー | [API プロバイダー](./api-providers) |
-| タスクごとのモデル選択 | [モデル設定](./model-config) |
-| オーバーライドの仕組み | [設定の優先順位](./config-priority) |
-
-## Web UI による設定
-
-N.E.K.O. を設定する最も簡単な方法は Web UI を使用することです：
-
-- **API キー：** `http://localhost:48911/api_key`
-- **キャラクター設定：** `http://localhost:48911/character_card_manager`
-- **モデル管理：** `http://localhost:48911/model_manager`
-
-Web UI で行った変更は、適切な設定ファイルに自動的に保存されます。
+API Key を Git、screenshot、Issue、log に含めないでください。
