@@ -57,6 +57,8 @@ class PluginCliInstallRequest(BaseModel):
     plugins_root: str | None = None
     profiles_root: str | None = None
     on_conflict: str = Field(default="fail", pattern="^fail$")
+    confirm_upgrade: bool = False
+    confirmation_token: str | None = None
 
 
 class PluginCliInstallPlanRequest(BaseModel):
@@ -196,6 +198,9 @@ class PluginCliInstallResponse(BaseModel):
     payload_hash_verified: bool | None = None
     conflict_strategy: str
     installed_plugin_count: int
+    operation: str = "install"
+    restarted: bool = False
+    rollback_status: str = "not_needed"
 
 
 class PluginCliSharedDependencyResponse(BaseModel):
@@ -309,6 +314,8 @@ async def plugin_cli_install(
             plugins_root=payload.plugins_root,
             profiles_root=payload.profiles_root,
             on_conflict=payload.on_conflict,
+            confirm_upgrade=payload.confirm_upgrade,
+            confirmation_token=payload.confirmation_token,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

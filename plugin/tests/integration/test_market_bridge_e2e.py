@@ -1595,12 +1595,13 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
     async def fake_stop(target: str) -> None:
         calls.append(("stop", target))
 
-    async def fake_start(target: str) -> None:
+    async def fake_start(target: str, *, strict: bool) -> bool:
         calls.append(("start", target))
+        return strict
 
-    monkeypatch.setattr(market_bridge_module, "_safely_is_running", fake_is_running)
-    monkeypatch.setattr(market_bridge_module, "_safely_stop", fake_stop)
-    monkeypatch.setattr(market_bridge_module, "_safely_start", fake_start)
+    monkeypatch.setattr(market_bridge_module, "plugin_is_running", fake_is_running)
+    monkeypatch.setattr(market_bridge_module, "stop_plugin_for_upgrade", fake_stop)
+    monkeypatch.setattr(market_bridge_module, "start_plugin_after_upgrade", fake_start)
 
     with _serve_bytes(
         filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
