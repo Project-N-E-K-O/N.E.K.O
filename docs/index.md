@@ -1,5 +1,8 @@
 ---
 layout: home
+title: Project N.E.K.O. Developer Documentation
+titleTemplate: false
+description: Build, deploy, configure and extend Project N.E.K.O., an open-source AI companion with realtime voice, persistent memory, embodied avatars, agents, APIs and plugins.
 
 hero:
   name: Project N.E.K.O.

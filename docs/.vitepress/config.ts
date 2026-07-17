@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isNoindexRoute } from './indexing-policy.mjs'
+import { buildSeoHead, buildSeoPageData } from './seo'
 
 const SITE_ORIGIN = 'https://project-neko.online'
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -52,6 +53,7 @@ function collectPageRoutes(directory = DOCS_ROOT): string[] {
 }
 
 const availablePageRoutes = collectPageRoutes()
+const availablePageRouteSet = new Set(availablePageRoutes)
 
 /* ------------------------------------------------------------------ */
 /*  Shared sidebar definitions (reused across locales)                */
@@ -575,6 +577,12 @@ export default defineConfig({
   sitemap: {
     hostname: SITE_ORIGIN,
     transformItems: filterSitemapItems,
+  },
+  transformPageData(pageData) {
+    return buildSeoPageData(pageData, DOCS_ROOT)
+  },
+  transformHead(context) {
+    return buildSeoHead(context, availablePageRouteSet)
   },
 
   // Keep this list in sync with SRC_EXCLUDE in

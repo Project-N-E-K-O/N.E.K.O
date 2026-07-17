@@ -1,5 +1,8 @@
 ---
 layout: home
+title: Project N.E.K.O. 开发者文档
+titleTemplate: false
+description: Project N.E.K.O. 开源 AI 伙伴的开发者文档，涵盖安装部署、模型配置、长期记忆、具身 Avatar、智能体、API 与插件开发。
 
 hero:
   name: Project N.E.K.O.

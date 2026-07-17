@@ -1,5 +1,8 @@
 ---
 layout: home
+title: Project N.E.K.O. 開発者ドキュメント
+titleTemplate: false
+description: オープンソース AI コンパニオン Project N.E.K.O. の開発者ドキュメント。導入、デプロイ、モデル設定、永続メモリ、アバター、エージェント、API、プラグイン開発を解説します。
 
 hero:
   name: Project N.E.K.O.
