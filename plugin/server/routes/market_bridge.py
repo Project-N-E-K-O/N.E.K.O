@@ -1855,6 +1855,10 @@ async def _do_upgrade(
         finally:
             _cleanup_download_file(package_path)
 
+        # ``upload_and_install`` has persisted the replacement Market entry.
+        # Rollback steps run in reverse order, so placing this first restores
+        # metadata only after the old plugin/profile directories are back.
+        rollback_steps.insert(0, _make_restore_install_source_step(mgr, entry))
         rollback_steps.append(_make_remove_dir_step(plugin_dir))
         rollback_steps.append(_make_remove_dir_step(profile_dir))
 
@@ -2062,6 +2066,18 @@ def _make_remove_dir_step(target_dir: Path) -> Callable[[], Awaitable[None]]:
 
     async def _step() -> None:
         await remove_directory(target_dir)
+
+    return _step
+
+
+def _make_restore_install_source_step(
+    manager: InstallSourceManager,
+    entry: LockEntry,
+) -> Callable[[], Awaitable[None]]:
+    """Build a rollback step that restores the exact pre-upgrade lock row."""
+
+    async def _step() -> None:
+        await asyncio.to_thread(manager.restore_entry_for_rollback, entry)
 
     return _step
 

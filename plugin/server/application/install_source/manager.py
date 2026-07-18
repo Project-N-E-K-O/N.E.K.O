@@ -1865,6 +1865,33 @@ class InstallSourceManager:
             package_id=package_id,
         )
 
+    def restore_entry_for_rollback(self, entry: LockEntry) -> None:
+        """Restore one exact pre-upgrade entry without clobbering other rows.
+
+        Market upgrade writes the replacement entry before lifecycle restart.
+        If that restart fails, filesystem rollback must restore this lock row
+        as part of the same transaction. Replacing only the matching primary
+        key preserves unrelated install-source updates.
+        """
+
+        with self._lock:
+            old_lock = self._current
+            now = self._now_iso()
+            try:
+                self._current = self._replace_entry(old_lock, entry, updated_at=now)
+                self.save()
+            except Exception as exc:
+                self._current = old_lock
+                raise InstallSourceError(
+                    "lock_write_failed",
+                    f"failed to restore install-source entry for {entry.plugin_id}: {exc}",
+                    details={
+                        "plugin_id": entry.plugin_id,
+                        "root_id": entry.root_id,
+                        "directory_name": entry.directory_name,
+                    },
+                ) from exc
+
     def package_id_for_directory(self, directory_path: Path) -> str:
         """Return the recorded profile key for an installed plugin directory."""
 

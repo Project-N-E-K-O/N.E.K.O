@@ -339,6 +339,78 @@ async def test_market_upgrade_blocks_package_id_change_and_preserves_old_profile
 
 
 @pytest.mark.asyncio
+async def test_market_restart_failure_restores_previous_install_source_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    old_entry = _entry("demo", "demo")
+
+    class FakeManager:
+        def __init__(self) -> None:
+            self.current = old_entry
+            self.restore_calls: list[SimpleNamespace] = []
+
+        def find_active_market_entry(self, _plugin_id: str) -> SimpleNamespace:
+            return self.current
+
+        def restore_entry_for_rollback(self, entry: SimpleNamespace) -> None:
+            self.restore_calls.append(entry)
+            self.current = entry
+
+    manager = FakeManager()
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(market_bridge, "get_install_source_manager", lambda: manager)
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_true())
+    monkeypatch.setattr(
+        market_bridge,
+        "stop_plugin_for_upgrade",
+        lambda _plugin_id: _async_none(),
+    )
+    monkeypatch.setattr(
+        market_bridge,
+        "_download_package",
+        lambda _url, _task: _async_value(package_path),
+    )
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+
+    async def install_new(**_kwargs: Any) -> dict[str, object]:
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.toml").write_text("version = '2.0.0'\n", encoding="utf-8")
+        manager.current = _entry("demo", "demo")
+        manager.current.source_detail = SimpleNamespace(version="2.0.0")
+        return {"operation": "upgrade"}
+
+    async def fail_new_start(_plugin_id: str, *, strict: bool) -> bool:
+        if strict:
+            raise RuntimeError("replacement start failed")
+        return True
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=install_new),
+    )
+    monkeypatch.setattr(market_bridge, "start_plugin_after_upgrade", fail_new_start)
+
+    with pytest.raises(market_bridge._TaskError) as exc_info:
+        await market_bridge._do_upgrade({}, _payload(), {})
+
+    assert exc_info.value.code == "upgrade_rollback_completed"
+    assert manager.restore_calls == [old_entry]
+    assert manager.current is old_entry
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
+
+
+@pytest.mark.asyncio
 async def test_market_rollback_marks_restart_failure_as_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
