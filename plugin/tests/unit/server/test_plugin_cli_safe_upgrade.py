@@ -159,11 +159,47 @@ async def test_rollback_keeps_targets_that_were_not_backed_up(tmp_path: Path) ->
     restored = await upgrade_support._rollback_targets(
         targets=(target, profile),
         backups={target: backup},
+        preexisting_targets=frozenset({target, profile}),
+        remove_created_targets=False,
     )
 
     assert restored is True
     assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
     assert (profile / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
+
+
+@pytest.mark.asyncio
+async def test_safe_upgrade_removes_profile_created_by_failed_install(tmp_path: Path) -> None:
+    target = tmp_path / "demo"
+    target.mkdir()
+    (target / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    profile = tmp_path / "profiles" / "demo"
+
+    async def install_new() -> dict[str, object]:
+        target.mkdir()
+        (target / "plugin.toml").write_text("version = 2\n", encoding="utf-8")
+        profile.mkdir(parents=True)
+        (profile / "default.toml").write_text("new_value = true\n", encoding="utf-8")
+        return {"ok": True}
+
+    async def validate_new() -> None:
+        raise RuntimeError("validation failed")
+
+    with pytest.raises(SafeUpgradeError, match="validate"):
+        await perform_safe_upgrade(
+            plan=_upgrade_plan(),
+            target_dir=target,
+            install_new=install_new,
+            validate_new=validate_new,
+            is_running=lambda _plugin_id: _async_true(),
+            stop=lambda _plugin_id: _async_none(),
+            start=lambda _plugin_id: _async_none(),
+            cleanup_backup=lambda _path: _async_none(),
+            additional_targets=(profile,),
+        )
+
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
+    assert not profile.exists()
 
 
 async def _async_none() -> None:

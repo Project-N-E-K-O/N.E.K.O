@@ -140,11 +140,23 @@ async def _rollback_targets(
     *,
     targets: tuple[Path, ...],
     backups: dict[Path, Path],
+    preexisting_targets: frozenset[Path],
+    remove_created_targets: bool,
 ) -> bool:
     restored = True
     for target in reversed(targets):
         backup = backups.get(target)
         if backup is None:
+            if remove_created_targets and target not in preexisting_targets:
+                try:
+                    await remove_directory(target)
+                except Exception as exc:
+                    restored = False
+                    logger.error(
+                        "plugin upgrade created-target cleanup failed target={} err_type={}",
+                        target.name,
+                        type(exc).__name__,
+                    )
             continue
         try:
             await remove_directory(target)
@@ -187,6 +199,7 @@ async def perform_safe_upgrade(
     targets = (target_dir, *additional_targets)
     if any(target not in targets for target in preserve_targets):
         raise ValueError("preserve targets must also be upgrade targets")
+    preexisting_targets = frozenset(target for target in targets if target.exists())
     backups: dict[Path, Path] = {}
     backup_dir = backup_path_for(target_dir)
     try:
@@ -200,7 +213,12 @@ async def perform_safe_upgrade(
             await asyncio.to_thread(target.rename, backup)
             backups[target] = backup
     except Exception as exc:
-        recovered = await _rollback_targets(targets=targets, backups=backups)
+        recovered = await _rollback_targets(
+            targets=targets,
+            backups=backups,
+            preexisting_targets=preexisting_targets,
+            remove_created_targets=False,
+        )
         if was_running:
             try:
                 await start(plugin_id)
@@ -247,7 +265,12 @@ async def perform_safe_upgrade(
             backup_dir=backup_dir,
         )
     except Exception as exc:
-        restored = await _rollback_targets(targets=targets, backups=backups)
+        restored = await _rollback_targets(
+            targets=targets,
+            backups=backups,
+            preexisting_targets=preexisting_targets,
+            remove_created_targets=True,
+        )
         if was_running:
             try:
                 await start(plugin_id)
