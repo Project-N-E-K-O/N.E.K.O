@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -391,3 +392,45 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
     assert 'version = "2.0.0"' in (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
     assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "old_profile = true\n"
     assert (profile_dir / "custom.toml").read_text(encoding="utf-8") == "custom = true\n"
+
+
+@pytest.mark.asyncio
+async def test_service_blocks_package_id_change_before_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    _rewrite_package_manifest_id(package_path, "new-package")
+
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+    old_profile = profiles_root / "old-package"
+    old_profile.mkdir(parents=True)
+    (old_profile / "default.toml").write_text("user_value = true\n", encoding="utf-8")
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "old-package"),
+    )
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "package_id_change"
+    assert plan["package_id"] == "new-package"
+    assert plan["installed_package_id"] == "old-package"
+    assert (old_profile / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"

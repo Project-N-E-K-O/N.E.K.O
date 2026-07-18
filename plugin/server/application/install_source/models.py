@@ -90,6 +90,9 @@ class LockEntry:
     removed: bool = False
     removed_at: str | None = None
     source_detail: SourceDetail = None
+    # Package-profile directory key. Empty on legacy rows that predate
+    # package identity tracking; callers may then fall back to plugin_id.
+    package_id: str = ""
 
     @property
     def primary_key(self) -> tuple[str, str]:

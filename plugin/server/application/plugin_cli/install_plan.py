@@ -26,6 +26,7 @@ class PluginInstallPlan:
     confirmation_token: str
     reason: str
     legacy_plugin_ids: tuple[str, ...]
+    installed_package_id: str = ""
 
 
 def confirmation_token(*, package_path: Path, target_dir: Path) -> str:

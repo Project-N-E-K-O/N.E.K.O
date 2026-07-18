@@ -26,11 +26,12 @@ def _payload(plugin_id: str = "demo") -> SimpleNamespace:
     )
 
 
-def _entry(plugin_id: str = "demo") -> SimpleNamespace:
+def _entry(plugin_id: str = "demo", package_id: str = "") -> SimpleNamespace:
     return SimpleNamespace(
         plugin_id=plugin_id,
         directory_name=plugin_id,
         source_detail=None,
+        package_id=package_id,
     )
 
 
@@ -214,6 +215,61 @@ async def test_market_upgrade_uses_package_id_for_profile_backup(
 
     assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
     assert (profile_dir / "new.toml").read_text(encoding="utf-8") == "new = true\n"
+
+
+@pytest.mark.asyncio
+async def test_market_upgrade_blocks_package_id_change_and_preserves_old_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    plugin_dir = plugins_root / "demo"
+    old_profile = profiles_root / "old-package"
+    plugin_dir.mkdir(parents=True)
+    old_profile.mkdir(parents=True)
+    (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    (old_profile / "default.toml").write_text("user_value = true\n", encoding="utf-8")
+    package_path = tmp_path / "demo.neko-plugin"
+    package_path.write_bytes(b"package")
+
+    _configure_paths(monkeypatch, plugins_root=plugins_root, profiles_root=profiles_root)
+    monkeypatch.setattr(
+        market_bridge,
+        "get_install_source_manager",
+        lambda: SimpleNamespace(
+            find_active_market_entry=lambda _plugin_id: _entry("demo", "old-package")
+        ),
+    )
+    monkeypatch.setattr(market_bridge, "plugin_is_running", lambda _plugin_id: _async_false())
+    monkeypatch.setattr(market_bridge, "_download_package", lambda _url, _task: _async_value(package_path))
+    monkeypatch.setattr(market_bridge, "_verify_sha256_file", lambda *args, **kwargs: "passed")
+    monkeypatch.setattr(market_bridge, "_cleanup_download_file", lambda _path: None)
+    monkeypatch.setattr(
+        market_bridge,
+        "inspect_package",
+        lambda _path: SimpleNamespace(package_id="new-package"),
+    )
+
+    install_called = False
+
+    async def unexpected_install(**_kwargs: Any) -> dict[str, object]:
+        nonlocal install_called
+        install_called = True
+        return {}
+
+    monkeypatch.setattr(
+        market_bridge,
+        "_cli_service",
+        SimpleNamespace(upload_and_install=unexpected_install),
+    )
+
+    with pytest.raises(market_bridge._TaskError, match="package id changes are not supported"):
+        await market_bridge._do_upgrade({}, _payload(), {})
+
+    assert install_called is False
+    assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
+    assert (old_profile / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
 
 
 @pytest.mark.asyncio

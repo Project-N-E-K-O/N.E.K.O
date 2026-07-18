@@ -1798,6 +1798,18 @@ async def _do_upgrade(
                     code="install_failed",
                     message=f"invalid package id: {package_id!r}",
                 )
+            incoming_profile_dir = path_policy.package_profiles_root / package_id
+            installed_package_id = getattr(entry, "package_id", "") or (
+                package_id if incoming_profile_dir.exists() else installed_plugin_id
+            )
+            if package_id != installed_package_id:
+                raise _TaskError(
+                    code="package_id_change",
+                    message=(
+                        "plugin identity mismatch: package id changes are not supported during upgrade: "
+                        f"installed={installed_package_id!r} incoming={package_id!r}"
+                    ),
+                )
             profile_dir = (path_policy.package_profiles_root / package_id).resolve()
             profile_backup_dir = backup_path_for(profile_dir)
             if profile_dir.exists():

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import shutil
 import tomllib
@@ -27,7 +27,7 @@ from plugin.server.application.install_source import (
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
-from plugin.server.application.plugin_cli.install_plan import build_install_plan
+from plugin.server.application.plugin_cli.install_plan import PluginInstallPlan, build_install_plan
 from plugin.server.application.plugins import upgrade_support
 from plugin.server.application.plugin_cli.source_resolver import (
     PluginSourceResolver,
@@ -206,14 +206,21 @@ class PluginCliService:
             if profiles_root
             else policy.package_profiles_root
         )
-        package_id = _require_safe_directory_name(
+        _require_safe_directory_name(
             str(plan_dict["package_id"]),
             field="package_id",
         )
-        profile_dir = profiles_root_path / package_id
-        plan = build_install_plan(
-            package_path=self._resolve_package_path(package),
-            plugins_root=target_root,
+        installed_package_id = _require_safe_directory_name(
+            str(plan_dict["installed_package_id"] or plan_dict["package_id"]),
+            field="installed_package_id",
+        )
+        profile_dir = profiles_root_path / installed_package_id
+        plan = self._apply_installed_package_identity(
+            build_install_plan(
+                package_path=self._resolve_package_path(package),
+                plugins_root=target_root,
+            ),
+            target_root=target_root,
         )
 
         async def install_new() -> dict[str, object]:
@@ -469,6 +476,7 @@ class PluginCliService:
                     target_dir=target_dir,
                     saved_filename=str(saved["name"]),
                     actual_sha256=actual_sha256,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
                 return self._compose_install_result(
                     saved=saved,
@@ -547,6 +555,7 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
@@ -554,6 +563,7 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
             warnings.extend(ism_warnings)
 
@@ -711,6 +721,7 @@ class PluginCliService:
         target_dir: Path,
         saved_filename: str,
         actual_sha256: str,
+        package_id: str,
     ) -> dict[str, Any]:
         """Fall back to recording the install as ``channel="imported"``.
 
@@ -726,6 +737,7 @@ class PluginCliService:
                 directory_path=target_dir,
                 package_filename=saved_filename,
                 package_sha256=actual_sha256,
+                package_id=package_id,
             )
 
         await asyncio.to_thread(_record)
@@ -1008,13 +1020,48 @@ class PluginCliService:
                 if plugins_root
                 else policy.user_plugins_root
             )
-            plan = build_install_plan(
-                package_path=self._resolve_package_path(package),
-                plugins_root=target_root,
+            plan = self._apply_installed_package_identity(
+                build_install_plan(
+                    package_path=self._resolve_package_path(package),
+                    plugins_root=target_root,
+                ),
+                target_root=target_root,
             )
             return asdict(plan)
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="install-plan") from exc
+
+    def _apply_installed_package_identity(
+        self,
+        plan: PluginInstallPlan,
+        *,
+        target_root: Path,
+    ) -> PluginInstallPlan:
+        if plan.action != "upgrade":
+            return plan
+
+        target_dir = target_root / plan.directory_name
+        manager = get_install_source_manager()
+        installed_package_id = (
+            manager.package_id_for_directory(target_dir) if manager is not None else ""
+        )
+        if not installed_package_id:
+            # Legacy rows predate package identity tracking. If the incoming
+            # profile key already exists, it is the strongest available proof
+            # that the identity is unchanged. Otherwise official historical
+            # single-plugin packages used plugin_id as package_id, so fail
+            # closed against that conservative baseline.
+            incoming_profile = self._path_policy().package_profiles_root / plan.package_id
+            installed_package_id = plan.package_id if incoming_profile.exists() else plan.plugin_id
+        if installed_package_id != plan.package_id:
+            return replace(
+                plan,
+                action="blocked",
+                confirmation_token="",
+                reason="package_id_change",
+                installed_package_id=installed_package_id,
+            )
+        return replace(plan, installed_package_id=installed_package_id)
 
     def _install_sync(
         self,
@@ -1485,6 +1532,7 @@ def _record_install_source_for_install_result(
     from plugin.server.application.install_source import InstallSourceError
 
     installed_plugins = install_result.get("installed_plugins", [])
+    package_id = str(install_result.get("package_id") or "")
     for installed in installed_plugins:
         target_dir = Path(installed["target_dir"])
         if override is None:
@@ -1492,6 +1540,7 @@ def _record_install_source_for_install_result(
                 directory_path=target_dir,
                 package_filename=package_filename,
                 package_sha256=package_sha256,
+                package_id=package_id,
             )
         elif override.get("channel") == "market":
             detail = override.get("market_detail", {})
@@ -1500,6 +1549,7 @@ def _record_install_source_for_install_result(
                 plugin_market_id=detail.get("plugin_market_id", ""),
                 version=detail.get("version", ""),
                 package_url=detail.get("package_url", ""),
+                package_id=package_id,
             )
         else:
             raise InstallSourceError(
