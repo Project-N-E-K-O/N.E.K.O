@@ -267,11 +267,12 @@ async def translate_japanese_to_chinese(text):
     pass
 
 async def _receive_ws_frame(websocket: WebSocket) -> dict:
-    """接收一帧原始 ws 消息，断连帧转 WebSocketDisconnect（对齐 receive_text 语义）。
+    """Receive one raw ws message; convert disconnect frames to WebSocketDisconnect.
 
-    starlette 0.46 的 receive_text()/receive_bytes() 收到类型不符的帧会抛
-    KeyError（且该帧已被消费），沿用它们会让一个意外的二进制/文本帧直接
-    杀掉整条连接。用原始 receive() + 显式取键让调用方自行容忍帧类型。
+    starlette 0.46's receive_text()/receive_bytes() raise KeyError on a frame of
+    the mismatched type (and the frame is already consumed), so a single
+    unexpected binary/text frame would kill the whole connection. Using raw
+    receive() with explicit key lookups lets each caller tolerate any frame type.
     """
     message = await websocket.receive()
     if message.get("type") == "websocket.disconnect":

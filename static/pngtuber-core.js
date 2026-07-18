@@ -1311,6 +1311,8 @@
         // rAF 请求把 Blink 主帧调度顶到显示器刷新率——live2d round-2 同款策略）。
         _layeredAnimationNeedsFullRate(timestamp) {
             try {
+                // 页面级豁免（demo/模型管理器等）：与 VRM/MMD governor 的豁免对齐
+                if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return true;
                 if (this._dragState || this._touchZoomState) return true;
                 if (this.isSpeaking || this.lipSyncFrame || this.talkingHopFrame || this.speakingBounceFrame) return true;
                 if ((this.state || 'idle') !== 'idle') return true;
@@ -1416,6 +1418,8 @@
             // 视觉与满帧 rAF 无差，且不会让 Blink 以显示器刷新率空跑主帧。
             // 拖拽/说话等高频视觉各自的路径会直接调 applyTransform，不依赖本循环。
             const breathingIntervalMs = Math.round(1000 / PNGTUBER_BREATHING_IDLE_FPS);
+            // 页面级豁免（demo/模型管理器等）：保持原 rAF 满帧驱动
+            const breathingUsesTimer = window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ !== true;
             const tick = (timestamp) => {
                 if (!this.layeredBreathingEnabled() || !this.container || this.container.style.display === 'none') {
                     this.stopLayeredBreathingLoop();
@@ -1427,10 +1431,19 @@
                     this.applyAnimationTransform(timestamp);
                     this.updateOverlayPositionsForAnimation(timestamp);
                 }
-                this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+                if (breathingUsesTimer) {
+                    this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+                } else {
+                    this.layeredBreathingFrame = requestAnimationFrame(tick);
+                }
             };
-            this._layeredBreathingDriveMode = 'timer';
-            this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+            if (breathingUsesTimer) {
+                this._layeredBreathingDriveMode = 'timer';
+                this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+            } else {
+                this._layeredBreathingDriveMode = 'raf';
+                this.layeredBreathingFrame = requestAnimationFrame(tick);
+            }
         }
 
         stopLayeredBreathingLoop() {

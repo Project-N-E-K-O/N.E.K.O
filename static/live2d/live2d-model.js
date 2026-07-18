@@ -2583,7 +2583,7 @@ Live2DManager.prototype.installMouthOverride = function() {
 
                     // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
                     if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                        for (const [id, idx] of mouthParamEntries) {
+                        for (const [, idx] of mouthParamEntries) {
                             try {
                                 coreModel.setParameterValueByIndex(idx, this.mouthValue);
                             } catch (_) {}
@@ -2683,7 +2683,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 这是渲染前的最后一步，强制命令，绝对优先级
             // 口型参数：lipsync 在响（mouthValue > 0）时强制覆盖 motion；静默时让位给 motion 自带的嘴部动画
             if (!this._isMouthDrivenByMotion || this.mouthValue > LIPSYNC_OVERRIDE_THRESHOLD) {
-                for (const [id, idx] of mouthParamEntries) {
+                for (const [, idx] of mouthParamEntries) {
                     try {
                         currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
                     } catch (_) {}
