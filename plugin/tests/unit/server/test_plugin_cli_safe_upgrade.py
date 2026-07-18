@@ -237,6 +237,60 @@ async def test_service_rejects_changed_target_before_stopping(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [("directory_name", "../outside"), ("package_id", "../outside")],
+)
+async def test_service_rejects_unsafe_upgrade_plan_paths_before_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    unsafe_value: str,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    plan[field] = unsafe_value
+
+    async def unsafe_plan_install(**_kwargs: object) -> dict[str, object]:
+        return plan
+
+    backup_attempted = False
+
+    async def unexpected_upgrade(**_kwargs: object) -> object:
+        nonlocal backup_attempted
+        backup_attempted = True
+        return object()
+
+    monkeypatch.setattr(service, "plan_install", unsafe_plan_install)
+    monkeypatch.setattr(upgrade_support, "perform_safe_upgrade", unexpected_upgrade)
+
+    with pytest.raises(ValueError, match=field):
+        await service.install(
+            package=str(package_path),
+            confirm_upgrade=True,
+            confirmation_token=str(plan["confirmation_token"]),
+        )
+
+    assert backup_attempted is False
+
+
+@pytest.mark.asyncio
 async def test_service_backs_up_profile_by_package_id_during_upgrade(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

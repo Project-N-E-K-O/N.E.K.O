@@ -192,7 +192,11 @@ class PluginCliService:
             if plugins_root
             else policy.user_plugins_root
         )
-        target_dir = target_root / str(plan_dict["directory_name"])
+        directory_name = _require_safe_directory_name(
+            str(plan_dict["directory_name"]),
+            field="directory_name",
+        )
+        target_dir = target_root / directory_name
         profiles_root_path = (
             _require_within(
                 Path(profiles_root).expanduser().resolve(),
@@ -202,7 +206,11 @@ class PluginCliService:
             if profiles_root
             else policy.package_profiles_root
         )
-        profile_dir = profiles_root_path / str(plan_dict["package_id"])
+        package_id = _require_safe_directory_name(
+            str(plan_dict["package_id"]),
+            field="package_id",
+        )
+        profile_dir = profiles_root_path / package_id
         plan = build_install_plan(
             package_path=self._resolve_package_path(package),
             plugins_root=target_root,
