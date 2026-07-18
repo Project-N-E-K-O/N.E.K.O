@@ -3,22 +3,50 @@
 This backend supersedes the implementation approach in PR #2187. It is built
 from the current package-based `main` layout and intentionally does not connect
 directly to Omni Realtime, Core, an ASR provider, or a user-visible setting.
-Phase 3 integrates it through a session-level Voice Turn Adapter that is owned
-by `RealtimeAsrSession` and constructed only for ASR routes whose registry
-metadata declares `requires_smart_turn`, currently GLM and Gemini.
+Phase 3 integrates it through the production voice-input runtime. Every
+official independent-ASR route must acquire and retain a Smart Turn lease for
+the complete logical turn. Direct use of the lower-level `RealtimeAsrSession`
+is not a supported product voice-input path.
 
 ## Endpoint authority
 
-- A provider with an authoritative semantic endpoint (for example Soniox
-  `<end>`) must not construct or call Smart Turn.
-- An ASR provider without that capability may use common VAD to find a
-  candidate pause and ask Smart Turn for `COMPLETE` or `INCOMPLETE`.
+- Smart Turn is the only logical-turn endpoint authority for every production
+  independent-ASR provider.
+- Provider-native endpoints, including Soniox `<end>`, form physical transcript
+  segments only. They cannot publish a logical final to a consumer.
+- RNNoise and Silero may suppress idle uploads or find candidate pauses, but
+  neither can replace Smart Turn.
 - Provider buffer commit, hard timeout, maximum turn duration, and manual
   commit remain responsibilities of the ASR session/controller layer.
 
 VAD emits only speech start, resumed speech, and candidate pause events. It is
 also suitable for barge-in and connection lifecycle gating, but it never emits
 `TURN_COMPLETE` or `FORCE_COMMIT`.
+
+## Consumer-neutral voice input
+
+`LLMSessionManager.bind_voice_input_consumer()` exposes the high-level final
+text boundary needed by later game/plugin integration. A binding is inert:
+MicLease remains the sole microphone-ownership authority, and the caller must
+bind before changing the lease owner to `game`.
+
+- `owner=core` keeps the existing Core transcript path.
+- `owner=game` accepts PCM only while the exact captured consumer binding is
+  still registered; otherwise the route remains fail-closed and suspended.
+- The binding receives only a SmartTurn-authorized `VoiceTranscriptEvent`.
+  It never receives PCM, provider partials, or physical segment finals.
+- Consumer replacement or removal is forbidden while that owner holds
+  MicLease. Lease changes invalidate queued PCM, the active turn, transcript
+  reservations, and delayed callbacks before another target can become active.
+- Consumer callback failure discards that delivery. It never falls back to
+  Core, Omni, another ASR provider, or a browser speech recognizer.
+- Provider selection remains centralized and follows the active Core/ASR route
+  policy. A game or plugin cannot select Qwen, Soniox, or another provider.
+
+Phase 3 supplies only this common binding contract and a fake-consumer
+integration test. Registering concrete games, changing game UI, and removing
+legacy browser `SpeechRecognition` are responsibilities of their own follow-up
+integration changes.
 
 ## Audio contract
 
@@ -41,8 +69,9 @@ licenses, and SHA-256 digests. Run:
 uv run python tools/voice_eval/prepare_voice_turn_assets.py
 ```
 
-The runtime is lazy and is loaded only for routes marked `requires_smart_turn`.
-Concurrent loads are single-flight. Missing/corrupt assets produce
+The runtime is lazy and is loaded on the first candidate turn for every
+production independent-ASR route. Concurrent loads are single-flight.
+Missing/corrupt assets produce
 `UNAVAILABLE`, which is distinct from a semantic `INCOMPLETE` result. Repeated
 inference failures open a per-instance circuit breaker; constructing a new
 instance permits recovery. Closing or failing the ASR session unloads its

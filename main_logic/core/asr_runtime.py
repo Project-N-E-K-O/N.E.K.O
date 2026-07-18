@@ -42,6 +42,11 @@ from .asr_transcript_dispatcher import (
     CoreTranscriptDispatcher,
     TranscriptEnvelope,
 )
+from .voice_input_consumer import (
+    VoiceInputConsumerBinding,
+    VoiceTranscriptCallback,
+    VoiceTranscriptEvent,
+)
 
 
 class AsrRuntimeMixin:
@@ -77,6 +82,7 @@ class AsrRuntimeMixin:
         self._asr_audio_generation = 0
         self._asr_accepted_final_keys: OrderedDict[FinalKey, None] = OrderedDict()
         self._asr_reserved_final_key: FinalKey | None = None
+        self._asr_reserved_voice_consumer: VoiceInputConsumerBinding | None = None
         self._asr_transcript_dispatcher = CoreTranscriptDispatcher(
             self._dispatch_asr_transcript_envelope,
         )
@@ -94,6 +100,10 @@ class AsrRuntimeMixin:
         self._voice_input_suppressed = True
         self._voice_input_suppression_reasons: set[str] = set()
         self._voice_input_resource_optimization_enabled = True
+        self._voice_input_consumer_bindings: dict[
+            str,
+            VoiceInputConsumerBinding,
+        ] = {}
 
     def _ensure_asr_runtime_state(self) -> None:
         # A number of focused unit tests intentionally construct the manager via
@@ -148,13 +158,63 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
+        owner = self._voice_lease_owner
+        owner_has_target = owner == "core" or (
+            owner == "game"
+            and self._voice_input_consumer_bindings.get("game") is not None
+        )
         return bool(
             self._voice_lease_synchronized
-            and self._voice_lease_owner == "core"
+            and owner_has_target
             and not self._voice_lease_hard_muted
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
         )
+
+    def bind_voice_input_consumer(
+        self,
+        owner: str,
+        on_final: VoiceTranscriptCallback,
+    ) -> VoiceInputConsumerBinding:
+        """Bind an external final-text target before its MicLease takeover."""
+
+        self._ensure_asr_runtime_state()
+        normalized_owner = str(owner or "").strip().lower()
+        if normalized_owner != "game":
+            raise ValueError("VOICE_INPUT_CONSUMER_OWNER_UNSUPPORTED")
+        if not callable(on_final):
+            raise TypeError("VOICE_INPUT_CONSUMER_CALLBACK_REQUIRED")
+        if self._voice_lease_owner == normalized_owner:
+            raise RuntimeError("VOICE_INPUT_CONSUMER_BIND_BEFORE_TAKEOVER")
+        if normalized_owner in self._voice_input_consumer_bindings:
+            raise RuntimeError("VOICE_INPUT_CONSUMER_ALREADY_BOUND")
+        binding = VoiceInputConsumerBinding(
+            owner="game",
+            on_final=on_final,
+        )
+        self._voice_input_consumer_bindings[normalized_owner] = binding
+        return binding
+
+    def unbind_voice_input_consumer(
+        self,
+        binding: VoiceInputConsumerBinding,
+    ) -> bool:
+        """Remove a target only after MicLease has left that owner."""
+
+        self._ensure_asr_runtime_state()
+        if not isinstance(binding, VoiceInputConsumerBinding):
+            return False
+        if self._voice_lease_owner == binding.owner:
+            raise RuntimeError("VOICE_INPUT_CONSUMER_RELEASE_LEASE_FIRST")
+        if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
+            return False
+        del self._voice_input_consumer_bindings[binding.owner]
+        return True
+
+    def _current_voice_input_consumer(self) -> VoiceInputConsumerBinding | None:
+        if self._voice_lease_owner != "game":
+            return None
+        return self._voice_input_consumer_bindings.get("game")
 
     def _transport_token_matches(
         self,
@@ -535,6 +595,7 @@ class AsrRuntimeMixin:
         self._asr_turn_prepared = False
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        self._asr_reserved_voice_consumer = None
         for task_name in (
             "_asr_transport_task",
             "_asr_warm_expiry_task",
@@ -865,6 +926,7 @@ class AsrRuntimeMixin:
         self._asr_audio_generation += 1
         self._asr_transcript_dispatcher.invalidate_all()
         self._asr_reserved_final_key = None
+        self._asr_reserved_voice_consumer = None
         self._asr_sealed_turn_token = None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
@@ -1079,6 +1141,7 @@ class AsrRuntimeMixin:
         self._asr_audio_generation += 1
         self._asr_transcript_dispatcher.invalidate_all()
         self._asr_reserved_final_key = None
+        self._asr_reserved_voice_consumer = None
         self._asr_sealed_turn_token = None
         self._asr_turn_prepared = False
         self._asr_received_audio = False
@@ -1110,10 +1173,15 @@ class AsrRuntimeMixin:
         self._voice_lease_owner = owner
         self._voice_lease_hard_muted = hard_muted
         self._voice_lease_focus_suppressed = focus_suppressed
+        game_consumer = (
+            self._voice_input_consumer_bindings.get("game")
+            if owner == "game"
+            else None
+        )
         reasons: set[str] = set()
         if owner == "none":
             reasons.add("owner_none")
-        elif owner == "game":
+        elif owner == "game" and game_consumer is None:
             reasons.add("game")
         if hard_muted:
             reasons.add("hard_mute")
@@ -1125,11 +1193,15 @@ class AsrRuntimeMixin:
 
         lifecycle = self._asr_lifecycle
         if lifecycle is not None:
-            if owner == "game" and lifecycle.snapshot.state not in {
-                VoiceLifecycleState.OFF,
-                VoiceLifecycleState.BLOCKED,
-                VoiceLifecycleState.SUSPENDED,
-            }:
+            if (
+                owner == "game"
+                and game_consumer is None
+                and lifecycle.snapshot.state not in {
+                    VoiceLifecycleState.OFF,
+                    VoiceLifecycleState.BLOCKED,
+                    VoiceLifecycleState.SUSPENDED,
+                }
+            ):
                 lifecycle.transition(VoiceLifecycleEvent.GAME_TAKEOVER)
             elif (
                 owner == "core"
@@ -1327,6 +1399,9 @@ class AsrRuntimeMixin:
             return
         turn_token = self._capture_turn_token(lifecycle)
         final_key = FinalKey.from_turn(turn_token)
+        consumer_binding = self._current_voice_input_consumer()
+        if self._voice_lease_owner == "game" and consumer_binding is None:
+            return
         if not self._asr_transcript_dispatcher.try_reserve(final_key):
             await self._handle_independent_asr_error(
                 epoch,
@@ -1335,9 +1410,12 @@ class AsrRuntimeMixin:
             )
             return
         self._asr_reserved_final_key = final_key
+        self._asr_reserved_voice_consumer = consumer_binding
 
         self._asr_turn_prepared = True
         session_ref = self.session
+        if consumer_binding is not None:
+            return
         handle_interruption = getattr(session_ref, "handle_interruption", None)
         try:
             ensure_arbiter = getattr(session_ref, "_ensure_response_arbiter", None)
@@ -1538,6 +1616,7 @@ class AsrRuntimeMixin:
                 )
             has_pending_turn = lifecycle_ref.has_pending_turn
             accepted_turn_token = sealed_token.turn
+            consumer_binding = self._asr_reserved_voice_consumer
             lifecycle_ref.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
             detector_ref = self._asr_detector
             self._asr_turn_prepared = False
@@ -1545,6 +1624,7 @@ class AsrRuntimeMixin:
             self._asr_sealed_turn_token = None
             self._asr_turn_endpointed_at = None
             self._asr_reserved_final_key = None
+            self._asr_reserved_voice_consumer = None
             watchdog = self._asr_final_watchdog_task
             self._asr_final_watchdog_task = None
             if watchdog is not None and watchdog is not asyncio.current_task():
@@ -1555,6 +1635,7 @@ class AsrRuntimeMixin:
                     core_session_ref=self.session,
                     provider=provider,
                     text=clean,
+                    consumer_binding=consumer_binding,
                 )
             else:
                 lifecycle_ref.metrics.false_wake_count += 1
@@ -1608,10 +1689,35 @@ class AsrRuntimeMixin:
     ) -> None:
         ingress_token = envelope.turn_token.ingress
         session_ref = envelope.core_session_ref
-        if (
-            not self._ingress_token_matches(ingress_token)
-            or session_ref is not self.session
-        ):
+        if not self._ingress_token_matches(ingress_token):
+            return
+        consumer_binding = envelope.consumer_binding
+        if consumer_binding is not None:
+            if (
+                self._voice_lease_owner != consumer_binding.owner
+                or self._voice_input_consumer_bindings.get(
+                    consumer_binding.owner
+                ) is not consumer_binding
+            ):
+                return
+            try:
+                await consumer_binding.on_final(
+                    VoiceTranscriptEvent(
+                        turn_token=envelope.turn_token,
+                        provider=envelope.provider,
+                        text=envelope.text,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "[%s] external voice transcript consumer failed owner=%s",
+                    self.lanlan_name,
+                    consumer_binding.owner,
+                )
+            return
+        if self._voice_lease_owner != "core" or session_ref is not self.session:
             return
         try:
             accepted = await self.handle_input_transcript(
@@ -1697,6 +1803,7 @@ class AsrRuntimeMixin:
         self._asr_turn_prepared = False
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
+        self._asr_reserved_voice_consumer = None
         self._asr_sealed_turn_token = None
         if asr_session is not None:
             task = asyncio.create_task(self._close_asr_session(asr_session))
