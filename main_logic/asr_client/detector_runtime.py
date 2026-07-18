@@ -218,6 +218,30 @@ class DetectorRuntime:
     def candidate_open(self) -> bool:
         return self._candidate_open
 
+    @property
+    def queued_audio_ms(self) -> int:
+        adapter = self._semantic_adapter
+        return adapter.queued_audio_ms if adapter is not None else 0
+
+    @property
+    def smart_turn_evaluation_ms(self) -> int:
+        adapter = self._semantic_adapter
+        return adapter.smart_turn_evaluation_ms if adapter is not None else 0
+
+    @property
+    def smart_turn_stale_result_count(self) -> int:
+        adapter = self._semantic_adapter
+        return adapter.smart_turn_stale_result_count if adapter is not None else 0
+
+    @property
+    def smart_turn_coalesced_evaluation_count(self) -> int:
+        adapter = self._semantic_adapter
+        return (
+            adapter.smart_turn_coalesced_evaluation_count
+            if adapter is not None
+            else 0
+        )
+
     async def bind_candidate(
         self,
         candidate: DetectorCandidateKey,

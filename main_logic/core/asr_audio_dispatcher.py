@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
@@ -66,6 +67,10 @@ class AsrAudioDispatcher:
         self._session_ref: Any = None
         self._state: Literal["idle", "active", "sealed", "aborted"] = "idle"
         self._last_sequence = 0
+        self._enqueued_at: dict[int, float] = {}
+        self.asr_audio_command_queue_ms = 0
+        self.asr_abort_discarded_command_count = 0
+        self.provider_wire_sequence = 0
 
     @property
     def active_turn(self) -> VoiceTurnToken | None:
@@ -155,6 +160,16 @@ class AsrAudioDispatcher:
     def abort(self, turn_token: VoiceTurnToken | None = None) -> None:
         if turn_token is not None and self._turn_token != turn_token:
             return
+        discarded = 0
+        while True:
+            try:
+                command = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._enqueued_at.pop(id(command), None)
+            self._queue.task_done()
+            discarded += 1
+        self.asr_abort_discarded_command_count += discarded
         self._generation += 1
         self._turn_token = None
         self._session_ref = None
@@ -185,6 +200,7 @@ class AsrAudioDispatcher:
                 name="asr-audio-command-backpressure",
             )
             return False
+        self._enqueued_at[id(command)] = time.monotonic()
         return True
 
     def _ensure_worker(self) -> None:
@@ -197,6 +213,11 @@ class AsrAudioDispatcher:
         while True:
             command = await self._queue.get()
             try:
+                queued_at = self._enqueued_at.pop(id(command), None)
+                if queued_at is not None:
+                    self.asr_audio_command_queue_ms = int(
+                        (time.monotonic() - queued_at) * 1_000
+                    )
                 if not self._command_is_current(command):
                     continue
                 if isinstance(command, AsrSealCommand):
@@ -220,6 +241,7 @@ class AsrAudioDispatcher:
                         chunk,
                         sample_rate_hz=command.sample_rate_hz,
                     )
+                    self.provider_wire_sequence += 1
                     await self._on_wire_audio(
                         command.turn_token,
                         command.session_ref,
