@@ -96,11 +96,11 @@ DouyinEmbeddedBridgeSupervisor.start()
 
 The bundled `douyinLive` binary lives under `vendor/douyin_bridge/windows-amd64/` with its MIT license, version metadata, and checksum. `bridge_backend.py` is the only place that should name the selected bundled executable, launch arguments, and same-path stale-process cleanup hook. The plugin starts and stops that process, and on Windows a new supervisor start may first terminate old `douyinLive.exe` processes whose executable path exactly matches the bundled backend path, so hot reloads do not accumulate orphan bridge processes. It still treats the binary as a replaceable bridge: no Go source is imported, no bridge raw payload is persisted, stdout/stderr are discarded, and plugin interaction logic only sees sanitized JSON-derived payloads.
 
-## Real-Machine Validation
+## Current Verified Boundary
 
-2026-07-07 internal pass: manual Cookie import, room lookup, bridge startup, event forwarding, and stop cleanup were verified with the N.E.K.O backend and N.E.K.O.-PC Electron frontend running together. The plugin started the bundled `douyinLive.exe` as a child process, forwarded live-room events through the existing proactive bridge while the room was active, and removed the bridge process after `disconnect_live_room`; only a transient `TIME_WAIT` socket remained on the local bridge port.
+The maintained integration path covers manual Cookie import, room lookup, bundled bridge startup, sanitized event forwarding, disconnect cleanup, and joint operation with the N.E.K.O backend and N.E.K.O.-PC Electron frontend. The plugin owns the `douyinLive.exe` child process and must remove it after `disconnect_live_room`; a transient local `TIME_WAIT` socket is not an orphan bridge process.
 
-This validation does not settle binary distribution. Keep the bundled executable as the current internal bridge backend for now, but leave signing, checksum policy, packaging size, platform matrix, and replacement-source review for a later distribution decision.
+This coverage does not settle binary distribution. The bundled executable remains the internal bridge backend, while signing, checksum policy, packaging size, platform coverage, and replacement-source review remain separate distribution decisions.
 
 ## Replacement Boundary
 
