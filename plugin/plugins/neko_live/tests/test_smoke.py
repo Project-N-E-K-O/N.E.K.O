@@ -412,6 +412,25 @@ def test_interaction_panel_uses_stable_cards_and_detail_modals() -> None:
         assert required_keys <= set(locale), locale_path.name
 
 
+def test_co_stream_pause_fill_has_no_manual_operator_surface() -> None:
+    root = Path(__file__).resolve().parents[1]
+    plugin_source = (root / "__init__.py").read_text(encoding="utf-8")
+
+    assert '"enum": ["off", "conditional_auto"]' in plugin_source
+    assert "trigger_co_stream_host_pause_fill" not in plugin_source
+
+    for panel_name in ("panel.tsx", "panel_compat.tsx"):
+        source = (root / "ui" / panel_name).read_text(encoding="utf-8")
+        assert "co_stream_host_pause_fill_activation" not in source
+        assert "pauseFill" not in source
+
+    for locale_path in sorted((root / "i18n").glob("*.json")):
+        locale = json.loads(locale_path.read_text(encoding="utf-8"))
+        assert not any(key.startswith("panel.coStream.pauseFill") for key in locale)
+        assert "entries.trigger_co_stream_host_pause_fill.name" not in locale
+        assert "entries.trigger_co_stream_host_pause_fill.description" not in locale
+
+
 def test_live_room_entries_are_platform_neutral():
     root = Path(__file__).resolve().parents[1]
     with (root / "plugin.toml").open("rb") as handle:
