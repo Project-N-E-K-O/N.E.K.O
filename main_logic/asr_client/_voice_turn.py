@@ -48,7 +48,17 @@ class _CloseItem:
     completed: asyncio.Future[None]
 
 
-_QueueItem: TypeAlias = _AudioItem | _ResetItem | _CloseItem
+@dataclass(frozen=True, slots=True)
+class _EvaluationResultItem:
+    identity: _Identity
+    coordinator_generation: int
+    activity_seq: int
+    reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    result: object | None = None
+    error: BaseException | None = None
+
+
+_QueueItem: TypeAlias = _AudioItem | _ResetItem | _CloseItem | _EvaluationResultItem
 
 
 class _VoiceTurnAdapter:
@@ -98,6 +108,12 @@ class _VoiceTurnAdapter:
         self._close_task: asyncio.Task[None] | None = None
         self._fallback_task: asyncio.Task[None] | None = None
         self._smart_turn_unload_task: asyncio.Task[None] | None = None
+        self._evaluation_task: asyncio.Task[None] | None = None
+        self._reevaluation_requested = False
+        self._reevaluation_reason: Literal[
+            "candidate_pause", "periodic_no_vad", "strict_retry"
+        ] | None = None
+        self._strict_endpoint_deadline: float | None = None
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
@@ -146,9 +162,14 @@ class _VoiceTurnAdapter:
         return not self._vad_degraded
 
     async def wait_idle(self) -> None:
-        """Wait for the current detector batch and callbacks to finish."""
+        """Drain detector work for tests and shutdown; never use per PCM frame."""
 
-        await self._queue.join()
+        while True:
+            await self._queue.join()
+            evaluation_task = self._evaluation_task
+            if evaluation_task is None:
+                break
+            await asyncio.gather(evaluation_task, return_exceptions=True)
         callbacks = tuple(self._callback_tasks)
         if callbacks:
             await asyncio.gather(*callbacks)
@@ -262,6 +283,11 @@ class _VoiceTurnAdapter:
                     if not item.completed.done():
                         item.completed.set_result(None)
                     continue
+                if isinstance(item, _EvaluationResultItem):
+                    await self._process_evaluation_result(item)
+                    if self._failed:
+                        return
+                    continue
                 await self._process_close()
                 if not item.completed.done():
                     item.completed.set_result(None)
@@ -328,6 +354,7 @@ class _VoiceTurnAdapter:
         ):
             self._cancel_smart_turn_unload()
             self._cancel_fallback()
+            self._strict_endpoint_deadline = None
 
         if (
             SpeechActivityEvent.CANDIDATE_PAUSE not in events
@@ -342,35 +369,7 @@ class _VoiceTurnAdapter:
             self._schedule_fallback(item.identity, "semantic_degraded")
             return
 
-        result = await self._coordinator.evaluate_buffered()
-        if item.identity != self._identity:
-            return
-        status = getattr(result, "status", None)
-        decision = getattr(result, "decision", None)
-        if (
-            status is EvaluationStatus.OK
-            and decision is TurnDecision.COMPLETE
-        ):
-            self._dispatch_commit(item.identity)
-            return
-        if (
-            status is EvaluationStatus.OK
-            and decision is TurnDecision.INCOMPLETE
-        ):
-            self._schedule_fallback(item.identity, "semantic_incomplete")
-            return
-        if status is EvaluationStatus.STALE:
-            return
-        if self._smart_turn_required:
-            failure_kind = (
-                "unavailable"
-                if status is EvaluationStatus.UNAVAILABLE
-                else "runtime_error"
-            )
-            self._report_failure(failure_kind, "smart_turn")
-            return
-        self._enter_semantic_degraded()
-        self._schedule_fallback(item.identity, "semantic_degraded")
+        self._request_evaluation(item.identity, "candidate_pause")
 
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
@@ -389,28 +388,115 @@ class _VoiceTurnAdapter:
         if self._fallback_audio_ms < self._fallback_evaluation_interval_ms:
             return
         self._fallback_audio_ms = 0
-        result = await self._coordinator.evaluate_buffered()
-        if item.identity != self._identity:
+        self._request_evaluation(item.identity, "periodic_no_vad")
+
+    def _request_evaluation(
+        self,
+        identity: _Identity,
+        reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+    ) -> None:
+        if self._closed or self._failed or identity != self._identity:
             return
+        if self._evaluation_task is not None:
+            self._reevaluation_requested = True
+            self._reevaluation_reason = reason
+            return
+        coordinator_generation = int(getattr(self._coordinator, "generation", 0))
+        activity_seq = int(getattr(self._coordinator, "activity_seq", 0))
+
+        async def evaluate() -> None:
+            result: object | None = None
+            error: BaseException | None = None
+            try:
+                result = await self._coordinator.evaluate_buffered()
+            except asyncio.CancelledError:
+                return
+            except BaseException as exc:
+                error = exc
+            await self._queue.put(
+                _EvaluationResultItem(
+                    identity=identity,
+                    coordinator_generation=coordinator_generation,
+                    activity_seq=activity_seq,
+                    reason=reason,
+                    result=result,
+                    error=error,
+                )
+            )
+
+        self._evaluation_task = asyncio.create_task(
+            evaluate(), name="asr-smart-turn-evaluation"
+        )
+
+    async def _process_evaluation_result(self, item: _EvaluationResultItem) -> None:
+        self._evaluation_task = None
+        reevaluate = self._reevaluation_requested
+        reevaluation_reason = self._reevaluation_reason or item.reason
+        self._reevaluation_requested = False
+        self._reevaluation_reason = None
+        identity_matches = item.identity == self._identity
+        generation_matches = item.coordinator_generation == int(
+            getattr(self._coordinator, "generation", item.coordinator_generation)
+        )
+        activity_matches = item.activity_seq == int(
+            getattr(self._coordinator, "activity_seq", item.activity_seq)
+        )
+        if (
+            self._closed
+            or self._failed
+            or not identity_matches
+            or not generation_matches
+            or not activity_matches
+        ):
+            if reevaluate and identity_matches and not self._closed and not self._failed:
+                self._request_evaluation(item.identity, reevaluation_reason)
+            return
+        if item.error is not None:
+            self._report_failure("runtime_error", "smart_turn")
+            return
+        result = item.result
         status = getattr(result, "status", None)
         decision = getattr(result, "decision", None)
+        if status is EvaluationStatus.STALE:
+            if reevaluate:
+                self._request_evaluation(item.identity, reevaluation_reason)
+            return
         if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
+            self._strict_endpoint_deadline = None
             self._dispatch_commit(item.identity)
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
+            if reevaluate:
+                self._request_evaluation(item.identity, reevaluation_reason)
+                return
+            if item.reason != "periodic_no_vad":
+                if self._smart_turn_required and self._strict_endpoint_deadline is None:
+                    self._strict_endpoint_deadline = (
+                        asyncio.get_running_loop().time()
+                        + self._max_endpoint_wait_seconds
+                    )
+                self._schedule_fallback(item.identity, "semantic_incomplete")
             return
-        if status is EvaluationStatus.STALE:
+        if self._smart_turn_required:
+            failure_kind = (
+                "unavailable"
+                if status is EvaluationStatus.UNAVAILABLE
+                else "runtime_error"
+            )
+            self._report_failure(failure_kind, "smart_turn")
             return
-        failure_kind = (
-            "unavailable"
-            if status is EvaluationStatus.UNAVAILABLE
-            else "runtime_error"
-        )
-        self._report_failure(failure_kind, "smart_turn")
+        self._enter_semantic_degraded()
+        self._schedule_fallback(item.identity, "semantic_degraded")
 
     async def _process_reset(self, identity: _Identity) -> None:
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
+        evaluation_task, self._evaluation_task = self._evaluation_task, None
+        if evaluation_task is not None:
+            evaluation_task.cancel()
+        self._reevaluation_requested = False
+        self._reevaluation_reason = None
+        self._strict_endpoint_deadline = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
         self._identity = identity
@@ -430,12 +516,17 @@ class _VoiceTurnAdapter:
             return
         self._resources_closed = True
         self._cancel_smart_turn_unload()
+        evaluation_task, self._evaluation_task = self._evaluation_task, None
+        if evaluation_task is not None:
+            evaluation_task.cancel()
         await self._coordinator.close()
         await asyncio.to_thread(self._vad.close)
         for task in tuple(self._callback_tasks):
             task.cancel()
         if self._callback_tasks:
             await asyncio.gather(*self._callback_tasks, return_exceptions=True)
+        if evaluation_task is not None:
+            await asyncio.gather(evaluation_task, return_exceptions=True)
 
     def _schedule_fallback(
         self,
@@ -468,47 +559,21 @@ class _VoiceTurnAdapter:
         )
 
     async def _strict_incomplete_wait(self, identity: _Identity) -> None:
-        """Re-evaluate incomplete semantics without silence-timeout commit."""
+        """Schedule one strict retry through the single SmartTurn lane."""
 
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._max_endpoint_wait_seconds
-        while True:
-            await asyncio.sleep(self._continuation_timeout_seconds)
-            if (
-                self._closed
-                or self._failed
-                or identity != self._identity
-                or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
-            ):
-                return
-            if loop.time() >= deadline:
-                self._report_failure("unavailable", "smart_turn")
-                return
-            try:
-                result = await self._coordinator.evaluate_buffered()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self._report_failure("runtime_error", "smart_turn")
-                return
-            if identity != self._identity or self._closed or self._failed:
-                return
-            status = getattr(result, "status", None)
-            decision = getattr(result, "decision", None)
-            if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
-                self._dispatch_commit(identity)
-                return
-            if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
-                continue
-            if status is EvaluationStatus.STALE:
-                return
-            failure_kind = (
-                "unavailable"
-                if status is EvaluationStatus.UNAVAILABLE
-                else "runtime_error"
-            )
-            self._report_failure(failure_kind, "smart_turn")
+        await asyncio.sleep(self._continuation_timeout_seconds)
+        if (
+            self._closed
+            or self._failed
+            or identity != self._identity
+            or self._coordinator.state is not CoordinatorState.WAIT_CONTINUATION
+        ):
             return
+        deadline = self._strict_endpoint_deadline
+        if deadline is None or asyncio.get_running_loop().time() >= deadline:
+            self._report_failure("unavailable", "smart_turn")
+            return
+        self._request_evaluation(identity, "strict_retry")
 
     def _cancel_fallback(self) -> None:
         task = self._fallback_task

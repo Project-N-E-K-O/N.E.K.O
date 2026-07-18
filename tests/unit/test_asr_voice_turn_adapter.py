@@ -470,14 +470,12 @@ async def test_clear_rejects_late_complete_result_from_old_identity() -> None:
     commits: list[tuple[int, int, int]] = []
     current_identity = [7, 8, 9]
     operation_lock = asyncio.Lock()
-    callback_finished = asyncio.Event()
 
     async def commit(generation: int, buffer_epoch: int, utterance_id: int) -> None:
         identity = (generation, buffer_epoch, utterance_id)
         async with operation_lock:
             if identity == tuple(current_identity):
                 commits.append(identity)
-        callback_finished.set()
 
     gate = _FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)])
     coordinator = _FakeCoordinator([_complete()], block_evaluation=True)
@@ -498,16 +496,77 @@ async def test_clear_rejects_late_complete_result_from_old_identity() -> None:
         reset_task = asyncio.create_task(
             adapter.reset(generation=7, buffer_epoch=9, utterance_id=10)
         )
-        await asyncio.sleep(0)
-        assert reset_task.done() is False
-        coordinator.evaluate_release.set()
         await asyncio.wait_for(reset_task, 1)
         current_identity[:] = [7, 9, 10]
+        coordinator.evaluate_release.set()
     finally:
         operation_lock.release()
-    await asyncio.wait_for(callback_finished.wait(), 1)
+    await asyncio.sleep(0)
 
     assert commits == []
+    await adapter.close()
+
+
+async def test_silero_keeps_consuming_while_smart_turn_is_blocked() -> None:
+    gate = _FakeGate(
+        [
+            (SpeechActivityEvent.CANDIDATE_PAUSE,),
+            (SpeechActivityEvent.SPEECH_RESUMED,),
+        ]
+    )
+    coordinator = _FakeCoordinator([_failed_evaluation(EvaluationStatus.STALE)], block_evaluation=True)
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=gate,
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+
+    await adapter.push_audio(
+        generation=1, buffer_epoch=1, utterance_id=1, pcm16=b"\x01\x00"
+    )
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    await adapter.push_audio(
+        generation=1, buffer_epoch=1, utterance_id=1, pcm16=b"\x02\x00"
+    )
+    await _eventually(lambda: len(gate.feed_calls) == 2)
+
+    assert coordinator.evaluate_calls == 1
+    assert coordinator.evaluate_release.is_set() is False
+    coordinator.evaluate_release.set()
+    await adapter.wait_idle()
+    await adapter.close()
+
+
+async def test_multiple_pauses_coalesce_to_one_followup_evaluation() -> None:
+    coordinator = _FakeCoordinator(
+        [_failed_evaluation(EvaluationStatus.STALE), _complete()],
+        block_evaluation=True,
+    )
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate([(SpeechActivityEvent.CANDIDATE_PAUSE,)] * 3),
+        coordinator=coordinator,
+        on_commit=_noop_commit,
+        smart_turn_required=True,
+    )
+    await adapter.start()
+
+    for value in (1, 2, 3):
+        await adapter.push_audio(
+            generation=1,
+            buffer_epoch=1,
+            utterance_id=1,
+            pcm16=bytes((value, 0)),
+        )
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    await _eventually(lambda: len(coordinator.pushed_audio) == 3)
+    coordinator.evaluate_release.set()
+    await adapter.wait_idle()
+
+    assert coordinator.evaluate_calls == 2
     await adapter.close()
 
 
