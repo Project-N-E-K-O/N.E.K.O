@@ -18,6 +18,8 @@ from main_logic.voice_turn.coordinator import CoordinatorState, TurnCoordinator
 from main_logic.voice_turn.silero_vad import SileroActivityGate, SileroVad
 from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
+from .detector_queue import DetectorDurationQueue
+
 
 _Identity: TypeAlias = tuple[int, int, int]
 _FallbackReason: TypeAlias = Literal["semantic_incomplete", "semantic_degraded"]
@@ -35,6 +37,7 @@ class _VoiceTurnFailure:
 class _AudioItem:
     identity: _Identity
     pcm16: bytes
+    duration_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +61,8 @@ class _EvaluationResultItem:
     error: BaseException | None = None
 
 
-_QueueItem: TypeAlias = _AudioItem | _ResetItem | _CloseItem | _EvaluationResultItem
+_ControlItem: TypeAlias = _ResetItem | _CloseItem | _EvaluationResultItem
+_QueueItem: TypeAlias = _AudioItem | _ControlItem
 
 
 class _VoiceTurnAdapter:
@@ -72,7 +76,8 @@ class _VoiceTurnAdapter:
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
-        queue_maxsize: int = 64,
+        queue_maxsize: int = 128,
+        queue_capacity_ms: int = 1_000,
         continuation_timeout_seconds: float = 2.0,
         max_endpoint_wait_seconds: float = 15.0,
         smart_turn_required: bool = False,
@@ -81,6 +86,8 @@ class _VoiceTurnAdapter:
     ) -> None:
         if queue_maxsize <= 0:
             raise ValueError("queue_maxsize must be positive")
+        if queue_capacity_ms <= 0:
+            raise ValueError("queue_capacity_ms must be positive")
         if continuation_timeout_seconds <= 0:
             raise ValueError("continuation_timeout_seconds must be positive")
         if max_endpoint_wait_seconds <= 0:
@@ -98,7 +105,12 @@ class _VoiceTurnAdapter:
         self._coordinator = coordinator
         self._on_commit = on_commit
         self._on_activity = on_activity
-        self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue(maxsize=queue_maxsize)
+        self._queue: DetectorDurationQueue[_AudioItem, _ControlItem] = (
+            DetectorDurationQueue(
+                capacity_us=queue_capacity_ms * 1_000,
+                max_frames=queue_maxsize,
+            )
+        )
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
@@ -193,14 +205,26 @@ class _VoiceTurnAdapter:
         buffer_epoch: int,
         utterance_id: int,
         pcm16: bytes,
+        sample_rate_hz: int = 16_000,
     ) -> None:
         if len(pcm16) % 2:
             raise ValueError("ASR_INVALID_PCM: Voice Turn requires PCM16LE")
         if not pcm16:
             return
+        if sample_rate_hz <= 0:
+            raise ValueError("ASR_INVALID_SAMPLE_RATE")
         self._ensure_running()
-        await self._queue.put(
-            _AudioItem((generation, buffer_epoch, utterance_id), pcm16)
+        samples = len(pcm16) // 2
+        duration_us = (
+            samples * 1_000_000 + sample_rate_hz - 1
+        ) // sample_rate_hz
+        self._queue.put_audio_nowait(
+            _AudioItem(
+                (generation, buffer_epoch, utterance_id),
+                pcm16,
+                duration_us,
+            ),
+            duration_us=duration_us,
         )
 
     async def reset(
@@ -211,9 +235,11 @@ class _VoiceTurnAdapter:
         utterance_id: int,
     ) -> None:
         self._ensure_running()
+        self._queue.discard_audio()
         completed = asyncio.get_running_loop().create_future()
-        await self._queue.put(
-            _ResetItem((generation, buffer_epoch, utterance_id), completed)
+        self._queue.put_control_nowait(
+            _ResetItem((generation, buffer_epoch, utterance_id), completed),
+            priority=True,
         )
         consumer = self._consumer_task
         if consumer is None:
@@ -258,7 +284,7 @@ class _VoiceTurnAdapter:
             await self._close_resources()
             return
         completed = asyncio.get_running_loop().create_future()
-        await self._queue.put(_CloseItem(completed))
+        self._queue.put_control_nowait(_CloseItem(completed), priority=True)
         await completed
         await task
 
@@ -413,7 +439,7 @@ class _VoiceTurnAdapter:
                 return
             except BaseException as exc:
                 error = exc
-            await self._queue.put(
+            self._queue.put_control_nowait(
                 _EvaluationResultItem(
                     identity=identity,
                     coordinator_generation=coordinator_generation,

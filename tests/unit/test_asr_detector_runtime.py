@@ -13,6 +13,7 @@ from main_logic.asr_client.detector_runtime import (
     SmartTurnLease,
     SmartTurnReadiness,
 )
+from main_logic.asr_client.detector_contracts import DetectorSubmitStatus
 from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
 from main_logic.voice_turn.contracts import (
@@ -91,6 +92,42 @@ class _SemanticCoordinator:
 
     async def unload_predictor(self) -> None:
         return None
+
+
+class _BlockingSemanticCoordinator(_SemanticCoordinator):
+    def __init__(self, *, block_prepare: bool = False) -> None:
+        super().__init__()
+        self.evaluate_started = asyncio.Event()
+        self.evaluate_release = asyncio.Event()
+        self.prepare_started = asyncio.Event()
+        self.prepare_release = asyncio.Event()
+        if not block_prepare:
+            self.prepare_release.set()
+
+    async def evaluate_buffered(self):
+        self.evaluate_started.set()
+        await self.evaluate_release.wait()
+        return await super().evaluate_buffered()
+
+    async def prepare_predictor(self) -> bool:
+        self.prepare_started.set()
+        await self.prepare_release.wait()
+        return True
+
+
+def _smart_turn_policy() -> AsrProviderPolicy:
+    return AsrProviderPolicy(
+        transport="streaming",
+        endpoint_authority="smart_turn",
+        smart_turn_required=True,
+        max_segment_ms=None,
+        warm_transport_ms=25_000,
+        replay_policy="preconnect_only",
+    )
+
+
+def _ingress_token() -> VoiceIngressToken:
+    return VoiceIngressToken(1, "socket", 1, 1, 1)
 
 
 async def test_detector_loads_silero_off_loop_and_returns_activity() -> None:
@@ -192,6 +229,113 @@ async def test_unified_detector_owns_smart_turn_and_emits_semantic_completion() 
     assert completion_count == 1
     await detector.release_deferred_turn()
     assert completion_count == 2
+    await detector.close()
+
+
+async def test_submit_audio_does_not_wait_for_smart_turn_inference() -> None:
+    coordinator = _BlockingSemanticCoordinator()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.CANDIDATE_PAUSE,)),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+
+    first = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    second = await asyncio.wait_for(
+        detector.submit_audio(
+            b"\x02\x00" * 160,
+            ingress_token=_ingress_token(),
+            sample_rate_hz=16_000,
+            speech_probability=0.1,
+            rnnoise_available=True,
+        ),
+        0.1,
+    )
+
+    assert first.status is DetectorSubmitStatus.ACCEPTED
+    assert second.status is DetectorSubmitStatus.ACCEPTED
+    assert detector.candidate_open is True
+    coordinator.evaluate_release.set()
+    await detector.close()
+
+
+async def test_candidate_open_prevents_rnnoise_from_skipping_followup_pcm() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+
+    quiet = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.1,
+        rnnoise_available=True,
+    )
+    onset = await detector.submit_audio(
+        b"\x02\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    followup = await detector.submit_audio(
+        b"\x03\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.0,
+        rnnoise_available=True,
+    )
+
+    assert quiet.status is DetectorSubmitStatus.SKIPPED_QUIET
+    assert onset.status is DetectorSubmitStatus.ACCEPTED
+    assert followup.status is DetectorSubmitStatus.ACCEPTED
+    await detector.close()
+
+
+async def test_smart_turn_loading_does_not_hold_detector_audio_submission() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    prepare_task = asyncio.create_task(detector.prepare_endpointing(turn_token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+
+    submitted = await asyncio.wait_for(
+        detector.submit_audio(
+            b"\x01\x00" * 160,
+            ingress_token=_ingress_token(),
+            sample_rate_hz=16_000,
+            speech_probability=0.9,
+            rnnoise_available=True,
+        ),
+        0.1,
+    )
+
+    assert submitted.status is DetectorSubmitStatus.ACCEPTED
+    assert detector.smart_turn_readiness is SmartTurnReadiness.LOADING
+    assert detector.endpointing_ready(turn_token) is False
+    coordinator.prepare_release.set()
+    lease = await asyncio.wait_for(prepare_task, 1)
+    assert lease is not None
+    await lease.release()
     await detector.close()
 
 
