@@ -3,20 +3,17 @@ import {
   AVATAR_TOOL_ASSET_PATH_MAX_LENGTH,
   AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
-  AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS,
   AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS,
-  AVATAR_TOOL_TIMER_DELAY_MAX_MS,
   AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   getAvatarToolRegistration,
   hasValidAvatarToolAssetVersion,
   isAvatarToolSameOriginAssetPath,
-  validateAvatarToolDefinition,
   withAvatarToolAssetVersion,
   type AvatarToolId,
-  type AvatarToolContractDefinition,
-  type AvatarToolContractEffectRecipe,
-  type AvatarToolContractInteractionProfile,
+  type AvatarToolDefinition,
+  type AvatarToolEffectRecipe,
+  type AvatarToolInteractionProfile,
 } from './catalog';
 import {
   AVATAR_TOOL_RUNTIME_POLICY,
@@ -32,20 +29,11 @@ const positiveNumberSchema = finiteNumberSchema.positive();
 const positiveIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const probabilitySchema = finiteNumberSchema.min(0).max(1);
 const identifierSchema = z.string().min(1).max(64).regex(/^[a-z][a-z0-9_-]*$/);
-const payloadFieldNameSchema = z.string().min(1).max(64).regex(/^[a-z][a-zA-Z0-9]*$/);
-const payloadFieldSchema = payloadFieldNameSchema
+const payloadFieldSchema = z.string().min(1).max(64).regex(/^[a-z][a-zA-Z0-9]*$/)
   .refine(
     field => !(AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(field),
     { message: 'payload field is reserved' },
   );
-const roundChoiceFactFieldSchema = payloadFieldNameSchema.refine(
-  (field): field is typeof AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS[number] => (
-    (AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS as readonly string[]).includes(field)
-  ),
-  { message: 'payload field is not a canonical round field' },
-);
-const timerDelaySchema = nonNegativeNumberSchema.max(AVATAR_TOOL_TIMER_DELAY_MAX_MS);
-const positiveTimerDelaySchema = positiveNumberSchema.max(AVATAR_TOOL_TIMER_DELAY_MAX_MS);
 const avatarToolDefinitionIdSchema = z.enum(AVATAR_TOOL_DEFINITION_IDS);
 const avatarToolVariantIdSchema = z.enum(AVATAR_TOOL_VARIANT_IDS);
 const intensitySchema = z.enum(AVATAR_TOOL_INTERACTION_INTENSITIES);
@@ -216,85 +204,10 @@ const hammerSwingEffectSchema = z.object({
   });
 });
 
-const localizedLabelTextSchema = z.string().min(1).max(256).refine(value => value.trim() !== '', {
-  message: 'localized label must not be blank',
-});
-const localizedLabelSchema = z.object({
-  key: localizedLabelTextSchema,
-  fallback: localizedLabelTextSchema,
-}).strict();
-const layoutOffsetSchema = z.object({
-  x: finiteNumberSchema,
-  y: finiteNumberSchema,
-}).strict();
-const roundRevealTimelineEntrySchema = z.object({
-  phase: z.enum(['reveal', 'result', 'idle']),
-  delayMs: timerDelaySchema,
-}).strict();
-const gestureLabelsSchema = z.record(identifierSchema, localizedLabelSchema).superRefine((labels, context) => {
-  const count = Object.keys(labels).length;
-  if (count === 0 || count > 64) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'gesture labels must contain between 1 and 64 entries',
-    });
-  }
-});
-const roundRevealEffectSchema = z.object({
-  id: identifierSchema,
-  kind: z.literal('round-reveal'),
-  interactionLock: z.literal('effect-lifetime'),
-  anchors: z.object({
-    user: z.literal('release-pointer'),
-    avatar: z.literal('avatar-head'),
-  }).strict(),
-  timeline: z.array(roundRevealTimelineEntrySchema).length(3),
-  labels: z.object({
-    gestures: gestureLabelsSchema,
-    results: z.object({
-      user_win: localizedLabelSchema,
-      avatar_win: localizedLabelSchema,
-      draw: localizedLabelSchema,
-    }).strict(),
-    announcement: localizedLabelSchema,
-  }).strict(),
-  layout: z.object({
-    userOffset: layoutOffsetSchema,
-    avatarOffset: layoutOffsetSchema,
-    resultOffset: layoutOffsetSchema,
-  }).strict(),
-}).strict().superRefine((effect, context) => {
-  const expected = ['reveal', 'result', 'idle'] as const;
-  effect.timeline.forEach((entry, index) => {
-    if (entry.phase !== expected[index]) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['timeline', index, 'phase'],
-        message: `must be ${expected[index]}`,
-      });
-    }
-    if (index === 0 && entry.delayMs !== 0) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['timeline', index, 'delayMs'],
-        message: 'reveal must start at 0ms',
-      });
-    }
-    if (index > 0 && entry.delayMs <= effect.timeline[index - 1].delayMs) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['timeline', index, 'delayMs'],
-        message: 'must be strictly increasing',
-      });
-    }
-  });
-});
-
 const effectRecipeSchema = z.union([
   fixedParticlesEffectSchema,
   randomScatterEffectSchema,
   hammerSwingEffectSchema,
-  roundRevealEffectSchema,
 ]);
 
 const progressiveReleaseProfileSchema = z.object({
@@ -403,71 +316,10 @@ const lockedImpactProfileSchema = z.object({
   }
 });
 
-const roundChoiceProfileSchema = z.object({
-  kind: z.literal('round-choice'),
-  actionId: identifierSchema,
-  intensity: intensitySchema,
-  choices: z.object({
-    primary: identifierSchema,
-    secondary: identifierSchema,
-    tertiary: identifierSchema,
-  }).strict(),
-  beats: z.record(identifierSchema, identifierSchema),
-  facts: z.object({
-    userChoiceField: roundChoiceFactFieldSchema.and(z.literal('userGesture')),
-    avatarChoiceField: roundChoiceFactFieldSchema.and(z.literal('avatarGesture')),
-    resultField: roundChoiceFactFieldSchema.and(z.literal('roundResult')),
-  }).strict(),
-  cycle: z.object({
-    outsideMs: positiveTimerDelaySchema,
-    inRangeMs: positiveTimerDelaySchema,
-    avatarPreviewMs: positiveTimerDelaySchema,
-  }).strict(),
-  random: z.object({
-    strategy: z.literal('uniform'),
-  }).strict(),
-  presentation: z.object({
-    confirmation: z.literal('render-owner-required'),
-  }).strict(),
-  feedback: z.object({
-    effect: identifierSchema,
-    confirmSound: identifierSchema,
-    resultSounds: z.object({
-      user_win: identifierSchema,
-      avatar_win: identifierSchema,
-      draw: identifierSchema,
-    }).strict(),
-  }).strict(),
-}).strict().superRefine((profile, context) => {
-  const choices = Object.values(profile.choices);
-  if (new Set(choices).size !== choices.length) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['choices'],
-      message: 'choices must be unique',
-    });
-  }
-  const beatsKeys = Object.keys(profile.beats);
-  const beatenChoices = choices.map(choice => profile.beats[choice]);
-  if (
-    beatsKeys.length !== choices.length
-    || !choices.every(choice => beatsKeys.includes(choice))
-    || beatenChoices.some((loser, index) => !choices.includes(loser) || loser === choices[index])
-    || new Set(beatenChoices).size !== choices.length
-  ) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['beats'],
-      message: 'beats must form a unique three-element cycle',
-    });
-  }
-});
-
 const interactionProfileSchema = z.union([
   progressiveReleaseProfileSchema,
   pressReleaseProfileSchema,
   lockedImpactProfileSchema,
-  roundChoiceProfileSchema,
 ]);
 
 function collectInteractionReferences(profile: z.infer<typeof interactionProfileSchema>) {
@@ -477,19 +329,8 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
   if (profile.kind === 'press-release') {
     return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
   }
-  if (profile.kind === 'locked-impact') {
-    return {
-      sounds: [profile.chance.sound, profile.feedback.sound],
-      effects: [profile.feedback.effect],
-    };
-  }
   return {
-    sounds: [
-      profile.feedback.confirmSound,
-      profile.feedback.resultSounds.user_win,
-      profile.feedback.resultSounds.avatar_win,
-      profile.feedback.resultSounds.draw,
-    ],
+    sounds: [profile.chance.sound, profile.feedback.sound],
     effects: [profile.feedback.effect],
   };
 }
@@ -529,39 +370,6 @@ export const desktopAvatarToolInteractionSchema = z.object({
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['effects'], message: `missing referenced effect ${id}` });
     }
   });
-  if (interaction.profile.kind === 'round-choice') {
-    const effect = interaction.effects.find(candidate => candidate.id === interaction.profile.feedback.effect);
-    if (effect?.kind !== 'round-reveal') {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['profile', 'feedback', 'effect'],
-        message: 'round choice must reference a round-reveal effect',
-      });
-      return;
-    }
-    const choices = Object.values(interaction.profile.choices);
-    const gestureLabelKeys = Object.keys(effect.labels.gestures);
-    if (
-      gestureLabelKeys.length !== choices.length
-      || !choices.every(choice => gestureLabelKeys.includes(choice))
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['effects', interaction.effects.indexOf(effect), 'labels', 'gestures'],
-        message: 'gesture labels must match round choices',
-      });
-    }
-  } else {
-    references.effects.forEach((effectId) => {
-      if (interaction.effects.find(effect => effect.id === effectId)?.kind === 'round-reveal') {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['profile'],
-          message: 'round-reveal effects require a round-choice profile',
-        });
-      }
-    });
-  }
 });
 
 export const desktopAvatarToolDefinitionSchema = z.object({
@@ -634,7 +442,7 @@ function projectAssetPath(path: string): string {
   return desktopAvatarToolAssetPathSchema.parse(withAvatarToolAssetVersion(path, '0'));
 }
 
-function projectVisual(definition: AvatarToolContractDefinition): DesktopAvatarToolVisual {
+function projectVisual(definition: AvatarToolDefinition): DesktopAvatarToolVisual {
   const { visual } = definition;
   const projectVariant = (variant: keyof typeof visual.variants) => ({
     iconImagePath: projectAssetPath(visual.variants[variant].iconImagePath),
@@ -672,12 +480,7 @@ function projectVisual(definition: AvatarToolContractDefinition): DesktopAvatarT
   };
 }
 
-function unsupportedContractDiscriminator(value: never, domain: string): never {
-  const kind = (value as { kind?: unknown })?.kind;
-  throw new Error(`Unsupported desktop avatar tool ${domain} discriminator: ${String(kind)}`);
-}
-
-function projectEffect(effect: AvatarToolContractEffectRecipe) {
+function projectEffect(effect: AvatarToolEffectRecipe) {
   if (effect.kind === 'fixed-particles') {
     return {
       id: effect.id,
@@ -716,81 +519,47 @@ function projectEffect(effect: AvatarToolContractEffectRecipe) {
       delayMs: projectRange(effect.delayMs),
     };
   }
-  if (effect.kind === 'hammer-swing') {
-    return {
-      id: effect.id,
-      kind: effect.kind,
-      interactionLock: effect.interactionLock,
-      anchor: {
-        source: effect.anchor.source,
-        visualMode: effect.anchor.visualMode,
-      },
+  return {
+    id: effect.id,
+    kind: effect.kind,
+    interactionLock: effect.interactionLock,
+    anchor: {
+      source: effect.anchor.source,
+      visualMode: effect.anchor.visualMode,
+    },
+    transformOrigin: {
+      x: effect.transformOrigin.x,
+      y: effect.transformOrigin.y,
+    },
+    impactRegistration: {
       transformOrigin: {
-        x: effect.transformOrigin.x,
-        y: effect.transformOrigin.y,
+        x: effect.impactRegistration.transformOrigin.x,
+        y: effect.impactRegistration.transformOrigin.y,
       },
-      impactRegistration: {
-        transformOrigin: {
-          x: effect.impactRegistration.transformOrigin.x,
-          y: effect.impactRegistration.transformOrigin.y,
-        },
-        translate: {
-          x: effect.impactRegistration.translate.x,
-          y: effect.impactRegistration.translate.y,
-        },
-        rotationDeg: effect.impactRegistration.rotationDeg,
-        scale: effect.impactRegistration.scale,
+      translate: {
+        x: effect.impactRegistration.translate.x,
+        y: effect.impactRegistration.translate.y,
       },
-      variants: {
-        idle: effect.variants.idle,
-        impact: effect.variants.impact,
+      rotationDeg: effect.impactRegistration.rotationDeg,
+      scale: effect.impactRegistration.scale,
+    },
+    variants: {
+      idle: effect.variants.idle,
+      impact: effect.variants.impact,
+    },
+    timeline: effect.timeline.map(entry => ({ phase: entry.phase, delayMs: entry.delayMs })),
+    easterEgg: {
+      mode: effect.easterEgg.mode,
+      scale: effect.easterEgg.scale,
+      anchorOffset: {
+        x: effect.easterEgg.anchorOffset.x,
+        y: effect.easterEgg.anchorOffset.y,
       },
-      timeline: effect.timeline.map(entry => ({ phase: entry.phase, delayMs: entry.delayMs })),
-      easterEgg: {
-        mode: effect.easterEgg.mode,
-        scale: effect.easterEgg.scale,
-        anchorOffset: {
-          x: effect.easterEgg.anchorOffset.x,
-          y: effect.easterEgg.anchorOffset.y,
-        },
-      },
-    };
-  }
-  if (effect.kind === 'round-reveal') {
-    return {
-      id: effect.id,
-      kind: effect.kind,
-      interactionLock: effect.interactionLock,
-      anchors: {
-        user: effect.anchors.user,
-        avatar: effect.anchors.avatar,
-      },
-      timeline: effect.timeline.map(entry => ({ phase: entry.phase, delayMs: entry.delayMs })),
-      labels: {
-        gestures: Object.fromEntries(
-          Object.entries(effect.labels.gestures).map(([choice, label]) => [choice, {
-            key: label.key,
-            fallback: label.fallback,
-          }]),
-        ),
-        results: {
-          user_win: { ...effect.labels.results.user_win },
-          avatar_win: { ...effect.labels.results.avatar_win },
-          draw: { ...effect.labels.results.draw },
-        },
-        announcement: { ...effect.labels.announcement },
-      },
-      layout: {
-        userOffset: { ...effect.layout.userOffset },
-        avatarOffset: { ...effect.layout.avatarOffset },
-        resultOffset: { ...effect.layout.resultOffset },
-      },
-    };
-  }
-  return unsupportedContractDiscriminator(effect, 'effect');
+    },
+  };
 }
 
-function projectProfile(profile: AvatarToolContractInteractionProfile) {
+function projectProfile(profile: AvatarToolInteractionProfile) {
   if (profile.kind === 'progressive-release') {
     return {
       kind: profile.kind,
@@ -842,101 +611,50 @@ function projectProfile(profile: AvatarToolContractInteractionProfile) {
       },
     };
   }
-  if (profile.kind === 'locked-impact') {
-    return {
-      kind: profile.kind,
-      actionId: profile.actionId,
-      touchZone: profile.touchZone,
-      outsideFeedback: {
-        variant: profile.outsideFeedback.variant,
-        resetAfterMs: profile.outsideFeedback.resetAfterMs,
-      },
-      burst: {
-        windowMs: profile.burst.windowMs,
-        rapidThreshold: profile.burst.rapidThreshold,
-        burstThreshold: profile.burst.burstThreshold,
-        normalIntensity: profile.burst.normalIntensity,
-        rapidIntensity: profile.burst.rapidIntensity,
-        burstIntensity: profile.burst.burstIntensity,
-      },
-      touchZones: [...profile.touchZones],
-      chance: {
-        field: profile.chance.field,
-        probability: profile.chance.probability,
-        intensity: profile.chance.intensity,
-        sound: profile.chance.sound,
-      },
-      feedback: {
-        sound: profile.feedback.sound,
-        effect: profile.feedback.effect,
-      },
-    };
-  }
-  if (profile.kind === 'round-choice') {
-    return {
-      kind: profile.kind,
-      actionId: profile.actionId,
-      intensity: profile.intensity,
-      choices: {
-        primary: profile.choices.primary,
-        secondary: profile.choices.secondary,
-        tertiary: profile.choices.tertiary,
-      },
-      beats: { ...profile.beats },
-      facts: {
-        userChoiceField: profile.facts.userChoiceField,
-        avatarChoiceField: profile.facts.avatarChoiceField,
-        resultField: profile.facts.resultField,
-      },
-      cycle: {
-        outsideMs: profile.cycle.outsideMs,
-        inRangeMs: profile.cycle.inRangeMs,
-        avatarPreviewMs: profile.cycle.avatarPreviewMs,
-      },
-      random: { strategy: profile.random.strategy },
-      presentation: { confirmation: profile.presentation.confirmation },
-      feedback: {
-        effect: profile.feedback.effect,
-        confirmSound: profile.feedback.confirmSound,
-        resultSounds: {
-          user_win: profile.feedback.resultSounds.user_win,
-          avatar_win: profile.feedback.resultSounds.avatar_win,
-          draw: profile.feedback.resultSounds.draw,
-        },
-      },
-    };
-  }
-  return unsupportedContractDiscriminator(profile, 'profile');
+  return {
+    kind: profile.kind,
+    actionId: profile.actionId,
+    touchZone: profile.touchZone,
+    outsideFeedback: {
+      variant: profile.outsideFeedback.variant,
+      resetAfterMs: profile.outsideFeedback.resetAfterMs,
+    },
+    burst: {
+      windowMs: profile.burst.windowMs,
+      rapidThreshold: profile.burst.rapidThreshold,
+      burstThreshold: profile.burst.burstThreshold,
+      normalIntensity: profile.burst.normalIntensity,
+      rapidIntensity: profile.burst.rapidIntensity,
+      burstIntensity: profile.burst.burstIntensity,
+    },
+    touchZones: [...profile.touchZones],
+    chance: {
+      field: profile.chance.field,
+      probability: profile.chance.probability,
+      intensity: profile.chance.intensity,
+      sound: profile.chance.sound,
+    },
+    feedback: {
+      sound: profile.feedback.sound,
+      effect: profile.feedback.effect,
+    },
+  };
 }
 
-function getReferencedResourceIds(profile: AvatarToolContractInteractionProfile) {
+function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
   if (profile.kind === 'progressive-release') {
     return { sounds: new Set([profile.feedback.sound]), effects: new Set([profile.feedback.effect]) };
   }
   if (profile.kind === 'press-release') {
     return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
   }
-  if (profile.kind === 'locked-impact') {
-    return {
-      sounds: new Set<string>([profile.chance.sound, profile.feedback.sound]),
-      effects: new Set<string>([profile.feedback.effect]),
-    };
-  }
-  if (profile.kind === 'round-choice') {
-    return {
-      sounds: new Set<string>([
-        profile.feedback.confirmSound,
-        profile.feedback.resultSounds.user_win,
-        profile.feedback.resultSounds.avatar_win,
-        profile.feedback.resultSounds.draw,
-      ]),
-      effects: new Set<string>([profile.feedback.effect]),
-    };
-  }
-  return unsupportedContractDiscriminator(profile, 'profile');
+  return {
+    sounds: new Set([profile.chance.sound, profile.feedback.sound]),
+    effects: new Set([profile.feedback.effect]),
+  };
 }
 
-function projectInteraction(definition: AvatarToolContractDefinition): DesktopAvatarToolInteraction {
+function projectInteraction(definition: AvatarToolDefinition): DesktopAvatarToolInteraction {
   const references = getReferencedResourceIds(definition.interaction);
   return {
     profile: projectProfile(definition.interaction),
@@ -954,7 +672,7 @@ function projectInteraction(definition: AvatarToolContractDefinition): DesktopAv
 }
 
 export function projectDesktopAvatarToolContract(
-  definition: AvatarToolContractDefinition | null,
+  definition: AvatarToolDefinition | null,
   runtimePolicy: AvatarToolRuntimePolicy = AVATAR_TOOL_RUNTIME_POLICY,
 ): DesktopAvatarToolContract {
   if (definition === null) {
@@ -964,7 +682,6 @@ export function projectDesktopAvatarToolContract(
       runtimePolicy: null,
     });
   }
-  validateAvatarToolDefinition(definition);
   const { desktopVisual, desktopInteraction } = definition.capability;
   return desktopAvatarToolContractSchema.parse({
     wireVersion: 1,

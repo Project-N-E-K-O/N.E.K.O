@@ -5,20 +5,14 @@ export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer'] as cons
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
-export const AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS = [
-  'userGesture', 'avatarGesture', 'roundResult',
-] as const;
 export const AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS = [
   'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
   'toolId', 'actionId', 'intensity', 'touchZone', 'clientX', 'clientY',
-  ...AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS,
 ] as const;
 const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
-const AVATAR_TOOL_PAYLOAD_FIELD_PATTERN = /^[a-z][a-zA-Z0-9]*$/;
 const AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH = 64;
 const AVATAR_TOOL_RESOURCE_MAX_COUNT = 16;
 const AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT = 64;
-export const AVATAR_TOOL_TIMER_DELAY_MAX_MS = 2_147_483_647;
 export const AVATAR_TOOL_ASSET_PATH_MAX_LENGTH = 2048;
 
 declare global {
@@ -153,48 +147,10 @@ export type HammerSwingEffectRecipe = {
   };
 };
 
-export type AvatarToolLocalizedLabel = {
-  key: string;
-  fallback: string;
-};
-
-export type AvatarToolLayoutOffset = {
-  x: number;
-  y: number;
-};
-
-export type RoundRevealEffectRecipe = {
-  id: string;
-  kind: 'round-reveal';
-  interactionLock: 'effect-lifetime';
-  anchors: {
-    user: 'release-pointer';
-    avatar: 'avatar-head';
-  };
-  timeline: ReadonlyArray<{
-    phase: 'reveal' | 'result' | 'idle';
-    delayMs: number;
-  }>;
-  labels: {
-    gestures: Readonly<Record<string, AvatarToolLocalizedLabel>>;
-    results: Readonly<Record<'user_win' | 'avatar_win' | 'draw', AvatarToolLocalizedLabel>>;
-    announcement: AvatarToolLocalizedLabel;
-  };
-  layout: {
-    userOffset: AvatarToolLayoutOffset;
-    avatarOffset: AvatarToolLayoutOffset;
-    resultOffset: AvatarToolLayoutOffset;
-  };
-};
-
 export type AvatarToolEffectRecipe =
   | FixedParticleEffectRecipe
   | RandomScatterEffectRecipe
   | HammerSwingEffectRecipe;
-
-export type AvatarToolContractEffectRecipe =
-  | AvatarToolEffectRecipe
-  | RoundRevealEffectRecipe;
 
 export type AvatarToolVisualVariant = {
   iconImagePath: string;
@@ -322,48 +278,12 @@ export type LockedImpactProfile = {
   };
 };
 
-export type RoundChoiceProfile = {
-  kind: 'round-choice';
-  actionId: string;
-  intensity: AvatarToolInteractionIntensity;
-  choices: Readonly<Record<AvatarToolVariantId, string>>;
-  beats: Readonly<Record<string, string>>;
-  facts: {
-    userChoiceField: 'userGesture';
-    avatarChoiceField: 'avatarGesture';
-    resultField: 'roundResult';
-  };
-  cycle: {
-    outsideMs: number;
-    inRangeMs: number;
-    avatarPreviewMs: number;
-  };
-  random: {
-    strategy: 'uniform';
-  };
-  presentation: {
-    confirmation: 'render-owner-required';
-  };
-  feedback: {
-    effect: AvatarToolEffectId;
-    confirmSound: AvatarToolSoundId;
-    resultSounds: Readonly<Record<'user_win' | 'avatar_win' | 'draw', AvatarToolSoundId>>;
-  };
-};
-
 export type AvatarToolInteractionProfile =
   | ProgressiveReleaseProfile
   | PressReleaseProfile
   | LockedImpactProfile;
 
-export type AvatarToolContractInteractionProfile =
-  | AvatarToolInteractionProfile
-  | RoundChoiceProfile;
-
-type AvatarToolDefinitionShape<
-  EffectRecipe extends AvatarToolContractEffectRecipe,
-  InteractionProfile extends AvatarToolContractInteractionProfile,
-> = {
+export type AvatarToolDefinition = {
   definitionVersion: 1;
   id: AvatarToolId;
   label: {
@@ -376,19 +296,9 @@ type AvatarToolDefinitionShape<
   };
   visual: AvatarToolVisualDefinition;
   sounds: ReadonlyArray<AvatarToolSoundResource>;
-  effects: ReadonlyArray<EffectRecipe>;
-  interaction: InteractionProfile;
+  effects: ReadonlyArray<AvatarToolEffectRecipe>;
+  interaction: AvatarToolInteractionProfile;
 };
-
-export type AvatarToolDefinition = AvatarToolDefinitionShape<
-  AvatarToolEffectRecipe,
-  AvatarToolInteractionProfile
->;
-
-export type AvatarToolContractDefinition = AvatarToolDefinitionShape<
-  AvatarToolContractEffectRecipe,
-  AvatarToolContractInteractionProfile
->;
 
 export type AvatarToolRegistration = {
   definition: AvatarToolDefinition;
@@ -404,7 +314,7 @@ function registerAvatarTool<const Definition extends AvatarToolDefinition>(
   };
 }
 
-function fail(definition: AvatarToolContractDefinition, reason: string): never {
+function fail(definition: AvatarToolDefinition, reason: string): never {
   throw new Error(`Invalid avatar tool definition "${String(definition?.id)}": ${reason}`);
 }
 
@@ -412,31 +322,31 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function assertFinite(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertFinite(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!isFiniteNumber(value)) fail(definition, `${field} must be finite`);
 }
 
-function assertPositive(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertPositive(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!isFiniteNumber(value) || value <= 0) fail(definition, `${field} must be positive`);
 }
 
-function assertPositiveInteger(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertPositiveInteger(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!Number.isSafeInteger(value) || Number(value) <= 0) {
     fail(definition, `${field} must be a safe positive integer`);
   }
 }
 
-function assertProbability(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertProbability(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!isFiniteNumber(value) || value < 0 || value > 1) {
     fail(definition, `${field} must be between 0 and 1`);
   }
 }
 
-function assertNonEmpty(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertNonEmpty(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (typeof value !== 'string' || value.trim() === '') fail(definition, `${field} must be non-empty`);
 }
 
-function assertDesktopAssetSource(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertDesktopAssetSource(definition: AvatarToolDefinition, value: unknown, field: string) {
   const projected = typeof value === 'string' ? withAvatarToolAssetVersion(value, '0') : '';
   if (
     projected.length > AVATAR_TOOL_ASSET_PATH_MAX_LENGTH
@@ -447,7 +357,7 @@ function assertDesktopAssetSource(definition: AvatarToolContractDefinition, valu
   }
 }
 
-function assertWireIdentifier(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertWireIdentifier(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (
     typeof value !== 'string'
     || value.length > AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH
@@ -457,105 +367,20 @@ function assertWireIdentifier(definition: AvatarToolContractDefinition, value: u
   }
 }
 
-function assertPayloadFieldSyntax(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  field: string,
-) {
-  if (
-    typeof value !== 'string'
-    || value.length > AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH
-    || !AVATAR_TOOL_PAYLOAD_FIELD_PATTERN.test(value)
-  ) {
-    fail(definition, `${field} must be a camel-case payload field of at most 64 characters`);
-  }
-}
-
-function assertUnreservedPayloadField(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  field: string,
-) {
-  assertPayloadFieldSyntax(definition, value, field);
-  if ((AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly unknown[]).includes(value)) {
-    fail(definition, `${field} conflicts with a reserved payload field`);
-  }
-}
-
-function assertRoundChoiceFactField(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  field: string,
-) {
-  assertPayloadFieldSyntax(definition, value, field);
-  if (!(AVATAR_TOOL_ROUND_CHOICE_FACT_FIELDS as readonly unknown[]).includes(value)) {
-    fail(definition, `${field} must be a canonical round field`);
-  }
-}
-
-function assertTimerDelay(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  field: string,
-  allowZero: boolean,
-) {
-  if (
-    !isFiniteNumber(value)
-    || (allowZero ? value < 0 : value <= 0)
-    || value > AVATAR_TOOL_TIMER_DELAY_MAX_MS
-  ) {
-    fail(
-      definition,
-      `${field} must be ${allowZero ? 'non-negative' : 'positive'} and at most ${AVATAR_TOOL_TIMER_DELAY_MAX_MS}ms`,
-    );
-  }
-}
-
-function assertExactKeys(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  expectedKeys: ReadonlyArray<string>,
-  field: string,
-) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    fail(definition, `${field} must be an object`);
-  }
-  const actualKeys = Object.keys(value);
-  const missing = expectedKeys.find(key => !actualKeys.includes(key));
-  if (missing) fail(definition, `${field}.${missing} is required`);
-  const unexpected = actualKeys.find(key => !expectedKeys.includes(key));
-  if (unexpected) fail(definition, `${field} contains unexpected field ${unexpected}`);
-}
-
-function assertLocalizedLabel(
-  definition: AvatarToolContractDefinition,
-  value: unknown,
-  field: string,
-) {
-  assertExactKeys(definition, value, ['key', 'fallback'], field);
-  const label = value as AvatarToolLocalizedLabel;
-  (['key', 'fallback'] as const).forEach((labelField) => {
-    const text = label[labelField];
-    if (typeof text !== 'string' || text.trim() === '' || text.length > 256) {
-      fail(definition, `${field}.${labelField} must be non-blank and at most 256 characters`);
-    }
-  });
-}
-
-function assertVariant(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertVariant(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!AVATAR_TOOL_VARIANT_IDS.includes(value as never)) {
     fail(definition, `${field} must be a supported variant`);
   }
 }
 
-function assertIntensity(definition: AvatarToolContractDefinition, value: unknown, field: string) {
+function assertIntensity(definition: AvatarToolDefinition, value: unknown, field: string) {
   if (!AVATAR_TOOL_INTERACTION_INTENSITIES.includes(value as never)) {
     fail(definition, `${field} must be a supported intensity`);
   }
 }
 
 function assertTouchZones(
-  definition: AvatarToolContractDefinition,
+  definition: AvatarToolDefinition,
   value: ReadonlyArray<AvatarToolTouchZone> | undefined,
   field: string,
 ) {
@@ -570,7 +395,7 @@ function assertTouchZones(
   }
 }
 
-function validateVisual(definition: AvatarToolContractDefinition) {
+function validateVisual(definition: AvatarToolDefinition) {
   const { visual } = definition;
   if (!visual || typeof visual !== 'object') fail(definition, 'visual is required');
   assertVariant(definition, visual.initialVariant, 'visual.initialVariant');
@@ -628,7 +453,7 @@ function validateVisual(definition: AvatarToolContractDefinition) {
   });
 }
 
-function validateSounds(definition: AvatarToolContractDefinition) {
+function validateSounds(definition: AvatarToolDefinition) {
   if (
     !Array.isArray(definition.sounds)
     || definition.sounds.length === 0
@@ -650,7 +475,7 @@ function validateSounds(definition: AvatarToolContractDefinition) {
 }
 
 function validateRange(
-  definition: AvatarToolContractDefinition,
+  definition: AvatarToolDefinition,
   range: { min: number; range: number } | undefined,
   field: string,
 ) {
@@ -659,104 +484,12 @@ function validateRange(
   if (Number(range?.range) < 0) fail(definition, `${field}.range must not be negative`);
 }
 
-function validateRoundRevealEffect(
-  definition: AvatarToolContractDefinition,
-  effect: RoundRevealEffectRecipe,
-  effectPath: string,
-) {
-  assertExactKeys(
-    definition,
-    effect,
-    ['id', 'kind', 'interactionLock', 'anchors', 'timeline', 'labels', 'layout'],
-    effectPath,
-  );
-  if (effect.interactionLock !== 'effect-lifetime') {
-    fail(definition, `${effectPath} must lock interaction for its effect lifetime`);
-  }
-  assertExactKeys(definition, effect.anchors, ['user', 'avatar'], `${effectPath}.anchors`);
-  if (effect.anchors?.user !== 'release-pointer') {
-    fail(definition, `${effectPath}.anchors.user must be release-pointer`);
-  }
-  if (effect.anchors?.avatar !== 'avatar-head') {
-    fail(definition, `${effectPath}.anchors.avatar must be avatar-head`);
-  }
-  const expectedPhases = ['reveal', 'result', 'idle'] as const;
-  const timeline = effect.timeline ?? [];
-  if (
-    !Array.isArray(timeline)
-    || timeline.length !== expectedPhases.length
-    || timeline.some((entry, index) => entry?.phase !== expectedPhases[index])
-  ) {
-    fail(definition, 'round reveal timeline must contain reveal, result and idle in order');
-  }
-  timeline.forEach((entry, index) => {
-    assertExactKeys(definition, entry, ['phase', 'delayMs'], `${effectPath}.timeline[${index}]`);
-    assertTimerDelay(definition, entry.delayMs, `${effectPath}.timeline[${index}].delayMs`, true);
-    if (index === 0 && entry.delayMs !== 0) {
-      fail(definition, 'round reveal timeline must start at 0ms');
-    }
-    if (index > 0 && entry.delayMs <= timeline[index - 1].delayMs) {
-      fail(definition, 'round reveal timeline delays after reveal must be strictly increasing');
-    }
-  });
-  assertExactKeys(
-    definition,
-    effect.labels,
-    ['gestures', 'results', 'announcement'],
-    `${effectPath}.labels`,
-  );
-  const gestureLabels = effect.labels?.gestures;
-  if (
-    !gestureLabels
-    || typeof gestureLabels !== 'object'
-    || Array.isArray(gestureLabels)
-    || Object.keys(gestureLabels).length === 0
-    || Object.keys(gestureLabels).length > AVATAR_TOOL_EFFECT_ITEM_MAX_COUNT
-  ) {
-    fail(definition, `${effectPath}.labels.gestures must contain between 1 and 64 labels`);
-  }
-  Object.entries(gestureLabels).forEach(([choice, label]) => {
-    assertWireIdentifier(definition, choice, `${effectPath}.labels.gestures key`);
-    assertLocalizedLabel(definition, label, `${effectPath}.labels.gestures.${choice}`);
-  });
-  assertExactKeys(
-    definition,
-    effect.labels?.results,
-    ['user_win', 'avatar_win', 'draw'],
-    `${effectPath}.labels.results`,
-  );
-  (['user_win', 'avatar_win', 'draw'] as const).forEach((result) => {
-    assertLocalizedLabel(
-      definition,
-      effect.labels.results[result],
-      `${effectPath}.labels.results.${result}`,
-    );
-  });
-  assertLocalizedLabel(
-    definition,
-    effect.labels?.announcement,
-    `${effectPath}.labels.announcement`,
-  );
-  assertExactKeys(
-    definition,
-    effect.layout,
-    ['userOffset', 'avatarOffset', 'resultOffset'],
-    `${effectPath}.layout`,
-  );
-  (['userOffset', 'avatarOffset', 'resultOffset'] as const).forEach((offset) => {
-    const path = `${effectPath}.layout.${offset}`;
-    assertExactKeys(definition, effect.layout?.[offset], ['x', 'y'], path);
-    assertFinite(definition, effect.layout[offset].x, `${path}.x`);
-    assertFinite(definition, effect.layout[offset].y, `${path}.y`);
-  });
-}
-
-function validateEffects(definition: AvatarToolContractDefinition) {
+function validateEffects(definition: AvatarToolDefinition) {
   if (!Array.isArray(definition.effects) || definition.effects.length > AVATAR_TOOL_RESOURCE_MAX_COUNT) {
     fail(definition, 'effects must contain at most 16 resources');
   }
   const ids = new Set<string>();
-  definition.effects.forEach((effect: AvatarToolContractEffectRecipe, index: number) => {
+  definition.effects.forEach((effect: AvatarToolEffectRecipe, index: number) => {
     const effectPath = `effects[${index}]`;
     assertWireIdentifier(definition, effect?.id, `${effectPath}.id`);
     if (ids.has(effect.id)) fail(definition, `effect ${effect.id} is duplicated`);
@@ -879,15 +612,11 @@ function validateEffects(definition: AvatarToolContractDefinition) {
       assertFinite(definition, effect.easterEgg?.anchorOffset?.y, `${effectPath}.easterEgg.anchorOffset.y`);
       return;
     }
-    if (effect.kind === 'round-reveal') {
-      validateRoundRevealEffect(definition, effect, effectPath);
-      return;
-    }
     fail(definition, `effects[${index}].kind is unsupported`);
   });
 }
 
-function validateInteractionReferences(definition: AvatarToolContractDefinition) {
+function validateInteractionReferences(definition: AvatarToolDefinition) {
   const soundIds = new Set(definition.sounds.map(sound => sound.id));
   const effectIds = new Set(definition.effects.map(effect => effect.id));
   const requireSound = (sound: AvatarToolSoundId) => {
@@ -895,25 +624,6 @@ function validateInteractionReferences(definition: AvatarToolContractDefinition)
   };
   const requireEffect = (effect: AvatarToolEffectId) => {
     if (!effectIds.has(effect)) fail(definition, `interaction references missing effect ${effect}`);
-  };
-  const requireLegacyEffect = (effectId: AvatarToolEffectId) => {
-    requireEffect(effectId);
-    if (definition.effects.find(effect => effect.id === effectId)?.kind === 'round-reveal') {
-      fail(definition, 'round-reveal effects require a round-choice profile');
-    }
-  };
-  const requireExactResourceClosure = (
-    referencedSounds: ReadonlySet<AvatarToolSoundId>,
-    referencedEffects: ReadonlySet<AvatarToolEffectId>,
-  ) => {
-    referencedSounds.forEach(requireSound);
-    referencedEffects.forEach(requireEffect);
-    soundIds.forEach((sound) => {
-      if (!referencedSounds.has(sound)) fail(definition, `interaction has unreferenced sound ${sound}`);
-    });
-    effectIds.forEach((effect) => {
-      if (!referencedEffects.has(effect)) fail(definition, `interaction has unreferenced effect ${effect}`);
-    });
   };
   const interaction = definition.interaction;
   assertNonEmpty(definition, interaction?.kind, 'interaction.kind');
@@ -949,114 +659,10 @@ function validateInteractionReferences(definition: AvatarToolContractDefinition)
       interaction.burst.thresholdIntensity,
       'interaction.burst.thresholdIntensity',
     );
-    assertVariant(definition, interaction.feedback.effectVariant, 'interaction.feedback.effectVariant');
     requireSound(interaction.feedback.sound);
-    requireLegacyEffect(interaction.feedback.effect);
+    requireEffect(interaction.feedback.effect);
+    assertVariant(definition, interaction.feedback.effectVariant, 'interaction.feedback.effectVariant');
     return;
-  }
-  if (interaction.kind === 'round-choice') {
-    assertExactKeys(
-      definition,
-      interaction,
-      [
-        'kind', 'actionId', 'intensity', 'choices', 'beats', 'facts', 'cycle',
-        'random', 'presentation', 'feedback',
-      ],
-      'interaction',
-    );
-    assertWireIdentifier(definition, interaction.actionId, 'interaction.actionId');
-    assertIntensity(definition, interaction.intensity, 'interaction.intensity');
-    assertExactKeys(definition, interaction.choices, AVATAR_TOOL_VARIANT_IDS, 'interaction.choices');
-    const choices = AVATAR_TOOL_VARIANT_IDS.map(variant => interaction.choices[variant]);
-    choices.forEach((choice, index) => {
-      assertWireIdentifier(definition, choice, `interaction.choices.${AVATAR_TOOL_VARIANT_IDS[index]}`);
-    });
-    if (new Set(choices).size !== AVATAR_TOOL_VARIANT_IDS.length) {
-      fail(definition, 'interaction.choices must contain three unique choice identifiers');
-    }
-    assertExactKeys(definition, interaction.beats, choices, 'interaction.beats');
-    const beatenChoices = choices.map((choice) => interaction.beats[choice]);
-    if (
-      beatenChoices.some((loser, index) => !choices.includes(loser) || loser === choices[index])
-      || new Set(beatenChoices).size !== choices.length
-    ) {
-      fail(definition, 'interaction.beats must form a unique three-element cycle');
-    }
-    assertExactKeys(
-      definition,
-      interaction.facts,
-      ['userChoiceField', 'avatarChoiceField', 'resultField'],
-      'interaction.facts',
-    );
-    const expectedFactFields = {
-      userChoiceField: 'userGesture',
-      avatarChoiceField: 'avatarGesture',
-      resultField: 'roundResult',
-    } as const;
-    (Object.keys(expectedFactFields) as Array<keyof typeof expectedFactFields>).forEach((field) => {
-      const value = interaction.facts[field];
-      assertRoundChoiceFactField(definition, value, `interaction.facts.${field}`);
-      if (value !== expectedFactFields[field]) {
-        fail(definition, `interaction.facts.${field} must be ${expectedFactFields[field]}`);
-      }
-    });
-    assertExactKeys(
-      definition,
-      interaction.cycle,
-      ['outsideMs', 'inRangeMs', 'avatarPreviewMs'],
-      'interaction.cycle',
-    );
-    (['outsideMs', 'inRangeMs', 'avatarPreviewMs'] as const).forEach((field) => {
-      assertTimerDelay(definition, interaction.cycle[field], `interaction.cycle.${field}`, false);
-    });
-    assertExactKeys(definition, interaction.random, ['strategy'], 'interaction.random');
-    if (interaction.random.strategy !== 'uniform') {
-      fail(definition, 'interaction.random.strategy must be uniform');
-    }
-    assertExactKeys(
-      definition,
-      interaction.presentation,
-      ['confirmation'],
-      'interaction.presentation',
-    );
-    if (interaction.presentation.confirmation !== 'render-owner-required') {
-      fail(definition, 'interaction.presentation.confirmation must be render-owner-required');
-    }
-    assertExactKeys(
-      definition,
-      interaction.feedback,
-      ['effect', 'confirmSound', 'resultSounds'],
-      'interaction.feedback',
-    );
-    assertExactKeys(
-      definition,
-      interaction.feedback.resultSounds,
-      ['user_win', 'avatar_win', 'draw'],
-      'interaction.feedback.resultSounds',
-    );
-    const referencedSounds = new Set<AvatarToolSoundId>([
-      interaction.feedback.confirmSound,
-      interaction.feedback.resultSounds.user_win,
-      interaction.feedback.resultSounds.avatar_win,
-      interaction.feedback.resultSounds.draw,
-    ]);
-    const referencedEffects = new Set<AvatarToolEffectId>([interaction.feedback.effect]);
-    requireExactResourceClosure(referencedSounds, referencedEffects);
-    const revealEffect = definition.effects.find(effect => effect.id === interaction.feedback.effect);
-    if (revealEffect?.kind !== 'round-reveal') {
-      fail(definition, 'interaction.feedback.effect must reference a round-reveal effect');
-    }
-    const gestureLabelKeys = Object.keys(revealEffect.labels.gestures);
-    if (
-      gestureLabelKeys.length !== choices.length
-      || !choices.every(choice => gestureLabelKeys.includes(choice))
-    ) {
-      fail(definition, 'round reveal gesture labels must match interaction choices');
-    }
-    return;
-  }
-  if (interaction.kind !== 'press-release' && interaction.kind !== 'locked-impact') {
-    fail(definition, 'interaction.kind is unsupported');
   }
   assertWireIdentifier(definition, interaction.actionId, 'interaction.actionId');
   if (interaction.touchZone !== 'release') {
@@ -1068,7 +674,16 @@ function validateInteractionReferences(definition: AvatarToolContractDefinition)
   assertIntensity(definition, interaction.burst.normalIntensity, 'interaction.burst.normalIntensity');
   assertIntensity(definition, interaction.burst.rapidIntensity, 'interaction.burst.rapidIntensity');
   assertTouchZones(definition, interaction.touchZones, 'interaction.touchZones');
-  assertUnreservedPayloadField(definition, interaction.chance.field, 'interaction.chance.field');
+  assertNonEmpty(definition, interaction.chance.field, 'interaction.chance.field');
+  if (
+    interaction.chance.field.length > 64
+    || !/^[a-z][a-zA-Z0-9]*$/.test(interaction.chance.field)
+  ) {
+    fail(definition, 'interaction.chance.field must be a camel-case payload field of at most 64 characters');
+  }
+  if ((AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS as readonly string[]).includes(interaction.chance.field)) {
+    fail(definition, 'interaction.chance.field conflicts with a reserved payload field');
+  }
   assertProbability(definition, interaction.chance.probability, 'interaction.chance.probability');
   if (interaction.kind === 'press-release') {
     assertVariant(definition, interaction.pointerDown.rangeVariant, 'interaction.pointerDown.rangeVariant');
@@ -1076,7 +691,7 @@ function validateInteractionReferences(definition: AvatarToolContractDefinition)
     assertVariant(definition, interaction.pointerRelease.rangeVariant, 'interaction.pointerRelease.rangeVariant');
     assertVariant(definition, interaction.pointerRelease.outsideVariant, 'interaction.pointerRelease.outsideVariant');
     requireSound(interaction.chance.sound);
-    requireLegacyEffect(interaction.chance.effect);
+    requireEffect(interaction.chance.effect);
     return;
   }
   if (interaction.kind === 'locked-impact') {
@@ -1099,13 +714,13 @@ function validateInteractionReferences(definition: AvatarToolContractDefinition)
     assertPositive(definition, interaction.outsideFeedback.resetAfterMs, 'interaction.outsideFeedback.resetAfterMs');
     requireSound(interaction.chance.sound);
     requireSound(interaction.feedback.sound);
-    requireLegacyEffect(interaction.feedback.effect);
+    requireEffect(interaction.feedback.effect);
     return;
   }
   fail(definition, 'interaction.kind is unsupported');
 }
 
-export function validateAvatarToolDefinition(definition: AvatarToolContractDefinition): void {
+export function validateAvatarToolDefinition(definition: AvatarToolDefinition): void {
   if (!definition || typeof definition !== 'object') throw new Error('Invalid avatar tool definition');
   if (definition.definitionVersion !== 1) fail(definition, 'definitionVersion must be 1');
   if (!AVATAR_TOOL_DEFINITION_IDS.includes(definition.id as never)) fail(definition, 'id is unsupported');
