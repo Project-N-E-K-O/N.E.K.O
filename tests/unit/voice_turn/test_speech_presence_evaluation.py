@@ -69,6 +69,14 @@ def test_sustained_trigger_rejects_isolated_rnnoise_spikes() -> None:
     assert sustained == 60
 
 
+def test_current_rnnoise_policy_uses_adaptive_threshold_after_baseline() -> None:
+    probabilities = [0.0] * 20 + [0.25, 0.25]
+
+    trigger = MODULE._current_rnnoise_policy_trigger_ms(probabilities)
+
+    assert trigger == 220
+
+
 def test_mix_at_snr_preserves_requested_rms_ratio() -> None:
     rng = np.random.default_rng(123)
     speech = rng.normal(size=48_000).astype(np.float32) * 0.02
