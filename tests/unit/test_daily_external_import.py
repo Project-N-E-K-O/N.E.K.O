@@ -30,11 +30,12 @@ class _DailyHarness(FactStore):
         # 对偶真实 load_facts_full：active + archive（含已归档天的 provenance）。
         return self.store + self.archive
 
-    # sidecar 只 stub 文件 IO 层：_aload_imported_day_fps 的双源合并逻辑走真实现。
+    # 只 stub sidecar 文件 IO 层：_arecord_unpersisted_day_fp 的 has_carrier 检查
+    # + 锁 + best-effort 包裹走真实实现（state_fps 充当磁盘）。
     def _load_external_import_state(self, name):
         return {"daily": {"imported_day_fingerprints": sorted(self.state_fps)}}
 
-    async def _arecord_unpersisted_day_fp(self, lanlan_name, fingerprint):
+    def _record_imported_day_fp_locked(self, name, fingerprint):
         self.state_fps.add(fingerprint)
 
     async def _allm_extract_facts(self, lanlan_name, messages):
@@ -485,9 +486,8 @@ async def test_sidecar_write_failure_does_not_fail_the_day():
     # failed_day → 整包 HTTP 500（回归 B）。走真实 _arecord_unpersisted_day_fp，
     # 只让底层写盘抛 OSError。
     class _FailingSidecarHarness(_DailyHarness):
-        # 恢复真实 best-effort 包裹（父 harness 把它 stub 成 set.add）。
-        _arecord_unpersisted_day_fp = FactStore._arecord_unpersisted_day_fp
-
+        # 父 harness 已走真实 _arecord_unpersisted_day_fp（best-effort 包裹）；这里
+        # 只让底层写盘抛 OSError。
         def _record_imported_day_fp_locked(self, name, fingerprint):
             raise OSError("disk full")
 
@@ -523,16 +523,42 @@ async def test_imported_day_fps_merges_sidecar_and_fact_provenance():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_sidecar_only_fingerprint_detected_before_persist():
-    # 并发缩窗重查同样合并 sidecar：对方并发导入把「空抽取天」只落进 sidecar
-    # （无 fact 落盘），本方 persist 前重查也必须命中并放弃写入。
+async def test_concurrent_sidecar_only_does_not_suppress_real_facts():
+    # Codex：并发缩窗重查只认 active fact provenance、**不查 sidecar**。对方并发
+    # 的 sidecar-only（空抽取/全去重、无 fact 载体）结果不能挤掉本请求已抽出的
+    # 真实 facts——否则「无 fact 的 sidecar」压掉真实抽取内容。
     harness_holder = {}
 
     def stub(journal):
-        # 模拟「LLM 期间」并发请求把同一天以 sidecar-only 形式标记 processed
+        # 模拟「LLM 期间」对方并发请求把同一天以 sidecar-only 形式标记 processed
         h = harness_holder["h"]
         fp = h._daily_fingerprint(["went hiking"], event_date="2026-07-12")
         h.state_fps.add(fp)
+        return [{"text": "my phrasing", "importance": 5}]  # 本请求抽出真实 facts
+
+    harness = _DailyHarness(stub)
+    harness_holder["h"] = harness
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "went hiking"),
+        "hermes", "t",
+    )
+    assert result["added"] == 1              # 真实 facts 落盘，不被 sidecar-only 挤掉
+    assert len(harness.persisted) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_real_facts_before_persist_still_drops_this_write():
+    # 并发重查的正路径保留：对方并发已把这天**真实 facts**（有 provenance）落盘，
+    # 本请求 persist 前查 active provenance 命中即放弃（措辞不同的重复绕过精确去重）。
+    harness_holder = {}
+
+    def stub(journal):
+        h = harness_holder["h"]
+        fp = h._daily_fingerprint(["went hiking"], event_date="2026-07-12")
+        h.store.append({
+            "text": "someone else's phrasing", "importance": 5,
+            "external_import": {"day_fingerprint": fp},
+        })
         return [{"text": "my phrasing", "importance": 5}]
 
     harness = _DailyHarness(stub)
@@ -542,8 +568,64 @@ async def test_concurrent_sidecar_only_fingerprint_detected_before_persist():
         "hermes", "t",
     )
     assert result["added"] == 0
-    assert result["failed_days"] == 0
-    assert harness.persisted == []  # 本次写入被放弃
+    assert harness.persisted == []           # 本次写入被放弃
+
+
+@pytest.mark.asyncio
+async def test_provenance_upgraded_day_does_not_record_sidecar():
+    # Codex：exact-hash 命中把 provenance upgrade 到既有 ai_disclosure fact 时，
+    # _apersist_new_facts 返回 [] 但这天**有 fact 载体**（provenance 打在既有 fact
+    # 上）。此天不该记 sidecar，否则 facts.json 回滚后残留指纹压制 upgrade 自愈。
+    class _UpgradeHarness(_DailyHarness):
+        async def _apersist_new_facts(
+            self, lanlan_name, extracted, *,
+            default_source="user_observation", semantic_dedup=True,
+        ):
+            self.persisted.append([dict(f) for f in extracted])
+            # 模拟 upgrade：不新增 fact（返回 []），但把 provenance 打到既有 fact 上。
+            for fact in extracted:
+                meta = fact.get("_external_import")
+                if isinstance(meta, dict):
+                    self.store.append({
+                        "text": "pre-existing ai_disclosure fact",
+                        "external_import": dict(meta),
+                    })
+            return []
+
+    harness = _UpgradeHarness(
+        lambda journal: [{"text": "corroborated", "importance": 6}]
+    )
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "user corroboration")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert harness.state_fps == set()        # 有 provenance 载体 → 不记 sidecar
+
+
+@pytest.mark.asyncio
+async def test_empty_day_skips_sidecar_when_concurrent_import_persisted_facts():
+    # Codex：空抽取分支写 sidecar 前也要查 active provenance。若并发对方已把这天
+    # 真实 facts 落盘（有载体），本空抽取请求不该再记 sidecar（那会给「现在有 fact」
+    # 的天留 sidecar、破坏回滚自愈）。
+    harness_holder = {}
+
+    def stub(journal):
+        h = harness_holder["h"]
+        fp = h._daily_fingerprint(["nothing factual"], event_date="2026-07-12")
+        h.store.append({
+            "text": "concurrent real fact", "importance": 5,
+            "external_import": {"day_fingerprint": fp},
+        })
+        return []  # 本请求空抽取
+
+    harness = _DailyHarness(stub)
+    harness_holder["h"] = harness
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "nothing factual"),
+        "hermes", "t",
+    )
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert harness.state_fps == set()        # 并发对方已落 provenance → 不记 sidecar
 
 
 # ── sidecar 文件层（真实读写，tmp 目录）──
@@ -593,5 +675,21 @@ async def test_sidecar_corrupt_file_degrades_to_empty_and_recovers(tmp_path):
     # 损坏文件降级为空集（最坏重抽一遍，不炸导入）……
     assert await harness._aload_imported_day_fps("Neko") == set()
     # ……且下一次 record 原子重建文件。
+    await harness._arecord_unpersisted_day_fp("Neko", "fp-new")
+    assert await harness._aload_imported_day_fps("Neko") == {"fp-new"}
+
+
+@pytest.mark.asyncio
+async def test_sidecar_non_utf8_file_degrades_to_empty(tmp_path):
+    # Codex：非法 UTF-8 字节让 json.load 抛 UnicodeDecodeError（ValueError 子类、
+    # 非 JSONDecodeError/OSError）。_aload_imported_day_fps 在 per-day 隔离**前**
+    # 跑，不降级会 abort 整个导入——必须降级为空集，与文本损坏同等对待。
+    harness = _SidecarFileHarness(tmp_path)
+    path = harness._external_import_state_path("Neko")
+    with open(path, "wb") as f:
+        f.write(b"\xff\xfe not valid utf-8 \x80\x81")
+
+    assert await harness._aload_imported_day_fps("Neko") == set()
+    # 且下一次 record 原子重建文件。
     await harness._arecord_unpersisted_day_fp("Neko", "fp-new")
     assert await harness._aload_imported_day_fps("Neko") == {"fp-new"}
