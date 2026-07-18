@@ -27,12 +27,19 @@ from .detector import (
     DetectorDurationQueue,
     DetectorEvent,
     DetectorIngressIdentity,
+    DetectorPrewarmEvent,
     DetectorSubmitResult,
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
+from .activity_evidence import RnnoiseEvidence
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
+from .throttle_policy import (
+    ThrottleAction,
+    ThrottleShadowMetrics,
+    VoiceThrottlePolicy,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -876,6 +883,7 @@ class DetectorRuntime:
         resource_optimization_enabled: bool = True,
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
+        throttle_policy: VoiceThrottlePolicy | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_endpointing_failure: Callable[[], Awaitable[None]] | None = None,
         on_event: Callable[[DetectorEvent], Awaitable[None]] | None = None,
@@ -899,6 +907,10 @@ class DetectorRuntime:
         self._closed = False
         self._rnnoise_onset_probability = rnnoise_onset_probability
         self._resource_optimization_enabled = bool(resource_optimization_enabled)
+        self._throttle_policy = throttle_policy or VoiceThrottlePolicy(
+            resource_optimization_enabled=self._resource_optimization_enabled,
+            bootstrap_onset=rnnoise_onset_probability,
+        )
         self._speech_active = False
         self._events: list[SpeechActivityEvent] = []
         self._semantic_adapter: _VoiceTurnAdapter | None = None
@@ -917,12 +929,14 @@ class DetectorRuntime:
         self._prepare_task: asyncio.Task[bool] | None = None
         self._prepare_token: VoiceTurnToken | None = None
         self._prepare_epoch: int | None = None
+        self._session_smart_turn_pinned = False
         self._overflow_reset_task: asyncio.Task[None] | None = None
         self._detector_epoch = 0
         self._sequence_no = 0
         self._ingress_token: VoiceIngressToken | None = None
         self._candidate_open = False
         self._candidate_generation = 0
+        self._policy_event_candidate: DetectorCandidateKey | None = None
         self._bound_turns: dict[DetectorCandidateKey, BoundDetectorTurn] = {}
         self._deferred_completions: dict[
             DetectorCandidateKey, DetectorIngressIdentity
@@ -944,6 +958,8 @@ class DetectorRuntime:
 
             async def commit(_generation: int, _buffer_epoch: int, _turn_id: int) -> None:
                 self._candidate_open = False
+                self._policy_event_candidate = None
+                self._throttle_policy.reset_candidate_activity()
                 if self._defer_turn_complete:
                     self._deferred_turn_complete = True
                     return
@@ -965,11 +981,13 @@ class DetectorRuntime:
 
             async def activity(event: SpeechActivityEvent) -> None:
                 self._events.append(event)
+                self._throttle_policy.observe_silero(event)
 
             async def scoped_activity(
                 event: SpeechActivityEvent,
                 identity: DetectorIngressIdentity,
             ) -> None:
+                self._throttle_policy.observe_silero(event)
                 if self._on_event is None or identity.detector_epoch != self._detector_epoch:
                     return
                 await self._on_event(
@@ -1029,6 +1047,10 @@ class DetectorRuntime:
     @property
     def candidate_open(self) -> bool:
         return self._candidate_open
+
+    @property
+    def throttle_shadow_metrics(self) -> ThrottleShadowMetrics:
+        return self._throttle_policy.shadow_metrics
 
     @property
     def queued_audio_ms(self) -> int:
@@ -1164,6 +1186,63 @@ class DetectorRuntime:
             return SmartTurnLease(token, self)
         return None
 
+    async def pin_endpointing_session(self) -> bool:
+        """Load and retain SmartTurn for a continuous-upload voice session."""
+
+        adapter = self._semantic_adapter
+        coordinator = self._semantic_coordinator
+        if self._closed or adapter is None or coordinator is None:
+            self._smart_turn_readiness = SmartTurnReadiness.FAILED
+            return False
+        await self._ensure_semantic_started(adapter)
+        async with self._lock:
+            if self._closed or adapter.failed:
+                self._smart_turn_readiness = SmartTurnReadiness.FAILED
+                return False
+            if self._session_smart_turn_pinned:
+                return self._smart_turn_readiness is not SmartTurnReadiness.FAILED
+            self._session_smart_turn_pinned = True
+            self._smart_turn_readiness = SmartTurnReadiness.LOADING
+            adapter.pin_smart_turn()
+            detector_epoch = self._detector_epoch
+        loaded = False
+        cancelled = False
+        try:
+            loaded = await coordinator.prepare_predictor()
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            loaded = False
+        async with self._lock:
+            valid = bool(
+                self._session_smart_turn_pinned
+                and not self._closed
+                and not adapter.failed
+                and detector_epoch == self._detector_epoch
+            )
+            if valid and loaded:
+                self._smart_turn_readiness = SmartTurnReadiness.READY
+                return True
+            if self._session_smart_turn_pinned:
+                self._session_smart_turn_pinned = False
+                adapter.unpin_smart_turn()
+            if valid:
+                self._smart_turn_readiness = SmartTurnReadiness.FAILED
+        if cancelled:
+            raise asyncio.CancelledError
+        return False
+
+    async def release_endpointing_session(self) -> None:
+        async with self._lock:
+            if not self._session_smart_turn_pinned:
+                return
+            self._session_smart_turn_pinned = False
+            adapter = self._semantic_adapter
+            if adapter is not None:
+                adapter.unpin_smart_turn()
+            if self._smart_turn_token is None and self._prepare_token is None:
+                self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
+
     async def _prepare_endpointing_task(
         self,
         adapter: _VoiceTurnAdapter,
@@ -1248,6 +1327,8 @@ class DetectorRuntime:
             self._detector_epoch += 1
             self._candidate_generation = 0
             self._candidate_open = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
@@ -1262,6 +1343,7 @@ class DetectorRuntime:
         *,
         speech_probability: float | None = None,
         rnnoise_available: bool | None = None,
+        rnnoise_evidence: RnnoiseEvidence | None = None,
     ) -> DetectorFeedResult:
         if not isinstance(pcm16, bytes) or len(pcm16) % 2:
             raise ValueError("DetectorRuntime requires complete PCM16 bytes")
@@ -1287,6 +1369,7 @@ class DetectorRuntime:
                 sample_rate_hz=16_000,
                 speech_probability=speech_probability,
                 rnnoise_available=rnnoise_available,
+                rnnoise_evidence=rnnoise_evidence,
             )
             if submitted.status is DetectorSubmitStatus.SKIPPED_QUIET:
                 return DetectorFeedResult((), submitted.throttle_available)
@@ -1322,13 +1405,16 @@ class DetectorRuntime:
         async with self._lock:
             if self._closed or not self._available:
                 return DetectorFeedResult((), False)
-            if (
-                self._resource_optimization_enabled
-                and rnnoise_available
-                and speech_probability is not None
-                and not self._speech_active
-                and speech_probability < self._rnnoise_onset_probability
-            ):
+            evidence = rnnoise_evidence or RnnoiseEvidence.from_legacy_probability(
+                speech_probability,
+                available=bool(rnnoise_available),
+            )
+            throttle = self._throttle_policy.decide(
+                evidence,
+                candidate_open=self._speech_active,
+                allow_baseline_update=not self._speech_active,
+            )
+            if throttle.action is ThrottleAction.SKIP_IDLE_PCM:
                 return DetectorFeedResult((), True)
             if not self._load_attempted:
                 self._load_attempted = True
@@ -1354,6 +1440,8 @@ class DetectorRuntime:
                 for event in events
             ):
                 self._speech_active = True
+            for event in events:
+                self._throttle_policy.observe_silero(event)
         return DetectorFeedResult(events, True)
 
     async def submit_audio(
@@ -1364,6 +1452,8 @@ class DetectorRuntime:
         sample_rate_hz: int,
         speech_probability: float | None,
         rnnoise_available: bool,
+        rnnoise_evidence: RnnoiseEvidence | None = None,
+        allow_baseline_update: bool = False,
     ) -> DetectorSubmitResult:
         """Validate and enqueue one frame without waiting for detector inference."""
 
@@ -1419,18 +1509,22 @@ class DetectorRuntime:
                 True,
                 None,
             )
-        if (
-            self._resource_optimization_enabled
-            and rnnoise_available
-            and speech_probability is not None
-            and not self._candidate_open
-            and speech_probability < self._rnnoise_onset_probability
-        ):
+        evidence = rnnoise_evidence or RnnoiseEvidence.from_legacy_probability(
+            speech_probability,
+            available=rnnoise_available,
+        )
+        throttle = self._throttle_policy.decide(
+            evidence,
+            candidate_open=self._candidate_open,
+            allow_baseline_update=allow_baseline_update,
+        )
+        if throttle.action is ThrottleAction.SKIP_IDLE_PCM:
             return DetectorSubmitResult(
                 DetectorSubmitStatus.SKIPPED_QUIET,
                 adapter.throttle_available,
                 True,
                 None,
+                throttle.action,
             )
         self._candidate_open = True
         await self._ensure_semantic_started(adapter)
@@ -1453,6 +1547,8 @@ class DetectorRuntime:
             self._detector_epoch += 1
             self._candidate_generation = 0
             self._candidate_open = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
@@ -1474,11 +1570,35 @@ class DetectorRuntime:
                 None,
             )
         self._sequence_no = next_sequence
+        candidate = DetectorCandidateKey(
+            identity.detector_epoch,
+            self._candidate_generation,
+        )
+        if (
+            self._on_event is not None
+            and self._policy_event_candidate != candidate
+            and throttle.action
+            in {ThrottleAction.PREWARM, ThrottleAction.ALLOW_PROVIDER_AUDIO}
+        ):
+            self._policy_event_candidate = candidate
+            await self._on_event(
+                DetectorPrewarmEvent(
+                    ingress=identity,
+                    candidate=candidate,
+                    kind=(
+                        "continuous"
+                        if throttle.action is ThrottleAction.ALLOW_PROVIDER_AUDIO
+                        else "prewarm"
+                    ),
+                )
+            )
         return DetectorSubmitResult(
             DetectorSubmitStatus.ACCEPTED,
             adapter.throttle_available,
             True,
             identity,
+            throttle.action,
+            candidate,
         )
 
     async def _reset_after_overflow(
@@ -1514,6 +1634,7 @@ class DetectorRuntime:
             await asyncio.gather(overflow_reset_task, return_exceptions=True)
         adapter: _VoiceTurnAdapter | None = None
         semantic_identity: tuple[int, int, int] | None = None
+        prepare_task: asyncio.Task[bool] | None = None
         async with self._lock:
             if self._closed:
                 return
@@ -1522,15 +1643,26 @@ class DetectorRuntime:
             self._sequence_no = 0
             self._ingress_token = None
             self._candidate_open = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
             self._bound_turns.clear()
             self._deferred_completions.clear()
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
+            if (
+                self._prepare_task is not None
+                and self._prepare_task is not asyncio.current_task()
+            ):
+                prepare_task = self._prepare_task
+                prepare_task.cancel()
             self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
             if self._semantic_adapter is not None and self._semantic_started:
                 if self._smart_turn_token is not None:
                     self._smart_turn_token = None
+                    self._semantic_adapter.unpin_smart_turn()
+                if self._session_smart_turn_pinned:
+                    self._session_smart_turn_pinned = False
                     self._semantic_adapter.unpin_smart_turn()
                 self._defer_turn_complete = False
                 self._deferred_turn_complete = False
@@ -1542,6 +1674,8 @@ class DetectorRuntime:
                     0,
                     self._semantic_turn_id,
                 )
+        if prepare_task is not None:
+            await asyncio.gather(prepare_task, return_exceptions=True)
         if adapter is not None and semantic_identity is not None:
             await adapter.reset(
                 generation=semantic_identity[0],
@@ -1586,6 +1720,7 @@ class DetectorRuntime:
             self._detector_epoch += 1
             self._candidate_generation = 0
             self._candidate_open = False
+            self._throttle_policy.reset_candidate_activity()
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
@@ -1594,7 +1729,13 @@ class DetectorRuntime:
                 watch_task.cancel()
             if self._semantic_adapter is not None:
                 overflow_reset_task = self._overflow_reset_task
+                release_turn_pin = self._smart_turn_token is not None
                 self._smart_turn_token = None
+                if release_turn_pin:
+                    self._semantic_adapter.unpin_smart_turn()
+                if self._session_smart_turn_pinned:
+                    self._session_smart_turn_pinned = False
+                    self._semantic_adapter.unpin_smart_turn()
                 self._prepare_token = None
                 self._prepare_epoch = None
                 prepare_task, self._prepare_task = self._prepare_task, None
@@ -1623,6 +1764,7 @@ class DetectorRuntime:
             self._detector_epoch += 1
             self._candidate_generation = 0
             self._candidate_open = False
+            self._throttle_policy.reset_candidate_activity()
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()

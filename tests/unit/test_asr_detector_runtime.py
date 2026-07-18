@@ -13,13 +13,16 @@ from main_logic.asr_client.detector_runtime import (
     SmartTurnLease,
     SmartTurnReadiness,
 )
+from main_logic.asr_client.activity_evidence import RnnoiseEvidence
 from main_logic.asr_client.detector import (
     DetectorActivityEvent,
+    DetectorPrewarmEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.asr_client.throttle_policy import ThrottleAction
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
     SpeechActivityEvent,
@@ -371,6 +374,128 @@ async def test_disabled_resource_optimization_never_skips_quiet_rnnoise_pcm() ->
     await detector.close()
 
 
+async def test_submit_audio_uses_chunk_peak_for_prewarm_and_emits_once() -> None:
+    events: list[DetectorPrewarmEvent] = []
+
+    async def on_event(event) -> None:
+        if isinstance(event, DetectorPrewarmEvent):
+            events.append(event)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    evidence = RnnoiseEvidence(
+        available=True,
+        frame_count=3,
+        peak=0.8,
+        mean=0.35,
+        last=0.05,
+        ema=0.3,
+    )
+
+    first = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.05,
+        rnnoise_available=True,
+        rnnoise_evidence=evidence,
+    )
+    second = await detector.submit_audio(
+        b"\x02\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.0,
+        rnnoise_available=True,
+        rnnoise_evidence=RnnoiseEvidence(
+            available=True,
+            frame_count=1,
+            peak=0.0,
+            mean=0.0,
+            last=0.0,
+            ema=0.0,
+        ),
+    )
+
+    assert first.status is DetectorSubmitStatus.ACCEPTED
+    assert first.throttle_action is ThrottleAction.PREWARM
+    assert second.status is DetectorSubmitStatus.ACCEPTED
+    assert second.throttle_action is ThrottleAction.KEEP_CANDIDATE_OPEN
+    assert [event.kind for event in events] == ["prewarm"]
+    assert events[0].candidate == first.candidate == second.candidate
+    await detector.close()
+
+
+async def test_session_smart_turn_pin_survives_turn_lease_then_reset_releases_it() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+
+    assert await detector.pin_endpointing_session() is True
+    assert detector._semantic_adapter._smart_turn_pin_count == 1
+    lease = await detector.prepare_endpointing(token)
+    assert lease is not None
+    assert detector._semantic_adapter._smart_turn_pin_count == 2
+
+    await lease.release()
+    assert detector._semantic_adapter._smart_turn_pin_count == 1
+    await detector.reset()
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    await detector.close()
+
+
+async def test_reset_does_not_wait_for_blocked_session_smart_turn_load() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    pin_task = asyncio.create_task(detector.pin_endpointing_session())
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+
+    await asyncio.wait_for(detector.reset(), 0.1)
+
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    coordinator.prepare_release.set()
+    assert await asyncio.wait_for(pin_task, 1) is False
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    await detector.close()
+
+
+async def test_close_releases_session_and_turn_smart_turn_pins() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    assert await detector.pin_endpointing_session() is True
+    lease = await detector.prepare_endpointing(token)
+    assert lease is not None
+    adapter = detector._semantic_adapter
+    assert adapter._smart_turn_pin_count == 2
+
+    await detector.close()
+
+    assert adapter._smart_turn_pin_count == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+
+
 async def test_smart_turn_loading_does_not_hold_detector_audio_submission() -> None:
     coordinator = _BlockingSemanticCoordinator(block_prepare=True)
     detector = DetectorRuntime(
@@ -402,6 +527,29 @@ async def test_smart_turn_loading_does_not_hold_detector_audio_submission() -> N
     lease = await asyncio.wait_for(prepare_task, 1)
     assert lease is not None
     await lease.release()
+    await detector.close()
+
+
+async def test_reset_cancels_turn_prepare_without_waiting_for_model_load() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    prepare = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+
+    await asyncio.wait_for(detector.reset(), 0.1)
+
+    with pytest.raises(asyncio.CancelledError):
+        await prepare
+    assert detector._prepare_task is None
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
     await detector.close()
 
 
@@ -447,6 +595,7 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
         await asyncio.sleep(0.001)
 
     assert [type(event) for event in events] == [
+        DetectorPrewarmEvent,
         DetectorActivityEvent,
         DetectorActivityEvent,
         DetectorTurnEvent,

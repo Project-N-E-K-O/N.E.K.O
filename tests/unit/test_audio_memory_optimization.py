@@ -28,6 +28,14 @@ class _IdentityDenoiser:
         return frame.copy(), 0.1
 
 
+class _ProbabilityDenoiser:
+    def __init__(self, probabilities: list[float]) -> None:
+        self._probabilities = iter(probabilities)
+
+    def process_frame(self, frame: np.ndarray) -> tuple[np.ndarray, float]:
+        return frame.copy(), next(self._probabilities)
+
+
 def _processor() -> AudioProcessor:
     processor = AudioProcessor.__new__(AudioProcessor)
     processor._denoiser = _IdentityDenoiser()
@@ -166,3 +174,33 @@ def test_rnnoise_overflow_keeps_latest_one_second() -> None:
 
     np.testing.assert_array_equal(output, audio)
     assert processor._frame_buffer_size == 0
+
+
+def test_rnnoise_evidence_aggregates_every_complete_frame_in_chunk() -> None:
+    processor = _processor()
+    processor._denoiser = _ProbabilityDenoiser([0.1, 0.8, 0.2])
+    audio = np.zeros(processor.RNNOISE_FRAME_SIZE * 3, dtype=np.int16)
+
+    processor._process_with_rnnoise(audio)
+
+    assert processor.rnnoise_frame_count == 3
+    assert processor.rnnoise_probability_peak == pytest.approx(0.8)
+    assert processor.rnnoise_probability_mean == pytest.approx(1.1 / 3.0)
+    assert processor.rnnoise_probability_last == pytest.approx(0.2)
+    assert processor.rnnoise_probability_ema == pytest.approx(0.29425)
+
+
+def test_rnnoise_incomplete_chunk_does_not_reuse_prior_evidence() -> None:
+    processor = _processor()
+    processor._denoiser = _ProbabilityDenoiser([0.75])
+    processor._process_with_rnnoise(
+        np.zeros(processor.RNNOISE_FRAME_SIZE, dtype=np.int16)
+    )
+
+    processor._process_with_rnnoise(np.zeros(100, dtype=np.int16))
+
+    assert processor.rnnoise_frame_count == 0
+    assert processor.rnnoise_probability_peak is None
+    assert processor.rnnoise_probability_mean is None
+    assert processor.rnnoise_probability_last is None
+    assert processor.rnnoise_probability_ema is None

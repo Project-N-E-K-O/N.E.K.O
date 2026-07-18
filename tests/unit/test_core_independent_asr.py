@@ -12,6 +12,7 @@ from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin
 from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.asr_client.lifecycle import (
+    VoiceLifecycleConfig,
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
@@ -1144,12 +1145,10 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
     asr = type("Asr", (), {"close": AsyncMock()})()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
-    policy = replace(
-        resolve_provider_policy("qwen", "manual"),
-        warm_transport_ms=10,
-    )
+    policy = resolve_provider_policy("qwen", "manual")
     runtime._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=policy,
+        config=VoiceLifecycleConfig(idle_transport_close_ms=10),
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
@@ -1738,6 +1737,9 @@ async def test_start_uses_current_core_route_only_after_provider_ready(
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    asr.connect.assert_not_awaited()
+    assert runtime._asr_session is None
+    await runtime._restart_transport(max_attempts=1)
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_session is asr
     assert runtime._asr_provider == "gemini"
@@ -1773,6 +1775,9 @@ async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) 
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    asr.connect.assert_not_awaited()
+    assert runtime._asr_session is None
+    await runtime._restart_transport(max_attempts=1)
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_session is asr
     assert runtime._asr_route_mode == "independent"
@@ -1814,6 +1819,9 @@ async def test_runtime_builds_primary_candidate_from_its_single_selection(
     await runtime._start_independent_asr_if_enabled("audio")
 
     resolver.assert_called_once_with("gemini")
+    builder.assert_not_called()
+    assert runtime._asr_transport_selection is selection
+    await runtime._restart_transport(max_attempts=1)
     assert builder.call_args.kwargs["selection"] is selection
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_session is asr
@@ -1887,6 +1895,8 @@ async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> Non
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    asr.connect.assert_not_awaited()
+    await runtime._restart_transport(max_attempts=1)
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_session is asr
     assert runtime._asr_provider == "soniox"
@@ -1958,6 +1968,7 @@ async def test_soniox_connect_failure_retries_same_selection_before_audio(
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    await runtime._restart_transport(max_attempts=3)
     sessions[0].close.assert_awaited_once_with()
     sessions[1].close.assert_awaited_once_with()
     sessions[2].close.assert_not_awaited()
@@ -2031,6 +2042,7 @@ async def test_soniox_connect_retries_exhausted_blocks_without_provider_fallback
     monkeypatch.setattr(runtime_module.asyncio, "sleep", sleep)
 
     await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._restart_transport(max_attempts=3)
 
     consumed = await runtime._route_microphone_audio(
         b"\x00\x00",
@@ -2113,6 +2125,7 @@ async def test_failed_soniox_candidate_cannot_invalidate_successful_successor(
     monkeypatch.setattr(runtime_module.asyncio, "sleep", AsyncMock())
 
     await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._restart_transport(max_attempts=2)
     adopted_epoch = runtime._asr_session_epoch
 
     await callbacks[0]["on_input_transcript"]("late soniox final")
@@ -2221,6 +2234,8 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
 
     await runtime._start_independent_asr_if_enabled("audio")
 
+    factory.assert_not_called()
+    await runtime._restart_transport(max_attempts=1)
     factory.assert_called_once()
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_route_mode == "independent"
@@ -2302,6 +2317,7 @@ async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> N
     )
 
     await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._restart_transport(max_attempts=1)
 
     assert runtime._asr_route_mode == "blocked"
     assert runtime._asr_session is None
@@ -2333,6 +2349,7 @@ async def test_builder_failure_stays_blocked_and_never_sends_audio_to_omni(
     )
 
     await runtime._start_independent_asr_if_enabled("audio")
+    await runtime._restart_transport(max_attempts=1)
     consumed = await runtime._route_microphone_audio(
         b"\x00\x00",
         sample_rate_hz=16_000,
