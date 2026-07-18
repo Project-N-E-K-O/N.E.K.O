@@ -47,8 +47,8 @@ def test_host_turn_store_reset_returns_to_unknown() -> None:
 
 
 def test_host_turn_store_expires_yielded_signal_to_unknown() -> None:
-    now = [42.0]
-    store = HostTurnSignalStore(now=lambda: now[0], yielded_ttl_seconds=5.0)
+    mock_time = 42.0
+    store = HostTurnSignalStore(now=lambda: mock_time, yielded_ttl_seconds=5.0)
     signal = HostTurnSignal(
         state="yielded",
         confidence=1.0,
@@ -58,10 +58,10 @@ def test_host_turn_store_expires_yielded_signal_to_unknown() -> None:
     )
     store.update(signal)
 
-    now[0] = 47.0
+    mock_time = 47.0
     assert store.current() == signal
 
-    now[0] = 47.01
+    mock_time = 47.01
     expired = store.current()
     assert expired.state == "unknown"
     assert expired.reliability == "unavailable"
