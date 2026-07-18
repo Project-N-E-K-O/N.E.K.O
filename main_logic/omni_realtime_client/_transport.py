@@ -886,7 +886,6 @@ class _TransportMixin:
                             event_response_id = response.get("id")
                     if (
                         event_response_id
-                        and self._current_response_id
                         and event_response_id != self._current_response_id
                     ):
                         logger.info(

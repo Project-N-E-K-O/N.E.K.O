@@ -609,3 +609,108 @@ async def test_hot_swap_overflow_blocks_whole_candidate():
     mgr._route_microphone_audio.assert_not_awaited()
     mgr.session.stream_audio.assert_not_awaited()
     mgr._record_omni_microphone_audio.assert_not_called()
+
+
+async def test_hot_swap_flush_orders_inflight_live_then_cached_audio():
+    mgr = _make_routable_audio_manager(True)
+    token = _queue_token()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._handle_audio_ingress_backpressure = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(
+        HotSwapAudioFrame(pcm16=b"\x10\x00" * 160, token=token)
+    )
+    mgr._process_microphone_audio = AsyncMock(
+        side_effect=[
+            ProcessedVoiceFrame(b"\x20\x00" * 160, 16_000, 0.8, True),
+            ProcessedVoiceFrame(b"\x30\x00" * 160, 16_000, 0.8, True),
+        ]
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    routed: list[bytes] = []
+
+    async def route(pcm16: bytes, **_kwargs) -> bool:
+        routed.append(pcm16)
+        if pcm16.startswith(b"\x20\x00"):
+            first_started.set()
+            await release_first.wait()
+        return True
+
+    mgr._route_microphone_audio = AsyncMock(side_effect=route)
+    first = asyncio.create_task(
+        LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "audio", "sample_rate_hz": 16_000, "data": [1] * 160},
+            ingress_token=token,
+        )
+    )
+    await asyncio.wait_for(first_started.wait(), 1)
+    flush = asyncio.create_task(LLMSessionManager._flush_hot_swap_audio_cache(mgr))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(
+        LLMSessionManager._process_stream_data_internal(
+            mgr,
+            {"input_type": "audio", "sample_rate_hz": 16_000, "data": [2] * 160},
+            ingress_token=token,
+        )
+    )
+    await asyncio.sleep(0)
+    release_first.set()
+    await asyncio.wait_for(asyncio.gather(first, second, flush), 1)
+
+    assert [pcm[:2] for pcm in routed] == [b"\x20\x00", b"\x10\x00", b"\x30\x00"]
+    mgr._handle_audio_ingress_backpressure.assert_not_awaited()
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache
+
+
+async def test_hot_swap_mid_batch_failure_invalidates_candidate():
+    mgr = _make_routable_audio_manager(True)
+    token = _queue_token()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._handle_audio_ingress_backpressure = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(
+        HotSwapAudioFrame(pcm16=b"\x10\x00" * 160, token=token)
+    )
+    assert mgr.hot_swap_audio_cache.append(
+        HotSwapAudioFrame(pcm16=b"\x20\x00" * 160, token=token)
+    )
+    mgr._route_microphone_audio = AsyncMock(side_effect=RuntimeError("route failed"))
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    mgr._route_microphone_audio.assert_awaited_once()
+    mgr._handle_audio_ingress_backpressure.assert_awaited_once_with(token)
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache
+    assert mgr.is_flushing_hot_swap_cache is False
+
+
+async def test_hot_swap_iteration_exhaustion_invalidates_residual_audio():
+    mgr = _make_routable_audio_manager(True)
+    token = _queue_token()
+    mgr._ingress_token_matches = MagicMock(return_value=True)
+    mgr._handle_audio_ingress_backpressure = AsyncMock()
+    mgr.hot_swap_audio_cache = HotSwapAudioBuffer(capacity_ms=8_000)
+    assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
+    calls = 0
+
+    async def route(_pcm16: bytes, **_kwargs) -> bool:
+        nonlocal calls
+        calls += 1
+        assert mgr.hot_swap_audio_cache.append(_hot_swap_frame(token))
+        return True
+
+    mgr._route_microphone_audio = AsyncMock(side_effect=route)
+
+    await LLMSessionManager._flush_hot_swap_audio_cache(mgr)
+
+    assert calls == 20
+    mgr._handle_audio_ingress_backpressure.assert_awaited_once_with(token)
+    mgr.session.stream_audio.assert_not_awaited()
+    mgr._record_omni_microphone_audio.assert_not_called()
+    assert not mgr.hot_swap_audio_cache

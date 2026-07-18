@@ -113,13 +113,28 @@ class StreamingMixin:
     
     async def _flush_hot_swap_audio_cache(self):
         """Flush current-generation hot-swap PCM only to independent ASR."""
-        self.is_flushing_hot_swap_cache = True
+        damaged_frames = []
+        flush_complete = False
+        async with self.hot_swap_cache_lock:
+            self.is_flushing_hot_swap_cache = True
+            live_audio_idle = getattr(self, "_hot_swap_live_audio_idle", None)
+            if live_audio_idle is None:
+                live_audio_idle = asyncio.Event()
+                self._hot_swap_live_audio_idle = live_audio_idle
+            if getattr(self, "_hot_swap_live_audio_inflight", 0) == 0:
+                live_audio_idle.set()
+            else:
+                live_audio_idle.clear()
 
         try:
+            # Frames that committed to the live route before the flush barrier
+            # must finish before cached frames are drained. No network await is
+            # performed while holding hot_swap_cache_lock.
+            await live_audio_idle.wait()
             if not self.session or not self.is_active:
                 logger.warning("⚠️ 热切换音频缓存刷新时session不可用，丢弃缓存")
                 async with self.hot_swap_cache_lock:
-                    self.hot_swap_audio_cache.clear()
+                    damaged_frames.extend(self.hot_swap_audio_cache.drain())
                 return
 
             max_iterations = 20  # 最多迭代20次，防止无限循环
@@ -139,7 +154,7 @@ class StreamingMixin:
                     iteration + 1,
                     len(audio_frames),
                 )
-                for frame in audio_frames:
+                for index, frame in enumerate(audio_frames):
                     if not self._ingress_token_matches(frame.token):
                         continue
                     try:
@@ -150,14 +165,31 @@ class StreamingMixin:
                             rnnoise_available=frame.rnnoise_available,
                         )
                         total_frames_sent += 1
+                    except asyncio.CancelledError:
+                        damaged_frames.extend(audio_frames[index:])
+                        raise
                     except Exception as exc:
                         logger.error("💥 推送音频缓存失败: %s", exc)
+                        damaged_frames.extend(audio_frames[index:])
                         return
 
                 iteration += 1
 
-            if iteration >= max_iterations:
-                logger.warning(f"⚠️ 达到最大迭代次数({max_iterations})，停止推送")
+            async with self.hot_swap_cache_lock:
+                remaining_frames = self.hot_swap_audio_cache.drain()
+                if remaining_frames:
+                    damaged_frames.extend(remaining_frames)
+                else:
+                    self.is_flushing_hot_swap_cache = False
+                    self.is_hot_swap_imminent = False
+                    flush_complete = True
+
+            if not flush_complete:
+                logger.warning(
+                    "⚠️ 达到最大迭代次数(%s)，当前候选按背压失效",
+                    max_iterations,
+                )
+                return
 
             logger.info(
                 "✅ 热切换音频缓存推送完成，共推送 %s 个frame，迭代 %s 次",
@@ -165,7 +197,20 @@ class StreamingMixin:
                 iteration,
             )
         finally:
-            self.is_flushing_hot_swap_cache = False
+            async with self.hot_swap_cache_lock:
+                if not flush_complete:
+                    damaged_frames.extend(self.hot_swap_audio_cache.drain())
+                    self.is_flushing_hot_swap_cache = False
+                    self.is_hot_swap_imminent = False
+            damaged_tokens = []
+            for frame in damaged_frames:
+                if (
+                    self._ingress_token_matches(frame.token)
+                    and frame.token not in damaged_tokens
+                ):
+                    damaged_tokens.append(frame.token)
+            for token in damaged_tokens:
+                await self._handle_audio_ingress_backpressure(token)
     
     def _should_drop_live_vision_stream(self, input_type: str | None) -> bool:
         """Deliberately checked at each stream boundary; callers may enter below stream_data."""
@@ -591,38 +636,69 @@ class StreamingMixin:
                         or self._audio_stream_epoch != audio_epoch
                     ):
                         return
-                    if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
-                        if ingress_token is None:
-                            return
+                    cache_for_hot_swap = False
+                    live_route_reserved = False
+                    if ingress_token is not None:
                         async with self.hot_swap_cache_lock:
-                            accepted = self.hot_swap_audio_cache.append(
-                                HotSwapAudioFrame(
-                                    pcm16=processed_frame.pcm16,
-                                    token=ingress_token,
-                                    speech_probability=(
-                                        processed_frame.speech_probability
-                                    ),
-                                    rnnoise_available=(
-                                        processed_frame.rnnoise_available
-                                    ),
+                            if (
+                                self.is_hot_swap_imminent
+                                or self.is_flushing_hot_swap_cache
+                            ):
+                                cache_for_hot_swap = True
+                                accepted = self.hot_swap_audio_cache.append(
+                                    HotSwapAudioFrame(
+                                        pcm16=processed_frame.pcm16,
+                                        token=ingress_token,
+                                        speech_probability=(
+                                            processed_frame.speech_probability
+                                        ),
+                                        rnnoise_available=(
+                                            processed_frame.rnnoise_available
+                                        ),
+                                    )
                                 )
-                            )
+                            else:
+                                self._hot_swap_live_audio_inflight = (
+                                    getattr(self, "_hot_swap_live_audio_inflight", 0)
+                                    + 1
+                                )
+                                live_audio_idle = getattr(
+                                    self, "_hot_swap_live_audio_idle", None
+                                )
+                                if live_audio_idle is None:
+                                    live_audio_idle = asyncio.Event()
+                                    self._hot_swap_live_audio_idle = live_audio_idle
+                                live_audio_idle.clear()
+                                live_route_reserved = True
+                    elif self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
+                        return
+                    if cache_for_hot_swap:
                         if not accepted:
                             await self._handle_audio_ingress_backpressure(
                                 ingress_token
                             )
                         return
-                    if (
-                        ingress_token is not None
-                        and not self._ingress_token_matches(ingress_token)
-                    ):
-                        return
-                    await self._route_microphone_audio(
-                        processed_frame.pcm16,
-                        sample_rate_hz=processed_frame.sample_rate_hz,
-                        speech_probability=processed_frame.speech_probability,
-                        rnnoise_available=processed_frame.rnnoise_available,
-                    )
+                    try:
+                        if (
+                            ingress_token is not None
+                            and not self._ingress_token_matches(ingress_token)
+                        ):
+                            return
+                        await self._route_microphone_audio(
+                            processed_frame.pcm16,
+                            sample_rate_hz=processed_frame.sample_rate_hz,
+                            speech_probability=processed_frame.speech_probability,
+                            rnnoise_available=processed_frame.rnnoise_available,
+                        )
+                    finally:
+                        if live_route_reserved:
+                            async with self.hot_swap_cache_lock:
+                                self._hot_swap_live_audio_inflight = max(
+                                    0,
+                                    self._hot_swap_live_audio_inflight - 1,
+                                )
+                                if self._hot_swap_live_audio_inflight == 0:
+                                    self._hot_swap_live_audio_idle.set()
                     return
                 except struct.error:
                     logger.error("Microphone input rejected: invalid PCM samples")

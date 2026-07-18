@@ -106,6 +106,7 @@ class DetectorRuntime:
         self._prepare_task: asyncio.Task[bool] | None = None
         self._prepare_token: VoiceTurnToken | None = None
         self._prepare_epoch: int | None = None
+        self._overflow_reset_task: asyncio.Task[None] | None = None
         self._detector_epoch = 0
         self._sequence_no = 0
         self._ingress_token: VoiceIngressToken | None = None
@@ -359,12 +360,22 @@ class DetectorRuntime:
         token: VoiceTurnToken,
         detector_epoch: int,
     ) -> bool:
-        loaded = await coordinator.prepare_predictor()
+        loaded = False
+        prepare_error: BaseException | None = None
+        try:
+            loaded = await coordinator.prepare_predictor()
+        except asyncio.CancelledError as exc:
+            prepare_error = exc
+        except Exception as exc:
+            prepare_error = exc
+        prepared = False
         async with self._lock:
-            if self._prepare_task is asyncio.current_task():
+            owns_prepare = self._prepare_task is asyncio.current_task()
+            if owns_prepare:
                 self._prepare_task = None
             valid = bool(
-                not self._closed
+                owns_prepare
+                and not self._closed
                 and not adapter.failed
                 and self._prepare_token == token
                 and self._prepare_epoch == detector_epoch
@@ -372,14 +383,17 @@ class DetectorRuntime:
             )
             self._prepare_token = None
             self._prepare_epoch = None
-            if valid and loaded:
+            if valid and loaded and prepare_error is None:
                 self._smart_turn_token = token
                 self._smart_turn_readiness = SmartTurnReadiness.READY
-                return True
-            adapter.unpin_smart_turn()
-            if valid:
+                prepared = True
+            else:
+                adapter.unpin_smart_turn()
+            if valid and not prepared:
                 self._smart_turn_readiness = SmartTurnReadiness.FAILED
-            return False
+        if isinstance(prepare_error, asyncio.CancelledError):
+            raise prepare_error
+        return prepared
 
     async def _ensure_semantic_started(self, adapter: _VoiceTurnAdapter) -> None:
         if self._semantic_started:
@@ -555,6 +569,21 @@ class DetectorRuntime:
                 False,
                 None,
             )
+        overflow_reset_task = self._overflow_reset_task
+        if overflow_reset_task is not None and not overflow_reset_task.done():
+            return DetectorSubmitResult(
+                DetectorSubmitStatus.BACKPRESSURE,
+                adapter.throttle_available if adapter is not None else False,
+                True,
+                None,
+            )
+        if self._smart_turn_readiness is SmartTurnReadiness.FAILED:
+            return DetectorSubmitResult(
+                DetectorSubmitStatus.FAILED,
+                adapter.throttle_available if adapter is not None else False,
+                False,
+                None,
+            )
         if adapter is None or adapter.failed:
             return DetectorSubmitResult(
                 DetectorSubmitStatus.FAILED,
@@ -616,14 +645,15 @@ class DetectorRuntime:
             self._deferred_completions.clear()
             self._semantic_generation += 1
             self._semantic_turn_id += 1
-            asyncio.create_task(
-                adapter.reset(
-                    generation=self._semantic_generation,
-                    buffer_epoch=0,
-                    utterance_id=self._semantic_turn_id,
+            overflow_reset_task = asyncio.create_task(
+                self._reset_after_overflow(
+                    adapter,
+                    self._semantic_generation,
+                    self._semantic_turn_id,
                 ),
                 name="detector-runtime-overflow-reset",
             )
+            self._overflow_reset_task = overflow_reset_task
             return DetectorSubmitResult(
                 DetectorSubmitStatus.BACKPRESSURE,
                 adapter.throttle_available,
@@ -638,7 +668,37 @@ class DetectorRuntime:
             identity,
         )
 
+    async def _reset_after_overflow(
+        self,
+        adapter: _VoiceTurnAdapter,
+        generation: int,
+        utterance_id: int,
+    ) -> None:
+        failed = False
+        try:
+            await adapter.reset(
+                generation=generation,
+                buffer_epoch=0,
+                utterance_id=utterance_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed = True
+        finally:
+            async with self._lock:
+                if self._overflow_reset_task is asyncio.current_task():
+                    self._overflow_reset_task = None
+                if failed and not self._closed:
+                    self._smart_turn_readiness = SmartTurnReadiness.FAILED
+
     async def reset(self) -> None:
+        overflow_reset_task = self._overflow_reset_task
+        if (
+            overflow_reset_task is not None
+            and overflow_reset_task is not asyncio.current_task()
+        ):
+            await asyncio.gather(overflow_reset_task, return_exceptions=True)
         adapter: _VoiceTurnAdapter | None = None
         semantic_identity: tuple[int, int, int] | None = None
         async with self._lock:
@@ -705,6 +765,7 @@ class DetectorRuntime:
         adapter: _VoiceTurnAdapter | None = None
         vad = None
         prepare_task: asyncio.Task[bool] | None = None
+        overflow_reset_task: asyncio.Task[None] | None = None
         async with self._lock:
             if self._closed:
                 return
@@ -719,6 +780,7 @@ class DetectorRuntime:
             if watch_task is not None:
                 watch_task.cancel()
             if self._semantic_adapter is not None:
+                overflow_reset_task = self._overflow_reset_task
                 self._smart_turn_token = None
                 self._prepare_token = None
                 self._prepare_epoch = None
@@ -730,6 +792,8 @@ class DetectorRuntime:
             else:
                 vad = self._vad
         if adapter is not None:
+            if overflow_reset_task is not None:
+                await asyncio.gather(overflow_reset_task, return_exceptions=True)
             await adapter.close()
             if prepare_task is not None:
                 await asyncio.gather(prepare_task, return_exceptions=True)

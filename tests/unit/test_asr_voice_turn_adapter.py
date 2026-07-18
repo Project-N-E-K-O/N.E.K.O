@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from main_logic.asr_client._voice_turn import _VoiceTurnAdapter
+from main_logic.asr_client.detector_contracts import DetectorIngressIdentity
+from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
     SpeechActivityEvent,
@@ -619,6 +621,54 @@ async def test_complete_uses_original_identity_and_commit_callback_can_reenter()
 
     assert commits == [(11, 12, 13)]
     assert coordinator.reset_calls == 1
+    await adapter.close()
+
+
+async def test_reset_invalidates_scoped_commit_before_core_callback() -> None:
+    scoped_started = asyncio.Event()
+    release_scoped = asyncio.Event()
+    core_commits: list[tuple[int, int, int]] = []
+
+    async def scoped_commit(*_args) -> None:
+        scoped_started.set()
+        try:
+            await release_scoped.wait()
+        except asyncio.CancelledError:
+            # A defensive consumer may suppress cancellation. The identity
+            # barrier must still stop it from reaching the Core callback.
+            await release_scoped.wait()
+
+    async def core_commit(*identity: int) -> None:
+        core_commits.append(identity)
+
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator(),
+        on_commit=core_commit,
+        on_scoped_commit=scoped_commit,
+    )
+    await adapter.start()
+    old_identity = (4, 5, 6)
+    adapter._identity = old_identity
+    adapter._dispatch_commit(
+        old_identity,
+        DetectorIngressIdentity(
+            ingress_token=VoiceIngressToken(1, "socket", 1, 1, 1),
+            detector_epoch=1,
+            sequence_no=1,
+        ),
+    )
+    await asyncio.wait_for(scoped_started.wait(), 1)
+
+    reset_task = asyncio.create_task(
+        adapter.reset(generation=4, buffer_epoch=7, utterance_id=8)
+    )
+    await asyncio.sleep(0)
+    release_scoped.set()
+    await asyncio.wait_for(reset_task, 1)
+
+    assert core_commits == []
     await adapter.close()
 
 

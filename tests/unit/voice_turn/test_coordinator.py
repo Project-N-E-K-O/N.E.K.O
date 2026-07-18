@@ -121,6 +121,29 @@ async def test_close_invalidates_late_result_and_releases_runtime():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_evaluation_keeps_lane_until_thread_finishes():
+    predictor = _BlockingPredictor()
+    coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
+    evaluation = asyncio.create_task(coordinator.evaluate(_pcm()))
+    await asyncio.to_thread(predictor.started.wait, 2)
+
+    evaluation.cancel()
+    await asyncio.sleep(0)
+    close_task = asyncio.create_task(coordinator.close())
+    await asyncio.sleep(0)
+
+    assert evaluation.done() is False
+    assert close_task.done() is False
+    predictor.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await evaluation
+    await asyncio.wait_for(close_task, 1)
+    assert coordinator.state is CoordinatorState.CLOSED
+    assert predictor.closed is True
+    assert predictor.max_active_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reset_during_inflight_evaluation_is_stale():
     predictor = _BlockingPredictor()
     coordinator = TurnCoordinator(predictor, SmartTurnConfig(enabled=True))
