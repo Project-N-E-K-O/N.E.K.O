@@ -143,11 +143,12 @@ async def _rollback_targets(
 ) -> bool:
     restored = True
     for target in reversed(targets):
+        backup = backups.get(target)
+        if backup is None:
+            continue
         try:
             await remove_directory(target)
-            backup = backups.get(target)
-            if backup is not None:
-                await restore_directory(backup, target)
+            await restore_directory(backup, target)
         except Exception as exc:
             restored = False
             logger.error(

@@ -146,6 +146,26 @@ async def test_safe_upgrade_replaces_plugin_and_cleans_backup_on_success(tmp_pat
     assert not result.backup_dir.exists()
 
 
+@pytest.mark.asyncio
+async def test_rollback_keeps_targets_that_were_not_backed_up(tmp_path: Path) -> None:
+    target = tmp_path / "demo"
+    backup = tmp_path / ".upgrade-backups" / "demo.bak"
+    backup.mkdir(parents=True)
+    (backup / "plugin.toml").write_text("version = 1\n", encoding="utf-8")
+    profile = tmp_path / "profiles" / "demo"
+    profile.mkdir(parents=True)
+    (profile / "default.toml").write_text("user_value = true\n", encoding="utf-8")
+
+    restored = await upgrade_support._rollback_targets(
+        targets=(target, profile),
+        backups={target: backup},
+    )
+
+    assert restored is True
+    assert (target / "plugin.toml").read_text(encoding="utf-8") == "version = 1\n"
+    assert (profile / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
+
+
 async def _async_none() -> None:
     return None
 

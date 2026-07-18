@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
 from plugin.logging_config import get_logger
+from plugin.neko_plugin_cli.public import inspect_package
 from plugin.server.application.install_source import (
     InstallSourceError,
     InstallSourceManager,
@@ -1713,9 +1714,7 @@ async def _do_upgrade(
 
     path_policy = PluginCliPathPolicy.from_settings()
     plugin_dir = (path_policy.user_plugins_root / entry.directory_name).resolve()
-    profile_dir = (path_policy.package_profiles_root / installed_plugin_id).resolve()
     backup_dir = backup_path_for(plugin_dir)
-    profile_backup_dir = backup_path_for(profile_dir)
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
     was_running = await plugin_is_running(installed_plugin_id)
 
@@ -1747,11 +1746,6 @@ async def _do_upgrade(
             "backup_dir": str(backup_dir),
             "restored": False,
         }
-        if profile_dir.exists():
-            await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
-            rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
-            task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
     except OSError as exc:
         rollback_ok = await _run_rollback(
             task if rollback_steps else None,
@@ -1791,6 +1785,26 @@ async def _do_upgrade(
                     message=str(exc),
                 ) from exc
             log_ctx["package_sha256_check"] = sha_check
+
+            inspected = await asyncio.to_thread(inspect_package, package_path)
+            package_id = str(inspected.package_id).strip()
+            if (
+                not package_id
+                or package_id in {".", ".."}
+                or "/" in package_id
+                or "\\" in package_id
+            ):
+                raise _TaskError(
+                    code="install_failed",
+                    message=f"invalid package id: {package_id!r}",
+                )
+            profile_dir = (path_policy.package_profiles_root / package_id).resolve()
+            profile_backup_dir = backup_path_for(profile_dir)
+            if profile_dir.exists():
+                await asyncio.to_thread(profile_backup_dir.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(os.rename, profile_dir, profile_backup_dir)
+                rollback_steps.append(_make_restore_dir_step(profile_backup_dir, profile_dir))
+                task["rollback"]["profile_backup_dir"] = str(profile_backup_dir)
 
             # Step 6: unpack + record_market_upgrade (single atomic call).
             _set_task_stage(
