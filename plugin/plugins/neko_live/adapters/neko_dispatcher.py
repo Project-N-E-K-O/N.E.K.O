@@ -230,7 +230,7 @@ def _mark_live_audience_speaker(metadata: dict[str, Any], request: InteractionRe
     danmaku = str(request.event.danmaku_text or "").strip()
     module = response_module_hint(request)
     if (
-        source not in _NEKO_ROAST_AUDIENCE_SOURCES
+        source not in _NEKO_LIVE_AUDIENCE_SOURCES
         or module not in {"avatar_roast", "danmaku_response"}
         or not danmaku
     ):
@@ -248,7 +248,7 @@ def _prepend_live_audience_speaker_lock(
     danmaku = str(request.event.danmaku_text or "").strip()
     module = response_module_hint(request)
     if (
-        source not in _NEKO_ROAST_AUDIENCE_SOURCES
+        source not in _NEKO_LIVE_AUDIENCE_SOURCES
         or module not in {"avatar_roast", "danmaku_response"}
         or not danmaku
     ):
