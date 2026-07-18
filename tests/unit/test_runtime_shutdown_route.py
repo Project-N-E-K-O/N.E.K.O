@@ -35,6 +35,11 @@ async def test_runtime_shutdown_route_delegates_to_application_shutdown(monkeypa
     shutdown = AsyncMock()
     monkeypatch.setenv("NEKO_RUNTIME_SHUTDOWN_TOKEN", "owner-secret")
     monkeypatch.setattr(web_app.runtime, "request_application_shutdown_async", shutdown)
+    monkeypatch.setattr(
+        web_app.runtime,
+        "get_start_config",
+        lambda: {"request_runtime_shutdown": lambda **_kwargs: None, "server": None},
+    )
 
     request = SimpleNamespace(
         headers={
@@ -48,6 +53,31 @@ async def test_runtime_shutdown_route_delegates_to_application_shutdown(monkeypa
     assert response.status_code == 202
     shutdown.assert_awaited_once_with(reason="desktop_owner_exit")
 
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_runtime_shutdown_route_rejects_missing_shutdown_target(monkeypatch):
+    from app.main_server import web_app
+
+    shutdown = AsyncMock()
+    monkeypatch.setenv("NEKO_RUNTIME_SHUTDOWN_TOKEN", "owner-secret")
+    monkeypatch.delenv("NEKO_LAUNCHER_PID", raising=False)
+    monkeypatch.setattr(web_app.runtime, "request_application_shutdown_async", shutdown)
+    monkeypatch.setattr(
+        web_app.runtime,
+        "get_start_config",
+        lambda: {"request_runtime_shutdown": None, "server": None},
+    )
+
+    request = SimpleNamespace(
+        headers={
+            "x-neko-runtime-shutdown-token": "owner-secret",
+        }
+    )
+    response = await web_app.runtime_shutdown(request)
+
+    assert response.status_code == 503
+    shutdown.assert_not_called()
 
 @pytest.mark.unit
 @pytest.mark.asyncio

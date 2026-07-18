@@ -213,6 +213,24 @@ async def beacon_shutdown():
         return {"success": False, "error": str(e)}
 
 
+def _runtime_shutdown_has_target() -> bool:
+    current_config = runtime.get_start_config()
+    if callable(current_config.get("request_runtime_shutdown")):
+        return True
+    if current_config.get("server") is not None:
+        return True
+
+    launcher_pid_raw = os.environ.get("NEKO_LAUNCHER_PID", "").strip()
+    if os.name != "nt" and launcher_pid_raw:
+        try:
+            launcher_pid = int(launcher_pid_raw)
+        except ValueError:
+            return False
+        return launcher_pid > 0 and launcher_pid != os.getpid()
+
+    return False
+
+
 @app.post("/api/runtime/shutdown")
 async def runtime_shutdown(request: Request):
     """Request an authenticated application-level shutdown from the owning desktop app."""
@@ -241,6 +259,12 @@ async def runtime_shutdown(request: Request):
         return JSONResponse(
             {"success": False, "error": "runtime instance mismatch"},
             status_code=409,
+        )
+
+    if not _runtime_shutdown_has_target():
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown target is unavailable"},
+            status_code=503,
         )
 
     shutdown = runtime.request_application_shutdown_async
