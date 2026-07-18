@@ -3,12 +3,15 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from starlette.requests import Request
 
 from utils.config_manager import ConfigManager, get_config_manager
+
+from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
 
 
 @pytest.fixture
@@ -260,7 +263,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
     index_source = Path("static/js/index.js").read_text(encoding="utf-8")
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     handoff_source = Path("static/tutorial/yui-guide/page-handoff.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "def _user_plugin_ctx()" not in pages_router_source
@@ -321,7 +324,9 @@ def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
+    paths = set()
+    for module_path, _ in _agent_server_package_sources():
+        paths.update(_route_paths_from_decorators(str(module_path), "app"))
     for expected in {
         "/health",
         "/agent/flags",
@@ -424,7 +429,7 @@ def test_yui_guide_steps_registry_uses_day1_round_without_legacy_handoff_scenes(
 
 def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -460,7 +465,7 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
 
 def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanup():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
 
     for expected in (
@@ -515,7 +520,7 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
 
 def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "neko:yui-guide:plugin-dashboard-skip-bypass" not in tutorial_source
@@ -534,7 +539,7 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
 
 
 def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fade():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     doc_source = Path("docs/design/home-yui-guide-text-highlight-cursor-flow.md").read_text(encoding="utf-8")
     petal_animation = Path("static/assets/tutorial/petals/yui-guide-petal-transition.webp")
@@ -606,7 +611,7 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
 
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/tutorial/yui-guide/overlay.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
@@ -669,7 +674,7 @@ _YUI_RUNTIME_SCRIPTS = (
     "tutorial/yui-guide/overlay.js",
     "tutorial/yui-guide/page-handoff.js",
     "tutorial/core/interaction-takeover.js",
-    "tutorial/yui-guide/director.js",
+    *DIRECTOR_SCRIPT_NAMES,
 )
 
 _HOME_YUI_RUNTIME_SCRIPTS = (
@@ -680,7 +685,7 @@ _HOME_YUI_RUNTIME_SCRIPTS = (
     "tutorial/avatar/yui-stage.js",
     "tutorial/yui-guide/wakeup.js",
     "tutorial/core/interaction-takeover.js",
-    "tutorial/yui-guide/director.js",
+    *DIRECTOR_SCRIPT_NAMES,
 )
 
 
@@ -728,7 +733,7 @@ def test_home_template_loads_yui_wakeup_before_director():
             "tutorial/avatar/yui-stage.js",
             "tutorial/yui-guide/wakeup.js",
             "tutorial/core/interaction-takeover.js",
-            "tutorial/yui-guide/director.js",
+            *DIRECTOR_SCRIPT_NAMES,
             "tutorial/core/skip-controller.js",
             "tutorial/avatar/reload-controller.js",
             "tutorial/core/universal-manager.js",
@@ -915,7 +920,7 @@ def test_yui_wakeup_delegates_action_boundary_to_avatar_stage():
 
 
 def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "runIntroGreetingHugPerformance" in director_source
@@ -941,7 +946,7 @@ def test_yui_intro_greeting_hug_action_is_called_without_param_coupling():
 
 
 def test_yui_intro_avatar_actions_respect_reduced_motion():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
 
     assert "shouldReduceTutorialMotion()" in director_source
@@ -952,7 +957,7 @@ def test_yui_intro_avatar_actions_respect_reduced_motion():
 
 
 def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1026,7 +1031,7 @@ def test_yui_plugin_dashboard_corner_peek_uses_adapter_and_releases_on_close():
 
 
 def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_params():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1069,7 +1074,7 @@ def test_yui_settings_peek_second_line_triggers_panic_session_with_real_model_pa
 
 
 def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reentry():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     avatar_source = Path("static/tutorial/avatar/yui-stage.js").read_text(encoding="utf-8")
     performance_source = Path("static/avatar/avatar-performance-stage.js").read_text(encoding="utf-8")
 
@@ -1186,7 +1191,11 @@ def test_pages_router_static_asset_version_tracks_tutorial_runtime_modules():
     assert "static/libs/driver.min.js" in tracked_paths
     assert "static/libs/driver.min.css" in tracked_paths
     assert "static/live2d/live2d-init.js" in tracked_paths
-    assert "static/app/app-interpage.js" in tracked_paths
+    interpage_parts = sorted(Path("static/app/app-interpage").glob("*.js"))
+    assert interpage_parts
+    assert {
+        path.as_posix() for path in interpage_parts
+    }.issubset(tracked_paths)
     assert "static/live2d/live2d-interaction.js" in tracked_paths
 
 
@@ -1236,17 +1245,27 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
     react_assets = (
         "/static/react/neko-chat/neko-chat-window.css",
         "/static/react/neko-chat/neko-chat-window.iife.js",
-        "/static/app/app-react-chat-window.js",
         "/static/app/app-chat-adapter.js",
         "/static/app/app-buttons.js",
     )
+    react_host_assets = tuple(
+        "/static/app/app-react-chat-window/" + path.name
+        for path in sorted(Path("static/app/app-react-chat-window").glob("*.js"))
+    )
+    interpage_assets = tuple(
+        "/static/app/app-interpage/" + path.name
+        for path in sorted(Path("static/app/app-interpage").glob("*.js"))
+    )
+    assert react_host_assets
+    assert interpage_assets
 
     for template_path in ("templates/index.html", "templates/chat.html"):
         source = Path(template_path).read_text(encoding="utf-8")
         assert "window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};" in source
-        assert "/static/app/app-interpage.js?v={{ static_asset_version }}" in source
-        assert "/static/app/app-interpage.js?v={{ react_chat_asset_version }}" not in source
-        for asset_path in react_assets:
+        for asset_path in interpage_assets:
+            assert f"{asset_path}?v={static_version}" in source
+            assert f"{asset_path}?v={react_version}" not in source
+        for asset_path in (*react_assets, *react_host_assets):
             assert f"{asset_path}?v={react_version}" in source
             assert f"{asset_path}?v={static_version}" not in source
 
@@ -1259,11 +1278,11 @@ def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
         "static/icons/chat_sugar1.png",
         "static/icons/cat_claw1.png",
         "static/icons/chat_hammer1.png",
-        "static/app/app-react-chat-window.js",
         "static/app/app-chat-adapter.js",
         "static/app/app-buttons.js",
     ):
         assert f'_PROJECT_ROOT / "{asset_path}"' in source
+    assert 'glob("static/app/app-react-chat-window/*.js")' in source
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():
@@ -1428,14 +1447,14 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
-    app_ui_source = Path("static/app/app-ui.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
+    app_ui_source = read_js_parts(Path("static/app/app-ui"))
     live2d_init_source = Path("static/live2d/live2d-init.js").read_text(encoding="utf-8")
     live2d_model_source = Path("static/live2d/live2d-model.js").read_text(encoding="utf-8")
     round_prelude_source = Path("static/tutorial/core/round-prelude-controller.js").read_text(encoding="utf-8")
     visual_runtime_source = Path("static/tutorial/core/visual-runtime.js").read_text(encoding="utf-8")
     resistance_source = Path("static/tutorial/visual/resistance-controllers.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     begin_start = avatar_reload_source.index("beginOverride(")
     restore_start = avatar_reload_source.index("restoreOverride()")
@@ -1495,13 +1514,14 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
     assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
-    assert ".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))" in tutorial_source
+    # 最终恢复统一按业务形态分流：普通模型回放交互快照，猫咪态重走 goodbye 链路。
+    assert ".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())" in tutorial_source
     assert tutorial_source.index(".then(() => this.restoreTutorialAvatarOverride())") < tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
     )
     assert tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
-    ) < tutorial_source.index(".then(() => this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored'))")
+    ) < tutorial_source.index(".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())")
     assert "async clearTutorialYuiLive2dRuntimeResidue(reason = '')" in tutorial_source
     assert "this.isCurrentRuntimeModelLive2d()" in tutorial_source
     assert "await manager.removeModel({ skipCloseWindows: true });" in tutorial_source
@@ -1778,7 +1798,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
 
 
 def test_tutorial_temporary_model_reload_bootstraps_live2d_manager_without_user_model_init():
-    interpage_source = Path("static/app/app-interpage.js").read_text(encoding="utf-8")
+    interpage_source = read_js_parts(Path("static/app/app-interpage"))
     live2d_branch = interpage_source.split("if (newModelPath) {", 1)[1].split(
         "// Load the new model",
         1,
@@ -1793,7 +1813,7 @@ def test_tutorial_temporary_model_reload_bootstraps_live2d_manager_without_user_
 
 
 def test_day1_round_activation_keeps_wakeup_after_step_registry_split():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     activation_block = director_source.split("async playDay1IntroActivationRoundScene(sceneRunId)", 1)[1].split(
         "async playDay1IntroGreetingRoundScene(sceneRunId)",
         1,
@@ -1941,6 +1961,18 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForTutorialModelHostReady()" in start_round_block
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
+    # round 预留会改变预测结果；direct-boot claim 必须覆盖胶囊 prepare 的异步等待窗口。
+    assert start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);") < start_round_block.index(
+        "await this.prepareYuiGuideCompactChatForTutorial()"
+    )
+    # prepare 期间取消时释放提前 claim，但保留已跳过用户模型的恢复标记。
+    cancellation_release_index = start_round_block.index(
+        "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {"
+    )
+    # 只检查取消分支的当前 release 调用，避免误命中后续正常 teardown 的同名参数。
+    cancellation_release_block = start_round_block[cancellation_release_index:].split("});", 1)[0]
+    assert "keepUserModelBootSkipped: true" in cancellation_release_block
+    assert "suppressPrediction: true" in cancellation_release_block
     assert "skipSourceModelFade: directTutorialBoot" in start_round_block
     assert "clearDirectAvatarFloatingTutorialLoading" not in start_round_block
     assert "await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed')" in start_round_block
@@ -1964,7 +1996,8 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     )[0]
     assert "this.dispatchAvatarFloatingTutorialInputRestored(" in tutorial_source
     assert "neko:yui-guide:tutorial-input-restored" in tutorial_source
-    assert teardown_block.index("this.restoreAvatarFloatingModelInteractionState('tutorial-avatar-restored')") < teardown_block.index(
+    # 输入区域刷新必须发生在模型身份和猫咪/普通业务形态都恢复完成之后。
+    assert teardown_block.index("this.restoreAvatarFloatingModelStateAfterTutorial()") < teardown_block.index(
         "this.dispatchAvatarFloatingTutorialInputRestored("
     )
 
@@ -2107,7 +2140,7 @@ def test_theme_system_preference_does_not_become_saved_user_choice():
 
 
 def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
     plugin_runtime_source = Path("frontend/plugin-manager/src/yui-guide-runtime.ts").read_text(encoding="utf-8")
 
     assert "window.homeTutorialPlatformCapabilities" in director_source
@@ -2125,7 +2158,7 @@ def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
 
 def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
     steps_source = Path("static/tutorial/yui-guide/steps.js").read_text(encoding="utf-8")
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     assert "timeline: []" in steps_source
     assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
@@ -2139,7 +2172,7 @@ def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalize
 
 
 def test_home_yui_guide_records_local_experience_metrics_without_upload_path():
-    director_source = Path("static/tutorial/yui-guide/director.js").read_text(encoding="utf-8")
+    director_source = read_director_source()
 
     assert "neko_home_tutorial_experience_metrics_v1" in director_source
     assert "window.homeTutorialExperienceMetrics" in director_source
@@ -3487,7 +3520,7 @@ def test_agent_gate_is_free_version_field_sources_agent_free():
 
 
 def test_main_server_mounts_card_assist_router():
-    source = Path("app/main_server.py").read_text(encoding="utf-8")
+    source = Path("app/main_server/web_app.py").read_text(encoding="utf-8")
 
     assert "from main_routers.card_assist_router import router as card_assist_router" in source
     assert "app.include_router(card_assist_router)" in source

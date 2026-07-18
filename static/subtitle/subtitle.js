@@ -18,8 +18,8 @@ var webDanmakuModeSettingsCleanup = null;
 var WEB_DANMAKU_AVATAR_GAP = 12;
 var WEB_DANMAKU_VERTICAL_OFFSET_RATIO = 0.5;
 var WEB_DANMAKU_STATE_SYNC_MS = 120;
-var WEB_DANMAKU_MIN_PANEL_WIDTH = 48;
-var WEB_DANMAKU_MIN_PANEL_HEIGHT = 28;
+var WEB_DANMAKU_MIN_PANEL_WIDTH = 228;
+var WEB_DANMAKU_MIN_PANEL_HEIGHT = 40;
 var WEB_DANMAKU_LAYOUT_EPSILON = 0.25;
 var initialSubtitleSettings = SubtitleShared && typeof SubtitleShared.getSettings === 'function'
     ? SubtitleShared.getSettings()
@@ -383,6 +383,35 @@ function attachWebDanmakuModeLayout(controller) {
         scheduleLayout(true);
     }
 
+    function maintainDanmakuTemporaryState() {
+        if (!active || destroyed) return;
+        var state = SubtitleShared.getSettings();
+        var layoutMatches = !lastVisualLayout || sameWebDanmakuLayout({
+            subtitlePanelBounds: state.subtitlePanelBounds,
+            subtitlePanelPosition: state.subtitlePanelPosition
+        }, lastVisualLayout);
+        if (state.subtitlePanelLocked === true &&
+            state.subtitleInteractionPassthrough === true &&
+            state.subtitleOpacity === 0 &&
+            layoutMatches) {
+            return;
+        }
+
+        var patch = {
+            subtitlePanelLocked: true,
+            subtitleInteractionPassthrough: true,
+            subtitleOpacity: 0
+        };
+        if (lastVisualLayout) {
+            patch.subtitlePanelBounds = lastVisualLayout.subtitlePanelBounds;
+            patch.subtitlePanelPosition = lastVisualLayout.subtitlePanelPosition;
+        }
+        SubtitleShared.updateSettings(patch, {
+            persist: false,
+            source: 'subtitle-web-danmaku-maintain'
+        });
+    }
+
     function start() {
         if (active || destroyed || !isWebSubtitleDanmakuHost()) return;
         active = true;
@@ -399,14 +428,7 @@ function attachWebDanmakuModeLayout(controller) {
             display.style.transition = 'none';
             display.style.willChange = 'left, top, width, height';
         }
-        SubtitleShared.updateSettings({
-            subtitlePanelLocked: true,
-            subtitleInteractionPassthrough: true,
-            subtitleOpacity: 0
-        }, {
-            persist: false,
-            source: 'subtitle-web-danmaku-enter'
-        });
+        maintainDanmakuTemporaryState();
         window.addEventListener('resize', onViewportChanged);
         window.addEventListener('scroll', onViewportChanged, true);
         scheduleLayout(true);
@@ -438,6 +460,7 @@ function attachWebDanmakuModeLayout(controller) {
     var unsubscribe = SubtitleShared.subscribeSettings(function(state) {
         if (state && state.subtitleDanmakuMode) {
             start();
+            maintainDanmakuTemporaryState();
         } else {
             stop();
         }
@@ -1278,7 +1301,12 @@ function initSubtitleHostUi() {
         host: 'web',
         onClose: function() {
             if (window.subtitleBridge && typeof window.subtitleBridge.setSubtitleEnabled === 'function') {
-                window.subtitleBridge.setSubtitleEnabled(false);
+                window.subtitleBridge.setSubtitleEnabled(false, {
+                    source: 'subtitle-ui-close'
+                });
+            }
+            if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
             }
         },
         onLanguageChange: function(lang) {

@@ -537,28 +537,59 @@
     /**
      * 后端截图兜底：当前端所有屏幕捕获 API 均失败时，请求后端用 pyautogui 截取本机屏幕。
      * 安全限制：仅当页面来自 localhost / 127.0.0.1 / 0.0.0.0 时才调用。
-     * @returns {Promise<{dataUrl: string|null, status: number|null}>}
+     * @returns {Promise<{dataUrl: string|null, status: number|null, reason: string|null}>}
      */
     async function fetchBackendScreenshot() {
         var h = window.location.hostname;
         if (h !== 'localhost' && h !== '127.0.0.1' && h !== '0.0.0.0') {
-            return { dataUrl: null, status: null };
+            return { dataUrl: null, status: null, reason: null };
         }
         try {
             var resp = await secureLocalScreenshotFetch('/api/screenshot', { method: 'POST' });
-            if (!resp.ok) return { dataUrl: null, status: resp.status };
-            var json = await resp.json();
-            if (json.success && json.data) {
-                console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
-                return { dataUrl: json.data, status: 200 };
+            var json = null;
+            try {
+                json = await resp.json();
+            } catch (_) {
+                json = null;
             }
-            return { dataUrl: null, status: resp.status };
+            if (!resp.ok) {
+                return {
+                    dataUrl: null,
+                    status: resp.status,
+                    reason: (json && json.reason) ? json.reason : null
+                };
+            }
+            if (json && json.success && json.data) {
+                console.log('[截图] 后端 pyautogui 截图成功,', json.size, 'bytes');
+                return { dataUrl: json.data, status: 200, reason: null };
+            }
+            return {
+                dataUrl: null,
+                status: resp.status,
+                reason: (json && json.reason) ? json.reason : null
+            };
         } catch (e) {
             console.warn('[截图] 后端截图请求失败:', e);
-            return { dataUrl: null, status: null };
+            return { dataUrl: null, status: null, reason: null };
         }
     }
     mod.fetchBackendScreenshot = fetchBackendScreenshot;
+
+    function translateBackendScreenshotReason(reason) {
+        var supportedReasons = {
+            AGENT_PYAUTOGUI_NOT_INSTALLED: true,
+            AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE: true,
+            AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING: true,
+            AGENT_PYAUTOGUI_IMPORT_FAILED: true
+        };
+        if (!supportedReasons[reason]) return '';
+        var key = 'agent.precheck.' + reason;
+        if (typeof window.t === 'function') {
+            var translated = window.t(key);
+            if (translated && translated !== key) return translated;
+        }
+        return reason;
+    }
 
     /**
      * 后端系统原生交互截图：触发操作系统级的全桌面框选截图。
@@ -980,7 +1011,10 @@
                 var result = await fetchBackendScreenshot();
                 var backendTest = result.dataUrl;
                 if (!backendTest) {
-                    throw new Error('所有屏幕捕获方式均失败（含后端兜底）');
+                    throw new Error(
+                        translateBackendScreenshotReason(result.reason)
+                        || (window.t ? window.t('console.screenShareFailed') : '所有屏幕捕获方式均失败（含后端兜底）')
+                    );
                 }
                 if (await stopLiveVisionStreamIfBlocked('screen')) {
                     return;

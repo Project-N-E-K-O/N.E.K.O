@@ -1,472 +1,310 @@
 # Avatar 道具交互设计与维护说明
 
-本文记录聊天紧凑模式里“展开按钮 -> Avatar tools -> 道具交互”的设计、主链路和后续维护边界。提示词写法以 `docs/design/avatar-tool-prompt-guidelines.md` 为准。
+本文是三种 Avatar 道具的当前设计入口。它同时约束网页端、宿主/后端与 NEKO-PC 桌面端；Full Chat 与 Compact Chat 已共用同一套道具运行时、注册表和提交语义，只保留布局与选择入口的呈现差异。
 
-后续维护统一按本文列出的新链路处理。如果本文与当前代码、测试或真实运行结果冲突，以可复现证据和当前代码为准，并先更新本文再继续改动。
-
-## 业务目标
-
-道具交互让用户在紧凑聊天输入区展开工具轮盘后，选择一个“拿在鼠标上”的小道具，再对 NEKO 头像做轻量互动。
-
-用户路径：
-
-1. 打开紧凑聊天输入区的工具轮盘。
-2. 点击 `Avatar tools`。
-3. 在快捷道具条里选择棒棒糖、猫爪或锤子。
-4. 鼠标进入道具光标模式，工具轮盘自动收起。
-5. 用户用道具点击头像命中区。
-6. 前端播放本地光标、动画、音效和掉落效果。
-7. 宿主把交互事件发给后端。
-8. 后端用一次 `avatar_interaction` 临时 prompt 让角色自然回应。
-
-核心语义：
-
-1. 道具交互是轻量打招呼、逗一下、喂一下，不是普通文本输入。
-2. 用户选择道具后进入持续道具光标模式，直到主动清除或切换。
-3. 只有点击头像命中区才触发角色交互；点到聊天按钮、模型侧边按钮或其它 UI 不触发。
-4. 前端表现和后端回应必须来自同一个事件事实：道具、动作、强度、命中位置和彩蛋字段要一致。
+若本文与代码、测试或真实运行结果冲突，以可复现证据和当前代码为准，并在继续扩展前修正文档。
 
 ## 当前范围
 
-已实装 3 个道具：
+本链路只包含三种已实装道具：
 
-范围内形态切换规则：
+| 道具 | tool id | action | intensity | 特殊事实 |
+|---|---|---|---|---|
+| 棒棒糖 | `lollipop` | `offer` / `tease` / `tap_soft` | `normal` / `rapid` / `burst` | 无 `touchZone` |
+| 猫爪 | `fist` | `poke` | `normal` / `rapid` | `touchZone`、可选 `rewardDrop` |
+| 锤子 | `hammer` | `bonk` | `normal` / `rapid` / `burst` / `easter_egg` | `touchZone`、可选 `easterEgg` |
 
-1. 猫爪和锤子进入头像判定范围时，从小光标形态切到大图标形态，用于强调“已经对准 NEKO”。
-2. 猫爪和锤子离开头像判定范围时，恢复小光标形态。
-3. 棒棒糖始终保持小光标形态，不随头像范围放大，避免投喂指向感变得不稳定。
+本次不包含：
 
-| 道具 | tool id | 前端动作 | 后端 action |
-|---|---|---|---|
-| 棒棒糖 | `lollipop` | 投喂、连续投喂、爱心飘字 | `offer` / `tease` / `tap_soft` |
-| 猫爪 | `fist` | 轻戳、按下态、概率掉金币 | `poke` |
-| 锤子 | `hammer` | 轻敲、挥动动画、概率彩蛋 | `bonk` |
+1. 猜拳或其它新道具。
+2. 为 Full Chat 或 Compact Chat 重新建立独立的道具状态机、声音、效果、命中或提交链路。
+3. 背包、购买、消耗、解锁或拖拽投放即触发。
+4. 非 Avatar 目标交互。
+5. 改变 `avatar_interaction` 作为轻量临时互动的产品语义。
 
-当前不包含：
+新增道具必须另行确认产品事件和跨端能力，不能落入任一旧道具的 fallback。
 
-1. 自定义道具、背包、消耗、购买或解锁。
-2. 道具拖到头像即触发。
-3. 非头像目标交互。
-4. 语音实时会话中的道具即时回应。
+## 用户体验与不可破坏规则
 
-## 主维护入口
+用户路径：
 
-前端 React：
+1. 在 Full Chat 或 Compact Chat 的 Avatar tools 入口打开道具选择。
+2. 从当前界面的选择入口选择一种道具。
+3. 道具进入持续跟随状态，直到用户取消、切换、道具被移出快捷栏或页面失去可交互能力。
+4. 离开 Avatar 范围时显示范围外小图标；靠近 Avatar 时三种道具都显示大图标。
+5. 按下只给本地按压反馈；在同一 session 内有效松开后才提交一次交互。
+6. 本地声音和动效立即播放，不等待模型回复或后端 ack。
 
-1. `frontend/react-neko-chat/src/App.tsx`
-   - 紧凑聊天主实现。
-   - 管理 `activeCursorToolId`、命中判定、道具光标、pointer 事件和本地特效。
-2. `frontend/react-neko-chat/src/avatarTools.ts`
-   - 道具清单、默认快捷道具、图片资源、光标热点和 localStorage key。
-3. `frontend/react-neko-chat/src/AvatarToolQuickbar.tsx`
-   - 展开后的快捷道具条。
-   - 展示已启用道具和编辑入口。
-4. `frontend/react-neko-chat/src/AvatarToolItemManager.tsx`
-   - 快捷道具管理弹窗。
-   - 负责 3 个槽位、道具库、拖拽、保存和取消。
-5. `frontend/react-neko-chat/src/message-schema.ts`
-   - 前端 props 和 `AvatarInteractionPayload` / `AvatarToolStatePayload` schema。
+必须一直成立：
 
-宿主和后端：
+1. 三种道具靠近 Avatar 都放大；棒棒糖不放大是旧实现错误。
+2. `pointerdown` 不提交后端。
+3. `pointerup` 必须匹配同一 pointer、同一 session、未超过移动阈值，并重新确认当前 Avatar 命中和 UI 排除。
+4. `pointercancel`、窗口失焦、页面隐藏、教程接管、输入区禁用、切换或销毁都只取消，不提交。
+5. 同一次 press 最多产生一个 commit。
+6. 本地表现、Host payload、后端 prompt 和 memory 从同一个 commit 事实派生。
+7. UI、聊天窗口和其它桌面管理窗口不能误触发道具，也不能被透明 overlay 抢走点击。
+8. 猫爪/锤子的 `touchZone` 必须保持真实的 `ear` / `head` / `face` / `body`，不能统一写成头部。
+9. Avatar Tool 链路始终显示系统光标；道具图片只跟随在系统光标旁边，不隐藏、不替换系统光标。
 
-1. `static/app/app-react-chat-window.js`
-   - 接收 React 的 `onAvatarInteraction` 和 `onAvatarToolStateChange`。
-   - 对外派发 `neko-react-chat-window:avatar-interaction` 和 `neko-react-chat-window:avatar-tool-state`。
-2. `static/app/app-buttons.js`
-   - 归一化并校验 avatar interaction payload。
-   - 通过 websocket 发送 `action: "avatar_interaction"`。
-   - 处理本地 seed emotion、发送节流和普通文本输入延后。
-3. `static/app/app-websocket.js`
-   - 接收后端 `avatar_interaction_ack`，转成 `neko-avatar-interaction-ack` 生命周期事件。
-4. `main_routers/websocket_router.py`
-   - 收到 `avatar_interaction` 后转给当前 session manager。
-5. `main_logic/core.py`
-   - `handle_avatar_interaction()` 负责校验、去重、冷却、会话准备、临时 prompt 和 ack。
-6. `config/prompts/prompts_avatar_interaction.py`
-   - 归一化 payload。
-   - 构造 avatar interaction instruction 和 memory note。
-7. `main_logic/cross_server.py`
-   - 处理 avatar interaction turn 的记忆隔离和去重持久化。
+## 职责与事实源
 
-桌面端：
+### NEKO React
 
-1. React 通过 `AvatarToolStatePayload` 持续上报道具光标状态。
-2. NEKO-PC 根据该状态和 pet 窗口判定结果同步桌面道具光标。
-3. 桌面端进入模型判定范围时，应使用头像范围内的大形态；离开模型判定范围时恢复小形态。
-
-## 前端状态
-
-| 状态 | 含义 |
+| 位置 | 职责 |
 |---|---|
-| `toolMenuOpen` | Avatar tools 快捷道具条是否展开 |
-| `activeCursorToolId` | 当前选中的道具光标 |
-| `activeAvatarToolIds` | 快捷道具槽位里的道具 id 列表 |
-| `avatarToolManagerOpen` | 道具管理弹窗是否打开 |
-| `avatarRangeCursorVariants` | 光标在头像命中区内时的道具图变体 |
-| `outsideRangeCursorVariants` | 光标在头像命中区外时的道具图变体 |
-| `isCursorOverAvatarRange` | 当前光标是否在头像命中区 |
-| `isCursorOverCompactCursorZone` | 当前光标是否在聊天/工具 UI 区 |
-| `isCursorInsideHostWindow` | 当前光标是否仍在宿主窗口内 |
-| `isCursorWithinAvatarToolRange` | 综合 host 窗口、头像 bounds 和 UI 覆盖排除后的最终头像范围判断 |
-| `shouldRenderAvatarRangeOverlay` | 是否显示头像范围内的大形态；当前排除 `lollipop` |
-| `avatarToolImageKind` | 当前上报给宿主的图片形态：`cursor` 小光标或 `icon` 大图标 |
+| `frontend/react-neko-chat/src/App.tsx`、`FullChatSurface.tsx` | Full/Compact 的界面适配、选择状态接线、调用共享 runtime 和渲染共享视觉层；只保留布局与入口差异。 |
+| `frontend/react-neko-chat/src/avatarTools.ts` | 从共享定义投影 UI 目录、资源路径、热点、默认槽位和持久化。 |
+| `frontend/react-neko-chat/src/avatar-tools/catalog.ts` | 唯一道具注册与定义层；棒棒糖、猫爪、锤子在同一层内分区维护各自的 definition、资源和 interaction profile，功能边界互不回退。 |
+| `frontend/react-neko-chat/src/avatar-tools/profileInterpreter.ts` | 通用 profile 解释器；网页与 PC 按相同声明语义执行现有 profile，只有真正特殊的玩法才注册 custom handler。 |
+| `frontend/react-neko-chat/src/avatar-tools/interaction.ts` | 共享交互内核；集中维护范围策略、bounds/UI exclusion、touch zone、press/release guard 和通用规则分发。 |
+| `frontend/react-neko-chat/src/avatar-tools/protocol.ts`、`message-schema.ts` | 从注册表派生 interaction/state payload、运行时校验与构建器；`message-schema.ts` 只重导出道具协议。 |
+| `frontend/react-neko-chat/src/avatar-tools/desktopContract.ts` | 桌面契约层；集中维护严格 schema、definition/runtime policy 投影与 PC 契约构建。 |
+| `frontend/react-neko-chat/src/avatar-tools/presentation.tsx` | 本地表现层；集中维护 disposer、sound/effect execution、视觉状态派生和稳定 React 展示，不重新定义命中或提交规则。 |
+| `frontend/react-neko-chat/src/avatar-tools/runtime.ts` | 唯一活动 session 与页面适配层；负责 pointer 周期、范围状态、命令/commit 分发、Host 发布和统一销毁。 |
 
-状态转换：
+`catalog.ts` 是 React 道具注册的单一事实源；三个道具可以位于同一文件，但 definition 和概率字段必须按道具分区，禁止跨道具 fallback。普通玩法由 `profileInterpreter.ts` 通用解释 profile；新增复用现有 profile 的道具不得再复制 tool-id handler。`avatarTools.ts`、protocol、runtime、表现层和桌面 contract 都消费注册表。`App.tsx`、`FullChatSurface.tsx`、quickbar 和 manager 不维护道具 timer、burst、press、声音或 tool-id 业务分支。
 
-1. 点击工具轮盘中的 `Avatar tools`：
-   - 未选中道具时，切换快捷道具条。
-   - 已选中道具时，清除当前道具模式并关闭工具轮盘。
-2. 点击快捷道具：
-   - 点击当前道具会取消选中。
-   - 点击其它道具会设置 `activeCursorToolId`。
-   - 重置该道具的光标变体为 `primary`。
-   - 用户点击选择后关闭紧凑工具轮盘。
-3. 点击编辑按钮：
-   - 记录编辑按钮位置作为弹窗锚点。
-   - 打开 `AvatarToolItemManager`。
-4. 保存管理弹窗：
-   - sanitize 道具 id。
-   - 写入 localStorage。
-   - 如果当前选中道具被移出快捷槽，清除道具模式。
+Runtime 依赖可替换 provider：
 
-## 命中判定
+1. bounds provider。
+2. UI exclusion provider。
+3. clock / monotonic clock。
+4. random source。
+5. Host state/interaction callbacks。
 
-头像命中范围来源按优先级组合：
+默认 provider 可以读取当前页面的 Live2D、VRM、MMD 或桌面注入 bounds；道具规则模块不能直接读取模型 manager、DOM、Host 或 IPC。
 
-1. 桌面端注入的 `window.__nekoDesktopAvatarBounds`。
-2. `window.mmdManager.getModelScreenBounds()`。
-3. `window.vrmManager.getModelScreenBounds()`。
-4. `window.live2dManager.getModelScreenBounds()`。
+### Host 与 Python 后端
 
-命中规则：
+| 位置 | 职责 |
+|---|---|
+| `static/app/app-react-chat-window/*` | 接收 React 的 interaction/state callback 并派发宿主事件；状态、消息处理和公开 API 按上游 parts 分层维护。 |
+| `static/app/app-buttons.js` | wire payload 归一、Host 冷却、发送、文本输入延后和 ack/turn 生命周期。 |
+| `static/app/app-websocket.js` | 把 `avatar_interaction_ack` 转成宿主生命周期事件。 |
+| `main_routers/websocket_router.py` | 把 `avatar_interaction` 转给当前 session manager。 |
+| `main_logic/core/greeting.py` | 去重、后端冷却、会话守卫、临时 prompt、turn meta 和最终 ack。 |
+| `config/prompts/avatar_interaction_contract.py` | Python 侧唯一 tool/action/intensity/special-field 契约和 wire normalizer。 |
+| `config/prompts/prompts_avatar_interaction.py` | 直接事件事实 prompt、reaction profile、touch zone 事实、memory 和 text-context sanitizer。 |
+| `main_logic/cross_server.py` | avatar interaction memory 隔离、去重与持久化。 |
 
-1. 容器必须可见。
-2. bounds 必须有正数宽高。
-3. 先用 100px padding 做外框快速过滤。
-4. 再用头像中心椭圆判断实际命中。
-5. 命中后按点击位置划分 `touchZone`：`ear`、`head`、`face`、`body`。
+Host 与 Python 都接受顶层 snake_case / camelCase 输入。Host 的 websocket wire 顶层字段使用 snake_case，但嵌套 `pointer` 仍使用 `{clientX, clientY}`；Python 同时接受嵌套 camelCase / snake_case，并归一为 `{client_x, client_y}`。两端必须用完整行为 parity 测试约束，不能只比较允许值表。
 
-排除规则：
+每次 commit 必须携带该 action 声明的 `intensity`；猫爪和锤子还必须携带声明范围内的真实 `touchZone`。缺失、越权或非法值直接拒绝，不得回退为 `normal` 或默认位置。
 
-1. 聊天输入工具区和快捷道具条。
-2. Avatar tool 管理弹窗。
-3. 聊天历史、发送按钮、窗口顶栏按钮。
-4. Live2D / VRM / MMD 浮动按钮、返回按钮、锁定按钮、弹窗。
-5. 标记为 `data-neko-sidepanel` 的侧边面板。
+Python 调用方直接从 `config.prompts.avatar_interaction_contract` 使用 `normalize_avatar_interaction_payload`，并显式注入 `_sanitize_avatar_interaction_text_context`。旧的私有 `_normalize_avatar_interaction_payload` 已退役，不通过 `main_logic.core` 或其它 facade 提供兼容 alias；调用方必须迁移到公开严格契约，不保留第二个 normalizer。Host 不维护 tool/action/intensity 到模型 emotion 的 seed 表，也不直接调用模型 emotion API；即时反馈属于 React/PC 的道具视觉、声音和效果，模型情绪与动作继续由既有 assistant 响应链路决定。
 
-维护时不要只看“坐标在头像附近”。必须同时检查命中区和 UI 覆盖排除，否则会出现点按钮也触发道具交互的误触。
+### NEKO-PC
 
-## 道具行为
+桌面端分为三层：
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| Chat descriptor publisher | `src/preload/bridges/chat-avatar-tool-bridge.js`、`chat-compact-window-surface-bridge.js`、`chat-full-window-surface-bridge.js` | 只由当前可见且选中的 surface 发布 descriptor；不转发 pointer，不渲染桌面道具跟随视觉。 |
+| Main pointer/visual coordinator | `src/main.js`、`src/avatar-tool-visual-overlay-service.js`、`src/main/avatar-tool-visual-ownership.js`、`src/main/cursor-display-ipc.js` | 读取全局坐标、识别窗口上下文、管理视觉所有权、桌面 overlay 和 move 通道；不隐藏或替换系统光标。 |
+| Pet interaction adapter | `src/preload/bridges/pet-input-region-bridge.js`、`src/preload/bridges/pet-avatar-tool-adapter.js` | Bridge 提供模型 bounds、平台坐标和输入穿透能力；adapter 接入真实 down/up/cancel，执行桌面视觉、声音、效果并提交一次 interaction。 |
+
+`src/desktop-avatar-tools/*` 按四层保存可测试的桌面领域逻辑：
+
+1. `contract.js`：严格契约校验、decode、能力协商、规范化和 fingerprint。
+2. `runtime.js`：bounds、range、touch zone、press/release guard、声明式 profile 执行、唯一 session、effect lock/timeline 和 generation 所有权。
+3. `interaction-output.js`：从 selection/range/effect 派生视觉状态，并集中生成 effect plan、interaction payload 与 sound/effect 输出顺序。
+4. `surface-lifecycle.js`：Full/Compact/Pet 的 ownership、handoff、reload replay 和 renderer 守卫。
+
+PC 不再复制 `tools/*` 或 tool-id 业务表；每个道具的独立定义来自 NEKO 投影的桌面 contract，PC domain 只执行声明式 profile。`pet-avatar-tool-adapter.js` 可以操作 DOM、Audio、窗口和 IPC，并使用 preload scope 做资源清理，但不能创建第二套 session/range/effect 生命周期。
+
+桌面多窗口模式下，Full/Compact 都从同一 NEKO runtime 发布真实选择得到的 descriptor，但只有当前可见且选中的 surface 拥有发布权。切换 surface 时 ownership 必须原子交接，隐藏或失活 surface 的迟到状态必须被拒绝；Pet reload/ready 后重放当前 owner 的最新 descriptor。隐藏窗口即使残留旧 shape 元数据，也不能参与 Host 命中。
+
+Avatar Tool 链路始终不调用 `system-cursor-visibility-service.js`；该服务只属于新手教程 Ghost Cursor 生命周期。Niri 的全屏道具视觉 overlay 只负责视觉跟随并始终保持 passthrough；真实 down/up/cancel 只能来自 Pet 的精确输入区域。不得用 overlay 接管桌面其它应用的点击来模拟全局交互。
+
+`wireVersion`、`definitionVersion`、`policyVersion` 的值 `1`，以及 `*-v1` interaction/effect `kind`，是已序列化的协议判别值，必须由生产者和消费者共同校验。它们不用于公开文件、模块、factory 或 API 命名；当前实现不保留名为 `V1`、`contract-v1` 的兼容层。
+
+## Runtime 生命周期
+
+```text
+inactive
+  -> active.outside
+  -> active.in_range
+  -> active.pressing
+  -> active.committing
+  -> active.settling
+  -> active.outside / active.in_range / inactive
+```
+
+### 创建与切换
+
+1. 切换前先 destroy 旧 session。
+2. 新 session 获得新的 generation。
+3. 初始化当前道具变体、burst history 和 disposer。
+4. 发布 active state；桌面多窗口只发布 descriptor，不发布 Chat pointer。
+5. 旧 timer、audio、effect 或 Promise 回调必须通过 generation/disposer 失效。
+
+### 高频移动
+
+1. 原始坐标保存在 ref/session，不直接进入 React render。
+2. 网页端用一个 RAF 合并 move；每帧最多计算一次 bounds/UI exclusion 并发布一次有效 state diff。
+3. 道具跟随视觉节点保持稳定，只更新 `transform`；不得在 move 中创建 DOM 或 Audio。
+4. PC main 只轮询 move；不得合成 down/up/cancel 或提交 interaction。
+5. overlay/poller 只在支持桌面视觉的 active tool 下运行。
+
+### Press 与 release
+
+`pointerdown` 保存：
+
+1. session generation。
+2. tool id 与 pointer id。
+3. 起点和移动阈值状态。
+4. 当前本地按压反馈所需状态。
+
+`pointerup` 重新读取当前 bounds 和 UI exclusion。只有当前命中有效时才由道具模块返回 commit。release 的 `touchZone` 取当前可靠命中，不以 press 旧 bounds 兜底。
+
+### 销毁
+
+统一销毁必须：
+
+1. 先让 generation 失效。
+2. 清 press、timer、RAF、audio、effect 和 tool lock。
+3. 确认系统光标始终可见，并恢复 passthrough。
+4. 停止 PC overlay/poller。
+5. 发布 inactive state。
+6. 幂等；重复销毁不抛错、不重复提交。
+
+## 命中与范围稳定性
+
+Avatar bounds 的默认优先来源：
+
+1. 桌面注入 bounds。
+2. MMD manager。
+3. VRM manager。
+4. Live2D manager。
+
+页面命中使用矩形快速过滤和中心椭圆，并使用进入/离开不同 padding 与短 hold，减少模型轻微变化或边缘移动造成的范围外/范围内视觉抖动。桌面 Pet 只读取当前活动模型的几何 bounds；通用布局与道具范围共用带模型身份的稳定快照，选中道具不得清空，短暂缺失只能在同模型的 missing grace 内沿用，release 必须强制读取当前几何且不得使用 last-known。普通模型 hit test 不得成为道具范围的第二权威。
+
+UI exclusion 至少覆盖：
+
+1. composer、工具轮盘、quickbar、manager、发送按钮和消息操作按钮。
+2. 窗口拖拽/缩放层。
+3. 教程 interaction shield。
+4. Live2D / VRM / MMD 浮动按钮、返回、锁定和弹窗。
+5. sidepanel、历史区和桌面浮动交互控件。
+
+桌面全局上下文必须区分：
+
+1. `overPetWindow`：指针在 Pet 自身；这是 Pet 交互候选，不是 Host exclusion。
+2. `overChatWindow`：指针在聊天窗口；必须排除并取消 press。
+3. `insideHostWindow`：指针在字幕、字幕设置、Agent HUD、jukebox、toast 等其它管理窗口；必须排除并取消 press。
+
+禁止把 `overPetWindow` 合并进 `insideHostWindow`，否则 Pet 原生 move 与 main 轮询会交替写道具视觉，并在按下期间取消 session。
+
+## 三种道具规则
 
 ### 棒棒糖
 
-行为：
-
-1. 第一次命中头像：`offer`。
-2. 第二次命中头像：`tease`。
-3. 之后命中头像：`tap_soft`。
-4. `tap_soft` 连点会记录 burst 历史，短时间内多次点击升级为 `burst`。
-5. 播放 `lollipop-bite.mp3`。
-6. 第三阶段后生成爱心飘字。
-7. 进入头像范围时仍保持 `cursor` 小形态，不切换到大图标。
-
-payload：
-
-```json
-{
-  "toolId": "lollipop",
-  "actionId": "offer | tease | tap_soft",
-  "intensity": "normal | rapid | burst"
-}
-```
-
-棒棒糖不带 `touchZone`。它的语义是投喂，不是点到头像哪个部位。
+1. 第一阶段 `offer`，第二阶段 `tease`，后续 `tap_soft`。
+2. `tap_soft` 可按连续点击升级为 `rapid/burst`。
+3. 不带 `touchZone`、`rewardDrop` 或 `easterEgg`。
+4. commit 后播放咬食音效并生成爱心。
+5. 靠近 Avatar 使用大图标。
 
 ### 猫爪
 
-行为：
-
-1. 点击头像时发送 `poke`。
-2. 按下时光标切到 secondary，松开后恢复 primary。
-3. 根据点击位置带上 `touchZone`。
-4. 短时间连点会升级为 `rapid`。
-5. 命中头像时有概率设置 `rewardDrop: true`。
-6. `rewardDrop` 为真时播放 `coin-drop.mp3` 并生成金币掉落效果。
-7. 进入头像范围时从 `cursor` 小形态切到 `icon` 大形态，离开范围后恢复小形态。
-
-payload：
-
-```json
-{
-  "toolId": "fist",
-  "actionId": "poke",
-  "intensity": "normal | rapid",
-  "touchZone": "ear | head | face | body",
-  "rewardDrop": true
-}
-```
-
-`rewardDrop` 只对猫爪有效。不要把它泛化成所有道具通用字段。
+1. `pointerdown` 只切按下变体；有效 release 才提交 `poke`。
+2. 连续点击只使用 `normal/rapid`；不要从旧草稿误加 `burst`。
+3. commit 使用 release 时的真实 `touchZone`。
+4. `rewardDrop` 只属于猫爪；命中后可播放金币音和掉落效果。
+5. 靠近 Avatar 使用大图标。
 
 ### 锤子
 
-行为：
+1. Avatar 外按下只允许短暂本地反馈，不提交、不累计 burst。
+2. 有效 release 才提交 `bonk`。
+3. commit 后执行 `windup -> swing -> impact -> recover -> idle`。
+4. 动画锁只属于当前 hammer session；动画未结束时不接受重叠提交。
+5. `easterEgg` 只属于锤子，并与 `intensity=easter_egg` 保持同一事实。
+6. 挥动期间保持大形态或显式隐藏基础道具视觉，不能在移出 Avatar 时重新出现小锤。
 
-1. 点击头像时发送 `bonk`。
-2. 点击头像外只做短暂 outside cursor 变体反馈，不发送后端事件。
-3. 命中头像且当前没有挥动动画时，进入 `windup -> swing -> impact -> recover -> idle` 动画阶段。
-4. 短时间连敲会升级为 `rapid` 或 `burst`。
-5. 命中时有小概率设置 `easterEgg: true`。
-6. 普通敲击播放 `hammer-small.mp3`，彩蛋播放 `hammer-big.mp3`。
-7. 进入头像范围时从 `cursor` 小形态切到 `icon` 大形态，离开范围后恢复小形态。
-8. 挥动动画进行中即使光标离开头像范围，也保持大形态直到动画收束，避免中途缩放跳变。
+## Host/后端回应周期
 
-payload：
+本地动效不等待后端。普通文本输入只在角色回应周期内延后。
 
-```json
-{
-  "toolId": "hammer",
-  "actionId": "bonk",
-  "intensity": "normal | rapid | burst | easter_egg",
-  "touchZone": "ear | head | face | body",
-  "easterEgg": true
-}
+当前真实顺序：
+
+```text
+interaction sent
+  -> awaiting_result
+  -> matching assistant turn active
+  -> matching turn ended / awaiting_final_ack
+  -> delivered/rejected ack or grace timeout
+  -> release deferred text
 ```
-
-锤子有本地挥动动画锁。维护时不要允许动画未结束就重复进入新挥动，否则会产生视觉叠加和重复发送。
-
-## 宿主与后端事件
-
-React 侧发出的 `AvatarInteractionPayload` 经过两层出口：
-
-1. `onAvatarInteraction(payload)`：交给宿主业务处理。
-2. `neko-react-chat-window:avatar-interaction`：作为事件总线兼容出口。
-
-宿主归一化后 websocket 消息格式：
-
-```json
-{
-  "action": "avatar_interaction",
-  "interaction_id": "...",
-  "tool_id": "lollipop | fist | hammer",
-  "action_id": "...",
-  "target": "avatar",
-  "timestamp": 0,
-  "intensity": "normal | rapid | burst | easter_egg",
-  "touch_zone": "ear | head | face | body",
-  "reward_drop": true,
-  "easter_egg": true,
-  "text_context": "...",
-  "pointer": {
-    "clientX": 0,
-    "clientY": 0
-  }
-}
-```
-
-后端 `handle_avatar_interaction()` 会：
-
-1. 校验字段。
-2. 用 `interaction_id` 做重复过滤。
-3. 用 `avatar_interaction_cooldown_ms` 做交互冷却。
-4. 在语音实时会话中拒绝该事件。
-5. 必要时自动启动文本会话。
-6. 如果文本会话忙或说话冷却未结束，拒绝该事件。
-7. 构造 avatar interaction instruction 和 memory note。
-8. 调用 `prompt_ephemeral(..., persist_response=False)`。
-9. 发送 `avatar_interaction_ack`。
-
-前端收到 ack 后通过 `neko-avatar-interaction-ack` 收束生命周期。宿主还会在道具交互回应期间延后普通文本输入，避免普通聊天和道具回应互相打断。
-
-## 道具光标同步
-
-`AvatarToolStatePayload` 必须包含：
-
-1. 是否 active。
-2. 当前 `toolId`。
-3. 当前光标变体。
-4. 当前图片形态 `imageKind`：
-   - `cursor`：小光标资源，通常用于离开头像范围时。
-   - `icon`：大图标资源，通常用于进入头像范围时，`lollipop` 除外。
-   - 桌面端收到变化后应同步调整 cursor overlay 的显示尺寸和 hotspot。
-5. 是否在头像命中区。
-6. 是否在紧凑 UI 区。
-7. 当前 pointer client/screen 坐标。
-8. 道具图片、光标热点和显示尺寸。
-
-维护边界：
-
-1. 不要只改 React 光标，必须同步 `onAvatarToolStateChange` payload。
-2. 新增道具图片时必须同时提供 icon、cursor、hotspot 和显示尺寸。
-3. 桌面端依赖 `imageKind` 区分小光标和头像范围内大形态。
-4. 光标 overlay 层级必须高于模型侧边按钮和模型菜单，但不能拦截 pointer 事件。
-5. PC 侧判断应以 pet/model 范围为准，不应只用 chat 窗口内坐标推断头像命中。
-
-## 道具管理弹窗
-
-`AvatarToolItemManager` 只管理快捷道具槽，不管理道具语义。
 
 规则：
 
-1. 最多 3 个槽位。
-2. 默认槽位是 `lollipop`、`fist`、`hammer`。
-3. 支持从道具库拖入槽位。
-4. 支持槽位间重排。
-5. 支持移除槽位道具。
-6. 保存后写入 `neko.reactChatWindow.activeAvatarTools`。
-7. localStorage 无效或数据非法时回退默认槽位。
+1. 不使用旧的 8 秒 ack timeout 提前释放；模型回复可能更慢。
+2. 长时间完全没有 turn/ack 时才使用总结果 timeout 兜底。
+3. assistant turn 事件只按后端既有 `meta.kind=avatar_interaction` 与匹配的
+   `meta.interaction_id` 关联；无标记、类型不同或 interaction 不同的 turn
+   都不得推进或结束本次延后。
+4. turn 结束后等待最终 ack；ack 丢失时用短 grace 收尾。
+5. late ack、reject、duplicate、busy、cooldown 和 error 都必须幂等收尾。
+6. ack 不回滚已经播放的本地点击效果。
 
-不要在管理弹窗里写道具业务逻辑。新增道具时，管理弹窗只消费 `AVAILABLE_AVATAR_TOOLS`。
+## 扩展与维护边界
 
-## i18n 与文案
+新增或修改道具前先写清：
 
-用户可见文案必须走 i18n key。
+1. 选择后的范围外小图标和范围内大图标。
+2. pointerdown 本地反馈、有效 release 条件和 outside 行为。
+3. action/intensity、touch zone、概率字段与 effect/sound。
+4. 网页与桌面 capability；未适配桌面时必须明确 `desktopVisual=false`，不能 fallback。
+5. Host/Python prompt、memory 和 ack 语义。
 
-相关 key 包括：
+同步入口：
 
-1. `chat.avatarToolsButtonAriaLabel`
-2. `chat.avatarToolQuickbarAriaLabel`
-3. `chat.avatarToolQuickbarEmpty`
-4. `chat.avatarToolEdit`
-5. `chat.clearCursorToolAriaLabel`
-6. `chat.toolLollipop`
-7. `chat.toolFist`
-8. `chat.toolHammer`
-9. 道具管理弹窗标题、槽位、保存、取消、提示类 key
+1. React catalog、interaction、protocol、runtime 和测试。
+2. `static/app/app-buttons.js` Host contract。
+3. `config/prompts/avatar_interaction_contract.py` Python contract。
+4. `config/prompts/prompts_avatar_interaction.py` prompt/memory。
+5. PC desktop contract、通用 profile runtime 和测试。
+6. 8 locale 用户可见文案与静态资源预加载。
 
-新增或修改用户可见文案时，同步 8 个 locale：
+不要：
 
-```text
-en / es / ja / ko / pt / ru / zh-CN / zh-TW
-```
+1. 在 `App.tsx` 或 Pet preload 重新加大段 tool-id 分支。
+2. 复制新的 timer/audio/effect lifecycle。
+3. 让 quickbar/manager 承担道具业务。
+4. 让 Chat preload 回灌 pointer 或桌面道具视觉状态。
+5. 让 main poller 合成点击。
+6. 用 press 旧命中代替 release 当前命中。
 
-不要只在 TSX 里加中文 fallback。fallback 可以保留，但规范入口应是 locale JSON。
+## 验证清单
 
-## 新增道具流程
+网页端至少覆盖：
 
-### 1. 定义产品事件
+1. 三种道具选择、取消、切换和槽位移除。
+2. 所有道具范围内大图标、范围外小图标稳定，边缘不抖动；系统光标始终可见。
+3. down 不提交；有效 up 单次提交。
+4. drag-out、移动超阈值、release 到 UI、cancel、blur、教程 shield 均不提交。
+5. release 重新读取 bounds/touch zone。
+6. timer、audio、effect 和旧 generation 不残留。
+7. RAF 合并和 state diff 不重复上报。
 
-先写清楚：
+Host/后端至少覆盖：
 
-1. 用户选择它后看到什么光标。
-2. 点击头像时发生什么本地反馈。
-3. 是否区分点到耳朵、头、脸、身体。
-4. 是否有概率掉落、彩蛋或连续点击升级。
-5. 后端应该收到哪些 `action_id` 和 `intensity`。
+1. Host/Python contract 与 normalizer 行为 parity。
+2. 三种道具的 action/intensity/special fields。
+3. 8 locale prompt/memory 和四种 touch zone。
+4. ack/reject、慢回复、匹配/不匹配 turn、late ack 和 timeout。
 
-不能直接从图片或道具名推断后端事件。后端事件必须是明确业务语义。
+桌面端至少覆盖：
 
-### 2. 更新前端道具清单
+1. 同一 Pet 点经 Pet 原生 pointer 与 main poll 后 imageKind/尺寸稳定。
+2. main poll 不取消 Pet press；down -> poll -> up 只 commit 一次。
+3. Chat 和其它管理窗口仍正确排除。
+4. Niri 初始坐标、overlay 持续视觉跟随与全程 passthrough；Pet 精确区域完成真实 down/up/cancel，第三方窗口点击不被抢走。
+5. Compact 与 Full 双向切换时原子交接 descriptor ownership，选择持续、旧 surface 迟到状态被拒绝，并且始终只有一个发布者；隐藏窗口的旧 shape 不影响命中。
+6. Pet reload/crash 后 overlay、道具视觉和 selection 能恢复，系统光标仍保持可见。
+7. hammer 动画移出 Avatar 时不出现第二把小锤。
+8. macOS / Windows / Wayland 的 passthrough、截图暂停、多屏变化不被破坏。
 
-修改 `avatarTools.ts`：
-
-1. 新增 `AVAILABLE_AVATAR_TOOLS` 项。
-2. 提供 icon 和 cursor 图片。
-3. 配置 cursor hotspot。
-4. 如需默认出现在快捷栏，更新 `DEFAULT_ACTIVE_AVATAR_TOOL_IDS`。
-
-同时检查：
-
-1. `message-schema.ts` 的 `avatarInteractionPayloadSchema`。
-2. `AvatarToolId` 类型来源。
-3. `sanitizeAvatarToolIds()` 是否允许新 id。
-
-### 3. 更新前端交互分支
-
-在 `App.tsx` 的 pointerdown 处理里新增该道具的行为：
-
-1. 命中头像才发后端事件。
-2. 命中 UI 覆盖区不得发事件。
-3. 明确本地动画和 sound。
-4. 明确是否改变 cursor variant。
-5. 明确是否需要 burst history。
-6. 明确是否需要 cleanup timer。
-7. 明确头像范围内的大形态 `imageKind`。
-   - 如果新道具遵循“范围内 `icon`、范围外 `cursor`”的规则，需要确认未被 `shouldRenderAvatarRangeOverlay` 排除。
-   - 如果新道具应始终保持 `cursor` 形态，需要在排除条件和文档里写清楚原因。
-
-不要把新道具做成默认 fallback 分支。每个道具都应有清晰的事件语义。
-
-### 4. 更新宿主和后端白名单
-
-需要同步：
-
-1. `static/app/app-buttons.js` 的允许 action / intensity / seed emotion。
-2. `config/prompts/prompts_avatar_interaction.py` 的 allowed actions、intensity combinations、labels、reaction profiles、memory meta。
-3. 必要时更新 `main_logic/core.py` 的特殊处理，但优先保持通用链路不变。
-
-前端能发不等于后端会接受。没有后端白名单的新道具会被当成 invalid payload。
-
-### 5. 更新测试
-
-至少覆盖：
-
-1. 选择新道具后进入 tool cursor active。
-2. 点头像范围内会发 `onAvatarInteraction`。
-3. 点头像范围外不发。
-4. 点 UI 覆盖区不发。
-5. 头像范围内上报大形态 `imageKind`。
-6. payload 符合 `message-schema.ts`。
-7. 后端归一化接受新事件。
-8. 8 个 locale 的 prompt 和 memory meta 可生成。
-9. 如果有掉落、彩蛋、连点升级，覆盖概率或强度分支。
-
-## 修改检查清单
-
-改前端表现时检查：
-
-1. 紧凑聊天工具轮盘是否仍能打开和关闭。
-2. 已选道具是否仍能清除。
-3. 道具管理弹窗是否仍能保存、取消、拖拽。
-4. localStorage 旧值是否仍能 sanitize。
-5. 点聊天工具区不会触发头像交互。
-6. Live2D / VRM / MMD 三种模型 bounds 是否仍可命中。
-7. 头像范围内外的光标大小和图片形态是否正确。
-8. 桌面多窗口光标状态是否仍同步。
-
-改后端语义时检查：
-
-1. `static/app/app-buttons.js` 和 `config/prompts/prompts_avatar_interaction.py` 白名单一致。
-2. 前端 action / intensity / flag 与 prompt 事件事实一致。
-3. `avatar_interaction_ack` 的 accepted/reason 仍能让前端收尾。
-4. 冷却、去重、文本会话忙、语音会话 active 的拒绝路径不被绕过。
-5. `prompt_ephemeral(..., persist_response=False)` 语义不被改成普通聊天输入。
-6. memory note 和 dedupe rank 仍按 `cross_server.py` 的 avatar interaction 逻辑处理。
-
-改视觉或 CSS 时检查：
-
-1. 道具 cursor overlay 不遮挡点击。
-2. overlay z-index 高于模型菜单，但不污染普通聊天。
-3. 紧凑轮盘里的 quickbar 锚点仍在轮盘原点附近。
-4. 小屏或桌面边缘时弹窗不会跑出视口。
-5. 文案不溢出按钮。
-
-## 验证建议
-
-轻量静态验证：
-
-```bash
-cd frontend/react-neko-chat
-npm test -- App.test.tsx
-```
-
-提示词和记忆验证：
-
-```bash
-uv run pytest tests/unit/test_avatar_interaction_memory_contract.py
-```
-
-涉及桌面光标、命中区、窗口外同步时，需要用 NEKO-PC 真实运行或自动化观察。不能只靠代码阅读判断。
-
-如果新增或修改 `imageKind` 值，还需要确认 NEKO-PC 的 `avatar-tool-cursor-service.js` 和相关 preload 链路已支持该值的图片资源、尺寸切换和 hotspot，否则前端上报完整也不会得到正确桌面反馈。
-
-## 常见误区
-
-1. 只加前端按钮，不加 schema 和后端白名单。
-2. 只改提示词，不改前端实际发送的 action / intensity。
-3. 点到聊天 UI 时也触发头像事件。
-4. 忘记桌面光标状态同步，只在浏览器 CSS cursor 里看起来正常。
-5. 头像范围内没有切到大形态，导致 PC 侧只在点击时才变化。
-6. 把 `rewardDrop`、`easterEgg` 做成所有道具通用语义。
-7. 为了某个坏回复在 prompt 里堆禁令，导致道具交互变模板化。
-8. 为了新增道具改共享会话、普通聊天或 voice session 语义。
+修改后运行与范围匹配的 typecheck、Vitest、Node contract、Python 单测、PC unit/contract，并以隔离数据目录启动真实桌面端复测。截图只能辅助观察，不能替代连续移动、按下、松开、取消和跨窗口的真实输入验证。

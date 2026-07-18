@@ -259,8 +259,8 @@
   function renderForgeBadge(count, bump) {
     ensureStyles();
     var n = Math.max(0, Number(count) || 0);
-    // 券快照可能早于 avatar 浮动按钮完成挂载。必须先缓存数量，
-    // 这样 MutationObserver 才能在按钮出现后补建角标。
+    // The authoritative refresh can finish before the floating button exists.
+    // Cache first so the MutationObserver can render once the button mounts.
     cachedCredits = n;
     var badge = ensureForgeBadge();
     if (!badge) return;

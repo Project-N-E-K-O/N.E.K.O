@@ -84,6 +84,7 @@ def route_for_event(
     already_roasted: bool,
     entrance_pacing_active: bool,
     active_hook_answer: bool = False,
+    avatar_roast_enabled: bool = True,
     avatar_roast_allowed: bool = True,
     avatar_roast_burst_active: bool = False,
     avatar_roast_batch_welcome: bool = False,
@@ -112,6 +113,8 @@ def route_for_event(
         entrance_pacing_active=entrance_pacing_active,
     ):
         return PipelineRoute("danmaku_response", "entrance_pacing", True)
+    if is_live_danmaku_with_text(event) and not avatar_roast_enabled:
+        return PipelineRoute("danmaku_response", "avatar_roast_disabled", False)
     if is_live_danmaku_with_text(event) and not avatar_roast_allowed:
         if avatar_roast_burst_active and avatar_roast_batch_welcome:
             return PipelineRoute("danmaku_response", "batch_welcome", False)

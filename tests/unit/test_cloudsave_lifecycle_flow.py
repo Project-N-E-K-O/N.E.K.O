@@ -109,7 +109,7 @@ def _write_runtime_state(cm, *, character_name: str, recent_message: str = "你�
 
 
 def _run_launcher_phase0(cm):
-    import launcher
+    from launcher_core import runtime as launcher
 
     emitted_events = []
     with patch.object(launcher, "get_config_manager", lambda _app_name, **_kwargs: cm), patch.object(
@@ -362,6 +362,9 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         mock_mount_workshop = stack.enter_context(
             patch.object(main_server, "_init_and_mount_workshop", AsyncMock(return_value=None))
         )
+        mock_start_workers = stack.enter_context(
+            patch.object(main_server, "_start_neko_servers_integration_workers", Mock())
+        )
         mock_set_steamworks = stack.enter_context(
             patch("main_routers.shared_state.set_steamworks", Mock())
         )
@@ -393,6 +396,7 @@ async def test_main_server_manual_startup_performs_fallback_import_and_continues
         bridge_start.assert_awaited_once_with()
         mock_set_main_bridge.assert_called_once()
         mock_mount_workshop.assert_awaited_once_with()
+        mock_start_workers.assert_called_once_with()
         fake_tracker.start_periodic_save.assert_called_once_with()
         fake_tracker.record_app_start.assert_called_once_with(process="main_server")
         assert main_server._preload_task is not None
@@ -408,7 +412,7 @@ async def test_main_server_shutdown_does_not_reexport_runtime_into_cloudsave_sna
     with patch.object(main_server, "_IS_MAIN_PROCESS", True), \
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("utils.music_crawlers.close_all_crawlers", AsyncMock(return_value=None)), \
          patch("utils.token_tracker.TokenTracker.get_instance", return_value=fake_tracker):
@@ -543,11 +547,39 @@ async def test_main_server_startup_stays_limited_when_storage_barrier_is_blockin
          patch.object(main_server, "role_state", {}), \
          patch.object(main_server, "_config_manager", SimpleNamespace()), \
          patch.object(main_server, "get_storage_startup_blocking_reason", Mock(return_value="selection_required")), \
+         patch.object(main_server, "_start_neko_servers_integration_workers", Mock()) as mock_start_workers, \
          patch.object(main_server, "_ensure_main_server_runtime_initialized", AsyncMock()) as mock_ensure_runtime:
         await main_server.on_startup()
         assert shared_state.get_templates() is sentinel_templates
 
     mock_ensure_runtime.assert_not_awaited()
+    mock_start_workers.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_storage_startup_barrier_starts_integration_workers_after_runtime_init():
+    from app import main_server
+
+    with patch.object(
+        main_server,
+        "_request_memory_server_continue_startup",
+        AsyncMock(return_value=None),
+    ) as mock_continue, patch.object(
+        main_server,
+        "_ensure_main_server_runtime_initialized",
+        AsyncMock(return_value=True),
+    ) as mock_ensure, patch.object(
+        main_server,
+        "_start_neko_servers_integration_workers",
+        Mock(),
+    ) as mock_start_workers:
+        result = await main_server.release_storage_startup_barrier(reason="unit_test")
+
+    assert result == {"ok": True, "initialized": True}
+    mock_continue.assert_awaited_once_with("unit_test")
+    mock_ensure.assert_awaited_once_with(reason="unit_test")
+    mock_start_workers.assert_called_once_with()
 
 
 @pytest.mark.unit
@@ -571,6 +603,50 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert health_response.status_code == 200
     assert steam_language_response.status_code == 200
     assert "uiLanguage" in steam_language_response.json()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("encoded_path", "escaped_control", "raw_control"),
+    [
+        ("/blocked/%1B%5B31m", r"\x1b", "\x1b"),
+        ("/blocked/%00", r"\x00", "\x00"),
+        ("/blocked/%C2%85", r"\x85", "\x85"),
+        ("/blocked/%E2%80%A8", r"\u2028", "\u2028"),
+    ],
+)
+def test_main_server_limited_mode_log_escapes_control_characters(
+    encoded_path,
+    escaped_control,
+    raw_control,
+):
+    from app import main_server
+
+    with (
+        patch.object(main_server, "_IS_MAIN_PROCESS", False),
+        patch.object(main_server, "_runtime_startup_init_completed", False),
+        patch.object(main_server, "_main_runtime_limited_mode_enabled", True),
+        patch.object(
+            main_server,
+            "_main_runtime_limited_mode_reason",
+            "selection_required",
+        ),
+        patch.object(main_server.logger, "info") as mock_info,
+    ):
+        with TestClient(main_server.app) as client:
+            response = client.get(encoded_path)
+
+    log_call = next(
+        call
+        for call in mock_info.call_args_list
+        if call.args
+        and call.args[0].startswith("[Main] limited-mode blocks request path=")
+    )
+    rendered = log_call.args[0] % log_call.args[1:]
+
+    assert response.status_code == 409
+    assert raw_control not in rendered
+    assert escaped_control in rendered
 
 
 @pytest.mark.unit
@@ -745,7 +821,7 @@ def test_main_server_resets_sync_shutdown_events_after_startup_rollback():
         )
     }
 
-    with patch.object(main_server, "role_state", role_state):
+    with patch.object(main_server.character_runtime, "role_state", role_state):
         # 不抛异常即视为通过；旧版会清 threading.Event，新版无状态可清。
         # 显式断言返回值为 None，未来若改成有副作用返回时能更早暴露。
         assert main_server._reset_sync_connector_shutdown_events() is None
@@ -765,7 +841,7 @@ async def test_main_server_shutdown_releases_live_sessions_then_uploads_existing
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", existing_steamworks), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": manager_with_resampler, "角色B": object(), "空槽": None})), \
          patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action), \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(return_value=True)) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -796,7 +872,7 @@ async def test_main_server_shutdown_continues_when_memory_release_returns_false(
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({"角色A": object(), "角色B": object()})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch("main_routers.characters_router.release_memory_server_character", AsyncMock(side_effect=[True, False])) as mock_release, \
          patch("utils.language_utils.aclose_translation_service", AsyncMock(return_value=None), create=True), \
@@ -862,7 +938,7 @@ async def test_main_server_shutdown_requests_memory_server_stop_after_snapshot_u
          patch.object(main_server, "_preload_task", None), \
          patch.object(main_server, "agent_event_bridge", None), \
          patch.object(main_server, "steamworks", None), \
-         patch.object(main_server, "role_state", _role_state_from_session_managers({})), \
+         patch.object(main_server.character_runtime, "role_state", _role_state_from_session_managers({})), \
          patch.object(main_server, "_run_cloudsave_manager_action", AsyncMock()) as run_cloudsave_action, \
          patch.object(main_server, "get_start_config", Mock(return_value=start_config)), \
          patch.object(main_server, "_request_memory_server_shutdown", AsyncMock(side_effect=_fake_request_shutdown)) as mock_request_shutdown, \

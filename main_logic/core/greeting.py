@@ -23,10 +23,13 @@ import time
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
+from config.prompts.avatar_interaction_contract import (
+    normalize_avatar_interaction_payload,
+)
 from config.prompts.prompts_avatar_interaction import (
-    _normalize_avatar_interaction_payload,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
+    _sanitize_avatar_interaction_text_context,
 )
 from utils.config_manager import get_config_manager
 from utils.language_utils import normalize_language_code, get_global_language
@@ -48,7 +51,10 @@ class GreetingMixin:
 
     async def handle_avatar_interaction(self, payload: dict) -> dict:
         raw_interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip() if isinstance(payload, dict) else ""
-        raw = _normalize_avatar_interaction_payload(payload)
+        raw = normalize_avatar_interaction_payload(
+            payload,
+            sanitize_text_context=_sanitize_avatar_interaction_text_context,
+        )
         if not raw:
             logger.debug("[%s] handle_avatar_interaction: ignored invalid payload", self.lanlan_name)
             await self.send_avatar_interaction_ack(raw_interaction_id, False, "invalid_payload")

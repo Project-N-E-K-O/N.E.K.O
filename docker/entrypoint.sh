@@ -13,6 +13,9 @@ export SSL_DOMAIN=${SSL_DOMAIN:-project-neko.online}
 export SSL_DAYS=${SSL_DAYS:-365000}  # 1000年
 export NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用自动重载，默认启用
 
+# Docker 容器内 Nginx 作为反向代理前置，强制启用 uvicorn proxy_headers
+export NEKO_BEHIND_PROXY=true
+
 # 1. 信号处理优化
 setup_signal_handlers() {
     trap 'echo "🛑 Received shutdown signal"; nginx -s stop 2>/dev/null || true; for pid in "${PIDS[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done; [ -n "$RELOADER_PID" ] && kill -TERM "$RELOADER_PID" 2>/dev/null || true; wait; exit 0' TERM INT
@@ -436,10 +439,10 @@ setup_nginx_proxy() {
     
     # 生成SSL证书和密钥（如果不存在）
     echo "🔐 Setting up SSL certificates..."
-    mkdir -p /root/ssl
+    mkdir -p /home/neko/ssl
     
-    local cert_file="/root/ssl/N.E.K.O.crt"
-    local key_file="/root/ssl/N.E.K.O.key"
+    local cert_file="/home/neko/ssl/N.E.K.O.crt"
+    local key_file="/home/neko/ssl/N.E.K.O.key"
     
     # 如果证书或密钥不存在，直接生成新的
     if [ ! -f "$cert_file" ] || [ ! -f "$key_file" ]; then
@@ -549,6 +552,40 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+
+    # 插件 WebSocket 路径 → 插件服务器 (48916)
+    location ~ ^/ws/(run|admin|logs)(/|$) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+    
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
@@ -556,6 +593,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
         
         # WebSocket支持
         proxy_http_version 1.1;
@@ -634,6 +672,40 @@ server {
     # 取消客户端请求体大小限制
     client_max_body_size 0;
 
+    # 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+    location ~ ^/(ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+
+    # 插件 WebSocket 路径 → 插件服务器 (48916)
+    location ~ ^/ws/(run|admin|logs)(/|$) {
+        proxy_pass http://127.0.0.1:48916;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 86400;
+    }
+    
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
@@ -641,6 +713,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
         
         # WebSocket支持
         proxy_http_version 1.1;
@@ -720,8 +793,8 @@ start_nginx_reloader() {
     # 记录初始配置文件的修改时间
     local nginx_conf="/etc/nginx/nginx.conf"
     local site_conf="/etc/nginx/conf.d/neko-proxy.conf"
-    local ssl_cert="/root/ssl/N.E.K.O.crt"
-    local ssl_key="/root/ssl/N.E.K.O.key"
+    local ssl_cert="/home/neko/ssl/N.E.K.O.crt"
+    local ssl_key="/home/neko/ssl/N.E.K.O.key"
     
     local last_conf_time=$(stat -c %Y "$nginx_conf" "$site_conf" 2>/dev/null)
     local last_ssl_time=""
@@ -873,6 +946,12 @@ setup_dependencies() {
         fi
     fi
     
+    # uv sync 以 root 运行，生成的文件归 root；服务以 neko 用户运行，须修正权限
+    echo "🔧 Fixing .venv permissions for neko user..."
+    chown -R neko:neko /app/.venv 2>/dev/null || echo "⚠️ Could not chown .venv (non-fatal)"
+    # 同时确保文档和模板目录可被 neko 读取（用于 OpenClaw 指南等静态内容）
+    chown -R neko:neko /app/docs /app/templates /app/static 2>/dev/null || echo "⚠️ Could not chown doc/template/static dirs (non-fatal)"
+    
     echo "✅ Dependencies installed successfully"
     
     # 安装 Playwright 浏览器（用于 browser_use 自动化）
@@ -888,6 +967,8 @@ setup_dependencies() {
         # 尝试安装 Chromium，失败时不中断启动
         if uv run --no-sync python -m playwright install chromium --with-deps 2>&1; then
             echo "✅ Playwright Chromium installed successfully"
+            echo "🔧 Fixing Playwright browser permissions for neko user..."
+            chown -R neko:neko "${PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}" 2>/dev/null || echo "⚠️ Could not chown Playwright browsers (non-fatal)"
         else
             echo "⚠️ Playwright Chromium installation failed (will retry on next start)"
             echo "   Browser automation features may not work until Playwright is installed"
@@ -896,6 +977,60 @@ setup_dependencies() {
 }
 
 # 7. 服务启动优化
+# ── OpenFang (Rust A2A agent daemon) ──────────────────────────
+start_openfang_daemon() {
+    if ! command -v openfang &>/dev/null; then
+        echo "⚠️ OpenFang binary not found, skipping OpenFang daemon"
+        return 0
+    fi
+    echo "🚀 Starting OpenFang A2A daemon..."
+    cd /app
+
+    # OpenFang 工作目录（~neko/.openfang）
+    local OF_HOME="/home/neko/.openfang"
+    local OF_CONFIG="$OF_HOME/config.toml"
+
+    if [ ! -f "$OF_CONFIG" ]; then
+        echo "   Initializing OpenFang workspace..."
+        runuser -u neko -- openfang init 2>&1 || {
+            echo "⚠️ OpenFang init failed (non-critical)"
+        }
+        # 首次初始化时清除预装 agent（默认用 Groq 但用户无 key → 刷 heartbeat WARN）
+        if [ -d "$OF_HOME/agents" ]; then
+            echo "   Removing pre-installed agents (no Groq API key configured)..."
+            rm -rf "$OF_HOME/agents"
+        fi
+    fi
+
+    # 确保 A2A 协议已启用（N.E.K.O 通过 A2A 接口与 OpenFang 通信）
+    if [ -f "$OF_CONFIG" ]; then
+        if ! grep -q '^\s*\[a2a\]' "$OF_CONFIG" 2>/dev/null; then
+            echo "   Enabling A2A protocol in OpenFang config..."
+            printf '\n[a2a]\nenabled = true\n' >> "$OF_CONFIG"
+        fi
+    fi
+
+    local OF_PORT="${OPENFANG_PORT:-50051}"
+    echo "   Starting openfang daemon (API listen: 127.0.0.1:${OF_PORT})..."
+    OPENFANG_LISTEN="127.0.0.1:${OF_PORT}" runuser -u neko -- openfang start &
+    local of_pid=$!
+    PIDS+=("$of_pid")
+    echo "     OpenFang daemon PID: $of_pid"
+
+    # 等待健康检查
+    local of_retries=15
+    while [ $of_retries -gt 0 ]; do
+        if curl -sf "http://127.0.0.1:${OF_PORT}/api/health" >/dev/null 2>&1; then
+            echo "✅ OpenFang daemon is healthy"
+            return 0
+        fi
+        sleep 2
+        of_retries=$((of_retries - 1))
+    done
+    echo "⚠️ OpenFang health check timed out (continuing anyway)"
+    return 0
+}
+
 start_services() {
     echo "🚀 Starting N.E.K.O. services..."
     cd /app
@@ -916,13 +1051,13 @@ start_services() {
     # 根的 sys.path，config 等顶层包会 import 不到）。
     # PR #2264: memory_server 同样包化（app/memory_server/），走同一机制；
     # 其 __main__.py 顶部另带 sys.path bootstrap，文件直跑亦等价，但统一用 -m。
-    local services=("app/memory_server/__main__.py" "app/main_server.py" "app/agent_server/__main__.py")
+    local services=("app/memory_server/__main__.py" "app/main_server/__main__.py" "app/agent_server/__main__.py")
 
     for service in "${services[@]}"; do
         if [ ! -f "$service" ]; then
             echo "❌ Service file $service not found!"
             # 对关键服务直接失败
-            if [[ "$service" == "app/main_server.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
+            if [[ "$service" == "app/main_server/__main__.py" ]] || [[ "$service" == "app/memory_server/__main__.py" ]]; then
                 return 1
             fi
             continue
@@ -934,6 +1069,8 @@ start_services() {
             runuser -u neko -- "$VENV_PYTHON" -m app.agent_server &
         elif [[ "$service" == "app/memory_server/__main__.py" ]]; then
             runuser -u neko -- "$VENV_PYTHON" -m app.memory_server &
+        elif [[ "$service" == "app/main_server/__main__.py" ]]; then
+            runuser -u neko -- "$VENV_PYTHON" -m app.main_server &
         else
             runuser -u neko -- "$VENV_PYTHON" "$service" &
         fi
@@ -1042,6 +1179,13 @@ main() {
     setup_configuration
     setup_dependencies
     setup_nginx_proxy
+    
+    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）
+    mkdir -p /home/neko/.local/share/N.E.K.O
+    chown -R neko:neko /home/neko/.local/share/N.E.K.O
+    
+    # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
+    start_openfang_daemon
     
     # 启动N.E.K.O服务
     if ! start_services; then

@@ -5,8 +5,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { readJsParts } = require('./app-part-test-utils.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, 'app/app-interpage.js'), 'utf8');
+const appInterpageDirectory = path.join(__dirname, 'app/app-interpage');
+const source = readJsParts(appInterpageDirectory);
+const runtimeSource = readJsParts(appInterpageDirectory, { contractView: false });
 
 function createEventTarget() {
     const listeners = new Map();
@@ -134,7 +137,7 @@ function loadHarness() {
         localStorage: window.localStorage,
         sessionStorage: window.sessionStorage,
     };
-    vm.runInNewContext(source, context, { filename: 'app/app-interpage.js' });
+    vm.runInNewContext(runtimeSource, context, { filename: 'app/app-interpage' });
     return {
         window,
         get composerHidden() {

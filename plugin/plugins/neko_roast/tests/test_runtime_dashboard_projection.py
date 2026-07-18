@@ -187,11 +187,13 @@ def test_runtime_timeline_redacts_sensitive_summary_fields(runtime: RoastRuntime
             "status": "skipped",
             "reason": "",
             "route": "",
-            "uid": "1001",
+            "uid": timeline[0]["uid"],
             "source": "live_danmaku",
         }
     ]
     serialized = json.dumps(timeline, ensure_ascii=False)
+    assert timeline[0]["uid"].startswith("viewer_")
+    assert timeline[0]["uid"] != "1001"
     assert "must-not-leak" not in serialized
     assert "token=" not in serialized
     assert "cookie=" not in serialized

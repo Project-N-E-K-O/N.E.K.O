@@ -14,11 +14,24 @@
 
 """Shared TTS jitter buffer semantics (qwen / step / other streaming workers)."""
 
+import re
+from pathlib import Path
+
 from main_logic.tts_client._infra import (
     AudioJitterBuffer,
     make_audio_jitter_buffer,
     _TTS_OUTPUT_BYTES_PER_SECOND,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+REALTIME_WORKERS = {
+    "step": PROJECT_ROOT / "main_logic/tts_client/workers/step.py",
+    "qwen": PROJECT_ROOT / "main_logic/tts_client/workers/qwen.py",
+    "grok": PROJECT_ROOT / "main_logic/tts_client/workers/grok.py",
+    "elevenlabs": PROJECT_ROOT / "main_logic/tts_client/workers/elevenlabs.py",
+}
 
 
 class _FakeQueue:
@@ -95,6 +108,22 @@ def test_reset_discards_unsent_buffer_and_restarts_head_start():
     assert q.items == []
 
 
+def test_interrupt_guard_drops_append_and_flush_until_resumed():
+    q = _FakeQueue()
+    buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=2)
+
+    buf.append(b"ab")
+    buf.begin_interrupt()
+    buf.append(b"cd")
+    buf.flush()
+    assert q.items == []
+
+    buf.reset()
+    buf.end_interrupt()
+    buf.append(b"wxyz")
+    assert q.items == [b"wxyz"]
+
+
 def test_empty_append_is_noop():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=4)
@@ -134,3 +163,65 @@ def test_factory_generic_env_wins_over_legacy(monkeypatch):
     q = _FakeQueue()
     buf = make_audio_jitter_buffer(q, legacy_env_prefix="NEKO_QWEN_TTS")
     assert buf._initial_buffer_bytes == int(500 / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
+
+
+def test_realtime_workers_guard_interrupt_close_windows():
+    for provider, path in REALTIME_WORKERS.items():
+        source = path.read_text(encoding="utf-8")
+        assert ".begin_interrupt()" in source, provider
+        assert ".end_interrupt()" in source, provider
+
+    for provider in ("step", "qwen", "grok"):
+        source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
+        start = source.index('if sid == "__interrupt__":')
+        end = source.index("continue", start)
+        block = source[start:end]
+        assert block.index(".begin_interrupt()") < block.index("receive_task.cancel()"), provider
+        assert block.index("receive_task.cancel()") < block.index("ws.close"), provider
+
+    elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
+    interrupt_start = elevenlabs.index('if sid == "__interrupt__":')
+    interrupt_end = elevenlabs.index("continue", interrupt_start)
+    interrupt_block = elevenlabs[interrupt_start:interrupt_end]
+    assert "interrupt=True" in interrupt_block
+
+    close_start = elevenlabs.index("async def _close_ws")
+    close_end = elevenlabs.index("async def _open_ws", close_start)
+    close_block = elevenlabs[close_start:close_end]
+    assert close_block.index("if interrupt and receive_task") < close_block.index("if ws is not None")
+
+
+def test_realtime_workers_flush_jitter_on_non_cancelled_receiver_exit():
+    expected_flush_guards = {
+        "step": 2,
+        "qwen": 2,
+        "grok": 1,
+        "elevenlabs": 1,
+    }
+    pattern = re.compile(
+        r"finally:\s+if not cancelled:\s+(?:qwen_)?audio_jitter\.flush\(\)",
+        re.MULTILINE,
+    )
+
+    for provider, expected_count in expected_flush_guards.items():
+        source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
+        assert len(pattern.findall(source)) >= expected_count, provider
+
+
+def test_realtime_workers_flush_tail_before_normal_receiver_cancel():
+    for provider in ("step", "qwen", "grok"):
+        source = REALTIME_WORKERS[provider].read_text(encoding="utf-8")
+        start = source.index("if current_speech_id != sid:")
+        end = source.index("receive_task = asyncio.create_task", start)
+        block = source[start:end]
+        flush_call = "qwen_audio_jitter.flush()" if provider == "qwen" else "audio_jitter.flush()"
+        assert block.index(flush_call) < block.index("receive_task.cancel()"), provider
+
+    elevenlabs = REALTIME_WORKERS["elevenlabs"].read_text(encoding="utf-8")
+    close_start = elevenlabs.index("async def _close_ws")
+    close_end = elevenlabs.index("async def _open_ws", close_start)
+    close_block = elevenlabs[close_start:close_end]
+    normal_cancel_start = close_block.index("if receive_task and not receive_task.done():")
+    normal_cancel_block = close_block[normal_cancel_start:]
+    assert normal_cancel_block.index("if not interrupt:") < normal_cancel_block.index("audio_jitter.flush()")
+    assert normal_cancel_block.index("audio_jitter.flush()") < normal_cancel_block.index("receive_task.cancel()")

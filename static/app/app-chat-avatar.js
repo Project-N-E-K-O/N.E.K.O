@@ -410,7 +410,14 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(referenceBody)
-        }).then(function () {
+        }).then(function (response) {
+            if (!response.ok) {
+                console.warn(
+                    '[chat-avatar] card-forge character reference sync returned HTTP',
+                    response.status
+                );
+                return false;
+            }
             return true;
         }).catch(function (err) {
             console.warn('[chat-avatar] card-forge character reference sync failed:', err);
@@ -1317,6 +1324,9 @@
             syncAvatarToCardForge(cachedPreview.dataUrl);
             return;
         }
+        // 头像捕获失败或尚未完成时，也先同步已知角色名，避免 Card Forge
+        // 因 activeCharacterName 为空而跳过真实记忆加载。
+        syncAvatarToCardForge('');
         invalidateCachedPreview();
         scheduleAutoCapture(reason);
     }
@@ -1448,6 +1458,8 @@
             }));
         } else {
             cachedPreview = null;
+            // 首次运行没有缓存头像时，角色身份不应被头像捕获阻塞。
+            syncAvatarToCardForge('');
             setPreviewImage('');
             setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
             setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));

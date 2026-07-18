@@ -21,6 +21,7 @@ config/memory path lookups of :class:`ConfigManager`.
 """
 import json
 import os
+import secrets
 import sys
 import threading
 import uuid
@@ -52,7 +53,7 @@ class StorageRootsMixin:
             app_name: application name, defaults to APP_NAME from config
         """
         self.app_name = app_name if app_name is not None else APP_NAME
-        # 检测是否在子进程中，子进程静默初始化（通过 main_server.py 设置的环境变量）
+        # 检测是否在子进程中，子进程静默初始化（通过 main_server 设置的环境变量）
         self._verbose = '_NEKO_MAIN_SERVER_INITIALIZED' not in os.environ
         self.docs_dir = self._get_documents_directory()
         default_app_docs_dir = self.docs_dir / self.app_name
@@ -944,6 +945,7 @@ class StorageRootsMixin:
         return {
             "version": self.CLOUDSAVE_LOCAL_STATE_VERSION,
             "client_id": str(client_id or uuid.uuid4().hex),
+            "client_proof": secrets.token_urlsafe(32),
             "next_sequence_number": 1,
             "last_applied_manifest_fingerprint": "",
             "last_successful_export_at": "",
@@ -1012,6 +1014,31 @@ class StorageRootsMixin:
             data,
             "saving cloudsave_local_state",
         )
+
+    def ensure_cloudsave_client_credentials(self):
+        """Return a stable client id and secret, persisting either when missing."""
+        needs_persist = not self.cloudsave_local_state_path.exists()
+        state = self.load_cloudsave_local_state()
+        if not isinstance(state, dict):
+            state = self.build_default_cloudsave_local_state()
+            needs_persist = True
+
+        client_id = state.get("client_id")
+        if not isinstance(client_id, str) or not client_id:
+            client_id = uuid.uuid4().hex
+            state["client_id"] = client_id
+            needs_persist = True
+
+        client_proof = state.get("client_proof")
+        if not isinstance(client_proof, str) or not 32 <= len(client_proof) <= 256:
+            client_proof = secrets.token_urlsafe(32)
+            state["client_proof"] = client_proof
+            state["version"] = self.CLOUDSAVE_LOCAL_STATE_VERSION
+            needs_persist = True
+
+        if needs_persist:
+            self.save_cloudsave_local_state(state)
+        return client_id, client_proof
 
     def load_character_tombstones_state(self, default_value=None):
         """Load per-character tombstone local state."""

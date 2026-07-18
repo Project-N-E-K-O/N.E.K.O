@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import asyncio
 
-import app.agent_server as a
+from app.agent_server import api_runtime as a
+from app.agent_server import api_routes
 from brain.task_executor import DirectTaskExecutor
 
 
@@ -171,7 +172,7 @@ def test_genuine_new_session_resets_budget(monkeypatch):
     _reset_state()
     async def _noop():
         return
-    monkeypatch.setattr(a, "_maybe_restore_agent_intent", _noop)
+    monkeypatch.setattr(api_routes, "_maybe_restore_agent_intent", _noop)
     a.Modules.proactive_analyze_count["lan"] = 2
     a.Modules.last_proactive_assistant_fingerprint["lan"] = "deadbeef"
     asyncio.run(a._on_session_event({
@@ -187,7 +188,7 @@ def test_refresh_does_not_reset_budget(monkeypatch):
     _reset_state()
     async def _noop():
         return
-    monkeypatch.setattr(a, "_maybe_restore_agent_intent", _noop)
+    monkeypatch.setattr(api_routes, "_maybe_restore_agent_intent", _noop)
     a.Modules.proactive_analyze_count["lan"] = 2
     asyncio.run(a._on_session_event({
         "event_type": "agent_intent_restore_signal", "lanlan_name": "lan",  # no new_session

@@ -23,7 +23,7 @@ helpers that live higher up the stack (language detection, tokenize-aware
 truncation). The classic dependency-inversion pattern:
 
 * higher layers register the concrete implementation at app startup
-  (e.g. ``app/main_server.py``)
+  (e.g. ``app/main_server/__init__.py``)
 * ``config`` callers use the resolvers below
 
 If nothing is registered (unit tests / standalone tooling), each resolver

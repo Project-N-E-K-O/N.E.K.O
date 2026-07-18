@@ -277,9 +277,11 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
         str(payload.get("runtimeCharacterHint") or payload.get("runtime_character_hint") or payload.get("character") or "")
         .strip()
     )
-    active_context = await resolve_active_neko_context(runtime_character_hint=runtime_hint or None)
+    active_context = await resolve_active_neko_context()
     master_name = active_context.master_name
     lanlan_name = active_context.lanlan_name
+    if runtime_hint and runtime_hint != lanlan_name:
+        raise ForgeStoryGenerationError("runtime_character_hint_mismatch")
     lanlan_prompt = active_context.lanlan_prompt
     _forge_log(
         request_id,

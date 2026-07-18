@@ -57,9 +57,43 @@ async def test_generate_story_preserves_configured_provider_type(monkeypatch):
     result = await forge_story_generator.generate_forge_card_story(
         {
             "storyLead": "她第一次收到主人写来的信。",
+            "runtimeCharacterHint": "兰兰",
             "card": {"attrName": "温柔"},
         }
     )
 
     assert result.model == "custom-claude"
     assert create_calls[0][3]["provider_type"] == "anthropic"
+
+
+@pytest.mark.unit
+async def test_generate_story_rejects_stale_runtime_character_hint(monkeypatch):
+    class _ConfigManager:
+        pass
+
+    async def resolve_active_neko_context():
+        return SimpleNamespace(
+            master_name="主人",
+            lanlan_name="新角色",
+            lanlan_prompt="",
+            source="test",
+            facts_path=None,
+        )
+
+    monkeypatch.setattr(
+        "main_logic.card_forge_facts.resolve_active_neko_context",
+        resolve_active_neko_context,
+    )
+    monkeypatch.setattr("utils.config_manager.get_config_manager", lambda: _ConfigManager())
+
+    with pytest.raises(
+        forge_story_generator.ForgeStoryGenerationError,
+        match="runtime_character_hint_mismatch",
+    ):
+        await forge_story_generator.generate_forge_card_story(
+            {
+                "storyLead": "旧角色的故事引子。",
+                "runtimeCharacterHint": "旧角色",
+                "card": {"attrName": "温柔"},
+            }
+        )

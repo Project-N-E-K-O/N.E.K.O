@@ -144,7 +144,8 @@ def build_knowledge_map_payload(
         stage_counts[stage] = stage_counts.get(stage, 0) + 1
         subject_counts[subject] = subject_counts.get(subject, 0) + 1
         chapter_counts[chapter] = chapter_counts.get(chapter, 0) + 1
-        unit_counts[unit] = unit_counts.get(unit, 0) + 1
+        unit_key = f"{subject}:{unit}" if subject else unit
+        unit_counts[unit_key] = unit_counts.get(unit_key, 0) + 1
         mastery = mastery_by_topic.get(topic_id) or {}
         weak = topic_id in weak_topic_ids
         if weak:
@@ -162,9 +163,9 @@ def build_knowledge_map_payload(
                 "question_types": list(topic.get("question_types") or []),
                 "examples": list(topic.get("examples") or []),
                 "typical_misconceptions": list(
-                    topic.get("typical_misconceptions")
-                    or topic.get("misconceptions")
-                    or []
+                    topic["typical_misconceptions"]
+                    if isinstance(topic.get("typical_misconceptions"), list)
+                    else topic.get("misconceptions") or []
                 ),
                 "mastery": float(mastery.get("mastery") or 0.0),
                 "level": str(mastery.get("level") or ""),

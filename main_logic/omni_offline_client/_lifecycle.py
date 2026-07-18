@@ -13,6 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+import functools
+
+from utils.llm_client import (
+    peek_dialog_slop_lang,
+    reset_dialog_slop_lang,
+    set_dialog_slop_lang,
+)
+from utils.slop_filter import resolve_dialog_slop_lang
+
 from ._shared import (
     AIMessage,
     Callable,
@@ -27,6 +37,46 @@ from ._shared import (
     logger,
     set_call_type,
 )
+
+
+def _with_dialog_slop(method):
+    """Arm prompt-only slop reduction for one offline dialog turn."""
+    @functools.wraps(method)
+    async def _wrapper(self, *args, **kwargs):
+        try:
+            lang = resolve_dialog_slop_lang(
+                getattr(self, "_user_language_provider", None)
+            )
+        except Exception:
+            lang = None
+        token = set_dialog_slop_lang(lang)
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            reset_dialog_slop_lang(token)
+    return _wrapper
+
+
+@contextlib.contextmanager
+def _suspend_dialog_slop():
+    """Disarm dialog rewriting while an in-turn tool handler runs."""
+    token = set_dialog_slop_lang(None)
+    try:
+        yield
+    finally:
+        reset_dialog_slop_lang(token)
+
+
+def _slop_reduced_for_genai(messages):
+    """Return a rewritten message copy for the native Gemini SDK path."""
+    try:
+        lang = peek_dialog_slop_lang()
+        if not lang:
+            return messages
+        from utils.slop_filter import apply_slop_reduction
+        return apply_slop_reduction(messages, lang)
+    except Exception:
+        return messages
 
 
 class _LifecycleMixin:
@@ -85,6 +135,7 @@ class _LifecycleMixin:
         if instructions and instructions.strip():
             self._conversation_history.append(HumanMessage(content=instructions))
 
+    @_with_dialog_slop
     async def prompt_ephemeral(
         self,
         instruction: str,

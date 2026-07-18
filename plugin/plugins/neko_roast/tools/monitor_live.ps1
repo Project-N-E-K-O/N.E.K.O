@@ -15,6 +15,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:LastSnapshotOk = $true
+$script:CorrelationSalt = New-Object byte[] 32
+$correlationRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $correlationRng.GetBytes($script:CorrelationSalt)
+} finally {
+    $correlationRng.Dispose()
+}
 
 function Write-MonitorHelp {
     Write-Output @"
@@ -542,12 +549,12 @@ function Get-OpaqueCorrelationId {
     if ($text -eq $Default) {
         return $text
     }
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256 -ArgumentList (, $script:CorrelationSalt)
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
-        $digest = $sha256.ComputeHash($bytes)
+        $digest = $hmac.ComputeHash($bytes)
     } finally {
-        $sha256.Dispose()
+        $hmac.Dispose()
     }
     $hex = [System.BitConverter]::ToString($digest).Replace("-", "").ToLowerInvariant()
     return "viewer_" + $hex.Substring(0, 12)
@@ -588,6 +595,12 @@ function Get-TimelineReasonCode {
         "safety_tripped"
     )
     if ($allowed -contains $reason) {
+        return $reason
+    }
+    if ($reason -match "^(selected|signal_only|support)\.[a-z0-9_]+$") {
+        return $reason
+    }
+    if ($reason -eq "exception") {
         return $reason
     }
     return "[redacted]"

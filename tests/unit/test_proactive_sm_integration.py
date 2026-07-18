@@ -1081,9 +1081,15 @@ def test_submit_proactive_callback_persists_when_goodbye_silent():
     mgr.proactive_manager.submit.assert_not_called()
     assert mgr.pending_agent_callbacks == [cb]
     assert cb["_callback_delivery_id"]
+    # goodbye_silent bypasses the manager, so the coalesce_key arg is carried
+    # onto the callback dict (plus a submission seq) for the enqueue path.
+    assert cb["coalesce_key"] == "same-source"
+    assert isinstance(cb["_coalesce_submit_seq"], int)
     assert mgr.pending_extra_replies == [
         {
             "_callback_delivery_id": cb["_callback_delivery_id"],
+            "coalesce_key": "same-source",
+            "_coalesce_submit_seq": cb["_coalesce_submit_seq"],
             "origin": "event",
             "summary": "queued",
             "detail": "",
@@ -1127,7 +1133,7 @@ def test_start_session_seeds_topic_hooks_with_full_global_locale():
     normalized_source = re.sub(r"\s+", " ", _read_core_package_source())
 
     assert "topic_language_seed = normalize_language_code(get_global_language_full(), format='full')" in normalized_source
-    assert "self.user_language = normalize_language_code(topic_language_seed, format='short')" in normalized_source
+    assert "self.user_language = topic_language_seed" in normalized_source
     assert "self._conversation_turn_language = topic_language_seed" in normalized_source
     assert "self._conversation_turn_language or topic_language_seed or self.user_language" in normalized_source
     assert "self._conversation_turn_language = normalized_lang" in normalized_source

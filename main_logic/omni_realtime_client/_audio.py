@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
+
 from ._shared import (
     asyncio,
     logger,
@@ -62,18 +64,61 @@ class _AudioMixin:
         Asynchronously process audio chunk using RNNoise in a separate thread.
         This prevents blocking the main event loop during heavy calculation.
         """
-        if self._audio_processor is None:
-            return audio_chunk
-
         async with self._audio_processing_lock:
-            # Use run_in_executor to offload heavy processing
-            # None = use default ThreadPoolExecutor
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None, 
-                self._audio_processor.process_chunk, 
-                audio_chunk
+            processor = self._audio_processor
+            if processor is None:
+                # The caller selected the 48 kHz RNNoise path before awaiting
+                # this lock. Returning that original frame would make it look
+                # like processed 16 kHz PCM after a concurrent close.
+                return b""
+            worker = asyncio.create_task(
+                asyncio.to_thread(processor.process_chunk, audio_chunk)
             )
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                # A native RNNoise call keeps running after cancellation. Keep
+                # the lifecycle lock until it exits so close/toggle cannot
+                # destroy or mutate the processor underneath that call.
+                while not worker.done():
+                    try:
+                        await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if worker.done() and not worker.cancelled():
+                    with contextlib.suppress(Exception):
+                        worker.result()
+                raise
+
+    async def set_audio_noise_reduction_enabled(self, enabled: bool) -> None:
+        """Apply a live denoiser toggle after active processing quiesces."""
+        async with self._audio_processing_lock:
+            self._noise_reduction_enabled = enabled
+            processor = self._audio_processor
+            if processor is not None:
+                try:
+                    processor.set_enabled(enabled)
+                except Exception as exc:
+                    logger.error(f"Error toggling audio noise reduction: {exc}")
+
+    async def _close_audio_processor(self) -> None:
+        """Quiesce executor processing before releasing RNNoise/soxr state."""
+        async with self._audio_processing_lock:
+            processor = self._audio_processor
+            if processor is None:
+                return
+            try:
+                processor.save_debug_audio()
+            except Exception as exc:
+                logger.error(f"Error saving debug audio: {exc}")
+            try:
+                processor.close()
+            except Exception as exc:
+                logger.error(f"Error closing audio processor: {exc}")
+            finally:
+                self._audio_processor = None
 
     async def _check_silence_timeout(self):
         """Periodically check whether the silence timeout has been exceeded; if so, trigger the timeout callback"""

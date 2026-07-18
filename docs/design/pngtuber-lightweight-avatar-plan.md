@@ -1,6 +1,6 @@
 # PNGTuber 轻量角色载体技术文档
 
-本文记录 PNGTuber 轻量角色载体的设计、实现经验与当前技术基线。前半部分保留历史方案和踩坑记录，后半部分以 PR #1779 为当前事实来源，整理 PNGTubeRemix `.pngRemix` 转换导入、Godot Variant 解析、依赖边界、包体影响和验收标准。
+本文记录 PNGTuber 轻量角色载体的设计、实现经验与当前技术基线。前半部分保留历史方案和踩坑记录，后半部分以 PR #1779 为当前事实来源，整理 PNGTubeRemix `.pngRemix` 转换导入、Godot Variant 解析、依赖边界、包体影响和验收标准。PR #2129 之后，第三方分层工程导入（PNGTuber-Plus `.save` 分层 runtime 与 PNGTubeRemix 能力增量）以「第三方分层工程导入当前基线（PR #2129）」一节为准。
 
 ## PNGTubeRemix runtime 阶段经验补充
 
@@ -119,6 +119,234 @@ pytest tests/unit/test_pngtuber_static_contracts.py tests/unit/test_pngtube_remi
 5. 状态调试/预览 UI；不要恢复原版状态热键绑定。
 6. 更完整的 Remix physics。
 
+## 第三方分层工程导入当前基线（PR #2129）
+
+本节整理第三方分层工程导入落地后的当前基线：PNGTuber-Plus `.save` 从第一阶段静态合成升级为完整分层 runtime（metadata `adapter_version: 2`），PNGTubeRemix `.pngRemix` 增加 `state_catalog`、`emotion_mappings`、`physics_v2` 与可用 mesh deformation。凡涉及 PNGTubeRemix 状态控制（`Alt+1` / `Alt+2`）、`metadata.hotkeys` 为空、`state_hotkeys` / `asset_actions` 只作来源信息、`effective_z_index` 排序的行为，以上文「PNGTubeRemix runtime 阶段经验补充」为准，本节不改变这些结论。
+
+### 当前支持的导入形态
+
+| 来源 | `source_format` | 当前状态 |
+| --- | --- | --- |
+| 原生 `model.json` 图片包 | `simple_package` | 直接加载，支持 idle/talking/drag/click 与轻量情绪图。 |
+| PNGTuber-Plus `.save` | `pngtuber_plus_save` | 转换为 `layered_canvas_v1`，metadata `adapter_version: 2`；支持 costume、hotkey、toggle、说话/眨眼、多帧、Plus 节点树、矩形 clip 和近似物理。 |
+| PNGTubeRemix `.pngRemix` | `pngtube_remix_pngremix` | 解析 Godot Variant 并转换为 `layered_canvas_v1`，metadata `adapter_version: 2`；支持 state 切换、emotion mapping、sprite sheet、父级继承 `z_index` 图层排序、Remix `physics_v2` 和可用 mesh deformation；来源状态热键只保存在 `state_hotkeys`。 |
+| veadotube `.veadomini/.veado` | `veadotube` | 识别但拒绝，等待真实样本适配。 |
+| 只有图片无工程文件 | `image_pair_candidate` | 拒绝，提示使用双图导入或补 `model.json`。 |
+
+公开 `pngtuber.adapter` 继续保持 `layered_canvas_v1`，这是兼容现有前端开关和旧模型的加载名；能力版本写在 metadata 的 `adapter_version` 与 `runtime_features` 中。
+
+上文「当前暂缓的能力」描述的是 PNGTubeRemix 状态控制阶段的默认基线；本节的 physics_v2、mesh deformation、sprite sheet 能力都以 `source_format` 分流和 metadata `runtime_features` 开关落地，不默认作用于既有模型，也不改变稳定基线的验证要求。
+
+### 分层模型配置与保存字段
+
+分层模型的 `_reserved.avatar.pngtuber` 关键字段示例：
+
+```json
+{
+  "idle_image": "/user_pngtuber/character_idle.png",
+  "talking_image": "/user_pngtuber/character_talking.png",
+  "drag_image": "",
+  "click_image": "",
+  "happy_image": "",
+  "sad_image": "",
+  "angry_image": "",
+  "surprised_image": "",
+  "scale": 1,
+  "offset_x": 0,
+  "offset_y": 0,
+  "mobile_scale": 1,
+  "mobile_offset_x": 0,
+  "mobile_offset_y": 0,
+  "mirror": false,
+  "adapter": "layered_canvas_v1",
+  "layered_metadata": "metadata.pngtuber-plus.json",
+  "source_type": "pngtuber_plus_save",
+  "source_format": "pngtuber_plus_save"
+}
+```
+
+保存链路必须保留完整 config，尤其是 `adapter`、`layered_metadata`、`source_format`、`source_type`、`idle_image`、`talking_image`、`mobile_scale`、`mobile_offset_x`、`mobile_offset_y`。Plus 还要保留 `plus_settings`、`runtime_features` 和 layer transform 字段；Remix 要保留 `runtime_features`、`state_catalog`、`emotion_mappings`、mesh/physics 能力标记。
+
+### 分层 runtime 共同能力
+
+导入 Plus 或 Remix 后，运行时使用 `<canvas>` 绘制分层图像，按 `source_format` 分流 Plus / Remix runtime，避免互相污染。共同能力：
+
+- 说话和眨眼层筛选。
+- 随机 blink timer。
+- speech bounce / One Bounce。
+- layered state 切换。
+- sprite sheet frame animation（feature flag 控制）。
+- `window.pngtuberManager.getDebugState()`。
+
+`getDebugState()` 必须至少暴露：
+
+- `sourceFormat`
+- `adapterVersion`
+- `metadataCapabilities`
+- `runtimeFeatures`
+- `unsupportedFeatures`
+- `layerCount`
+- `renderedIdleLayerCount`
+- `renderedTalkingLayerCount`
+- `renderedLayers`
+- `meshMetadata`
+- `meshRuntime`
+- `physicsVersion`
+- `layeredToggles`
+
+### Plus 分层 runtime
+
+Plus 由 `source_format: "pngtuber_plus_save"` 显式启用，不能套到 Remix 或旧 layered 模型。
+
+当前能力：
+
+- `costumeLayers` 归一化为 10 位，默认 costume 1。
+- 生成 10 个 `Costume 1..10` state。
+- 当前 costume 可见性继承父级：父层隐藏时子层也隐藏。
+- 默认 costume hotkey 为 `1 2 3 4 5 6 7 8 9 0`。
+- 可选读取 `settings.pngtp` 的 `costumeKeys`。
+- `null`、空字符串、重复键不注册 hotkey。
+- 每层 `toggle` 可按键翻转显示状态，并影响子树。
+- 同一按键既是 costume hotkey 又是 toggle key 时，先切 costume，再执行 toggle。
+- `showTalk/showBlink` 按官方 Plus 可见性表生效。
+- 横向 sprite sheet 保留完整图片，`frames` 映射到 `hframes`。
+- `animSpeed` 转换为前端 `animation_speed`，保留 `source_anim_speed`。
+- 导入器输出 `local_position`、`node_origin`、`sprite_offset`、`draw_offset`、`parent_chain`、`plus_transform`。
+- 前端走 `isLayeredPlusModel()`、`drawPlusLayerTree()`、`plusLayerPhysicsTransform()`。
+- 父层 transform 影响子层。
+- `clip_children` 以父 sprite 当前帧矩形裁剪子树。
+- `settings.pngtp` 的 `blinkSpeed`、`blinkChance`、`bounceOnCostumeChange` 写入 runtime 配置。
+
+Plus 边界：
+
+- collision polygon / 透明区域命中仍只保留 metadata。
+- `clip_children` 是矩形裁剪，不是 alpha mask。
+- wobble / drag / rotationalDrag / stretch 是实用近似，不是 Godot 逐帧复刻。
+- 不复刻 Plus 编辑器、拖拽碰撞、选中区域或完整 Godot 节点系统。
+
+### Remix runtime 能力增量
+
+Remix 由 `source_format: "pngtube_remix_pngremix"` 显式启用。它不走 Plus 的节点树 runtime，保留扁平 layered canvas 绘制路径。在上文状态控制基线之上，PR #2129 增加：
+
+- 输出 `state_catalog` 与 `emotion_mappings`。
+- `window.applyEmotion('happy')` 等轻量情绪路径可映射到 layered state。
+- 5 个未命名 state 使用 neutral、happy、sad、angry、surprised 的兜底顺序。
+- 原始热键信息仍只作为来源数据保留（`state_hotkeys` / `raw_hotkeys`），不绑定运行时键盘事件；运行时状态控制只用 `Alt+1` / `Alt+2`。
+- `stateFrameInfo()` 驱动 metadata 可表达的 sprite sheet。
+- `stateHasRemixPhysics()`、`layeredPhysicsTransform()`、`physics_v2` 支持 follow mouse、drag、rotation、stretch、animate-to-mouse sheet 等近似行为。
+- 当存在真实 vertices / triangles / UVs 时，`runtime_features.mesh_deformation` 为 true，`drawLayerMesh()` 启用 affine mesh triangle 绘制。
+- 缺少真实几何时保留 `mesh_metadata: true`、`mesh_runtime: false`，并在 `unsupported_features` 中说明原因。
+
+Remix 边界：
+
+- 不运行 PNGTubeRemix / Godot runtime。
+- 不复刻 Remix 编辑器交互。
+- 不复用 Plus 的 `drawPlusLayerTree()`、`local_position` / `node_origin` transform stack。
+- 如果未来要补 Remix 父子 transform 或更完整物理，应新增 Remix 专属 feature flag 或 adapter 语义，并先补浏览器视觉验收。
+
+### Plus `.save` 导入输出契约
+
+本契约取代上文「PNGTuber Plus `.save` 导入器」一节描述的第一阶段静态合成方案。
+
+输出文件：
+
+```text
+model.json
+idle.png
+talking.png
+source.save
+layers/
+metadata.pngtuber-plus.json
+```
+
+`metadata.pngtuber-plus.json` 必须包含：
+
+- `adapter_version: 2`
+- `runtime: "layered_canvas"`
+- `source_format: "pngtuber_plus_save"`
+- `state_count: 10`
+- `settings.states`
+- `hotkeys`
+- `toggles`
+- `plus_settings`
+- `runtime_features.clip_children_rect`
+- `layers`
+
+Plus layer/state 必须包含：
+
+- `costumeLayers`
+- `showTalk`
+- `showBlink`
+- `toggle`
+- `clipped`
+- `parentId`
+- `parent_chain`
+- `local_position`
+- `node_origin`
+- `sprite_offset`
+- `draw_offset`
+- `plus_transform`
+- `frames`
+- `hframes`
+- `animation_speed`
+- `source_anim_speed`
+
+多 `.save` 规则：
+
+- 只有一个 `.save`：直接导入。
+- 多个 `.save`：优先根目录中与上传文件夹/模型名同名的 `.save`。
+- 仍不唯一：返回 `400`，`source_format: "pngtuber_plus_save"`，`warnings` 列出候选 `.save`。
+
+### Remix `.pngRemix` 契约增量
+
+在下文「PR #1779 技术文档整理版」的 `.pngRemix` 输出契约基础上，`metadata.pngtube-remix.json` 新增：
+
+- `adapter_version: 2`
+- `runtime_features.physics_v2`
+- `runtime_features.mesh_deformation`
+- `state_catalog`
+- `emotion_mappings`
+- `raw_settings`
+
+`hotkeys` 仍为空数组，`state_hotkeys`、`asset_actions`、`effective_z_index` 契约不变。失败规则不变：Variant 解析失败归类为 PNGTubeRemix 转换失败，不回退为“缺少 model.json”，导入失败必须清理临时目录，成功导入后必须能通过 `/api/model/pngtuber/models` 列出。
+
+### PR #2129 验收增量
+
+自动验证：
+
+```powershell
+node --check static\pngtuber-core.js
+node --check static\app-buttons.js
+node --check static\js\model_manager.js
+uv run pytest tests\unit\test_pngtuber_plus_importer.py tests\unit\test_pngtuber_static_contracts.py tests\unit\test_pngtuber_router_delete.py tests\unit\test_model_manager_window_features.py
+```
+
+涉及 `.pngRemix` parser 时额外运行：
+
+```powershell
+python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
+```
+
+手动验收（在既有验收之上补充）：
+
+1. 导入 PNGTuber Plus `.save`，确认生成并显示角色；costume hotkey、toggle、说话/眨眼、多帧 sprite sheet、父子 transform、矩形 clip 行为稳定。
+2. Plus 包含多个 `.save` 且无法唯一选择时，确认返回 `400` 和候选 `warnings`。
+3. 多 state Remix 包确认 `window.applyEmotion('happy')` 情绪映射生效。
+4. 检查 `window.pngtuberManager.getDebugState()` 中的 `sourceFormat`、`adapterVersion`、`runtimeFeatures`、`meshRuntime`、`physicsVersion`。
+
+### 长期扩展方向
+
+可考虑但不属于当前已完成范围：
+
+- veadotube 真实样本适配。
+- Reactive Images / OBS 插件类导入。
+- Plus collision polygon / alpha mask clip runtime。
+- Remix 父子 transform 专属 runtime。
+- 更完整的 Remix / Plus 物理。
+- 分层模型可视化调试面板。
+- 分层状态按钮或轻量 UI 编辑器。
+- PNGTuber 与角色市场、创作者分享、活动角色快速发布联动。
+
 ## 实施经验与问题复盘摘要
 
 本节汇总 PNGTuber 接入过程中的实际经验。PNGTuber 看起来只是图片/GIF 播放，但它进入的是一个已经存在 Live2D、VRM、MMD、模型管理器、多窗口通信、主页返回动画、悬浮按钮和角色配置接口的系统。因此稳定性关键不在单个 `<img>` 能否显示，而在前后端配置一致、运行时互斥、跨页面状态同步和重复 reload 防护。
@@ -175,8 +403,8 @@ PNGTuber 最终接入方式是复用现有 `#live2d-model-group / #model-select 
 - `static/js/index.js`：主页初始配置加载。
 - `static/live2d-init.js`：Live2D 自动初始化。
 - `static/pngtuber-core.js`：PNGTuber 加载、显示、拖动、保存。
-- `static/app/app-interpage.js`：模型管理器保存后的主页热重载、隐藏/显示主界面。
-- `static/app/app-ui.js`：`showLive2d()`、`showCurrentModel()`、请她离开/回来流程。
+- `static/app/app-interpage`：模型管理器保存后的主页热重载、隐藏/显示主界面。
+- `static/app/app-ui`：`showLive2d()`、`showCurrentModel()`、请她离开/回来流程。
 - `static/app/app-character.js`：角色切换流程。
 
 经验规则：每个“显示当前模型”的入口都必须同时“隐藏其他模型”。不要假设调用者已经处理过互斥。
@@ -985,7 +1213,7 @@ fixtures/simple_pngtuber/model.json
 验证命令：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 python -m py_compile main_routers\pngtuber_router.py
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static_contracts.py tests\unit\test_pngtuber_importers.py
@@ -1021,7 +1249,7 @@ uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_static
 最近一次相关自动验证基线包括：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1209,7 +1437,7 @@ PNGTuber 的“手机页面”定义必须跟项目现有 Web 口径一致：按
 推荐验证命令：
 
 ```powershell
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 node --check static\pngtuber-core.js
 uv run pytest tests\unit\test_pngtuber_static_contracts.py
 uv run pytest tests\unit\test_pngtube_remix_importer.py
@@ -1274,7 +1502,7 @@ PR #1779 将 PNGTuber 第三方工程导入从“简单包 + PNGTuber Plus `.sav
 
 - `static/pngtuber-core.js`：统一 PNGTuber runtime，承载 `layered_canvas_v1`、mouth flap、One Bounce、debug state。
 - `static/js/model_manager/`：模型管理页选择、预览、保存和导入后的加载链路。
-- `static/app/app-interpage.js`、`static/app/app-ui.js`、`static/live2d-init.js`：跨页面 reload 与 Live2D/PNGTuber 互斥边界。
+- `static/app/app-interpage`、`static/app/app-ui`、`static/live2d-init.js`：跨页面 reload 与 Live2D/PNGTuber 互斥边界。
 
 ### 导入数据流
 
@@ -1413,7 +1641,7 @@ layers/
 ```powershell
 python -m py_compile main_routers\pngtuber_importers\godot_variant.py main_routers\pngtuber_importers\pngtube_remix.py
 node --check static\pngtuber-core.js
-node --check static\js\model_manager\06-page-controller.js
+node --check static\js\model_manager\page-controller.js
 uv run pytest tests\unit\test_pngtuber_router.py tests\unit\test_pngtuber_importers.py tests\unit\test_pngtuber_static_contracts.py
 ```
 

@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from plugin.plugins._shared.rapidocr import rapidocr_support
-from plugin.plugins._shared.rapidocr.ocr_runtime_types import _rapidocr_runtime_cache_key
+from plugin.plugins._shared.rapidocr import ocr_rapidocr_backend, rapidocr_support
+from plugin.plugins._shared.rapidocr.ocr_rapidocr_backend import RapidOcrBackend
+from plugin.plugins._shared.rapidocr.ocr_runtime_types import (
+    _RAPIDOCR_RUNTIME_CACHE,
+    _rapidocr_runtime_cache_key,
+)
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -80,6 +85,133 @@ def test_shared_rapidocr_runtime_cache_key_includes_plugin_id() -> None:
         "PP-OCRv5",
     )
     assert other_key != study_key
+
+
+def test_shared_rapidocr_backend_close_releases_plugin_scoped_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = object()
+    install_target_dir = str(tmp_path / "RapidOCR")
+    monkeypatch.setattr(
+        "plugin.plugins._shared.rapidocr.ocr_rapidocr_backend.load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    backend = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    second = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+
+    assert backend._ensure_runtime() is runtime
+    assert second._ensure_runtime() is runtime
+    assert _RAPIDOCR_RUNTIME_CACHE[key][0] is runtime
+
+    backend.close()
+
+    assert _RAPIDOCR_RUNTIME_CACHE[key][0] is runtime
+
+    second.close()
+
+    assert key not in _RAPIDOCR_RUNTIME_CACHE
+
+
+def test_shared_rapidocr_cache_acquire_is_atomic_with_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = object()
+    install_target_dir = str(tmp_path / "RapidOCR")
+    monkeypatch.setattr(
+        ocr_rapidocr_backend,
+        "load_rapidocr_runtime",
+        lambda **_kwargs: (runtime, {}),
+    )
+    first = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    second = RapidOcrBackend(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=install_target_dir,
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version="PP-OCRv5",
+        plugin_id="study_companion",
+    )
+    assert first._ensure_runtime() is runtime
+
+    acquire_started = threading.Event()
+    release_acquire = threading.Event()
+    close_completed = threading.Event()
+    result: list[object] = []
+    real_acquire = ocr_rapidocr_backend._acquire_rapidocr_runtime_cache
+
+    def _blocking_acquire(cache_key) -> None:
+        acquire_started.set()
+        assert release_acquire.wait(timeout=2.0)
+        real_acquire(cache_key)
+
+    monkeypatch.setattr(
+        ocr_rapidocr_backend,
+        "_acquire_rapidocr_runtime_cache",
+        _blocking_acquire,
+    )
+    ensure_thread = threading.Thread(target=lambda: result.append(second._ensure_runtime()))
+
+    def _close_first() -> None:
+        first.close()
+        close_completed.set()
+
+    close_thread = threading.Thread(target=_close_first)
+    try:
+        ensure_thread.start()
+        assert acquire_started.wait(timeout=2.0)
+        close_thread.start()
+        assert not close_completed.wait(timeout=0.2)
+        release_acquire.set()
+        ensure_thread.join(timeout=2.0)
+        close_thread.join(timeout=2.0)
+
+        assert result == [runtime]
+        assert close_completed.is_set()
+        assert _RAPIDOCR_RUNTIME_CACHE[key][0] is runtime
+    finally:
+        release_acquire.set()
+        ensure_thread.join(timeout=2.0)
+        close_thread.join(timeout=2.0)
+        second.close()
 
 
 def test_default_rapidocr_install_target_rejects_path_traversal_plugin_id(

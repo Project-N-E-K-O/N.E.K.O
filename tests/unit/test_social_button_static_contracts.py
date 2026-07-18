@@ -2,10 +2,11 @@ import struct
 from pathlib import Path
 
 import pytest
+from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
 FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
 FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
@@ -13,7 +14,7 @@ FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
 
 @pytest.mark.unit
 def test_social_open_request_is_deduped_before_fetching_config():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     assert "const SOCIAL_OPEN_DEDUPE_MS = 1200;" in source
     assert "window.__nekoSocialOpenState" in source
@@ -32,11 +33,16 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
     assert "native_sync: String(ticketJson.sync_ticket)" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
+    assert protocol_guard in listener
+    assert listener.index(protocol_guard) < listener.index(
+        "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })"
+    )
 
 
 @pytest.mark.unit
 def test_social_browser_fallback_preopens_popup_before_async_fetches():
-    source = APP_UI_PATH.read_text(encoding="utf-8")
+    source = read_js_parts(APP_UI_PATH)
 
     listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
     listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
@@ -150,12 +156,13 @@ def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
 
 
 @pytest.mark.unit
-def test_credit_badge_caches_count_before_late_social_button_mount():
+def test_credit_badge_caches_count_before_button_mount():
     source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    render_start = source.index("function renderForgeBadge(count, bump) {")
+    render_end = source.index("function startForgeBadgeObserver()", render_start)
+    render = source[render_start:render_end]
 
-    cache_index = source.index("cachedCredits = n;")
-    badge_mount_index = source.index("var badge = ensureForgeBadge();")
-    assert cache_index < badge_mount_index
+    assert render.index("cachedCredits = n;") < render.index("if (!badge) return;")
 
 
 @pytest.mark.unit

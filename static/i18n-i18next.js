@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 修改原因：本分支新增社交状态与错误文案，需要递增版本让 Docker immutable 缓存重新拉取语言包。
-    const LOCALE_VERSION = '2026-07-13-social-status-messages';
+    // 修改原因：合并社交状态、远程语言更新与截图贴图文案，需要递增版本让 Docker immutable 缓存重新拉取语言包。
+    const LOCALE_VERSION = '2026-07-15-social-status-screenshot-pin-remote-i18n';
 
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {

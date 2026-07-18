@@ -281,7 +281,14 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          NUITKA_OPTS="--standalone"
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            # PyObjC Foundation/AppKit refuse Nuitka's plain standalone mode.
+            # Keep the backend as a background app bundle; the packaging step
+            # below adds a stable bin/projectneko_server wrapper for Electron.
+            NUITKA_OPTS="--mode=app --macos-app-mode=background"
+          else
+            NUITKA_OPTS="--standalone"
+          fi
           NUITKA_OPTS="$NUITKA_OPTS --output-dir=dist"
           NUITKA_OPTS="$NUITKA_OPTS --output-filename=projectneko_server"
 
@@ -394,16 +401,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
-
-          # macOS: exclude pyobjc frameworks (Foundation requires --mode=app)
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Foundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=AppKit"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=objc"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=PyObjCTools"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=CoreFoundation"
-            NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=Quartz"
-          fi
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
@@ -552,21 +549,36 @@ jobs:
       - name: Rename build output
         shell: bash
         run: |
-          if [ -d "dist/build_nuitka_launcher.dist" ]; then
+          if [[ "$RUNNER_OS" == "macOS" && -d "dist/build_nuitka_launcher.app" ]]; then
+            mkdir -p dist/Xiao8
+            mv dist/build_nuitka_launcher.app dist/Xiao8/projectneko_server.app
+            {
+              echo '#!/bin/sh'
+              echo 'SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)'
+              echo 'exec "$SCRIPT_DIR/projectneko_server.app/Contents/MacOS/projectneko_server" "$@"'
+            } > dist/Xiao8/projectneko_server
+            chmod +x dist/Xiao8/projectneko_server
+            RUNTIME_DIR="dist/Xiao8/projectneko_server.app/Contents/MacOS"
+          elif [ -d "dist/build_nuitka_launcher.dist" ]; then
             mv dist/build_nuitka_launcher.dist dist/Xiao8
+            RUNTIME_DIR="dist/Xiao8"
+          else
+            echo "::error::Nuitka output directory not found"
+            exit 1
           fi
+          echo "NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR" >> "$GITHUB_ENV"
           # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
           # spaces in .app paths), copy it manually into the output directory
           if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
-            cp -R playwright_browsers dist/Xiao8/playwright_browsers
-            echo "Copied playwright_browsers into dist/Xiao8/"
+            cp -R playwright_browsers "$RUNTIME_DIR/playwright_browsers"
+            echo "Copied playwright_browsers into $RUNTIME_DIR/"
           fi
           VENV_PYTHON=".venv/bin/python"
           if [ -f ".venv/Scripts/python.exe" ]; then
             VENV_PYTHON=".venv/Scripts/python.exe"
           fi
           "$VENV_PYTHON" scripts/prepare_nuitka_plugins.py install \
-            --destination-dir dist/Xiao8/plugin/plugins
+            --destination-dir "$RUNTIME_DIR/plugin/plugins"
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
@@ -581,8 +593,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d "dist/Xiao8" ]; then
-            echo "::error::dist/Xiao8 not found, cannot verify"
+          if [ ! -d "$NEKO_NUITKA_RUNTIME_DIR" ]; then
+            echo "::error::$NEKO_NUITKA_RUNTIME_DIR not found, cannot verify"
             exit 1
           fi
           embedding_required=(
@@ -594,12 +606,12 @@ jobs:
           )
           missing=0
           for rel in "${embedding_required[@]}"; do
-            if [ ! -s "dist/Xiao8/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
+            if [ ! -s "$NEKO_NUITKA_RUNTIME_DIR/data/embedding_models/$EMBEDDING_MODEL_PROFILE_ID/$rel" ]; then
               echo "::error::missing or empty bundled embedding asset: $rel"
               missing=1
             fi
           done
-          if ! ls dist/Xiao8/data/tiktoken_cache/ 2>/dev/null | grep -q .; then
+          if ! ls "$NEKO_NUITKA_RUNTIME_DIR/data/tiktoken_cache/" 2>/dev/null | grep -q .; then
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
@@ -617,8 +629,20 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             .venv/Scripts/python.exe scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
           else
-            .venv/bin/python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
+            .venv/bin/python scripts/check_nuitka_dist.py "$NEKO_NUITKA_RUNTIME_DIR" --plugin-stage build/nuitka-plugins
           fi
+
+      # Nuitka signs macOS app bundles when it creates them. The steps above
+      # then add Playwright and plugin payloads inside the bundle, invalidating
+      # that seal. Restore a valid ad-hoc signature for the backend artifact;
+      # electron-builder applies the configured distribution identity later.
+      - name: Re-sign macOS backend after post-processing
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
+          codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
 
       - name: Upload Python backend artifact
         uses: actions/upload-artifact@v4
@@ -685,7 +709,12 @@ jobs:
 
       - name: Make server binary executable (Unix)
         if: runner.os != 'Windows'
-        run: chmod +x electron-app/bin/projectneko_server
+        shell: bash
+        run: |
+          chmod +x electron-app/bin/projectneko_server
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            chmod +x electron-app/bin/projectneko_server.app/Contents/MacOS/projectneko_server
+          fi
 
       # --- Cache Electron binary to avoid download failures ---
       - name: Cache Electron binary

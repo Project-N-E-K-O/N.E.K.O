@@ -92,7 +92,7 @@ async def storage_limited_mode_guard(request: Request, call_next):
     if blocking_reason or _memory_storage_blocked_after_init:
         blocking_reason = blocking_reason or "storage_startup_blocked_after_init"
         logger.info(
-            "[Memory] limited-mode blocks request path=%s reason=%s",
+            "[Memory] limited-mode blocks request path=%r reason=%s",
             request.url.path,
             blocking_reason,
         )
@@ -108,7 +108,7 @@ async def storage_limited_mode_guard(request: Request, call_next):
         )
     runtime_blocking_reason = "runtime_initializing"
     logger.info(
-        "[Memory] limited-mode blocks request path=%s reason=%s",
+        "[Memory] limited-mode blocks request path=%r reason=%s",
         request.url.path,
         runtime_blocking_reason,
     )
@@ -744,6 +744,14 @@ async def shutdown_event_handler():
         shutdown_coros.append(_await_worker_stop())
     if shutdown_coros:
         await asyncio.gather(*shutdown_coros)
+    # The worker is stopped before releasing the process-scoped singleton, so
+    # no background inference can retain or race the ONNX/tokenizer instances.
+    try:
+        from memory.embeddings import release_embedding_service
+
+        await release_embedding_service()
+    except Exception as e:
+        logger.warning("[Memory] embedding service release 失败: %s", e)
     logger.info("Memory server已关闭")
 
 
@@ -759,4 +767,3 @@ async def reload_config():
     except Exception as e:
         logger.error(f"重新加载配置时出错: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
-

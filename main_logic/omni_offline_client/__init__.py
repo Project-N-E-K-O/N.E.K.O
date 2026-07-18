@@ -87,6 +87,11 @@ from ._genai_support import (  # noqa: F401 - preserve the legacy module namespa
     _genai_types,
     _should_use_genai_sdk,
 )
+from ._lifecycle import (  # noqa: F401 - preserve the legacy module namespace
+    _slop_reduced_for_genai,
+    _suspend_dialog_slop,
+    _with_dialog_slop,
+)
 
 from ._client import OmniOfflineClient  # noqa: F401
 

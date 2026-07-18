@@ -750,6 +750,11 @@ MAIN_SERVER_SUPPRESSED_ENDPOINTS = [
     "/api/agent/computer_use/availability",
     "/api/agent/mcp/availability",
     "/api/steam/update-playtime",
+    # OAuth callbacks carry short-lived code/state in the query string.  The
+    # route handles them, but the raw request target must never reach access logs.
+    "/oauth/callback",
+    "/api/card-drop/oauth/callback",
+    "/api/card-drop/steam-callback",
 ]
 
 MAIN_SERVER_RATE_LIMITED_ENDPOINTS = [

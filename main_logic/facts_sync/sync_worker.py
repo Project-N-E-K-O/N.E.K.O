@@ -79,30 +79,22 @@ def _append_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _get_client_id() -> str | None:
-    """Return a persisted ``client_id`` from the cloudsave local state.
-
-    ``load_cloudsave_local_state`` builds an in-memory default UUID when the
-    file is missing. Persist that default before any upload; otherwise a fresh
-    profile can sync facts under an ID that the next load will never reuse.
-    """
+def _get_client_credentials() -> tuple[str, str] | None:
+    """Return persisted client credentials before any cloud request."""
     try:
         cm = get_config_manager()
-        needs_persist = not cm.cloudsave_local_state_path.exists()
-        state = cm.load_cloudsave_local_state()
-        cid = state.get("client_id") if isinstance(state, dict) else None
-        if not isinstance(cid, str) or not cid:
-            state = cm.build_default_cloudsave_local_state()
-            cid = state.get("client_id")
-            needs_persist = True
-        if not isinstance(cid, str) or not cid:
+        client_id, client_proof = cm.ensure_cloudsave_client_credentials()
+        if not client_id or not client_proof:
             return None
-        if needs_persist:
-            cm.save_cloudsave_local_state(state)
-        return cid
+        return client_id, client_proof
     except Exception as exc:  # noqa: BLE001
-        logger.warning("facts_sync: failed to load or persist client_id: %s", exc)
+        logger.warning("facts_sync: failed to load or persist client credentials: %s", exc)
     return None
+
+
+def _get_client_id() -> str | None:
+    credentials = _get_client_credentials()
+    return credentials[0] if credentials else None
 
 
 def _enumerate_lanlan_dirs(memory_dir: Path) -> list[Path]:
@@ -161,7 +153,11 @@ def _select_unsynced_facts(
     return out
 
 
-async def _ensure_client_registered(base_url: str, client_id: str) -> bool:
+async def _ensure_client_registered(
+    base_url: str,
+    client_id: str,
+    client_proof: str,
+) -> bool:
     """Idempotently register the current client_id with Servers.
 
     The first sweep must call ``POST /api/clients/register`` before facts are
@@ -176,7 +172,10 @@ async def _ensure_client_registered(base_url: str, client_id: str) -> bool:
         url = f"{base_url}/api/clients/register"
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
-                r = await client.post(url, json={"client_id": client_id})
+                r = await client.post(
+                    url,
+                    json={"client_id": client_id, "client_proof": client_proof},
+                )
         except (httpx.HTTPError, OSError) as exc:
             logger.warning("facts_sync: client register HTTP failed: %s", exc)
             return False
@@ -213,11 +212,13 @@ async def _post_facts_batch(
     if r.status_code >= 300:
         logger.warning("facts_sync: %s returned %s: %s", url, r.status_code, r.text[:200])
         return False, None
+    # Any 2xx response confirms the mutation. The caller does not depend on a
+    # response body, and valid 201/204 responses may be empty or non-JSON.
     try:
-        return True, r.json()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("facts_sync: parse response failed: %s", exc)
-        return False, None
+        response_payload = r.json()
+    except (TypeError, ValueError):
+        response_payload = None
+    return True, response_payload if isinstance(response_payload, dict) else None
 
 
 async def _sync_one_lanlan(
@@ -298,13 +299,14 @@ async def _sweep_once() -> None:
     base_url = _social_base_url()
     if not base_url:
         return
-    client_id = _get_client_id()
-    if not client_id:
-        logger.warning("facts_sync: no client_id available, skipping sweep")
+    credentials = _get_client_credentials()
+    if not credentials:
+        logger.warning("facts_sync: no client credentials available, skipping sweep")
         return
+    client_id, client_proof = credentials
 
     # M2-i fix: bootstrap register before pushing；失败则跳过本轮，下次再试。
-    if not await _ensure_client_registered(base_url, client_id):
+    if not await _ensure_client_registered(base_url, client_id, client_proof):
         logger.warning("facts_sync: client not registered with Servers; skipping sweep")
         return
 

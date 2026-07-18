@@ -1,11 +1,13 @@
 from pathlib import Path
+from tests.static_app_parts import read_js_parts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PNGTUBER_CORE_PATH = PROJECT_ROOT / "static" / "pngtuber-core.js"
+APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
 APP_AUDIO_PLAYBACK_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-playback.js"
-APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage.js"
-APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app" / "app-interpage"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -36,6 +38,8 @@ def test_pngtuber_config_keeps_separate_mobile_placement_fields():
     assert "normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));" in normalize_block
     assert "normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;" in normalize_block
     assert "normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;" in normalize_block
+    assert "normalized.position_anchor = (sourceAnchor === 'center' || sourceAnchor === 'bottom_right')" in normalize_block
+    assert "? 'bottom_right' : 'center'" in normalize_block
     assert "centerPreview ? 0" not in normalize_block
 
 
@@ -65,6 +69,13 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "getActiveLayoutFields()" in transform_block
     assert "getActivePlacement()" in transform_block
     assert "const renderPlacement = this.getRenderPlacement(placement);" in transform_block
+    assert "const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';" in transform_block
+    assert "left: '50%'" in transform_block
+    assert "top: '50%'" in transform_block
+    assert "left: 'calc(100% - 48px)'" in transform_block
+    assert "top: 'calc(100% - 18px)'" in transform_block
+    assert "'translate(-50%, -50%)'" in transform_block
+    assert "'translate(-100%, -100%)'" in transform_block
     assert "renderPlacement.scale" in transform_block
     assert "renderPlacement.offsetX" in transform_block
     assert "renderPlacement.offsetY + bounce.y" in transform_block
@@ -80,6 +91,7 @@ def test_pngtuber_transform_and_interactions_use_active_layout_fields():
     assert "this.config.mobile_offset_x" in save_block
     assert "this.config.mobile_offset_y" in save_block
     assert "this.config.mobile_scale" in save_block
+    assert "this.config.position_anchor" in save_block
 
 
 def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets():
@@ -101,8 +113,8 @@ def test_pngtuber_model_manager_preview_centering_does_not_mutate_saved_offsets(
 
 def test_pngtuber_container_pointer_events_stay_passthrough_on_restore_paths():
     core_source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
-    interpage_source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
-    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+    interpage_source = read_js_parts(APP_INTERPAGE_PATH)
+    app_ui_source = read_js_parts(APP_UI_PATH)
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     css_container_block = css_source[
@@ -213,7 +225,8 @@ def test_layered_pngtuber_motion_requires_explicit_runtime_feature_flags():
     assert "const layerMotionEnabled = this.layeredRuntimeFeatureEnabled('layer_motion');" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.xAmp, layerState.xFrq" in draw_block
     assert "layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq" in draw_block
-    assert "layerMotionEnabled ? this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
+    assert "const wiggleDegrees = layerMotionEnabled" in draw_block
+    assert "this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq" in draw_block
 
 
 def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
@@ -250,6 +263,16 @@ def test_layered_pngtuber_alt_one_cycles_states_without_imported_hotkeys():
     assert "const stateCount = this.getLayeredStateCount();" in cycle_block
     assert "this.setLayeredStateIndex((this.layeredStateIndex + 1) % stateCount" in cycle_block
     assert "source: 'alt-one-cycle-hotkey'" in cycle_block
+
+
+def test_pngtuber_plus_imported_toggles_ignore_shift_modified_events():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    toggle_block = source[
+        source.index("layeredToggleEntriesForEvent(event) {"):
+        source.index("        initializeLayeredToggleState(layers)")
+    ]
+
+    assert "if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return [];" in toggle_block
 
 
 def test_layered_pngtuber_alt_two_toggles_imported_asset_action():
@@ -290,6 +313,23 @@ def test_layered_pngtuber_alt_two_toggles_imported_asset_action():
     assert "if (layerState.visible === false && !assetForcedVisible) return false;" in render_block
 
 
+def test_layered_pngtuber_uses_default_mouth_state_under_emotions():
+    source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
+    state_block = source[
+        source.index("layerStateForRender(layer, stateName = this.state || 'idle')"):
+        source.index("        isLayeredRemixModel()")
+    ]
+    render_block = source[
+        source.index("        shouldRenderLayer(layer, stateName) {"):
+        source.index("        layerStateForCurrentIndex(layer)")
+    ]
+
+    assert "const layerState = this.layerStateForRender(layer, stateName);" in render_block
+    assert "this.isLayeredPlusModel() || this.layerStateHasTalkingMouth(currentState)" in state_block
+    assert "const defaultState = states[0] || layer.state || {};" in state_block
+    assert "return this.layerStateHasTalkingMouth(defaultState) ? defaultState : currentState;" in state_block
+
+
 def test_layered_pngtuber_draw_order_uses_imported_effective_z_index():
     source = PNGTUBER_CORE_PATH.read_text(encoding="utf-8")
     helper_block = source[
@@ -315,8 +355,8 @@ def test_layered_pngtuber_draw_order_uses_imported_effective_z_index():
     assert "const layersBySpriteId = this._fallbackLayersBySpriteId;" in helper_block
     assert "const layersBySpriteId = new Map();" not in helper_block
     assert "currentState.z_as_relative ?? current.z_as_relative" in helper_block
-    assert "this.compareLayerDrawOrder(a, b)" in draw_block
-    assert "this.compareLayerDrawOrder(a, b)" in debug_block
+    assert "this.compareLayerRenderOrder(a, b, stateName)" in draw_block
+    assert "this.compareLayerRenderOrder(a, b, stateName)" in debug_block
 
 
 def test_layered_pngtuber_keeps_stable_breathing_without_raw_layer_motion():
@@ -627,3 +667,16 @@ def test_pngtuber_floating_controls_auto_hide_like_live2d_without_touching_other
     assert "'live2d-lock-icon'" not in setup_block
     assert "'vrm-lock-icon'" not in setup_block
     assert "'mmd-lock-icon'" not in setup_block
+
+
+def test_apply_emotion_prefers_pngtuber_runtime_when_active():
+    source = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    apply_block = source[
+        source.index("mod.applyEmotion = function applyEmotion(emotion)"):
+        source.index("    window.applyEmotion = mod.applyEmotion;")
+    ]
+
+    assert "window.lanlan_config && window.lanlan_config.model_type" in apply_block
+    assert "modelType === 'pngtuber'" in apply_block
+    assert "window.pngtuberManager.setEmotion(emotion)" in apply_block
+    assert "window.LanLan1.setEmotion(emotion)" in apply_block

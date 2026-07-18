@@ -315,8 +315,8 @@ MMDManager.prototype.setupFloatingButtons = function() {
     });
 
     // 处理"请她离开"事件
-    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui.js 统一处理，
-    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui.js 无法读取按钮位置。
+    // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，
+    // 此处仅更新内部状态标志。不能在此隐藏按钮容器，否则 app-ui 无法读取按钮位置。
     const goodbyeHandler = () => {
         this._isInReturnState = true;
         if (this._physicsRestoreTimer) {

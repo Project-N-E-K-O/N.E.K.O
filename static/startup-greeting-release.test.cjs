@@ -82,6 +82,17 @@ test('startup greeting waits for an explicit release instead of firing on websoc
     assert.match(listenerBlock, /if \(detail\.released === false\) \{\s*return;\s*\}/);
 });
 
+test('migration completion notice does not block the released startup greeting', () => {
+    const blockerBlock = appWebsocketSource.split('function _isGreetingCheckBlocked()')[1].split(
+        'function _resetGreetingCheckRetry',
+        1,
+    )[0];
+
+    assert.doesNotMatch(blockerBlock, /\.storage-location-completion-card/);
+    assert.match(blockerBlock, /#storage-location-overlay/);
+    assert.match(blockerBlock, /\.storage-location-modal/);
+});
+
 test('startup greeting is deferred until new-user icebreaker ends', () => {
     assert.match(appWebsocketSource, /function isNewUserIcebreakerActiveForGreeting\(\)/);
     assert.match(appWebsocketSource, /function _deferGreetingCheckForNewUserIcebreaker\(\)/);

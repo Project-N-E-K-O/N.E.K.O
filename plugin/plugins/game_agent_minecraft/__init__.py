@@ -40,7 +40,7 @@ from plugin.sdk.plugin import (
 )
 
 from . import prompts
-from .service import GameAgentService
+from .service import GameAgentService, text_signals_blocked
 
 # JSON Schema reused by the @llm_tool decorator below. Pulled into a
 # module-level constant so the plugin's introspection (status entry,
@@ -73,6 +73,15 @@ MINECRAFT_TASK_DESCRIPTION = (
     "(cue). "
     "Do not infer or claim results from the task text itself — only from "
     "actually-observed cues and screenshots.\n\n"
+    "CRITICAL — never parrot the game's own logs. The Minecraft feed you see is "
+    "the agent's internal telemetry: function-call lines (goToCoordinates(...), "
+    "attackEntity(...)), '!commands', 'admin movement request', and coordinates it "
+    "picked itself. NEVER copy any of that into a task — echoing a log line back "
+    "as a task creates a dispatch loop. A task must come from the user's actual "
+    "spoken request or a genuine decision of your own, written as a plain-language "
+    "goal (e.g. 'mine straight down 3 blocks then place 1 block below you'), never "
+    "the game's raw command syntax or a coordinate you only saw in a log. If the "
+    "user asked for a specific thing, do THAT — not whatever the log happens to say.\n\n"
     "Use this tool when the user asks the character to do something in "
     "the game, or when continuing an in-game activity that needs another "
     "concrete step. Do NOT use it for chat, status questions, or "
@@ -466,11 +475,21 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # dialog LLM can paraphrase. The "received status string" stays
         # the surface text the LLM sees; routing logic below still keys
         # off the original ``ok`` / ``受阻`` sentinel values via the
-        # same-language label, so the three-way branch survives
+        # same-language label, so the status branches below survive
         # localization without growing brittle "if any locale of 受阻"
         # checks.
         blocked_label = prompts.t("STATUS_LABEL_BLOCKED", lang=self._lang)
-        if status == "AGENT_DISCONNECTED" or "not connected" in detail.lower():
+        # Gate the "not connected" text sniff on an actual error envelope.
+        # The genuine transport failure already arrives as
+        # status=="AGENT_DISCONNECTED" (is_error path above), so the substring
+        # is only a belt-and-suspenders for error results whose text says
+        # "not connected". Firing it on ANY detail containing that phrase
+        # would hijack a legitimate completion (e.g. status="ok",
+        # text="the lever is not connected to the piston") — or a new
+        # interrupted/superseded frame — into the disconnect bucket.
+        if status == "AGENT_DISCONNECTED" or (
+            result.get("is_error") and "not connected" in detail.lower()
+        ):
             status = prompts.t("STATUS_LABEL_DISCONNECTED", lang=self._lang)
             detail = prompts.t("STATUS_DETAIL_DISCONNECTED", lang=self._lang)
         # mc-agent quirk: chat-loop returns ``status="ok"`` even when the
@@ -480,23 +499,10 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         # "结果 ok" + "find player not found" and concludes "task done"
         # (cf. user-reported "她以为找博士成功了，没改用真 username"
         # bug). Surface the blocked-ness explicitly so she has to plan
-        # around it.
-        elif status.lower() == "ok" and detail:
-            blocked_markers = (
-                "obstacle", "obstructed", "not found", "could not", "couldn't",
-                "unable", "failed", "no path", "blocked", "missing",
-                "cannot", "can't",
-                # status=ok 但实际没目标 / 要更多信息也算受阻：mc-agent 对
-                # 「过来」「跟着我」这类缺玩家名/坐标的指令会回 status=ok +
-                # "Target unavailable. Please provide the exact player name or
-                # coordinates."，旧标记词表漏了 unavailable，导致被当成功 →
-                # 猫娘叙述「我来啦」其实化身没动。
-                "unavailable", "please provide", "provide the exact",
-                "no target", "target not",
-            )
-            d_lower = detail.lower()
-            if any(m in d_lower for m in blocked_markers):
-                status = blocked_label
+        # around it. Marker list is shared with the retroactive cue via
+        # ``text_signals_blocked`` so the two can't drift apart.
+        elif status.strip().lower() == "ok" and text_signals_blocked(detail):
+            status = blocked_label
 
         inv = result.get("inventory")
         inv_line = ""
@@ -513,17 +519,35 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         elif isinstance(inv, dict):
             inv_line = prompts.t("COMPLETION_INV_CURRENT_EMPTY", lang=self._lang)
 
-        # Three-way: actual success ("ok", case-insensitive), rebadged
-        # success-but-blocked (status == blocked_label), or anything
-        # else (disconnect, timeout, interrupted, error, "unknown",
-        # arbitrary is_error strings). The else branch previously cue'd
-        # everything that wasn't 受阻 as "做完 ... 派下一步" which told
-        # the dialog LLM the action succeeded when it actually
-        # disconnected / timed out / crashed — Codex review on PR
-        # #1395 caught this. Whitelist "ok" as success instead of
-        # trying to enumerate every failure.
+        # Four-way: actual success ("ok", case-insensitive), rebadged
+        # success-but-blocked (status == blocked_label), neutral
+        # interrupted/superseded (task stopped short but nothing went
+        # wrong), or genuine failure (disconnect, timeout, "failed",
+        # error, "unknown", arbitrary is_error strings). The catch-all
+        # branch previously cue'd everything that wasn't 受阻 as "做完 ...
+        # 派下一步" which told the dialog LLM the action succeeded when it
+        # actually disconnected / timed out / crashed — Codex review on
+        # PR #1395 caught this, so we whitelist "ok" as success instead
+        # of enumerating every failure. ``interrupted`` (our overwrite/
+        # shutdown/bounce verdict) and ``superseded`` (mc-agent's "a newer
+        # task replaced this") are carved out of the failure bucket: they
+        # are non-completions, not failures, and narrating them as
+        # "没做成——想清楚原因" is wrong (there's no cause; she just moved on).
+        # Normalize once for the buckets: tolerate case + stray whitespace
+        # from mc-agent (e.g. "ok " / " SUPERSEDED" must still classify).
+        # ``is_blocked`` keeps the exact-label compare — blocked_label is a
+        # localized display string set by the rewrite above, never padded.
+        status_lc = status.strip().lower()
         is_blocked = status == blocked_label
-        is_success = status.lower() == "ok"
+        is_success = status_lc == "ok"
+        is_interrupted = status_lc in ("interrupted", "superseded")
+        # [NO-SWITCH-CUE] interrupted/superseded means a newer task already
+        # replaced this one — the LLM (or user) did that on purpose and knows.
+        # Reporting "your task got switched (re-dispatch if you want)" just makes
+        # it fire another minecraft_task → the observed task-switch retry storm.
+        # Emit nothing; the fresh task's own cues/screenshots carry the story.
+        if is_interrupted:
+            return ""
         if is_blocked:
             head_verb = prompts.t("HEAD_VERB_BLOCKED", lang=self._lang)
         elif is_success:

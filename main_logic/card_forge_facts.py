@@ -79,18 +79,19 @@ def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> 
 def _build_context(
     config_manager: Any,
     character_override: str | None = None,
-    runtime_character_hint: str | None = None,
 ) -> ActiveNekoContext:
     master_name, current_lanlan, *_rest = config_manager.get_character_data()
     master = str(master_name or "").strip()
     active_lanlan = _safe_character_segment(str(current_lanlan or ""))
+    override_lanlan = _safe_character_segment(str(character_override or ""))
     known_names = _known_character_names(config_manager)
-    # Browser-provided hints and debug overrides must never select another role's
-    # memory.  Only the current character returned by the trusted config manager
-    # may determine the facts directory, and it must also exist in the prompt map.
+    # Browser-provided runtime hints never select another role's memory.  A
+    # character override reaches this helper only after the standalone/debug
+    # feature flag is checked, and must still name a configured character.
+    selected_lanlan = override_lanlan if character_override is not None else active_lanlan
     lanlan = (
-        active_lanlan
-        if active_lanlan and known_names and active_lanlan in known_names
+        selected_lanlan
+        if selected_lanlan and known_names and selected_lanlan in known_names
         else ""
     )
 
@@ -101,7 +102,7 @@ def _build_context(
         source = "env-facts-json"
     elif memory_dir and lanlan:
         facts_path = memory_dir / lanlan / "facts.json"
-        source = "neko-config"
+        source = "character-override" if character_override is not None else "neko-config"
     else:
         facts_path = None
         source = "unresolved"
@@ -118,7 +119,6 @@ def _build_context(
 
 async def resolve_active_neko_context(
     character_override: str | None = None,
-    runtime_character_hint: str | None = None,
 ) -> ActiveNekoContext:
     """Resolve the active, configured character without blocking the event loop."""
     import asyncio
@@ -130,7 +130,6 @@ async def resolve_active_neko_context(
         _build_context,
         config_manager,
         character_override,
-        runtime_character_hint,
     )
 
 
@@ -513,7 +512,6 @@ async def build_forge_facts_payload(
     try:
         context = await resolve_active_neko_context(
             character if allow_override else None,
-            runtime_character_hint,
         )
     except Exception as exc:
         logger.warning(
@@ -530,9 +528,9 @@ async def build_forge_facts_payload(
         and character != resolved_character
         and not allow_override
     )
-    runtime_hint_used = bool(
-        runtime_character_hint and runtime_character_hint == resolved_character
-    )
+    if runtime_hint and runtime_hint != resolved_character:
+        return _empty_payload(character, limit)
+    runtime_hint_used = bool(runtime_hint and runtime_hint == resolved_character)
 
     url_template = os.environ.get("NEKO_FORGE_FACTS_URL", "").strip()
     if url_template:

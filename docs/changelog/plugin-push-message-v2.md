@@ -156,6 +156,6 @@ field is removed in **v0.9** (see below).
 * `plugin/_types/protocols.py`, `_types/models.py`
 * `plugin/core/context.py`
 * `plugin/server/messaging/proactive_bridge.py`
-* `main_server.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
+* `app/main_server/character_runtime.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
 * `plugin/plugins/{bilibili_danmaku,memo_reminder,sts2_autoplay}/__init__.py` (migrated senders)
 * `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`

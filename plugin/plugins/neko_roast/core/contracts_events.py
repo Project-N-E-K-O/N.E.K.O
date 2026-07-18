@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts_public import public_int, public_text, public_value
+from .contracts_public import (
+    TOPIC_PRIVACY_PUBLIC,
+    public_int,
+    public_text,
+    public_value,
+    topic_privacy_classification,
+)
 from .contracts_types import LiveMode, TriggerSource, utc_now_iso
 
 
@@ -58,14 +64,13 @@ class ViewerEvent:
                     data[public_key] = value
             topic = self.raw.get("topic_material")
             if isinstance(topic, dict):
+                privacy_classification = topic_privacy_classification(topic)
+                data["topic_privacy_classification"] = privacy_classification
                 for raw_key, public_key in (
                     ("source", "topic_source"),
                     ("shape", "topic_shape"),
-                    ("title", "topic_title"),
-                    ("key", "topic_key"),
                     ("family", "topic_family"),
                     ("fun_axis", "topic_fun_axis"),
-                    ("hook", "topic_hook"),
                     ("pattern", "topic_pattern"),
                     ("intent", "topic_intent"),
                     ("live_column", "topic_live_column"),
@@ -76,6 +81,15 @@ class ViewerEvent:
                     value = public_text(topic.get(raw_key))
                     if value:
                         data[public_key] = value
+                if privacy_classification == TOPIC_PRIVACY_PUBLIC:
+                    for raw_key, public_key in (
+                        ("title", "topic_title"),
+                        ("key", "topic_key"),
+                        ("hook", "topic_hook"),
+                    ):
+                        value = public_text(topic.get(raw_key))
+                        if value:
+                            data[public_key] = value
             host_beat = self.raw.get("host_beat")
             if isinstance(host_beat, dict):
                 for raw_key, public_key in (

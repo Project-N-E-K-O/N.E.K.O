@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import socket
 import sys
 import threading
@@ -86,8 +87,32 @@ _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
 DEFAULT_BIND_HOST = "127.0.0.1"
 
 
+def _read_port_config() -> dict[str, Any]:
+    """Read the Electron port overrides without importing the main application."""
+    try:
+        system = platform.system()
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        if system == "Windows":
+            appdata = os.environ.get("APPDATA") or os.path.join(
+                home, "AppData", "Roaming"
+            )
+            base = os.path.join(appdata, "N.E.K.O")
+        elif system == "Darwin":
+            base = os.path.join(home, "Library", "Application Support", "N.E.K.O")
+        else:
+            base = os.path.join(
+                os.environ.get("XDG_CONFIG_HOME", os.path.join(home, ".config")),
+                "N.E.K.O",
+            )
+        with open(os.path.join(base, "port_config.json"), encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        return config if isinstance(config, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _read_main_server_port() -> int:
-    """Mirror the root config's env precedence without coupling this standalone service to it."""
+    """Mirror the root config's port precedence without importing the application."""
     for key in ("NEKO_MAIN_SERVER_PORT", "MAIN_SERVER_PORT"):
         raw = os.getenv(key)
         if not raw:
@@ -96,6 +121,13 @@ def _read_main_server_port() -> int:
             port = int(raw)
         except (TypeError, ValueError):
             continue
+        if 1 <= port <= 65535:
+            return port
+    try:
+        port = int(_read_port_config().get("MAIN_SERVER_PORT"))
+    except (TypeError, ValueError):
+        pass
+    else:
         if 1 <= port <= 65535:
             return port
     return 48911
