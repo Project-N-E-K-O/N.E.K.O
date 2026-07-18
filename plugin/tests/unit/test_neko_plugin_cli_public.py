@@ -347,6 +347,27 @@ def test_unpack_package_never_renames_existing_plugin_directory(tmp_path: Path) 
     assert not (plugins_root / "demo_plugin_1").exists()
 
 
+def test_unpack_package_preflights_profile_conflict_before_extracting_plugin(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+    plugins_root = tmp_path / "plugins"
+    profiles_root = tmp_path / "profiles"
+    build_plugin(plugin_dir, package_path)
+    profile_dir = profiles_root / "demo_plugin"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "default.toml").write_text("existing = true\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="demo_plugin"):
+        unpack_package(
+            package_path,
+            plugins_root=plugins_root,
+            profiles_root=profiles_root,
+        )
+
+    assert not (plugins_root / "demo_plugin").exists()
+    assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "existing = true\n"
+
+
 def test_install_package_rejects_payload_hash_mismatch(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "demo_plugin.neko-plugin"

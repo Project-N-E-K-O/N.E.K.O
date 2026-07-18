@@ -18,6 +18,7 @@ PackageType = Literal["plugin", "bundle"]
 class PluginInstallPlan:
     action: InstallAction
     package_type: PackageType
+    package_id: str
     plugin_id: str
     directory_name: str
     current_version: str
@@ -49,6 +50,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         return PluginInstallPlan(
             action="blocked" if conflicts else "install",
             package_type="bundle",
+            package_id=inspected.package_id,
             plugin_id=inspected.package_id,
             directory_name="",
             current_version="",
@@ -59,7 +61,12 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         )
 
     if len(inspected.plugins) != 1:
-        return _blocked(inspected.package_id, inspected.version, reason="invalid_plugin_count")
+        return _blocked(
+            inspected.package_id,
+            inspected.package_id,
+            inspected.version,
+            reason="invalid_plugin_count",
+        )
 
     packaged_plugin = inspected.plugins[0]
     plugin_id = packaged_plugin.plugin_id
@@ -77,6 +84,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         return PluginInstallPlan(
             action="blocked",
             package_type="plugin",
+            package_id=inspected.package_id,
             plugin_id=plugin_id,
             directory_name=directory_name,
             current_version="",
@@ -92,6 +100,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         target_manifest = _read_manifest(target_dir / "plugin.toml")
         if _plugin_text(target_manifest, "id") != plugin_id:
             return _blocked(
+                inspected.package_id,
                 plugin_id,
                 target_version,
                 reason="directory_identity_conflict",
@@ -99,6 +108,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
             )
     if len(matching) > 1 or (matching and matching[0].resolve() != target_dir.resolve()):
         return _blocked(
+            inspected.package_id,
             plugin_id,
             target_version,
             reason="multiple_installations",
@@ -108,6 +118,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
         return PluginInstallPlan(
             action="install",
             package_type="plugin",
+            package_id=inspected.package_id,
             plugin_id=plugin_id,
             directory_name=directory_name,
             current_version="",
@@ -121,6 +132,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
     return PluginInstallPlan(
         action="upgrade",
         package_type="plugin",
+        package_id=inspected.package_id,
         plugin_id=plugin_id,
         directory_name=directory_name,
         current_version=_plugin_text(current_manifest, "version"),
@@ -132,6 +144,7 @@ def build_install_plan(*, package_path: Path, plugins_root: Path) -> PluginInsta
 
 
 def _blocked(
+    package_id: str,
     plugin_id: str,
     target_version: str,
     *,
@@ -141,6 +154,7 @@ def _blocked(
     return PluginInstallPlan(
         action="blocked",
         package_type="plugin",
+        package_id=package_id,
         plugin_id=plugin_id,
         directory_name=directory_name,
         current_version="",

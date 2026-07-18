@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import zipfile
 
 import pytest
 
@@ -19,6 +20,7 @@ def _upgrade_plan() -> PluginInstallPlan:
     return PluginInstallPlan(
         action="upgrade",
         package_type="plugin",
+        package_id="demo",
         plugin_id="demo",
         directory_name="demo",
         current_version="1.0.0",
@@ -175,6 +177,21 @@ def _write_plugin(root: Path, plugin_id: str, version: str) -> Path:
     return plugin_dir
 
 
+def _rewrite_package_manifest_id(package_path: Path, package_id: str) -> None:
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(package_path) as src:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename == "manifest.toml":
+                manifest = data.decode("utf-8")
+                data = manifest.replace('id = "demo"', f'id = "{package_id}"', 1).encode("utf-8")
+            entries.append((info, data))
+
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as dst:
+        for info, data in entries:
+            dst.writestr(info, data)
+
+
 @pytest.mark.asyncio
 async def test_service_rejects_changed_target_before_stopping(
     tmp_path: Path,
@@ -217,3 +234,48 @@ async def test_service_rejects_changed_target_before_stopping(
 
     assert exc_info.value.code == "PLUGIN_UPGRADE_PLAN_CHANGED"
     assert stop_calls == []
+
+
+@pytest.mark.asyncio
+async def test_service_backs_up_profile_by_package_id_during_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    _rewrite_package_manifest_id(package_path, "demo-package")
+
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+    profile_dir = profiles_root / "demo-package"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "default.toml").write_text("old_profile = true\n", encoding="utf-8")
+
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+
+    async def not_running(_plugin_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(upgrade_support, "plugin_is_running", not_running)
+
+    service = PluginCliService()
+    plan = await service.plan_install(package=str(package_path))
+    assert plan["package_id"] == "demo-package"
+    result = await service.install(
+        package=str(package_path),
+        confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+
+    assert result["operation"] == "upgrade"
+    assert 'version = "2.0.0"' in (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
+    assert "old_profile = true" not in (profile_dir / "default.toml").read_text(encoding="utf-8")

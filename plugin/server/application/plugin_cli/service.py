@@ -202,7 +202,7 @@ class PluginCliService:
             if profiles_root
             else policy.package_profiles_root
         )
-        profile_dir = profiles_root_path / str(plan_dict["plugin_id"])
+        profile_dir = profiles_root_path / str(plan_dict["package_id"])
         plan = build_install_plan(
             package_path=self._resolve_package_path(package),
             plugins_root=target_root,
