@@ -1269,7 +1269,7 @@ class FactStore:
                     return data
             except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 # UnicodeDecodeError（非法 UTF-8 字节，ValueError 子类，非
-                # JSONDecodeError/OSError）也要降级：_aload_imported_day_fps 在
+                # JSONDecodeError/OSError）也要降级：_acollect_day_fp_sources 在
                 # per-day 隔离**之前**跑，一个损坏 sidecar 冒泡会 abort 整个导入，
                 # 违背 docstring 承诺的「降级空集」（Codex P2）。
                 logger.warning(
@@ -1346,10 +1346,14 @@ class FactStore:
 
         Provenance is read over active + archive (``aload_facts_full``) so a day
         whose facts were archived by ``_archive_absorbed`` (>7 days old) still
-        skips instead of re-extracting. Used only for the up-front skip filter;
-        the persist-time concurrent re-check reads active provenance directly
-        (a rival import that just persisted writes the active list, and a
-        sidecar-only rival must not suppress this request's real facts).
+        skips instead of re-extracting. The production skip filter computes this
+        same union itself from ``_acollect_day_fp_sources`` (it also needs the
+        ``sidecar ∩ provenance`` intersection for the up-front self-heal), so
+        this wrapper is the read-side contract exercised by the sidecar
+        degradation tests. The persist-time concurrent re-check reads active
+        provenance directly (a rival import that just persisted writes the
+        active list, and a sidecar-only rival must not suppress this request's
+        real facts).
         """
         sidecar_fps, provenance_fps = await self._acollect_day_fp_sources(name)
         return sidecar_fps | provenance_fps
@@ -1657,8 +1661,10 @@ class FactStore:
             except Exception:
                 # persist 失败（FTS/JSON 写错等）也要清该天 sidecar：本请求已抽出真实
                 # facts（这天有内容），若并发空抽取先写下 sidecar，persist 失败后它会
-                # 成为唯一载体、压制用户重试 skip 未变日记而永不落盘（Codex）。失败天
-                # 由 gather 计入 failed_days、重试从头重抽。
+                # 成为唯一载体、压制用户重试 skip 未变日记而永不落盘（Codex）。收窄非
+                # 根除：对方空判定在本清理**之后**才落盘的序覆盖不到——失败天标识不
+                # 持久化、无法跨请求围栏，与「任意后续导入 LLM 恰判空即 checkpoint」
+                # 的既定接受面同构。失败天由 gather 计入 failed_days、重试从头重抽。
                 await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
                 raise
             # 抽出 fact 的天（成功落新 fact，或全去重命中既有）都清掉该天可能残留的

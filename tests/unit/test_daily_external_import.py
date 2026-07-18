@@ -786,6 +786,34 @@ async def test_sidecar_roundtrip_dedups_and_sorts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sidecar_clear_removes_only_targeted_fps(tmp_path):
+    import json
+    import os
+
+    # 对偶 roundtrip 测试：record 有文件层专测，clear 的落盘逻辑（to_drop 交集、
+    # sorted 重写、无文件早退）同样必须打在真实实现上——否则 clear 回归成磁盘
+    # no-op 时套件全绿，skip 前自愈/persist 失败清理/成功天清残留全部静默失效。
+    harness = _SidecarFileHarness(tmp_path)
+    await harness._arecord_unpersisted_day_fp("Neko", "fp-a")
+    await harness._arecord_unpersisted_day_fp("Neko", "fp-b")
+
+    # 只清目标指纹（含集合里混入的未知指纹），不无差别清空。
+    await harness._aclear_day_fps("Neko", {"fp-a", "fp-unknown"})
+    with open(harness._external_import_state_path("Neko"), encoding="utf-8") as f:
+        payload = json.load(f)
+    assert payload["daily"]["imported_day_fingerprints"] == ["fp-b"]
+
+    # 无交集 → 文件内容原样不动。
+    await harness._aclear_day_fps("Neko", {"fp-gone"})
+    with open(harness._external_import_state_path("Neko"), encoding="utf-8") as f:
+        assert json.load(f) == payload
+
+    # 无 sidecar 文件 → 一次 stat 即返回，不创建文件。
+    await harness._aclear_day_fps("hermes", {"fp-x"})
+    assert not os.path.exists(harness._external_import_state_path("hermes"))
+
+
+@pytest.mark.asyncio
 async def test_sidecar_corrupt_file_degrades_to_empty_and_recovers(tmp_path):
     harness = _SidecarFileHarness(tmp_path)
     path = harness._external_import_state_path("Neko")
