@@ -291,6 +291,43 @@ def _issue_sync_ticket(client: TestClient) -> str:
     return ticket
 
 
+def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
+    client, monkeypatch,
+):
+    from main_logic import forge_credit_ledger
+
+    monkeypatch.setattr(
+        forge_credit_ledger,
+        "list_credits",
+        lambda: {
+            "count": 2,
+            "credits": [
+                {"id": "secret-a", "rarity": "SSR", "expires_at": "2026-07-15T00:00:00Z"},
+                {"id": "secret-b", "rarity": "N", "expires_at": "2026-07-16T00:00:00Z"},
+            ],
+            "reservations": [{"operation_id": "secret-operation"}],
+        },
+    )
+
+    allowed = client.get(
+        "/api/card-drop/credits/local-summary",
+        headers={"Origin": "http://localhost:48911"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json() == {
+        "count": 2,
+        "next_expires_at": "2026-07-15T00:00:00Z",
+    }
+    assert allowed.headers["cache-control"] == "no-store"
+
+    denied = client.get(
+        "/api/card-drop/credits/local-summary",
+        headers={"Origin": "https://community.example"},
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "origin_not_allowed"}
+
+
 def test_sync_ticket_is_short_lived_and_single_use(client):
     ticket = _issue_sync_ticket(client)
 
@@ -482,7 +519,7 @@ async def test_bind_ownership_conflict_never_publishes_new_token(tmp_path, monke
     assert json.loads(session.read_text(encoding="utf-8")) == old_session
 
 
-def test_sync_session_bind_ownership_conflict_returns_409_and_preserves_session(
+def test_sync_session_skips_legacy_client_binding_and_replaces_session(
     client, tmp_path, monkeypatch,
 ):
     auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
@@ -511,11 +548,20 @@ def test_sync_session_bind_ownership_conflict_returns_409_and_preserves_session(
         },
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "client_already_bound_to_other_user"}
+    assert response.status_code == 200
+    assert response.json()["bind"] == {
+        "bound": False,
+        "error": None,
+        "skipped": "native_session_sync",
+    }
     assert response.headers["access-control-allow-origin"] == "https://community.example"
-    assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
-    assert json.loads(session.read_text(encoding="utf-8")) == old_session
+    saved_auth = json.loads(auth.read_text(encoding="utf-8"))
+    saved_session = json.loads(session.read_text(encoding="utf-8"))
+    assert saved_auth["access_token"] == "wrong-new-token"
+    assert saved_auth["refresh_token"] == "wrong-new-refresh"
+    assert saved_auth["bind"]["skipped"] == "native_session_sync"
+    assert saved_session["token"] == "wrong-new-token"
+    assert saved_session["refresh_token"] == "wrong-new-refresh"
 
 
 def test_local_login_bind_ownership_conflict_returns_409_and_preserves_session(

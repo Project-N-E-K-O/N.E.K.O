@@ -1,4 +1,9 @@
-# 铸造券稀有度音效（占位）
+# 铸造券稀有度音效
 
-掉落铸造券时 NEKO-PC 按稀有度播放 `/static/sounds/forge/rarity-{n,r,sr,ssr,ur}.mp3`。
-当前为占位音（从 avatar-tools 复制，按强度区分）——请替换为正式的稀有度音效。
+掉落铸造券时，Pet 窗口会按稀有度预加载并播放对应音效：
+
+- N：`rarity-n.mp3`
+- R：`rarity-r.mp3`
+- SR：`rarity-sr.wav`
+- SSR：`rarity-ssr.mp3`
+- UR：`rarity-ur.mp3`

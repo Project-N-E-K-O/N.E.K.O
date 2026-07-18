@@ -21,6 +21,62 @@ body {
     flex-direction: column;
 }
 
+/* 社区铸造页嵌入模式：只保留透明、实时的模型画布。 */
+html.card-maker-embed,
+html.card-maker-embed body {
+    background: transparent !important;
+}
+
+html.card-maker-embed body {
+    display: block;
+}
+
+html.card-maker-embed .page-title-bar,
+html.card-maker-embed #control-panel,
+html.card-maker-embed #layer-panel,
+html.card-maker-embed #card-edit-area,
+html.card-maker-embed #sticker-overlay-below,
+html.card-maker-embed #sticker-overlay,
+html.card-maker-embed #sticker-selection-frame,
+html.card-maker-embed #sticker-rotate-handle,
+html.card-maker-embed #portrait-placeholder,
+html.card-maker-embed #model-loading-overlay {
+    display: none !important;
+}
+
+html.card-maker-embed #main-content {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    max-width: none;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent !important;
+}
+
+html.card-maker-embed #model-viewport {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    z-index: 0;
+    opacity: 1;
+    overflow: visible;
+    pointer-events: none;
+}
+
+html.card-maker-embed #model-viewport #live2d-container,
+html.card-maker-embed #model-viewport #vrm-container,
+html.card-maker-embed #model-viewport #mmd-container,
+html.card-maker-embed #model-viewport #pngtuber-container {
+    overflow: visible;
+}
+
 /* --- 页面标题栏 --- */
 .page-title-bar {
     background: linear-gradient(to right, #4BD4FD, #17A7FF);

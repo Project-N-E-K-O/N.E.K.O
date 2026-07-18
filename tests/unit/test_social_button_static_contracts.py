@@ -1,3 +1,4 @@
+import struct
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui.js"
 FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
+FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
 
 
 @pytest.mark.unit
@@ -62,17 +65,97 @@ def test_credit_drop_event_plays_forge_overlay_animation():
 
 
 @pytest.mark.unit
+def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    tokens = FORGE_DROP_TOKENS_PATH.read_text(encoding="utf-8")
+
+    assert "ticketArt.className = 'ticket-art';" in overlay
+    assert "t.ticketPath(rarity)" in overlay
+    assert "var CARD_MAX_W = 360;" in overlay
+    assert "var CARD_MARGIN = 12;" in overlay
+    assert "var CARD_ASPECT = 1192 / 445;" in overlay
+    assert "window.innerWidth - CARD_MARGIN * 2" in overlay
+    assert "ticketAuraArt.className = 'ticket-aura-art';" in overlay
+    assert "spark.textContent" not in overlay
+    assert "className = 'rk'" not in overlay
+    assert "className = 'meta'" not in overlay
+
+    expected_assets = {
+        "N": "forge-ticket-n.png",
+        "R": "forge-ticket-r.png",
+        "SR": "forge-ticket-sr.png",
+        "SSR": "forge-ticket-ssr.png",
+        "UR": "forge-ticket-ur.png",
+    }
+    for rarity, filename in expected_assets.items():
+        version = "20260718-hd" if rarity == "UR" else "20260717-hd"
+        assert f"{rarity}: '/static/assets/forge-tickets/{filename}?v={version}'" in tokens
+        asset = PROJECT_ROOT / "static" / "assets" / "forge-tickets" / filename
+        assert asset.is_file()
+        png_header = asset.read_bytes()[:24]
+        assert png_header[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", png_header[16:24])
+        assert width >= 1000
+        assert height >= 400
+
+
+@pytest.mark.unit
+def test_credit_drop_preloads_and_plays_the_supplied_rarity_sounds():
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    tokens = FORGE_DROP_TOKENS_PATH.read_text(encoding="utf-8")
+
+    expected_sounds = {
+        "N": "rarity-n.mp3",
+        "R": "rarity-r.mp3",
+        "SR": "rarity-sr.wav",
+        "SSR": "rarity-ssr.mp3",
+        "UR": "rarity-ur.mp3",
+    }
+    for rarity, filename in expected_sounds.items():
+        assert f"{rarity}: '/static/sounds/forge/{filename}?v=20260718-user'" in tokens
+        audio = FORGE_SOUND_DIR / filename
+        assert audio.is_file()
+        assert audio.stat().st_size > 1_000
+        header = audio.read_bytes()[:12]
+        if audio.suffix == ".wav":
+            assert header[:4] == b"RIFF"
+            assert header[8:12] == b"WAVE"
+        else:
+            assert header[:3] == b"ID3" or header[:1] == b"\xff"
+
+    assert "function preloadDropSounds()" in overlay
+    assert "function playDropSound(rarity)" in overlay
+    assert "audio.preload = 'auto';" in overlay
+    assert "audio.currentTime = 0;" in overlay
+    assert "var playResult = audio.play();" in overlay
+    assert "playResult.catch(function () {});" in overlay
+    assert "playDropSound(rarity);" in overlay
+    assert "preloadDropSounds();" in overlay
+
+
+@pytest.mark.unit
 def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
     source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
 
+    assert "fetch('/api/card-drop/credits/local-summary'" in source
+    assert "fetch('/api/card-drop/credits'," not in source
     assert "var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];" in source
     assert "startupRetryIndex >= STARTUP_RETRY_DELAYS_MS.length" in source
     assert "var PASSIVE_REFRESH_MS = 10 * 60 * 1000;" in source
     assert "}, PASSIVE_REFRESH_MS);" in source
     assert "window.addEventListener('focus', requestInteractiveRefresh);" in source
     assert "document.addEventListener('visibilitychange'" in source
-    assert "scheduleExpiryRefresh(data.credits);" in source
+    assert "scheduleExpiryRefresh(data.next_expires_at);" in source
     assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_credit_badge_caches_count_before_late_social_button_mount():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+
+    cache_index = source.index("cachedCredits = n;")
+    badge_mount_index = source.index("var badge = ensureForgeBadge();")
+    assert cache_index < badge_mount_index
 
 
 @pytest.mark.unit

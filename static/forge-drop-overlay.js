@@ -8,7 +8,7 @@
  * 同时：
  *   - 「猫娘社区」按钮右下角蓝色券数角标（.neko-social-forge-badge）
  *   - 掉券卡片飞向该按钮中心
- *   - 启动时 GET /api/card-drop/credits 拉初始券数
+ *   - 启动时 GET /api/card-drop/credits/local-summary 拉初始券数
  *
  * 硬约束：必须在 Pet 透明窗内渲染（独立 Toast 窗在部分 macOS 上不可见）。
  * pointer-events: none，不破坏穿透 hitTest。
@@ -21,7 +21,7 @@
 
   var T = window.NekoForgeDropTokens || null;
   var QUEUE_GAP_MS = 400;
-  var HOLD_MS = 2800;
+  var HOLD_MS = 3200;
   var FLY_MS = 700;
   var PASSIVE_REFRESH_MS = 10 * 60 * 1000;
   var INTERACTIVE_REFRESH_THROTTLE_MS = 15 * 1000;
@@ -37,6 +37,7 @@
   var passiveRefreshTimer = null;
   var expiryRefreshTimer = null;
   var forgeBadgeObserver = null;
+  var dropSoundAudioByRarity = {};
   // 浮动按钮栏未聚焦时会被 display:none；此时 getBoundingClientRect=0 → 会误飞左上角。
   // 缓存上次可见位置，并在隐藏时用 style.left/top 估算。
   var lastSocialCenter = null;
@@ -46,15 +47,64 @@
       normalizeRarity: function (r) { return String(r || 'N').toUpperCase(); },
       rarityColor: function () { return '#9aa6bd'; },
       rarityGlow: function () { return 'rgba(154,166,189,.5)'; },
+      ticketPath: function () { return '/static/assets/forge-tickets/forge-ticket-n.png?v=20260717-hd'; },
       reasonText: function () { return '一个小小的奇遇'; },
       SOUND_PATHS: {},
     };
   }
 
+  function preloadTicketArt() {
+    var t = tokens();
+    var paths = t.TICKET_PATHS || {};
+    ['N', 'R', 'SR', 'SSR', 'UR'].forEach(function (rarity) {
+      try {
+        var src = paths[rarity] || (typeof t.ticketPath === 'function' ? t.ticketPath(rarity) : '');
+        if (!src) return;
+        var image = new Image();
+        image.decoding = 'async';
+        image.src = src;
+      } catch (_) {}
+    });
+  }
+
+  function createDropSoundAudio(rarity) {
+    try {
+      var t = tokens();
+      var src = (t.SOUND_PATHS || {})[rarity];
+      if (!src || typeof window.Audio !== 'function') return null;
+      var audio = new window.Audio(src);
+      audio.preload = 'auto';
+      audio.load();
+      dropSoundAudioByRarity[rarity] = audio;
+      return audio;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function preloadDropSounds() {
+    ['N', 'R', 'SR', 'SSR', 'UR'].forEach(function (rarity) {
+      if (!dropSoundAudioByRarity[rarity]) createDropSoundAudio(rarity);
+    });
+  }
+
+  function playDropSound(rarity) {
+    try {
+      var normalized = tokens().normalizeRarity(rarity);
+      var audio = dropSoundAudioByRarity[normalized] || createDropSoundAudio(normalized);
+      if (!audio) return;
+      audio.currentTime = 0;
+      var playResult = audio.play();
+      if (playResult && typeof playResult.catch === 'function') {
+        playResult.catch(function () {});
+      }
+    } catch (_) {}
+  }
+
   function ensureStyles() {
     // 版本号覆盖，避免 Pet 残留旧样式（右下角 HUD / 错误 transform 飞出）。
     var STYLE_ID = 'neko-forge-drop-styles';
-    var STYLE_VER = 'v6-hidden-btn-fly';
+    var STYLE_VER = 'v9-prominent-hd-ticket';
     var existing = document.getElementById(STYLE_ID);
     if (existing && existing.getAttribute('data-ver') === STYLE_VER) return;
     if (existing) try { existing.remove(); } catch (_) {}
@@ -68,18 +118,15 @@
     style.setAttribute('data-ver', STYLE_VER);
     style.textContent = [
       '@keyframes nekoForgeCardPop{',
-      '  0%{opacity:0;transform:scale(.3)}',
-      '  70%{opacity:1;transform:scale(1.08)}',
+      '  0%{opacity:0;transform:translateY(18px) scale(.55)}',
+      '  55%{opacity:1;transform:translateY(-3px) scale(1.1)}',
+      '  78%{opacity:1;transform:translateY(0) scale(.98)}',
       '  100%{opacity:1;transform:scale(1)}',
       '}',
-      '@keyframes nekoForgeCardFloat{',
-      '  0%,100%{transform:translateY(0)}',
-      '  50%{transform:translateY(-4px)}',
-      '}',
-      '@keyframes nekoForgeSpark{',
-      '  0%{opacity:0;transform:translate(0,0) scale(.4)}',
-      '  30%{opacity:1}',
-      '  100%{opacity:0;transform:translate(var(--sx),var(--sy)) scale(.2)}',
+      '@keyframes nekoForgeAuraPop{',
+      '  0%{opacity:0;transform:scale(.72)}',
+      '  55%{opacity:.72;transform:scale(1.08)}',
+      '  100%{opacity:.38;transform:scale(1.04)}',
       '}',
       '@keyframes nekoForgeBadgePop{',
       '  0%{transform:scale(.2);opacity:0}',
@@ -88,26 +135,19 @@
       '}',
       '.neko-forge-drop-layer{position:fixed;inset:0;pointer-events:none;z-index:2147483640;overflow:hidden}',
       // left/top 像素定位飞出，避免 translate(-50%) 混算跑偏。
-      '.neko-forge-card{position:fixed;width:128px;height:76px;margin:0;box-sizing:border-box;',
-      '  border-radius:14px;padding:10px 12px;pointer-events:none;user-select:none;',
-      '  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;',
-      '  background:linear-gradient(145deg,rgba(18,20,36,.96),rgba(10,12,24,.94));',
-      '  display:flex;flex-direction:column;justify-content:space-between;',
+      '.neko-forge-card{position:fixed;width:360px;height:134px;margin:0;box-sizing:border-box;',
+      '  padding:0;pointer-events:none;user-select:none;background:transparent;display:block;isolation:isolate;',
       '  transform-origin:center center;',
       '  transition:left .7s cubic-bezier(.4,0,.2,1),top .7s cubic-bezier(.4,0,.2,1),',
       '    opacity .7s cubic-bezier(.4,0,.2,1),transform .7s cubic-bezier(.4,0,.2,1);',
-      '  animation:nekoForgeCardPop .4s cubic-bezier(.2,.9,.25,1) both}',
-      '.neko-forge-card.holding{animation:nekoForgeCardFloat 4s ease-in-out infinite}',
+      '  animation:nekoForgeCardPop .56s cubic-bezier(.2,.9,.25,1)}',
       // flying 状态由 JS 内联 left/top/opacity/transform 驱动，避免 animation:none 打断 transition
-      '.neko-forge-card .rk{font-size:22px;font-weight:800;letter-spacing:.5px;line-height:1}',
-      '.neko-forge-card .label{font-size:11px;color:#c9d2e0;margin-top:2px}',
-      '.neko-forge-card .why{font-size:10px;color:#9aa6bd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.neko-forge-card .meta{font-size:10px;color:#8fa0b8;display:flex;justify-content:space-between;gap:6px}',
-      '.neko-forge-card .ribbon{position:absolute;top:-8px;left:10px;font-size:9px;font-weight:700;',
-      '  color:#1a1200;background:linear-gradient(90deg,#ffe08a,#ffb627);padding:2px 7px;border-radius:8px;',
-      '  box-shadow:0 2px 8px rgba(255,182,39,.45)}',
-      '.neko-forge-spark{position:absolute;font-size:12px;pointer-events:none;',
-      '  animation:nekoForgeSpark .7s ease-out forwards}',
+      '.neko-forge-card .ticket-aura-art{position:absolute;inset:0;z-index:0;display:block;',
+      '  width:100%;height:100%;object-fit:contain;opacity:.38;transform:scale(1.04);',
+      '  filter:blur(18px) saturate(1.35);animation:nekoForgeAuraPop .56s cubic-bezier(.2,.9,.25,1);',
+      '  -webkit-user-drag:none;user-select:none}',
+      '.neko-forge-card .ticket-art{position:relative;z-index:1;display:block;width:100%;height:100%;',
+      '  object-fit:contain;-webkit-user-drag:none;user-select:none}',
       // 挂在「猫娘社区」按钮右下角的蓝色券数角标
       '.neko-social-forge-badge{position:absolute;bottom:-4px;right:-4px;min-width:16px;height:16px;',
       '  padding:0 4px;border-radius:8px;background:#39b7f5;color:#fff;font-size:10px;font-weight:700;',
@@ -120,7 +160,8 @@
       // 隐藏上一版右下角 HUD（若样式残留）
       '.neko-forge-credit-hud{display:none!important}',
       '@media (prefers-reduced-motion: reduce){',
-      '  .neko-forge-card,.neko-forge-card.holding,.neko-forge-spark{animation:none!important;opacity:1;transition:none!important}',
+      '  .neko-forge-card,.neko-forge-card .ticket-aura-art{animation:none!important;transition:none!important}',
+      '  .neko-forge-card{opacity:1!important}',
       '}',
     ].join('');
     (document.head || document.documentElement).appendChild(style);
@@ -217,10 +258,12 @@
 
   function renderForgeBadge(count, bump) {
     ensureStyles();
+    var n = Math.max(0, Number(count) || 0);
+    // 券快照可能早于 avatar 浮动按钮完成挂载。必须先缓存数量，
+    // 这样 MutationObserver 才能在按钮出现后补建角标。
+    cachedCredits = n;
     var badge = ensureForgeBadge();
     if (!badge) return;
-    var n = Math.max(0, Number(count) || 0);
-    cachedCredits = n;
     var wantHidden = n <= 0;
     var wantText = wantHidden ? '' : (n > 99 ? '99+' : String(n));
     if (badge.classList.contains('hidden') === wantHidden && badge.textContent === wantText && !bump) {
@@ -262,35 +305,13 @@
     };
   }
 
-  function spawnSparks(layer, originX, originY, rarity, color) {
-    var count = rarity === 'UR' ? 10 : rarity === 'SSR' ? 8 : rarity === 'SR' ? 5 : rarity === 'R' ? 3 : 1;
-    for (var i = 0; i < count; i++) {
-      var spark = document.createElement('div');
-      spark.className = 'neko-forge-spark';
-      spark.textContent = '✦';
-      spark.style.left = originX + 'px';
-      spark.style.top = originY + 'px';
-      spark.style.color = color;
-      var angle = (Math.PI * 2 * i) / count + Math.random() * 0.4;
-      var dist = 36 + Math.random() * 48;
-      spark.style.setProperty('--sx', Math.cos(angle) * dist + 'px');
-      spark.style.setProperty('--sy', Math.sin(angle) * dist + 'px');
-      spark.style.animationDelay = (i * 30) + 'ms';
-      layer.appendChild(spark);
-      (function (node) {
-        setTimeout(function () { try { node.remove(); } catch (_) {} }, 900);
-      })(spark);
-    }
-  }
-
   function playOne(payload) {
     return new Promise(function (resolve) {
       try {
         ensureStyles();
         var t = tokens();
         var rarity = t.normalizeRarity(payload && payload.rarity);
-        var color = t.rarityColor(rarity);
-        var glow = t.rarityGlow(rarity);
+        playDropSound(rarity);
         var why = (payload && payload.is_career_first)
           ? '生涯第一张锻造券'
           : t.reasonText(payload && payload.reason);
@@ -306,8 +327,11 @@
           (document.body || document.documentElement).appendChild(layer);
         }
 
-        var CARD_W = 128;
-        var CARD_H = 76;
+        var CARD_MAX_W = 360;
+        var CARD_MARGIN = 12;
+        var CARD_ASPECT = 1192 / 445;
+        var CARD_W = Math.max(1, Math.min(CARD_MAX_W, window.innerWidth - CARD_MARGIN * 2));
+        var CARD_H = Math.round(CARD_W / CARD_ASPECT);
         var originX = window.innerWidth * 0.5;
         var originY = window.innerHeight * 0.42;
         var startLeft = Math.round(originX - CARD_W / 2);
@@ -317,36 +341,27 @@
         card.className = 'neko-forge-card';
         card.style.left = startLeft + 'px';
         card.style.top = startTop + 'px';
-        card.style.border = '1.5px solid ' + color;
-        card.style.boxShadow = '0 12px 36px rgba(0,0,0,.45), 0 0 28px ' + glow;
-        if (payload && payload.is_career_first) {
-          var ribbon = document.createElement('div');
-          ribbon.className = 'ribbon';
-          ribbon.textContent = '生涯首券';
-          card.appendChild(ribbon);
-        }
-        var top = document.createElement('div');
-        var rk = document.createElement('div');
-        rk.className = 'rk';
-        rk.style.color = color;
-        rk.textContent = rarity;
-        var label = document.createElement('div');
-        label.className = 'label';
-        label.textContent = '锻造券 ×1';
-        top.appendChild(rk);
-        top.appendChild(label);
-        card.appendChild(top);
-        var whyEl = document.createElement('div');
-        whyEl.className = 'why';
-        whyEl.textContent = why;
-        card.appendChild(whyEl);
-        var meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.innerHTML = '<span>+1</span><span>持有 ' + active + '</span>';
-        card.appendChild(meta);
+        card.style.width = CARD_W + 'px';
+        card.style.height = CARD_H + 'px';
+        card.setAttribute('role', 'img');
+        card.setAttribute('aria-label', rarity + ' 锻造券，' + why + '，持有 ' + active);
+        var ticketSrc = typeof t.ticketPath === 'function'
+          ? t.ticketPath(rarity)
+          : '/static/assets/forge-tickets/forge-ticket-n.png?v=20260717-hd';
+        var ticketAuraArt = document.createElement('img');
+        ticketAuraArt.className = 'ticket-aura-art';
+        ticketAuraArt.src = ticketSrc;
+        ticketAuraArt.alt = '';
+        ticketAuraArt.draggable = false;
+        ticketAuraArt.setAttribute('aria-hidden', 'true');
+        card.appendChild(ticketAuraArt);
+        var ticketArt = document.createElement('img');
+        ticketArt.className = 'ticket-art';
+        ticketArt.src = ticketSrc;
+        ticketArt.alt = '';
+        ticketArt.draggable = false;
+        card.appendChild(ticketArt);
         layer.appendChild(card);
-
-        spawnSparks(layer, originX, originY, rarity, color);
 
         var reduced = false;
         try {
@@ -447,11 +462,6 @@
           }
         }, hold);
 
-        if (!reduced) {
-          setTimeout(function () {
-            try { card.classList.add('holding'); } catch (_) {}
-          }, 420);
-        }
       } catch (_) {
         resolve();
       }
@@ -472,16 +482,13 @@
     if (timer) try { clearTimeout(timer); } catch (_) {}
   }
 
-  function scheduleExpiryRefresh(credits) {
+  function scheduleExpiryRefresh(nextExpiresAt) {
     clearTimer(expiryRefreshTimer);
     expiryRefreshTimer = null;
-    if (!Array.isArray(credits) || !credits.length) return;
+    if (!nextExpiresAt) return;
     var now = Date.now();
-    var earliest = 0;
-    credits.forEach(function (credit) {
-      var ts = Date.parse(credit && credit.expires_at);
-      if (Number.isFinite(ts) && ts > now && (!earliest || ts < earliest)) earliest = ts;
-    });
+    var earliest = Date.parse(nextExpiresAt);
+    if (!Number.isFinite(earliest) || earliest <= now) return;
     if (!earliest) return;
     // setTimeout 的有效上限约 2^31-1ms；券通常当日到期，这里仍做封顶。
     var delay = Math.min(0x7fffffff, Math.max(1000, earliest - now + 1000));
@@ -500,7 +507,7 @@
     lastCreditFetchStartedAt = now;
     var requestRevision = creditStateRevision;
     try {
-      creditFetchInFlight = fetch('/api/card-drop/credits', { credentials: 'include', cache: 'no-store' })
+      creditFetchInFlight = fetch('/api/card-drop/credits/local-summary', { cache: 'no-store' })
         .then(function (res) {
           if (!res.ok) throw new Error('credits_http_' + res.status);
           return res.json();
@@ -518,7 +525,7 @@
             : (Array.isArray(data.credits) ? data.credits.length : 0);
           creditStateRevision += 1;
           renderForgeBadge(count, false);
-          scheduleExpiryRefresh(data.credits);
+          scheduleExpiryRefresh(data.next_expires_at);
           clearTimer(startupRetryTimer);
           startupRetryTimer = null;
           startupRetryIndex = 0;
@@ -579,6 +586,8 @@
 
   function boot() {
     ensureStyles();
+    preloadTicketArt();
+    preloadDropSounds();
     startForgeBadgeObserver();
     renderForgeBadge(cachedCredits || 0, false);
     refreshCreditsWithRetry();

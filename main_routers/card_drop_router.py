@@ -360,11 +360,20 @@ def _access_token() -> str | None:
     return a.get("access_token") if a else None
 
 
-async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> dict:
-    """Store JWTs and bind the local client so guest cards migrate to the user.
+async def _store_session(
+    base: str,
+    access: str | None,
+    refresh: str | None,
+    user: dict,
+    *,
+    bind_client: bool = True,
+) -> dict:
+    """Store JWTs and optionally bind the legacy guest client to the user.
 
     Email/password and Steam login share this path. The bind result is persisted
-    and exposed through auth-status so client-binding conflicts are visible.
+    and exposed through auth-status so client-binding conflicts are visible. A
+    browser native-session sync deliberately skips client binding: forge credits
+    belong to the installation and must remain readable after switching accounts.
     """
     # Bind before publishing either local credential file.  A client that belongs to another
     # user is a non-recoverable identity conflict: publishing the new JWT even briefly would let
@@ -372,8 +381,10 @@ async def _store_session(base: str, access: str | None, refresh: str | None, use
     # Other historical bind failures remain recoverable and still persist the cloud-validated
     # login below, together with their bind status.
     bind: dict = {"bound": False, "error": None}
-    cid = _get_client_id()
-    if not cid:
+    cid = _get_client_id() if bind_client else None
+    if not bind_client:
+        bind["skipped"] = "native_session_sync"
+    elif not cid:
         bind["error"] = "client_not_registered"
     elif access:
         try:
@@ -640,10 +651,10 @@ async def sync_session_endpoint(request: Request, payload: dict = Body(...)):
     # winner at this atomic pop.
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse({"detail": "invalid_sync_ticket"}, status_code=403, headers=cors)
-    try:
-        bind = await _store_session(base, access, refresh, user)
-    except _ClientBindingConflict as exc:
-        return JSONResponse({"detail": exc.detail}, status_code=409, headers=cors)
+    # Web native sync only authorizes this browser account to read the installation-local
+    # ledger and memories. Legacy guest-card ownership is unrelated and must not block
+    # account switching with ``client_already_bound_to_other_user``.
+    bind = await _store_session(base, access, refresh, user, bind_client=False)
     return JSONResponse(
         {
             "ok": True,
@@ -913,6 +924,32 @@ async def credits_endpoint(request: Request):
     from main_logic.forge_credit_ledger import list_credits
 
     return JSONResponse(list_credits(), headers=cors)
+
+
+@router.get("/credits/local-summary", summary="本体同源界面读取锻造券数量角标")
+async def local_credit_summary_endpoint(request: Request):
+    """Expose only a count and expiry hint to the trusted local N.E.K.O UI.
+
+    The community-facing ``/credits`` endpoint remains native-session Bearer protected;
+    this summary intentionally omits credit IDs, rarities and reservation operations.
+    """
+    if not _local_mutation_origin_allowed(request):
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
+    from main_logic.forge_credit_ledger import list_credits
+
+    snapshot = list_credits()
+    expiries = [
+        str(credit.get("expires_at"))
+        for credit in snapshot.get("credits", [])
+        if credit.get("expires_at")
+    ]
+    return JSONResponse(
+        {
+            "count": int(snapshot.get("count") or 0),
+            "next_expires_at": min(expiries) if expiries else None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/credits/{credit_id}/reservations", summary="为一次云端铸造幂等预占本机券")
