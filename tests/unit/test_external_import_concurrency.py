@@ -255,6 +255,17 @@ class _DailyConcurrencyHarness(FactStore):
     async def aload_facts(self, lanlan_name):
         return []
 
+    async def aload_facts_full(self, lanlan_name):
+        # 隔离真实盘：读路径 _aload_imported_day_fps 现取 active+archive。
+        return []
+
+    # 隔离 sidecar 文件 IO：否则无 fact 载体天会读写真实 memory_dir。
+    def _load_external_import_state(self, name):
+        return {}
+
+    async def _arecord_unpersisted_day_fp(self, lanlan_name, fingerprint):
+        return None
+
     async def _allm_extract_facts(self, lanlan_name, messages):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         return await self._extract(text)
