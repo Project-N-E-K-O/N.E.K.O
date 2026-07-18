@@ -128,11 +128,13 @@ class PluginCliService:
         *,
         package: str,
         plugins_root: str | None = None,
+        profiles_root: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._plan_install_sync,
             package=package,
             plugins_root=plugins_root,
+            profiles_root=profiles_root,
         )
 
     async def install(
@@ -147,7 +149,11 @@ class PluginCliService:
         confirm_upgrade: bool = False,
         confirmation_token: str | None = None,
     ) -> dict[str, object]:
-        plan_dict = await self.plan_install(package=package, plugins_root=plugins_root)
+        plan_dict = await self.plan_install(
+            package=package,
+            plugins_root=plugins_root,
+            profiles_root=profiles_root,
+        )
         action = str(plan_dict["action"])
         if action == "blocked":
             raise ServerDomainError(
@@ -221,6 +227,7 @@ class PluginCliService:
                 plugins_root=target_root,
             ),
             target_root=target_root,
+            profiles_root=profiles_root_path,
         )
 
         async def install_new() -> dict[str, object]:
@@ -1008,6 +1015,7 @@ class PluginCliService:
         *,
         package: str,
         plugins_root: str | None,
+        profiles_root: str | None,
     ) -> dict[str, object]:
         try:
             policy = self._path_policy()
@@ -1020,12 +1028,22 @@ class PluginCliService:
                 if plugins_root
                 else policy.user_plugins_root
             )
+            profiles_root_path = (
+                _require_within(
+                    Path(profiles_root).expanduser().resolve(),
+                    policy.package_profiles_root,
+                    field="profiles_root",
+                )
+                if profiles_root
+                else policy.package_profiles_root
+            )
             plan = self._apply_installed_package_identity(
                 build_install_plan(
                     package_path=self._resolve_package_path(package),
                     plugins_root=target_root,
                 ),
                 target_root=target_root,
+                profiles_root=profiles_root_path,
             )
             return asdict(plan)
         except Exception as exc:
@@ -1036,6 +1054,7 @@ class PluginCliService:
         plan: PluginInstallPlan,
         *,
         target_root: Path,
+        profiles_root: Path,
     ) -> PluginInstallPlan:
         if plan.action != "upgrade":
             return plan
@@ -1051,7 +1070,7 @@ class PluginCliService:
             # that the identity is unchanged. Otherwise official historical
             # single-plugin packages used plugin_id as package_id, so fail
             # closed against that conservative baseline.
-            incoming_profile = self._path_policy().package_profiles_root / plan.package_id
+            incoming_profile = profiles_root / plan.package_id
             installed_package_id = plan.package_id if incoming_profile.exists() else plan.plugin_id
         if installed_package_id != plan.package_id:
             return replace(

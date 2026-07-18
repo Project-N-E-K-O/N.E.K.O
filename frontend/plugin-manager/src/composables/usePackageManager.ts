@@ -748,9 +748,11 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     try {
       const packagePath = installForm.value.package.trim()
       const pluginsRoot = installForm.value.plugins_root?.trim() || undefined
+      const profilesRoot = installForm.value.profiles_root?.trim() || undefined
       const plan = await planPluginInstall({
         package: packagePath,
         plugins_root: pluginsRoot,
+        profiles_root: profilesRoot,
       })
       installPlan.value = plan
 
@@ -773,7 +775,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
       const request: PluginCliInstallRequest = {
         package: packagePath,
         plugins_root: pluginsRoot,
-        profiles_root: installForm.value.profiles_root?.trim() || undefined,
+        profiles_root: profilesRoot,
         on_conflict: 'fail',
       }
       if (plan.action === 'upgrade') {

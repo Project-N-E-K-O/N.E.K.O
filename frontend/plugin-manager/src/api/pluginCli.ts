@@ -102,6 +102,7 @@ export interface PluginCliInstallRequest {
 export interface PluginCliInstallPlanRequest {
   package: string
   plugins_root?: string
+  profiles_root?: string
 }
 
 export interface PluginCliInstallPlanResponse {

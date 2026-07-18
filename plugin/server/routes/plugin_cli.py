@@ -64,6 +64,7 @@ class PluginCliInstallRequest(BaseModel):
 class PluginCliInstallPlanRequest(BaseModel):
     package: str
     plugins_root: str | None = None
+    profiles_root: str | None = None
 
 
 class PluginCliInstallPlanResponse(BaseModel):
@@ -330,6 +331,7 @@ async def plugin_cli_install_plan(
         return await service.plan_install(
             package=payload.package,
             plugins_root=payload.plugins_root,
+            profiles_root=payload.profiles_root,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

@@ -395,6 +395,64 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
 
 
 @pytest.mark.asyncio
+async def test_service_uses_custom_profile_root_for_legacy_package_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    _rewrite_package_manifest_id(package_path, "demo-package")
+
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+    custom_profiles_root = profiles_root / "custom"
+    profile_dir = custom_profiles_root / "demo-package"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "custom.toml").write_text("custom = true\n", encoding="utf-8")
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: SimpleNamespace(package_id_for_directory=lambda _path: ""),
+    )
+
+    async def not_running(_plugin_id: str) -> bool:
+        return False
+
+    monkeypatch.setattr(upgrade_support, "plugin_is_running", not_running)
+
+    service = PluginCliService()
+    plan = await service.plan_install(
+        package=str(package_path),
+        profiles_root=str(custom_profiles_root),
+    )
+
+    assert plan["action"] == "upgrade"
+    assert plan["installed_package_id"] == "demo-package"
+
+    result = await service.install(
+        package=str(package_path),
+        profiles_root=str(custom_profiles_root),
+        confirm_upgrade=True,
+        confirmation_token=str(plan["confirmation_token"]),
+    )
+
+    assert result["operation"] == "upgrade"
+    assert (profile_dir / "custom.toml").read_text(encoding="utf-8") == "custom = true\n"
+
+
+@pytest.mark.asyncio
 async def test_service_blocks_package_id_change_before_upgrade(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

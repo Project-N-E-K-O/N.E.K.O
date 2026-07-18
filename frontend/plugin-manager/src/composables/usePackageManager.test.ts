@@ -125,6 +125,7 @@ describe('usePackageManager safe installation flow', () => {
   it('confirms a matching upgrade and forwards the confirmation token', async () => {
     const manager = usePackageManager()
     manager.installForm.value.package = 'demo.neko-plugin'
+    manager.installForm.value.profiles_root = 'profiles/custom'
     vi.mocked(planPluginInstall).mockResolvedValue(upgradePlan)
     vi.mocked(ElMessageBox.confirm).mockResolvedValue({ action: 'confirm', value: '' } as any)
     vi.mocked(installPluginPackage).mockResolvedValue({
@@ -135,10 +136,18 @@ describe('usePackageManager safe installation flow', () => {
 
     await manager.handleInstall()
 
-    expect(installPluginPackage).toHaveBeenCalledWith(expect.objectContaining({
-      confirm_upgrade: true,
-      confirmation_token: 'a'.repeat(64),
-    }))
+    expect(planPluginInstall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profiles_root: 'profiles/custom',
+      })
+    )
+    expect(installPluginPackage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profiles_root: 'profiles/custom',
+        confirm_upgrade: true,
+        confirmation_token: 'a'.repeat(64),
+      })
+    )
   })
 
   it('installs a new plugin without upgrade credentials', async () => {
