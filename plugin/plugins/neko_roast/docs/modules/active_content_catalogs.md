@@ -25,9 +25,9 @@ The catalogs contain static public prompt material. They do not read live payloa
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests/test_active_topic_core.py -q
-uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+uv run pytest plugin/plugins/neko_roast/tests/test_active_topic_core.py -q
+uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 Focused tests cover standalone import, non-empty active fallback material, missing host-catalog degradation, fallback validation, and selector refresh behavior.

@@ -23,9 +23,9 @@ The pure shaper can remove stage directions and internal-context leaks, reject u
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests/test_output_contract.py -q
-uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+uv run pytest plugin/plugins/neko_roast/tests/test_output_contract.py -q
+uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 Coverage includes reply length, fulfilled content requests, hosting coalescing, and named-target parsing.

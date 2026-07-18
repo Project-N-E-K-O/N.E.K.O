@@ -90,6 +90,7 @@ plugin/plugins/
 ## 快速链接
 
 - [快速开始](./quick-start) — 5 分钟内创建你的第一个插件
+- [可回滚的本地插件升级](./safe-local-upgrades) — 安装计划、明确确认、profile 保留与失败恢复
 - [v0.9 迁移](./migration-v0.9) — 已删除接口与准确替代方案
 - [SDK 参考](./sdk-reference) — 基类、上下文 API、Result 类型
 - [装饰器](./decorators) — 所有可用的装饰器

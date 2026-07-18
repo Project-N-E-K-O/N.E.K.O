@@ -1,6 +1,6 @@
-# neko_live Agent Rules
+# neko_roast Agent Rules
 
-This file is for IDE agents and future contributors working inside `plugin/plugins/neko_live`.
+This file is for IDE agents and future contributors working inside `plugin/plugins/neko_roast`.
 
 ## Hard Rules
 
@@ -77,7 +77,6 @@ Protected Modules include:
 - Core architecture: `core/contracts.py`, `core/event_bus.py`, `core/module_registry.py`.
 - Event layer: `modules/bili_live_ingest/**`, live protocol parsing, LiveEvent schema, event normalization.
 - Selection: `modules/live_events/**`, score weights, cooldown window, event competition policy.
-- Support events: `modules/live_support_events/**`, verified support evidence, provider-ID dedupe, combo state, bounded priority scheduling, short-thanks request contracts, and session task cleanup.
 - Pipeline / output: `core/pipeline.py`, `core/safety_guard.py`, `adapters/neko_dispatcher.py`.
 - Runtime: `core/runtime.py`, plugin actions, config persistence, hosted-ui context.
 - Stores / privacy: `stores/viewer_store.py`, `stores/audit_store.py`, `stores/credential_store.py`.
@@ -114,8 +113,8 @@ Reviewers should check at least:
 For docs-only PRs, state that no code tests were run because the change is documentation-only. For any PR touching Python, UI, i18n, contracts, config schema, manifest, or runtime behavior, run at least:
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+uv run pytest plugin/plugins/neko_roast/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 For packaged compatibility builds, also confirm `ui/panel_compat.tsx` keeps the full panel surface: it may import `@neko/plugin-ui`, but it must not contain relative imports, `window.NekoUiKit`, or `__modules`.

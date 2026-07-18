@@ -26,9 +26,9 @@ These modules do not emit output, access credentials, write stores, or persist v
 Run:
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests/test_active_topic_core.py -q
-uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+uv run pytest plugin/plugins/neko_roast/tests/test_active_topic_core.py -q
+uv run pytest plugin/plugins/neko_roast/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 Focused coverage locks explicit-family precedence, A/B marker boundaries, optional split imports, fallback handling, rotation refresh, mention parsing, and anonymous-speaker guards.

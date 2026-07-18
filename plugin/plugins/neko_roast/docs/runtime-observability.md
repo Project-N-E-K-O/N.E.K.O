@@ -16,11 +16,10 @@ Runtime observability must answer five questions:
 
 - Do not define a concrete Dashboard layout.
 - Do not require a new storage backend.
-- The current support scheduler exposes bounded in-memory counters only; it does not write a persistent gift ledger or diagnostic event log.
 - Do not replace `stores/audit_store.py` or existing `PipelineStep` / `InteractionResult` fields in this phase.
 - Do not turn Monitor into a separate source of truth; it must read runtime projections.
 - Do not add contribution ranking, reward, or ceremony behavior for Gift / SC / Guard events.
-- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, general FIFO output queue, or output path that bypasses the NEKO Live main chain. The bounded `live_support_events` pending scheduler is a local exception for verified support events only; it remains upstream of Pipeline and never interrupts active output.
+- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, FIFO output queue, or output path that bypasses the NEKO Live main chain.
 
 ## Reference Principles
 
@@ -30,7 +29,7 @@ Core rule: 每次猫猫只该说一句；这句话为什么是它，系统必须
 
 Phase 2B uses three reference principles:
 
-- No general FIFO output queue: ordinary live events remain real-time input and must not become a stale replay list. Verified Gift / SC / Guard events use a separate bounded, priority-ordered pending scheduler so paid milestones are not lost behind lower-value support packets.
+- No FIFO queue: live events are strong real-time input. NEKO Live should not make the cat repeat stale messages from an output queue. Within a selection window, the runtime should keep or select the single event most worth speaking about.
 - High-value events may rank higher: SC, Guard, and important gift events may receive higher selection priority than ordinary danmaku. High priority must not bypass Safety Guard, directly call Dispatcher, skip cooldown policy, or ignore `dry_run`.
 - `dry_run` must explain the complete chain: even without real output, runtime observability must record whether the event was received, entered Selection, who won, who lost, why candidates lost, whether Pipeline started, whether Safety Guard passed, and whether Dispatcher ended as `dry_run`, `pushed`, or `failed`.
 
@@ -38,9 +37,9 @@ NEKO Live may also borrow the health rows observation model from the Warthunder 
 
 ## Implementation Checkpoint
 
-Updated: 2026-07-16
+Updated: 2026-07-07
 
-Phase 2C has reached a stable backend-observability checkpoint. The implementation below is complete enough for offline review; packaged UI and real-stream evidence remain part of the deferred release validation rather than unfinished observability architecture:
+Phase 2C is intentionally paused at a stable backend-observability checkpoint:
 
 - Completed: Dispatcher Outcome standardization distinguishes `dispatcher.dry_run`, `dispatcher.pushed`, `dispatcher.failed`, and `dispatcher.skipped`.
 - Completed: Selection Decision Chain records the selected candidate and privacy-safe dropped candidates with skip reasons.
@@ -50,7 +49,6 @@ Phase 2C has reached a stable backend-observability checkpoint. The implementati
 - Completed: Dashboard renders the latest event chain and runtime timeline using the read-only `live_explain` projection.
 - Completed: Monitor snapshot emission exposes `latest_trace_id` and compact timeline stage/status/route/reason fields from the same read-only projection.
 - Completed: Gift / SC / Guard support events route through `live_support_events`, preserving Pipeline -> Safety Guard -> Dispatcher and privacy-safe support metadata projection.
-- Completed: Bilibili Gift / SC / Guard events receive a privacy-safe `trace_id` at `ingest`, retain it across `event_bus` and `live_support_events`, and expose only bounded listener health facts (`reconnect_count`, `last_packet_at`, terminal outcome) rather than raw packets or viewer text.
 - Completed: Plugin-owned output policy metadata is emitted with live requests so hosted UI and Monitor can review route, trace, length mode, and response-shape intent without requiring host/core final-output hooks.
 - Completed: Plugin-owned prompt material metadata now includes optional meme hints from `data/meme_knowledge.json` and idle host beat material from `data/idle_hosting_beats.json`; Dashboard and Monitor may use fields such as `meme_hint_ids`, `meme_hint_tags`, and `host_beat_*` only as review clues.
 
@@ -144,7 +142,6 @@ Rules:
 Initial skip reasons:
 
 - `input.uid_required`
-- `ingest.duplicate_support_event`
 - `permission.developer_tools_disabled`
 - `runtime.disconnected`
 - `safety.paused`
@@ -187,9 +184,7 @@ High-value Event Priority Contract defines how SC, Guard, and important gift eve
 Contract:
 
 - High-value events may receive higher ranking weight than ordinary danmaku.
-- Inside `live_support_events`, priority also orders pending verified support events: milestone, high, medium, then light; equal priorities keep submission order.
-- Priority never cancels the support reply currently in Pipeline or TTS.
-- Provider event ID dedupe, one-second combo finalization, bounded backpressure, and session reset happen before the normal Pipeline call.
+- Higher priority only affects Selection ranking unless a future design explicitly updates this document.
 - Higher priority does not bypass Safety Guard, cooldown policy, `dry_run`, Dispatcher, or privacy rules.
 - Higher priority does not create critical hard preemption.
 - Higher priority must still produce explainable winner and loser records through the Selection Decision Chain.
@@ -283,8 +278,6 @@ Dashboard must not show raw payloads, cookies, tokens, avatar bytes, base64 imag
 
 Provider ingest modules such as `bili_live_ingest` and `douyin_live_ingest` receive provider live data and normalize it into `LiveEvent`. Every provider projects the same lifecycle outcomes below, and this stage should explain whether its listener is started, stopped, errored, or receiving events.
 
-For Bilibili support events, `LiveEvent.type` is the authoritative route classification. The rich `raw` object may enrich public support fields, but a missing inner type must not erase an outer `gift`, `super_chat`, or `guard` classification. Duplicate rich/lightweight callbacks use `ingest.duplicate_support_event`; the timeline keeps the shared opaque `trace_id` and never stores the raw packet, nickname, or original message.
-
 Expected outcomes: `received`, `published`, `failed`, `degraded`.
 
 ### EventBus
@@ -329,7 +322,7 @@ Expected outcomes: `pushed`, `dry_run`, `skipped`, `failed`, `degraded`.
 
 ### Runtime
 
-`core/runtime.py` owns lifecycle, hosted-ui context, and public runtime API compatibility. It keeps those APIs stable, but delegates mutable runtime cache initialization to `core/runtime_state.py`, real module instantiation / registration plus import-failure `ReservedModule` fallback / pipeline assembly to `core/runtime_modules.py`, and legacy runtime action/helper compatibility to focused `core/runtime_*_api.py` mixins. The implementation owners remain `core/runtime_bili_auth.py`, `core/runtime_config.py`, `core/runtime_live_controls.py`, `core/runtime_instructions.py`, `core/runtime_live_input.py`, `core/runtime_developer_tools.py`, `core/runtime_dashboard.py`, `core/live_hosting_director.py`, and `core/runtime_active_engagement.py`.
+`core/runtime.py` owns lifecycle, hosted-ui context, and public runtime API compatibility. It keeps those APIs stable, but delegates mutable runtime cache initialization to `core/runtime_state.py`, module instantiation / ReservedModule registration / pipeline assembly to `core/runtime_modules.py`, and legacy runtime action/helper compatibility to focused `core/runtime_*_api.py` mixins. The implementation owners remain `core/runtime_bili_auth.py`, `core/runtime_config.py`, `core/runtime_live_controls.py`, `core/runtime_instructions.py`, `core/runtime_live_input.py`, `core/runtime_developer_tools.py`, `core/runtime_dashboard.py`, `core/live_hosting_director.py`, and `core/runtime_active_engagement.py`.
 
 Expected outcomes: `received`, `skipped`, `failed`, `degraded`.
 

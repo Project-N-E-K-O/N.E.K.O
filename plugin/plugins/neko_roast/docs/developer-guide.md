@@ -1,22 +1,22 @@
-# NEKO Live 开发者指南（neko_live）
+# NEKO Live 开发者指南（neko_roast）
 
-> 面向**接手 / 参与 `neko_live`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
+> 面向**接手 / 参与 `neko_roast`（NEKO Live）开发**的人。这是 onboarding 入口：先读这份建立心智模型，
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-07-17 · 当前测试基线 1368 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
+> 更新日期：2026-07-14 · 当前测试基线 1268 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
 
 ---
 
 ## 1. 这是什么
 
-`neko_live`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
+`neko_roast`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
 全生命周期接进猫娘——开播 → 直播间互动（弹幕 / 进场 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化。
 
 「首评新观众锐评」（观众首条弹幕 → 猫按人设锐评其昵称 + 头像）只是**第一个落地的垂直切片**。
-所有未来能力以 neko_live 的**内部模块**形式集成，不做跨插件宿主。
+所有未来能力以 neko_roast 的**内部模块**形式集成，不做跨插件宿主。
 
-**当前状态**：核心闭环（真实直播监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard）已真机验证并进入主线；P5 登录态、Phase 1 文档治理、Phase 2A Review Gate 与主播面板重构已落地。当前普通面板为“控制台 / 直播间互动 / 观众 / 设置”四区，开发者工具按模式条件显示。
+**当前状态**：核心闭环（真实直播监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard）已真机验证并进入主线；P5 登录态、Phase 1 文档治理、Phase 2A Review Gate 已落地。
 
 ## 2. 五分钟心智模型
 
@@ -42,22 +42,20 @@
 ## 4. 目录结构速览
 
 ```text
-neko_live/
-├─ __init__.py            插件入口（NekoLivePlugin）+ @ui.action / @plugin_entry 动作
+neko_roast/
+├─ __init__.py            插件入口（NekoRoastPlugin）+ @ui.action / @plugin_entry 动作
 ├─ core/                  骨架：pipeline / safety_guard / runtime / contracts / event_bus /
 │                         module_registry / permission_gate / instructions，以及 NEKO Live
 │                         的 live_reply_policy / recent_context / live_status /
 │                         active_topic_selector / live_hosting_director
-├─ modules/               真实能力模块（InteractionModule）：直播 ingest / identity /
-│                         互动、主持、观众会话、开发者沙盒等；不预建空模块
+├─ modules/               能力模块（InteractionModule）：bili_live_ingest / bili_identity /
+│                         douyin_live_ingest / douyin_identity / developer_sandbox + 预留模块
 ├─ adapters/              neko_dispatcher（唯一输出）/ bili_auth_service（扫码登录）
 ├─ stores/                viewer_store / audit_store / avatar_cache / credential_store
 ├─ ui/panel_compat.tsx    Hosted UI manifest 入口（完整功能单文件，兼容主分支插件中心）
 ├─ ui/panel.tsx           Hosted UI 模块化源码入口（改了需同步生成完整 panel_compat.tsx）
-├─ ui/panel_components.tsx / panel_data_sections.tsx
-│                         通用展示组件、观众与诊断数据区块
-├─ ui/panel_state.ts / panel_helpers.ts
-│                         状态契约与标签/格式化 helper
+├─ ui/panel_components.tsx / panel_state.ts / panel_helpers.ts
+│                         面板展示组件、状态契约与标签/格式化 helper
 ├─ i18n/*.json            8 个 locale（新增文案必须同步全部 8 个）
 ├─ tests/                 插件自带单测
 └─ docs/                  本目录（见文档地图）
@@ -66,13 +64,13 @@ neko_live/
 ## 5. 开发环境 & 运行态
 
 - **后端** `http://127.0.0.1:48916`（主服务 48911）；**前端** 在 `NEKO-PC/` 下 `npm start`。
-- 插件 `auto_start=false`：后端起来后必须 `POST /plugin/neko_live/start` 才注册 hosted-ui 路由（否则 404）。
+- 插件 `auto_start=false`：后端起来后必须 `POST /plugin/neko_roast/start` 才注册 hosted-ui 路由（否则 404）。
 - **改 `.py` 后**：`POST .../stop` 再 `.../start` 重载子进程即可；**但新增 `@ui.action`/`@plugin_entry`
   动作要全量重启后端**（surface 暴露校验在主进程，`/start` 不刷新，见 devlog）。
 - **改 `ui/*.tsx` / `ui/*.ts` / `i18n`**：**不用 rebuild 前端**（plugin-manager 用 sucrase 运行时转译），UI 里重开面板即生效。
 - **动作调用**：`POST .../hosted-ui/action/<id>`，body `{"args":{...},"kind":"panel","surface_id":"main"}`。
-- **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_live/config/hot-update`，
-  body `{"config":{"neko_live":{...}},"mode":"temporary"}`（内存热更、不落盘）。
+- **配置改不动时**（写竞争）：走 host 直写 `POST /plugin/neko_roast/config/hot-update`，
+  body `{"config":{"neko_roast":{...}},"mode":"temporary"}`（内存热更、不落盘）。
 - ⚠️ 产品配置中 `dry_run` 默认关闭，连接真房间后猫会**真开口**。开发者、试播人员或压力测试脚本需要无声验链时，必须先主动切到 `dry_run=true`；测试房 `81004`。压力工具仍坚持自身默认 dry-run，不能据此推断产品开关默认值。
 
 ## 6. 核心契约：加一个事件 handler（最常见的扩展）
@@ -119,9 +117,9 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 
 ## 9. UI 约定
 
-- Hosted UI 在 `ui/panel.tsx`，普通模式固定为 **四个一级页**（控制台 / 直播间互动 / 观众 / 设置），开发者模式开启后条件追加“开发者工具”；未完成的私信与自动化不占用一级导航。id / 顺序由契约测试锁定。
-- 控制台是主播唯一必须使用的直播操作面：账号与平台、直播间二次确认、状态、节奏设置和底部“开始 / 结束直播”都在这里完成。普通设置与运行诊断不得重新塞回控制台。
-- 功能卡由模块 `config_schema()` **声明式驱动**（boolean→Toggle / select→pill / text|string→Input），改即存；没有真实消费者的数值字段与条件显示不属于当前契约。
+- Hosted UI 在 `ui/panel.tsx`，**六个一级页**（控制台 / 直播间互动 / 观众 / 私信 / 自动化 / ⚙设置
+  + 开发者沙盒按 dev 模式条件追加），id / 顺序由契约测试锁定。
+- 功能卡由模块 `config_schema()` **声明式驱动**（boolean→Toggle / select→pill / 其余→Input），改即存。
 - 宿主 runtime 约束（写 UI 前必读）：`data:` URL 会被剥（用 CSS `background-image` 绕）、**SVG 渲不了**、
   无 `useRef`。详见 `ui-architecture.md` §6。
 - manifest 使用 `ui/panel_compat.tsx`，它必须从模块化源码生成并保留完整面板能力；不要用最小 fallback 壳替代。兼容入口允许 `@neko/plugin-ui` import / hooks，但不得有相对 import、`window.NekoUiKit` 或 `__modules`。
@@ -132,8 +130,8 @@ LIVE + 多模块 + 多人写 ⇒ **任何单个模块失败都不能搞砸直播
 权威测试门禁见 `development.md`「测试门禁」和 `AGENTS.md`「Required Checks」。仓库根 `N.E.K.O/` 下的常用命令是：
 
 ```powershell
-uv run pytest plugin/plugins/neko_live/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+uv run pytest plugin/plugins/neko_roast/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
 ```
 
 文档-only PR 可以在 PR 描述中说明未运行代码测试；任何触碰 Python、UI、i18n、契约、配置 schema、manifest 或 runtime 行为的 PR 必须按门禁执行。改了 `panel.tsx` 还要同步完整 `panel_compat.tsx`，并确认 sucrase 转译通过（前端 plugin-manager 用生产同款选项 `transforms:['typescript','jsx']`, `jsxPragma:'h'`, `production`）。当前基线以 `development.md` 为准。
@@ -145,7 +143,7 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 - 四条不变量 + 凭据红线（见 §3）。
 - 新能力加成模块，不要在 `__init__.py` 堆大块内联；事件 handler 走 `subscribe` + pipeline，不碰 `push_message`。
 - 不整体拷贝旧插件 `bilibili_danmaku` / `bilibili_dm` 大文件；复用只拆小模块 + 补测试。
-- **勿与 neko_live 同直播间双连**旧插件。
+- **勿与 neko_roast 同直播间双连**旧插件。
 - `developer_tools_enabled` 是开发者模式唯一总控；权限以后端检查为准，不只靠前端禁用。
 - 涉及内存 / CPU / token / 依赖 / IO / 核心逻辑复杂度的改动，先按 `development.md`「成本类改动先讨论」列 Decision Points，拍板后再实现。
 - **没有对应文档的新功能视为未完成**（见 `development.md`「文档更新要求」）。
@@ -156,7 +154,6 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 | 文档 | 是什么 | 何时读 |
 |---|---|---|
 | **developer-guide.md**（本文）| 上手向导 | 第一份，建立心智模型 |
-| `contributing.md` | 一页式贡献流程 | 准备认领任务、开分支或提交 PR 时 |
 | `docs/README.md` | 文档职责矩阵 / Canonical Source | 不确定该改哪份文档时 |
 | `development.md` | 开发规范、架构契约、协作规范、测试门禁 | 实现某功能前查对应章节 |
 | `live-center-roadmap.md` | 阶段目标、完成状态、下一阶段顺序 | 想知道做到哪、接下来做什么 |
@@ -167,8 +164,8 @@ uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 
 ## 13. 已知坑 & 宿主侧待办（提前知道少踩）
 
-- **配置写竞争**：host/core 修复 `Fix plugin host config and data root handling (#1884)` 已由提交 `08b317f6` 落地；插件侧仍保留“内存先行 + 带预算持久化”的免疫策略，避免未来 host 持久化异常拖垮直播 action。详见 `development.md`「配置持久化与写竞争」。
-- **存储宿主历史 bug**：`PluginStore.store.enabled` 构造期冻结、插件数据不跟随 selected_root 已由 #1884 修复；观众档案仍走本地 JSON。插件侧默认目录、自定义目录写失败回退、实际路径状态和失败临时文件清理已完成回归；当前 UI 按产品范围继续不暴露 `viewer_store_dir` 自定义入口。详见 `devlog.md`。
+- **配置写竞争**：host/core 修复 `Fix plugin host config and data root handling (#1884)` 已进入当前 `Roast` 分支；插件侧仍保留“内存先行 + 带预算持久化”的免疫策略，避免未来 host 持久化异常拖垮直播 action。详见 `development.md`「配置持久化与写竞争」。
+- **存储宿主历史 bug**：`PluginStore.store.enabled` 构造期冻结、插件数据不跟随 selected_root 已由 #1884 修复；观众档案仍走本地 JSON，当前 UI 暂不恢复 `viewer_store_dir` 自定义入口，待插件侧回归后再启用。详见 `devlog.md`。
 - **hosted-ui 渲染**：`data:` URL 被剥、SVG 渲不了（见 §9 / `ui-architecture.md` §6）。
 - **新增 action 要全量重启后端**才暴露（见 §5）。
 - **lookup -352 风控**：查询失败 ≠ 监听失败；登录态可根治。详见 `development.md`「直播间查询与 -352 风控」。

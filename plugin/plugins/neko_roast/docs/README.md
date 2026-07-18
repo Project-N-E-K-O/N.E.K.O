@@ -1,6 +1,6 @@
 # NEKO Live 文档
 
-本文是 `neko_live` 文档地图和维护路由。它只说明“去哪份文档找权威信息”，不复制架构规范、运行步骤或路线图细节。
+本文是 `neko_roast` 文档地图和维护路由。它只说明“去哪份文档找权威信息”，不复制架构规范、运行步骤或路线图细节。
 
 ## 使用文档
 
@@ -13,13 +13,9 @@
 - [开发者指南（从这里开始）](developer-guide.md)：新开发者入口。负责心智模型、最短阅读路径、第一周建议和常见入口导航。
 - [开发文档](development.md)：长期开发规范和架构契约的权威来源。负责模块边界、pipeline、数据边界、测试门禁、协作规范和文档更新要求。
 - [Independent Mode Product Plan](independent-mode-product-plan.md)：Independent Mode 的产品路线权威来源。负责产品命题、当前阶段开发分工、Slice 顺序、MVP、非目标和内测节奏。
-- [贡献指南](contributing.md)：给第一次参与 NEKO Live 开发者的一页式入口。负责分支 / PR 起步、低风险任务、高风险 review gate 和提交前检查的短路径；完整规则仍链接到 `development.md` 与 `AGENTS.md`。
 - [Runtime Observability](runtime-observability.md)：运行态观测语言的权威来源。负责 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 和 Dashboard Visibility。
 - [开发总结与路线图](live-center-roadmap.md)：阶段目标、已完成进度和下一阶段路线。只记录“做到哪、接下来做什么”，不维护详细架构规范或运行 runbook。
-- [旧 `bilibili_danmaku` 能力迁移矩阵](bilibili-danmaku-migration-matrix.md)：逐项记录旧插件 47 个公开入口和内部能力的替代、吸收、独立插件或废弃决策；旧插件退役前必须以此关闭前置项。
 - [UI 与模块贡献架构基线](ui-architecture.md)：面板 UI、模块贡献模型、`config_schema`、Hosted UI 约束和渐进组件化规则。
-- [2026-07-13 UI / UX 研究记录](ui-ux-research-2026-07-13.md)：重构前问题证据、外部案例和重构后的落实状态；只作为研究记录，当前 UI 规范仍以 `ui-architecture.md` 为准。
-- [2026-07-13 UI 设计验收记录](ui-design-qa-2026-07-13.md)：主播控制台重构的历史截图验收结论；只作为验收证据，不覆盖当前 UI 规范或后续实现状态。
 - [开发日志](devlog.md)：宿主 / SDK 侧历史问题、跨层事故、迁移原因和兼容取舍。
 - [Pipeline Split](pipeline-split.md)：已完成的 pipeline 兼容拆分说明；记录 facade 与 helper 模块之间必须持续保持的契约。
 - [输出契约与弹幕回复模块](modules/output_contract.md)：普通弹幕分类、提示词、回复质量、长度整形和 dispatcher 输出边界。
@@ -50,7 +46,6 @@
 | 2026-07-07 历史交接状态 | `handoff-2026-07-07.md` | 仅作历史快照；当前状态以对应权威文档和代码为准 |
 | Independent Mode 产品路线、当前阶段开发分工、MVP、内测节奏 | `independent-mode-product-plan.md` | roadmap 只保留阶段指针 |
 | 新开发者阅读路径 | `developer-guide.md` | 不在 roadmap 中重复 onboarding |
-| 新贡献者分支 / PR 起步、任务选择和交付检查 | `contributing.md` | 完整协作规则仍以 `development.md` / `AGENTS.md` 为准 |
 | 架构边界、模块边界、数据边界 | `development.md` | roadmap / guide 只写摘要并链接 |
 | 运行态观测语言、Skip Reason、Monitor Signal | `runtime-observability.md` | development / AGENTS 只写入口和必查项 |
 | 协作规范、PR 规则、测试门禁、文档要求 | `development.md` | `AGENTS.md` 保留可执行硬规则摘要 |
@@ -62,12 +57,11 @@
 ## 文档更新路由
 
 - 改用户流程、按钮、操作顺序：更新 `quickstart.md`。
-- 改猫猫独播试播步骤、dry_run 使用和可执行 runbook：更新 `solo-stream-test-guide.md`；改 30 分钟发布验收的产品判定标准：更新 `independent-mode-product-plan.md`。
+- 改猫猫独播试播步骤、dry_run 使用、30 分钟验收流程：更新 `solo-stream-test-guide.md`。
 - 改 Independent Mode 产品路线、当前阶段开发分工、MVP、非目标或内测节奏：更新 `independent-mode-product-plan.md`。
 - 改模块边界、pipeline、数据边界、协作规范、测试门禁：更新 `development.md`。
 - 改 Runtime Timeline、Stage、Event Outcome、Skip Reason、Monitor Signal 或 Dashboard Visibility：更新 `runtime-observability.md`。
 - 改新开发者入口或第一周路径：更新 `developer-guide.md`。
-- 改新贡献者的分支 / PR 起步、任务选择或交付检查短路径：更新 `contributing.md`；规则本身仍更新 `development.md` / `AGENTS.md`。
 - 改阶段目标、完成状态、下一阶段顺序：更新 `live-center-roadmap.md`。
 - 改面板结构、模块 UI 贡献模型、Hosted UI 约束或 `panel_compat.tsx` 兼容入口策略：更新 `ui-architecture.md`。
 - 发现宿主 / SDK 侧历史问题或跨层取舍：更新 `devlog.md`。
