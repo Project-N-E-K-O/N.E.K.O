@@ -42,6 +42,7 @@ from plugin.server.application.plugin_cli import PluginCliService
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugins.upgrade_support import (
     backup_path_for,
+    merge_directory_contents,
     plugin_is_running,
     remove_directory,
     restore_directory,
@@ -1828,6 +1829,9 @@ async def _do_upgrade(
 
         rollback_steps.append(_make_remove_dir_step(plugin_dir))
         rollback_steps.append(_make_remove_dir_step(profile_dir))
+
+        if profile_backup_dir.exists():
+            await merge_directory_contents(profile_backup_dir, profile_dir)
 
         # Step 7: lifecycle start.
         if was_running:

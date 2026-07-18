@@ -254,6 +254,7 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
     profile_dir = profiles_root / "demo-package"
     profile_dir.mkdir(parents=True)
     (profile_dir / "default.toml").write_text("old_profile = true\n", encoding="utf-8")
+    (profile_dir / "custom.toml").write_text("custom = true\n", encoding="utf-8")
 
     import plugin.settings as plugin_settings
 
@@ -278,4 +279,5 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
 
     assert result["operation"] == "upgrade"
     assert 'version = "2.0.0"' in (plugins_root / "demo" / "plugin.toml").read_text(encoding="utf-8")
-    assert "old_profile = true" not in (profile_dir / "default.toml").read_text(encoding="utf-8")
+    assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "old_profile = true\n"
+    assert (profile_dir / "custom.toml").read_text(encoding="utf-8") == "custom = true\n"

@@ -96,6 +96,15 @@ async def remove_directory(target_dir: Path) -> None:
     await asyncio.to_thread(shutil.rmtree, target_dir)
 
 
+async def merge_directory_contents(source_dir: Path, target_dir: Path) -> None:
+    if not source_dir.exists():
+        return
+    if not source_dir.is_dir():
+        raise NotADirectoryError(source_dir)
+    await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(shutil.copytree, source_dir, target_dir, dirs_exist_ok=True)
+
+
 async def run_rollback(
     *,
     plugin_id: str,
@@ -160,6 +169,7 @@ async def perform_safe_upgrade(
     start: Callable[[str], Awaitable[None]],
     cleanup_backup: Callable[[Path], Awaitable[None]],
     additional_targets: tuple[Path, ...] = (),
+    preserve_targets: tuple[Path, ...] = (),
 ) -> SafeUpgradeResult:
     if getattr(plan, "action", "") != "upgrade":
         raise ValueError("safe upgrade requires an upgrade install plan")
@@ -174,6 +184,8 @@ async def perform_safe_upgrade(
         await stop(plugin_id)
 
     targets = (target_dir, *additional_targets)
+    if any(target not in targets for target in preserve_targets):
+        raise ValueError("preserve targets must also be upgrade targets")
     backups: dict[Path, Path] = {}
     backup_dir = backup_path_for(target_dir)
     try:
@@ -208,6 +220,11 @@ async def perform_safe_upgrade(
         install_result = await install_new()
         stage = "validate"
         await validate_new()
+        stage = "preserve"
+        for target in preserve_targets:
+            backup = backups.get(target)
+            if backup is not None:
+                await merge_directory_contents(backup, target)
         if was_running:
             stage = "restart"
             await start(plugin_id)

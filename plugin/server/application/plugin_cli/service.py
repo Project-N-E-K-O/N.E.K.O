@@ -238,6 +238,7 @@ class PluginCliService:
                 start=start,
                 cleanup_backup=upgrade_support.remove_directory,
                 additional_targets=(profile_dir,),
+                preserve_targets=(profile_dir,),
             )
         except upgrade_support.SafeUpgradeError as exc:
             raise ServerDomainError(
