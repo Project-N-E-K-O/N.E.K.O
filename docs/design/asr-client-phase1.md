@@ -63,7 +63,7 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 - 生产 ASR 跟随 `core_type` 路由；一个 Session 只使用一个 worker，不跨供应商 fallback。
 - 公共断句语义只有 `manual` 与 `provider`。`manual` 下 `signal_user_activity_end()` 发送 `commit`；`provider` 下不发送 `commit`，只刷新本地 48 kHz 流式重采样器尾部，最终断句由供应商决定。`server_vad`、`endpointing` 等厂商字段只存在于 worker 内部。
-- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`openai`、`step`、`glm`、`gemini` 使用 `manual`，`grok` 使用 `provider`。小游戏不需要按厂商选择模式。
+- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`step`、`grok` 使用 `provider`；`glm`、`gemini` 使用 `manual` 并由 Smart Turn 切分。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。当前 OpenAI `gpt-realtime-whisper` 只支持手动 commit、没有 Provider turn detection，因此生产路由保持 blocked，不能用 Smart Turn 伪装成流式 Provider 断句。
 - `endpointing_mode` 在 Session 创建时冻结，不能通过 `update_session()` 动态切换。
 - 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 16 kHz；一个 Session 首包锁定输入采样率。
 - 空音频块是 no-op；非空音频必须为偶数字节，单块最多一秒。
@@ -79,4 +79,4 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 
-Phase 3 已接入独立 ASR 云服务，以及用于 GLM/Gemini 分段 ASR 的 Smart Turn 与 VAD；仍不包含 RNNoise、声纹、全局节流，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。
+Phase 3 已接入独立 ASR 云服务，以及用于 GLM/Gemini 分段 ASR 的 Smart Turn；Silero/RNNoise 概率只负责无人说话时的本地节流和智能启停，不取得流式 ASR 的逻辑断句权。声纹和跨会话全局节流仍不在本阶段，且 ASR Session 本身不持有 LLM 回复、TTS、工具调用或产品路由。后续真实服务继续通过新增 worker 实现相同的 request/response 合同，不改变上述公共调用方式。

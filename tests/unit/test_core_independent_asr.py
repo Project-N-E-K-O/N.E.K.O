@@ -263,9 +263,9 @@ async def test_async_detector_orders_pre_roll_before_smart_turn_seal() -> None:
 
 @pytest.mark.parametrize(
     "provider",
-    ["qwen", "openai", "step", "grok", "soniox", "glm", "gemini"],
+    ["dummy", "glm", "gemini"],
 )
-async def test_smart_turn_unavailable_blocks_every_provider_before_wire_audio(
+async def test_smart_turn_unavailable_blocks_segmented_provider_before_wire_audio(
     provider: str,
 ) -> None:
     runtime = _Runtime()
@@ -279,7 +279,7 @@ async def test_smart_turn_unavailable_blocks_every_provider_before_wire_audio(
     runtime._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy(
             provider,
-            "provider" if provider in {"grok", "soniox"} else "manual",
+            "manual",
         ),
         shadow_mode=False,
     )
@@ -293,6 +293,39 @@ async def test_smart_turn_unavailable_blocks_every_provider_before_wire_audio(
 
     asr.stream_audio.assert_not_awaited()
     assert runtime._asr_route_mode == "blocked"
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+@pytest.mark.parametrize("provider", ["qwen", "grok", "soniox"])
+async def test_provider_endpoint_does_not_wait_for_smart_turn(
+    provider: str,
+) -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    asr.close = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = provider
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy(provider, "provider"),
+        shadow_mode=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_detector = _FailedSmartTurnDetector(
+        DetectorFeedResult((SpeechActivityEvent.SPEECH_STARTED,), True)
+    )
+    pcm16 = b"\x01\x00" * 160
+
+    assert await runtime._route_microphone_audio(
+        pcm16,
+        sample_rate_hz=16_000,
+    )
+    await runtime._asr_audio_dispatcher.wait_idle()
+
+    asr.stream_audio.assert_awaited_once_with(pcm16, sample_rate_hz=16_000)
+    assert runtime._asr_route_mode == "independent"
     assert runtime._omni_mic_audio_bytes == 0
 
 

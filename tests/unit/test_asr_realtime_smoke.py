@@ -87,7 +87,7 @@ def test_smart_turn_auto_cli_accepts_expected_final_count(monkeypatch) -> None:
         "argv",
         [
             "asr_realtime_smoke.py",
-            "openai",
+            "gemini",
             "turn.wav",
             "--smart-turn-auto",
             "--smart-turn-silence-ms",
