@@ -2141,7 +2141,7 @@ function showVoicePreviewErrorNotice(message) {
     function cleanup() {
         if (cleaned) return;
         cleaned = true;
-        document.removeEventListener('keydown', onKeydown);
+        document.removeEventListener('keydown', onKeydown, true);
         if (backdrop.parentNode) {
             backdrop.parentNode.removeChild(backdrop);
         }
@@ -2163,8 +2163,15 @@ function showVoicePreviewErrorNotice(message) {
     }
 
     function onKeydown(event) {
+        if (event.key === 'Tab') {
+            event.preventDefault();
+            event.stopPropagation();
+            okButton.focus();
+            return;
+        }
         if (event.key === 'Escape' || event.key === 'Enter') {
             event.preventDefault();
+            event.stopPropagation();
             close();
         }
     }
@@ -2173,7 +2180,7 @@ function showVoicePreviewErrorNotice(message) {
     backdrop.addEventListener('click', event => {
         if (event.target === backdrop) close();
     });
-    document.addEventListener('keydown', onKeydown);
+    document.addEventListener('keydown', onKeydown, true);
     document.body.appendChild(backdrop);
     activeVoicePreviewNotice = { backdrop, dispose };
     window.setTimeout(() => okButton.focus(), 0);

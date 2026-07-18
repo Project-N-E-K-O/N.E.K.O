@@ -213,16 +213,22 @@ def test_voice_preview_error_uses_styled_notice(mock_page: Page, running_server:
         mock_page.goto(f"{running_server}/voice_clone")
         item = mock_page.locator('.voice-list-item[data-voice-id="preview-error-test"]')
         expect(item).to_be_visible()
-        item.locator(".voice-preview-btn").click()
+        preview_button = item.locator(".voice-preview-btn")
+        preview_button.click()
 
         notice = mock_page.locator(".voice-preview-notice-backdrop")
         expect(notice).to_be_visible(timeout=20000)
         expect(mock_page.locator(".voice-preview-notice-title")).to_have_text("预览")
         expect(mock_page.locator(".voice-preview-notice-message")).to_contain_text("preview backend unavailable")
-        expect(mock_page.locator(".voice-preview-notice-ok")).to_be_focused()
+        ok_button = mock_page.locator(".voice-preview-notice-ok")
+        expect(ok_button).to_be_focused()
         assert native_dialogs == []
 
-        mock_page.locator(".voice-preview-notice-ok").click()
+        mock_page.keyboard.press("Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Shift+Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Escape")
         expect(notice).to_have_count(0)
     finally:
         mock_page.unroute("**/api/config/steam_language")
