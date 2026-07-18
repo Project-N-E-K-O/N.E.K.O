@@ -14,7 +14,7 @@ VoiceInputConsumerOwner: TypeAlias = Literal["game"]
 
 @dataclass(frozen=True, slots=True)
 class VoiceTranscriptEvent:
-    """One SmartTurn-authorized logical transcript for an external consumer."""
+    """One route-authorized logical transcript for an external consumer."""
 
     turn_token: VoiceTurnToken
     provider: str

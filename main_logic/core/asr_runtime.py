@@ -286,9 +286,23 @@ class AsrRuntimeMixin:
             and self._asr_session is session_ref
             and self._ingress_token_matches(turn_token.ingress)
             and lifecycle.snapshot.turn_id == turn_token.turn_id
-            and detector.endpointing_ready(turn_token)
+            and self._asr_endpointing_ready(lifecycle, detector, turn_token)
             and self._voice_input_accepts_pcm()
         )
+
+    def _asr_endpointing_ready(
+        self,
+        lifecycle: VoiceInputLifecycleController,
+        detector: DetectorRuntime | None,
+        turn_token: VoiceTurnToken,
+    ) -> bool:
+        """Accept provider authority without manufacturing a SmartTurn lease."""
+
+        if detector is None:
+            return False
+        if lifecycle.provider_policy.endpoint_authority == "provider":
+            return True
+        return detector.endpointing_ready(turn_token)
 
     async def _record_asr_dispatcher_wire_audio(
         self,
@@ -455,7 +469,7 @@ class AsrRuntimeMixin:
             session_ref is None
             or detector is None
             or not getattr(session_ref, "is_ready", True)
-            or not detector.endpointing_ready(turn_token)
+            or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
         ):
             return False
         if self._asr_audio_dispatcher.active_turn == turn_token:
@@ -479,6 +493,8 @@ class AsrRuntimeMixin:
     ) -> bool:
         if epoch != self._asr_session_epoch or self._asr_lifecycle is not lifecycle:
             return False
+        if lifecycle.provider_policy.endpoint_authority == "provider":
+            return True
         turn_token = self._capture_turn_token(lifecycle)
         detector = self._asr_detector
         if detector is None:
@@ -934,7 +950,14 @@ class AsrRuntimeMixin:
 
             if lifecycle is not None and detector is not None:
                 submit_audio = getattr(detector, "submit_audio", None)
-                if callable(submit_audio) and ingress_token is not None:
+                uses_smart_turn = (
+                    lifecycle.provider_policy.endpoint_authority == "smart_turn"
+                )
+                if (
+                    uses_smart_turn
+                    and callable(submit_audio)
+                    and ingress_token is not None
+                ):
                     detector_submit_started_at = time.perf_counter()
                     submitted = await submit_audio(
                         pcm16,
@@ -1073,7 +1096,7 @@ class AsrRuntimeMixin:
             turn_token = self._capture_turn_token(lifecycle)
             if (
                 lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
-                or not detector.endpointing_ready(turn_token)
+                or not self._asr_endpointing_ready(lifecycle, detector, turn_token)
             ):
                 await self._handle_independent_asr_error(
                     self._asr_session_epoch,
@@ -1207,7 +1230,11 @@ class AsrRuntimeMixin:
                         turn_token = self._capture_turn_token(lifecycle)
                         if (
                             detector is None
-                            or not detector.endpointing_ready(turn_token)
+                            or not self._asr_endpointing_ready(
+                                lifecycle,
+                                detector,
+                                turn_token,
+                            )
                         ):
                             await self._handle_independent_asr_error(
                                 self._asr_session_epoch,
@@ -1799,7 +1826,7 @@ class AsrRuntimeMixin:
         if lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE:
             turn_token = self._capture_turn_token(lifecycle)
             detector = self._asr_detector
-            if detector is None or not detector.endpointing_ready(turn_token):
+            if not self._asr_endpointing_ready(lifecycle, detector, turn_token):
                 await self._handle_independent_asr_error(
                     epoch,
                     self._asr_provider or "unknown",
@@ -1857,7 +1884,7 @@ class AsrRuntimeMixin:
             return
         detector = self._asr_detector
         turn_token = self._capture_turn_token(lifecycle)
-        if detector is None or not detector.endpointing_ready(turn_token):
+        if not self._asr_endpointing_ready(lifecycle, detector, turn_token):
             await self._handle_independent_asr_error(
                 epoch,
                 self._asr_provider or "unknown",

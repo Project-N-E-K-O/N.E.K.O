@@ -224,7 +224,7 @@ async def test_clear_invalidates_late_voice_turn_commit():
     await session.close()
 
 
-async def test_openai_glm_and_gemini_routes_create_smart_turn_sessions(monkeypatch):
+async def test_segmented_routes_create_smart_turn_and_openai_stays_blocked(monkeypatch):
     import utils.config_manager as config_manager
 
     class _ConfigManager:
@@ -241,13 +241,19 @@ async def test_openai_glm_and_gemini_routes_create_smart_turn_sessions(monkeypat
         "get_config_manager",
         lambda: _ConfigManager(),
     )
-    for core_type in ("openai", "glm", "gemini"):
+    for core_type in ("glm", "gemini"):
         session = create_asr_session(
             core_type,
             on_input_transcript=AsyncMock(),
             on_connection_error=AsyncMock(),
         )
         assert session._voice_turn_factory is not None
+    with pytest.raises(RuntimeError, match="ASR_BACKEND_BLOCKED: openai"):
+        create_asr_session(
+            "openai",
+            on_input_transcript=AsyncMock(),
+            on_connection_error=AsyncMock(),
+        )
 
 
 async def test_voice_turn_start_failure_fails_session_and_releases_adapter():

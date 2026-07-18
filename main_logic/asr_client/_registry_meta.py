@@ -71,11 +71,15 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
         provider_key="qwen",
         credential_field="ASSIST_API_KEY_QWEN",
         region="cn",
+        default_endpointing_mode="provider",
     ),
     "qwen_intl": AsrCoreRoute(
         provider_key="qwen",
         credential_field="ASSIST_API_KEY_QWEN_INTL",
         region="intl",
+        # The separate credential slot prevents cross-region key reuse; real
+        # Qwen Intl permission/scope acceptance is still required before release.
+        default_endpointing_mode="provider",
     ),
     "openai": AsrCoreRoute(
         provider_key="openai",
@@ -84,6 +88,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
     "step": AsrCoreRoute(
         provider_key="step",
         credential_field="ASSIST_API_KEY_STEP",
+        default_endpointing_mode="provider",
     ),
     "grok": AsrCoreRoute(
         provider_key="grok",
@@ -124,7 +129,6 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
-        requires_smart_turn=True,
     ),
     "openai": AsrProviderMeta(
         provider_key="openai",
@@ -132,8 +136,10 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=24_000,
         supported_endpointing_modes=frozenset({"manual"}),
-        implementation_status="implemented",
-        requires_smart_turn=True,
+        # gpt-realtime-whisper currently requires manual commits and does not
+        # support provider turn detection. Keep the production route blocked
+        # instead of using SmartTurn as a streaming-provider endpoint.
+        implementation_status="blocked_backend",
     ),
     "step": AsrProviderMeta(
         provider_key="step",
@@ -182,7 +188,6 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         wire_sample_rate_hz=16_000,
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
-        requires_smart_turn=True,
         replay_policy="provider_managed",
     ),
     "free": AsrProviderMeta(
