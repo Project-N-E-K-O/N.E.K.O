@@ -247,8 +247,10 @@ class _VoiceTurnAdapter:
             raise ValueError("ASR_INVALID_PCM: Voice Turn requires PCM16LE")
         if not pcm16:
             return
-        if sample_rate_hz <= 0:
-            raise ValueError("ASR_INVALID_SAMPLE_RATE")
+        if sample_rate_hz != 16_000:
+            raise ValueError(
+                "ASR_INVALID_SAMPLE_RATE: Voice Turn requires 16 kHz"
+            )
         self._ensure_running()
         samples = len(pcm16) // 2
         duration_us = (

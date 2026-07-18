@@ -101,6 +101,7 @@ class AsrRuntimeMixin:
         )
         self._asr_detector_dispatcher = AsrDetectorDispatcher(
             self._dispatch_asr_detector_event,
+            on_failure=self._handle_asr_detector_dispatcher_failure,
         )
         self._asr_audio_dispatcher = AsrAudioDispatcher(
             validator=self._asr_audio_command_is_valid,
@@ -138,6 +139,7 @@ class AsrRuntimeMixin:
         if not hasattr(self, "_asr_detector_dispatcher"):
             self._asr_detector_dispatcher = AsrDetectorDispatcher(
                 self._dispatch_asr_detector_event,
+                on_failure=self._handle_asr_detector_dispatcher_failure,
             )
         if not hasattr(self, "_asr_audio_dispatcher"):
             self._asr_audio_dispatcher = AsrAudioDispatcher(
@@ -328,6 +330,23 @@ class AsrRuntimeMixin:
             self._asr_session_epoch,
             self._asr_provider or "unknown",
             status_code=status_code,
+        )
+
+    async def _handle_asr_detector_dispatcher_failure(
+        self,
+        envelope: CoreDetectorEventEnvelope,
+        error: BaseException,
+    ) -> None:
+        logger.error(
+            "[%s] detector event dispatcher failed epoch=%s",
+            self.lanlan_name,
+            envelope.session_epoch,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        await self._handle_independent_asr_error(
+            self._asr_session_epoch,
+            self._asr_provider or "unknown",
+            status_code="ASR_ENDPOINTING_FAILED",
         )
 
     async def _dispatch_asr_detector_event(

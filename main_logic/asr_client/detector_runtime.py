@@ -408,6 +408,7 @@ class DetectorRuntime:
             self._smart_turn_token = None
             self._prepare_token = None
             self._prepare_epoch = None
+            self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
             adapter = self._semantic_adapter
             if adapter is not None:
                 adapter.unpin_smart_turn()
@@ -653,6 +654,7 @@ class DetectorRuntime:
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
+            self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
             if self._semantic_adapter is not None and self._semantic_started:
                 if self._smart_turn_token is not None:
                     self._smart_turn_token = None

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from main_logic.asr_client.detector_contracts import DetectorEvent
 
+from ._shared import logger
+
 
 @dataclass(frozen=True, slots=True)
 class CoreDetectorEventEnvelope:
@@ -22,18 +24,25 @@ class AsrDetectorDispatcher:
         self,
         handler: Callable[[CoreDetectorEventEnvelope], Awaitable[None]],
         *,
+        on_failure: Callable[
+            [CoreDetectorEventEnvelope, BaseException], Awaitable[None]
+        ],
         max_pending: int = 32,
     ) -> None:
         if max_pending <= 0:
             raise ValueError("detector event capacity must be positive")
         self._handler = handler
+        self._on_failure = on_failure
         self._queue: asyncio.Queue[tuple[int, CoreDetectorEventEnvelope]] = (
             asyncio.Queue(maxsize=max_pending)
         )
         self._generation = 0
+        self._failed = False
         self._worker: asyncio.Task[None] | None = None
 
     def submit_nowait(self, envelope: CoreDetectorEventEnvelope) -> bool:
+        if self._failed:
+            return False
         self._ensure_worker()
         try:
             self._queue.put_nowait((self._generation, envelope))
@@ -73,5 +82,16 @@ class AsrDetectorDispatcher:
             try:
                 if generation == self._generation:
                     await self._handler(envelope)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._failed = True
+                self.invalidate_all()
+                try:
+                    await self._on_failure(envelope, error)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("ASR detector fail-closed callback failed")
             finally:
                 self._queue.task_done()
