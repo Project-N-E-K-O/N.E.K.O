@@ -346,8 +346,11 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
     plugins_root = tmp_path / "plugins"
     profiles_root = tmp_path / "profiles"
     plugin_dir = plugins_root / "demo"
+    profile_dir = profiles_root / "demo"
     plugin_dir.mkdir(parents=True)
+    profile_dir.mkdir(parents=True)
     (plugin_dir / "plugin.toml").write_text("version = '1.0.0'\n", encoding="utf-8")
+    (profile_dir / "default.toml").write_text("user_value = true\n", encoding="utf-8")
     package_path = tmp_path / "demo.neko-plugin"
     package_path.write_bytes(b"package")
 
@@ -384,7 +387,9 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
 
     async def install_new(**_kwargs: Any) -> dict[str, object]:
         plugin_dir.mkdir(parents=True)
+        profile_dir.mkdir(parents=True)
         (plugin_dir / "plugin.toml").write_text("version = '2.0.0'\n", encoding="utf-8")
+        (profile_dir / "generated.toml").write_text("replacement = true\n", encoding="utf-8")
         manager.current = _entry("demo", "demo")
         manager.current.source_detail = SimpleNamespace(version="2.0.0")
         return {"operation": "upgrade"}
@@ -408,6 +413,8 @@ async def test_market_restart_failure_restores_previous_install_source_entry(
     assert manager.restore_calls == [old_entry]
     assert manager.current is old_entry
     assert (plugin_dir / "plugin.toml").read_text(encoding="utf-8") == "version = '1.0.0'\n"
+    assert (profile_dir / "default.toml").read_text(encoding="utf-8") == "user_value = true\n"
+    assert not (profile_dir / "generated.toml").exists()
 
 
 @pytest.mark.asyncio
