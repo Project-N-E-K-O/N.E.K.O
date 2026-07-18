@@ -303,6 +303,14 @@ class AsrRuntimeMixin:
         if self._asr_session is session_ref:
             self._asr_received_audio = True
             self._asr_audio_bytes += byte_count
+            lifecycle = self._asr_lifecycle
+            if lifecycle is not None:
+                lifecycle.metrics.provider_wire_sequence = (
+                    self._asr_audio_dispatcher.provider_wire_sequence
+                )
+                lifecycle.metrics.asr_audio_command_queue_ms = (
+                    self._asr_audio_dispatcher.asr_audio_command_queue_ms
+                )
 
     async def _handle_asr_audio_dispatcher_failure(
         self,
@@ -329,7 +337,7 @@ class AsrRuntimeMixin:
         event = envelope.event
         detector = self._asr_detector
         lifecycle = self._asr_lifecycle
-        if (
+        stale = bool(
             envelope.session_epoch != self._asr_session_epoch
             or detector is not envelope.detector_ref
             or lifecycle is not envelope.lifecycle_ref
@@ -337,8 +345,21 @@ class AsrRuntimeMixin:
             or lifecycle is None
             or event.ingress.detector_epoch != detector.detector_epoch
             or not self._ingress_token_matches(event.ingress.ingress_token)
-        ):
+        )
+        if stale:
+            stale_metrics = getattr(envelope.lifecycle_ref, "metrics", None)
+            if stale_metrics is not None:
+                stale_metrics.detector_stale_event_count += 1
             return
+        lifecycle.metrics.smart_turn_inference_ms = (
+            detector.smart_turn_evaluation_ms
+        )
+        lifecycle.metrics.smart_turn_stale_result_count = (
+            detector.smart_turn_stale_result_count
+        )
+        lifecycle.metrics.smart_turn_coalesced_evaluation_count = (
+            detector.smart_turn_coalesced_evaluation_count
+        )
         if isinstance(event, DetectorRuntimeEvent):
             await self._handle_independent_asr_error(
                 self._asr_session_epoch,
@@ -895,6 +916,7 @@ class AsrRuntimeMixin:
             if lifecycle is not None and detector is not None:
                 submit_audio = getattr(detector, "submit_audio", None)
                 if callable(submit_audio) and ingress_token is not None:
+                    detector_submit_started_at = time.perf_counter()
                     submitted = await submit_audio(
                         pcm16,
                         ingress_token=ingress_token,
@@ -902,9 +924,29 @@ class AsrRuntimeMixin:
                         speech_probability=speech_probability,
                         rnnoise_available=bool(rnnoise_available),
                     )
+                    lifecycle.metrics.detector_submit_latency_ms = int(
+                        (time.perf_counter() - detector_submit_started_at) * 1_000
+                    )
+                    lifecycle.metrics.detector_queue_audio_ms = (
+                        detector.queued_audio_ms
+                    )
+                    lifecycle.metrics.detector_queue_high_water_ms = max(
+                        lifecycle.metrics.detector_queue_high_water_ms,
+                        detector.queued_audio_ms,
+                    )
+                    lifecycle.metrics.smart_turn_inference_ms = (
+                        detector.smart_turn_evaluation_ms
+                    )
+                    lifecycle.metrics.smart_turn_stale_result_count = (
+                        detector.smart_turn_stale_result_count
+                    )
+                    lifecycle.metrics.smart_turn_coalesced_evaluation_count = (
+                        detector.smart_turn_coalesced_evaluation_count
+                    )
                     if not ingress_is_current():
                         return True
                     if submitted.status is DetectorSubmitStatus.BACKPRESSURE:
+                        lifecycle.metrics.detector_overflow_count += 1
                         await self._handle_audio_ingress_backpressure(ingress_token)
                         return True
                     if (
@@ -1232,6 +1274,9 @@ class AsrRuntimeMixin:
         asr_session, self._asr_session = self._asr_session, None
         lifecycle = self._asr_lifecycle
         if lifecycle is not None:
+            lifecycle.metrics.asr_abort_discarded_command_count = (
+                self._asr_audio_dispatcher.asr_abort_discarded_command_count
+            )
             lifecycle.invalidate_transport()
         if asr_session is not None:
             try:

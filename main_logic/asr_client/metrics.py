@@ -26,6 +26,17 @@ class VoiceLifecycleMetrics:
     warm_hit_count: int = 0
     smart_turn_load_ms: int = 0
     smart_turn_inference_ms: int = 0
+    detector_submit_latency_ms: int = 0
+    detector_queue_audio_ms: int = 0
+    detector_queue_high_water_ms: int = 0
+    detector_oldest_frame_age_ms: int = 0
+    detector_overflow_count: int = 0
+    smart_turn_stale_result_count: int = 0
+    smart_turn_coalesced_evaluation_count: int = 0
+    detector_stale_event_count: int = 0
+    asr_audio_command_queue_ms: int = 0
+    asr_abort_discarded_command_count: int = 0
+    provider_wire_sequence: int = 0
 
     @property
     def throttle_ratio(self) -> float:

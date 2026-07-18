@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
@@ -60,6 +61,7 @@ class _EvaluationResultItem:
     activity_seq: int
     reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
     detector_identity: DetectorIngressIdentity | None = None
+    evaluation_ms: int = 0
     result: object | None = None
     error: BaseException | None = None
 
@@ -140,6 +142,9 @@ class _VoiceTurnAdapter:
         ] | None = None
         self._strict_endpoint_deadline: float | None = None
         self._latest_detector_identity: DetectorIngressIdentity | None = None
+        self._smart_turn_evaluation_ms = 0
+        self._smart_turn_stale_result_count = 0
+        self._smart_turn_coalesced_evaluation_count = 0
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
@@ -186,6 +191,22 @@ class _VoiceTurnAdapter:
     @property
     def throttle_available(self) -> bool:
         return not self._vad_degraded
+
+    @property
+    def queued_audio_ms(self) -> int:
+        return self._queue.audio_duration_us // 1_000
+
+    @property
+    def smart_turn_evaluation_ms(self) -> int:
+        return self._smart_turn_evaluation_ms
+
+    @property
+    def smart_turn_stale_result_count(self) -> int:
+        return self._smart_turn_stale_result_count
+
+    @property
+    def smart_turn_coalesced_evaluation_count(self) -> int:
+        return self._smart_turn_coalesced_evaluation_count
 
     async def wait_idle(self) -> None:
         """Drain detector work for tests and shutdown; never use per PCM frame."""
@@ -454,6 +475,7 @@ class _VoiceTurnAdapter:
         if self._closed or self._failed or identity != self._identity:
             return
         if self._evaluation_task is not None:
+            self._smart_turn_coalesced_evaluation_count += 1
             self._reevaluation_requested = True
             self._reevaluation_reason = reason
             return
@@ -461,6 +483,7 @@ class _VoiceTurnAdapter:
         activity_seq = int(getattr(self._coordinator, "activity_seq", 0))
 
         async def evaluate() -> None:
+            started_at = time.perf_counter()
             result: object | None = None
             error: BaseException | None = None
             try:
@@ -476,6 +499,7 @@ class _VoiceTurnAdapter:
                     activity_seq=activity_seq,
                     reason=reason,
                     detector_identity=detector_identity,
+                    evaluation_ms=int((time.perf_counter() - started_at) * 1_000),
                     result=result,
                     error=error,
                 )
@@ -486,6 +510,7 @@ class _VoiceTurnAdapter:
         )
 
     async def _process_evaluation_result(self, item: _EvaluationResultItem) -> None:
+        self._smart_turn_evaluation_ms = item.evaluation_ms
         self._evaluation_task = None
         reevaluate = self._reevaluation_requested
         reevaluation_reason = self._reevaluation_reason or item.reason
@@ -519,6 +544,7 @@ class _VoiceTurnAdapter:
         status = getattr(result, "status", None)
         decision = getattr(result, "decision", None)
         if status is EvaluationStatus.STALE:
+            self._smart_turn_stale_result_count += 1
             if reevaluate:
                 self._request_evaluation(
                     item.identity,

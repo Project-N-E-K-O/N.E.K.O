@@ -60,6 +60,36 @@ left-padded. Whisper-compatible preprocessing is implemented with NumPy and is
 golden-tested against the reviewed 80-bin mel bank and synthetic feature
 statistics.
 
+## Asynchronous detector and ordering contract
+
+Production microphone ingestion never waits for Silero callbacks or Smart Turn
+inference. Normalized PCM enters a queue bounded by both one second of audio
+and 128 frames. Audio cannot consume the reserved control lane. Overflow
+invalidates the complete candidate or active turn; it never drops a middle
+frame and continues toward a partial transcript.
+
+Silero remains serial, while Smart Turn evaluation uses one in-flight task and
+at most one coalesced retry. Evaluation results re-enter the ordered detector
+lane behind PCM that arrived before inference completed. A resumed-speech
+activity revision therefore makes an older COMPLETE result stale.
+
+Core handles identity-scoped detector events through its own serial dispatcher.
+Provider commands use one independent-ASR dispatcher with this order:
+
+```text
+pre-roll / pending-connect -> real-time PCM -> SmartTurn seal
+```
+
+Hard mute, Focus suppression, game takeover, stop, route swap, and abort first
+invalidate the ingress/turn identity. Queued writes then fail validation before
+they can start. A write already in progress may finish, but no later write or
+seal from that identity can begin.
+
+These rules are safety contracts rather than resource optimizations. Disabling
+`voice_input_resource_optimization_enabled` keeps the independent ASR
+continuously active but does not disable Smart Turn or permit microphone PCM to
+enter Core/Omni. Smart Turn not READY always implies zero provider wire audio.
+
 ## Assets and lifecycle
 
 `data/vad_models/manifest.json` pins model revisions, authoritative URLs,
@@ -82,6 +112,11 @@ Adapter and releases the corresponding runtime resources.
 - Hermetic unit/concurrency/build-contract tests cover buffer bounds, model
   lifecycle, Silero state/context, stale results, candidate coalescing, close,
   asset SHA checks, and the Soniox-like capability path.
+- Phase 3 additionally covers non-blocking detector submission, Smart Turn
+  single-flight/coalescing, candidate rotation, pre-roll ordering, seal
+  ordering, abort barriers, overflow recovery, and stale detector identities.
+- Every Core routing safety test keeps `omni_mic_audio_bytes == 0`; consumers
+  receive only the SmartTurn-authorized logical final.
 - The pinned real models load successfully. One second of synthetic silence
   stays below Silero speech probability 0.05. Smart Turn golden outputs are
   checked for silence and a synthetic tone.

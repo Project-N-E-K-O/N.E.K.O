@@ -96,6 +96,8 @@ from pathlib import Path
 FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
+    "asr_audio_dispatcher",
+    "asr_detector_dispatcher",
     "asr_transcript_dispatcher",
     "audio_duration_queue",
     "callback_render",
