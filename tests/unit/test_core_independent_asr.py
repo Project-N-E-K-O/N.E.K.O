@@ -363,9 +363,10 @@ async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
 
 async def test_game_consumer_failure_never_falls_back_to_core() -> None:
     runtime = _Runtime()
+    on_final = AsyncMock(side_effect=RuntimeError("consumer failed"))
     runtime.bind_voice_input_consumer(
         "game",
-        AsyncMock(side_effect=RuntimeError("consumer failed")),
+        on_final,
     )
     await runtime._handle_voice_input_control(
         "lease_sync",
@@ -381,6 +382,12 @@ async def test_game_consumer_failure_never_falls_back_to_core() -> None:
     await runtime._handle_independent_asr_final("play", epoch, "qwen")
     await runtime._wait_asr_transcript_dispatch_idle()
 
+    on_final.assert_awaited_once()
+    event = on_final.await_args.args[0]
+    assert isinstance(event, VoiceTranscriptEvent)
+    assert event.text == "play"
+    assert event.provider == "qwen"
+    runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
     assert runtime._omni_mic_audio_bytes == 0
