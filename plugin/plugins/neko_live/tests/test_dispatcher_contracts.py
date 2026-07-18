@@ -111,6 +111,47 @@ def test_output_contract_bridge_rejects_object_support_event_type():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("allow_avatar_image", [False, True])
+async def test_dispatcher_keeps_live_viewer_as_question_author(allow_avatar_image: bool):
+    class Plugin:
+        def __init__(self):
+            self.parts = None
+            self.metadata = None
+
+        def push_message(self, **kwargs):
+            self.parts = kwargs["parts"]
+            self.metadata = kwargs["metadata"]
+
+    plugin = Plugin()
+    request = InteractionRequest(
+        event=ViewerEvent(
+            uid="42",
+            nickname="viewer42",
+            danmaku_text="what do you think?",
+            source="live_danmaku",
+            live_mode="co_stream",
+        ),
+        identity=ViewerIdentity(uid="42", nickname="viewer42"),
+        profile=ViewerProfile(uid="42", nickname="viewer42"),
+        prompt_text="reply to the live question",
+        live_mode="co_stream",
+        strength="normal",
+        allow_avatar_image=allow_avatar_image,
+    )
+
+    await NekoDispatcher(plugin).push_roast(request)
+
+    assert plugin.metadata["live_message_origin"] == "viewer_danmaku"
+    assert plugin.metadata["live_speaker_role"] == "viewer"
+    text = plugin.parts[0]["text"]
+    assert "NEKO Live audience speaker identity:" in text
+    assert "danmaku_author: viewer42" in text
+    assert "danmaku_author is the questioner/requester" in text
+    assert "not by {MASTER_NAME}, the owner, the operator, or the human co-streamer" in text
+    assert "never say or imply that the human streamer or owner asked this question" in text
+
+
+@pytest.mark.asyncio
 async def test_dispatcher_respects_non_deliverable_request():
     class Plugin:
         def push_message(self, **_kwargs):
