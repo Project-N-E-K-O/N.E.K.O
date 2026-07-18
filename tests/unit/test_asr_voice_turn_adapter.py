@@ -365,7 +365,7 @@ async def test_activity_events_are_forwarded_to_runtime_in_order() -> None:
     await adapter.close()
 
 
-async def test_bounded_queue_applies_backpressure_without_dropping_pcm() -> None:
+async def test_bounded_queue_reports_backpressure_without_blocking_producer() -> None:
     gate = _BlockingGate(blocked_indices=(0,))
     adapter = _VoiceTurnAdapter(
         vad=_FakeVad(),
@@ -383,21 +383,17 @@ async def test_bounded_queue_applies_backpressure_without_dropping_pcm() -> None
     await adapter.push_audio(
         generation=0, buffer_epoch=0, utterance_id=1, pcm16=b"\x02\x00"
     )
-    blocked_producer = asyncio.create_task(
-        adapter.push_audio(
+    with pytest.raises(asyncio.QueueFull):
+        await adapter.push_audio(
             generation=0,
             buffer_epoch=0,
             utterance_id=1,
             pcm16=b"\x03\x00",
         )
-    )
-    await asyncio.sleep(0)
-    assert blocked_producer.done() is False
 
     gate.release[0].set()
-    await asyncio.wait_for(blocked_producer, 1)
-    await _eventually(lambda: len(gate.feed_calls) == 3)
-    assert gate.feed_calls == [b"\x01\x00", b"\x02\x00", b"\x03\x00"]
+    await _eventually(lambda: len(gate.feed_calls) == 2)
+    assert gate.feed_calls == [b"\x01\x00", b"\x02\x00"]
     await adapter.close()
 
 

@@ -35,7 +35,7 @@ def test_detector_audio_duration_uses_ceiling_accounting() -> None:
 
 
 async def test_detector_queue_bounds_real_audio_duration_and_frames() -> None:
-    duration_queue: DetectorDurationQueue[str] = DetectorDurationQueue(
+    duration_queue: DetectorDurationQueue[DetectorAudioItem, str] = DetectorDurationQueue(
         capacity_us=20_000,
         max_frames=2,
     )
@@ -50,7 +50,7 @@ async def test_detector_queue_bounds_real_audio_duration_and_frames() -> None:
 
 
 async def test_control_lane_survives_full_audio_budget_and_preserves_order() -> None:
-    duration_queue: DetectorDurationQueue[str] = DetectorDurationQueue(
+    duration_queue: DetectorDurationQueue[DetectorAudioItem, str] = DetectorDurationQueue(
         capacity_us=10_000,
         max_frames=1,
     )
@@ -63,7 +63,7 @@ async def test_control_lane_survives_full_audio_budget_and_preserves_order() -> 
 
 
 async def test_priority_control_preempts_audio_backlog() -> None:
-    duration_queue: DetectorDurationQueue[str] = DetectorDurationQueue()
+    duration_queue: DetectorDurationQueue[DetectorAudioItem, str] = DetectorDurationQueue()
     duration_queue.put_audio_nowait(_audio(1, 160))
     duration_queue.put_control_nowait("hard-reset", priority=True)
 
@@ -71,7 +71,7 @@ async def test_priority_control_preempts_audio_backlog() -> None:
 
 
 def test_discard_audio_preserves_control_items() -> None:
-    duration_queue: DetectorDurationQueue[str] = DetectorDurationQueue()
+    duration_queue: DetectorDurationQueue[DetectorAudioItem, str] = DetectorDurationQueue()
     duration_queue.put_audio_nowait(_audio(1, 160))
     duration_queue.put_control_nowait("invalidate")
     duration_queue.put_audio_nowait(_audio(2, 160))
