@@ -153,6 +153,35 @@ async def test_idle_first_danmaku_roasts_immediately():
     assert ctx.payloads[0]["danmaku_text"] == "初见"
 
 
+@pytest.mark.parametrize("raw_kind", ["dict", "provider"])
+async def test_event_bus_preserves_envelope_session_generation(raw_kind: str):
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+    raw_event = (
+        {
+            "uid": "42",
+            "nickname": "viewer",
+            "text": "please explain this live topic",
+            "event_type": "danmaku",
+        }
+        if raw_kind == "dict"
+        else _danmaku("42", text="please explain this live topic")
+    )
+
+    ctx.event_bus.publish(
+        "danmaku",
+        LiveEvent(
+            type="danmaku",
+            uid="42",
+            raw=raw_event,
+            session_generation=23,
+        ),
+    )
+    await _drain(hub)
+
+    assert ctx.payloads[0]["_live_session_generation"] == 23
+
+
 async def test_low_value_danmaku_skips_reply_but_updates_room_context():
     ctx = _FakeCtx(remaining=0.0)
     hub = await _make_hub(ctx)

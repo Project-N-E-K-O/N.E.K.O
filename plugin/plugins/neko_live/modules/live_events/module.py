@@ -91,6 +91,22 @@ REPLY_WORTHY_TEXT_MARKERS = (
 REPLY_WORTHY_TEXT_WORDS = {"hello", "hi"}
 
 
+class _SessionBoundProviderEvent:
+    __slots__ = ("_event", "session_generation")
+
+    def __init__(self, event: Any, session_generation: int) -> None:
+        self._event = event
+        self.session_generation = session_generation
+
+    def __getattr__(self, name: str) -> Any:
+        if isinstance(self._event, dict):
+            try:
+                return self._event[name]
+            except KeyError:
+                raise AttributeError(name) from None
+        return getattr(self._event, name)
+
+
 class LiveEventsModule(BaseModule):
     """直播事件中枢。``submit()`` 是富模型事件入口，同步、非阻塞（只缓冲/打分，pipeline
     在后台 task 里跑，不拖慢弹幕接收循环）。"""
@@ -136,7 +152,12 @@ class LiveEventsModule(BaseModule):
         """EventBus 订阅回调：解包信封取富模型，复用既有窗口择优 ``submit()``（签名不变）。"""
         raw = getattr(event, "raw", None)
         if raw is not None:
-            self.submit(raw)
+            session_generation = event_session_generation(event)
+            self.submit(
+                _SessionBoundProviderEvent(raw, session_generation)
+                if session_generation
+                else raw
+            )
         else:
             self.submit(event)
 
