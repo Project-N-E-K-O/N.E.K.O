@@ -2610,10 +2610,7 @@
         "widgetMode": {
             "enabledNotice": "O Modo de encaixe na borda Beta está ativo.",
             "disabledNotice": "O Modo de encaixe na borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
-            "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde.",
-            "restoreFailed": "O modelo não pôde ser restaurado, então a forma de gato permanece ativa. Clique no gato novamente para tentar de novo.",
-            "compactionConfirmed": "O Modo de encaixe na borda Beta compactou o modelo atual para a forma de gato.",
-            "compactionFailed": "A compactação não foi concluída. O modelo atual foi restaurado."
+            "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",

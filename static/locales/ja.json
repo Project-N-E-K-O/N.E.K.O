@@ -2610,10 +2610,7 @@
         "widgetMode": {
             "enabledNotice": "エッジドックモード Beta を有効にしました。",
             "disabledNotice": "エッジドックモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
-            "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。",
-            "restoreFailed": "モデルを復元できないため、猫形態を維持します。猫をもう一度クリックして再試行してください。",
-            "compactionConfirmed": "エッジドックモード Beta が現在のモデルを猫形態にコンパクト化しました。",
-            "compactionFailed": "モデルのコンパクト化が完了しなかったため、現在のモデルを復元しました。"
+            "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。"
         },
         "toggles": {
             "allowInterrupt": "割り込み許可",

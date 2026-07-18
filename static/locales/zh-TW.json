@@ -2610,10 +2610,7 @@
         "widgetMode": {
             "enabledNotice": "掛邊模式 Beta 已開啟。",
             "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
-            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。",
-            "restoreFailed": "模型恢復失敗，目前保持貓貓形態，請再次點擊貓貓重試。",
-            "compactionConfirmed": "掛邊模式 Beta 已將目前模型收縮為貓貓形態。",
-            "compactionFailed": "模型收縮未完成，已恢復目前模型。"
+            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",

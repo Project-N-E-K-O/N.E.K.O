@@ -2610,10 +2610,7 @@
         "widgetMode": {
             "enabledNotice": "Edge Dock Mode Beta is on.",
             "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later.",
-            "restoreFailed": "The model could not be restored, so cat form remains active. Click the cat again to retry.",
-            "compactionConfirmed": "Edge Dock Mode Beta compacted the current model to cat form.",
-            "compactionFailed": "Model compaction did not finish. The current model was restored."
+            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",

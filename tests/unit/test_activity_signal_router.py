@@ -770,6 +770,7 @@ def test_throttle_dict_bounded(monkeypatch):
         json={"lanlan_name": "NewArrival", "idle_seconds": 0},
     )
     assert resp.status_code == 200
+
     # New entry is in; total size still <= cap.
     assert "NewArrival" in system_router_module._ACTIVITY_SIGNAL_THROTTLE
     assert (

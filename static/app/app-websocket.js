@@ -1361,8 +1361,7 @@
         // 对 lanlan_name 做 percent-encode：WebSocket.url 会把非 ASCII 字符（中文角色名）
         // 编成 %XX，下面幂等守卫用 S.socket.url === wsUrl 比对，两侧编码口径必须一致，
         // 否则中文名时守卫永远失败、造不出真正的幂等。
-        var wsUrl = protocol + '://' + window.location.host + '/ws/'
-            + encodeURIComponent(currentLanlanName);
+        var wsUrl = protocol + '://' + window.location.host + '/ws/' + encodeURIComponent(currentLanlanName);
 
         // 幂等兜底：如果当前 socket 已经 OPEN 且指向同一个 URL，说明有 stale 路径
         // （比如 Chat 窗口里被误触发 onclose 排队的 auto-reconnect）到了这一步。
@@ -1382,11 +1381,6 @@
         // ---- onopen ----
         S.socket.onopen = function () {
             console.log(window.t('console.websocketConnected'));
-            try {
-                window.dispatchEvent(new CustomEvent('neko:websocket-connection-state', {
-                    detail: { connected: true, timestamp: Date.now() }
-                }));
-            } catch (_) {}
 
             // Warm up Agent snapshot once websocket is ready.
             Promise.all([
@@ -3260,11 +3254,6 @@
                 return;
             }
             console.log(window.t('console.websocketClosed'));
-            try {
-                window.dispatchEvent(new CustomEvent('neko:websocket-connection-state', {
-                    detail: { connected: false, timestamp: Date.now() }
-                }));
-            } catch (_) {}
             clearAssistantLifecycleOnDisconnect('socket_close');
 
             // Clear heartbeat

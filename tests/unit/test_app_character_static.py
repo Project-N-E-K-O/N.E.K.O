@@ -34,19 +34,6 @@ def test_character_switch_resets_avatar_lock_after_successful_model_load():
     assert fallback_load < fallback_reset
 
 
-def test_character_switch_start_event_runs_after_all_deduplication_guards():
-    source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
-    block = source.split("async function handleCatgirlSwitch", 1)[1].split(
-        "window.invalidatePendingMusicSearch();", 1
-    )[0]
-    event = block.index("neko:character-switch-start")
-
-    assert block.index("if (S.isSwitchingCatgirl)") < event
-    assert block.index("if (!newCatgirl)") < event
-    assert block.index("if (newCatgirl === oldCatgirl)") < event
-    assert block.index("window.lanlan_config.lanlan_name === newCatgirl") < event
-
-
 def test_character_switch_clears_goodbye_state_only_after_commit():
     source = APP_CHARACTER_PATH.read_text(encoding="utf-8")
 

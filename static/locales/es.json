@@ -2610,10 +2610,7 @@
         "widgetMode": {
             "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
             "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde.",
-            "restoreFailed": "No se pudo restaurar el modelo, así que la forma de gato sigue activa. Haz clic de nuevo en el gato para reintentar.",
-            "compactionConfirmed": "Modo de acoplamiento al borde Beta compactó el modelo actual a forma de gato.",
-            "compactionFailed": "La compactación no terminó. Se restauró el modelo actual."
+            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
