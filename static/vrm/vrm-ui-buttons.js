@@ -786,6 +786,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
         document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
         document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
         this._returnButtonDragHandlers = null;
     }
 
@@ -800,8 +801,66 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let pendingClientX = 0;
     let pendingClientY = 0;
     let dragActiveDispatched = false;
+    let dragActivitySequence = 0;
+    let dragActivity = null;
+
+    const startDragActivity = (left, top) => {
+        const startedAt = Date.now();
+        dragActivitySequence += 1;
+        dragActivity = {
+            activityId: `return-cat-drag-vrm:${startedAt}:${dragActivitySequence}`,
+            startedAt: startedAt,
+            startX: left,
+            startY: top,
+            lastX: left,
+            lastY: top,
+            pathDistancePx: 0,
+            terminalReported: false
+        };
+    };
+
+    const recordDragActivityPoint = (left, top) => {
+        if (!dragActivity || dragActivity.terminalReported ||
+            !Number.isFinite(left) || !Number.isFinite(top)) {
+            return;
+        }
+        dragActivity.pathDistancePx += Math.hypot(
+            left - dragActivity.lastX,
+            top - dragActivity.lastY
+        );
+        dragActivity.lastX = left;
+        dragActivity.lastY = top;
+    };
+
+    const finishDragActivity = () => {
+        if (!dragActivity || dragActivity.terminalReported) return null;
+        dragActivity.terminalReported = true;
+        return {
+            activityId: dragActivity.activityId,
+            pathDistancePx: Math.max(0, dragActivity.pathDistancePx),
+            displacementPx: Math.hypot(
+                dragActivity.lastX - dragActivity.startX,
+                dragActivity.lastY - dragActivity.startY
+            ),
+            durationMs: Math.max(0, Date.now() - dragActivity.startedAt)
+        };
+    };
+
+    const dispatchDragTerminal = (reason, extraDetail) => {
+        if (typeof _dispatchNekoIdleReturnBallManualMove === 'function') {
+            _dispatchNekoIdleReturnBallManualMove(returnButtonContainer, reason, extraDetail);
+            return;
+        }
+        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+            detail: Object.assign({
+                reason: reason,
+                container: returnButtonContainer
+            }, extraDetail)
+        }));
+    };
 
     const handleStart = (clientX, clientY) => {
+        if (isDragging) return;
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
@@ -821,6 +880,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const rect = returnButtonContainer.getBoundingClientRect();
         containerStartX = rect.left;
         containerStartY = rect.top;
+        startDragActivity(containerStartX, containerStartY);
 
         // 在拖拽开始时缓存尺寸，避免每帧读取触发 layout
         cachedContainerWidth = rect.width || 64;
@@ -863,6 +923,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
 
         // 使用 transform 移动，仅走 GPU 合成，跳过 layout + paint
         const tx = newX - containerStartX;
@@ -888,6 +949,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
+        recordDragActivityPoint(newX, newY);
         returnButtonContainer.style.transform = '';
         returnButtonContainer.style.left = `${newX}px`;
         returnButtonContainer.style.top = `${newY}px`;
@@ -903,7 +965,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         }
     };
 
-    const handleEnd = () => {
+    const handleEnd = (cancelled = false) => {
         if (isDragging) {
             // 取消待执行的 RAF，将 transform 落实到 left/top
             if (dragRAFId) {
@@ -913,19 +975,21 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             commitDragPosition();
             const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
             const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
+            const dragActivityFacts = finishDragActivity();
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
-            if (moved) {
-                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
-                    detail: {
-                        reason: 'return-ball-drag-end',
-                        container: returnButtonContainer,
-                        movedDistancePx: movedDistancePx
-                    }
-                }));
+            if (dragActivityFacts) {
+                const dragCancelled = cancelled || !moved;
+                dispatchDragTerminal(
+                    dragCancelled ? 'return-ball-drag-cancel' : 'return-ball-drag-end',
+                    Object.assign({
+                        movedDistancePx: moved ? movedDistancePx : 0,
+                        dragCancelled: dragCancelled
+                    }, dragActivityFacts)
+                );
             }
 
             // 恢复拖拽期间禁用的视觉效果
@@ -953,11 +1017,12 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     // 保存 document 级别的事件监听器引用，以便后续清理
     this._returnButtonDragHandlers = {
         mouseMove: (e) => handleMove(e.clientX, e.clientY),
-        mouseUp: handleEnd,
+        mouseUp: () => handleEnd(false),
         touchMove: (e) => {
             if (isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
         },
-        touchEnd: handleEnd
+        touchEnd: () => handleEnd(false),
+        touchCancel: () => handleEnd(true)
     };
 
     document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
@@ -970,6 +1035,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     });
     document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, { passive: false });
     document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+    document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
     returnButtonContainer.style.cursor = 'grab';
 };
 

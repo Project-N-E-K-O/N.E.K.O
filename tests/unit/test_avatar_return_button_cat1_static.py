@@ -154,7 +154,8 @@ def test_cat1_walk_finish_keeps_legacy_probability_branch_outside_cat_mind():
     assert "state.walkFinishResolution = walkFinishResolution" in finish_block
     assert "state.walkFinishResolution = 'stretch';" in finish_block
     assert "if (targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE && state.walkFinishResolution)" in finish_block
-    assert "_playNekoIdleCat1PlayAction(button)" in finish_block
+    assert "_playNekoIdleCat1PlayAction(button, {" in finish_block
+    assert "source: 'cat1-journey-local'" in finish_block
     assert "_setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });" in finish_block
 
     walk_start_block = source.split("function _startNekoIdleCat1Walk", 1)[1].split(
