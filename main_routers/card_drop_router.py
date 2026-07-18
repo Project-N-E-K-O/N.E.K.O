@@ -1,10 +1,9 @@
 """Community-login + forge-credit proxy routes for NEKO (``/api/card-drop`` prefix).
 
-The old conversation card-drop (local 5-pick overlay + ``/draw`` direct mint) has
-been retired: drop decisions and credit grants now live in the private NEKO-PC
-forge-dropper, and minting goes through the cloud forge-beta flow (the cloud
-``POST /api/cards/draw`` is offline). This router now only proxies the live credit
-endpoints (``/credits``) and the community Steam login
+Drop decisions remain in the private NEKO-PC forge-dropper, while this service
+owns the installation-local credit ledger. The community may read and reserve
+credits only after its JWT has been synced through the native one-time ticket.
+This router also owns the community Steam login
 (``/steam-login`` / ``/steam-callback`` / ``/auth-status``).
 
 The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
@@ -220,6 +219,13 @@ def _facts_cors_headers(request: Request) -> dict[str, str] | None:
     }
     if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
         headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers
+
+
+def _credit_cors_headers(request: Request) -> dict[str, str] | None:
+    headers = _facts_cors_headers(request)
+    if headers is not None:
+        headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return headers
 
 
@@ -861,17 +867,90 @@ async def steam_callback_endpoint(
     return _steam_callback_html(f"已登录，欢迎 {name}", sub)
 
 
-@router.get("/credits", summary="代理云端：列当前有效铸造券（供铸造 UI 显示数量/稀有度/到期）")
-async def credits_endpoint():
-    base, cid = _require_ctx()
-    headers = {"X-Client-Id": cid}
-    token = _access_token()  # 登录则按 user 账号查；否则按游客 client
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    url = f"{base}/api/forge/credits"
+def _credit_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, LookupError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+def _require_credit_browser(request: Request) -> dict[str, str]:
+    cors = _credit_cors_headers(request)
+    if cors is None:
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
+    if not _facts_request_is_authenticated(request):
+        raise HTTPException(status_code=401, detail="local_session_mismatch")
+    return cors
+
+
+@router.options("/credits")
+@router.options("/credits/{credit_id}/reservations")
+@router.options("/credits/{credit_id}/reservations/{operation_id}/commit")
+@router.options("/credits/{credit_id}/reservations/{operation_id}")
+async def credit_options(request: Request, credit_id: str = "", operation_id: str = ""):
+    cors = _credit_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.post("/credits/grant", summary="Electron 掉落引擎写入一张本机锻造券")
+async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
+    if not _local_mutation_origin_allowed(request):
+        raise HTTPException(status_code=403, detail="origin_not_allowed")
+    from main_logic.forge_credit_ledger import grant_credit
+
     try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.get(url, headers=headers)
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    return _relay(r)
+        return grant_credit(payload)
+    except (ValueError, LookupError, RuntimeError) as exc:
+        raise _credit_error(exc) from exc
+
+
+@router.get("/credits", summary="读取 N.E.K.O 本机有效锻造券与待恢复预占")
+async def credits_endpoint(request: Request):
+    cors = _require_credit_browser(request)
+    from main_logic.forge_credit_ledger import list_credits
+
+    return JSONResponse(list_credits(), headers=cors)
+
+
+@router.post("/credits/{credit_id}/reservations", summary="为一次云端铸造幂等预占本机券")
+async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dict = Body(...)):
+    cors = _require_credit_browser(request)
+    from main_logic.forge_credit_ledger import reserve_credit
+
+    try:
+        result = reserve_credit(credit_id, str(payload.get("operation_id") or ""))
+    except (ValueError, LookupError, RuntimeError) as exc:
+        error = _credit_error(exc)
+        return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
+    return JSONResponse(result, headers=cors)
+
+
+@router.post("/credits/{credit_id}/reservations/{operation_id}/commit", summary="云端铸卡成功后确认消费本机券")
+async def commit_credit_endpoint(
+    request: Request, credit_id: str, operation_id: str, payload: dict = Body(...),
+):
+    cors = _require_credit_browser(request)
+    from main_logic.forge_credit_ledger import commit_credit
+
+    try:
+        result = commit_credit(credit_id, operation_id, str(payload.get("card_id") or ""))
+    except (ValueError, LookupError, RuntimeError) as exc:
+        error = _credit_error(exc)
+        return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
+    return JSONResponse(result, headers=cors)
+
+
+@router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")
+async def release_credit_endpoint(request: Request, credit_id: str, operation_id: str):
+    cors = _require_credit_browser(request)
+    from main_logic.forge_credit_ledger import release_credit
+
+    try:
+        result = release_credit(credit_id, operation_id)
+    except (ValueError, LookupError, RuntimeError) as exc:
+        error = _credit_error(exc)
+        return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
+    return JSONResponse(result, headers=cors)
