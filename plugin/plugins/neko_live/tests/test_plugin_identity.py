@@ -14,6 +14,7 @@ def test_neko_live_uses_one_permanent_internal_identity() -> None:
     manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
 
     assert plugin_dir.name == "neko_live"
+    assert not (plugin_dir.parent / "neko_roast").exists()
     assert manifest["plugin"]["id"] == "neko_live"
     assert manifest["plugin"]["name"] == "NEKO Live"
     assert manifest["plugin"]["entry"] == "plugin.plugins.neko_live:NekoLivePlugin"

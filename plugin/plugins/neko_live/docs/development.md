@@ -66,6 +66,23 @@ Live Provider / Developer Sandbox
 
 抖音 v1 只消费本地 bridge 清洗后的只读事件；不在插件内恢复 protobuf 直连、JS 签名、自动登录或浏览器自动化。详细边界见 [douyin_live_ingest](modules/douyin_live_ingest.md)。
 
+### 2.4 Provider-neutral update
+
+`modules/live_events/provider_event.py` 是共享的 provider-neutral 适配层：typed provider events 和 already-sanitized dict events are both accepted，room-topic prompt examples must use those helpers，不能重新读取 provider raw payload。
+
+抖音 metadata fetch 保持有界且只读：请求只使用用户提供的 `Cookie`，通过 `urlopen` 执行并设置 fetch timeout。`runtime_config.update_config()` 保存公开的 Douyin `live_room_ref`；`live_status_summary()` 和 `live_connection_snapshot()` 只投影 `room_ref` / `room_id`。存在数值标识时使用 `room_id` / `webcast_room_id`，未知事件类型保持为 `unknown`。
+
+事件公开身份字段只允许经过归一化的 `source_url` / `name` / `nickname` / `avatar_url`，并继续服从现有 URL、长度和隐私检查。
+
+bridge connection plan 只接受通过校验的公开 bridge URL，禁止携带 params/query/fragment。`status()` / `listener_state()` 返回公开生命周期投影；`state` 和 retry policy 必须显式。事件只有完成归一化和脱敏后才能进入 EventBus。
+
+### 2.5 抖音手动凭据边界
+
+- `runtime_douyin_auth`：抖音手动 cookie action，只接受用户主动粘贴的 Cookie 文本；
+- 混入 `X-...:` 等非 Cookie header 行必须拒绝；非法 cookie action 必须返回结构化 `saved=False` 结果；
+- 只在用户手动触发校验时读取当前房间元数据，不增加后台凭据轮询；
+- v1 不提供网页登录、二维码/手机号登录或浏览器自动化。
+
 ## 3. 模块模型
 
 一个可独立维护的直播能力应位于 `modules/<module_id>/`，并声明：
