@@ -4,7 +4,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
-APP_WIDGET_MODE_PATH = PROJECT_ROOT / "static" / "app" / "app-widget-mode.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -221,7 +220,6 @@ def test_live2d_widget_mode_edge_peek_animations_do_not_outlive_cleared_state():
 def test_live2d_widget_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_cat():
     interaction_source = _source(LIVE2D_INTERACTION_PATH)
     core_source = _source(LIVE2D_CORE_PATH)
-    widget_mode_source = _source(APP_WIDGET_MODE_PATH)
 
     assert "window.addEventListener('neko:widget-mode-state-changed', clearLive2DPeekOnDisabled)" in interaction_source
     assert "window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye)" in interaction_source
@@ -229,7 +227,6 @@ def test_live2d_widget_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_c
     assert "clearLive2DPeek('live2d-goodbye')" in interaction_source
     assert "this.clearLive2DPeek('model-reload')" in interaction_source
     assert "this.clearLive2DPeek('reset-model-position')" in core_source
-    assert "window.nekoLive2DPeek" in widget_mode_source
     assert "let lastViewportW = window.innerWidth;" in core_source
     assert "let lastViewportH = window.innerHeight;" in core_source
     assert "vw === lastViewportW && vh === lastViewportH" in core_source

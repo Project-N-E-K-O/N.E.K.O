@@ -2611,8 +2611,6 @@
             "enabledNotice": "挂边模式 Beta 已开启。",
             "disabledNotice": "挂边模式 Beta 已关闭。Live2D 将恢复普通边缘吸附行为。",
             "toggleFailed": "挂边模式 Beta 切换失败，请稍后重试。",
-            "statusOn": "开启",
-            "statusOff": "关闭",
             "restoreFailed": "模型恢复失败，当前保持猫猫形态，请再次点击猫猫重试。",
             "compactionConfirmed": "挂边模式 Beta 已将当前模型收缩为猫猫形态。",
             "compactionFailed": "模型收缩未完成，已恢复当前模型。"

@@ -73,15 +73,6 @@ class VRMManager {
         return this._activeLoadToken === loadToken;
     }
 
-    cancelActiveModelLoadForWidgetMode(reason = 'widget-mode-compaction') {
-        if (!['preparing', 'settling'].includes(this._loadState)) return false;
-        this._activeLoadToken += 1;
-        this._loadState = 'cancelled';
-        this._nekoWidgetModeReloadRequired = true;
-        this._nekoWidgetModeLoadCancelReason = reason;
-        return true;
-    }
-
     _waitForSceneStability(scene, loadToken, options = {}) {
         const requiredStableFrames = options.requiredStableFrames || 2;
         const maxFrames = options.maxFrames || 24;

@@ -2611,8 +2611,6 @@
             "enabledNotice": "가장자리 도킹 모드 Beta가 켜졌습니다.",
             "disabledNotice": "가장자리 도킹 모드 Beta가 꺼졌습니다. Live2D는 일반 가장자리 스냅을 사용합니다.",
             "toggleFailed": "가장자리 도킹 모드 Beta를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
-            "statusOn": "켜짐",
-            "statusOff": "꺼짐",
             "restoreFailed": "모델을 복원하지 못해 고양이 형태를 유지합니다. 고양이를 다시 클릭해 재시도하세요.",
             "compactionConfirmed": "가장자리 도킹 모드 Beta가 현재 모델을 고양이 형태로 축소했습니다.",
             "compactionFailed": "모델 축소가 완료되지 않아 현재 모델을 복원했습니다."

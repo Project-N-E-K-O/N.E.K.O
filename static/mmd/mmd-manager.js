@@ -252,15 +252,6 @@ class MMDManager {
         }
     }
 
-    cancelActiveModelLoadForWidgetMode(reason = 'widget-mode-compaction') {
-        if (this._modelLoadState !== 'loading') return false;
-        this._activeLoadToken += 1;
-        this._modelLoadState = 'cancelled';
-        this._nekoWidgetModeReloadRequired = true;
-        this._nekoWidgetModeLoadCancelReason = reason;
-        return true;
-    }
-
     // ═══════════════════ 动画 ═══════════════════
 
     async loadAnimation(vmdPath, options = {}) {

@@ -32,36 +32,14 @@ def test_response_discarded_visible_in_react_chat():
     assert "appendChild(messageDiv)" not in response_discarded_block
 
 
-def test_widget_mode_websocket_events_are_relayed_to_frontend():
-    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
-
-    widget_mode_block = source.split(
-        "if (typeof response.type === 'string' && response.type.startsWith('widget_mode_'))",
-        1,
-    )[1].split(
-        "// -------- gemini_response --------",
-        1,
-    )[0]
-
-    assert "new CustomEvent('neko:widget-mode-message'" in widget_mode_block
-    assert "detail: response" in widget_mode_block
-    assert "return;" in widget_mode_block
-
-
-def test_websocket_marks_only_widget_mode_pet_pages_as_capable():
+def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     frontend_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
     router_source = WEBSOCKET_ROUTER_PATH.read_text(encoding="utf-8")
 
-    assert re.search(
-        r"window\.nekoWidgetMode\s*&&\s*window\.nekoWidgetModeHost",
-        frontend_source,
-    )
-    assert "'?widget_mode_capable=1' : ''" in frontend_source
-    assert re.search(
-        r'websocket\.query_params\.get\(\s*"widget_mode_capable"\s*\)\s*==\s*"1"',
-        router_source,
-    )
-    assert re.search(r"mgr\.widget_mode_capable\s*=\s*widget_mode_capable", router_source)
+    assert "widget_mode_capable" not in frontend_source
+    assert "widget_mode_capable" not in router_source
+    assert "response.type.startsWith('widget_mode_')" not in frontend_source
+    assert "neko:widget-mode-message" not in frontend_source
 
 
 def test_startup_greeting_release_event_replaces_home_tutorial_block_state():
