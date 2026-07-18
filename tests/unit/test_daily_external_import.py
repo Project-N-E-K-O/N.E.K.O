@@ -644,6 +644,48 @@ async def test_malformed_extraction_is_failed_day_not_sidecar_checkpoint():
 
 
 @pytest.mark.asyncio
+async def test_malformed_array_without_objects_is_failed_day():
+    # Codex：数组套字符串（["Master likes tea"]）isinstance(list) 为真、绕过
+    # treat_malformed_as_failure，但过滤 isinstance(dict) 后 day_extracted 空。这是
+    # schema 失败、非确认空抽取——当失败天（可重试），不 checkpoint sidecar。
+    harness = _DailyHarness(lambda journal: ["Master likes tea", "not an object"])
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert harness.state_fps == set()             # 无 object 数组不 checkpoint
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_clears_concurrent_sidecar():
+    # Codex：persist 抛异常时也清该天 sidecar（并发空抽取先写下的），否则残留成
+    # 唯一载体、压制用户重试 skip 未变日记而永不落盘。
+    harness_holder = {}
+
+    class _FailPersistHarness(_DailyHarness):
+        async def _apersist_new_facts(
+            self, lanlan_name, extracted, *,
+            default_source="user_observation", semantic_dedup=True,
+        ):
+            # 模拟：并发空抽取已把该天写进 sidecar，且本次 persist 失败。
+            h = harness_holder["h"]
+            fp = h._daily_fingerprint(["went hiking"], event_date="2026-07-12")
+            h.state_fps.add(fp)
+            raise RuntimeError("FTS write failed")
+
+    harness = _FailPersistHarness(
+        lambda journal: [{"text": "real fact", "importance": 5}]
+    )
+    harness_holder["h"] = harness
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "went hiking"),
+        "hermes", "t",
+    )
+    assert result["failed_days"] == 1             # persist 失败 → 失败天（重试重抽）
+    assert harness.state_fps == set()             # 残留 sidecar 被 except 路径清掉
+
+
+@pytest.mark.asyncio
 async def test_provenance_upgraded_day_uses_provenance_not_sidecar():
     # Codex：exact-hash 命中把**本天** day_fingerprint upgrade 到既有 ai_disclosure
     # fact 时，_apersist_new_facts 返回 [] 但这天有 fact 载体（本天指纹打在既有 fact

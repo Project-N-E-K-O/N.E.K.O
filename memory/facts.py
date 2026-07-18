@@ -1603,7 +1603,18 @@ class FactStore:
                         f"放弃 {source_file}（整天重试重抽）"
                     )
                     return 0, True
-                day_extracted.extend(f for f in extracted if isinstance(f, dict))
+                batch_facts = [f for f in extracted if isinstance(f, dict)]
+                if extracted and not batch_facts:
+                    # 数组非空但无 object 元素（如 ["Master likes tea"]）= schema 失败、
+                    # 非确认空抽取——treat_malformed_as_failure 只挡「非数组」，挡不住
+                    # 「数组套字符串」。当失败天可重试，否则被 checkpoint 成空抽取天、
+                    # 后续导入 skip LLM 静默丢该天 facts（Codex P2）。
+                    logger.warning(
+                        f"[FactStore] {lanlan_name}: 外部 daily 抽取返回无 object 元素的"
+                        f"数组，放弃 {source_file}（整天重试重抽）"
+                    )
+                    return 0, True
+                day_extracted.extend(batch_facts)
             if not day_extracted:
                 # 空抽取天：LLM 判该日无 fact，无 fact 载体存指纹，只能靠 sidecar，
                 # 否则每次重导都重抽该天并占 cap 配额（Codex P2 follow-up）。
@@ -1639,9 +1650,17 @@ class FactStore:
                     "imported_at": imported_at,
                     "day_fingerprint": day_fps[source_file],
                 }
-            new_facts = await self._apersist_new_facts(
-                lanlan_name, day_extracted, semantic_dedup=True,
-            )
+            try:
+                new_facts = await self._apersist_new_facts(
+                    lanlan_name, day_extracted, semantic_dedup=True,
+                )
+            except Exception:
+                # persist 失败（FTS/JSON 写错等）也要清该天 sidecar：本请求已抽出真实
+                # facts（这天有内容），若并发空抽取先写下 sidecar，persist 失败后它会
+                # 成为唯一载体、压制用户重试 skip 未变日记而永不落盘（Codex）。失败天
+                # 由 gather 计入 failed_days、重试从头重抽。
+                await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
+                raise
             # 抽出 fact 的天（成功落新 fact，或全去重命中既有）都清掉该天可能残留的
             # sidecar 指纹（并发对方空抽取先写下的）——这些天不该在 sidecar：
             #  - 成功/upgrade 天：指纹已在 fact provenance，与 facts 同处回滚单元、
