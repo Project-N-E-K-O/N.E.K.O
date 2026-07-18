@@ -58,7 +58,7 @@ The runtime UI's eight-locale rule is separate and remains mandatory for user-vi
 ## Links and paths
 
 - Use site-root links such as `/plugins/quick-start` for VitePress pages.
-- Use repository-relative links only when the target is outside the documentation site.
+- For repository files outside the documentation site, use a full GitHub `blob` URL; do not use relative-up (`../`) links.
 - Keep established routes stable. If a move is necessary, add a redirect or compatibility page and update inbound references.
 - Do not link generated files, local worktrees, temporary reports, private logs, or unmerged PR branches as permanent documentation.
 
