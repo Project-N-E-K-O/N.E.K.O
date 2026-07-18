@@ -17,6 +17,7 @@ import {
 import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { MEME_IMAGE_LOAD_FAILED_STICKER_URL } from './memeImageFallback';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
@@ -843,6 +844,9 @@ describe('App', () => {
     const img = container.querySelector('.compact-meme-overlay img');
     expect(img).not.toBeNull();
     expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+    expect(img).toHaveAttribute('loading', 'eager');
+    expect(img).toHaveAttribute('fetchpriority', 'high');
+    expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
 
     const caption = parseChatMessage({
       id: 'assistant-newer',
@@ -1040,6 +1044,8 @@ describe('App', () => {
       expect(img).not.toBeNull();
       expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
       fireEvent.error(img as Element);
+      expect(img).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
+      expect(img).toHaveAttribute('data-neko-image-load-failed-sticker', 'true');
       expect(geometryRefreshes.length).toBe(0);
       await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
       expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();

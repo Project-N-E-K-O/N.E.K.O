@@ -23,6 +23,7 @@
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
+    const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
     // ======================== proactive leader election ========================
     //
@@ -939,7 +940,10 @@
                 for (var _ref of Object.entries(result.data)) {
                     var platform = _ref[0];
                     var info = _ref[1];
-                    if (personalFeedPlatforms.has(platform) && info.has_cookies) {
+                    // A credential can belong to a non-feed platform (for example
+                    // NetEase Music or Xiaoheihe).  Presence alone must not enable
+                    // the personal-dynamics source.
+                    if (personalFeedPlatforms.has(platform) && info.has_cookies && info.supports_personal_dynamic === true) {
                         availablePlatforms.push(platform);
                     }
                 }
@@ -1069,7 +1073,7 @@
                 availableModes.push('window');
             }
 
-            // 新闻搭话：使用微博热议话题
+            // 新闻搭话：使用微博热议与小黑盒首页内容
             if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('news');
             }
@@ -1079,7 +1083,7 @@
                 availableModes.push('video');
             }
 
-            // 个人动态搭话：使用B站和微博个人动态
+            // 个人动态搭话：聚合已登录社交平台的账号信息流。
             if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                 // 检查是否有可用的 Cookie 凭证
                 var platforms = await getAvailablePersonalPlatforms();
@@ -1775,18 +1779,15 @@
                         img.src = proxyUrl + '&retry=' + retryCount + '&t=' + Date.now();
                     } else {
                         img.dataset.failed = "true";
-                        img.src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg4OCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjMiIHk9IjMiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgcng9IjIiIHJ5PSIyIjPjwvcmVjdD48Y2lyY2xlIGN4PSI4LjUiIGN5PSI4LjUiIHI9IjEuNSI+PC9jaXJjbGU+PHBvbHlsaW5lIHBvaW50cz0iMjEgMTUgMTYgMTAgNSAyMSI+PC9wb2x5bGluZT48bGluZSB4MT0iNCIgeTE9IjQiIHgyPSIyMCIgeTI9IjIwIiBzdHJva2U9IiNmNDQzMzYiIG9wYWNpdHk9IjAuOCI+PC9saW5lPjwvc3ZnPg==";
-                        img.style.objectFit = "none";
-                        img.style.backgroundColor = "rgba(128,128,128,0.05)";
-                        img.style.border = "1px dashed var(--border-color, rgba(128,128,128,0.3))";
-                        img.style.minWidth = "120px";
-                        img.style.minHeight = "120px";
-                        img.style.cursor = "default";
-                        
-                        var errSpan = document.createElement('div');
-                        errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
-                        errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6)); font-size: 12px; margin-top: 4px;';
-                        imgOuter.appendChild(errSpan);
+                        img.src = MEME_LOAD_FAILED_STICKER_URL;
+                        Object.assign(img.style, {
+                            objectFit: "contain",
+                            backgroundColor: "#fff",
+                            border: "none",
+                            minWidth: "160px",
+                            minHeight: "160px",
+                            cursor: "default"
+                        });
                     }
                 });
 

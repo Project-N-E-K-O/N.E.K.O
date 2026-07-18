@@ -249,6 +249,12 @@ Object.assign(AvatarButtonMixin.methods, {
                 cancelAnimationFrame(this._uiUpdateLoopId);
                 this._uiUpdateLoopId = null;
             }
+            // 空闲低频模式下 UI 循环停在 pending 的再入定时器里：显式清掉，
+            // 让停止即刻生效（不依赖定时器触发时的自检兜底）
+            if (this._uiLoopIdleTimeout) {
+                clearTimeout(this._uiLoopIdleTimeout);
+                this._uiLoopIdleTimeout = null;
+            }
             this._updateFloatingButtonsPositionNow = null;
 
             // 摘除浮动按钮 / 锁图标 ticker —— 下方会删掉它们的 DOM，但 _removeFloatingButtonsElement

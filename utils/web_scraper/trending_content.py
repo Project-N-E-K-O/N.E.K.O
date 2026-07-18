@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 import httpx
+from utils.cookies_login import load_cookies_from_file
 from utils.external_http_client import get_external_http_client
 import random
 import re
@@ -31,8 +32,24 @@ if TYPE_CHECKING:
     from bs4 import BeautifulSoup
 
 from ._shared import get_random_user_agent, is_china_region, logger
-from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .platform_helpers import (
+    _get_bilibili_credential,
+    _get_platform_cookies,
+    build_xhh_cookie_header,
+    build_xhh_request_params,
+)
 from .youtube_feed import fetch_youtube_home_feed
+
+
+XHH_API_BASE = "https://api.xiaoheihe.cn"
+XHH_FEEDS_PATH = "/bbs/app/feeds"
+XHH_WEB_LINK = "https://www.xiaoheihe.cn/app/bbs/link/{link_id}"
+XHH_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
+
 
 async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
@@ -760,8 +777,9 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
     Fetch news/trending-topic content based on the user's region
     
-    Chinese region: trending Weibo topics plus Tieba community discussions
-    non-Chinese region: Twitter trends
+    Chinese region: trending Weibo topics, Tieba community discussions,
+    and Xiaoheihe feed
+    non-Chinese region: Twitter trends and Xiaoheihe feed
     
     Args:
         limit: maximum amount of content
@@ -773,13 +791,14 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     region = 'china' if china_region else 'non-china'
     try:
         if china_region:
-            logger.info("检测到中文区域，获取微博热议话题与贴吧社区讨论")
-            weibo_result, tieba_result = await asyncio.gather(
+            logger.info("检测到中文区域，并行获取微博、贴吧与小黑盒内容")
+            weibo_result, tieba_result, xhh_result = await asyncio.gather(
                 fetch_weibo_trending(limit),
                 fetch_tieba_content(
                     limit=limit,
                     candidate_limit=max(_tieba_limit(limit) * 4, 20),
                 ),
+                fetch_xhh_feed_content(limit),
                 return_exceptions=True,
             )
             if isinstance(weibo_result, Exception):
@@ -788,37 +807,61 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
             if isinstance(tieba_result, Exception):
                 logger.warning(f"贴吧社区讨论获取失败: {tieba_result}")
                 tieba_result = {'success': False, 'error': str(tieba_result)}
+            if isinstance(xhh_result, Exception):
+                logger.warning(f"小黑盒首页内容获取失败: {xhh_result}")
+                xhh_result = {'success': False, 'error': str(xhh_result), 'posts': []}
 
-            success = bool(weibo_result.get('success') or tieba_result.get('success'))
+            source_results = (weibo_result, tieba_result, xhh_result)
+            success = any(item.get('success') for item in source_results)
             response: Dict[str, Any] = {
                 'success': success,
                 'region': region,
                 'news': weibo_result,
                 'tieba': tieba_result,
+                'xhh': xhh_result,
             }
             if not success:
                 errors = [
                     str(item.get('error'))
-                    for item in (weibo_result, tieba_result)
+                    for item in source_results
                     if item.get('error')
                 ]
                 response['error'] = '; '.join(errors) if errors else '暂时无法获取热议话题'
             return response
 
-        logger.info("检测到非中文区域，获取Twitter热门话题")
-        twitter_result = await fetch_twitter_trending(limit)
+        logger.info("检测到非中文区域，并行获取 Twitter 与小黑盒内容")
+        twitter_result, xhh_result = await asyncio.gather(
+            fetch_twitter_trending(limit),
+            fetch_xhh_feed_content(limit),
+            return_exceptions=True,
+        )
+        if isinstance(twitter_result, Exception):
+            logger.warning(f"Twitter 热门话题获取失败: {twitter_result}")
+            twitter_result = {'success': False, 'error': str(twitter_result)}
+        if isinstance(xhh_result, Exception):
+            logger.warning(f"小黑盒首页内容获取失败: {xhh_result}")
+            xhh_result = {'success': False, 'error': str(xhh_result), 'posts': []}
+
+        success = bool(twitter_result.get('success') or xhh_result.get('success'))
         response = {
-            'success': twitter_result.get('success', False),
+            'success': success,
             'region': region,
             'news': twitter_result,
+            'xhh': xhh_result,
         }
-        if not twitter_result.get('success') and twitter_result.get('error'):
-            response['error'] = twitter_result.get('error')
+        if not success:
+            errors = [
+                str(item.get('error'))
+                for item in (twitter_result, xhh_result)
+                if item.get('error')
+            ]
+            response['error'] = '; '.join(errors) if errors else 'Unable to fetch trending topics'
         return response
     except Exception as e:
         logger.error(f"获取热议内容失败: region={region} error={e}")
         return {
             'success': False,
+            'region': region,
             'error': str(e),
         }
 
@@ -1385,7 +1428,6 @@ async def fetch_tieba_content(
         result["warnings"] = errors
     return result
 
-
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:
     """Format the Bilibili video list"""
     output_lines = ["【B站首页推荐】"]
@@ -1540,8 +1582,9 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     Format news content into a readable string
     
     Formats automatically by region:
-    - Chinese region: trending Weibo topics and Tieba community discussions
-    - non-Chinese region: Twitter trends
+    - Chinese region: trending Weibo topics, Tieba community discussions,
+      and Xiaoheihe feed
+    - non-Chinese region: Twitter trends and Xiaoheihe feed
     
     Args:
         news_content: result returned by fetch_news_content
@@ -1552,6 +1595,7 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
     region = news_content.get('region', 'china')
     news_data = news_content.get('news', {})
     
+    output_lines: list[str] = []
     if region == 'china':
         output_lines = []
         if news_data.get('success'):
@@ -1559,17 +1603,150 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
             output_lines.extend(_format_weibo_trending(trending_list))
         tieba_data = news_content.get('tieba', {})
         if tieba_data.get('success'):
-            output_lines.append(format_tieba_content(tieba_data))
-            output_lines.append("")
-        if output_lines:
-            return "\n".join(output_lines).strip()
-        return "暂时无法获取热议话题"
+            formatted_tieba = format_tieba_content(tieba_data)
+            if formatted_tieba:
+                output_lines.append(formatted_tieba)
+
     else:
         if news_data.get('success'):
             trending_list = news_data.get('trending', [])
-            output_lines = _format_twitter_trending(trending_list)
-            return "\n".join(output_lines)
-        return "Unable to fetch trending topics at the moment"
+            output_lines.extend(_format_twitter_trending(trending_list))
+
+    xhh_data = news_content.get('xhh', {})
+    if xhh_data.get('success'):
+        formatted_xhh = format_xhh_feed(xhh_data.get('posts', []))
+        if formatted_xhh:
+            output_lines.append("【小黑盒首页内容】" if region == 'china' else "【Xiaoheihe Home】")
+            output_lines.append(formatted_xhh)
+
+    if output_lines:
+        return "\n".join(output_lines)
+    return "暂时无法获取热议话题" if region == 'china' else "Unable to fetch trending topics at the moment"
+
+
+def _plain_xhh_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _xhh_label_values(items: Any) -> list[str]:
+    labels: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict):
+            value = item.get("name") or item.get("title") or item.get("text")
+        else:
+            value = item
+        normalized = _plain_xhh_text(value)
+        if normalized and normalized not in labels:
+            labels.append(normalized)
+    return labels
+
+
+def normalize_xhh_feed(payload: dict[str, Any], *, limit: int = 10) -> list[dict[str, Any]]:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    raw_links = result.get("links") if isinstance(result.get("links"), list) else []
+    posts: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for raw in raw_links:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            link_id = int(raw.get("linkid") or raw.get("link_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        title = _plain_xhh_text(raw.get("title"))
+        if link_id <= 0 or not title or link_id in seen_ids:
+            continue
+        seen_ids.add(link_id)
+        user = raw.get("user") if isinstance(raw.get("user"), dict) else {}
+        posts.append(
+            {
+                "link_id": link_id,
+                "title": title,
+                "description": _plain_xhh_text(raw.get("description")),
+                "author": _plain_xhh_text(user.get("username")),
+                "topics": _xhh_label_values(raw.get("topics")),
+                "tags": _xhh_label_values(raw.get("hashtags")),
+                "url": XHH_WEB_LINK.format(link_id=link_id),
+                "create_at": raw.get("create_at"),
+            }
+        )
+        if len(posts) >= max(1, int(limit)):
+            break
+    return posts
+
+
+def format_xhh_feed(posts: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for index, post in enumerate(posts, start=1):
+        details: list[str] = []
+        if post.get("author"):
+            details.append(f"作者: {post['author']}")
+        labels = [*post.get("topics", []), *post.get("tags", [])]
+        if labels:
+            details.append("话题: " + "、".join(labels[:5]))
+        description = _plain_xhh_text(post.get("description"))
+        suffix = f"（{'；'.join(details)}）" if details else ""
+        line = f"{index}. {post['title']}{suffix}"
+        if description:
+            line += f"\n   {description[:300]}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def fetch_xhh_feed_content(limit: int = 10) -> dict[str, Any]:
+    """Fetch Xiaoheihe feed, preferring credentials and falling back to public data."""
+    try:
+        cookies = await asyncio.to_thread(load_cookies_from_file, "xhh")
+    except Exception as exc:
+        logger.warning(f"读取小黑盒凭证失败，按未登录模式继续: {exc}")
+        cookies = {}
+
+    base_headers = {
+        "Referer": "https://www.xiaoheihe.cn/",
+        "User-Agent": XHH_USER_AGENT,
+    }
+    attempts: list[tuple[str, dict[str, str]]] = []
+    if cookies:
+        attempts.append(("登录态", {**base_headers, "Cookie": build_xhh_cookie_header(cookies)}))
+    attempts.append(("未登录", base_headers))
+
+    last_error = "小黑盒 feeds 未返回可用帖子"
+    for attempt_name, headers in attempts:
+        try:
+            response = await get_external_http_client().get(
+                f"{XHH_API_BASE}{XHH_FEEDS_PATH}",
+                params=build_xhh_request_params(XHH_FEEDS_PATH, extra={"pull": "1"}),
+                headers=headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("响应不是 JSON 对象")
+            status = str(payload.get("status") or payload.get("stat") or "ok").lower()
+            if status not in {"ok", "success"}:
+                raise ValueError(str(payload.get("msg") or payload.get("message") or status))
+            posts = normalize_xhh_feed(payload, limit=limit)
+            if not posts:
+                raise ValueError("小黑盒 feeds 未返回可用帖子")
+            return {
+                "success": True,
+                "posts": posts,
+                "formatted_content": format_xhh_feed(posts),
+                "authenticated": attempt_name == "登录态",
+            }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt_name == "登录态":
+                logger.warning(f"小黑盒登录态首页获取失败，回退未登录 feed: {last_error}")
+                continue
+            break
+
+    return {
+        "success": False,
+        "error": last_error,
+        "posts": [],
+    }
 
 
 def _format_tieba_hot_replies(post: dict[str, Any]) -> list[str]:

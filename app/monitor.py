@@ -266,6 +266,20 @@ async def translate_japanese_to_chinese(text):
     # 你需要根据实际情况实现翻译功能
     pass
 
+async def _receive_ws_frame(websocket: WebSocket) -> dict:
+    """Receive one raw ws message; convert disconnect frames to WebSocketDisconnect.
+
+    starlette 0.46's receive_text()/receive_bytes() raise KeyError on a frame of
+    the mismatched type (and the frame is already consumed), so a single
+    unexpected binary/text frame would kill the whole connection. Using raw
+    receive() with explicit key lookups lets each caller tolerate any frame type.
+    """
+    message = await websocket.receive()
+    if message.get("type") == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code") or 1000)
+    return message
+
+
 @app.websocket("/subtitle_ws")
 async def subtitle_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -282,9 +296,10 @@ async def subtitle_websocket_endpoint(websocket: WebSocket):
                 "text": current_subtitle
             })
 
-        # 保持连接
+        # 保持连接（keep-alive：忽略帧内容，容忍任意帧类型——
+        # receive_text() 收到二进制帧会抛 KeyError 杀掉字幕连接）
         while True:
-            await websocket.receive_text()
+            await _receive_ws_frame(websocket)
     except WebSocketDisconnect:
         print(f"字幕客户端已断开: {websocket.client}")
     finally:
@@ -319,7 +334,11 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
         while True:
             try:
                 global current_subtitle
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=25)
+                message = await asyncio.wait_for(_receive_ws_frame(websocket), timeout=25)
+                data = message.get("text")
+                if data is None:
+                    # 非文本帧（如二进制）：忽略，不让 KeyError 杀掉同步连接
+                    continue
 
                 # 广播到所有连接的客户端
                 data = json.loads(data)
@@ -367,7 +386,11 @@ async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
     try:
         while True:
             try:
-                data = await asyncio.wait_for(websocket.receive_bytes(), timeout=25)
+                message = await asyncio.wait_for(_receive_ws_frame(websocket), timeout=25)
+                data = message.get("bytes")
+                if data is None:
+                    # 非二进制帧（如文本）：忽略，不让 KeyError 杀掉同步连接
+                    continue
                 if len(data)>4:
                     await broadcast_binary(data)
             except asyncio.exceptions.TimeoutError:
@@ -388,28 +411,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
     connected_clients.add(websocket)
 
     try:
-        # 保持连接直到客户端断开
+        # 保持连接直到客户端断开（keep-alive：忽略帧内容，容忍任意帧类型；
+        # 断连由 _receive_ws_frame 转成 WebSocketDisconnect 抛到外层收尾）
         while True:
-            # 接收任何类型的消息（文本或二进制），主要用于保持连接。
-            # 注意：断连必须重新抛出——旧实现的裸 except 会把 WebSocketDisconnect
-            # 一并吞掉，随后 receive 永远抛 RuntimeError，协程退化成每个已断开
-            # 客户端一条 10Hz 的永动空转循环。
-            try:
-                await websocket.receive_text()
-            except WebSocketDisconnect:
-                raise
-            except Exception:
-                # 如果收到的是二进制数据，receive_text() 会失败，尝试 receive_bytes()
-                try:
-                    await websocket.receive_bytes()
-                except WebSocketDisconnect:
-                    raise
-                except RuntimeError as e:
-                    # starlette: 断开后继续 receive 抛 RuntimeError —— 视作断连收尾
-                    raise WebSocketDisconnect() from e
-                except Exception:
-                    # 两者都失败（非断连原因），等待一下再继续
-                    await asyncio.sleep(0.1)
+            await _receive_ws_frame(websocket)
     except WebSocketDisconnect:
         print(f"❌ [CLIENT] 查看客户端已断开: {websocket.client}")
     except Exception as e:

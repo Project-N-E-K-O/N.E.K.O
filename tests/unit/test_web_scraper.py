@@ -129,9 +129,13 @@ async def test_fetch_news_content_merges_weibo_and_tieba_in_china(monkeypatch):
             "formatted_content": "【贴吧热门帖子（社区讨论，非权威信息）】\n1. 贴吧热门帖子",
         }
 
+    async def fake_xhh(limit):
+        return {"success": False, "error": "not configured", "posts": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
     monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
     monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+    monkeypatch.setattr(trending_content, "fetch_xhh_feed_content", fake_xhh)
 
     result = await web_scraper.fetch_news_content(limit=3)
     formatted = web_scraper.format_news_content(result)
@@ -161,9 +165,13 @@ async def test_fetch_news_content_succeeds_when_weibo_fails_but_tieba_succeeds(m
             "formatted_content": "【贴吧热门帖子（社区讨论，非权威信息）】\n1. 贴吧候补",
         }
 
+    async def fake_xhh(limit):
+        return {"success": False, "error": "not configured", "posts": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
     monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
     monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+    monkeypatch.setattr(trending_content, "fetch_xhh_feed_content", fake_xhh)
 
     result = await web_scraper.fetch_news_content(limit=3)
 
@@ -185,9 +193,13 @@ async def test_fetch_news_content_succeeds_when_tieba_fails_but_weibo_succeeds(m
     async def fake_tieba(keyword="", limit=5, candidate_limit=None):
         return {"success": False, "error": "tieba blocked", "posts": [], "topics": []}
 
+    async def fake_xhh(limit):
+        return {"success": False, "error": "not configured", "posts": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: True)
     monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
     monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
+    monkeypatch.setattr(trending_content, "fetch_xhh_feed_content", fake_xhh)
 
     result = await web_scraper.fetch_news_content(limit=3)
 
@@ -212,10 +224,14 @@ async def test_fetch_news_content_routes_non_china_to_twitter(monkeypatch):
             "trending": [{"word": "Global trend", "url": "https://twitter.com/search?q=x"}],
         }
 
+    async def fake_xhh(limit):
+        return {"success": False, "error": "not configured", "posts": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
     monkeypatch.setattr(trending_content, "fetch_weibo_trending", fake_weibo)
     monkeypatch.setattr(trending_content, "fetch_tieba_content", fake_tieba)
     monkeypatch.setattr(trending_content, "fetch_twitter_trending", fake_twitter)
+    monkeypatch.setattr(trending_content, "fetch_xhh_feed_content", fake_xhh)
 
     result = await web_scraper.fetch_news_content(limit=3)
 

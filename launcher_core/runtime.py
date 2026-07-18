@@ -903,8 +903,8 @@ def run_merged_servers() -> int:
                 "browser_mode_enabled": False,
                 "browser_page": "",
                 "shutdown_memory_server_on_exit": False,
-                "request_runtime_shutdown": lambda: _begin_merged_shutdown(
-                    reason="storage_location_restart"
+                "request_runtime_shutdown": lambda *, reason="application_request": _begin_merged_shutdown(
+                    reason=reason
                 ),
                 "server": None,
             }

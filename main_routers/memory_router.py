@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
     MAX_TOTAL_BYTES,
+    batch_daily_fragments,
     build_import_candidates,
     collect_markdown_files,
 )
@@ -793,15 +794,35 @@ async def preview_external_memory_import(request: Request):
         counts = {
             "persona": len(persona_cands),
             "facts": sum(1 for item in analysis["candidates"] if item["target"] == "facts"),
+            # daily 日记走 commit 阶段 LLM 抽取，preview 显示的是解析出的片段数（近似）。
+            "daily": sum(1 for item in analysis["candidates"] if item.get("kind") == "daily"),
         }
         # ETA 估算用料（前端据此估时、标注 240s 上限）：persona 融合按 entity
-        # (neko / master) 分组，每组一次 LLM 往返；facts 走纯写盘、不调 LLM。空
-        # persona → 0 次调用（前端回退到无预估文案）。
+        # (neko / master) 分组，每组一次 LLM 往返；daily 日记按天（=source_file）
+        # 各一次 LLM 抽取；MEMORY.md facts 走纯写盘、不调 LLM。0 次调用 → 前端
+        # 回退到无预估文案。
         persona_fusion_calls = len({(item.get("entity") or "master") for item in persona_cands})
-        # count_tokens 逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件循环，
-        # 与上面 _prepare_external_import 一致 offload 到线程池（Codex/CodeRabbit）。
-        persona_candidate_tokens = await asyncio.to_thread(
-            lambda: sum(count_tokens(item["text"]) for item in persona_cands)
+        daily_cands = [item for item in analysis["candidates"] if item.get("kind") == "daily"]
+        daily_by_file: dict[str, list[str]] = {}
+        for item in daily_cands:
+            daily_by_file.setdefault(str(item.get("source_file") or ""), []).append(item["text"])
+
+        # count_tokens / 分批逐条编码；接近 8 MiB / 1000 条上限的导入会阻塞事件
+        # 循环，与上面 _prepare_external_import 一致 offload 到线程池。daily 调用
+        # 次数用与 commit 侧同一个 batch_daily_fragments 算（超长天会拆多批），
+        # 保证 ETA 的调用计数与实际执行永不漂移。
+        def _eta_inputs():
+            from config import EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS
+            persona_tokens = sum(count_tokens(item["text"]) for item in persona_cands)
+            daily_tokens = sum(count_tokens(item["text"]) for item in daily_cands)
+            daily_calls = sum(
+                len(batch_daily_fragments(texts, EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS))
+                for texts in daily_by_file.values()
+            )
+            return persona_tokens, daily_tokens, daily_calls
+
+        persona_candidate_tokens, daily_candidate_tokens, daily_extraction_calls = (
+            await asyncio.to_thread(_eta_inputs)
         )
         return {
             "success": True,
@@ -812,6 +833,8 @@ async def preview_external_memory_import(request: Request):
             "candidate_count": len(analysis["candidates"]),
             "persona_fusion_calls": persona_fusion_calls,
             "persona_candidate_tokens": persona_candidate_tokens,
+            "daily_extraction_calls": daily_extraction_calls,
+            "daily_candidate_tokens": daily_candidate_tokens,
             "warning_count": len(analysis["warnings"]),
             "warnings": analysis["warnings"][:20],
             "candidates": analysis["candidates"][:100],
