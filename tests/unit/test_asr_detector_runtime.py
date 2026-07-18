@@ -121,6 +121,42 @@ class _BlockingSemanticCoordinator(_SemanticCoordinator):
         return True
 
 
+class _RaisingPrepareCoordinator(_SemanticCoordinator):
+    async def prepare_predictor(self) -> bool:
+        raise RuntimeError("prepare failed")
+
+
+class _OverflowAdapter:
+    def __init__(self) -> None:
+        self.failed = False
+        self.throttle_available = True
+        self.push_calls = 0
+        self.reset_started = asyncio.Event()
+        self.reset_release = asyncio.Event()
+        self.closed = False
+
+    async def push_audio(self, **_kwargs) -> None:
+        self.push_calls += 1
+        if self.push_calls == 1:
+            raise asyncio.QueueFull
+
+    async def reset(self, **_kwargs) -> None:
+        self.reset_started.set()
+        await self.reset_release.wait()
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def wait_failure(self):
+        await asyncio.Event().wait()
+
+    def pin_smart_turn(self) -> None:
+        return None
+
+    def unpin_smart_turn(self) -> None:
+        return None
+
+
 def _smart_turn_policy() -> AsrProviderPolicy:
     return AsrProviderPolicy(
         transport="streaming",
@@ -484,6 +520,95 @@ async def test_smart_turn_prepare_failure_never_becomes_ready() -> None:
     assert await detector.prepare_endpointing(token) is None
     assert detector.smart_turn_readiness is SmartTurnReadiness.FAILED
     assert detector.endpointing_ready(token) is False
+    await detector.close()
+
+
+async def test_smart_turn_prepare_exception_cleans_task_and_pin() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_RaisingPrepareCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+
+    assert await detector.prepare_endpointing(token) is None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.FAILED
+    assert detector._prepare_task is None
+    assert detector._prepare_token is None
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    await detector.close()
+
+
+async def test_close_cancels_prepare_after_cleanup() -> None:
+    coordinator = _BlockingSemanticCoordinator(block_prepare=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+    prepare = asyncio.create_task(detector.prepare_endpointing(token))
+    await asyncio.wait_for(coordinator.prepare_started.wait(), 1)
+
+    await detector.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await prepare
+    assert detector._prepare_task is None
+    assert detector._prepare_token is None
+    assert detector._semantic_adapter._smart_turn_pin_count == 0
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+
+
+async def test_overflow_reset_rejects_audio_until_barrier_finishes() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+    adapter = _OverflowAdapter()
+    detector._semantic_adapter = adapter
+    detector._semantic_started = True
+
+    first = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await asyncio.wait_for(adapter.reset_started.wait(), 1)
+    second = await detector.submit_audio(
+        b"\x02\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+
+    assert first.status is DetectorSubmitStatus.BACKPRESSURE
+    assert second.status is DetectorSubmitStatus.BACKPRESSURE
+    assert adapter.push_calls == 1
+
+    overflow_reset = detector._overflow_reset_task
+    assert overflow_reset is not None
+    adapter.reset_release.set()
+    await asyncio.wait_for(overflow_reset, 1)
+    third = await detector.submit_audio(
+        b"\x03\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert third.status is DetectorSubmitStatus.ACCEPTED
+    assert adapter.push_calls == 2
     await detector.close()
 
 

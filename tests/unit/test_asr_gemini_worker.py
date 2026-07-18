@@ -515,7 +515,8 @@ async def test_rejects_missing_credentials_and_provider_endpointing() -> None:
 
 
 async def test_rejects_utterance_longer_than_28_seconds() -> None:
-    task, requests, responses = await _start_worker(_FakeClient())
+    client = _FakeClient()
+    task, requests, responses = await _start_worker(client)
     await _next_event(responses, "ready")
     await requests.put(
         _AsrWorkerRequest(
@@ -529,4 +530,23 @@ async def test_rejects_utterance_longer_than_28_seconds() -> None:
 
     error = await _next_event(responses, "error")
     assert error.error_code == "ASR_GEMINI_AUDIO_TOO_LONG"
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=1,
+            audio=b"\x01\x00" * 160,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit",
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=1,
+        )
+    )
+    await asyncio.wait_for(requests.join(), 1)
+    assert client.models.calls == []
     await _shutdown(task, requests, responses)

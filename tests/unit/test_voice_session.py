@@ -371,6 +371,38 @@ async def test_late_delta_from_cancelled_response_is_not_forwarded_after_new_res
     client.on_audio_delta.assert_awaited_once_with(b"fresh-audio")
 
 
+async def test_id_bearing_events_are_dropped_without_an_active_response():
+    client = _make_manual_client(model="gpt-4o-realtime-preview", api_type="openai")
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-old"}}),
+        json.dumps({"type": "response.done", "response": {"id": "resp-old"}}),
+        json.dumps(
+            {
+                "type": "response.text.delta",
+                "response_id": "resp-old",
+                "delta": "late",
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.function_call_arguments.done",
+                "response_id": "resp-old",
+                "call_id": "call-old",
+                "name": "late_tool",
+                "arguments": "{}",
+            }
+        ),
+    ]
+    client.on_text_delta = AsyncMock()
+    client.on_tool_call = AsyncMock()
+
+    await client.handle_messages()
+
+    client.on_text_delta.assert_not_awaited()
+    client.on_tool_call.assert_not_awaited()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # VAD MANUAL turn detection tests
 # ──────────────────────────────────────────────────────────────────────

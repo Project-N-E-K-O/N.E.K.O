@@ -96,7 +96,9 @@ class TurnCoordinator:
             if self._closed:
                 return False
             try:
-                return bool(await asyncio.to_thread(self._predictor.load))
+                return bool(await self._run_predictor_call(self._predictor.load))
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 return False
 
@@ -132,7 +134,7 @@ class TurnCoordinator:
                 )
             else:
                 try:
-                    loaded = await asyncio.to_thread(self._predictor.load)
+                    loaded = await self._run_predictor_call(self._predictor.load)
                     if not loaded:
                         result = self._non_ok(
                             EvaluationStatus.UNAVAILABLE,
@@ -142,7 +144,7 @@ class TurnCoordinator:
                         )
                     else:
                         audio = np.frombuffer(audio_tail, dtype="<i2").astype(np.float32) / 32768.0
-                        probability = await asyncio.to_thread(
+                        probability = await self._run_predictor_call(
                             self._predictor.predict_probability, audio
                         )
                         decision = (
@@ -157,6 +159,17 @@ class TurnCoordinator:
                             generation,
                             activity_seq,
                         )
+                except asyncio.CancelledError:
+                    async with self._state_lock:
+                        if (
+                            not self._closed
+                            and request == self._latest_request
+                            and generation == self._generation
+                            and activity_seq == self._activity_seq
+                            and self._state is CoordinatorState.EVALUATING
+                        ):
+                            self._state = CoordinatorState.PAUSE_CANDIDATE
+                    raise
                 except RuntimeUnavailableError as exc:
                     result = self._non_ok(
                         EvaluationStatus.UNAVAILABLE, generation, activity_seq, str(exc)
@@ -186,6 +199,25 @@ class TurnCoordinator:
                     else CoordinatorState.PAUSE_CANDIDATE
                 )
                 return result
+
+    @staticmethod
+    async def _run_predictor_call(call, *args):
+        """Keep the inference lane owned until a cancelled thread call exits."""
+
+        task = asyncio.create_task(asyncio.to_thread(call, *args))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            try:
+                task.result()
+            except BaseException:
+                pass
+            raise asyncio.CancelledError
+        return task.result()
 
     async def reset(self) -> None:
         async with self._state_lock:

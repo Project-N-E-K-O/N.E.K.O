@@ -370,39 +370,58 @@ async def soniox_asr_worker(
         nonlocal pending_finalize, provider_wire_audio_bytes
         nonlocal reconnect_attempted, replay_complete
         while True:
-            if pending_finalize is None and deferred_requests:
+            if deferred_requests and (
+                pending_finalize is None
+                or deferred_requests[0].kind in {"clear", "shutdown"}
+            ):
                 request = deferred_requests.popleft()
             elif pending_finalize is not None and deferred_requests:
                 request_task = asyncio.create_task(
                     request_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue
                 )
                 finalized_task = asyncio.create_task(finalize_completed.wait())
-                done, pending = await asyncio.wait(
-                    {request_task, finalized_task},
-                    timeout=_KEEPALIVE_SECONDS,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if request_task in done:
-                    request = request_task.result()
-                    if request.kind in {"audio", "commit"}:
+                request_saved = False
+                request_ready_for_processing = False
+                timed_out = False
+                try:
+                    done, _pending = await asyncio.wait(
+                        {request_task, finalized_task},
+                        timeout=_KEEPALIVE_SECONDS,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if request_task in done:
+                        request = request_task.result()
                         deferred_requests.append(request)
-                        finalized_task.cancel()
-                        await asyncio.gather(
-                            finalized_task, return_exceptions=True
-                        )
+                        request_saved = True
+                        if request.kind in {"audio", "commit"}:
+                            continue
+                        request_ready_for_processing = True
+                    elif finalized_task in done:
                         continue
-                elif finalized_task in done:
-                    request_task.cancel()
-                    await asyncio.gather(request_task, return_exceptions=True)
-                    continue
-                else:
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
+                    else:
+                        timed_out = True
+                finally:
+                    for task in (request_task, finalized_task):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(
+                        request_task,
+                        finalized_task,
+                        return_exceptions=True,
+                    )
+                    if (
+                        not request_saved
+                        and request_task.done()
+                        and not request_task.cancelled()
+                        and request_task.exception() is None
+                    ):
+                        deferred_requests.appendleft(request_task.result())
+                if timed_out:
                     await connection.send(json.dumps({"type": "keepalive"}))
                     continue
-                finalized_task.cancel()
-                await asyncio.gather(finalized_task, return_exceptions=True)
+                if not request_ready_for_processing:
+                    continue
+                request = deferred_requests.pop()
             else:
                 try:
                     request = await asyncio.wait_for(

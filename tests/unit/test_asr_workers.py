@@ -173,7 +173,8 @@ async def test_qwen_duplicate_item_created_preserves_next_manual_commit(
                 utterance_id=utterance_id,
             )
         )
-    await _wait_until(lambda: commit_count == 2)
+    await asyncio.wait_for(requests.join(), 1)
+    assert commit_count == 2
 
     await websocket.server_send(
         {"type": "conversation.item.created", "item": {"id": "first"}}
@@ -1505,6 +1506,96 @@ async def test_soniox_manual_reconnect_replays_pending_finalize(
         responses,
         generation=3,
         buffer_epoch=4,
+        utterance_id=6,
+    )
+
+
+async def test_soniox_sender_cancellation_preserves_dequeued_control(
+    monkeypatch,
+) -> None:
+    real_wait = asyncio.wait
+    inner_wait_started = asyncio.Event()
+    request_dequeued = asyncio.Event()
+    hold_inner_wait = asyncio.Event()
+    intercept_inner_wait = True
+
+    async def controlled_wait(tasks, *args, **kwargs):
+        nonlocal intercept_inner_wait
+        task_names = {task.get_name() for task in tasks}
+        is_connection_wait = {
+            "soniox-asr-receiver",
+            "soniox-asr-sender",
+        }.issubset(task_names)
+        if is_connection_wait or not intercept_inner_wait:
+            return await real_wait(tasks, *args, **kwargs)
+        inner_wait_started.set()
+        result = await real_wait(tasks, *args, **kwargs)
+        intercept_inner_wait = False
+        request_dequeued.set()
+        await hold_inner_wait.wait()
+        return result
+
+    monkeypatch.setattr(soniox.asyncio, "wait", controlled_wait)
+    sockets = (_FakeWebSocket(), _FakeWebSocket(), _FakeWebSocket())
+    connector = _FakeConnector(*sockets)
+    monkeypatch.setattr(soniox.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        soniox.soniox_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=1,
+            buffer_epoch=2,
+            utterance_id=3,
+            audio=b"\x01\x00" * 160,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="commit",
+            generation=1,
+            buffer_epoch=2,
+            utterance_id=3,
+        )
+    )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=1,
+            buffer_epoch=2,
+            utterance_id=4,
+            audio=b"\x02\x00" * 160,
+        )
+    )
+    await asyncio.wait_for(inner_wait_started.wait(), 1)
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="clear",
+            generation=2,
+            buffer_epoch=0,
+            utterance_id=5,
+        )
+    )
+    await asyncio.wait_for(request_dequeued.wait(), 1)
+    await sockets[0].server_end()
+    await _wait_until(lambda: len(connector.calls) == 2)
+    await _wait_until(lambda: len(connector.calls) == 3)
+
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=2,
+        buffer_epoch=0,
         utterance_id=6,
     )
 

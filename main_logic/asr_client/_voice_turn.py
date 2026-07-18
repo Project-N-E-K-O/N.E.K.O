@@ -47,6 +47,7 @@ class _AudioItem:
 class _ResetItem:
     identity: _Identity
     completed: asyncio.Future[None]
+    requester: asyncio.Task[object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +278,11 @@ class _VoiceTurnAdapter:
         self._queue.discard_audio()
         completed = asyncio.get_running_loop().create_future()
         self._queue.put_control_nowait(
-            _ResetItem((generation, buffer_epoch, utterance_id), completed),
+            _ResetItem(
+                (generation, buffer_epoch, utterance_id),
+                completed,
+                asyncio.current_task(),
+            ),
             priority=True,
         )
         consumer = self._consumer_task
@@ -344,7 +349,7 @@ class _VoiceTurnAdapter:
                         return
                     continue
                 if isinstance(item, _ResetItem):
-                    await self._process_reset(item.identity)
+                    await self._process_reset(item.identity, requester=item.requester)
                     if not item.completed.done():
                         item.completed.set_result(None)
                     continue
@@ -585,19 +590,33 @@ class _VoiceTurnAdapter:
         self._enter_semantic_degraded()
         self._schedule_fallback(item.identity, "semantic_degraded")
 
-    async def _process_reset(self, identity: _Identity) -> None:
+    async def _process_reset(
+        self,
+        identity: _Identity,
+        *,
+        requester: asyncio.Task[object] | None = None,
+    ) -> None:
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
+        # Invalidate callbacks before awaiting their cancellation. A callback
+        # may suppress CancelledError, but it must still observe the new turn.
+        self._identity = identity
         evaluation_task, self._evaluation_task = self._evaluation_task, None
         if evaluation_task is not None:
             evaluation_task.cancel()
+        callback_tasks = tuple(
+            task for task in self._callback_tasks if task is not requester
+        )
+        for task in callback_tasks:
+            task.cancel()
+        if callback_tasks:
+            await asyncio.gather(*callback_tasks, return_exceptions=True)
         self._reevaluation_requested = False
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
         self._latest_detector_identity = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
-        self._identity = identity
         self._commit_dispatched.clear()
         self._fallback_speech_started = False
         self._fallback_audio_ms = 0
@@ -730,6 +749,10 @@ class _VoiceTurnAdapter:
         self._failure = _VoiceTurnFailure(kind, stage)
         self._cancel_fallback()
         self._cancel_smart_turn_unload()
+        current_task = asyncio.current_task()
+        for task in tuple(self._callback_tasks):
+            if task is not current_task:
+                task.cancel()
         failure_future = self._failure_future
         if failure_future is None:
             failure_future = asyncio.get_running_loop().create_future()
@@ -750,8 +773,14 @@ class _VoiceTurnAdapter:
 
         async def commit() -> None:
             try:
+                if self._closed or self._failed or identity != self._identity:
+                    return
                 if self._on_scoped_commit is not None and detector_identity is not None:
                     await self._on_scoped_commit(*identity, detector_identity)
+                    if self._closed or self._failed or identity != self._identity:
+                        return
+                if self._closed or self._failed or identity != self._identity:
+                    return
                 await self._on_commit(*identity)
             except asyncio.CancelledError:
                 raise

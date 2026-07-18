@@ -150,7 +150,7 @@ async def test_glm_commit_posts_pcm16_wav_and_emits_exactly_one_final() -> None:
     # A duplicate commit has no remaining audio and must not create a second
     # provider call or a duplicate final.
     await requests.put(_AsrWorkerRequest(kind="commit", **key))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(requests.join(), 1)
     assert len(client.calls) == 1
     await _stop_worker(task, requests, responses)
 

@@ -361,6 +361,7 @@ async def gemini_asr_worker(
                     buffer.extend(request.audio)
                     if len(buffer) > _MAX_PCM_BYTES:
                         buffers.pop(key, None)
+                        committed.add(key)
                         await response_queue.put(
                             _AsrWorkerEvent(
                                 kind="error",
