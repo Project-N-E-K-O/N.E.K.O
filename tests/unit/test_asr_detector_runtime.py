@@ -13,7 +13,11 @@ from main_logic.asr_client.detector_runtime import (
     SmartTurnLease,
     SmartTurnReadiness,
 )
-from main_logic.asr_client.detector_contracts import DetectorSubmitStatus
+from main_logic.asr_client.detector_contracts import (
+    DetectorActivityEvent,
+    DetectorSubmitStatus,
+    DetectorTurnEvent,
+)
 from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
 from main_logic.voice_turn.contracts import (
@@ -335,6 +339,59 @@ async def test_smart_turn_loading_does_not_hold_detector_audio_submission() -> N
     coordinator.prepare_release.set()
     lease = await asyncio.wait_for(prepare_task, 1)
     assert lease is not None
+    await lease.release()
+    await detector.close()
+
+
+async def test_scoped_detector_events_bind_before_logical_complete() -> None:
+    events: list[DetectorActivityEvent | DetectorTurnEvent] = []
+    detector: DetectorRuntime
+    turn_token = VoiceTurnToken(_ingress_token(), turn_id=7)
+
+    async def on_event(event) -> None:
+        events.append(event)
+        if (
+            isinstance(event, DetectorActivityEvent)
+            and event.activity is SpeechActivityEvent.SPEECH_STARTED
+        ):
+            assert await detector.bind_candidate(event.candidate, turn_token)
+
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(
+            (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+        ),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_event=on_event,
+    )
+    lease = await detector.prepare_endpointing(turn_token)
+    assert lease is not None
+
+    submitted = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    assert submitted.status is DetectorSubmitStatus.ACCEPTED
+    for _ in range(100):
+        if any(isinstance(event, DetectorTurnEvent) for event in events):
+            break
+        await asyncio.sleep(0.001)
+
+    assert [type(event) for event in events] == [
+        DetectorActivityEvent,
+        DetectorActivityEvent,
+        DetectorTurnEvent,
+    ]
+    complete = events[-1]
+    assert isinstance(complete, DetectorTurnEvent)
+    assert complete.bound_turn.turn_token == turn_token
     await lease.release()
     await detector.close()
 

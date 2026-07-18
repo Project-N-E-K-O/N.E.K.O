@@ -19,6 +19,7 @@ from main_logic.voice_turn.silero_vad import SileroActivityGate, SileroVad
 from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
 from .detector_queue import DetectorDurationQueue
+from .detector_contracts import DetectorIngressIdentity
 
 
 _Identity: TypeAlias = tuple[int, int, int]
@@ -38,6 +39,7 @@ class _AudioItem:
     identity: _Identity
     pcm16: bytes
     duration_us: int
+    detector_identity: DetectorIngressIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,7 @@ class _EvaluationResultItem:
     coordinator_generation: int
     activity_seq: int
     reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"]
+    detector_identity: DetectorIngressIdentity | None = None
     result: object | None = None
     error: BaseException | None = None
 
@@ -76,6 +79,14 @@ class _VoiceTurnAdapter:
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
+        on_scoped_commit: Callable[
+            [int, int, int, DetectorIngressIdentity], Awaitable[None]
+        ]
+        | None = None,
+        on_scoped_activity: Callable[
+            [SpeechActivityEvent, DetectorIngressIdentity], Awaitable[None]
+        ]
+        | None = None,
         queue_maxsize: int = 128,
         queue_capacity_ms: int = 1_000,
         continuation_timeout_seconds: float = 2.0,
@@ -105,6 +116,8 @@ class _VoiceTurnAdapter:
         self._coordinator = coordinator
         self._on_commit = on_commit
         self._on_activity = on_activity
+        self._on_scoped_commit = on_scoped_commit
+        self._on_scoped_activity = on_scoped_activity
         self._queue: DetectorDurationQueue[_AudioItem, _ControlItem] = (
             DetectorDurationQueue(
                 capacity_us=queue_capacity_ms * 1_000,
@@ -126,6 +139,7 @@ class _VoiceTurnAdapter:
             "candidate_pause", "periodic_no_vad", "strict_retry"
         ] | None = None
         self._strict_endpoint_deadline: float | None = None
+        self._latest_detector_identity: DetectorIngressIdentity | None = None
         self._callback_tasks: set[asyncio.Task[None]] = set()
         self._identity: _Identity | None = None
         self._vad_load_attempted = False
@@ -206,6 +220,7 @@ class _VoiceTurnAdapter:
         utterance_id: int,
         pcm16: bytes,
         sample_rate_hz: int = 16_000,
+        detector_identity: DetectorIngressIdentity | None = None,
     ) -> None:
         if len(pcm16) % 2:
             raise ValueError("ASR_INVALID_PCM: Voice Turn requires PCM16LE")
@@ -223,6 +238,7 @@ class _VoiceTurnAdapter:
                 (generation, buffer_epoch, utterance_id),
                 pcm16,
                 duration_us,
+                detector_identity,
             ),
             duration_us=duration_us,
         )
@@ -336,6 +352,7 @@ class _VoiceTurnAdapter:
             self._identity = item.identity
         if item.identity != self._identity:
             return
+        self._latest_detector_identity = item.detector_identity
         self._coordinator.push_audio(item.pcm16)
         if self._vad_degraded:
             await self._process_without_vad(item)
@@ -371,6 +388,8 @@ class _VoiceTurnAdapter:
         for event in events:
             if self._on_activity is not None:
                 await self._on_activity(event)
+            if self._on_scoped_activity is not None and item.detector_identity is not None:
+                await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
 
         if any(
@@ -395,7 +414,11 @@ class _VoiceTurnAdapter:
             self._schedule_fallback(item.identity, "semantic_degraded")
             return
 
-        self._request_evaluation(item.identity, "candidate_pause")
+        self._request_evaluation(
+            item.identity,
+            "candidate_pause",
+            item.detector_identity,
+        )
 
     async def _process_without_vad(self, item: _AudioItem) -> None:
         """Keep SmartTurn authoritative when Silero cannot provide candidates."""
@@ -407,6 +430,8 @@ class _VoiceTurnAdapter:
             event = SpeechActivityEvent.SPEECH_STARTED
             if self._on_activity is not None:
                 await self._on_activity(event)
+            if self._on_scoped_activity is not None and item.detector_identity is not None:
+                await self._on_scoped_activity(event, item.detector_identity)
             await self._coordinator.on_activity_event(event)
         self._fallback_audio_ms += len(item.pcm16) * 1_000 // (16_000 * 2)
         if started_now:
@@ -414,12 +439,17 @@ class _VoiceTurnAdapter:
         if self._fallback_audio_ms < self._fallback_evaluation_interval_ms:
             return
         self._fallback_audio_ms = 0
-        self._request_evaluation(item.identity, "periodic_no_vad")
+        self._request_evaluation(
+            item.identity,
+            "periodic_no_vad",
+            item.detector_identity,
+        )
 
     def _request_evaluation(
         self,
         identity: _Identity,
         reason: Literal["candidate_pause", "periodic_no_vad", "strict_retry"],
+        detector_identity: DetectorIngressIdentity | None = None,
     ) -> None:
         if self._closed or self._failed or identity != self._identity:
             return
@@ -445,6 +475,7 @@ class _VoiceTurnAdapter:
                     coordinator_generation=coordinator_generation,
                     activity_seq=activity_seq,
                     reason=reason,
+                    detector_identity=detector_identity,
                     result=result,
                     error=error,
                 )
@@ -475,7 +506,11 @@ class _VoiceTurnAdapter:
             or not activity_matches
         ):
             if reevaluate and identity_matches and not self._closed and not self._failed:
-                self._request_evaluation(item.identity, reevaluation_reason)
+                self._request_evaluation(
+                    item.identity,
+                    reevaluation_reason,
+                    self._latest_detector_identity,
+                )
             return
         if item.error is not None:
             self._report_failure("runtime_error", "smart_turn")
@@ -485,15 +520,23 @@ class _VoiceTurnAdapter:
         decision = getattr(result, "decision", None)
         if status is EvaluationStatus.STALE:
             if reevaluate:
-                self._request_evaluation(item.identity, reevaluation_reason)
+                self._request_evaluation(
+                    item.identity,
+                    reevaluation_reason,
+                    self._latest_detector_identity,
+                )
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
             self._strict_endpoint_deadline = None
-            self._dispatch_commit(item.identity)
+            self._dispatch_commit(item.identity, item.detector_identity)
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
             if reevaluate:
-                self._request_evaluation(item.identity, reevaluation_reason)
+                self._request_evaluation(
+                    item.identity,
+                    reevaluation_reason,
+                    self._latest_detector_identity,
+                )
                 return
             if item.reason != "periodic_no_vad":
                 if self._smart_turn_required and self._strict_endpoint_deadline is None:
@@ -523,6 +566,7 @@ class _VoiceTurnAdapter:
         self._reevaluation_requested = False
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
+        self._latest_detector_identity = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
         self._identity = identity
@@ -578,7 +622,7 @@ class _VoiceTurnAdapter:
                 and identity == self._identity
                 and state_matches
             ):
-                self._dispatch_commit(identity)
+                self._dispatch_commit(identity, self._latest_detector_identity)
 
         self._fallback_task = asyncio.create_task(
             fallback(), name="asr-voice-turn-fallback"
@@ -599,7 +643,11 @@ class _VoiceTurnAdapter:
         if deadline is None or asyncio.get_running_loop().time() >= deadline:
             self._report_failure("unavailable", "smart_turn")
             return
-        self._request_evaluation(identity, "strict_retry")
+        self._request_evaluation(
+            identity,
+            "strict_retry",
+            self._latest_detector_identity,
+        )
 
     def _cancel_fallback(self) -> None:
         task = self._fallback_task
@@ -661,7 +709,11 @@ class _VoiceTurnAdapter:
         if not failure_future.done():
             failure_future.set_result(self._failure)
 
-    def _dispatch_commit(self, identity: _Identity) -> None:
+    def _dispatch_commit(
+        self,
+        identity: _Identity,
+        detector_identity: DetectorIngressIdentity | None = None,
+    ) -> None:
         if self._closed or identity != self._identity:
             return
         if identity in self._commit_dispatched:
@@ -670,6 +722,8 @@ class _VoiceTurnAdapter:
 
         async def commit() -> None:
             try:
+                if self._on_scoped_commit is not None and detector_identity is not None:
+                    await self._on_scoped_commit(*identity, detector_identity)
                 await self._on_commit(*identity)
             except asyncio.CancelledError:
                 raise
