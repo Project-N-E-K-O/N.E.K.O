@@ -1065,13 +1065,12 @@ class PluginCliService:
             manager.package_id_for_directory(target_dir) if manager is not None else ""
         )
         if not installed_package_id:
-            # Legacy rows predate package identity tracking. If the incoming
-            # profile key already exists, it is the strongest available proof
-            # that the identity is unchanged. Otherwise official historical
-            # single-plugin packages used plugin_id as package_id, so fail
-            # closed against that conservative baseline.
-            incoming_profile = profiles_root / plan.package_id
-            installed_package_id = plan.package_id if incoming_profile.exists() else plan.plugin_id
+            # Legacy rows predate package identity tracking. Directory
+            # existence cannot prove ownership because stale or unrelated
+            # profile trees may share the incoming name. Historical official
+            # single-plugin packages used plugin_id as package_id, so use that
+            # conservative baseline and fail closed on any ambiguous rename.
+            installed_package_id = plan.plugin_id
         if installed_package_id != plan.package_id:
             return replace(
                 plan,

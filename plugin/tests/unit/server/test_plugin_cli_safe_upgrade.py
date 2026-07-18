@@ -368,11 +368,17 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
     (profile_dir / "custom.toml").write_text("custom = true\n", encoding="utf-8")
 
     import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
 
     monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "demo-package"),
+    )
 
     async def not_running(_plugin_id: str) -> bool:
         return False
@@ -395,7 +401,7 @@ async def test_service_backs_up_profile_by_package_id_during_upgrade(
 
 
 @pytest.mark.asyncio
-async def test_service_uses_custom_profile_root_for_legacy_package_identity(
+async def test_service_uses_custom_profile_root_with_recorded_package_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -424,7 +430,7 @@ async def test_service_uses_custom_profile_root_for_legacy_package_identity(
     monkeypatch.setattr(
         service_module,
         "get_install_source_manager",
-        lambda: SimpleNamespace(package_id_for_directory=lambda _path: ""),
+        lambda: SimpleNamespace(package_id_for_directory=lambda _path: "demo-package"),
     )
 
     async def not_running(_plugin_id: str) -> bool:
@@ -450,6 +456,46 @@ async def test_service_uses_custom_profile_root_for_legacy_package_identity(
 
     assert result["operation"] == "upgrade"
     assert (profile_dir / "custom.toml").read_text(encoding="utf-8") == "custom = true\n"
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_legacy_package_rename_despite_stale_incoming_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write_plugin(tmp_path / "source", "demo", "2.0.0")
+    packages_root = tmp_path / "packages"
+    packages_root.mkdir()
+    package_path = packages_root / "demo-2.0.0.neko-plugin"
+    build_plugin(source, package_path)
+    _rewrite_package_manifest_id(package_path, "new-package")
+
+    plugins_root = tmp_path / "plugins"
+    _write_plugin(plugins_root, "demo", "1.0.0")
+    profiles_root = tmp_path / "profiles"
+    stale_profile = profiles_root / "new-package"
+    stale_profile.mkdir(parents=True)
+    (stale_profile / "default.toml").write_text("stale = true\n", encoding="utf-8")
+
+    import plugin.settings as plugin_settings
+    import plugin.server.application.plugin_cli.service as service_module
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", tmp_path / "builtin")
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", plugins_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(
+        service_module,
+        "get_install_source_manager",
+        lambda: SimpleNamespace(package_id_for_directory=lambda _path: ""),
+    )
+
+    plan = await PluginCliService().plan_install(package=str(package_path))
+
+    assert plan["action"] == "blocked"
+    assert plan["reason"] == "package_id_change"
+    assert plan["installed_package_id"] == "demo"
+    assert (stale_profile / "default.toml").read_text(encoding="utf-8") == "stale = true\n"
 
 
 @pytest.mark.asyncio

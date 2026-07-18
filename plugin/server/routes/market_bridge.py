@@ -1798,10 +1798,12 @@ async def _do_upgrade(
                     code="install_failed",
                     message=f"invalid package id: {package_id!r}",
                 )
-            incoming_profile_dir = path_policy.package_profiles_root / package_id
-            installed_package_id = getattr(entry, "package_id", "") or (
-                package_id if incoming_profile_dir.exists() else installed_plugin_id
-            )
+            # Legacy rows have no trustworthy package/profile key. Do not use
+            # an incoming-named directory as proof of ownership: it may be
+            # stale or belong to another package. Historical single-plugin
+            # packages used plugin_id as package_id, so ambiguous renames are
+            # rejected against that conservative baseline.
+            installed_package_id = getattr(entry, "package_id", "") or installed_plugin_id
             if package_id != installed_package_id:
                 raise _TaskError(
                     code="package_id_change",
