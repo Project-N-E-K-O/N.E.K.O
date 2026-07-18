@@ -257,7 +257,7 @@ def test_console_modal_close_callback_stays_stable_while_typing() -> None:
         assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
-def test_console_uses_floating_live_control_with_ordered_readiness_tooltip() -> None:
+def test_console_uses_viewport_fixed_live_control_with_priority_readiness_tooltip() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -266,35 +266,60 @@ def test_console_uses_floating_live_control_with_ordered_readiness_tooltip() -> 
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
         dock_source = source.split('className="neko-live-live-fab"', 1)[1].split(">\n        {", 1)[0]
+        live_control_source = source.split('className="neko-live-live-fab"', 1)[1].split(
+            "const renderConfigField", 1
+        )[0]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
         assert 'className="neko-live-console-layout"' in source
         assert '<Page className="neko-live-page"' in source
         assert ".neko-page.neko-live-page" in source
-        assert "animation-fill-mode: backwards !important" in source
+        assert "animation: none !important" in source
+        assert "transform: none !important" in source
         assert 'gridTemplateRows: "auto"' in source
-        assert 'paddingBottom: "120px"' in source
-        assert 'scrollPaddingBottom: "120px"' in source
+        assert 'paddingBottom: "120px"' not in source
+        assert 'scrollPaddingBottom: "120px"' not in source
         assert 'className="neko-live-console-scroll"' in source
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
         assert 'className="neko-live-console-dock"' not in source
+        assert 'position: "fixed"' in dock_source
+        assert 'right: "24px"' in dock_source
+        assert 'bottom: "24px"' in dock_source
+        assert 'background: "rgba(103, 194, 58, 0.1)"' in live_control_source
+        assert 'borderColor: "rgba(103, 194, 58, 0.38)"' in live_control_source
+        assert 'color: "var(--success)"' in live_control_source
+        assert 'minWidth: "188px"' in live_control_source
+        assert 'minHeight: "56px"' in live_control_source
+        assert 'borderRadius: "16px"' in live_control_source
+        assert 'fontSize: "22px"' in live_control_source
+        assert "fontWeight: 700" in live_control_source
+        assert "opacity: 1" in live_control_source
+        assert "!simpleActionPending" in live_control_source
+        assert 't("panel.actions.connect")' in live_control_source
         assert "<Tooltip" in source
         assert 'placement="top"' in source
-        assert 'content={readinessTooltip}' in source
-        preparation_source = source.split("const preparationSteps = [", 1)[1].split("]", 1)[0]
-        expected_steps = (
-            'panel.console.preparation.login',
-            'panel.console.preparation.lookupRoom',
-            'panel.console.preparation.confirmRoom',
-            'panel.console.preparation.liveSettings',
-            'panel.console.preparation.safety',
+        assert 'content={readinessReason}' in source
+        assert "readinessTooltip" not in source
+        readiness_source = source.split("const readinessReason =", 1)[1].split(
+            "const primaryStatusLabel", 1
+        )[0]
+        readiness_gates = (
+            "!accountStartReady",
+            "!roomConfigured",
+            "!liveSettingsReady",
+            "!safetyCheckReady",
         )
-        assert all(key in preparation_source for key in expected_steps)
-        assert [preparation_source.index(key) for key in expected_steps] == sorted(
-            preparation_source.index(key) for key in expected_steps
+        assert all(gate in readiness_source for gate in readiness_gates)
+        assert [readiness_source.index(gate) for gate in readiness_gates] == sorted(
+            readiness_source.index(gate) for gate in readiness_gates
         )
+        assert 'panel.console.preparation.login' in readiness_source
+        assert 'panel.console.preparation.lookupRoom' in readiness_source
+        assert 'panel.console.preparation.confirmRoom' in readiness_source
+        assert 'panel.console.preparation.liveSettings' in readiness_source
+        assert 'panel.console.preparation.safety' in readiness_source
         assert 't("panel.console.preparation.notReady")' in source
         assert "const [startConfirmOpen, setStartConfirmOpen] = useState(false)" in source
         assert "open={startConfirmOpen}" in source
