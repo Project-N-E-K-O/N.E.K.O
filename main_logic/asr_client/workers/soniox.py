@@ -26,7 +26,13 @@ from typing import Any, Literal
 
 import websockets
 
-from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from .._infra import (
+    AsrSessionConfig,
+    _AsrRequestQueue,
+    _AsrWorkerEvent,
+    _AsrWorkerRequest,
+    _QueuedAudioHold,
+)
 from ..provider_policy import AsrReplayPolicy
 
 
@@ -55,6 +61,16 @@ class _PendingFinalize:
     generation: int
     buffer_epoch: int
     utterance_id: int
+
+
+@dataclass(slots=True)
+class _DeferredSonioxRequest:
+    request: _AsrWorkerRequest
+    audio_hold: _QueuedAudioHold | None = None
+
+    def release(self) -> None:
+        if self.audio_hold is not None:
+            self.audio_hold.release()
 
 
 @dataclass(slots=True)
@@ -176,10 +192,34 @@ async def soniox_asr_worker(
     audio_bytes_sent = 0
     websocket = None
     pending_finalize: _PendingFinalize | None = None
-    deferred_requests: deque[_AsrWorkerRequest] = deque()
+    deferred_requests: deque[_DeferredSonioxRequest] = deque()
     finalize_completed = asyncio.Event()
     finalize_completed.set()
     worker_started_at = time.monotonic()
+
+    def defer_request(
+        request: _AsrWorkerRequest,
+        *,
+        append_left: bool = False,
+        existing: _DeferredSonioxRequest | None = None,
+        audio_hold: _QueuedAudioHold | None = None,
+    ) -> None:
+        if existing is not None:
+            if existing.request is not request or audio_hold is not None:
+                raise RuntimeError("ASR_SONIOX_DEFERRED_IDENTITY_MISMATCH")
+            item = existing
+        else:
+            item = _DeferredSonioxRequest(request=request, audio_hold=audio_hold)
+        if append_left:
+            deferred_requests.appendleft(item)
+        else:
+            deferred_requests.append(item)
+
+    def discard_deferred_requests() -> None:
+        while deferred_requests:
+            item = deferred_requests.popleft()
+            item.release()
+            request_queue.task_done()
 
     async def emit_error(code: str, message: str) -> None:
         nonlocal failure_sent
@@ -372,13 +412,20 @@ async def soniox_asr_worker(
         while True:
             if deferred_requests and (
                 pending_finalize is None
-                or deferred_requests[0].kind in {"clear", "shutdown"}
+                or deferred_requests[0].request.kind in {"clear", "shutdown"}
             ):
-                request = deferred_requests.popleft()
+                deferred_item = deferred_requests.popleft()
+                request = deferred_item.request
             elif pending_finalize is not None and deferred_requests:
-                request_task = asyncio.create_task(
-                    request_queue.get()  # noqa: ASYNC_BLOCK — asyncio.Queue
-                )
+                deferred_item = None
+                if isinstance(request_queue, _AsrRequestQueue):
+                    request_task = asyncio.create_task(
+                        request_queue.get_with_audio_hold()
+                    )
+                else:
+                    request_task = asyncio.create_task(
+                        request_queue.get()  # noqa: ASYNC_BLOCK - asyncio.Queue
+                    )
                 finalized_task = asyncio.create_task(finalize_completed.wait())
                 request_saved = False
                 request_ready_for_processing = False
@@ -390,8 +437,13 @@ async def soniox_asr_worker(
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if request_task in done:
-                        request = request_task.result()
-                        deferred_requests.append(request)
+                        request_result = request_task.result()
+                        if isinstance(request_queue, _AsrRequestQueue):
+                            request, audio_hold = request_result
+                        else:
+                            request = request_result
+                            audio_hold = None
+                        defer_request(request, audio_hold=audio_hold)
                         request_saved = True
                         if request.kind in {"audio", "commit"}:
                             continue
@@ -415,19 +467,43 @@ async def soniox_asr_worker(
                         and not request_task.cancelled()
                         and request_task.exception() is None
                     ):
-                        deferred_requests.appendleft(request_task.result())
+                        request_result = request_task.result()
+                        if isinstance(request_queue, _AsrRequestQueue):
+                            request, audio_hold = request_result
+                        else:
+                            request = request_result
+                            audio_hold = None
+                        defer_request(
+                            request,
+                            append_left=True,
+                            audio_hold=audio_hold,
+                        )
                 if timed_out:
                     await connection.send(json.dumps({"type": "keepalive"}))
                     continue
                 if not request_ready_for_processing:
                     continue
-                request = deferred_requests.pop()
+                deferred_item = deferred_requests.pop()
+                request = deferred_item.request
             else:
+                deferred_item = None
                 try:
-                    request = await asyncio.wait_for(
-                        request_queue.get(),  # noqa: ASYNC_BLOCK — asyncio.Queue
-                        timeout=_KEEPALIVE_SECONDS,
-                    )
+                    if pending_finalize is not None and isinstance(
+                        request_queue, _AsrRequestQueue
+                    ):
+                        request, audio_hold = await asyncio.wait_for(
+                            request_queue.get_with_audio_hold(),
+                            timeout=_KEEPALIVE_SECONDS,
+                        )
+                        deferred_item = _DeferredSonioxRequest(
+                            request=request,
+                            audio_hold=audio_hold,
+                        )
+                    else:
+                        request = await asyncio.wait_for(
+                            request_queue.get(),  # noqa: ASYNC_BLOCK - asyncio.Queue
+                            timeout=_KEEPALIVE_SECONDS,
+                        )
                 except asyncio.TimeoutError:
                     if (
                         time.monotonic() - connected_at >= _SAFE_ROTATION_SECONDS
@@ -453,7 +529,8 @@ async def soniox_asr_worker(
                     and request.kind in {"audio", "commit"}
                     and request_identity != pending_finalize
                 ):
-                    deferred_requests.append(request)
+                    defer_request(request, existing=deferred_item)
+                    deferred_item = None
                     request_deferred = True
                     continue
                 state.generation = request.generation
@@ -495,9 +572,7 @@ async def soniox_asr_worker(
                 if request.kind == "clear":
                     pending_finalize = None
                     finalize_completed.set()
-                    while deferred_requests:
-                        deferred_requests.popleft()
-                        request_queue.task_done()
+                    discard_deferred_requests()
                     replay_audio.clear()
                     replay_complete = True
                     provider_wire_audio_bytes = 0
@@ -510,9 +585,7 @@ async def soniox_asr_worker(
                     return "reset"
                 if request.kind == "shutdown":
                     intentional_shutdown = True
-                    while deferred_requests:
-                        deferred_requests.popleft()
-                        request_queue.task_done()
+                    discard_deferred_requests()
                     await connection.send(b"")
                     return "shutdown"
                 await emit_error(
@@ -522,6 +595,8 @@ async def soniox_asr_worker(
                 return "failed"
             finally:
                 if not request_deferred:
+                    if deferred_item is not None:
+                        deferred_item.release()
                     request_queue.task_done()
 
     try:
@@ -609,6 +684,7 @@ async def soniox_asr_worker(
             "Soniox connection or transcription failed",
         )
     finally:
+        discard_deferred_requests()
         if websocket is not None:
             try:
                 await websocket.close()

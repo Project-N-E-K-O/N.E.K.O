@@ -12,6 +12,7 @@ import main_logic.asr_client as asr_client
 import main_logic.asr_client._infra as asr_infra
 from main_logic.asr_client import AsrSessionConfig, create_asr_session
 from main_logic.asr_client._infra import (
+    _AsrRequestQueue,
     _AsrWorkerEvent,
     _AsrWorkerRequest,
     _RealtimeAsrSessionImpl,
@@ -1176,6 +1177,60 @@ async def test_close_unblocks_request_backpressure(monkeypatch):
     await asyncio.wait_for(session.close(), 1)
     with pytest.raises(RuntimeError, match="ASR_SESSION_NOT_READY"):
         await blocked_producer
+
+
+async def test_request_queue_hold_atomically_keeps_dequeued_audio_in_budget():
+    queue = _AsrRequestQueue()
+    one_second = b"\x00\x00" * 16_000
+    request = _AsrWorkerRequest(kind="audio", generation=0, audio=one_second)
+    queue.put_nowait(request)
+
+    assert queue.waiting_audio_bytes == len(one_second)
+    assert queue.waiting_audio_items == 1
+    dequeued, hold = await queue.get_with_audio_hold()
+
+    assert dequeued is request
+    assert hold is not None
+    assert queue.waiting_audio_bytes == len(one_second)
+    assert queue.waiting_audio_items == 1
+    assert queue.held_audio_bytes == len(one_second)
+    assert queue.held_audio_items == 1
+
+    hold.release()
+    hold.release()
+    queue.task_done()
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+    assert queue.held_audio_bytes == 0
+    assert queue.held_audio_items == 0
+
+    for kind in ("commit", "clear", "shutdown"):
+        queue.put_nowait(_AsrWorkerRequest(kind=kind, generation=0))
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+    for _ in range(3):
+        queue.get_nowait()
+        queue.task_done()
+
+
+async def test_request_backpressure_limits_tiny_audio_item_count(monkeypatch):
+    monkeypatch.setattr(asr_infra, "_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(asr_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 0.02)
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_non_consuming_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_ITEMS):
+        await session.stream_audio(b"\x00\x00")
+
+    with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+        await session.stream_audio(b"\x00\x00")
+
+    await session.close()
 
 
 async def test_sustained_request_backpressure_blocks_the_turn(monkeypatch):
