@@ -71,6 +71,25 @@ def test_prewarming_uses_eight_second_pending_connect_buffer() -> None:
     assert controller.pending_connect_bytes == 0
 
 
+def test_unconfirmed_prewarm_expiry_discards_candidate_audio() -> None:
+    controller = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    controller.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    controller.accept_audio(_pcm(300), sample_rate_hz=16_000)
+    controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    controller.accept_audio(_pcm(500), sample_rate_hz=16_000)
+
+    controller.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
+
+    assert controller.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert controller.pre_roll_bytes == 0
+    assert controller.pending_connect_bytes == 0
+    next_audio = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
+    assert next_audio.disposition is AudioDisposition.BUFFER
+
+
 def test_blocked_route_consumes_audio_without_buffer_or_forward() -> None:
     controller = VoiceInputLifecycleController(
         provider_policy=resolve_provider_policy("gemini", "manual"),

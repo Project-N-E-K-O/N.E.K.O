@@ -47,6 +47,7 @@ class VoiceLifecycleEvent(Enum):
     # 兼容旧调用方；新代码应使用 TURN_SEALED，明确区分语义端点和 provider final。
     TURN_ENDPOINTED = "turn_endpointed"
     PROVIDER_FINAL = "provider_final"
+    PREWARM_EXPIRED = "prewarm_expired"
     WARM_EXPIRED = "warm_expired"
     RECOVERED = "recovered"
     GAME_TAKEOVER = "game_takeover"
@@ -62,6 +63,7 @@ class VoiceLifecycleConfig:
     trailing_audio_ms: int = 400
     pending_audio_ms: int = 8_000
     default_warm_transport_ms: int = 25_000
+    idle_transport_close_ms: int = 5_000
     smart_turn_warm_ms: int = 60_000
 
     def __post_init__(self) -> None:
@@ -71,6 +73,7 @@ class VoiceLifecycleConfig:
             "candidate_pause_ms",
             "trailing_audio_ms",
             "pending_audio_ms",
+            "idle_transport_close_ms",
             "smart_turn_warm_ms",
         ):
             if getattr(self, field_name) <= 0:
@@ -97,6 +100,7 @@ _TRANSITIONS: dict[
     (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.SPEECH_CONFIRMED): VoiceLifecycleState.ACTIVE,
     (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.CONNECT_FAILED): VoiceLifecycleState.BACKOFF,
+    (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.PREWARM_EXPIRED): VoiceLifecycleState.LOCAL_LISTEN,
     (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_SEALED): VoiceLifecycleState.DRAINING,
     (VoiceLifecycleState.ACTIVE, VoiceLifecycleEvent.TURN_ENDPOINTED): VoiceLifecycleState.DRAINING,
     (VoiceLifecycleState.DRAINING, VoiceLifecycleEvent.PROVIDER_FINAL): VoiceLifecycleState.WARM_IDLE,
@@ -168,6 +172,12 @@ class VoiceLifecycleMetrics:
     asr_audio_command_queue_ms: int = 0
     asr_abort_discarded_command_count: int = 0
     provider_wire_sequence: int = 0
+    rnnoise_evidence_chunk_count: int = 0
+    rnnoise_incomplete_chunk_count: int = 0
+    rnnoise_shadow_trigger_count: int = 0
+    silero_shadow_trigger_count: int = 0
+    fusion_shadow_trigger_count: int = 0
+    rnnoise_silero_disagreement_count: int = 0
 
     @property
     def throttle_ratio(self) -> float:
@@ -339,6 +349,11 @@ class VoiceInputLifecycleController:
             self._completed_turn_id = self._turn_id
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
+        elif event is VoiceLifecycleEvent.PREWARM_EXPIRED:
+            self._pre_roll_sent_for_turn = False
+            self._pre_roll.clear()
+            self._pending_connect.clear()
+            self._active_start_audio = b""
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
             self._turn_id = self._allocate_turn_id()
             self._completed_turn_id = self._turn_id

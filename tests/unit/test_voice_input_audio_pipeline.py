@@ -14,6 +14,11 @@ class _Processor:
         self.closed = False
         self.speech_probability = 0.75
         self.rnnoise_available = True
+        self.rnnoise_frame_count = 3
+        self.rnnoise_probability_peak = 0.9
+        self.rnnoise_probability_mean = 0.6
+        self.rnnoise_probability_last = 0.2
+        self.rnnoise_probability_ema = 0.55
 
     def process_chunk(self, pcm16: bytes) -> bytes:
         self.inputs.append(pcm16)
@@ -35,6 +40,8 @@ async def test_pipeline_passes_16k_without_creating_rnnoise_processor() -> None:
     assert frame.pcm16 == pcm16
     assert frame.sample_rate_hz == 16_000
     assert frame.speech_probability is None
+    assert frame.rnnoise_evidence is not None
+    assert frame.rnnoise_evidence.available is False
     assert created == []
 
 
@@ -48,8 +55,14 @@ async def test_pipeline_owns_48k_processor_and_exposes_rnnoise_probability() -> 
     assert processor.inputs == [source]
     assert frame.pcm16 == b"\x02\x00" * 160
     assert frame.sample_rate_hz == 16_000
-    assert frame.speech_probability == 0.75
+    assert frame.speech_probability == 0.9
     assert frame.rnnoise_available is True
+    assert frame.rnnoise_evidence is not None
+    assert frame.rnnoise_evidence.frame_count == 3
+    assert frame.rnnoise_evidence.peak == 0.9
+    assert frame.rnnoise_evidence.mean == 0.6
+    assert frame.rnnoise_evidence.last == 0.2
+    assert frame.rnnoise_evidence.ema == 0.55
     await pipeline.close()
     assert processor.closed is True
 
