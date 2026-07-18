@@ -294,28 +294,28 @@ def test_roast_config_parses_activity_level_with_standard_default():
 
 
 def test_roast_config_normalizes_optional_co_stream_pause_fill_activation():
-    assert RoastConfig.from_mapping({}).co_stream_host_pause_fill_activation == "off"
-    assert RoastConfig.from_mapping({}).co_stream_host_pause_fill_auto_consent_version == 0
+    assert LiveConfig.from_mapping({}).co_stream_host_pause_fill_activation == "off"
+    assert LiveConfig.from_mapping({}).co_stream_host_pause_fill_auto_consent_version == 0
     assert (
-        RoastConfig.from_mapping(
+        LiveConfig.from_mapping(
             {"co_stream_host_pause_fill_activation": " conditional_auto "}
         ).co_stream_host_pause_fill_activation
         == "conditional_auto"
     )
     assert (
-        RoastConfig.from_mapping(
+        LiveConfig.from_mapping(
             {"co_stream_host_pause_fill_activation": "automatic"}
         ).co_stream_host_pause_fill_activation
         == "off"
     )
     assert (
-        RoastConfig.from_mapping(
+        LiveConfig.from_mapping(
             {"co_stream_host_pause_fill_auto_consent_version": 1}
         ).co_stream_host_pause_fill_auto_consent_version
         == 1
     )
     assert (
-        RoastConfig.from_mapping(
+        LiveConfig.from_mapping(
             {"co_stream_host_pause_fill_auto_consent_version": 99}
         ).co_stream_host_pause_fill_auto_consent_version
         == 99
@@ -323,7 +323,7 @@ def test_roast_config_normalizes_optional_co_stream_pause_fill_activation():
 
 
 def test_roast_config_public_projection_keeps_co_stream_pause_fill_bounded():
-    config = RoastConfig()
+    config = LiveConfig()
     config.co_stream_host_pause_fill_activation = "token=must-not-leak"  # type: ignore[assignment]
 
     assert config.to_public_dict()["co_stream_host_pause_fill_activation"] == "off"
