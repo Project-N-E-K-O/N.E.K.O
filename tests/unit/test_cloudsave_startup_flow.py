@@ -925,8 +925,8 @@ async def test_main_server_uses_runtime_shutdown_bridge_when_available(monkeypat
 
     callback_calls = []
 
-    def _request_runtime_shutdown():
-        callback_calls.append("called")
+    def _request_runtime_shutdown(*, reason):
+        callback_calls.append(reason)
 
     monkeypatch.setattr(
         main_server,
@@ -941,9 +941,9 @@ async def test_main_server_uses_runtime_shutdown_bridge_when_available(monkeypat
     )
     monkeypatch.setattr(main_server, "shutdown_server_async", AsyncMock())
 
-    await main_server.request_application_shutdown_async()
+    await main_server.request_application_shutdown_async(reason="desktop_owner_exit")
 
-    assert callback_calls == ["called"]
+    assert callback_calls == ["desktop_owner_exit"]
 
 
 @pytest.mark.unit

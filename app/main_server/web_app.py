@@ -17,6 +17,7 @@
 
 import asyncio
 import os
+import secrets
 
 import httpx
 from fastapi import Request
@@ -210,6 +211,54 @@ async def beacon_shutdown():
     except Exception as e:
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/runtime/shutdown")
+async def runtime_shutdown(request: Request):
+    """Request an authenticated application-level shutdown from the owning desktop app."""
+    configured_token = os.environ.get("NEKO_RUNTIME_SHUTDOWN_TOKEN", "").strip()
+    if not configured_token:
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown is not enabled"},
+            status_code=503,
+        )
+
+    provided_token = request.headers.get("x-neko-runtime-shutdown-token", "").strip()
+    if not provided_token or not secrets.compare_digest(
+        configured_token, provided_token
+    ):
+        return JSONResponse(
+            {"success": False, "error": "invalid runtime shutdown token"},
+            status_code=403,
+        )
+
+    from config import INSTANCE_ID
+
+    provided_instance = request.headers.get("x-neko-instance-id", "").strip()
+    if provided_instance and not secrets.compare_digest(
+        str(INSTANCE_ID), provided_instance
+    ):
+        return JSONResponse(
+            {"success": False, "error": "runtime instance mismatch"},
+            status_code=409,
+        )
+
+    shutdown = runtime.request_application_shutdown_async
+    if not callable(shutdown):
+        return JSONResponse(
+            {"success": False, "error": "runtime shutdown bridge is unavailable"},
+            status_code=503,
+        )
+
+    asyncio.create_task(shutdown(reason="desktop_owner_exit"))
+    return JSONResponse(
+        {
+            "success": True,
+            "message": "runtime shutdown accepted",
+            "instance_id": str(INSTANCE_ID),
+        },
+        status_code=202,
+    )
 
 
 @app.api_route(
