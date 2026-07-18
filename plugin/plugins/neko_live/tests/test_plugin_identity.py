@@ -28,11 +28,16 @@ def test_neko_live_uses_one_permanent_internal_identity() -> None:
 
 def test_neko_live_executable_sources_do_not_restore_legacy_identity() -> None:
     plugin_dir = Path(__file__).resolve().parents[1]
-    source_suffixes = {".html", ".ps1", ".py", ".toml", ".tsx"}
+    source_suffixes = {".html", ".ps1", ".py", ".toml", ".ts", ".tsx"}
     forbidden_markers = (
         "plugin.plugins.neko_roast",
         "NekoRoastPlugin",
         "NekoRoastPanel",
+        "RoastRuntime",
+        "RoastConfig",
+        "RoastPipeline",
+        "NEKO_ROAST_",
+        "Neko Roast",
         "neko-roast",
     )
     violations: list[str] = []

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
 class ConfigApi:
@@ -77,8 +77,8 @@ class FakeIngest:
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RoastRuntime:
-    rt = RoastRuntime(Plugin(tmp_path))
+def runtime(tmp_path: Path) -> LiveRuntime:
+    rt = LiveRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
     rt.avatar_roast.ctx = rt
     rt.live_support_events.ctx = rt

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from .contracts import RoastConfig, normalize_live_platform
+from .contracts import LiveConfig, normalize_live_platform
 from .live_provider_router import normalize_room_ref_for_platform
 from .runtime_config_activation import (
     activate_config,
@@ -22,7 +22,7 @@ from .runtime_live_listener import (
 )
 
 
-async def reload_config(runtime: Any) -> RoastConfig:
+async def reload_config(runtime: Any) -> LiveConfig:
     data: dict[str, Any] = {}
     try:
         dumped = await runtime.plugin.config.dump(timeout=5.0)
@@ -38,7 +38,7 @@ async def reload_config(runtime: Any) -> RoastConfig:
             f"config load failed: {type(exc).__name__}",
             level="warning",
         )
-    loaded = RoastConfig.from_mapping(data)
+    loaded = LiveConfig.from_mapping(data)
     async with get_config_lock(runtime):
         old_config = runtime.config
         old_platform = normalize_live_platform(getattr(old_config, "live_platform", "bilibili"))
@@ -67,7 +67,7 @@ def get_config_lock(runtime: Any) -> asyncio.Lock:
     return runtime._config_lock
 
 
-async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
+async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
     clean = clean_config_updates(updates)
     if not clean:
         return runtime.config
@@ -85,7 +85,7 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> RoastConfig:
         )
         data = runtime.config.to_dict()
         data.update(clean)
-        candidate = RoastConfig.from_mapping(data)
+        candidate = LiveConfig.from_mapping(data)
         live_diff = _live_config_diff(runtime.config, candidate)
         if was_listening and live_diff:
             runtime._accepting_live_events = False

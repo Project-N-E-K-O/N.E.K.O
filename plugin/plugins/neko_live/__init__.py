@@ -20,12 +20,12 @@ class NekoLivePlugin(NekoPluginBase):
     @lifecycle(id="startup")
     async def startup(self, **_):
         try:
-            from .core.runtime import RoastRuntime
+            from .core.runtime import LiveRuntime
         except ModuleNotFoundError as exc:
             if exc.name != "plugin.plugins.neko_live.core.runtime":
                 raise
             return Ok({"status": "ready", "runtime": "pending"})
-        self.runtime = RoastRuntime(self)
+        self.runtime = LiveRuntime(self)
         await self.runtime.start()
         self.register_dynamic_entry(
             "developer_lookup_bili_user",
@@ -86,7 +86,7 @@ class NekoLivePlugin(NekoPluginBase):
         await runtime.sync_developer_mode(announce=False)
         return Ok({"status": "reloaded"})
 
-    def _runtime(self) -> RoastRuntime:
+    def _runtime(self) -> LiveRuntime:
         if self.runtime is None:
             raise RuntimeError("NEKO Live runtime is not started")
         return self.runtime

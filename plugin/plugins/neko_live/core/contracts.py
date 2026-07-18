@@ -6,7 +6,7 @@ from ``core.contracts`` in feature code unless a module needs a narrower owner.
 
 from __future__ import annotations
 
-from .contracts_config import RoastConfig, normalize_live_platform, parse_room_id
+from .contracts_config import LiveConfig, normalize_live_platform, parse_room_id
 from .contracts_events import LiveEvent, ViewerEvent
 from .contracts_interaction import InteractionRequest, InteractionResult, PipelineStep
 from .contracts_safety import LiveRoomStatus, SafetyDecision
@@ -29,7 +29,7 @@ __all__ = [
     "LiveMode",
     "LiveRoomStatus",
     "PipelineStep",
-    "RoastConfig",
+    "LiveConfig",
     "RoastStrength",
     "SafetyDecision",
     "SafetyStatus",

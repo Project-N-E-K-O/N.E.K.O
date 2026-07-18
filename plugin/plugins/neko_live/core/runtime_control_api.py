@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from . import runtime_live_controls
-from .contracts import RoastConfig
+from .contracts import LiveConfig
 
 
 class RuntimeControlApiMixin:
@@ -30,7 +30,7 @@ class RuntimeControlApiMixin:
     def live_connection_snapshot(self) -> dict[str, Any]:
         return runtime_live_controls.live_connection_snapshot(self)
 
-    async def set_live_room(self, room_id: Any) -> RoastConfig:
+    async def set_live_room(self, room_id: Any) -> LiveConfig:
         return await runtime_live_controls.set_live_room(self, room_id)
 
     async def connect_live_room(

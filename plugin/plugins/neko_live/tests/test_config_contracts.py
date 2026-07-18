@@ -9,7 +9,7 @@ from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
     InteractionResult,
     PipelineStep,
-    RoastConfig,
+    LiveConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
@@ -20,7 +20,7 @@ from plugin.plugins.neko_live.core.contracts import (
 from plugin.plugins.neko_live.core.contracts_public import public_dict, public_text
 from plugin.plugins.neko_live.core.live_output_quality import needs_quality_fallback, safe_fallback_reply
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
-from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.runtime_live_input import record_result
 from plugin.plugins.neko_live.modules.active_engagement import ActiveEngagementModule
 from plugin.plugins.neko_live.modules.avatar_roast import AvatarRoastModule
@@ -37,21 +37,21 @@ class _SecretLike:
 
 
 def test_roast_config_defaults_to_real_output_mode():
-    assert RoastConfig().dry_run is False
-    assert RoastConfig.from_mapping({}).dry_run is False
-    assert RoastConfig.from_mapping(None).dry_run is False
+    assert LiveConfig().dry_run is False
+    assert LiveConfig.from_mapping({}).dry_run is False
+    assert LiveConfig.from_mapping(None).dry_run is False
 
 
 def test_roast_config_preserves_explicit_dry_run_false_for_real_output_window():
-    assert RoastConfig.from_mapping({"dry_run": False}).dry_run is False
+    assert LiveConfig.from_mapping({"dry_run": False}).dry_run is False
 
 
 def test_roast_config_preserves_explicit_avatar_timeout_zero():
-    assert RoastConfig.from_mapping({"avatar_fetch_timeout_seconds": 0}).avatar_fetch_timeout_seconds == 0
+    assert LiveConfig.from_mapping({"avatar_fetch_timeout_seconds": 0}).avatar_fetch_timeout_seconds == 0
 
 
 def test_roast_config_accepts_whole_number_float_int_fields():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "rate_limit_seconds": 30.0,
             "queue_limit": 7.0,
@@ -190,7 +190,7 @@ def test_viewer_derived_topic_key_stays_out_of_public_request_metadata():
 
 
 def test_roast_config_accepts_string_scalars_without_truthy_string_bool_traps():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "live_enabled": "true",
             "developer_tools_enabled": "false",
@@ -218,7 +218,7 @@ def test_roast_config_accepts_string_scalars_without_truthy_string_bool_traps():
     assert config.queue_limit == 1
     assert config.safety_auto_stop_enabled is False
 
-    numeric_false = RoastConfig.from_mapping({"live_enabled": 0, "dry_run": 0, "roast_once_per_uid": 2})
+    numeric_false = LiveConfig.from_mapping({"live_enabled": 0, "dry_run": 0, "roast_once_per_uid": 2})
     assert numeric_false.live_enabled is False
     assert numeric_false.dry_run is False
     assert numeric_false.roast_once_per_uid is True
@@ -243,7 +243,7 @@ def test_roast_config_does_not_coerce_object_scalars():
             return "sharp"
 
     value = _LooksLikeScalar()
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "live_mode": value,
             "roast_strength": value,
@@ -287,14 +287,14 @@ def test_roast_config_does_not_coerce_object_scalars():
 
 
 def test_roast_config_parses_activity_level_with_standard_default():
-    assert RoastConfig.from_mapping({}).activity_level == "standard"
-    assert RoastConfig.from_mapping({"activity_level": "quiet"}).activity_level == "quiet"
-    assert RoastConfig.from_mapping({"activity_level": "active"}).activity_level == "active"
-    assert RoastConfig.from_mapping({"activity_level": "noisy"}).activity_level == "standard"
+    assert LiveConfig.from_mapping({}).activity_level == "standard"
+    assert LiveConfig.from_mapping({"activity_level": "quiet"}).activity_level == "quiet"
+    assert LiveConfig.from_mapping({"activity_level": "active"}).activity_level == "active"
+    assert LiveConfig.from_mapping({"activity_level": "noisy"}).activity_level == "standard"
 
 
 def test_roast_config_module_controls_default_on_and_parse_explicit_false():
-    defaults = RoastConfig.from_mapping({})
+    defaults = LiveConfig.from_mapping({})
     keys = (
         "avatar_roast_enabled",
         "avatar_analysis_enabled",
@@ -307,14 +307,14 @@ def test_roast_config_module_controls_default_on_and_parse_explicit_false():
 
     assert all(getattr(defaults, key) is True for key in keys)
 
-    disabled = RoastConfig.from_mapping({key: False for key in keys})
+    disabled = LiveConfig.from_mapping({key: False for key in keys})
     assert all(getattr(disabled, key) is False for key in keys)
     assert all(disabled.to_public_dict()[key] is False for key in keys)
 
 
 def test_roast_config_viewer_memory_defaults_on_and_respects_explicit_false():
-    defaults = RoastConfig.from_mapping({})
-    disabled = RoastConfig.from_mapping({"viewer_memory_enabled": False})
+    defaults = LiveConfig.from_mapping({})
+    disabled = LiveConfig.from_mapping({"viewer_memory_enabled": False})
 
     assert defaults.viewer_memory_enabled is True
     assert defaults.to_public_dict()["viewer_memory_enabled"] is True
@@ -323,7 +323,7 @@ def test_roast_config_viewer_memory_defaults_on_and_respects_explicit_false():
 
 
 def test_roast_config_keeps_bilibili_room_id_and_room_ref_compatible():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {"live_platform": "bili", "live_room_ref": "https://live.bilibili.com/12345"}
     )
 
@@ -333,7 +333,7 @@ def test_roast_config_keeps_bilibili_room_id_and_room_ref_compatible():
 
 
 def test_roast_config_accepts_douyin_room_ref_without_numeric_room_id():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {"live_platform": "dy", "live_room_ref": "https://live.douyin.com/abc"}
     )
 
@@ -343,7 +343,7 @@ def test_roast_config_accepts_douyin_room_ref_without_numeric_room_id():
 
 
 def test_roast_config_clears_legacy_bilibili_room_id_for_douyin():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "live_platform": "douyin",
             "live_room_ref": "https://live.douyin.com/room-42",
@@ -375,7 +375,7 @@ def test_roast_config_does_not_stringify_room_ref_or_platform_objects():
         def __str__(self) -> str:
             return "https://live.douyin.com/room-42"
 
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "live_platform": _LooksLikePlatform(),
             "live_room_ref": _LooksLikeRoom(),
@@ -399,7 +399,7 @@ def test_roast_config_does_not_stringify_room_ref_or_platform_objects():
 
 
 def test_roast_config_accepts_stream_theme_fields_as_public_text():
-    config = RoastConfig.from_mapping(
+    config = LiveConfig.from_mapping(
         {
             "stream_theme": "  战雷陆战练车 + 轻松陪聊  ",
             "stream_goal": "让观众能知道猫猫正在围绕同一场直播营业",
@@ -422,7 +422,7 @@ def test_roast_config_accepts_stream_theme_fields_as_public_text():
 
 def test_roast_config_to_public_dict_is_public_projection_not_raw_asdict():
     secret = _SecretLike()
-    config = RoastConfig(
+    config = LiveConfig(
         live_platform=secret,  # type: ignore[arg-type]
         live_room_ref="https://live.douyin.com/123?signature=must-not-leak",
         live_room_id=secret,  # type: ignore[arg-type]
@@ -484,7 +484,7 @@ def test_roast_config_to_public_dict_is_public_projection_not_raw_asdict():
 
 def test_danmaku_response_prompt_is_not_avatar_roast_template():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="sharp", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="sharp", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -508,7 +508,7 @@ def test_danmaku_response_prompt_is_not_avatar_roast_template():
 def test_danmaku_response_prompt_uses_configured_stream_theme():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(
+        config=LiveConfig(
             roast_strength="normal",
             dry_run=True,
             stream_theme="战雷陆战练车 + 轻松陪聊",
@@ -542,7 +542,7 @@ def test_danmaku_response_prompt_uses_configured_stream_theme():
 def test_danmaku_response_prompt_uses_live_room_title_when_theme_is_blank():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         live_room_context={
             "title": "战雷陆战练车：今晚只打轻松局",
             "anchor_name": "水水",
@@ -570,7 +570,7 @@ def test_danmaku_response_prompt_uses_live_room_title_when_theme_is_blank():
 def test_danmaku_response_prompt_omits_stale_offline_room_status():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         live_room_context={
             "title": "solo queue test room",
             "anchor_name": "NEKO",
@@ -597,7 +597,7 @@ def test_danmaku_response_prompt_omits_stale_offline_room_status():
 
 def test_solo_host_prompts_do_not_address_unseen_human_operator():
     ctx = SimpleNamespace(
-        config=RoastConfig(
+        config=LiveConfig(
             roast_strength="normal",
             dry_run=True,
             live_mode="solo_stream",
@@ -641,7 +641,7 @@ def test_solo_host_prompts_do_not_address_unseen_human_operator():
 def test_configured_stream_theme_overrides_live_room_title():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(
+        config=LiveConfig(
             roast_strength="normal",
             dry_run=True,
             stream_theme="人工指定：观众点歌陪聊",
@@ -668,7 +668,7 @@ def test_configured_stream_theme_overrides_live_room_title():
 
 def test_danmaku_response_prompt_requires_visible_target_anchor():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="方块km",
@@ -700,7 +700,7 @@ def test_danmaku_response_prompt_requires_visible_target_anchor():
 
 def test_danmaku_response_prompt_uses_short_address_for_regular_viewer():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="\u4e0a\u4e5d\u5929\u63fd\u661f\u8fb0",
@@ -726,7 +726,7 @@ def test_danmaku_response_prompt_uses_short_address_for_regular_viewer():
 
 def test_danmaku_response_prompt_allows_natural_target_for_question_reply():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="\u5c0f\u738b",
@@ -749,7 +749,7 @@ def test_danmaku_response_prompt_allows_natural_target_for_question_reply():
 
 def test_danmaku_response_prompt_profiles_tiny_reactions():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -774,7 +774,7 @@ def test_danmaku_response_prompt_profiles_tiny_reactions():
 
 def test_danmaku_response_prompt_acknowledges_active_hook_answers():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -801,7 +801,7 @@ def test_danmaku_response_prompt_acknowledges_active_hook_answers():
 
 def test_danmaku_response_prompt_answers_questions_directly():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -824,7 +824,7 @@ def test_danmaku_response_prompt_answers_questions_directly():
 
 def test_danmaku_response_prompt_greets_before_viewer_memory():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -853,7 +853,7 @@ def test_danmaku_response_prompt_greets_before_viewer_memory():
 
 def test_danmaku_response_prompt_delivers_content_requests_now():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="悠怡",
@@ -885,7 +885,7 @@ def test_danmaku_response_prompt_delivers_content_requests_now():
 def test_danmaku_response_prompt_keeps_idiom_chain_state_from_room_context():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_room_danmaku_context=lambda event, limit=6: [
             "room_theme=idiom chain",
             "examples=viewer: \u6211\u4eec\u73a9\u6210\u8bed\u63a5\u9f99",
@@ -913,7 +913,7 @@ def test_danmaku_response_prompt_keeps_idiom_chain_state_from_room_context():
 
 def test_danmaku_response_prompt_marks_unverified_support_claims():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -948,7 +948,7 @@ def test_danmaku_response_prompt_marks_unverified_support_claims():
 )
 def test_danmaku_response_marks_contextual_unverified_support_claims(text: str):
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -979,7 +979,7 @@ def test_danmaku_response_marks_contextual_unverified_support_claims(text: str):
 )
 def test_danmaku_response_does_not_mark_support_discussion_as_claim(text: str):
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -1000,7 +1000,7 @@ def test_danmaku_response_does_not_mark_support_discussion_as_claim(text: str):
 
 def test_danmaku_response_prompt_marks_external_action_requests():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="\u590f\u6674\u60e0\u7f8e",
@@ -1024,7 +1024,7 @@ def test_danmaku_response_prompt_marks_external_action_requests():
 
 def test_danmaku_response_prompt_discourages_stale_comparison_templates():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -1047,7 +1047,7 @@ def test_danmaku_response_prompt_discourages_stale_comparison_templates():
 def test_danmaku_response_prompt_allows_room_bridge_length_for_shared_theme():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_room_danmaku_context=lambda event, limit=6: [
             "room_theme=choice / preference prompt (3 signals)",
             "room_rule=answer the current viewer first; if it matches the room theme, bridge the theme instead of replying one-by-one",
@@ -1079,7 +1079,7 @@ def test_danmaku_response_prompt_allows_room_bridge_length_for_shared_theme():
 def test_danmaku_response_prompt_keeps_greeting_short_even_with_room_theme():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_room_danmaku_context=lambda event, limit=6: ["room_theme=greetings (3 signals)"],
     )
     event = ViewerEvent(
@@ -1104,7 +1104,7 @@ def test_danmaku_response_prompt_keeps_greeting_short_even_with_room_theme():
 def test_danmaku_response_prompt_includes_private_viewer_preference_memory():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=12: [],
         live_session_memory=None,
         live_events=None,
@@ -1149,7 +1149,7 @@ def test_danmaku_response_prompt_includes_private_viewer_preference_memory():
 
 def test_danmaku_response_prompt_allows_requested_target_roast():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="\u70b9\u83dc\u4eba",
@@ -1176,7 +1176,7 @@ def test_danmaku_response_prompt_allows_requested_target_roast():
 
 def test_danmaku_response_prompt_marks_viewer_to_viewer_mentions():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -1199,7 +1199,7 @@ def test_danmaku_response_prompt_marks_viewer_to_viewer_mentions():
 
 def test_danmaku_response_prompt_keeps_neko_mentions_as_current_target():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -1222,7 +1222,7 @@ def test_danmaku_response_prompt_keeps_neko_mentions_as_current_target():
 def test_danmaku_response_prompt_includes_recent_interaction_context():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "avatar_roast / live_danmaku from viewer: 第一次来",
             "idle_hosting / idle_hosting: solo quiet-room host beat",
@@ -1276,7 +1276,7 @@ def test_danmaku_response_prompt_includes_recent_interaction_context():
 def test_danmaku_response_prompt_includes_recent_room_danmaku_context():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=12: [],
         viewer_session_context=lambda uid, limit=2: [],
         recent_room_danmaku_context=lambda event, limit=6: [
@@ -1313,7 +1313,7 @@ def test_danmaku_response_prompt_uses_wider_recent_context_window_by_default():
 
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=recent_context,
         viewer_session_context=lambda uid, limit=2: [],
     )
@@ -1338,7 +1338,7 @@ def test_danmaku_response_prompt_uses_wider_recent_context_window_by_default():
 
 def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
 
@@ -1368,7 +1368,7 @@ def test_danmaku_response_prompt_separates_solo_and_co_stream_roles():
 def test_danmaku_response_prompt_blocks_previous_reply_pollution():
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "danmaku_response / live_danmaku from viewer: previous line / NEKO already said: old reward bit",
         ],
@@ -1407,7 +1407,7 @@ def test_danmaku_response_prompt_compacts_long_recent_context():
     long_viewer_line = "danmaku_response: " + "same viewer old joke should not be resumed " * 4
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [long_recent_line],
         viewer_session_context=lambda uid, limit=2: [long_viewer_line] if uid == "42" else [],
     )
@@ -1443,7 +1443,7 @@ def test_danmaku_response_prompt_preserves_spent_neko_output_when_context_is_lon
     )
     module = DanmakuResponseModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [long_recent_line],
         viewer_session_context=lambda uid, limit=2: [long_viewer_line] if uid == "42" else [],
     )
@@ -1472,7 +1472,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
     host_contract = "Default host length: one compact sentence; occasional two short sentences are allowed for a fun host beat."
 
     danmaku = DanmakuResponseModule()
-    danmaku.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    danmaku.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     danmaku_request = danmaku.build_request(
         ViewerEvent(uid="42", nickname="viewer", danmaku_text="短句", source="live_danmaku", live_mode="solo_stream"),
         identity,
@@ -1480,7 +1480,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
     )
 
     avatar = AvatarRoastModule()
-    avatar.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    avatar.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     avatar_request = avatar.build_request(
         ViewerEvent(uid="42", nickname="viewer", danmaku_text="短句", source="live_danmaku", live_mode="solo_stream"),
         identity,
@@ -1493,7 +1493,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
     )
 
     warmup = WarmupHostingModule()
-    warmup.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    warmup.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     warmup_request = warmup.build_request(
         ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream"),
         ViewerIdentity(uid="__neko_warmup__", nickname="NEKO"),
@@ -1501,7 +1501,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
     )
 
     active = ActiveEngagementModule()
-    active.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    active.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     active_request = active.build_request(
         ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
         ViewerIdentity(uid="__neko_active__", nickname="NEKO"),
@@ -1587,7 +1587,7 @@ def test_live_interaction_prompts_share_short_reply_contract():
 
 def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer")
 
@@ -1614,7 +1614,7 @@ def test_avatar_roast_prompt_separates_solo_and_co_stream_roles():
 
 def test_avatar_roast_marks_first_danmaku_fake_support_claim_as_unverified():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer")
 
@@ -1636,7 +1636,7 @@ def test_avatar_roast_marks_first_danmaku_fake_support_claim_as_unverified():
 
 def test_solo_avatar_roast_uses_current_danmaku_before_avatar_details():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="sharp", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="sharp", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png")
     profile = ViewerProfile(uid="42", nickname="viewer")
 
@@ -1673,7 +1673,7 @@ def test_solo_avatar_roast_uses_current_danmaku_before_avatar_details():
 
 def test_avatar_roast_prompt_handles_delayed_retry_naturally():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="sharp", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="sharp", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png")
     profile = ViewerProfile(uid="42", nickname="viewer")
 
@@ -1697,7 +1697,7 @@ def test_avatar_roast_prompt_handles_delayed_retry_naturally():
 
 def test_avatar_roast_prompt_uses_natural_viewer_address_not_initials():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     identity = ViewerIdentity(uid="42", nickname="\u6d45\u971c\u6e05\u97f5-WF")
     profile = ViewerProfile(uid="42", nickname="\u6d45\u971c\u6e05\u97f5-WF", danmaku_count=8)
 
@@ -1722,7 +1722,7 @@ def test_avatar_roast_prompt_uses_natural_viewer_address_not_initials():
 def test_avatar_roast_prompt_includes_recent_used_material_blocklist():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "avatar_roast / live_danmaku from viewer: 猫猫先夸了小鱼干",
             "idle_hosting / idle_hosting: solo quiet-room host beat",
@@ -1744,7 +1744,7 @@ def test_avatar_roast_prompt_includes_recent_used_material_blocklist():
 def test_avatar_roast_prompt_includes_same_viewer_used_material_blocklist():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [],
         viewer_session_context=lambda uid, limit=2: [
             "avatar_roast / live_danmaku from viewer: first entrance / NEKO already said: old avatar bit",
@@ -1769,7 +1769,7 @@ def test_avatar_roast_prompt_includes_same_viewer_used_material_blocklist():
 def test_idle_hosting_prompt_includes_recent_interaction_context_without_metrics():
     module = AvatarRoastModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(roast_strength="normal", dry_run=True),
+        config=LiveConfig(roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "danmaku_response / live_danmaku from viewer: 猫猫在吗",
             "idle_hosting / idle_hosting: solo quiet-room host beat",
@@ -1797,13 +1797,13 @@ def test_idle_hosting_prompt_uses_activity_level_strategy():
     profile = ViewerProfile(uid="__neko_idle__", nickname="NEKO")
 
     quiet_module = AvatarRoastModule()
-    quiet_module.ctx = SimpleNamespace(config=RoastConfig(activity_level="quiet", dry_run=True))
+    quiet_module.ctx = SimpleNamespace(config=LiveConfig(activity_level="quiet", dry_run=True))
     quiet_request = quiet_module.build_request(event, identity, profile)
     assert "pacing: quiet" in quiet_request.prompt_text
     assert "Prefer a soft observation over a direct question." in quiet_request.prompt_text
 
     active_module = AvatarRoastModule()
-    active_module.ctx = SimpleNamespace(config=RoastConfig(activity_level="active", dry_run=True))
+    active_module.ctx = SimpleNamespace(config=LiveConfig(activity_level="active", dry_run=True))
     active_request = active_module.build_request(event, identity, profile)
     assert "pacing: active" in active_request.prompt_text
     assert "You may ask one specific, low-pressure question, but never as a numeric vote." in active_request.prompt_text
@@ -1811,7 +1811,7 @@ def test_idle_hosting_prompt_uses_activity_level_strategy():
 
 def test_idle_hosting_prompt_uses_host_beat_material():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(activity_level="standard", dry_run=True))
     event = ViewerEvent(
         uid="__neko_idle__",
         nickname="NEKO",
@@ -1849,7 +1849,7 @@ def test_idle_hosting_prompt_uses_host_beat_material():
 
 def test_idle_hosting_prompt_can_reuse_meme_knowledge_as_optional_seasoning():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(activity_level="standard", dry_run=True))
     event = ViewerEvent(
         uid="__neko_idle__",
         nickname="NEKO",
@@ -1884,7 +1884,7 @@ def test_idle_hosting_prompt_can_reuse_meme_knowledge_as_optional_seasoning():
 def test_active_engagement_prompt_is_one_light_solo_topic():
     module = ActiveEngagementModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(activity_level="active", roast_strength="sharp", dry_run=True),
+        config=LiveConfig(activity_level="active", roast_strength="sharp", dry_run=True),
         recent_interaction_context=lambda limit=3: ["danmaku_response / live_danmaku from viewer: 猫猫聊点什么"],
     )
     event = ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream")
@@ -1914,7 +1914,7 @@ def test_active_engagement_prompt_is_one_light_solo_topic():
 def test_active_engagement_prompt_treats_recent_reply_path_as_spent_material():
     module = ActiveEngagementModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(activity_level="active", roast_strength="sharp", dry_run=True),
+        config=LiveConfig(activity_level="active", roast_strength="sharp", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "active_engagement / active_engagement: fallback small_challenge / reply: viewer can answer in a few words",
         ],
@@ -1931,7 +1931,7 @@ def test_active_engagement_prompt_treats_recent_reply_path_as_spent_material():
 
 def test_active_engagement_prompt_turns_shape_into_concrete_task():
     module = ActiveEngagementModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(activity_level="standard", roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="__neko_active__",
         nickname="NEKO",
@@ -2016,7 +2016,7 @@ def test_live_output_quality_blocks_numeric_audience_cta_in_hosting():
 
 def test_active_engagement_prompt_blocks_broad_engagement_bait():
     module = ActiveEngagementModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
 
     request = module.build_request(
         ViewerEvent(uid="__neko_active__", nickname="NEKO", source="active_engagement", live_mode="solo_stream"),
@@ -2065,7 +2065,7 @@ def test_live_material_filter_rejects_mojibake_and_judgment_language():
 
 def test_warmup_hosting_prompt_is_opening_not_idle_filler():
     module = WarmupHostingModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(activity_level="standard", roast_strength="normal", dry_run=True))
     event = ViewerEvent(uid="__neko_warmup__", nickname="NEKO", source="warmup_hosting", live_mode="solo_stream")
     identity = ViewerIdentity(uid=event.uid, nickname=event.nickname)
     profile = ViewerProfile(uid=event.uid, nickname=event.nickname)
@@ -2087,7 +2087,7 @@ def test_warmup_hosting_prompt_is_opening_not_idle_filler():
 
 def test_idle_hosting_prompt_treats_gap_as_stage_time_not_dead_air():
     avatar = AvatarRoastModule()
-    avatar.ctx = SimpleNamespace(config=RoastConfig(activity_level="active", roast_strength="normal", dry_run=True))
+    avatar.ctx = SimpleNamespace(config=LiveConfig(activity_level="active", roast_strength="normal", dry_run=True))
     request = avatar.build_request(
         ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
         ViewerIdentity(uid="__neko_idle__", nickname="NEKO"),
@@ -2104,7 +2104,7 @@ def test_idle_hosting_prompt_treats_gap_as_stage_time_not_dead_air():
 def test_warmup_hosting_prompt_includes_recent_used_material_blocklist():
     module = WarmupHostingModule()
     module.ctx = SimpleNamespace(
-        config=RoastConfig(activity_level="standard", roast_strength="normal", dry_run=True),
+        config=LiveConfig(activity_level="standard", roast_strength="normal", dry_run=True),
         recent_interaction_context=lambda limit=3: [
             "warmup_hosting / warmup_hosting: NEKO opened with a fish snack bit",
             "idle_hosting / idle_hosting: solo quiet-room host beat",
@@ -2305,24 +2305,24 @@ def test_interaction_result_public_dict_exposes_response_latency_ms():
 
 
 def test_permission_gate_requires_developer_tools_for_sandbox():
-    gate = PermissionGate(RoastConfig(developer_tools_enabled=False))
+    gate = PermissionGate(LiveConfig(developer_tools_enabled=False))
 
     allowed, reason = gate.allows_source("developer_sandbox")
 
     assert allowed is False
     assert reason == "developer tools are disabled"
 
-    gate.update(RoastConfig(developer_tools_enabled=True))
+    gate.update(LiveConfig(developer_tools_enabled=True))
     assert gate.allows_source("developer_sandbox") == (True, "")
 
 
 def test_permission_gate_requires_developer_tools_for_manual_live_simulation():
-    gate = PermissionGate(RoastConfig(live_enabled=True, developer_tools_enabled=False))
+    gate = PermissionGate(LiveConfig(live_enabled=True, developer_tools_enabled=False))
 
     assert gate.allows_source("manual_live_simulation") == (False, "developer tools are disabled")
 
-    gate.update(RoastConfig(live_enabled=False, developer_tools_enabled=True))
+    gate.update(LiveConfig(live_enabled=False, developer_tools_enabled=True))
     assert gate.allows_source("manual_live_simulation") == (False, "live roast is disabled")
 
-    gate.update(RoastConfig(live_enabled=True, developer_tools_enabled=True))
+    gate.update(LiveConfig(live_enabled=True, developer_tools_enabled=True))
     assert gate.allows_source("manual_live_simulation") == (True, "")

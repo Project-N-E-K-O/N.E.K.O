@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import RoastConfig
+from .contracts import LiveConfig
 from .runtime_live_listener import refresh_live_room_context
 
 
@@ -143,7 +143,7 @@ def _public_optional_text(value: Any) -> str:
     return " ".join(value.split()).strip()[:200]
 
 
-async def set_live_room(runtime: Any, room_id: Any) -> RoastConfig:
+async def set_live_room(runtime: Any, room_id: Any) -> LiveConfig:
     normalized = runtime.live_provider.normalize_room_ref(room_id)
     if not normalized.get("ok"):
         raise ValueError(str(normalized.get("message") or "room_ref must be configured"))

@@ -1,4 +1,4 @@
-"""Neko Roast runtime assembly."""
+"""NEKO Live runtime assembly."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from ..adapters.neko_dispatcher import NekoDispatcher
 from ..stores.audit_store import AuditStore
 from ..stores.avatar_cache import AvatarCache
 from ..stores.viewer_store import ViewerStore
-from .contracts import RoastConfig
+from .contracts import LiveConfig
 from .event_bus import EventBus
 from . import runtime_bili_auth, runtime_douyin_auth, runtime_modules, runtime_state
 from .runtime_auth_api import RuntimeAuthApiMixin
@@ -26,7 +26,7 @@ from .runtime_live_input_api import RuntimeLiveInputApiMixin
 from .runtime_status_api import RuntimeStatusApiMixin
 
 
-class RoastRuntime(
+class LiveRuntime(
     RuntimeAuthApiMixin,
     RuntimeInstructionApiMixin,
     RuntimeConfigApiMixin,
@@ -53,7 +53,7 @@ class RoastRuntime(
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
-        self.config = RoastConfig()
+        self.config = LiveConfig()
         self.audit = AuditStore(limit=100)
         self.avatar_cache = AvatarCache()
         self.viewer_store = ViewerStore(
