@@ -2626,7 +2626,8 @@
             "language": "言語",
             "general": "一般設定",
             "mediaCredentials": "メディア資格情報",
-            "characterCardManager": "キャラクターカード管理"
+            "characterCardManager": "キャラクターカード管理",
+            "advancedSettings": "詳細設定"
         },
         "language": {
             "title": "言語を選択",
@@ -2641,12 +2642,19 @@
             "chatIntervalBase": "最小間隔",
             "visionInterval": "感知間隔"
         },
+        "widgetMode": {
+            "enabledNotice": "エッジドックモード Beta を有効にしました。",
+            "disabledNotice": "エッジドックモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
+            "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。"
+        },
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
+            "widgetMode": "エッジドックモード Beta",
+            "widgetModeTooltip": "エッジドックモードを手動で有効にすると、Live2D が画面端の 6 つのアンカーから覗けます。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",
