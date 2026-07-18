@@ -235,6 +235,7 @@ function _getNekoIdleCat1PlayActionState(button) {
             resumeJourney: false,
             yarnShell: null,
             yarnHidden: false,
+            presentationOnTerminal: null,
             catMindActionId: '',
             catMindRunId: '',
             catMindStartedAt: 0,
@@ -447,6 +448,10 @@ function _cancelNekoIdleCat1PlayAction(button, options = {}) {
     const state = button && button.__nekoIdleCat1PlayActionState;
     if (!state) return;
     const wasActive = !!state.active;
+    const presentationOnTerminal = typeof state.presentationOnTerminal === 'function'
+        ? state.presentationOnTerminal
+        : null;
+    state.presentationOnTerminal = null;
     state.token += 1;
     state.active = false;
     _clearNekoIdleCat1PlayActionTimers(state);
@@ -463,9 +468,19 @@ function _cancelNekoIdleCat1PlayAction(button, options = {}) {
         _syncNekoIdleCat1AmbientSoundForTier(button.getAttribute('data-neko-idle-tier'));
     }
     if (wasActive) {
-        _reportNekoCatMindStateActionResult(state, _getNekoCatMindCancelResult(
+        const result = _getNekoCatMindCancelResult(
             options.reason || 'cat1-play-action-cancelled', 'cat1-play-action-finished'
-        ), { reason: options.reason || 'cat1-play-action-cancelled' });
+        );
+        _reportNekoCatMindStateActionResult(state, result, {
+            reason: options.reason || 'cat1-play-action-cancelled'
+        });
+        if (presentationOnTerminal) {
+            try {
+                presentationOnTerminal(result, {
+                    reason: options.reason || 'cat1-play-action-cancelled'
+                });
+            } catch (_) {}
+        }
     }
 }
 
@@ -517,6 +532,9 @@ function _playNekoIdleCat1PlayAction(button) {
     state.active = true;
     state.token += 1;
     state.resumeJourney = shouldResumeJourney;
+    state.presentationOnTerminal = !isCatMindRun && typeof catMindRunOptions.onTerminal === 'function'
+        ? catMindRunOptions.onTerminal
+        : null;
     const run = isCatMindRun
         ? _beginNekoCatMindStateAction(state, _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN, _NEKO_IDLE_TIER_CAT1, {
             source: catMindRunOptions.source, requestId: catMindRunOptions.requestId
@@ -949,9 +967,9 @@ function _syncNekoIdleCat1AmbientSoundForTier(tier) {
     _stopNekoIdleCat1AmbientSoundAudio({ reason: 'cat1-social-ping-rescheduled' });
 }
 
-function _playNekoIdleCat1DragSound(tier) {
+function _playNekoIdleCat1DragSound(tier, options = {}) {
     if (_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1) return;
-    _stopNekoIdleCat1AmbientSound();
+    _stopNekoIdleCat1AmbientSound({ reason: options.reason || 'return-ball-drag-active' });
     _stopNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState);
     _playNekoIdleSound(
         _nekoIdleCat1DragSoundState,
@@ -960,9 +978,9 @@ function _playNekoIdleCat1DragSound(tier) {
     );
 }
 
-function _playNekoIdleCat1RapidDragSound(tier) {
+function _playNekoIdleCat1RapidDragSound(tier, options = {}) {
     if (_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1) return;
-    _stopNekoIdleCat1AmbientSound();
+    _stopNekoIdleCat1AmbientSound({ reason: options.reason || 'return-ball-drag-active' });
     _stopNekoIdleSoundAudio(_nekoIdleCat1DragSoundState);
     _playNekoIdleSound(
         _nekoIdleCat1RapidDragSoundState,

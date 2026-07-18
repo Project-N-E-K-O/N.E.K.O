@@ -1112,6 +1112,12 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   object-fit: cover;
 }
 
+.message-block-image img[data-neko-image-load-failed-sticker="true"] {
+  height: auto;
+  object-fit: contain;
+  background: #fff;
+}
+
 .message-block-link {
   display: grid;
   grid-template-columns: 1fr;
@@ -3113,6 +3119,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   object-fit: contain;
   border-radius: 12px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.compact-meme-overlay img[data-neko-image-load-failed-sticker="true"] {
+  background: #fff;
 }
 
 /* 关闭叉的定位框：inline-block 收紧到图片实际尺寸，叉子绝对定位到框右上角＝图片右上角。

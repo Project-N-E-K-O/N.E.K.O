@@ -24,10 +24,10 @@ orthogonal axes (see docs/design/tts-voice-source-unification.md):
   are folded in later.
 * **capabilities** — which *voice sources* the provider actually supports, any
   combination of ``preset`` (official built-in voices) / ``clone`` (user-cloned
-  voices) / ``design`` (text-described, generated; future). The three stack on a
+  voices) / ``design`` (text-described, generated). The three stack on a
   single provider entry, declared per real capability — this is the organizing
   principle of the refactor, not a per-provider special-case. e.g. ElevenLabs =
-  {preset, clone, design}, CosyVoice = {preset, clone}, GPT-SoVITS = {clone},
+  {clone, design}, CosyVoice = {clone, design}, GPT-SoVITS = {clone},
   vLLM-Omni = {preset}.
 
 A provider declares how it is selected (``is_selected``) and how it resolves to
@@ -212,6 +212,31 @@ class PresetCatalog:
 
 
 @dataclass(frozen=True)
+class VoiceDesignMetadata:
+    """Documented upstream constraints for a provider's Voice Design API.
+
+    ``None`` and an empty tuple mean the upstream documentation does not impose
+    that constraint. Language hints use NEKO's request-language values (for
+    example ``ch``), which provider adapters translate to upstream values.
+    """
+
+    prompt_min: int | None = None
+    prompt_max: int | None = None
+    prefix_max: int | None = None
+    prefix_pattern: str = ""
+    language_hints: tuple[str, ...] = ()
+
+    def for_ui(self) -> dict[str, Any]:
+        return {
+            "prompt_min": self.prompt_min,
+            "prompt_max": self.prompt_max,
+            "prefix_max": self.prefix_max,
+            "prefix_pattern": self.prefix_pattern,
+            "language_hints": list(self.language_hints),
+        }
+
+
+@dataclass(frozen=True)
 class TTSProvider:
     """One dispatchable TTS provider, declared in a single place.
 
@@ -242,6 +267,13 @@ class TTSProvider:
     # ``/voices`` endpoint and ``validate_voice_id`` query it instead of restating
     # the catalog elsewhere (see design doc §3 ``preset_catalog``).
     preset_catalog: "PresetCatalog | None" = None
+
+    # Alternate provider ids that share this provider's implementation and
+    # capabilities while retaining provider-specific runtime configuration.
+    aliases: frozenset[str] = frozenset()
+    # Upstream-enforced Voice Design constraints. Design-capable providers use
+    # an empty VoiceDesignMetadata when the API documents no hard limits.
+    voice_design: VoiceDesignMetadata | None = None
 
     # ── Declarative UI / probe metadata (single source of truth for frontend) ──
     # Whether this provider appears only in the TTS model dropdown and never
@@ -286,7 +318,10 @@ def register(provider: TTSProvider) -> None:
 def get(key: str | None) -> TTSProvider | None:
     if not key:
         return None
-    return _REGISTRY.get(key)
+    provider = _REGISTRY.get(key)
+    if provider is not None:
+        return provider
+    return next((item for item in _REGISTRY.values() if key in item.aliases), None)
 
 
 def all_providers() -> list[TTSProvider]:
@@ -422,8 +457,10 @@ def ui_metadata() -> list[dict[str, Any]]:
     return [
         {
             "key": p.key,
+            "aliases": sorted(p.aliases),
             "kind": p.kind,
             "capabilities": sorted(p.capabilities),
+            "voice_design": p.voice_design.for_ui() if p.voice_design is not None else None,
             "tts_dropdown_only": p.tts_dropdown_only,
             "tts_config_visible": p.tts_config_visible,
             "default_url": p.default_url,

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -64,7 +65,14 @@ _OMNI_ONLY_FIELDS = frozenset(
 )
 
 _RequestKind: TypeAlias = Literal["audio", "commit", "clear", "shutdown"]
-_EventKind: TypeAlias = Literal["ready", "partial", "final", "error", "closed"]
+_EventKind: TypeAlias = Literal[
+    "ready",
+    "utterance_started",
+    "partial",
+    "final",
+    "error",
+    "closed",
+]
 _UtteranceKey: TypeAlias = tuple[int, int, int]
 
 
@@ -74,7 +82,7 @@ class AsrSessionConfig:
 
     language: str = "zh"
     input_sample_rate_hz: Literal[16000, 48000] = 16000
-    endpointing_mode: Literal["provider", "manual"] = "manual"
+    endpointing_mode: Literal["manual", "provider"] = "manual"
 
     def __post_init__(self) -> None:
         language = str(self.language).strip()
@@ -98,9 +106,9 @@ class AsrSessionConfig:
             raise ValueError(
                 "ASR_INVALID_CONFIG: input_sample_rate_hz must be 16000 or 48000"
             )
-        if self.endpointing_mode not in ("provider", "manual"):
+        if self.endpointing_mode not in ("manual", "provider"):
             raise ValueError(
-                "ASR_INVALID_CONFIG: endpointing_mode must be 'provider' or 'manual'"
+                "ASR_INVALID_CONFIG: endpointing_mode must be 'manual' or 'provider'"
             )
         object.__setattr__(self, "language", normalized_language)
 
@@ -221,7 +229,8 @@ class _RealtimeAsrSessionImpl:
         self._resampler: soxr.ResampleStream | None = None
         self._active_utterance_keys: set[_UtteranceKey] = set()
         self._committed_utterance_keys: set[_UtteranceKey] = set()
-        self._final_keys: set[_UtteranceKey] = set()
+        self._utterance_order: deque[_UtteranceKey] = deque()
+        self._pending_finals: dict[_UtteranceKey, str] = {}
 
         self._request_queue: asyncio.Queue[_AsrWorkerRequest] | None = None
         self._response_queue: asyncio.Queue[_AsrWorkerEvent] | None = None
@@ -279,6 +288,11 @@ class _RealtimeAsrSessionImpl:
                     asyncio.shield(self._ready_future),
                     timeout=_READY_TIMEOUT_SECONDS,
                 )
+            except asyncio.CancelledError:
+                if self._ready_future is not None and not self._ready_future.done():
+                    self._ready_future.cancel()
+                await self.close()
+                raise
             except asyncio.TimeoutError as exc:
                 if self._ready_future is not None and not self._ready_future.done():
                     self._ready_future.cancel()
@@ -293,7 +307,9 @@ class _RealtimeAsrSessionImpl:
                 if self._state in (_SessionState.CLOSING, _SessionState.CLOSED):
                     raise
                 if self._state is not _SessionState.FAILED:
-                    await self._fail("ASR_WORKER_FAILED", "worker failed during connect")
+                    await self._fail(
+                        "ASR_WORKER_FAILED", "worker failed during connect"
+                    )
                 raise
 
             worker_task = self._worker_task
@@ -310,24 +326,29 @@ class _RealtimeAsrSessionImpl:
         if not isinstance(config, Mapping):
             raise TypeError("ASR_INVALID_CONFIG: session update must be a mapping")
 
-        unknown_fields = set(config) - {
-            "language",
-            "input_sample_rate_hz",
-            "endpointing_mode",
-        } - _OMNI_ONLY_FIELDS
+        unknown_fields = (
+            set(config)
+            - {
+                "language",
+                "input_sample_rate_hz",
+            }
+            - _OMNI_ONLY_FIELDS
+        )
         if unknown_fields:
             names = ", ".join(sorted(map(str, unknown_fields)))
             raise ValueError(f"ASR_INVALID_CONFIG: unknown session field(s): {names}")
 
         updates = {
             key: config[key]
-            for key in ("language", "input_sample_rate_hz", "endpointing_mode")
+            for key in ("language", "input_sample_rate_hz")
             if key in config
         }
         if not updates:
             return
         if self._state is not _SessionState.NEW:
-            raise RuntimeError("ASR_SESSION_CONFIG_LOCKED: session is already connecting")
+            raise RuntimeError(
+                "ASR_SESSION_CONFIG_LOCKED: session is already connecting"
+            )
         self._config = replace(self._config, **updates)
 
     async def stream_audio(
@@ -353,7 +374,9 @@ class _RealtimeAsrSessionImpl:
                 else self._config.input_sample_rate_hz
             )
             if effective_rate not in (16000, 48000):
-                raise ValueError("ASR_INVALID_CONFIG: sample rate must be 16000 or 48000")
+                raise ValueError(
+                    "ASR_INVALID_CONFIG: sample rate must be 16000 or 48000"
+                )
             if len(audio_chunk) > effective_rate * 2:
                 raise ValueError(
                     "ASR_AUDIO_CHUNK_TOO_LARGE: one chunk may contain at most one second"
@@ -401,7 +424,8 @@ class _RealtimeAsrSessionImpl:
             if self._config.endpointing_mode == "provider":
                 # Provider endpointing still needs a local activity boundary
                 # to drain soxr's buffered 48 kHz tail. It deliberately does
-                # not send a commit or advance the provider utterance key.
+                # not send a commit or advance a worker-owned utterance ID.
+                self._utterance_has_audio = False
                 self._reset_resampler()
                 return
             await self._enqueue_request(
@@ -425,7 +449,8 @@ class _RealtimeAsrSessionImpl:
             self._utterance_has_audio = False
             self._active_utterance_keys.clear()
             self._committed_utterance_keys.clear()
-            self._final_keys.clear()
+            self._utterance_order.clear()
+            self._pending_finals.clear()
             self._reset_resampler()
             await self._enqueue_request(
                 _AsrWorkerRequest(
@@ -469,7 +494,8 @@ class _RealtimeAsrSessionImpl:
             self._utterance_has_audio = False
             self._active_utterance_keys.clear()
             self._committed_utterance_keys.clear()
-            self._final_keys.clear()
+            self._utterance_order.clear()
+            self._pending_finals.clear()
             self._reset_resampler()
 
             if self._request_queue is not None:
@@ -599,13 +625,11 @@ class _RealtimeAsrSessionImpl:
 
         if event.generation != self._generation:
             return False
-        if event.kind == "partial":
-            return False
-        if event.kind == "final":
-            if event.utterance_id is None:
-                return False
-            text = event.text.strip()
-            if not text:
+        if event.kind == "utterance_started":
+            if (
+                self._config.endpointing_mode != "provider"
+                or event.utterance_id is None
+            ):
                 return False
             key = (event.generation, event.buffer_epoch, event.utterance_id)
             async with self._operation_lock:
@@ -615,7 +639,28 @@ class _RealtimeAsrSessionImpl:
                     or event.buffer_epoch != self._buffer_epoch
                 ):
                     return False
-                if key in self._final_keys:
+                # Repeated provider speech-start notifications for one item
+                # are idempotent. The worker owns provider-item -> internal-ID
+                # mapping, so no provider identifier leaks into this layer.
+                if key not in self._active_utterance_keys:
+                    self._active_utterance_keys.add(key)
+                    self._utterance_order.append(key)
+            return False
+        if event.kind == "partial":
+            return False
+        if event.kind == "final":
+            if event.utterance_id is None:
+                return False
+            text = event.text.strip()
+            key = (event.generation, event.buffer_epoch, event.utterance_id)
+            async with self._operation_lock:
+                if (
+                    self._state is not _SessionState.READY
+                    or event.generation != self._generation
+                    or event.buffer_epoch != self._buffer_epoch
+                ):
+                    return False
+                if key in self._pending_finals:
                     logger.warning(
                         "ASR worker returned a duplicate or conflicting final"
                     )
@@ -630,18 +675,20 @@ class _RealtimeAsrSessionImpl:
                         "ASR worker returned a final for an inactive utterance"
                     )
                     return False
-                self._final_keys.add(key)
-                self._active_utterance_keys.discard(key)
-                self._committed_utterance_keys.discard(key)
-                if (
-                    self._config.endpointing_mode == "provider"
-                    and event.utterance_id == self._utterance_id
+                self._pending_finals[key] = text
+                ready_texts: list[str] = []
+                while (
+                    self._utterance_order
+                    and self._utterance_order[0] in self._pending_finals
                 ):
-                    self._utterance_id += 1
-                    self._utterance_has_audio = False
-                    self._reset_resampler()
+                    ready_key = self._utterance_order.popleft()
+                    ready_texts.append(self._pending_finals.pop(ready_key))
+                    self._active_utterance_keys.discard(ready_key)
+                    self._committed_utterance_keys.discard(ready_key)
             assert self._callback_queue is not None
-            await self._callback_queue.put(_CallbackItem(text=text))
+            for ready_text in ready_texts:
+                if ready_text:
+                    await self._callback_queue.put(_CallbackItem(text=ready_text))
             return False
         if event.kind == "error":
             if (
@@ -671,7 +718,8 @@ class _RealtimeAsrSessionImpl:
         self._closing_event.set()
         self._active_utterance_keys.clear()
         self._committed_utterance_keys.clear()
-        self._final_keys.clear()
+        self._utterance_order.clear()
+        self._pending_finals.clear()
         safe_code = (
             error_code
             if re.fullmatch(r"ASR_[A-Z0-9_]+", error_code or "")
@@ -681,7 +729,10 @@ class _RealtimeAsrSessionImpl:
         error = f"{safe_code}: {safe_message}"
         if self._ready_future is not None and not self._ready_future.done():
             self._ready_future.set_exception(RuntimeError(error))
-        if self._worker_task is not None and self._worker_task is not asyncio.current_task():
+        if (
+            self._worker_task is not None
+            and self._worker_task is not asyncio.current_task()
+        ):
             self._worker_task.cancel()
         try:
             await self._emit_connection_error_once(error)
@@ -710,18 +761,25 @@ class _RealtimeAsrSessionImpl:
         key: _UtteranceKey | None = None
         added_active = False
         added_committed = False
+        added_order = False
         if request.utterance_id is not None and request.kind in ("audio", "commit"):
             key = (
                 request.generation,
                 request.buffer_epoch,
                 request.utterance_id,
             )
-            if request.kind == "audio" and key not in self._active_utterance_keys:
+            if (
+                self._config.endpointing_mode == "manual"
+                and request.kind == "audio"
+                and key not in self._active_utterance_keys
+            ):
                 self._active_utterance_keys.add(key)
                 added_active = True
             if request.kind == "commit" and key not in self._committed_utterance_keys:
                 self._committed_utterance_keys.add(key)
                 added_committed = True
+                self._utterance_order.append(key)
+                added_order = True
 
         put_task = asyncio.create_task(self._request_queue.put(request))
         closing_task = asyncio.create_task(self._closing_event.wait())
@@ -737,6 +795,11 @@ class _RealtimeAsrSessionImpl:
                     self._active_utterance_keys.discard(key)
                 if added_committed:
                     self._committed_utterance_keys.discard(key)
+                if added_order:
+                    try:
+                        self._utterance_order.remove(key)
+                    except ValueError:
+                        pass
             raise
 
         if put_task in done:
@@ -750,6 +813,11 @@ class _RealtimeAsrSessionImpl:
                         self._active_utterance_keys.discard(key)
                     if added_committed:
                         self._committed_utterance_keys.discard(key)
+                    if added_order:
+                        try:
+                            self._utterance_order.remove(key)
+                        except ValueError:
+                            pass
                 raise
             closing_task.cancel()
             await asyncio.gather(closing_task, return_exceptions=True)
@@ -763,6 +831,11 @@ class _RealtimeAsrSessionImpl:
                 self._active_utterance_keys.discard(key)
             if added_committed:
                 self._committed_utterance_keys.discard(key)
+            if added_order:
+                try:
+                    self._utterance_order.remove(key)
+                except ValueError:
+                    pass
         raise RuntimeError("ASR_SESSION_NOT_READY: worker is no longer running")
 
     def _make_resampler(self) -> soxr.ResampleStream | None:
@@ -784,12 +857,7 @@ class _RealtimeAsrSessionImpl:
         output = self._resampler.resample_chunk(samples)
         if len(output) == 0:
             return b""
-        return (
-            (output * 32768.0)
-            .clip(-32768, 32767)
-            .astype("<i2")
-            .tobytes()
-        )
+        return (output * 32768.0).clip(-32768, 32767).astype("<i2").tobytes()
 
     def _flush_resampler(self) -> bytes:
         if self._resampler is None:
@@ -800,12 +868,7 @@ class _RealtimeAsrSessionImpl:
         )
         if len(output) == 0:
             return b""
-        return (
-            (output * 32768.0)
-            .clip(-32768, 32767)
-            .astype("<i2")
-            .tobytes()
-        )
+        return (output * 32768.0).clip(-32768, 32767).astype("<i2").tobytes()
 
     def _reset_resampler(self) -> None:
         if self._resampler is not None:

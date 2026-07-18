@@ -7,6 +7,10 @@
 <!-- VRM 光照默认值：从后端注入（vrm-core.js 依赖） -->
 <script>window.VRM_DEFAULT_LIGHTING = Object.freeze({{ vrm_defaults | tojson }});</script>
 
+<!-- 小游戏页豁免 avatar 空闲节流：gameplay 姿态由本页自有 rAF 循环驱动骨骼，
+     manager 的活动探测看不见它，节流会让射门/庆祝等动作以 30fps 渲染出卡顿 -->
+<script>window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ = true;</script>
+
 <!-- Mock 桌宠运行环境（必要最小子集，避免各 init 脚本崩溃） -->
 <script>
   // mini-game 邀请被接受后由 chat.html / Pet 主聊天 window.open 打开本页面，
@@ -711,6 +715,7 @@
 <script src="/static/avatar/avatar-ui-buttons/idle-actions-and-audio.js"></script>
 <script src="/static/avatar/avatar-ui-buttons/idle-drag-and-subactions.js"></script>
 <script src="/static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js"></script>
+<script src="/static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js"></script>
 <script src="/static/avatar/avatar-ui-buttons/methods-setup.js"></script>
 <script src="/static/avatar/avatar-ui-buttons/methods-buttons.js"></script>
 <script src="/static/avatar/avatar-ui-buttons/methods-return.js"></script>
