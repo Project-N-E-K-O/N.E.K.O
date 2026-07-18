@@ -583,7 +583,8 @@ class StreamingMixin:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
             
-            # 麦克风 PCM 只进入独立 ASR，Core 会话类型不参与音频路由。
+            # 麦克风 PCM 遵循会话启动时解析出的唯一硬路由：显式关闭
+            # 独立 ASR 时走 Omni native；启用后只允许 independent/blocked。
             if input_type == 'audio':
                 if (
                     ingress_token is not None
@@ -591,6 +592,7 @@ class StreamingMixin:
                 ):
                     return
                 if getattr(self, "_asr_route_mode", "independent") not in {
+                    "native",
                     "independent",
                     "blocked",
                 }:

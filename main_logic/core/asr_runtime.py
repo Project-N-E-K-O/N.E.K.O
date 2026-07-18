@@ -163,6 +163,15 @@ class AsrRuntimeMixin:
             audio_generation=self._asr_audio_generation,
         )
 
+    def _capture_native_ingress_token(self) -> VoiceIngressToken:
+        return VoiceIngressToken(
+            session_epoch=self._asr_session_epoch,
+            connection_id=self._voice_lease_connection_id,
+            lease_generation=self._voice_lease_generation,
+            route_generation=0,
+            audio_generation=self._asr_audio_generation,
+        )
+
     def _capture_turn_token(
         self,
         lifecycle: VoiceInputLifecycleController,
@@ -183,13 +192,21 @@ class AsrRuntimeMixin:
 
     def _ingress_token_matches(self, token: VoiceIngressToken) -> bool:
         lifecycle = self._asr_lifecycle
+        route_matches = (
+            lifecycle is not None
+            and token.route_generation == lifecycle.snapshot.route_generation
+        ) or (
+            lifecycle is None
+            and token.route_generation == 0
+            and self._asr_route_mode == "native"
+            and not self._asr_required
+        )
         return bool(
             token.session_epoch == self._asr_session_epoch
             and token.connection_id == self._voice_lease_connection_id
             and token.lease_generation == self._voice_lease_generation
             and token.audio_generation == self._asr_audio_generation
-            and lifecycle is not None
-            and token.route_generation == lifecycle.snapshot.route_generation
+            and route_matches
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
@@ -629,6 +646,11 @@ class AsrRuntimeMixin:
             )
             return
         if not enabled:
+            # An explicitly disabled independent-ASR feature preserves the
+            # product's native Omni microphone path.  Fail-closed applies only
+            # after the user has opted into independent ASR.
+            self._asr_required = False
+            self._asr_route_mode = "native"
             await self._send_asr_status("ASR_INDEPENDENT_DISABLED", core_type or "unknown")
             return
         self._asr_required = True
@@ -921,10 +943,26 @@ class AsrRuntimeMixin:
         speech_probability: float | None = None,
         rnnoise_available: bool | None = None,
     ) -> bool:
-        """Return True when this frame must not be sent to Omni."""
+        """Consume the frame through the resolved native/independent hard route."""
 
         self._ensure_asr_runtime_state()
-        if self._asr_route_mode != "independent":
+        route_mode = self._asr_route_mode
+        if route_mode == "native" and not self._asr_required:
+            if not self._voice_input_accepts_pcm():
+                return True
+            session_ref = getattr(self, "session", None)
+            stream_audio = getattr(session_ref, "stream_audio", None)
+            if not callable(stream_audio):
+                return True
+            try:
+                await stream_audio(pcm16)
+                self._record_omni_microphone_audio(len(pcm16))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.error("[%s] Omni native microphone routing failed", self.lanlan_name)
+            return True
+        if route_mode != "independent":
             self._asr_route_mode = "blocked"
             return True
         if not self._voice_input_accepts_pcm():
@@ -1433,8 +1471,12 @@ class AsrRuntimeMixin:
 
     def _record_omni_microphone_audio(self, byte_count: int) -> None:
         self._ensure_asr_runtime_state()
-        if int(byte_count) > 0:
+        byte_count = int(byte_count)
+        if byte_count <= 0:
+            return
+        if self._asr_required or self._asr_route_mode != "native":
             raise RuntimeError("OMNI_MICROPHONE_ROUTE_FORBIDDEN")
+        self._omni_mic_audio_bytes += byte_count
 
     def _sync_provider_wire_metrics(
         self,

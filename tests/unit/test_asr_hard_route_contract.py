@@ -32,10 +32,15 @@ async def test_fresh_runtime_is_fail_closed_until_independent_asr_is_ready() -> 
     assert runtime._omni_mic_audio_bytes == 0
 
 
-async def test_disabled_independent_asr_blocks_audio_instead_of_using_omni(
+async def test_disabled_independent_asr_preserves_omni_native_audio(
     monkeypatch,
 ) -> None:
     runtime = _Runtime()
+    runtime._voice_lease_synchronized = True
+    runtime._voice_lease_owner = "core"
+    runtime._voice_input_suppressed = False
+    runtime.session = type("Omni", (), {})()
+    runtime.session.stream_audio = AsyncMock()
     monkeypatch.setattr(
         core_facade,
         "aload_global_conversation_settings",
@@ -44,13 +49,14 @@ async def test_disabled_independent_asr_blocks_audio_instead_of_using_omni(
 
     await runtime._start_independent_asr_if_enabled("audio")
 
-    assert runtime._asr_route_mode == "blocked"
-    assert runtime._asr_required is True
+    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_required is False
     assert await runtime._route_microphone_audio(
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
     ) is True
-    assert runtime._omni_mic_audio_bytes == 0
+    runtime.session.stream_audio.assert_awaited_once_with(b"\x01\x00" * 160)
+    assert runtime._omni_mic_audio_bytes == 320
     assert "ASR_INDEPENDENT_DISABLED" in runtime.send_status.await_args.args[0]
 
 

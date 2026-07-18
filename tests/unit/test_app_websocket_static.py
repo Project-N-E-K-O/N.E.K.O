@@ -25,6 +25,23 @@ def test_independent_asr_injection_failure_does_not_show_fallback_toast():
     assert "independentAsrFallback" not in injection_branch
 
 
+def test_disabled_independent_asr_is_a_normal_native_status_without_failure_toast():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    status_block = source.split(
+        "if (statusCode && statusCode.indexOf('ASR_INDEPENDENT_') === 0)",
+        1,
+    )[1].split("if (statusCode === 'TTS_CONNECTION_FAILED')", 1)[0]
+    disabled_branch = status_block.split(
+        "if (statusCode === 'ASR_INDEPENDENT_DISABLED')",
+        1,
+    )[1].split("if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED')", 1)[0]
+
+    assert "S.independentAsrActive = false;" in disabled_branch
+    assert "return;" in disabled_branch
+    assert "independentAsrFallback" not in disabled_branch
+
+
 def test_independent_asr_terminal_status_clears_partial_preview():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
