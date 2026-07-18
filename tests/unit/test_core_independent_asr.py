@@ -1531,7 +1531,8 @@ async def test_startup_close_window_is_blocked_before_settings_resolution(
 
     release_close.set()
     await asyncio.wait_for(start_task, 1)
-    assert runtime._asr_route_mode == "blocked"
+    assert runtime._asr_route_mode == "native"
+    assert runtime._asr_required is False
 
 
 async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> None:

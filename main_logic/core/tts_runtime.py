@@ -99,11 +99,19 @@ class TtsRuntimeMixin:
             return
         lifecycle = self._asr_lifecycle
         if lifecycle is None:
-            return
+            if (
+                self._asr_route_mode == "native"
+                and not self._asr_required
+            ):
+                ingress_token = self._capture_native_ingress_token()
+            else:
+                return
+        else:
+            ingress_token = self._capture_ingress_token(lifecycle)
         try:
             frame = QueuedMicFrame.from_message(
                 message,
-                token=self._capture_ingress_token(lifecycle),
+                token=ingress_token,
             )
         except ValueError:
             logger.warning("[%s] invalid microphone ingress frame", self.lanlan_name)

@@ -130,6 +130,32 @@ def _authorize_core_lease(mgr: LLMSessionManager) -> None:
     mgr._voice_input_suppressed = False
 
 
+async def test_native_audio_without_asr_lifecycle_reaches_internal_processor():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._init_asr_runtime_state()
+    _authorize_core_lease(mgr)
+    mgr._asr_route_mode = "native"
+    mgr._asr_required = False
+    mgr._ensure_audio_stream_worker = lambda: None
+    mgr._audio_stream_queue = AudioDurationQueue(
+        capacity_us=1_000_000,
+        max_frames=10,
+    )
+    mgr._audio_stream_dropped_total = 0
+    mgr._last_audio_stream_backlog_log_time = 0.0
+    message = {"input_type": "audio", "data": [1] * 160}
+
+    await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
+
+    frame = await mgr._audio_stream_queue.get()
+    assert frame.message is message
+    assert mgr._ingress_token_matches(frame.token)
+    mgr._asr_required = True
+    mgr._asr_route_mode = "blocked"
+    assert not mgr._ingress_token_matches(frame.token)
+    mgr._audio_stream_queue.task_done()
+
+
 def test_audio_stream_queue_uses_ceiling_duration_accounting():
     frame = QueuedMicFrame.from_message(
         {

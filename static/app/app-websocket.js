@@ -2188,6 +2188,11 @@
                             }
                             return;
                         }
+                        if (statusCode === 'ASR_INDEPENDENT_DISABLED') {
+                            removeExternalAsrPreview();
+                            S.independentAsrActive = false;
+                            return;
+                        }
                         if (statusCode === 'ASR_INDEPENDENT_INJECTION_FAILED') {
                             return;
                         }
