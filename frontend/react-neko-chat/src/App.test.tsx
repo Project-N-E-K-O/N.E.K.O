@@ -4935,7 +4935,7 @@ describe('App', () => {
       ['.compact-input-tool-item-jukebox', 'Jukebox test label'],
       ['.compact-input-tool-item-translate', 'Translate test label'],
       ['.compact-input-tool-item-galgame', 'Galgame test label'],
-      ['.compact-input-tool-item-export', 'Show history actions'],
+      ['.compact-input-tool-item-export', 'Export conversation history'],
       ['.compact-input-tool-item-avatar', 'Avatar tools'],
     ];
 
