@@ -148,7 +148,7 @@ def test_app_widget_mode_frontend_contracts() -> None:
           win.fetch = async (url, init = {{}}) => {{
             const body = init.body ? JSON.parse(init.body) : null;
             fetchCalls.push({{ url, method: init.method || 'GET', body }});
-            let payload = {{ success: true, state: {{ enabled: true, settings: {{ activity_response: 'disabled' }} }} }};
+            let payload = {{ success: true, state: {{ enabled: true }} }};
             if (url === '/api/widget-mode/windows/register') {{
               const compatible = (options.protocolVersion || 1) === 1
                 && options.lease !== false
@@ -160,10 +160,6 @@ def test_app_widget_mode_frontend_contracts() -> None:
                 compaction_phase: options.registrationCycleId ? 'compacted' : 'idle',
                 join_as_compacted: !!options.registrationCycleId,
               }};
-            }} else if (url === '/api/widget-mode/settings' && (init.method || 'GET') === 'GET') {{
-              payload = {{ activity_response: 'disabled' }};
-            }} else if (url === '/api/widget-mode/settings') {{
-              payload = body;
             }}
             return {{ ok: true, status: 200, json: async () => payload }};
           }};
@@ -217,13 +213,13 @@ def test_app_widget_mode_frontend_contracts() -> None:
         function assert(condition, message) {{ if (!condition) throw new Error(message); }}
         const request = (cycle) => ({
           type: 'widget_mode_compaction_requested',
-          source: 'widget_mode_activity_compaction',
+          source: 'widget_mode_compaction',
           compaction_cycle_id: cycle,
-          reason: 'activity-confirmed',
+          reason: 'widget-mode',
         }});
         const lifecycle = (type, cycle, extra = {{}}) => Object.assign({{
           type,
-          source: 'widget_mode_activity_compaction',
+          source: 'widget_mode_compaction',
           compaction_cycle_id: cycle,
         }}, extra);
 
@@ -287,7 +283,7 @@ def test_app_widget_mode_frontend_contracts() -> None:
           await live2d.win.nekoWidgetMode.handleLifecycleMessage(request('live-cycle'));
           const alreadyAck = live2d.fetchCalls.find((call) =>
             call.url === '/api/widget-mode/compaction/ack' && call.body.status === 'already_compacted');
-          assert(alreadyAck, 'Live2D activity request must not change the model');
+          assert(alreadyAck, 'Live2D Widget Mode request must not change the model');
           assert(live2d.goodbyeEvents.length === 0, 'Live2D should remain unchanged');
 
           const mismatch = createHarness({{ protocolVersion: 2 }});
@@ -382,9 +378,6 @@ def test_app_widget_mode_frontend_contracts() -> None:
             call.url === '/api/widget-mode/renderer-suspension/ack').at(-1);
           assert(resumeRendererAck && resumeRendererAck.body.success === false,
             'system resume must report renderer suspension no longer active');
-          assert(systemResume.fetchCalls.some((call) =>
-            call.url === '/api/widget-mode/activity/reset' && call.body.reason === 'system-resume'),
-            'system resume must reset the activity candidate');
           assert(systemResume.registrations.length === 2 && systemResume.registrations.every(Boolean),
             'system resume must re-register the compatible pet window');
 
@@ -466,17 +459,12 @@ def test_widget_mode_product_names_and_fallbacks_are_localized() -> None:
         assert settings["toggles"]["widgetMode"] == product_name
 
 
-def test_widget_mode_settings_mutations_are_serialized_without_fixed_timer_reentry() -> None:
+def test_widget_mode_toggle_mutation_is_serialized_without_fixed_timer_reentry() -> None:
     source = (PROJECT_ROOT / "static" / "avatar" / "avatar-ui-popup.js").read_text(
         encoding="utf-8"
     )
 
     assert "function queueWidgetModeMutation(operation)" in source
-    persist_block = source.split("const persistSettings = function (settings)", 1)[1].split(
-        "Object.keys(modeButtons)",
-        1,
-    )[0]
-    assert "return queueWidgetModeMutation(function ()" in persist_block
     widget_toggle_block = source.split("} else if (toggle.id === 'widget-mode')", 1)[1].split(
         "}",
         1,

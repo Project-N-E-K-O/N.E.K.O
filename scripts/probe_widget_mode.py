@@ -95,20 +95,12 @@ def normalize_widget_mode_state(payload: Any) -> dict[str, Any] | None:
 def summarize_state(state: dict[str, Any] | None) -> str:
     if not state:
         return "state unavailable"
-    reason = state.get("last_resource_reason")
-    reason_text = "none"
-    if isinstance(reason, dict):
-        metric = reason.get("metric") or reason.get("reason") or "?"
-        percent = reason.get("percent", "?")
-        duration = reason.get("duration_seconds", "?")
-        reason_text = f"{metric} {percent}% / {duration}s"
     return (
         f"enabled={state.get('enabled')}, "
-        f"resource_pressure_state={state.get('resource_pressure_state')}, "
         f"compaction_phase={state.get('compaction_phase')}, "
-        f"activity_response={(state.get('settings') or {}).get('activity_response')}, "
-        f"suppressed_until={state.get('suppressed_until')}, "
-        f"last_resource_reason={reason_text}"
+        f"compaction_cycle_id={state.get('compaction_cycle_id')}, "
+        f"user_restore_active={state.get('user_restore_active')}, "
+        f"suppressed_until={state.get('suppressed_until')}"
     )
 
 
@@ -118,12 +110,8 @@ def _check_default_off(state: dict[str, Any] | None) -> list[str]:
         return ["widget mode state endpoint did not return a state object"]
     if state.get("enabled") is not False:
         failures.append("expected enabled=false after restart")
-    if state.get("resource_pressure_state") != "normal":
-        failures.append("expected resource_pressure_state=normal after restart")
     if state.get("compaction_phase") != "idle":
         failures.append("expected compaction_phase=idle after restart")
-    if state.get("last_resource_reason") is not None:
-        failures.append("expected last_resource_reason=null after restart")
     return failures
 
 
@@ -241,8 +229,9 @@ def run_probe(
             "status": response.get("status"),
             "widget_mode_present": widget_mode is not None,
             "enabled": widget_mode.get("enabled") if widget_mode else None,
-            "resource_pressure_state": widget_mode.get("resource_pressure_state") if widget_mode else None,
-            "sample_count": len(widget_mode.get("last_resource_samples") or []) if widget_mode else None,
+            "compaction_phase": widget_mode.get("compaction_phase") if widget_mode else None,
+            "compaction_cycle_id": widget_mode.get("compaction_cycle_id") if widget_mode else None,
+            "suppressed_until": widget_mode.get("suppressed_until") if widget_mode else None,
         })
         if widget_mode is None:
             failures.append("monitor sample missing widget_mode")

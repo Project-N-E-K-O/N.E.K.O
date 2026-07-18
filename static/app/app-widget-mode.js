@@ -5,22 +5,18 @@
     'use strict';
 
     const PROTOCOL_VERSION = 1;
-    const SOURCE = 'widget_mode_activity_compaction';
+    const SOURCE = 'widget_mode_compaction';
     const API_STATE = '/api/widget-mode/state';
     const API_ENABLED = '/api/widget-mode/enabled';
-    const API_SETTINGS = '/api/widget-mode/settings';
     const API_USER_RESTORE = '/api/widget-mode/user-restore';
     const API_REGISTER_WINDOW = '/api/widget-mode/windows/register';
     const API_UNREGISTER_WINDOW = '/api/widget-mode/windows/unregister';
     const API_COMPACTION_ACK = '/api/widget-mode/compaction/ack';
     const API_RENDERER_ACK = '/api/widget-mode/renderer-suspension/ack';
-    const API_ACTIVITY_RESET = '/api/widget-mode/activity/reset';
-    const ACTIVITY_POLICIES = new Set(['disabled', 'observe_only', 'compact_on_confirm']);
 
     const clientState = {
         enabled: false,
         backendState: null,
-        settings: { activity_response: 'disabled' },
         hostContract: null,
         hostCompatible: false,
         currentCycleId: null,
@@ -61,14 +57,6 @@
         try { window.alert(message); } catch (_) {}
     }
 
-    function normalizeSettings(settings) {
-        const source = settings && typeof settings === 'object' ? settings : {};
-        const policy = ACTIVITY_POLICIES.has(source.activity_response)
-            ? source.activity_response
-            : 'disabled';
-        return { activity_response: policy };
-    }
-
     function isCatFormActive() {
         try {
             return !!(
@@ -106,7 +94,6 @@
     function getState() {
         return {
             enabled: clientState.enabled,
-            settings: Object.assign({}, clientState.settings),
             currentCycleId: clientState.currentCycleId,
             compactedByCycle: clientState.compactedByCycle,
             alreadyCompacted: clientState.alreadyCompacted,
@@ -145,9 +132,6 @@
         if (!state || typeof state !== 'object') return;
         clientState.backendState = state;
         clientState.enabled = state.enabled === true;
-        if (state.settings && typeof state.settings === 'object') {
-            clientState.settings = normalizeSettings(state.settings);
-        }
         dispatchState();
     }
 
@@ -578,7 +562,7 @@
                     autoGoodbye: true,
                     widgetModeCompaction: true,
                     source: SOURCE,
-                    reason: payload.reason || 'activity-confirmed',
+                    reason: payload.reason || 'widget-mode',
                     compactionCycleId: cycleId,
                     edgeAnchor: clientState.restoreAnchor,
                 },
@@ -647,13 +631,6 @@
             await handleCompactionRequested(payload);
             return;
         }
-        if (payload.type === 'widget_mode_activity_signal_unavailable') {
-            showNotice(t(
-                'settings.widgetMode.signalUnavailable',
-                '活动信号暂时不可用；当前候选不会被误判为结束。'
-            ));
-            return;
-        }
         if (payload.compaction_cycle_id !== clientState.currentCycleId) return;
         if (payload.type === 'widget_mode_compaction_confirmed') {
             showNotice(t(
@@ -692,32 +669,6 @@
         return null;
     }
 
-    async function refreshSettings() {
-        try {
-            const response = await fetch(API_SETTINGS, { cache: 'no-store' });
-            if (!response.ok) return null;
-            clientState.settings = normalizeSettings(await response.json());
-            dispatchState();
-            return Object.assign({}, clientState.settings);
-        } catch (error) {
-            console.warn('[WidgetMode] settings refresh failed:', error);
-            return null;
-        }
-    }
-
-    async function setSettings(settings) {
-        const next = normalizeSettings(Object.assign({}, clientState.settings, settings || {}));
-        try {
-            clientState.settings = normalizeSettings(await postJson(API_SETTINGS, next));
-            dispatchState();
-            return true;
-        } catch (error) {
-            console.warn('[WidgetMode] settings update failed:', error);
-            await refreshSettings();
-            return false;
-        }
-    }
-
     async function setEnabled(enabled) {
         const next = enabled === true;
         try {
@@ -737,33 +688,10 @@
         }
     }
 
-    function metricLabel(metric) {
-        if (metric === 'cpu') return 'CPU';
-        if (metric === 'memory') return t('settings.widgetMode.memoryMetric', '内存');
-        if (metric === 'gpu') return 'GPU';
-        return metric || t('settings.widgetMode.resourceMetric', '资源');
-    }
-
     function getStatusText() {
-        const status = clientState.enabled
+        return clientState.enabled
             ? t('settings.widgetMode.statusOn', '开启')
             : t('settings.widgetMode.statusOff', '关闭');
-        const reason = clientState.backendState && clientState.backendState.last_resource_reason;
-        if (!reason || !reason.metric) {
-            return t('settings.widgetMode.statusOnly', '{status}', { status: status });
-        }
-        const percent = Number.isFinite(reason.percent) ? Math.round(reason.percent) + '%' : '-';
-        return t(
-            'settings.widgetMode.statusWithResource',
-            '{status} · 诊断：{metric} {percent}',
-            { status: status, metric: metricLabel(reason.metric), percent: percent }
-        );
-    }
-
-    async function resetActivityCandidate(reason) {
-        try {
-            await postJson(API_ACTIVITY_RESET, { reason: reason || 'frontend-reset' });
-        } catch (_) {}
     }
 
     function joinActiveCompactionCycle(registration) {
@@ -834,7 +762,6 @@
             host.onSystemResume(function () {
                 resumeSuspendedRenderers();
                 void sendRendererSuspensionAck(false);
-                void resetActivityCandidate('system-resume');
                 void registerHostWindow();
             });
         }
@@ -879,12 +806,8 @@
                 clientState.returnBallMoved = true;
             }
         });
-        window.addEventListener('neko:character-switch-start', function () {
-            void resetActivityCandidate('character-switch');
-        });
         window.addEventListener('neko:websocket-connection-state', function (event) {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
-            if (detail.connected === false) void resetActivityCandidate('connection-interrupted');
             if (detail.connected === true) void registerHostWindow();
         });
         window.addEventListener('beforeunload', function () {
@@ -907,9 +830,6 @@
         setEnabled: setEnabled,
         isEnabled: function () { return clientState.enabled === true; },
         getStatusText: getStatusText,
-        refreshSettings: refreshSettings,
-        setSettings: setSettings,
-        getSettings: function () { return Object.assign({}, clientState.settings); },
         registerHostWindow: registerHostWindow,
         handleLifecycleMessage: handleLifecycleMessage,
         getState: getState,

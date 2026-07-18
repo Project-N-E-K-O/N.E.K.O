@@ -19,7 +19,7 @@ Coverage focus:
 
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -777,53 +777,3 @@ def test_throttle_dict_bounded(monkeypatch):
     )
     # Oldest entry should have been evicted.
     assert "old_0" not in system_router_module._ACTIVITY_SIGNAL_THROTTLE
-
-
-@pytest.mark.unit
-def test_activity_tracker_adapts_exact_game_at_widget_mode_boundary(monkeypatch):
-    from main_logic import widget_mode_runtime
-
-    mgr, tracker = _build_mgr()
-    tracker.get_snapshot_sync.return_value = SimpleNamespace(
-        state="gaming",
-        os_signals_available=True,
-        active_window=SimpleNamespace(category="gaming", subcategory="game"),
-    )
-    ingest = AsyncMock()
-    monkeypatch.setattr(widget_mode_runtime.widget_mode_coordinator, "ingest_activity_signal", ingest)
-    client = _build_client(monkeypatch, {"Aria": mgr})
-
-    response = client.post(
-        ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria", "process_name": "KnownGame.exe"},
-    )
-
-    assert response.status_code == 200
-    kwargs = ingest.await_args.kwargs
-    assert kwargs["active"] is True
-    assert kwargs["available"] is True
-    assert set(kwargs) == {"active", "available", "observed_at"}
-
-
-@pytest.mark.unit
-def test_gpu_fallback_gaming_state_is_not_an_exact_game_signal(monkeypatch):
-    from main_logic import widget_mode_runtime
-
-    mgr, tracker = _build_mgr()
-    tracker.get_snapshot_sync.return_value = SimpleNamespace(
-        state="gaming",
-        os_signals_available=True,
-        active_window=SimpleNamespace(category="unknown", subcategory=None),
-    )
-    ingest = AsyncMock()
-    monkeypatch.setattr(widget_mode_runtime.widget_mode_coordinator, "ingest_activity_signal", ingest)
-    client = _build_client(monkeypatch, {"Aria": mgr})
-
-    response = client.post(
-        ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria", "gpu_utilization": 99.0},
-    )
-
-    assert response.status_code == 200
-    assert ingest.await_args.kwargs["active"] is False
-    assert ingest.await_args.kwargs["available"] is True

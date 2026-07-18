@@ -14,12 +14,10 @@ SPEC.loader.exec_module(probe)
 def clean_state() -> dict:
     return {
         "enabled": False,
-        "resource_pressure_state": "normal",
-        "last_resource_samples": [],
-        "last_resource_reason": None,
         "compaction_phase": "idle",
+        "compaction_cycle_id": None,
+        "user_restore_active": False,
         "suppressed_until": None,
-        "settings": {"activity_response": "disabled"},
     }
 
 
@@ -52,7 +50,7 @@ def test_probe_accepts_clean_default_off_and_debug_health():
     assert report["ok"] is True
     assert report["failures"] == []
     assert "enabled=False" in report["summary"]["widget_mode_state"]
-    assert "resource_pressure_state=normal" in report["summary"]["widget_mode_state"]
+    assert "compaction_phase=idle" in report["summary"]["widget_mode_state"]
     assert report["summary"]["debug_health_widget_mode_present"] is True
 
 
@@ -85,12 +83,13 @@ def test_probe_parse_args_defaults_to_auto_base_url():
     assert probe.parse_args([]).base_url == "auto"
 
 
-def test_summarize_state_handles_explicit_none_settings():
-    state = clean_state() | {"settings": None}
+def test_summarize_state_reports_cycle_and_suppression():
+    state = clean_state() | {"compaction_cycle_id": "cycle-1", "suppressed_until": 1234.5}
 
     summary = probe.summarize_state(state)
 
-    assert "activity_response=None" in summary
+    assert "compaction_cycle_id=cycle-1" in summary
+    assert "suppressed_until=1234.5" in summary
 
 
 def test_probe_reports_restart_default_off_failures():
@@ -98,8 +97,6 @@ def test_probe_reports_restart_default_off_failures():
         assert path == "/api/widget-mode/state"
         state = clean_state() | {
             "enabled": True,
-            "resource_pressure_state": "high",
-            "last_resource_reason": {"metric": "gpu", "percent": 91, "duration_seconds": 30},
             "compaction_phase": "compacted",
         }
         return {"ok": True, "status": 200, "data": {"success": True, "state": state}}
@@ -111,9 +108,7 @@ def test_probe_reports_restart_default_off_failures():
 
     assert report["ok"] is False
     assert "expected enabled=false after restart" in report["failures"]
-    assert "expected resource_pressure_state=normal after restart" in report["failures"]
     assert "expected compaction_phase=idle after restart" in report["failures"]
-    assert "expected last_resource_reason=null after restart" in report["failures"]
 
 
 def test_probe_reports_missing_debug_health_widget_mode():
@@ -141,7 +136,7 @@ def test_probe_inspects_debug_health_log_with_rotation_summary(tmp_path):
     rotated_path = tmp_path / "debug_health.jsonl.1"
     log_path.write_text(
         '{"ts": 1, "uptime_seconds": 3}\n'
-        '{"ts": 2, "widget_mode": {"enabled": false, "resource_pressure_state": "normal"}}\n',
+        '{"ts": 2, "widget_mode": {"enabled": false, "compaction_phase": "idle"}}\n',
         encoding="utf-8",
     )
     rotated_path.write_text("old\n", encoding="utf-8")

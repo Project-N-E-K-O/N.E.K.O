@@ -10,67 +10,29 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
 WIDGET_MODE_PROTOCOL_VERSION = 1
-PRESSURE_THRESHOLD_PERCENT = 85.0
-SAMPLE_INTERVAL_SECONDS = 5.0
-SUSTAINED_SAMPLE_COUNT = 6
-LAST_RESOURCE_SAMPLE_LIMIT = SUSTAINED_SAMPLE_COUNT
-ACTIVITY_CONFIRM_SNAPSHOT_COUNT = 3
-ACTIVITY_CONFIRM_MIN_SECONDS = 10.0
-ACTIVITY_SIGNAL_TTL_SECONDS = 15.0
+MAINTENANCE_INTERVAL_SECONDS = 5.0
 COMPACTION_ACK_TIMEOUT_SECONDS = 5.0
 COMPACTION_RETRY_BACKOFF_SECONDS = 30.0
 RENDERER_SUSPENSION_DELAY_SECONDS = 90.0
 USER_RESTORE_COOLDOWN_SECONDS = 10 * 60
 WINDOW_REGISTRATION_TTL_SECONDS = 20.0
-WIDGET_MODE_ACTIVITY_SOURCE = "widget_mode_activity_compaction"
-
-DEFAULT_WIDGET_MODE_SETTINGS = {
-    "activity_response": "disabled",
-}
-VALID_ACTIVITY_RESPONSE_POLICIES = {
-    "disabled",
-    "observe_only",
-    "compact_on_confirm",
-}
-
-
-class ResourceSample(TypedDict, total=False):
-    ts: float
-    cpu_percent: float | None
-    memory_percent: float | None
-    gpu_percent: float | None
-    gpu_vram_percent: float | None
-    neko_cpu_percent: float | None
-    neko_memory_mb: float | None
-    errors: dict[str, str]
-
-
-class ResourceSampler(Protocol):
-    def __call__(self) -> ResourceSample: ...
+WIDGET_MODE_SOURCE = "widget_mode_compaction"
 
 
 class EventBroadcaster(Protocol):
     async def __call__(self, payload: dict[str, Any]) -> int: ...
 
 
-_PSUTIL_IMPORT_TRIED = False
-_PSUTIL: Any = None
-_GPU_DISABLED_UNTIL = 0.0
-_METRIC_ERROR_LOGGED: dict[str, str] = {}
-
-
 class WidgetModeSettingsStore:
-    """Persist Widget Mode settings without reading any legacy settings file."""
+    """Persist Widget Mode runtime cooldown without reading legacy files."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = Path(path) if path is not None else None
@@ -108,128 +70,6 @@ class WidgetModeSettingsStore:
         await asyncio.to_thread(self.save, payload)
 
 
-def _remember_metric_error(metric: str, error: Any) -> str:
-    message = str(error)[:160]
-    if _METRIC_ERROR_LOGGED.get(metric) != message:
-        _METRIC_ERROR_LOGGED[metric] = message
-        logger.warning("[WidgetMode] %s sample unavailable: %s", metric, message)
-    return message
-
-
-def _load_psutil() -> Any:
-    global _PSUTIL_IMPORT_TRIED, _PSUTIL
-    if not _PSUTIL_IMPORT_TRIED:
-        _PSUTIL_IMPORT_TRIED = True
-        try:
-            import psutil  # type: ignore
-
-            _PSUTIL = psutil
-            try:
-                psutil.cpu_percent(interval=None)
-            except Exception:
-                pass
-        except Exception as exc:
-            logger.warning("[WidgetMode] psutil unavailable: %s", exc)
-            _PSUTIL = None
-    return _PSUTIL
-
-
-def _read_nvidia_gpu_sample(now: float) -> dict[str, Any]:
-    global _GPU_DISABLED_UNTIL
-    if now < _GPU_DISABLED_UNTIL:
-        return {"gpu_percent": None, "gpu_vram_percent": None, "gpu_error": "cooldown"}
-    try:
-        startupinfo = None
-        creationflags = 0
-        if os.name == "nt":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        completed = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=utilization.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-            check=False,
-            startupinfo=startupinfo,
-            creationflags=creationflags,
-        )
-        if completed.returncode != 0:
-            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "nvidia-smi failed")
-        gpu_values: list[float] = []
-        vram_values: list[float] = []
-        for raw_line in completed.stdout.splitlines():
-            parts = [part.strip() for part in raw_line.split(",")]
-            if len(parts) < 3:
-                continue
-            try:
-                gpu_values.append(float(parts[0]))
-                used = float(parts[1])
-                total = float(parts[2])
-                if total > 0:
-                    vram_values.append((used / total) * 100.0)
-            except (TypeError, ValueError):
-                continue
-        if not gpu_values and not vram_values:
-            raise RuntimeError("nvidia-smi returned no usable gpu rows")
-        return {
-            "gpu_percent": max(gpu_values) if gpu_values else None,
-            "gpu_vram_percent": max(vram_values) if vram_values else None,
-            "gpu_error": None,
-        }
-    except Exception as exc:
-        _GPU_DISABLED_UNTIL = now + 60.0
-        return {
-            "gpu_percent": None,
-            "gpu_vram_percent": None,
-            "gpu_error": _remember_metric_error("gpu", exc),
-        }
-
-
-def collect_resource_sample() -> ResourceSample:
-    now = time.time()
-    sample: ResourceSample = {
-        "ts": now,
-        "cpu_percent": None,
-        "memory_percent": None,
-        "gpu_percent": None,
-        "gpu_vram_percent": None,
-        "neko_cpu_percent": None,
-        "neko_memory_mb": None,
-        "errors": {},
-    }
-    psutil = _load_psutil()
-    errors = sample["errors"]
-    if psutil is not None:
-        try:
-            sample["cpu_percent"] = float(psutil.cpu_percent(interval=None))
-        except Exception as exc:
-            errors["cpu"] = _remember_metric_error("cpu", exc)
-        try:
-            sample["memory_percent"] = float(psutil.virtual_memory().percent)
-        except Exception as exc:
-            errors["memory"] = _remember_metric_error("memory", exc)
-        try:
-            proc = psutil.Process()
-            cpu_count = psutil.cpu_count() or 1
-            sample["neko_cpu_percent"] = float(proc.cpu_percent(interval=None)) / float(cpu_count)
-            sample["neko_memory_mb"] = float(proc.memory_info().rss) / (1024 * 1024)
-        except Exception as exc:
-            errors["neko_process"] = _remember_metric_error("neko_process", exc)
-    else:
-        errors["psutil"] = "unavailable"
-    gpu_sample = _read_nvidia_gpu_sample(now)
-    sample["gpu_percent"] = gpu_sample.get("gpu_percent")
-    sample["gpu_vram_percent"] = gpu_sample.get("gpu_vram_percent")
-    if gpu_sample.get("gpu_error"):
-        errors["gpu"] = str(gpu_sample["gpu_error"])
-    return sample
-
-
 async def discard_widget_mode_event(_payload: dict[str, Any]) -> int:
     return 0
 
@@ -238,12 +78,10 @@ class WidgetModeCoordinator:
     def __init__(
         self,
         *,
-        sampler: ResourceSampler = collect_resource_sample,
         broadcaster: EventBroadcaster = discard_widget_mode_event,
         time_fn: Any = time.time,
         store: WidgetModeSettingsStore | None = None,
     ) -> None:
-        self._sampler = sampler
         self._broadcaster = broadcaster
         self._time = time_fn
         self._store = store
@@ -253,7 +91,6 @@ class WidgetModeCoordinator:
         self._window_acks: dict[str, dict[str, Any]] = {}
         self._renderer_suspension_acks: dict[str, bool] = {}
         persisted = self._store.load_settings() if self._store is not None else {}
-        self._settings = self._normalize_settings(persisted)
         raw_suppressed_until = persisted.get("suppressed_until")
         self._persisted_suppressed_until = (
             float(raw_suppressed_until)
@@ -265,28 +102,9 @@ class WidgetModeCoordinator:
     def set_event_broadcaster(self, broadcaster: EventBroadcaster) -> None:
         self._broadcaster = broadcaster
 
-    @staticmethod
-    def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, str]:
-        source = raw if isinstance(raw, dict) else {}
-        policy = source.get("activity_response")
-        if policy not in VALID_ACTIVITY_RESPONSE_POLICIES:
-            policy = DEFAULT_WIDGET_MODE_SETTINGS["activity_response"]
-        return {"activity_response": policy}
-
     def _new_state(self) -> dict[str, Any]:
         return {
             "enabled": False,
-            "resource_pressure_state": "normal",
-            "last_resource_samples": [],
-            "high_resource_sample_count": 0,
-            "last_resource_reason": None,
-            "activity_signal_count": 0,
-            "activity_first_seen_at": None,
-            "activity_last_seen_at": None,
-            "activity_confirmed": False,
-            "activity_signal_available": True,
-            "activity_signal_error_count": 0,
-            "activity_diagnostic_high_count": 0,
             "compaction_cycle_id": None,
             "compaction_phase": "idle",
             "compaction_source": None,
@@ -307,13 +125,8 @@ class WidgetModeCoordinator:
     def snapshot(self) -> dict[str, Any]:
         snap = dict(self._state)
         snap.pop("expected_window_ids", None)
-        snap["last_resource_samples"] = list(self._state.get("last_resource_samples") or [])
-        snap["settings"] = dict(self._settings)
         snap["registered_window_count"] = len(self._active_window_ids(self._time()))
         return snap
-
-    def settings_snapshot(self) -> dict[str, str]:
-        return dict(self._settings)
 
     def _active_window_ids(self, now: float) -> list[str]:
         return [
@@ -327,8 +140,9 @@ class WidgetModeCoordinator:
     async def _persist_locked(self) -> None:
         if self._store is None:
             return
-        payload: dict[str, Any] = dict(self._settings)
-        payload["suppressed_until"] = self._persisted_suppressed_until
+        payload: dict[str, Any] = {
+            "suppressed_until": self._persisted_suppressed_until,
+        }
         await self._store.save_async(payload)
 
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
@@ -354,23 +168,6 @@ class WidgetModeCoordinator:
                 self._cancel_task_locked()
                 logger.info("[WidgetMode] disabled and runtime state cleared")
             return self.snapshot()
-
-    async def update_settings(self, *, activity_response: str) -> dict[str, str]:
-        if activity_response not in VALID_ACTIVITY_RESPONSE_POLICIES:
-            raise ValueError("activity_response policy is invalid")
-        async with self._lock:
-            previous_settings = dict(self._settings)
-            previous_state = dict(self._state)
-            self._settings = {"activity_response": activity_response}
-            if activity_response == "disabled":
-                self._clear_activity_candidate_locked()
-            try:
-                await self._persist_locked()
-            except Exception:
-                self._settings = previous_settings
-                self._state = previous_state
-                raise
-            return self.settings_snapshot()
 
     async def register_window(
         self,
@@ -498,7 +295,7 @@ class WidgetModeCoordinator:
             elif normalized == "compacted" and phase == "renderer_suspended":
                 await self._broadcaster({
                     "type": "widget_mode_renderer_suspension_requested",
-                    "source": WIDGET_MODE_ACTIVITY_SOURCE,
+                    "source": WIDGET_MODE_SOURCE,
                     "compaction_cycle_id": compaction_cycle_id,
                     "pet_instance_ids": [window_id],
                     "timestamp": self._time(),
@@ -552,79 +349,21 @@ class WidgetModeCoordinator:
                 self._end_cycle_locked(preserve_last_event=True)
             return self.snapshot()
 
-    async def ingest_activity_signal(
-        self,
-        *,
-        active: bool,
-        available: bool,
-        observed_at: float | None = None,
-    ) -> dict[str, Any]:
-        async with self._lock:
-            now = self._time() if observed_at is None else float(observed_at)
-            if self._settings["activity_response"] == "disabled":
-                self._clear_activity_candidate_locked()
-                return self.snapshot()
-            if not available:
-                await self._mark_activity_unavailable_locked(now, increment_error=False)
-                return self.snapshot()
-            self._state["activity_signal_available"] = True
-            self._state["activity_signal_error_count"] = 0
-            self._state["activity_last_seen_at"] = now
-            if not active:
-                self._clear_activity_candidate_locked(keep_last_seen=True)
-                return self.snapshot()
-            if int(self._state.get("activity_signal_count") or 0) == 0:
-                self._state["activity_first_seen_at"] = now
-            self._state["activity_signal_count"] = int(self._state.get("activity_signal_count") or 0) + 1
-            first_seen = float(self._state.get("activity_first_seen_at") or now)
-            confirmed = bool(
-                self._state["activity_signal_count"] >= ACTIVITY_CONFIRM_SNAPSHOT_COUNT
-                and now - first_seen >= ACTIVITY_CONFIRM_MIN_SECONDS
-            )
-            self._state["activity_confirmed"] = confirmed
-            if confirmed and self._settings["activity_response"] == "compact_on_confirm":
-                await self._trigger_compaction_locked(
-                    reason="activity-confirmed",
-                    duration_seconds=now - first_seen,
-                )
-            return self.snapshot()
-
-    async def reset_activity_candidate(self, reason: str = "external-reset") -> dict[str, Any]:
-        async with self._lock:
-            self._clear_activity_candidate_locked()
-            self._state["last_event"] = {
-                "type": "activity_candidate_reset",
-                "reason": reason,
-                "ts": self._time(),
-            }
-            return self.snapshot()
-
-    async def record_activity_signal_error(self) -> dict[str, Any]:
-        async with self._lock:
-            await self._mark_activity_unavailable_locked(self._time(), increment_error=True)
-            return self.snapshot()
-
     async def trigger_debug_compaction(
         self,
         reason: str = "debug",
-        percent: float = 99.0,
     ) -> dict[str, Any]:
         async with self._lock:
             if not self._state.get("enabled"):
                 self._state["enabled"] = True
                 self._ensure_task_locked()
-            self._state["last_resource_reason"] = {
-                "metric": reason,
-                "percent": percent,
-                "diagnostic_only": True,
-            }
             await self._trigger_compaction_locked(reason="debug", duration_seconds=0.0)
             return self.snapshot()
 
     def _ensure_task_locked(self) -> None:
         if self._task is not None and not self._task.done():
             return
-        self._task = asyncio.create_task(self._run(), name="widget_mode_resource_monitor")
+        self._task = asyncio.create_task(self._run(), name="widget_mode_lifecycle_monitor")
 
     def _cancel_task_locked(self) -> None:
         if self._task is not None and not self._task.done():
@@ -634,7 +373,7 @@ class WidgetModeCoordinator:
     async def _run(self) -> None:
         try:
             while True:
-                await asyncio.sleep(SAMPLE_INTERVAL_SECONDS)
+                await asyncio.sleep(MAINTENANCE_INTERVAL_SECONDS)
                 await self.tick_once()
         except asyncio.CancelledError:
             return
@@ -643,59 +382,8 @@ class WidgetModeCoordinator:
         async with self._lock:
             if not self._state.get("enabled"):
                 return self.snapshot()
-        sample = await asyncio.to_thread(self._sampler)
-        async with self._lock:
-            if not self._state.get("enabled"):
-                return self.snapshot()
-            now = self._time()
-            await self._maintain_lifecycle_locked(now)
-            await self._apply_resource_sample_locked(sample, now)
+            await self._maintain_lifecycle_locked(self._time())
             return self.snapshot()
-
-    async def _apply_resource_sample_locked(self, sample: ResourceSample, now: float) -> None:
-        samples = list(self._state.get("last_resource_samples") or [])
-        samples.append(sample)
-        self._state["last_resource_samples"] = samples[-LAST_RESOURCE_SAMPLE_LIMIT:]
-        reason, percent = self._high_pressure_reason(sample)
-        if reason is None:
-            self._state["resource_pressure_state"] = "normal"
-            self._state["high_resource_sample_count"] = 0
-            self._state["last_resource_reason"] = None
-        else:
-            self._state["resource_pressure_state"] = "high"
-            self._state["high_resource_sample_count"] = int(
-                self._state.get("high_resource_sample_count") or 0
-            ) + 1
-            self._state["last_resource_reason"] = {
-                "metric": reason,
-                "percent": percent,
-                "observed_at": now,
-            }
-            if self._state.get("activity_confirmed"):
-                self._state["activity_diagnostic_high_count"] = int(
-                    self._state.get("activity_diagnostic_high_count") or 0
-                ) + 1
-        suppressed_until = self._state.get("suppressed_until")
-        if isinstance(suppressed_until, (int, float)) and suppressed_until <= now:
-            self._state["suppressed_until"] = None
-            self._state["user_restore_active"] = False
-            self._persisted_suppressed_until = None
-            await self._persist_locked()
-
-    @staticmethod
-    def _high_pressure_reason(sample: ResourceSample) -> tuple[str | None, float | None]:
-        candidates: list[tuple[str, float]] = []
-        for key, metric in (
-            ("cpu_percent", "cpu"),
-            ("memory_percent", "memory"),
-            ("gpu_percent", "gpu"),
-        ):
-            value = sample.get(key)
-            if isinstance(value, (int, float)) and value >= PRESSURE_THRESHOLD_PERCENT:
-                candidates.append((metric, float(value)))
-        if not candidates:
-            return None, None
-        return max(candidates, key=lambda item: item[1])
 
     async def _trigger_compaction_locked(self, *, reason: str, duration_seconds: float) -> None:
         now = self._time()
@@ -714,7 +402,7 @@ class WidgetModeCoordinator:
         self._state.update({
             "compaction_cycle_id": cycle_id,
             "compaction_phase": "compacting",
-            "compaction_source": WIDGET_MODE_ACTIVITY_SOURCE,
+            "compaction_source": WIDGET_MODE_SOURCE,
             "compaction_started_at": now,
             "compaction_ack_deadline": now + COMPACTION_ACK_TIMEOUT_SECONDS,
             "expected_window_ids": sorted(expected_window_ids),
@@ -728,10 +416,9 @@ class WidgetModeCoordinator:
         })
         self._window_acks.clear()
         self._renderer_suspension_acks.clear()
-        self._clear_activity_candidate_locked()
         delivered = await self._broadcaster({
             "type": "widget_mode_compaction_requested",
-            "source": WIDGET_MODE_ACTIVITY_SOURCE,
+            "source": WIDGET_MODE_SOURCE,
             "compaction_cycle_id": cycle_id,
             "reason": reason,
             "duration_seconds": duration_seconds,
@@ -756,29 +443,6 @@ class WidgetModeCoordinator:
             return False
         retry_not_before = self._state.get("retry_not_before")
         return not isinstance(retry_not_before, (int, float)) or retry_not_before <= now
-
-    def _clear_activity_candidate_locked(self, *, keep_last_seen: bool = False) -> None:
-        last_seen = self._state.get("activity_last_seen_at") if keep_last_seen else None
-        self._state["activity_signal_count"] = 0
-        self._state["activity_first_seen_at"] = None
-        self._state["activity_last_seen_at"] = last_seen
-        self._state["activity_confirmed"] = False
-        self._state["activity_diagnostic_high_count"] = 0
-
-    async def _mark_activity_unavailable_locked(self, now: float, *, increment_error: bool) -> None:
-        was_available = self._state.get("activity_signal_available") is True
-        self._state["activity_signal_available"] = False
-        if increment_error:
-            self._state["activity_signal_error_count"] = int(
-                self._state.get("activity_signal_error_count") or 0
-            ) + 1
-        if was_available:
-            self._state["last_event"] = {"type": "activity_signal_unavailable", "ts": now}
-            await self._broadcaster({
-                "type": "widget_mode_activity_signal_unavailable",
-                "source": WIDGET_MODE_ACTIVITY_SOURCE,
-                "timestamp": now,
-            })
 
     def _refresh_ack_counts_locked(self) -> None:
         expected = set(self._state.get("expected_window_ids") or [])
@@ -815,7 +479,7 @@ class WidgetModeCoordinator:
         self._state["last_event"] = {"type": "compaction_confirmed", "owned": owned, "ts": now}
         await self._broadcaster({
             "type": "widget_mode_compaction_confirmed",
-            "source": WIDGET_MODE_ACTIVITY_SOURCE,
+            "source": WIDGET_MODE_SOURCE,
             "compaction_cycle_id": self._state.get("compaction_cycle_id"),
             "renderer_suspension_after_seconds": RENDERER_SUSPENSION_DELAY_SECONDS,
             "timestamp": now,
@@ -829,7 +493,7 @@ class WidgetModeCoordinator:
         if cycle_id:
             await self._broadcaster({
                 "type": "widget_mode_compaction_failed",
-                "source": WIDGET_MODE_ACTIVITY_SOURCE,
+                "source": WIDGET_MODE_SOURCE,
                 "compaction_cycle_id": cycle_id,
                 "retry_after_seconds": COMPACTION_RETRY_BACKOFF_SECONDS,
                 "timestamp": now,
@@ -859,6 +523,13 @@ class WidgetModeCoordinator:
             self._state["last_event"] = last_event
 
     async def _maintain_lifecycle_locked(self, now: float) -> None:
+        suppressed_until = self._state.get("suppressed_until")
+        if isinstance(suppressed_until, (int, float)) and suppressed_until <= now:
+            self._state["suppressed_until"] = None
+            self._state["user_restore_active"] = False
+            self._persisted_suppressed_until = None
+            await self._persist_locked()
+
         expired_window_ids = [
             window_id
             for window_id, meta in self._windows.items()
@@ -867,13 +538,6 @@ class WidgetModeCoordinator:
         for window_id in expired_window_ids:
             await self._unregister_window_locked(window_id)
 
-        last_seen = self._state.get("activity_last_seen_at")
-        if (
-            self._state.get("activity_signal_available") is True
-            and isinstance(last_seen, (int, float))
-            and now - last_seen > ACTIVITY_SIGNAL_TTL_SECONDS
-        ):
-            await self._mark_activity_unavailable_locked(now, increment_error=False)
         if self._state.get("compaction_phase") == "compacting":
             deadline = self._state.get("compaction_ack_deadline")
             if isinstance(deadline, (int, float)) and now >= deadline:
@@ -895,7 +559,7 @@ class WidgetModeCoordinator:
                 self._state["last_event"] = {"type": "renderer_suspension_requested", "ts": now}
                 await self._broadcaster({
                     "type": "widget_mode_renderer_suspension_requested",
-                    "source": WIDGET_MODE_ACTIVITY_SOURCE,
+                    "source": WIDGET_MODE_SOURCE,
                     "compaction_cycle_id": self._state.get("compaction_cycle_id"),
                     "pet_instance_ids": owned_ids,
                     "timestamp": now,
@@ -914,7 +578,7 @@ class WidgetModeCoordinator:
         if cycle_id:
             await self._broadcaster({
                 "type": "widget_mode_compaction_restore_requested",
-                "source": WIDGET_MODE_ACTIVITY_SOURCE,
+                "source": WIDGET_MODE_SOURCE,
                 "compaction_cycle_id": cycle_id,
                 "pet_instance_ids": target_ids,
                 "reason": reason,

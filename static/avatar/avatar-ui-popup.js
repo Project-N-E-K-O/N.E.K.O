@@ -400,127 +400,6 @@ function queueWidgetModeMutation(operation) {
     return widgetModeMutationQueue;
 }
 
-function createWidgetModeDetailPanel(manager, prefix, mainToggleItem) {
-    const panel = manager._createSidePanelContainer();
-    panel.setAttribute('data-neko-sidepanel-type', 'widget-mode-details');
-    panel.dataset.nekoNestedSidePanel = 'true';
-    Object.assign(panel.style, {
-        width: '246px',
-        minWidth: '246px',
-        padding: '10px',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'stretch',
-        gap: '10px'
-    });
-
-    const modeLabel = document.createElement('div');
-    modeLabel.textContent = window.t ? window.t('settings.widgetMode.activityResponse') : '活动响应策略';
-    modeLabel.setAttribute('data-i18n', 'settings.widgetMode.activityResponse');
-    Object.assign(modeLabel.style, {
-        fontSize: '11px', color: 'var(--neko-popup-muted, #777)'
-    });
-    panel.appendChild(modeLabel);
-
-    const modeGroup = document.createElement('div');
-    modeGroup.setAttribute('role', 'radiogroup');
-    Object.assign(modeGroup.style, {
-        display: 'grid', gridTemplateColumns: '1fr', gap: '4px', width: '100%'
-    });
-    const modeButtons = {};
-    [
-        ['disabled', 'settings.widgetMode.activityDisabled', '关闭活动响应'],
-        ['observe_only', 'settings.widgetMode.activityObserveOnly', '仅观察并记录'],
-        ['compact_on_confirm', 'settings.widgetMode.activityCompactOnConfirm', '确认后收缩模型']
-    ].forEach(function (entry) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.dataset.mode = entry[0];
-        button.textContent = window.t ? window.t(entry[1]) : entry[2];
-        button.setAttribute('data-i18n', entry[1]);
-        button.setAttribute('role', 'radio');
-        Object.assign(button.style, {
-            minWidth: '0', minHeight: '30px', padding: '5px 6px', border: '1px solid var(--neko-popup-indicator-border, #ccc)',
-            borderRadius: '6px', background: 'transparent', color: 'var(--neko-popup-text, #333)',
-            fontSize: '11px', cursor: 'pointer', whiteSpace: 'normal', lineHeight: '1.25'
-        });
-        modeButtons[entry[0]] = button;
-        modeGroup.appendChild(button);
-    });
-    panel.appendChild(modeGroup);
-
-    const privacy = document.createElement('p');
-    privacy.textContent = window.t
-        ? window.t('settings.widgetMode.privacyNote')
-        : '活动信号只在边界转换为 active/available；资源采样仅用于诊断，不会触发模型变化。';
-    privacy.setAttribute('data-i18n', 'settings.widgetMode.privacyNote');
-    Object.assign(privacy.style, {
-        margin: '0', fontSize: '10px', lineHeight: '1.45', color: 'var(--neko-popup-muted, #777)'
-    });
-    panel.appendChild(privacy);
-
-    let syncing = false;
-    const render = function () {
-        const api = window.nekoWidgetMode;
-        const mainEnabled = !!(api && typeof api.isEnabled === 'function' && api.isEnabled());
-        const settings = api && typeof api.getSettings === 'function'
-            ? api.getSettings()
-            : { activity_response: 'disabled' };
-        syncing = true;
-        Object.keys(modeButtons).forEach(function (mode) {
-            const button = modeButtons[mode];
-            const selected = settings.activity_response === mode;
-            button.disabled = !mainEnabled;
-            button.setAttribute('aria-checked', selected ? 'true' : 'false');
-            button.style.opacity = mainEnabled ? '1' : '0.5';
-            button.style.cursor = mainEnabled ? 'pointer' : 'default';
-            button.style.background = selected ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))' : 'transparent';
-            button.style.borderColor = selected ? 'var(--neko-popup-accent, #44b7fe)' : 'var(--neko-popup-indicator-border, #ccc)';
-        });
-        syncing = false;
-    };
-
-    const persistSettings = function (settings) {
-        const api = window.nekoWidgetMode;
-        if (!api || typeof api.setSettings !== 'function') {
-            render();
-            return Promise.resolve(false);
-        }
-        return queueWidgetModeMutation(function () {
-            return Promise.resolve()
-                .then(function () { return api.setSettings(settings); })
-                .then(function (ok) {
-                    render();
-                    if (!ok) showWidgetModeMutationFailure(new Error('settings update rejected'));
-                    return ok;
-                })
-                .catch(function (error) {
-                    render();
-                    showWidgetModeMutationFailure(error);
-                    return false;
-                });
-        });
-    };
-
-    Object.keys(modeButtons).forEach(function (mode) {
-        modeButtons[mode].addEventListener('click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (syncing || modeButtons[mode].disabled || !window.nekoWidgetMode) return;
-            persistSettings({ activity_response: mode });
-        });
-    });
-    window.addEventListener('neko:widget-mode-state-changed', render);
-    if (window.nekoWidgetMode && typeof window.nekoWidgetMode.refreshSettings === 'function') {
-        void window.nekoWidgetMode.refreshSettings().then(render);
-    } else {
-        render();
-    }
-
-    panel._anchorElement = mainToggleItem;
-    return panel;
-}
-
 function createAdvancedSettingsSidePanel(manager, prefix, popup) {
     const panel = manager._createSidePanelContainer();
     panel.setAttribute('data-neko-sidepanel-type', 'advanced-settings');
@@ -547,31 +426,9 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
         widgetModeLabel.style.whiteSpace = 'normal';
     }
 
-    const detailButton = document.createElement('button');
-    detailButton.type = 'button';
-    detailButton.id = `${prefix}-widget-mode-details`;
-    detailButton.textContent = '›';
-    detailButton.setAttribute('aria-label', window.t ? window.t('settings.widgetMode.details') : '详情');
-    Object.assign(detailButton.style, {
-        marginLeft: 'auto', width: '28px', height: '28px', border: '0', background: 'transparent',
-        color: 'var(--neko-popup-text, #333)', fontSize: '20px', lineHeight: '1', cursor: 'pointer', flexShrink: '0'
-    });
-    detailButton.addEventListener('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (detailPanel && typeof detailPanel._expand === 'function') detailPanel._expand();
-    });
-    widgetModeItem.appendChild(detailButton);
     panel.appendChild(widgetModeItem);
 
-    const detailPanel = createWidgetModeDetailPanel(manager, prefix, widgetModeItem);
-    detailPanel._anchorElement = detailButton;
-    detailPanel._popupElement = popup;
-    manager._attachSidePanelHover(detailButton, detailPanel);
-    document.body.appendChild(detailPanel);
-
     panel._widgetModeToggleItem = widgetModeItem;
-    panel._widgetModeDetailPanel = detailPanel;
     document.body.appendChild(panel);
     return panel;
 }
@@ -1909,7 +1766,6 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'chat-settings',
             'animation-settings',
             'advanced-settings',
-            'widget-mode-details',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'

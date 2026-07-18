@@ -34,7 +34,7 @@ def _register_payload(version: int = 1) -> dict:
     }
 
 
-def test_widget_mode_state_settings_and_enable_contract(monkeypatch, tmp_path: Path) -> None:
+def test_widget_mode_state_and_enable_contract(monkeypatch, tmp_path: Path) -> None:
     coordinator = WidgetModeCoordinator(
         store=WidgetModeSettingsStore(tmp_path / "widget_mode_settings.json"),
     )
@@ -42,23 +42,12 @@ def test_widget_mode_state_settings_and_enable_contract(monkeypatch, tmp_path: P
     with _client() as client:
         state = client.get("/api/widget-mode/state").json()["state"]
         assert state["enabled"] is False
-        assert state["resource_pressure_state"] == "normal"
         assert state["compaction_phase"] == "idle"
-
-        settings = client.get("/api/widget-mode/settings")
-        assert settings.json() == {"activity_response": "disabled"}
-        updated = client.post(
-            "/api/widget-mode/settings",
-            json={"activity_response": "observe_only"},
-        )
-        assert updated.json() == {"activity_response": "observe_only"}
+        assert "settings" not in state
 
         enabled = client.post("/api/widget-mode/enabled", json={"enabled": "on"})
         assert enabled.json()["state"]["enabled"] is True
         client.post("/api/widget-mode/enabled", json={"enabled": False})
-
-    assert coordinator.settings_snapshot() == {"activity_response": "observe_only"}
-    assert (tmp_path / "widget_mode_settings.json").exists()
 
 
 def test_widget_mode_window_protocol_and_stale_ack_contract() -> None:
@@ -98,28 +87,29 @@ def test_widget_mode_debug_endpoint_is_gated(monkeypatch) -> None:
     assert response.status_code == 404
 
 
-@pytest.mark.parametrize(
-    "percent",
-    ["nan", "inf", "-inf"],
-    ids=["nan", "positive-infinity", "negative-infinity"],
-)
-def test_widget_mode_debug_endpoint_rejects_non_finite_percent(
-    monkeypatch,
-    percent: str,
-) -> None:
-    coordinator = WidgetModeCoordinator()
+def test_widget_mode_debug_endpoint_triggers_compaction(monkeypatch) -> None:
+    async def delivered(_payload: dict) -> int:
+        return 1
+
+    coordinator = WidgetModeCoordinator(broadcaster=delivered)
     monkeypatch.setattr(widget_mode_router_module, "widget_mode_coordinator", coordinator)
     monkeypatch.setenv("NEKO_WIDGET_MODE_DEBUG", "1")
 
     with _client() as client:
+        client.post("/api/widget-mode/windows/register", json=_register_payload())
         response = client.post(
             "/api/widget-mode/debug/compaction",
-            json={"reason": "contract", "percent": percent},
+            json={"reason": "contract"},
         )
         client.post("/api/widget-mode/enabled", json={"enabled": False})
+        client.post(
+            "/api/widget-mode/windows/unregister",
+            json={"pet_instance_id": "pet-contract"},
+        )
 
     assert response.status_code == 200
-    assert response.json()["state"]["last_resource_reason"]["percent"] == 99.0
+    assert response.json()["state"]["compaction_phase"] == "compacting"
+    assert response.json()["state"]["compaction_source"] == "widget_mode_compaction"
 
 
 def test_widget_mode_router_is_registered_on_main_app() -> None:
@@ -132,13 +122,11 @@ def test_widget_mode_router_is_registered_on_main_app() -> None:
     ("path", "payload"),
     [
         ("/api/widget-mode/enabled", {"enabled": True}),
-        ("/api/widget-mode/settings", {"activity_response": "observe_only"}),
         ("/api/widget-mode/user-restore", {}),
         ("/api/widget-mode/windows/register", _register_payload()),
         ("/api/widget-mode/windows/unregister", {"pet_instance_id": "pet-a"}),
         ("/api/widget-mode/compaction/ack", {"compaction_cycle_id": "x"}),
         ("/api/widget-mode/renderer-suspension/ack", {"compaction_cycle_id": "x"}),
-        ("/api/widget-mode/activity/reset", {}),
         ("/api/widget-mode/debug/compaction", {}),
     ],
 )
@@ -148,15 +136,6 @@ def test_widget_mode_mutations_require_local_csrf(monkeypatch, path, payload) ->
         response = client.post(path, json=payload)
     assert response.status_code == 403
     assert response.json()["error_code"] == "csrf_validation_failed"
-
-
-def test_widget_mode_settings_reject_invalid_policy() -> None:
-    with _client() as client:
-        response = client.post(
-            "/api/widget-mode/settings",
-            json={"activity_response": "unknown"},
-        )
-    assert response.status_code == 400
 
 
 @pytest.mark.asyncio

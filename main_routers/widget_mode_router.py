@@ -9,16 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from main_logic.widget_mode_runtime import (
-    VALID_ACTIVITY_RESPONSE_POLICIES,
-    widget_mode_coordinator,
-)
+from main_logic.widget_mode_runtime import widget_mode_coordinator
 from main_routers.shared_state import get_session_manager
 from main_routers.system_router import _validate_local_mutation_request
 
@@ -119,22 +115,6 @@ async def set_widget_mode_enabled(request: Request, payload: dict[str, Any]) -> 
     return {"success": True, "state": state}
 
 
-@router.get("/api/widget-mode/settings")
-async def get_widget_mode_settings() -> dict[str, str]:
-    return widget_mode_coordinator.settings_snapshot()
-
-
-@router.post("/api/widget-mode/settings")
-async def set_widget_mode_settings(request: Request, payload: dict[str, Any]) -> Any:
-    validation_error = _validate_widget_mode_mutation(request, payload)
-    if validation_error is not None:
-        return validation_error
-    policy = payload.get("activity_response")
-    if not isinstance(policy, str) or policy not in VALID_ACTIVITY_RESPONSE_POLICIES:
-        raise HTTPException(status_code=400, detail="activity_response policy is invalid")
-    return await widget_mode_coordinator.update_settings(activity_response=policy)
-
-
 @router.post("/api/widget-mode/user-restore")
 async def mark_widget_mode_user_restore(
     request: Request,
@@ -214,21 +194,6 @@ async def acknowledge_widget_mode_renderer_suspension(
     return {"success": True, "state": state}
 
 
-@router.post("/api/widget-mode/activity/reset")
-async def reset_widget_mode_activity(
-    request: Request,
-    payload: dict[str, Any] | None = None,
-) -> Any:
-    data = payload or {}
-    validation_error = _validate_widget_mode_mutation(request, data)
-    if validation_error is not None:
-        return validation_error
-    state = await widget_mode_coordinator.reset_activity_candidate(
-        str(data.get("reason") or "external-reset"),
-    )
-    return {"success": True, "state": state}
-
-
 @router.post("/api/widget-mode/debug/compaction")
 async def debug_trigger_widget_mode_compaction(
     request: Request,
@@ -240,14 +205,7 @@ async def debug_trigger_widget_mode_compaction(
     validation_error = _validate_widget_mode_mutation(request, data)
     if validation_error is not None:
         return validation_error
-    try:
-        percent = float(data.get("percent", 99.0))
-    except (TypeError, ValueError):
-        percent = 99.0
-    if not math.isfinite(percent):
-        percent = 99.0
     state = await widget_mode_coordinator.trigger_debug_compaction(
         reason=str(data.get("reason") or "debug"),
-        percent=percent,
     )
     return {"success": True, "state": state}
