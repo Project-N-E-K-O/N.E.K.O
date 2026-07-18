@@ -73,6 +73,18 @@ and 128 frames. Audio cannot consume the reserved control lane. Overflow
 invalidates the complete candidate or active turn; it never drops a middle
 frame and continues toward a partial transcript.
 
+When that ingress queue is full, Core rejects the current frame, clears every
+pending frame, and invokes the identity-scoped backpressure handler. The
+handler invalidates the candidate or active turn and its audio generation
+before another frame can be routed. A separate overflow inside the detector's
+adapter queue clears candidate bindings and installs a serialized reset
+barrier; every submission returns `BACKPRESSURE` until that reset completes.
+Only a frame carrying the then-current ingress identity may start the next
+candidate. Boundary coverage lives in
+`test_audio_stream_queue_clears_whole_candidate_when_full`,
+`test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen`, and
+`test_overflow_reset_rejects_audio_until_barrier_finishes`.
+
 Silero remains serial, while Smart Turn evaluation uses one in-flight task and
 at most one coalesced retry. Evaluation results re-enter the ordered detector
 lane behind PCM that arrived before inference completed. A resumed-speech
@@ -157,3 +169,11 @@ Before treating the integrated routes as product-quality, maintainers must run
 includes sentence-internal pauses, hesitation followed by continuation,
 complete turns, keyboard noise, and barge-in. The report always includes all
 four confusion-matrix cells and per-sample probabilities.
+
+No numeric product-quality threshold has been approved yet. Before any future
+approval run, the product owner must pre-register, for every language and
+route, the minimum labelled sample count, metric thresholds, maximum permitted
+premature-split count, and confidence method. Missing pre-registered criteria
+or failure of any criterion blocks product-quality approval. Remediation must
+tune the detector or route without weakening fail-closed behavior, then rerun
+the complete registered matrix; a partial rerun cannot clear the gate.
