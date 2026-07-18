@@ -331,6 +331,8 @@ class Live2DManager {
                 // 任务栏、DevTools、输入法等视口变化不会触发（幂等判定跳过）
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
+                let lastViewportW = window.innerWidth;
+                let lastViewportH = window.innerHeight;
                 let lastDevicePixelRatio = window.devicePixelRatio || 1;
 
                 const doResize = (reason) => {
@@ -352,6 +354,12 @@ class Live2DManager {
                     const sizeChanged = prevW !== newW || prevH !== newH;
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
+
+                    if (typeof this.isLive2DPeekActive === 'function' &&
+                        this.isLive2DPeekActive() &&
+                        typeof this.clearLive2DPeek === 'function') {
+                        this.clearLive2DPeek(`viewport-changed:${reason}`);
+                    }
 
                     if (resolutionChanged) {
                         renderer.resolution = nextResolution;
@@ -395,16 +403,21 @@ class Live2DManager {
                 this._screenChangeHandler = () => {
                     const sw = window.screen.width;
                     const sh = window.screen.height;
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
                     const dpr = window.devicePixelRatio || 1;
                     const renderer = this.pixi_app && this.pixi_app.renderer;
                     const shouldRecoverReturnBallRenderer = !!(renderer && renderer.screen &&
                         isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height) &&
                         !isLive2DReturnBallViewportSize(window.innerWidth, window.innerHeight));
                     if (sw === lastScreenW && sh === lastScreenH &&
+                        vw === lastViewportW && vh === lastViewportH &&
                         Math.abs(dpr - lastDevicePixelRatio) < 0.001 &&
                         !shouldRecoverReturnBallRenderer) return;
                     lastScreenW = sw;
                     lastScreenH = sh;
+                    lastViewportW = vw;
+                    lastViewportH = vh;
                     lastDevicePixelRatio = dpr;
                     doResize(shouldRecoverReturnBallRenderer
                         ? 'window.resize:return-ball-renderer-recovery'
@@ -4654,6 +4667,48 @@ class Live2DManager {
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
     getModelScreenBounds() {
+        const edgePeekState = this._live2DPeekState;
+        if (edgePeekState && edgePeekState.active) {
+            const model = edgePeekState.model || this.currentModel;
+            if (model && !model.destroyed && typeof model.getBounds === 'function') {
+                const bounds = model.getBounds();
+                const left = Number(bounds.left ?? bounds.x);
+                const top = Number(bounds.top ?? bounds.y);
+                const right = Number(bounds.right ?? (left + Number(bounds.width)));
+                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+                const renderer = this.pixi_app && this.pixi_app.renderer;
+                const screen = renderer && renderer.screen;
+                const rendererW = Number(screen && screen.width);
+                const rendererH = Number(screen && screen.height);
+                const viewportLeft = 0;
+                const viewportTop = 0;
+                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                    ? rendererW
+                    : Number(window.innerWidth) || 0);
+                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                    ? rendererH
+                    : Number(window.innerHeight) || 0);
+                const visibleLeft = Math.max(left, viewportLeft);
+                const visibleRight = Math.min(right, viewportRight);
+                const visibleTop = Math.max(top, viewportTop);
+                const visibleBottom = Math.min(bottom, viewportBottom);
+                const width = visibleRight - visibleLeft;
+                const height = visibleBottom - visibleTop;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: visibleLeft,
+                        right: visibleRight,
+                        top: visibleTop,
+                        bottom: visibleBottom,
+                        width: width,
+                        height: height,
+                        centerX: visibleLeft + width / 2,
+                        centerY: visibleTop + height / 2
+                    };
+                }
+            }
+        }
+
         const model = this.currentModel;
         if (!model) {
             return null;
@@ -4707,6 +4762,9 @@ class Live2DManager {
 
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
+        if (typeof this.clearLive2DPeek === 'function') {
+            this.clearLive2DPeek('reset-model-position');
+        }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
             return;

@@ -537,7 +537,6 @@ Live2DManager.prototype.reloadModelParameters = async function(options = {}) {
     return { applied: true, parameters: effectiveParameters };
 };
 
-// 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     const isModelManagerPage = document.body?.classList.contains('model-manager-page')
         || window.location.pathname.includes('model_manager');
@@ -581,6 +580,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         }
 
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
+        if (!this._isLoadTokenActive(loadToken)) {
+            try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
+            const cancelError = new Error('Live2D load superseded by a newer model request.');
+            cancelError.name = 'LoadSuperseded';
+            throw cancelError;
+        }
         if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && !isModelManagerPage) {
             try { model && model.destroy && model.destroy({ children: true }); } catch (_) {}
             this._activeLoadToken = (this._activeLoadToken || 0) + 1;
@@ -598,6 +603,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         return model;
     } catch (error) {
+        if (error && error.name === 'LoadSuperseded') {
+            throw error;
+        }
         if (error && error.name === 'PNGTuberActiveLive2DSkip') {
             console.log('[Live2D] PNGTuber 模式已接管，取消 Live2D 加载且不回退默认模型');
             throw error;

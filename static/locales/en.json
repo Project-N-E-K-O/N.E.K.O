@@ -2626,7 +2626,8 @@
             "language": "Language",
             "general": "General",
             "mediaCredentials": "Media Credentials",
-            "characterCardManager": "Character Card Manager"
+            "characterCardManager": "Character Card Manager",
+            "advancedSettings": "Advanced Settings"
         },
         "language": {
             "title": "Select Language",
@@ -2641,12 +2642,19 @@
             "chatIntervalBase": "Minimum Interval",
             "visionInterval": "Perception Interval"
         },
+        "widgetMode": {
+            "enabledNotice": "Edge Dock Mode Beta is on.",
+            "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
+            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
+        },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
+            "widgetMode": "Edge Dock Mode Beta",
+            "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",

@@ -2626,7 +2626,8 @@
             "language": "語言",
             "general": "通用設置",
             "mediaCredentials": "媒體憑證資訊",
-            "characterCardManager": "角色卡管理"
+            "characterCardManager": "角色卡管理",
+            "advancedSettings": "進階設定"
         },
         "language": {
             "title": "選擇語言",
@@ -2641,12 +2642,19 @@
             "chatIntervalBase": "最低間隔",
             "visionInterval": "感知間隔"
         },
+        "widgetMode": {
+            "enabledNotice": "掛邊模式 Beta 已開啟。",
+            "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
+            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
+        },
         "toggles": {
             "allowInterrupt": "允許打斷",
             "mergeMessages": "合併消息",
             "avatarReactionBubble": "表情氣泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
+            "widgetMode": "掛邊模式 Beta",
+            "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
             "autoCat": "自動變貓",
