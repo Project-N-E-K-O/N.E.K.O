@@ -70,6 +70,7 @@ class _SemanticCoordinator:
         self.state = CoordinatorState.IDLE
         self.audio: list[bytes] = []
         self.available = available
+        self.prepare_calls = 0
 
     def push_audio(self, pcm16: bytes) -> None:
         self.audio.append(pcm16)
@@ -86,6 +87,7 @@ class _SemanticCoordinator:
         )
 
     async def prepare_predictor(self) -> bool:
+        self.prepare_calls += 1
         return self.available
 
     async def reset(self) -> None:
@@ -397,6 +399,7 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
 
 
 async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
+    coordinator = _SemanticCoordinator()
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),
@@ -408,7 +411,7 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
             warm_transport_ms=25_000,
             replay_policy="preconnect_only",
         ),
-        coordinator=_SemanticCoordinator(),
+        coordinator=coordinator,
         on_turn_complete=AsyncMock(),
     )
     token = VoiceTurnToken(
@@ -423,6 +426,16 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     assert detector.endpointing_ready(token) is True
     await lease.release()
     assert detector.endpointing_ready(token) is False
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+
+    next_token = VoiceTurnToken(token.ingress, turn_id=2)
+    next_lease = await detector.prepare_endpointing(next_token)
+
+    assert next_lease is not None
+    assert coordinator.prepare_calls == 2
+    await detector.reset()
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    await next_lease.release()
     await detector.close()
 
 

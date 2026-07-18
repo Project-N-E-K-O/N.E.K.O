@@ -245,6 +245,26 @@ async def test_first_audio_lazy_loads_vad_off_loop_once() -> None:
     await adapter.close()
 
 
+async def test_voice_turn_rejects_non_16khz_pcm() -> None:
+    adapter = _VoiceTurnAdapter(
+        vad=_FakeVad(),
+        gate=_FakeGate(),
+        coordinator=_FakeCoordinator(),
+        on_commit=_noop_commit,
+    )
+
+    with pytest.raises(ValueError, match="requires 16 kHz"):
+        await adapter.push_audio(
+            generation=0,
+            buffer_epoch=0,
+            utterance_id=1,
+            pcm16=b"\x01\x00",
+            sample_rate_hz=48_000,
+        )
+
+    await adapter.close()
+
+
 async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     coordinator = _FakeCoordinator()
     gate = _FakeGate()

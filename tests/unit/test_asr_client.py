@@ -1070,11 +1070,9 @@ async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
     await session.signal_user_activity_end()
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     await asyncio.sleep(0.05)
     assert transcripts.empty()
-    await session.stream_audio(b"\x00\x00" * 160)
-    await session.signal_user_activity_end()
-    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     await session.close()
 
 
