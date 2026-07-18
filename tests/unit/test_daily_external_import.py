@@ -38,6 +38,9 @@ class _DailyHarness(FactStore):
     def _record_imported_day_fp_locked(self, name, fingerprint):
         self.state_fps.add(fingerprint)
 
+    def _clear_day_fp_locked(self, name, fingerprint):
+        self.state_fps.discard(fingerprint)
+
     async def _allm_extract_facts(self, lanlan_name, messages):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
@@ -413,10 +416,12 @@ async def test_daily_empty_extraction_day_records_fingerprint_and_skips_reimport
 
 
 @pytest.mark.asyncio
-async def test_daily_all_deduped_day_records_fingerprint_and_skips_reimport():
-    # 编辑过的天抽出的 facts 全部被同日期去重命中（_apersist_new_facts 返回
-    # []）：没有新 fact 载体存新指纹——processed 指纹落 sidecar，重导零 LLM
-    # 调用。
+async def test_daily_all_deduped_day_does_not_record_sidecar_and_reextracts():
+    # 方案 B（用户拍板）：抽出的 facts 全被同日期去重命中（_apersist_new_facts 返回
+    # []）的全去重天**不记 sidecar**——内容已被既有 fact 承载（指纹不同、不在同一
+    # cloudsave 回滚单元），记 sidecar 会在 facts 回滚后残留压制重抽（Codex）。退回
+    # 每次重导重抽（added=0、不丢数据）；只有 LLM 判定完全无 fact 的空抽取天靠
+    # sidecar。
     class _AllDedupedHarness(_DailyHarness):
         async def _apersist_new_facts(
             self, lanlan_name, extracted, *,
@@ -433,11 +438,11 @@ async def test_daily_all_deduped_day_records_fingerprint_and_skips_reimport():
     first = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
     assert first == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
     assert len(harness.extract_inputs) == 1
-    assert len(harness.state_fps) == 1      # 全去重天也落 processed 指纹
+    assert harness.state_fps == set()        # 全去重天不落 sidecar
 
     second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
-    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
-    assert len(harness.extract_inputs) == 1  # 重导零新 LLM 调用
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
+    assert len(harness.extract_inputs) == 2  # 无指纹载体 → 重导重抽（added=0 不丢数据）
 
 
 @pytest.mark.asyncio
@@ -547,6 +552,29 @@ async def test_concurrent_sidecar_only_does_not_suppress_real_facts():
 
 
 @pytest.mark.asyncio
+async def test_success_clears_stale_sidecar_from_concurrent_empty_race():
+    # Codex：并发下对方 sidecar-only（空抽取/全去重）先写这天指纹，本请求随后抽出
+    # 真实 facts 落盘 → 成功天要清掉陈旧 sidecar 指纹，维持「有 fact 载体的天不在
+    # sidecar」不变式（否则 facts 回滚后残留指纹压制自愈）。
+    harness_holder = {}
+
+    def stub(journal):
+        h = harness_holder["h"]
+        fp = h._daily_fingerprint(["went hiking"], event_date="2026-07-12")
+        h.state_fps.add(fp)                       # 对方 sidecar-only 先写
+        return [{"text": "real fact", "importance": 5}]  # 本请求抽出真实 facts
+
+    harness = _DailyHarness(stub)
+    harness_holder["h"] = harness
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "went hiking"),
+        "hermes", "t",
+    )
+    assert result["added"] == 1
+    assert harness.state_fps == set()             # 陈旧 sidecar 指纹被清
+
+
+@pytest.mark.asyncio
 async def test_concurrent_real_facts_before_persist_still_drops_this_write():
     # 并发重查的正路径保留：对方并发已把这天**真实 facts**（有 provenance）落盘，
     # 本请求 persist 前查 active provenance 命中即放弃（措辞不同的重复绕过精确去重）。
@@ -572,17 +600,18 @@ async def test_concurrent_real_facts_before_persist_still_drops_this_write():
 
 
 @pytest.mark.asyncio
-async def test_provenance_upgraded_day_does_not_record_sidecar():
-    # Codex：exact-hash 命中把 provenance upgrade 到既有 ai_disclosure fact 时，
-    # _apersist_new_facts 返回 [] 但这天**有 fact 载体**（provenance 打在既有 fact
-    # 上）。此天不该记 sidecar，否则 facts.json 回滚后残留指纹压制 upgrade 自愈。
+async def test_provenance_upgraded_day_uses_provenance_not_sidecar():
+    # Codex：exact-hash 命中把**本天** day_fingerprint upgrade 到既有 ai_disclosure
+    # fact 时，_apersist_new_facts 返回 [] 但这天有 fact 载体（本天指纹打在既有 fact
+    # 上）。此天不记 sidecar、靠 provenance skip——与「全去重天」相反：全去重天的本天
+    # 指纹谁都没有（既有 fact 带别的指纹）→ 无载体、重导重抽。
     class _UpgradeHarness(_DailyHarness):
         async def _apersist_new_facts(
             self, lanlan_name, extracted, *,
             default_source="user_observation", semantic_dedup=True,
         ):
             self.persisted.append([dict(f) for f in extracted])
-            # 模拟 upgrade：不新增 fact（返回 []），但把 provenance 打到既有 fact 上。
+            # 模拟 upgrade：不新增 fact（返回 []），但把**本天**指纹打到既有 fact 上。
             for fact in extracted:
                 meta = fact.get("_external_import")
                 if isinstance(meta, dict):
@@ -597,9 +626,14 @@ async def test_provenance_upgraded_day_does_not_record_sidecar():
     )
     candidates = _daily("memories/2026-07-12.md", "2026-07-12", "user corroboration")
 
-    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t1")
     assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 0}
     assert harness.state_fps == set()        # 有 provenance 载体 → 不记 sidecar
+
+    # 本天指纹在既有 fact 的 provenance 上 → 重导靠 provenance skip、零新 LLM。
+    second = await harness.aimport_external_daily("Neko", candidates, "hermes", "t2")
+    assert second == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert len(harness.extract_inputs) == 1
 
 
 @pytest.mark.asyncio
@@ -677,6 +711,30 @@ async def test_sidecar_corrupt_file_degrades_to_empty_and_recovers(tmp_path):
     # ……且下一次 record 原子重建文件。
     await harness._arecord_unpersisted_day_fp("Neko", "fp-new")
     assert await harness._aload_imported_day_fps("Neko") == {"fp-new"}
+
+
+@pytest.mark.asyncio
+async def test_load_facts_full_non_utf8_archive_degrades_to_active(tmp_path):
+    # Codex：读路径现经 aload_facts_full 扫 archive provenance（在 per-day 隔离前）。
+    # 非法 UTF-8 archive 抛 UnicodeDecodeError（非 JSONDecodeError/OSError）会 abort
+    # 整个导入 → load_facts_full 必须把它降级为仅 active。
+    class _H(FactStore):
+        def _facts_path(self, name):
+            return str(tmp_path / "facts.json")
+
+        def _facts_archive_path(self, name):
+            return str(tmp_path / "facts_archive.json")
+
+    from utils.file_utils import atomic_write_json as _awj
+
+    _awj(str(tmp_path / "facts.json"), [{"id": "a", "text": "active"}],
+         ensure_ascii=False, indent=2)
+    with open(tmp_path / "facts_archive.json", "wb") as f:
+        f.write(b"\xff\xfe not utf-8 \x80\x81")
+
+    harness = _H()
+    result = harness.load_facts_full("Neko")       # 不抛
+    assert [f["id"] for f in result] == ["a"]      # 降级仅 active
 
 
 @pytest.mark.asyncio
