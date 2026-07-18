@@ -47,8 +47,10 @@ def normalize_activation_mode(
     if not isinstance(value, str):
         return default
     normalized = value.strip().lower()
-    if normalized in {"off", "conditional_auto"}:
-        return normalized  # type: ignore[return-value]
+    if normalized == "off":
+        return "off"
+    if normalized == "conditional_auto":
+        return "conditional_auto"
     return default
 
 

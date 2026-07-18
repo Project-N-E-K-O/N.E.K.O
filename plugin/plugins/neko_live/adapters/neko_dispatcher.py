@@ -253,9 +253,6 @@ def _prepend_live_audience_speaker_lock(
         or not danmaku
     ):
         return text
-    if "NEKO Live audience speaker identity:" in text:
-        return text
-
     viewer = str(metadata.get("danmaku_viewer_nickname") or "").strip()
     if not viewer:
         viewer = str(request.identity.nickname or request.event.nickname or "").strip()

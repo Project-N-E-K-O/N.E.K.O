@@ -44,3 +44,40 @@ def test_host_turn_store_reset_returns_to_unknown() -> None:
 
     assert store.current().state == "unknown"
     assert store.current().source == "fallback"
+
+
+def test_host_turn_store_expires_yielded_signal_to_unknown() -> None:
+    now = [42.0]
+    store = HostTurnSignalStore(now=lambda: now[0], yielded_ttl_seconds=5.0)
+    signal = HostTurnSignal(
+        state="yielded",
+        confidence=1.0,
+        reliability="reliable",
+        observed_at=42.0,
+        source="host_runtime",
+    )
+    store.update(signal)
+
+    now[0] = 47.0
+    assert store.current() == signal
+
+    now[0] = 47.01
+    expired = store.current()
+    assert expired.state == "unknown"
+    assert expired.reliability == "unavailable"
+    assert expired.source == "fallback"
+
+
+def test_host_turn_store_rejects_future_yielded_signal() -> None:
+    store = HostTurnSignalStore(now=lambda: 42.0)
+    store.update(
+        HostTurnSignal(
+            state="yielded",
+            confidence=1.0,
+            reliability="reliable",
+            observed_at=43.0,
+            source="host_runtime",
+        )
+    )
+
+    assert store.current().state == "unknown"

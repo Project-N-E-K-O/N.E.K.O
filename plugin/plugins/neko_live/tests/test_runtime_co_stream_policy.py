@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.neko_live.core.contracts import HostTurnSignal
+from plugin.plugins.neko_live.core.host_turn import HostTurnSignalStore
 from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
@@ -49,6 +50,7 @@ async def test_dashboard_projection_is_read_only_for_host_runtime_signal(
 ) -> None:
     runtime.config.co_stream_host_pause_fill_activation = "conditional_auto"
     runtime.config.co_stream_host_pause_fill_auto_consent_version = 1
+    runtime.host_turn_signal_provider = HostTurnSignalStore(now=lambda: 42.0)
     signal = HostTurnSignal(
         state="yielded",
         confidence=1.0,
