@@ -47,8 +47,8 @@ SAMPLE_RATE_48K = 48_000
 SAMPLE_RATE_16K = 16_000
 RNNOISE_CHUNK_MS = 20
 RNNOISE_CURRENT_THRESHOLD = 0.35
-RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD = 0.8
-RNNOISE_EXPLORATORY_SUSTAINED_WINDOWS = 5
+RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD = 0.7
+RNNOISE_EXPLORATORY_SUSTAINED_FRAMES = 10
 SILERO_CURRENT_THRESHOLD = 0.5
 SILERO_OFFSET_THRESHOLD = 0.35
 SILERO_MINIMUM_SPEECH_MS = 200
@@ -112,6 +112,7 @@ class EvaluatedClip:
     silero_raw_score: float
     silero_after_rnnoise_score: float
     rnnoise_trigger_ms: float | None
+    rnnoise_current_policy_trigger_ms: float | None
     rnnoise_sustained_100ms_trigger_ms: float | None
     silero_raw_trigger_ms: float | None
     silero_after_rnnoise_trigger_ms: float | None
@@ -448,25 +449,44 @@ def _pcm16(samples: np.ndarray) -> bytes:
 
 def _rnnoise_process(
     processor: AudioProcessor, samples_48k: np.ndarray
-) -> tuple[list[float], list[float], bytes, float]:
+) -> tuple[list[float], list[float], bytes, float, float]:
     chunk_samples = SAMPLE_RATE_48K * RNNOISE_CHUNK_MS // 1000
-    peak_values: list[float] = []
+    frame_probabilities: list[float] = []
     ema_values: list[float] = []
     processed_chunks: list[bytes] = []
-    started = time.perf_counter()
-    for start in range(0, samples_48k.size, chunk_samples):
-        chunk = samples_48k[start : start + chunk_samples]
-        processed = processor.process_chunk(_pcm16(chunk))
-        if processed:
-            processed_chunks.append(processed)
-        peak = processor.rnnoise_probability_peak
-        ema = processor.rnnoise_probability_ema
-        if peak is not None:
-            peak_values.append(float(peak))
-        if ema is not None:
-            ema_values.append(float(ema))
-    elapsed = time.perf_counter() - started
-    return peak_values, ema_values, b"".join(processed_chunks), elapsed
+    denoiser = processor._denoiser  # noqa: SLF001 - benchmark-only instrumentation
+    if denoiser is None:
+        raise RuntimeError("RNNoise denoiser disappeared during evaluation")
+    original_process_frame = denoiser.process_frame
+
+    def capture_process_frame(frame: np.ndarray) -> tuple[np.ndarray, float]:
+        denoised, probability = original_process_frame(frame)
+        frame_probabilities.append(float(probability))
+        return denoised, probability
+
+    denoiser.process_frame = capture_process_frame
+    wall_started = time.perf_counter()
+    cpu_started = time.process_time()
+    try:
+        for start in range(0, samples_48k.size, chunk_samples):
+            chunk = samples_48k[start : start + chunk_samples]
+            processed = processor.process_chunk(_pcm16(chunk))
+            if processed:
+                processed_chunks.append(processed)
+            ema = processor.rnnoise_probability_ema
+            if ema is not None:
+                ema_values.append(float(ema))
+    finally:
+        cpu_elapsed = time.process_time() - cpu_started
+        wall_elapsed = time.perf_counter() - wall_started
+        denoiser.process_frame = original_process_frame
+    return (
+        frame_probabilities,
+        ema_values,
+        b"".join(processed_chunks),
+        wall_elapsed,
+        cpu_elapsed,
+    )
 
 
 def _first_threshold_trigger_ms(
@@ -489,6 +509,34 @@ def _first_sustained_trigger_ms(
     return None
 
 
+def _current_rnnoise_policy_trigger_ms(
+    frame_probabilities: Sequence[float],
+    *,
+    frames_per_chunk: int = 2,
+) -> float | None:
+    """Simulate the fresh-session #2398 adaptive RNNoise onset policy."""
+
+    if frames_per_chunk <= 0:
+        raise ValueError("frames_per_chunk must be positive")
+    baseline: float | None = None
+    baseline_samples = 0
+    for start in range(0, len(frame_probabilities), frames_per_chunk):
+        chunk = frame_probabilities[start : start + frames_per_chunk]
+        if not chunk:
+            continue
+        mean = sum(chunk) / len(chunk)
+        baseline = mean if baseline is None else 0.05 * mean + 0.95 * baseline
+        baseline_samples += len(chunk)
+        threshold = (
+            RNNOISE_CURRENT_THRESHOLD
+            if baseline_samples < 20
+            else min(0.65, max(0.20, baseline + 0.12))
+        )
+        if max(chunk) >= threshold:
+            return (start + len(chunk)) * 10.0
+    return None
+
+
 def evaluate_corpus(
     clips: Iterable[CorpusClip], asset_dir: Path
 ) -> tuple[list[EvaluatedClip], dict[str, float]]:
@@ -505,38 +553,57 @@ def evaluate_corpus(
     if processor._denoiser is None:  # noqa: SLF001 - benchmark must fail closed
         raise RuntimeError("RNNoise native runtime is unavailable")
     rss_after_rnnoise = process.memory_info().rss
+    import onnxruntime  # noqa: F401, PLC0415 - isolate shared runtime RSS
+
+    rss_after_onnxruntime_import = process.memory_info().rss
     vad = SileroVad(enabled=True, asset_dir=asset_dir, intra_op_threads=1)
     if not vad.load():
         raise RuntimeError(f"Silero failed to load: {vad.unavailable_reason}")
-    rss_after_silero = process.memory_info().rss
+    vad.process_pcm16(np.zeros(SileroVad.WINDOW_SAMPLES, dtype="<i2").tobytes())
+    vad.reset_stream()
+    rss_after_silero_warm = process.memory_info().rss
 
     evaluated: list[EvaluatedClip] = []
-    rnnoise_seconds = 0.0
-    silero_raw_seconds = 0.0
-    silero_after_rnnoise_seconds = 0.0
+    rnnoise_wall_seconds = 0.0
+    rnnoise_cpu_seconds = 0.0
+    silero_raw_wall_seconds = 0.0
+    silero_raw_cpu_seconds = 0.0
+    silero_after_rnnoise_wall_seconds = 0.0
+    silero_after_rnnoise_cpu_seconds = 0.0
     audio_seconds = 0.0
     try:
         for index, clip in enumerate(clips, start=1):
             processor.reset()
             vad.reset_stream()
-            peak_values, ema_values, processed_16k, rnnoise_elapsed = (
-                _rnnoise_process(processor, clip.samples_48k)
-            )
+            (
+                frame_probabilities,
+                ema_values,
+                processed_16k,
+                rnnoise_wall_elapsed,
+                rnnoise_cpu_elapsed,
+            ) = _rnnoise_process(processor, clip.samples_48k)
             raw_16k = soxr.resample(
                 clip.samples_48k, SAMPLE_RATE_48K, SAMPLE_RATE_16K, quality="HQ"
             )
-            raw_started = time.perf_counter()
+            raw_wall_started = time.perf_counter()
+            raw_cpu_started = time.process_time()
             raw_probabilities = vad.process_pcm16(_pcm16(raw_16k))
-            raw_elapsed = time.perf_counter() - raw_started
+            raw_cpu_elapsed = time.process_time() - raw_cpu_started
+            raw_wall_elapsed = time.perf_counter() - raw_wall_started
             vad.reset_stream()
-            denoised_started = time.perf_counter()
+            denoised_wall_started = time.perf_counter()
+            denoised_cpu_started = time.process_time()
             denoised_probabilities = vad.process_pcm16(processed_16k)
-            denoised_elapsed = time.perf_counter() - denoised_started
+            denoised_cpu_elapsed = time.process_time() - denoised_cpu_started
+            denoised_wall_elapsed = time.perf_counter() - denoised_wall_started
             duration = clip.samples_48k.size / SAMPLE_RATE_48K
             audio_seconds += duration
-            rnnoise_seconds += rnnoise_elapsed
-            silero_raw_seconds += raw_elapsed
-            silero_after_rnnoise_seconds += denoised_elapsed
+            rnnoise_wall_seconds += rnnoise_wall_elapsed
+            rnnoise_cpu_seconds += rnnoise_cpu_elapsed
+            silero_raw_wall_seconds += raw_wall_elapsed
+            silero_raw_cpu_seconds += raw_cpu_elapsed
+            silero_after_rnnoise_wall_seconds += denoised_wall_elapsed
+            silero_after_rnnoise_cpu_seconds += denoised_cpu_elapsed
             evaluated.append(
                 EvaluatedClip(
                     clip_id=clip.clip_id,
@@ -546,26 +613,29 @@ def evaluate_corpus(
                     snr_db=clip.snr_db,
                     noise_kind=clip.noise_kind,
                     duration_seconds=duration,
-                    rnnoise_peak=max(peak_values, default=0.0),
+                    rnnoise_peak=max(frame_probabilities, default=0.0),
                     rnnoise_ema_peak=max(ema_values, default=0.0),
                     rnnoise_sustained_100ms_score=silero_presence_score(
-                        peak_values, minimum_windows=5
+                        frame_probabilities, minimum_windows=10
                     ),
                     rnnoise_sustained_200ms_score=silero_presence_score(
-                        peak_values, minimum_windows=10
+                        frame_probabilities, minimum_windows=20
                     ),
                     silero_raw_score=silero_presence_score(raw_probabilities),
                     silero_after_rnnoise_score=silero_presence_score(
                         denoised_probabilities
                     ),
                     rnnoise_trigger_ms=_first_threshold_trigger_ms(
-                        peak_values, RNNOISE_CURRENT_THRESHOLD, RNNOISE_CHUNK_MS
+                        frame_probabilities, RNNOISE_CURRENT_THRESHOLD, 10
+                    ),
+                    rnnoise_current_policy_trigger_ms=(
+                        _current_rnnoise_policy_trigger_ms(frame_probabilities)
                     ),
                     rnnoise_sustained_100ms_trigger_ms=_first_sustained_trigger_ms(
-                        peak_values,
+                        frame_probabilities,
                         RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD,
-                        RNNOISE_EXPLORATORY_SUSTAINED_WINDOWS,
-                        RNNOISE_CHUNK_MS,
+                        RNNOISE_EXPLORATORY_SUSTAINED_FRAMES,
+                        10,
                     ),
                     silero_raw_trigger_ms=first_silero_trigger_ms(
                         raw_probabilities, SILERO_CURRENT_THRESHOLD
@@ -584,16 +654,37 @@ def evaluate_corpus(
     mib = 1024 * 1024
     return evaluated, {
         "total_audio_seconds": audio_seconds,
-        "rnnoise_pipeline_seconds": rnnoise_seconds,
-        "silero_raw_seconds": silero_raw_seconds,
-        "silero_after_rnnoise_seconds": silero_after_rnnoise_seconds,
-        "rnnoise_pipeline_realtime_factor": rnnoise_seconds / audio_seconds,
-        "silero_raw_realtime_factor": silero_raw_seconds / audio_seconds,
-        "silero_after_rnnoise_realtime_factor": (
-            silero_after_rnnoise_seconds / audio_seconds
+        "rnnoise_pipeline_wall_seconds": rnnoise_wall_seconds,
+        "rnnoise_pipeline_cpu_seconds": rnnoise_cpu_seconds,
+        "silero_raw_wall_seconds": silero_raw_wall_seconds,
+        "silero_raw_cpu_seconds": silero_raw_cpu_seconds,
+        "silero_after_rnnoise_wall_seconds": silero_after_rnnoise_wall_seconds,
+        "silero_after_rnnoise_cpu_seconds": silero_after_rnnoise_cpu_seconds,
+        "rnnoise_pipeline_wall_realtime_factor": (
+            rnnoise_wall_seconds / audio_seconds
+        ),
+        "rnnoise_pipeline_cpu_realtime_factor": rnnoise_cpu_seconds / audio_seconds,
+        "silero_raw_wall_realtime_factor": silero_raw_wall_seconds / audio_seconds,
+        "silero_raw_cpu_realtime_factor": silero_raw_cpu_seconds / audio_seconds,
+        "silero_after_rnnoise_wall_realtime_factor": (
+            silero_after_rnnoise_wall_seconds / audio_seconds
+        ),
+        "silero_after_rnnoise_cpu_realtime_factor": (
+            silero_after_rnnoise_cpu_seconds / audio_seconds
         ),
         "rnnoise_rss_delta_mib": (rss_after_rnnoise - rss_before_rnnoise) / mib,
-        "silero_rss_delta_mib": (rss_after_silero - rss_after_rnnoise) / mib,
+        "onnxruntime_import_rss_delta_mib": (
+            rss_after_onnxruntime_import - rss_after_rnnoise
+        )
+        / mib,
+        "silero_session_warm_rss_delta_mib": (
+            rss_after_silero_warm - rss_after_onnxruntime_import
+        )
+        / mib,
+        "silero_combined_rss_delta_mib": (
+            rss_after_silero_warm - rss_after_rnnoise
+        )
+        / mib,
     }
 
 
@@ -621,8 +712,11 @@ def _threshold_curve(
 def _current_strategy_metrics(
     clips: Sequence[EvaluatedClip],
 ) -> dict[str, dict[str, float | int]]:
-    rnnoise = [
+    rnnoise_fixed = [
         clip.rnnoise_peak >= RNNOISE_CURRENT_THRESHOLD for clip in clips
+    ]
+    rnnoise_current_policy = [
+        clip.rnnoise_current_policy_trigger_ms is not None for clip in clips
     ]
     rnnoise_100ms = [
         clip.rnnoise_sustained_100ms_score >= RNNOISE_CURRENT_THRESHOLD
@@ -632,26 +726,36 @@ def _current_strategy_metrics(
         clip.rnnoise_sustained_200ms_score >= RNNOISE_CURRENT_THRESHOLD
         for clip in clips
     ]
-    silero_raw = [
-        clip.silero_raw_score >= SILERO_CURRENT_THRESHOLD for clip in clips
-    ]
+    silero_raw = [clip.silero_raw_trigger_ms is not None for clip in clips]
     silero_after = [
-        clip.silero_after_rnnoise_score >= SILERO_CURRENT_THRESHOLD
-        for clip in clips
+        clip.silero_after_rnnoise_trigger_ms is not None for clip in clips
     ]
     return {
-        "rnnoise_peak_0.35": _metric_row(clips, rnnoise),
+        "rnnoise_fixed_peak_0.35": _metric_row(clips, rnnoise_fixed),
+        "rnnoise_current_adaptive_policy_fresh_session": _metric_row(
+            clips, rnnoise_current_policy
+        ),
         "rnnoise_sustained_100ms_0.35": _metric_row(clips, rnnoise_100ms),
         "rnnoise_sustained_200ms_0.35": _metric_row(clips, rnnoise_200ms),
         "silero_raw_0.5_200ms": _metric_row(clips, silero_raw),
         "silero_after_rnnoise_0.5_200ms": _metric_row(clips, silero_after),
         "rnnoise_and_silero_after_rnnoise": _metric_row(
             clips,
-            [left and right for left, right in zip(rnnoise, silero_after, strict=True)],
+            [
+                left and right
+                for left, right in zip(
+                    rnnoise_current_policy, silero_after, strict=True
+                )
+            ],
         ),
         "rnnoise_or_silero_raw": _metric_row(
             clips,
-            [left or right for left, right in zip(rnnoise, silero_raw, strict=True)],
+            [
+                left or right
+                for left, right in zip(
+                    rnnoise_current_policy, silero_raw, strict=True
+                )
+            ],
         ),
     }
 
@@ -681,6 +785,31 @@ def _group_metrics(
     return result
 
 
+def _group_trigger_metrics(
+    clips: Sequence[EvaluatedClip], trigger_name: str
+) -> dict[str, dict[str, float | int]]:
+    groups: dict[str, list[EvaluatedClip]] = defaultdict(list)
+    for clip in clips:
+        groups[clip.scenario].append(clip)
+    result: dict[str, dict[str, float | int]] = {}
+    for name, group in sorted(groups.items()):
+        predictions = [getattr(clip, trigger_name) is not None for clip in group]
+        labels = [clip.label for clip in group]
+        if all(labels):
+            result[name] = {
+                "clips": len(group),
+                "speech_recall": sum(predictions) / len(predictions),
+            }
+        elif not any(labels):
+            result[name] = {
+                "clips": len(group),
+                "false_positive_rate": sum(predictions) / len(predictions),
+            }
+        else:
+            result[name] = _metric_row(group, predictions)
+    return result
+
+
 def _locale_recall(
     clips: Sequence[EvaluatedClip], score_name: str, threshold: float
 ) -> dict[str, dict[str, float | int]]:
@@ -693,6 +822,25 @@ def _locale_recall(
             "clips": len(group),
             "speech_recall": sum(
                 getattr(clip, score_name) >= threshold for clip in group
+            )
+            / len(group),
+        }
+        for locale, group in sorted(groups.items())
+    }
+
+
+def _locale_trigger_recall(
+    clips: Sequence[EvaluatedClip], trigger_name: str
+) -> dict[str, dict[str, float | int]]:
+    groups: dict[str, list[EvaluatedClip]] = defaultdict(list)
+    for clip in clips:
+        if clip.label and clip.locale:
+            groups[clip.locale].append(clip)
+    return {
+        locale: {
+            "clips": len(group),
+            "speech_recall": sum(
+                getattr(clip, trigger_name) is not None for clip in group
             )
             / len(group),
         }
@@ -792,29 +940,32 @@ def build_report(
             ),
         },
         "scenario_metrics": {
-            "rnnoise_peak_0.35": _group_metrics(
+            "rnnoise_fixed_peak_0.35": _group_metrics(
                 clips, "rnnoise_peak", RNNOISE_CURRENT_THRESHOLD
             ),
-            "silero_raw_0.5_200ms": _group_metrics(
-                clips, "silero_raw_score", SILERO_CURRENT_THRESHOLD
+            "rnnoise_current_adaptive_policy_fresh_session": (
+                _group_trigger_metrics(clips, "rnnoise_current_policy_trigger_ms")
             ),
-            "silero_after_rnnoise_0.5_200ms": _group_metrics(
-                clips, "silero_after_rnnoise_score", SILERO_CURRENT_THRESHOLD
+            "silero_raw_production_gate": _group_trigger_metrics(
+                clips, "silero_raw_trigger_ms"
             ),
-            "rnnoise_sustained_100ms_0.8_exploratory": _group_metrics(
+            "silero_after_rnnoise_production_gate": _group_trigger_metrics(
+                clips, "silero_after_rnnoise_trigger_ms"
+            ),
+            "rnnoise_sustained_100ms_0.7_exploratory": _group_metrics(
                 clips,
                 "rnnoise_sustained_100ms_score",
                 RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD,
             ),
         },
         "locale_recall": {
-            "rnnoise_peak_0.35": _locale_recall(
-                clips, "rnnoise_peak", RNNOISE_CURRENT_THRESHOLD
+            "rnnoise_current_adaptive_policy_fresh_session": (
+                _locale_trigger_recall(clips, "rnnoise_current_policy_trigger_ms")
             ),
-            "silero_raw_0.5_200ms": _locale_recall(
-                clips, "silero_raw_score", SILERO_CURRENT_THRESHOLD
+            "silero_raw_production_gate": _locale_trigger_recall(
+                clips, "silero_raw_trigger_ms"
             ),
-            "rnnoise_sustained_100ms_0.8_exploratory": _locale_recall(
+            "rnnoise_sustained_100ms_0.7_exploratory": _locale_recall(
                 clips,
                 "rnnoise_sustained_100ms_score",
                 RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD,
@@ -833,8 +984,13 @@ def build_report(
             ),
         },
         "trigger_timing": {
-            "rnnoise_peak_0.35": _trigger_summary(clips, "rnnoise_trigger_ms"),
-            "rnnoise_sustained_100ms_0.8_exploratory": _trigger_summary(
+            "rnnoise_fixed_peak_0.35": _trigger_summary(
+                clips, "rnnoise_trigger_ms"
+            ),
+            "rnnoise_current_adaptive_policy_fresh_session": _trigger_summary(
+                clips, "rnnoise_current_policy_trigger_ms"
+            ),
+            "rnnoise_sustained_100ms_0.7_exploratory": _trigger_summary(
                 clips, "rnnoise_sustained_100ms_trigger_ms"
             ),
             "silero_raw_0.5_200ms": _trigger_summary(
