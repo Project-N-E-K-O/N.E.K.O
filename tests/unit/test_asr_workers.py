@@ -9,10 +9,13 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+import main_logic.asr_client._infra as asr_infra
 from main_logic.asr_client._infra import (
     AsrSessionConfig,
+    _AsrRequestQueue,
     _AsrWorkerEvent,
     _AsrWorkerRequest,
+    _RealtimeAsrSessionImpl,
 )
 from main_logic.asr_client.workers import gemini, grok, openai, qwen, soniox, step
 
@@ -1342,7 +1345,7 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
 
     websocket = _FakeWebSocket(on_send=on_send)
     monkeypatch.setattr(soniox.websockets, "connect", _FakeConnector(websocket))
-    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    requests = _AsrRequestQueue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
     task = asyncio.create_task(
         soniox.soniox_asr_worker(
@@ -1387,7 +1390,10 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
         )
     )
     await _wait_until(requests.empty)
+    await _wait_until(lambda: requests.held_audio_bytes == len(second_audio))
     assert second_audio not in websocket.sent
+    assert requests.waiting_audio_bytes == len(second_audio)
+    assert requests.waiting_audio_items == 1
 
     await websocket.server_send(
         {
@@ -1406,6 +1412,8 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
     second = await _next_event(responses, "final")
     assert (second.generation, second.buffer_epoch, second.utterance_id) == (8, 9, 6)
     assert second.text == "second"
+    assert requests.waiting_audio_bytes == 0
+    assert requests.waiting_audio_items == 0
     await _stop_worker(
         task,
         requests,
@@ -1414,6 +1422,133 @@ async def test_soniox_manual_finalize_preserves_turn_identity_until_fin(
         buffer_epoch=9,
         utterance_id=7,
     )
+
+
+async def test_soniox_pending_fin_keeps_deferred_audio_in_session_backpressure(
+    monkeypatch,
+) -> None:
+    finalize_sent = asyncio.Event()
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        del ws
+        if isinstance(payload, str) and json.loads(payload).get("type") == "finalize":
+            finalize_sent.set()
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(soniox.websockets, "connect", _FakeConnector(websocket))
+    monkeypatch.setattr(asr_infra, "_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS", 0.02)
+    transcripts: list[str] = []
+    errors: list[str] = []
+
+    async def capture_transcript(text: str) -> None:
+        transcripts.append(text)
+
+    async def capture_error(error: str) -> None:
+        errors.append(error)
+
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=soniox.soniox_asr_worker,
+        api_key="key",
+        config=AsrSessionConfig(endpointing_mode="manual"),
+        on_input_transcript=capture_transcript,
+        on_connection_error=capture_error,
+    )
+    await session.connect()
+    first_audio = b"\x01\x00" * 160
+    await session.stream_audio(first_audio)
+    await session.signal_user_activity_end()
+    await asyncio.wait_for(finalize_sent.wait(), 1)
+
+    second_audio_a = b"\x02\x00" * 16_000
+    second_audio_b = b"\x03\x00" * 16_000
+    await session.stream_audio(second_audio_a)
+    await session.stream_audio(second_audio_b)
+    queue = session._request_queue
+    assert isinstance(queue, _AsrRequestQueue)
+    await _wait_until(
+        lambda: queue.held_audio_bytes == len(second_audio_a) + len(second_audio_b)
+    )
+
+    with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+        await session.stream_audio(b"\x04\x00" * 160)
+
+    assert queue.waiting_audio_bytes == len(second_audio_a) + len(second_audio_b)
+    assert queue.waiting_audio_items == 2
+    assert second_audio_a not in websocket.sent
+    assert second_audio_b not in websocket.sent
+    assert transcripts == []
+    assert errors == []
+
+    await session.close()
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+
+
+async def test_soniox_fin_releases_deferred_audio_budget_in_fifo_order(
+    monkeypatch,
+) -> None:
+    finalize_sent = asyncio.Event()
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        del ws
+        if isinstance(payload, str) and json.loads(payload).get("type") == "finalize":
+            finalize_sent.set()
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    monkeypatch.setattr(soniox.websockets, "connect", _FakeConnector(websocket))
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=soniox.soniox_asr_worker,
+        api_key="key",
+        config=AsrSessionConfig(endpointing_mode="manual"),
+        on_input_transcript=lambda text: asyncio.sleep(0),
+        on_connection_error=lambda error: asyncio.sleep(0),
+    )
+    await session.connect()
+    first_audio = b"\x11\x00" * 160
+    await session.stream_audio(first_audio)
+    await session.signal_user_activity_end()
+    await asyncio.wait_for(finalize_sent.wait(), 1)
+
+    second_audio_a = b"\x12\x00" * 16_000
+    second_audio_b = b"\x13\x00" * 16_000
+    second_audio_c = b"\x14\x00" * 160
+    await session.stream_audio(second_audio_a)
+    await session.stream_audio(second_audio_b)
+    queue = session._request_queue
+    assert isinstance(queue, _AsrRequestQueue)
+    await _wait_until(
+        lambda: queue.held_audio_bytes == len(second_audio_a) + len(second_audio_b)
+    )
+    blocked_producer = asyncio.create_task(session.stream_audio(second_audio_c))
+    await asyncio.sleep(0)
+    assert blocked_producer.done() is False
+
+    await websocket.server_send(
+        {
+            "tokens": [
+                {"text": "first", "is_final": True},
+                {"text": "<fin>", "is_final": True},
+            ]
+        }
+    )
+    await asyncio.wait_for(blocked_producer, 1)
+    await _wait_until(
+        lambda: all(
+            audio in websocket.sent
+            for audio in (second_audio_a, second_audio_b, second_audio_c)
+        )
+    )
+    wire_audio = [payload for payload in websocket.sent if isinstance(payload, bytes)]
+    assert wire_audio[:4] == [
+        first_audio,
+        second_audio_a,
+        second_audio_b,
+        second_audio_c,
+    ]
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+
+    await session.close()
 
 
 @pytest.mark.parametrize("disconnect_at", ["before_send", "send_raises", "after_send"])
@@ -1605,7 +1740,7 @@ async def test_soniox_manual_clear_discards_pending_finalize(monkeypatch) -> Non
     second = _FakeWebSocket()
     connector = _FakeConnector(first, second)
     monkeypatch.setattr(soniox.websockets, "connect", connector)
-    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    requests = _AsrRequestQueue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
     task = asyncio.create_task(
         soniox.soniox_asr_worker(
@@ -1632,9 +1767,21 @@ async def test_soniox_manual_clear_discards_pending_finalize(monkeypatch) -> Non
         )
     )
     await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=1,
+            buffer_epoch=2,
+            utterance_id=4,
+            audio=b"\x02\x00" * 160,
+        )
+    )
+    await _wait_until(lambda: requests.held_audio_bytes > 0)
+    await requests.put(
         _AsrWorkerRequest(kind="clear", generation=1, buffer_epoch=3, utterance_id=4)
     )
     await _wait_until(lambda: len(connector.calls) == 2)
+    assert requests.held_audio_bytes == 0
+    assert requests.held_audio_items == 0
     assert not any(
         isinstance(payload, str) and json.loads(payload).get("type") == "finalize"
         for payload in second.sent

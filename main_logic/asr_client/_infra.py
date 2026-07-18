@@ -40,6 +40,8 @@ _WORKER_CLOSE_TIMEOUT_SECONDS = 5.0
 # 活跃音频队列按时长限额；chunk 数量只保留为兼容常量，不参与容量判断。
 _REQUEST_QUEUE_SIZE = 64
 _ACTIVE_QUEUE_MAX_AUDIO_MS = 2_000
+_ACTIVE_QUEUE_MAX_AUDIO_BYTES = _ACTIVE_QUEUE_MAX_AUDIO_MS * 16_000 * 2 // 1_000
+_ACTIVE_QUEUE_MAX_AUDIO_ITEMS = 256
 _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS = 2.0
 _RESPONSE_QUEUE_SIZE = 128
 _CALLBACK_QUEUE_SIZE = 64
@@ -157,6 +159,89 @@ class _AsrWorkerRequest:
     buffer_epoch: int = 0
     utterance_id: int | None = None
     audio: bytes = b""
+
+
+@dataclass(slots=True)
+class _QueuedAudioHold:
+    """Keep dequeued audio charged to the session backpressure budget."""
+
+    queue: _AsrRequestQueue
+    audio_bytes: int
+    released: bool = False
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.released = True
+        self.queue._release_held_audio(self.audio_bytes)
+
+
+class _AsrRequestQueue(asyncio.Queue[_AsrWorkerRequest]):
+    """Unbounded control queue with bounded, explicitly held audio accounting."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._held_audio_bytes = 0
+        self._held_audio_items = 0
+
+    def hold_dequeued_audio(
+        self,
+        request: _AsrWorkerRequest,
+    ) -> _QueuedAudioHold | None:
+        if request.kind != "audio" or not request.audio:
+            return None
+        audio_bytes = len(request.audio)
+        self._held_audio_bytes += audio_bytes
+        self._held_audio_items += 1
+        return _QueuedAudioHold(queue=self, audio_bytes=audio_bytes)
+
+    async def get_with_audio_hold(
+        self,
+    ) -> tuple[_AsrWorkerRequest, _QueuedAudioHold | None]:
+        """Atomically transfer dequeued audio into the held budget."""
+
+        request = await super().get()
+        return request, self.hold_dequeued_audio(request)
+
+    def _release_held_audio(self, audio_bytes: int) -> None:
+        if audio_bytes <= 0:
+            raise ValueError("ASR_REQUEST_ACCOUNTING_INVALID_AUDIO")
+        if self._held_audio_items <= 0 or audio_bytes > self._held_audio_bytes:
+            raise RuntimeError("ASR_REQUEST_ACCOUNTING_UNDERFLOW")
+        self._held_audio_bytes -= audio_bytes
+        self._held_audio_items -= 1
+
+    @property
+    def waiting_audio_bytes(self) -> int:
+        return self._queued_audio_bytes + self._held_audio_bytes
+
+    @property
+    def waiting_audio_items(self) -> int:
+        return self._queued_audio_items + self._held_audio_items
+
+    @property
+    def held_audio_bytes(self) -> int:
+        return self._held_audio_bytes
+
+    @property
+    def held_audio_items(self) -> int:
+        return self._held_audio_items
+
+    @property
+    def _queued_audio_bytes(self) -> int:
+        return sum(
+            len(item.audio)
+            for item in self._queue
+            if isinstance(item, _AsrWorkerRequest) and item.kind == "audio"
+        )
+
+    @property
+    def _queued_audio_items(self) -> int:
+        return sum(
+            1
+            for item in self._queue
+            if isinstance(item, _AsrWorkerRequest) and item.kind == "audio"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +415,7 @@ class _RealtimeAsrSessionImpl:
                 )
 
             self._state = _SessionState.CONNECTING
-            self._request_queue = asyncio.Queue()
+            self._request_queue = _AsrRequestQueue()
             self._response_queue = asyncio.Queue(maxsize=_RESPONSE_QUEUE_SIZE)
             self._callback_queue = asyncio.Queue(maxsize=_CALLBACK_QUEUE_SIZE)
             self._ready_future = asyncio.get_running_loop().create_future()
@@ -1290,28 +1375,48 @@ class _RealtimeAsrSessionImpl:
                     logger.warning("ASR callback drain timed out after failure")
             await self._shutdown()
 
-    def _queued_audio_ms(self) -> int:
+    def _queued_audio_bytes(self) -> int:
         queue = self._request_queue
         if queue is None:
             return 0
+        if isinstance(queue, _AsrRequestQueue):
+            return queue.waiting_audio_bytes
         # asyncio.Queue 没有公开快照接口；这里仅在 session 自己的 operation
         # lock 内读取其 deque，不修改内部结构。
         queued = getattr(queue, "_queue", ())
-        audio_bytes = sum(
+        return sum(
             len(item.audio)
             for item in queued
             if isinstance(item, _AsrWorkerRequest) and item.kind == "audio"
         )
-        return audio_bytes * 1_000 // (16_000 * 2)
+
+    def _queued_audio_ms(self) -> int:
+        return self._queued_audio_bytes() * 1_000 // (16_000 * 2)
+
+    def _queued_audio_items(self) -> int:
+        queue = self._request_queue
+        if queue is None:
+            return 0
+        if isinstance(queue, _AsrRequestQueue):
+            return queue.waiting_audio_items
+        queued = getattr(queue, "_queue", ())
+        return sum(
+            1
+            for item in queued
+            if isinstance(item, _AsrWorkerRequest) and item.kind == "audio"
+        )
 
     async def _wait_for_audio_queue_capacity(
         self,
         request: _AsrWorkerRequest,
     ) -> None:
-        request_ms = len(request.audio) * 1_000 // (16_000 * 2)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _REQUEST_BACKPRESSURE_TIMEOUT_SECONDS
-        while self._queued_audio_ms() + request_ms > _ACTIVE_QUEUE_MAX_AUDIO_MS:
+        while (
+            self._queued_audio_bytes() + len(request.audio)
+            > _ACTIVE_QUEUE_MAX_AUDIO_BYTES
+            or self._queued_audio_items() + 1 > _ACTIVE_QUEUE_MAX_AUDIO_ITEMS
+        ):
             if self._closing_event.is_set() or self._state is not _SessionState.READY:
                 raise RuntimeError("ASR_SESSION_NOT_READY: session is not ready")
             remaining = deadline - loop.time()
