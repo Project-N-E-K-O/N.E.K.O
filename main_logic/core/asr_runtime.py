@@ -324,7 +324,7 @@ class AsrRuntimeMixin:
                 )
             )
             return
-        enabled = bool(settings.get("independentAsrEnabled", False))
+        enabled = bool(settings.get("independentAsrEnabled", True))
         optimization_value = settings.get(
             "voice_input_resource_optimization_enabled",
             settings.get("voiceInputResourceOptimizationEnabled", True),

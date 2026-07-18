@@ -347,6 +347,30 @@ async def test_candidate_open_prevents_rnnoise_from_skipping_followup_pcm() -> N
     await detector.close()
 
 
+async def test_disabled_resource_optimization_never_skips_quiet_rnnoise_pcm() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        resource_optimization_enabled=False,
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+    )
+
+    quiet = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.0,
+        rnnoise_available=True,
+    )
+
+    assert quiet.status is DetectorSubmitStatus.ACCEPTED
+    assert quiet.identity is not None
+    assert detector.candidate_open is True
+    await detector.close()
+
+
 async def test_smart_turn_loading_does_not_hold_detector_audio_submission() -> None:
     coordinator = _BlockingSemanticCoordinator(block_prepare=True)
     detector = DetectorRuntime(
