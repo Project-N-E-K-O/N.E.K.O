@@ -43,11 +43,7 @@ from utils.tts.providers.elevenlabs import (
 from utils.config_manager import (
     get_reserved,
 )
-from utils.dashscope_region import (
-    DASHSCOPE_GLOBAL_LOCK,
-    configure_dashscope_sdk_urls,
-    prefer_dashscope_websocket_ipv4,
-)
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 from utils.doubao_tts import (
     DOUBAO_TTS_DEFAULT_BASE_URL,
     DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
@@ -1013,7 +1009,7 @@ async def get_voice_preview(
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
             # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
             # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
-            with DASHSCOPE_GLOBAL_LOCK, prefer_dashscope_websocket_ipv4():
+            with DASHSCOPE_GLOBAL_LOCK:
                 dashscope.api_key = audio_api_key
                 try:
                     configure_dashscope_sdk_urls(

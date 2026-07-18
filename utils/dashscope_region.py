@@ -16,8 +16,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-import socket
 import threading
 from urllib.parse import urlparse, urlunparse
 
@@ -30,12 +28,6 @@ from urllib.parse import urlparse, urlunparse
 # 所有调用方在写 global + 构造 SDK + 同步调用这一整段都拿这把锁。
 # 拿到 SDK 实例后由实例自己的内部状态承载请求，可以解锁继续跑。
 DASHSCOPE_GLOBAL_LOCK = threading.Lock()
-# dashscope.audio.tts_v2 uses websocket-client, which attempts DNS results
-# serially. A black-holed IPv6 route can consume its fixed 5-second connection
-# window before it reaches a working IPv4 address. Limit the workaround to the
-# websocket-client module and DashScope hosts; HTTP and other providers stay
-# untouched.
-DASHSCOPE_WEBSOCKET_DNS_LOCK = threading.RLock()
 
 
 DASHSCOPE_ALLOWED_HOSTS = {
@@ -44,37 +36,6 @@ DASHSCOPE_ALLOWED_HOSTS = {
     "dashscope-us.aliyuncs.com",
 }
 DASHSCOPE_DEFAULT_HTTP_API_URL = "https://dashscope.aliyuncs.com/api/v1"
-
-
-@contextmanager
-def prefer_dashscope_websocket_ipv4():
-    """Temporarily make websocket-client prefer IPv4 for DashScope hosts.
-
-    websocket-client does not implement Happy Eyeballs. Keep IPv6 as a
-    fallback when DNS has no IPv4 address, so IPv6-only networks still work.
-    """
-    import websocket._http as websocket_http
-
-    original_socket_module = websocket_http.socket
-
-    class _DashScopeSocketFacade:
-        def getaddrinfo(self, host, *args, **kwargs):
-            results = original_socket_module.getaddrinfo(host, *args, **kwargs)
-            hostname = str(host or "").rstrip(".").lower()
-            if hostname not in DASHSCOPE_ALLOWED_HOSTS:
-                return results
-            ipv4_results = [result for result in results if result[0] == socket.AF_INET]
-            return ipv4_results or results
-
-        def __getattr__(self, name):
-            return getattr(original_socket_module, name)
-
-    with DASHSCOPE_WEBSOCKET_DNS_LOCK:
-        websocket_http.socket = _DashScopeSocketFacade()
-        try:
-            yield
-        finally:
-            websocket_http.socket = original_socket_module
 
 
 def _dashscope_default_ws_url(path_tail: str) -> str:

@@ -17,11 +17,7 @@
 import time
 
 from utils.config_manager import get_config_manager
-from utils.dashscope_region import (
-    DASHSCOPE_GLOBAL_LOCK,
-    configure_dashscope_sdk_urls,
-    prefer_dashscope_websocket_ipv4,
-)
+from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
 
 from .._infra import TTS_SHUTDOWN_SENTINEL, _enqueue_error
 from .._telemetry import _record_tts_telemetry
@@ -241,8 +237,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         if synthesizer is None:
             synthesizer = _create_synthesizer(detected_lang)
             callback.accepted_speech_id = current_speech_id
-        with prefer_dashscope_websocket_ipv4():
-            synthesizer.streaming_call(char_buffer)
+        synthesizer.streaming_call(char_buffer)
         _record_tts_telemetry("cosyvoice", len(char_buffer))
         last_streaming_call_time = time.time()
         char_buffer = ""
@@ -365,8 +360,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     logger.info(f"CosyVoice 语言提示: {detected_lang}")
                 synthesizer = _create_synthesizer(detected_lang)
                 callback.accepted_speech_id = current_speech_id
-                with prefer_dashscope_websocket_ipv4():
-                    synthesizer.streaming_call(char_buffer)
+                synthesizer.streaming_call(char_buffer)
                 _record_tts_telemetry("cosyvoice", len(char_buffer))
                 last_streaming_call_time = time.time()
                 char_buffer = ""
@@ -383,8 +377,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 continue
         else:
             try:
-                with prefer_dashscope_websocket_ipv4():
-                    synthesizer.streaming_call(tts_text)
+                synthesizer.streaming_call(tts_text)
                 last_streaming_call_time = time.time()
             except Exception:
                 if synthesizer is not None:
@@ -398,8 +391,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
                     callback.accepted_speech_id = current_speech_id
-                    with prefer_dashscope_websocket_ipv4():
-                        synthesizer.streaming_call(tts_text)
+                    synthesizer.streaming_call(tts_text)
                     last_streaming_call_time = time.time()
                 except Exception as reconnect_error:
                     logger.error(f"TTS Reconnect Error: {reconnect_error}")
