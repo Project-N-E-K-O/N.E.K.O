@@ -815,6 +815,9 @@ class IndependentAsrRuntime:
 
             detector_ref = DetectorRuntime(
                 provider_policy=policy,
+                resource_optimization_enabled=(
+                    self._voice_input_resource_optimization_enabled
+                ),
                 on_endpointing_failure=(
                     on_detector_endpointing_failure
                     if policy.endpoint_authority == "smart_turn"

@@ -1577,6 +1577,39 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     assert factory.call_args.kwargs["selection"].provider_key == "gemini"
 
 
+async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) -> None:
+    import main_logic.core.asr_runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    asr = type("Asr", (), {})()
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    factory = MagicMock(return_value=asr)
+    monkeypatch.setattr(
+        core_facade,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        factory,
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    asr.connect.assert_awaited_once_with()
+    assert runtime._asr_session is asr
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._omni_mic_audio_bytes == 0
+
+
 async def test_runtime_builds_primary_candidate_from_its_single_selection(
     monkeypatch,
 ) -> None:
