@@ -236,6 +236,28 @@ test('restore anchor stores semantic display identity without absolute coordinat
     assert.equal('screenY' in anchor.display, false);
 });
 
+test('detail-less goodbye events preserve the edge anchor for later listeners', async () => {
+    const harness = createHarness();
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0 });
+    harness.window.live2dManager = manager;
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    let receivedAnchor = null;
+    harness.window.addEventListener('live2d-goodbye-click', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        receivedAnchor = detail.edgeAnchor || (event && event.__nekoLive2DPeekEdgeAnchor) || null;
+    });
+    harness.window.dispatchEvent({ type: 'live2d-goodbye-click' });
+
+    assert.equal(receivedAnchor.kind, 'live2d-edge-peek');
+    assert.equal(receivedAnchor.edge, 'left');
+    assert.equal(manager.isLive2DPeekActive(), false);
+});
+
 test('head anchor keeps the face visible when a tail widens the model bounds', async () => {
     const harness = createHarness();
     const manager = new harness.Live2DManager();

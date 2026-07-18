@@ -821,8 +821,12 @@ function clearLive2DPeekOnDisabled(event) {
 
 function clearLive2DPeekOnGoodbye(event) {
     const restoreAnchor = captureLive2DPeekRestoreAnchor();
-    if (restoreAnchor && event && event.detail && typeof event.detail === 'object') {
-        event.detail.edgeAnchor = restoreAnchor;
+    if (restoreAnchor && event) {
+        if (event.detail && typeof event.detail === 'object') {
+            event.detail.edgeAnchor = restoreAnchor;
+        } else {
+            event.__nekoLive2DPeekEdgeAnchor = restoreAnchor;
+        }
     }
     clearLive2DPeek('live2d-goodbye');
 }

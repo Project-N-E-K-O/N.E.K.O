@@ -15,7 +15,8 @@ def test_live2d_peek_goodbye_transfers_the_edge_anchor_to_return_ball():
 
     assert "const restoreAnchor = captureLive2DPeekRestoreAnchor();" in interaction_source
     assert "event.detail.edgeAnchor = restoreAnchor;" in interaction_source
-    assert "const live2DPeekEdgeAnchor = goodbyeDetail.edgeAnchor || null;" in app_ui_source
+    assert "event.__nekoLive2DPeekEdgeAnchor = restoreAnchor;" in interaction_source
+    assert "|| (event && event.__nekoLive2DPeekEdgeAnchor)" in app_ui_source
     assert "edgeAnchor: live2DPeekEdgeAnchor" in app_ui_source
     assert "positionReturnBallContainer(container, anchorRect, options.edgeAnchor);" in app_ui_source
 
