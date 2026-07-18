@@ -542,7 +542,11 @@ class Live2DManager {
         }
         // 立即按 governor 语义落地，不必等下一次活动周期：有渲染活动升回配置帧率，
         // 否则直接压到静止地板，避免改完设置后空闲态停在未节流的值。
-        if (this._hasRenderActivity()) {
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            // 页面级豁免：直接落配置帧率，不进入空闲地板/低频模式
+            this._exitIdleTickMode();
+            this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+        } else if (this._hasRenderActivity()) {
             this.boostInteractiveFPS();
         } else {
             // 改配置时如果正处于空闲低频 tick 模式，先退出再按新地板重新进入，
@@ -583,7 +587,10 @@ class Live2DManager {
         const originalTicker = ticker;
         if (this._idleFpsRestoreTimer) {
             clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
         }
+        // 页面级豁免：只升频、不安排衰减——衰减会把预览页压回空闲地板帧率
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         this._idleFpsRestoreTimer = setTimeout(() => {
             this._idleFpsRestoreTimer = null;
             if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
@@ -701,6 +708,8 @@ class Live2DManager {
     // 自适应帧率守护：周期性探测活动状态，有活动就续命满帧，无活动时由衰减计时器回落到地板。
     _startIdleFpsGovernor() {
         this._stopIdleFpsGovernor();
+        // 页面级豁免（demo/模型管理器等预览页）：期望满帧，不启动空闲治理
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         // 启动即视为活动（加载/入场动画期间保持满帧），随后自动衰减。
         this.boostInteractiveFPS();
         this._idleFpsGovernorTimer = setInterval(() => {

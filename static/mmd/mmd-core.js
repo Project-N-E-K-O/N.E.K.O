@@ -1005,6 +1005,11 @@ class MMDCore {
     _boostInteractiveFPS(durationMs = MMD_INTERACTIVE_FPS_HOLD_MS) {
         this._exitIdleTickMode();
         if (this._idleDecayTimer) clearTimeout(this._idleDecayTimer);
+        // 豁免页：只升频、不安排衰减——衰减会在 governor 缺席时把渲染拖回空闲模式
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            this._idleDecayTimer = null;
+            return;
+        }
         this._idleDecayTimer = setTimeout(() => {
             this._idleDecayTimer = null;
             const m = this.manager;

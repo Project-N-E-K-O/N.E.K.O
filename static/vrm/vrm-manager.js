@@ -880,6 +880,11 @@ class VRMManager {
     _boostInteractiveFPS(durationMs = VRM_INTERACTIVE_FPS_HOLD_MS) {
         this._exitIdleTickMode();
         if (this._idleFpsRestoreTimer) clearTimeout(this._idleFpsRestoreTimer);
+        // 豁免页：只升频、不安排衰减——衰减会在 governor 缺席时把渲染拖回空闲模式
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            this._idleFpsRestoreTimer = null;
+            return;
+        }
         this._idleFpsRestoreTimer = setTimeout(() => {
             this._idleFpsRestoreTimer = null;
             if (this.renderer && this.scene && this.camera && !this._hasRenderActivity()) {
