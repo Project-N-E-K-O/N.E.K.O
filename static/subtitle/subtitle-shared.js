@@ -67,203 +67,27 @@
     var UNLOCK_ICON_PATH = 'M12 17a2 2 0 100-4 2 2 0 000 4zm6-7h-8V7a3 3 0 015.64-1.44 1 1 0 001.73-1A5 5 0 008 7v3H6a1 1 0 00-1 1v9a1 1 0 001 1h12a1 1 0 001-1v-9a1 1 0 00-1-1z';
     var UI_FALLBACK = {
         'zh-CN': {
-            settingsBtn: '字幕设置',
-            lockPosition: '锁定位置',
-            unlockPosition: '解锁位置',
-            closePanel: '关闭翻译面板',
-            targetLang: '语言',
-            opacity: '不透明度',
-            fontSize: '字体',
-            fontSizeSmall: '小号',
-            fontSizeSmaller: '较小',
-            fontSizeDefault: '默认',
-            fontSizeLarger: '较大',
-            fontSizeLarge: '大号',
-            colorScheme: '配色',
-            colorSchemeDefault: '默认',
-            colorSchemeRed: '红',
-            colorSchemeOrange: '橙',
-            colorSchemeYellow: '黄',
-            colorSchemeGreen: '绿',
-            colorSchemeBlue: '蓝',
-            colorSchemeIndigo: '靛',
-            colorSchemeViolet: '紫',
-            danmakuMode: '弹幕模式',
             emptyHint: '暂无翻译内容'
         },
         'zh-TW': {
-            settingsBtn: '字幕設定',
-            lockPosition: '鎖定位置',
-            unlockPosition: '解鎖位置',
-            closePanel: '關閉翻譯面板',
-            targetLang: '語言',
-            opacity: '不透明度',
-            fontSize: '字體',
-            fontSizeSmall: '小號',
-            fontSizeSmaller: '較小',
-            fontSizeDefault: '預設',
-            fontSizeLarger: '較大',
-            fontSizeLarge: '大號',
-            colorScheme: '配色',
-            colorSchemeDefault: '預設',
-            colorSchemeRed: '紅',
-            colorSchemeOrange: '橙',
-            colorSchemeYellow: '黃',
-            colorSchemeGreen: '綠',
-            colorSchemeBlue: '藍',
-            colorSchemeIndigo: '靛',
-            colorSchemeViolet: '紫',
-            danmakuMode: '彈幕模式',
             emptyHint: '暫無翻譯內容'
         },
         en: {
-            settingsBtn: 'Subtitle Settings',
-            lockPosition: 'Lock position',
-            unlockPosition: 'Unlock position',
-            closePanel: 'Close translation panel',
-            targetLang: 'Language',
-            opacity: 'Opacity',
-            fontSize: 'Font',
-            fontSizeSmall: 'Small',
-            fontSizeSmaller: 'Smaller',
-            fontSizeDefault: 'Default',
-            fontSizeLarger: 'Larger',
-            fontSizeLarge: 'Large',
-            colorScheme: 'Color',
-            colorSchemeDefault: 'Default',
-            colorSchemeRed: 'Red',
-            colorSchemeOrange: 'Orange',
-            colorSchemeYellow: 'Yellow',
-            colorSchemeGreen: 'Green',
-            colorSchemeBlue: 'Blue',
-            colorSchemeIndigo: 'Indigo',
-            colorSchemeViolet: 'Violet',
-            danmakuMode: 'Danmaku mode',
             emptyHint: 'No translation yet'
         },
         es: {
-            settingsBtn: 'Configuración de subtítulos',
-            lockPosition: 'Bloquear posición',
-            unlockPosition: 'Desbloquear posición',
-            closePanel: 'Cerrar panel de traducción',
-            targetLang: 'Idioma',
-            opacity: 'Opacidad',
-            fontSize: 'Fuente',
-            fontSizeSmall: 'Pequeño',
-            fontSizeSmaller: 'Más pequeño',
-            fontSizeDefault: 'Predeterminado',
-            fontSizeLarger: 'Más grande',
-            fontSizeLarge: 'Grande',
-            colorScheme: 'Color',
-            colorSchemeDefault: 'Predeterminado',
-            colorSchemeRed: 'Rojo',
-            colorSchemeOrange: 'Naranja',
-            colorSchemeYellow: 'Amarillo',
-            colorSchemeGreen: 'Verde',
-            colorSchemeBlue: 'Azul',
-            colorSchemeIndigo: 'Índigo',
-            colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Modo Danmaku',
             emptyHint: 'Sin traducción todavía'
         },
         pt: {
-            settingsBtn: 'Configurações de legenda',
-            lockPosition: 'Bloquear posição',
-            unlockPosition: 'Desbloquear posição',
-            closePanel: 'Fechar painel de tradução',
-            targetLang: 'Idioma',
-            opacity: 'Opacidade',
-            fontSize: 'Fonte',
-            fontSizeSmall: 'Pequeno',
-            fontSizeSmaller: 'Menor',
-            fontSizeDefault: 'Padrão',
-            fontSizeLarger: 'Maior',
-            fontSizeLarge: 'Grande',
-            colorScheme: 'Cor',
-            colorSchemeDefault: 'Padrão',
-            colorSchemeRed: 'Vermelho',
-            colorSchemeOrange: 'Laranja',
-            colorSchemeYellow: 'Amarelo',
-            colorSchemeGreen: 'Verde',
-            colorSchemeBlue: 'Azul',
-            colorSchemeIndigo: 'Índigo',
-            colorSchemeViolet: 'Violeta',
-            danmakuMode: 'Modo Danmaku',
             emptyHint: 'Sem tradução ainda'
         },
         ja: {
-            settingsBtn: '字幕設定',
-            lockPosition: '位置をロック',
-            unlockPosition: '位置ロックを解除',
-            closePanel: '翻訳パネルを閉じる',
-            targetLang: '言語',
-            opacity: '不透明度',
-            fontSize: '文字',
-            fontSizeSmall: '小さめ',
-            fontSizeSmaller: 'やや小さめ',
-            fontSizeDefault: '標準',
-            fontSizeLarger: 'やや大きめ',
-            fontSizeLarge: '大きめ',
-            colorScheme: '配色',
-            colorSchemeDefault: '標準',
-            colorSchemeRed: '赤',
-            colorSchemeOrange: '橙',
-            colorSchemeYellow: '黄',
-            colorSchemeGreen: '緑',
-            colorSchemeBlue: '青',
-            colorSchemeIndigo: '藍',
-            colorSchemeViolet: '紫',
-            danmakuMode: '弾幕モード',
             emptyHint: '翻訳はまだありません'
         },
         ko: {
-            settingsBtn: '자막 설정',
-            lockPosition: '위치 잠금',
-            unlockPosition: '위치 잠금 해제',
-            closePanel: '번역 패널 닫기',
-            targetLang: '언어',
-            opacity: '불투명도',
-            fontSize: '글자',
-            fontSizeSmall: '작게',
-            fontSizeSmaller: '조금 작게',
-            fontSizeDefault: '기본',
-            fontSizeLarger: '조금 크게',
-            fontSizeLarge: '크게',
-            colorScheme: '색상',
-            colorSchemeDefault: '기본',
-            colorSchemeRed: '빨강',
-            colorSchemeOrange: '주황',
-            colorSchemeYellow: '노랑',
-            colorSchemeGreen: '초록',
-            colorSchemeBlue: '파랑',
-            colorSchemeIndigo: '남색',
-            colorSchemeViolet: '보라',
-            danmakuMode: '탄막 모드',
             emptyHint: '아직 번역이 없습니다'
         },
         ru: {
-            settingsBtn: 'Настройки субтитров',
-            lockPosition: 'Заблокировать положение',
-            unlockPosition: 'Разблокировать положение',
-            closePanel: 'Закрыть панель перевода',
-            targetLang: 'Язык',
-            opacity: 'Непрозрачность',
-            fontSize: 'Шрифт',
-            fontSizeSmall: 'Малый',
-            fontSizeSmaller: 'Меньше',
-            fontSizeDefault: 'По умолчанию',
-            fontSizeLarger: 'Больше',
-            fontSizeLarge: 'Крупный',
-            colorScheme: 'Цвет',
-            colorSchemeDefault: 'По умолчанию',
-            colorSchemeRed: 'Красный',
-            colorSchemeOrange: 'Оранжевый',
-            colorSchemeYellow: 'Желтый',
-            colorSchemeGreen: 'Зеленый',
-            colorSchemeBlue: 'Синий',
-            colorSchemeIndigo: 'Индиго',
-            colorSchemeViolet: 'Фиолетовый',
-            danmakuMode: 'Режим данмаку',
             emptyHint: 'Перевода пока нет'
         }
     };
@@ -804,15 +628,25 @@
 
     function getUiText(key, uiLocale) {
         var i18nKey = UI_KEY_MAP[key];
-        if (i18nKey && typeof window.t === 'function') {
-            try {
-                var translated = window.t(i18nKey);
-                if (typeof translated === 'string' && translated && translated !== i18nKey) {
-                    return translated;
-                }
-            } catch (_) {}
+        if (!i18nKey || typeof window.t !== 'function') {
+            return '';
         }
-        return getUiFallbackText(key, uiLocale);
+        try {
+            var params = uiLocale ? { lng: normalizeUiLocale(uiLocale) } : {};
+            var translated = window.t(i18nKey, params);
+            if (typeof translated === 'string' && translated && translated !== i18nKey) {
+                return translated;
+            }
+        } catch (_) {}
+        return '';
+    }
+
+    function applyUiTextAttribute(element, attribute, key, uiLocale) {
+        if (!element) return;
+        var translated = getUiText(key, uiLocale);
+        if (translated) {
+            element.setAttribute(attribute, translated);
+        }
     }
 
     function getUiFallbackText(key, uiLocale) {
@@ -1407,6 +1241,7 @@
                 var key = label && label.dataset ? label.dataset.subtitleLabel : '';
                 if (!key) return;
                 var text = getUiText(key, locale);
+                if (!text) return;
                 var textNode = label.querySelector ? label.querySelector('.subtitle-settings-label-text') : null;
                 if (textNode) {
                     renderSettingsLabelText(textNode, text);
@@ -1416,44 +1251,48 @@
             });
         }
         if (refs.settingsBtn) {
-            refs.settingsBtn.title = getUiText('settingsBtn', locale);
-            refs.settingsBtn.setAttribute('aria-label', getUiText('settingsBtn', locale));
+            applyUiTextAttribute(refs.settingsBtn, 'title', 'settingsBtn', locale);
+            applyUiTextAttribute(refs.settingsBtn, 'aria-label', 'settingsBtn', locale);
         }
         if (refs.lockBtn) {
             var lockKey = state && state.subtitlePanelLocked ? 'unlockPosition' : 'lockPosition';
-            refs.lockBtn.title = getUiText(lockKey, locale);
-            refs.lockBtn.setAttribute('aria-label', getUiText(lockKey, locale));
+            applyUiTextAttribute(refs.lockBtn, 'title', lockKey, locale);
+            applyUiTextAttribute(refs.lockBtn, 'aria-label', lockKey, locale);
         }
         if (refs.closeBtn) {
-            refs.closeBtn.title = getUiText('closePanel', locale);
-            refs.closeBtn.setAttribute('aria-label', getUiText('closePanel', locale));
+            applyUiTextAttribute(refs.closeBtn, 'title', 'closePanel', locale);
+            applyUiTextAttribute(refs.closeBtn, 'aria-label', 'closePanel', locale);
         }
         if (refs.langSelect) {
-            refs.langSelect.title = getUiText('targetLang', locale);
+            applyUiTextAttribute(refs.langSelect, 'title', 'targetLang', locale);
         }
         if (refs.opacitySlider) {
-            refs.opacitySlider.title = getUiText('opacity', locale);
+            applyUiTextAttribute(refs.opacitySlider, 'title', 'opacity', locale);
         }
         if (refs.fontSizeSelect) {
-            refs.fontSizeSelect.title = getUiText('fontSize', locale);
+            applyUiTextAttribute(refs.fontSizeSelect, 'title', 'fontSize', locale);
             Array.prototype.forEach.call(refs.fontSizeSelect.options || [], function(option) {
                 var key = option && option.dataset ? option.dataset.subtitleFontSizeLabel : '';
                 if (!key) return;
-                option.textContent = getUiText(key, locale);
+                var text = getUiText(key, locale);
+                if (text) option.textContent = text;
             });
         }
         if (refs.colorSchemeSelect) {
-            refs.colorSchemeSelect.title = getUiText('colorScheme', locale);
+            applyUiTextAttribute(refs.colorSchemeSelect, 'title', 'colorScheme', locale);
             Array.prototype.forEach.call(refs.colorSchemeSelect.options || [], function(option) {
                 var key = option && option.dataset ? option.dataset.subtitleColorSchemeLabel : '';
                 if (!key) return;
-                option.textContent = getUiText(key, locale);
+                var text = getUiText(key, locale);
+                if (text) option.textContent = text;
             });
         }
         if (refs.danmakuModeBtn) {
             var danmakuText = getUiText('danmakuMode', locale);
-            refs.danmakuModeBtn.title = danmakuText;
-            refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
+            if (danmakuText) {
+                refs.danmakuModeBtn.title = danmakuText;
+                refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
+            }
         }
         if (refs.text) {
             var placeholderLocale = normalizeUiLocale(state && state.userLanguage ? state.userLanguage : locale);
@@ -2111,6 +1950,17 @@
             return null;
         }
 
+        // 独立字幕窗口与设置窗口和其它独立页面一样异步加载统一 i18next。
+        // settingsState 可能在 i18next 完成前已由模板默认 lang 创建；挂载时先与
+        // 当前权威语言对齐，避免错过此前已发生的 languageChanged 事件。
+        var mountedUiLocale = getCurrentUiLocale();
+        if (mountedUiLocale !== state.uiLocale) {
+            state = updateSettings({ uiLocale: mountedUiLocale }, {
+                persist: false,
+                source: 'subtitle-ui-locale-init'
+            });
+        }
+
         function notifyPanelStateChanged(source) {
             if (typeof options.onSettingsApplied === 'function') {
                 options.onSettingsApplied(getSettings(), refs, {
@@ -2324,20 +2174,27 @@
             });
         }
 
-        if (window.i18next && typeof window.i18next.on === 'function') {
-            var onLanguageChanged = function(nextLocale) {
-                updateSettings({ uiLocale: nextLocale }, {
-                    persist: false,
-                    source: 'subtitle-ui-locale'
-                });
-            };
-            window.i18next.on('languageChanged', onLanguageChanged);
-            cleanupFns.push(function() {
-                if (window.i18next && typeof window.i18next.off === 'function') {
-                    window.i18next.off('languageChanged', onLanguageChanged);
-                }
+        var refreshUiLocale = function(nextLocale, source) {
+            var resolvedLocale = nextLocale || getCurrentUiLocale();
+            var currentLocale = getSettings().uiLocale;
+            var nextState = updateSettings({ uiLocale: resolvedLocale }, {
+                persist: false,
+                source: source || 'subtitle-ui-locale'
             });
-        }
+            if (currentLocale === nextState.uiLocale) {
+                applyState(nextState, {
+                    changedKeys: ['uiLocale'],
+                    source: source || 'subtitle-ui-locale'
+                });
+            }
+        };
+        var onLocaleChanged = function() {
+            refreshUiLocale(null, 'subtitle-ui-localechange');
+        };
+        window.addEventListener('localechange', onLocaleChanged);
+        cleanupFns.push(function() {
+            window.removeEventListener('localechange', onLocaleChanged);
+        });
 
         var panelPointerInside = false;
 
