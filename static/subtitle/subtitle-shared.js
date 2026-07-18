@@ -1288,11 +1288,8 @@
             });
         }
         if (refs.danmakuModeBtn) {
-            var danmakuText = getUiText('danmakuMode', locale);
-            if (danmakuText) {
-                refs.danmakuModeBtn.title = danmakuText;
-                refs.danmakuModeBtn.setAttribute('aria-label', danmakuText);
-            }
+            applyUiTextAttribute(refs.danmakuModeBtn, 'title', 'danmakuMode', locale);
+            applyUiTextAttribute(refs.danmakuModeBtn, 'aria-label', 'danmakuMode', locale);
         }
         if (refs.text) {
             var placeholderLocale = normalizeUiLocale(state && state.userLanguage ? state.userLanguage : locale);
