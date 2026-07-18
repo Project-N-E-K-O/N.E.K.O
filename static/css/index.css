@@ -512,6 +512,12 @@ button * {
     gap: 12px;
 }
 
+body.neko-live2d-peek #live2d-floating-buttons,
+body.neko-live2d-peek #live2d-lock-icon {
+    display: none !important;
+    pointer-events: none !important;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -752,6 +758,38 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art {
     --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+[data-neko-live2d-peek-anchor$="right"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+[data-neko-live2d-peek-anchor="left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+[data-neko-live2d-peek-anchor="right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor="top-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="top-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
 }
 
 .neko-idle-thought-bubble {

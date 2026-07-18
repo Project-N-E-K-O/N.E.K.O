@@ -137,6 +137,779 @@ function isLive2DPointInRect(point, rect, padding = 0) {
         p.y <= rect.bottom + pad;
 }
 
+const LIVE2D_PEEK_TRIGGER_RATIO = 0.025;
+const LIVE2D_PEEK_TRIGGER_MIN_PX = 12;
+const LIVE2D_PEEK_TRIGGER_MAX_PX = 24;
+const LIVE2D_PEEK_VISIBLE_RATIO = 0.22;
+const LIVE2D_PEEK_VISIBLE_MIN_PX = 96;
+const LIVE2D_PEEK_VISIBLE_MAX_PX = 180;
+const LIVE2D_PEEK_SIDE_ROTATION_DEGREES = 60;
+const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+const LIVE2D_PEEK_TOP_CORNER_ROTATION_DEGREES = 135;
+const LIVE2D_PEEK_HEAD_Y_RATIO = 0.24;
+const LIVE2D_PEEK_VISIBLE_MARGIN_PX = 8;
+const LIVE2D_PEEK_ANIMATION_MS = 200;
+let live2DPeekDisplayContext = null;
+let live2DPeekDisplayRefresh = null;
+
+function isLive2DPeekMacRuntime() {
+    try {
+        return !!(window.__NEKO_DESKTOP_RUNTIME__ &&
+            window.__NEKO_DESKTOP_RUNTIME__.platform === 'darwin');
+    } catch (_) {
+        return false;
+    }
+}
+
+function isLive2DPeekDesktopRuntime() {
+    try {
+        return isLive2DPeekMacRuntime() || !!(
+            window.electronScreen &&
+            typeof window.electronScreen.getCurrentDisplay === 'function'
+        );
+    } catch (_) {
+        return false;
+    }
+}
+
+function normalizeLive2DPeekRect(rect) {
+    if (!rect) return null;
+    const x = Number(rect.x);
+    const y = Number(rect.y);
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return { x, y, width, height };
+}
+
+function refreshLive2DPeekDisplayContext(force = false) {
+    if (!isLive2DPeekDesktopRuntime()) {
+        live2DPeekDisplayContext = null;
+        return Promise.resolve(null);
+    }
+    const electronScreen = window.electronScreen;
+    if (!electronScreen || typeof electronScreen.getCurrentDisplay !== 'function') {
+        live2DPeekDisplayContext = null;
+        return Promise.resolve(null);
+    }
+    if (!force && live2DPeekDisplayContext) {
+        return Promise.resolve(live2DPeekDisplayContext);
+    }
+    if (live2DPeekDisplayRefresh) {
+        return live2DPeekDisplayRefresh;
+    }
+
+    live2DPeekDisplayRefresh = Promise.resolve()
+        .then(() => electronScreen.getCurrentDisplay())
+        .then((displayInfo) => {
+            const workArea = normalizeLive2DPeekRect(displayInfo && displayInfo.workArea);
+            const displayBounds = normalizeLive2DPeekRect(displayInfo && displayInfo.bounds);
+            const screenX = Number.isFinite(Number(displayInfo && displayInfo.screenX))
+                ? Number(displayInfo.screenX)
+                : (displayBounds ? Number(displayBounds.x) : NaN);
+            const screenY = Number.isFinite(Number(displayInfo && displayInfo.screenY))
+                ? Number(displayInfo.screenY)
+                : (displayBounds ? Number(displayBounds.y) : NaN);
+            live2DPeekDisplayContext = workArea &&
+                Number.isFinite(screenX) && Number.isFinite(screenY)
+                ? { screenX, screenY, workArea }
+                : null;
+            return live2DPeekDisplayContext;
+        })
+        .catch(() => {
+            live2DPeekDisplayContext = null;
+            return null;
+        })
+        .finally(() => {
+            live2DPeekDisplayRefresh = null;
+        });
+    return live2DPeekDisplayRefresh;
+}
+
+function getLive2DPeekTriggerViewport(viewport) {
+    const context = isLive2DPeekDesktopRuntime()
+        ? live2DPeekDisplayContext
+        : null;
+    if (!viewport || !context || !context.workArea) return viewport;
+
+    const area = context.workArea;
+    const left = clampLive2DPeekCoordinate(
+        area.x - context.screenX,
+        viewport.left,
+        viewport.right
+    );
+    const top = clampLive2DPeekCoordinate(
+        area.y - context.screenY,
+        viewport.top,
+        viewport.bottom
+    );
+    const right = clampLive2DPeekCoordinate(
+        area.x + area.width - context.screenX,
+        viewport.left,
+        viewport.right
+    );
+    const bottom = clampLive2DPeekCoordinate(
+        area.y + area.height - context.screenY,
+        viewport.top,
+        viewport.bottom
+    );
+    if (right <= left || bottom <= top) return viewport;
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top
+    };
+}
+
+function isLive2DPeekEnabled() {
+    try {
+        return !!(window.nekoWidgetMode &&
+            typeof window.nekoWidgetMode.isEnabled === 'function' &&
+            window.nekoWidgetMode.isEnabled());
+    } catch (_) {
+        return false;
+    }
+}
+
+function getLive2DPeekBounds(model) {
+    if (!model || typeof model.getBounds !== 'function') return null;
+    let bounds = null;
+    try {
+        bounds = model.getBounds();
+    } catch (_) {
+        return null;
+    }
+    if (!bounds) return null;
+    const left = Number.isFinite(bounds.left) ? bounds.left : bounds.x;
+    const top = Number.isFinite(bounds.top) ? bounds.top : bounds.y;
+    const right = Number.isFinite(bounds.right) ? bounds.right : left + bounds.width;
+    const bottom = Number.isFinite(bounds.bottom) ? bounds.bottom : top + bounds.height;
+    const width = Number.isFinite(bounds.width) ? bounds.width : right - left;
+    const height = Number.isFinite(bounds.height) ? bounds.height : bottom - top;
+    if (![left, top, right, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return { left, top, right, bottom, width, height };
+}
+
+function clampLive2DPeekCoordinate(value, min, max) {
+    if (!Number.isFinite(value)) return min;
+    return Math.min(max, Math.max(min, value));
+}
+
+function getLive2DPeekViewport(bounds = null, manager = null) {
+    const fallbackW = bounds && Number.isFinite(bounds.width) ? bounds.width : 1;
+    const fallbackH = bounds && Number.isFinite(bounds.height) ? bounds.height : 1;
+    const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;
+    const screen = renderer && renderer.screen;
+    const rendererW = Number(screen && screen.width);
+    const rendererH = Number(screen && screen.height);
+    const viewportW = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : Number(window.innerWidth);
+    const viewportH = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : Number(window.innerHeight);
+    const width = Number.isFinite(viewportW) && viewportW > 0 ? viewportW : fallbackW;
+    const height = Number.isFinite(viewportH) && viewportH > 0 ? viewportH : fallbackH;
+    return { left: 0, top: 0, right: width, bottom: height, width, height };
+}
+
+function getLive2DPeekViewportIntersection(bounds, viewport) {
+    if (!bounds || !viewport) return null;
+    const left = Math.max(bounds.left, viewport.left);
+    const right = Math.min(bounds.right, viewport.right);
+    const top = Math.max(bounds.top, viewport.top);
+    const bottom = Math.min(bounds.bottom, viewport.bottom);
+    const width = right - left;
+    const height = bottom - top;
+    if (![left, right, top, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return null;
+    }
+    return {
+        left,
+        right,
+        top,
+        bottom,
+        width,
+        height,
+        centerX: left + width / 2,
+        centerY: top + height / 2
+    };
+}
+
+function getLive2DPeekAnchor(bounds, viewport) {
+    if (!bounds || !viewport) return null;
+    const horizontalThreshold = clampLive2DPeekCoordinate(
+        bounds.width * LIVE2D_PEEK_TRIGGER_RATIO,
+        LIVE2D_PEEK_TRIGGER_MIN_PX,
+        LIVE2D_PEEK_TRIGGER_MAX_PX
+    );
+    const verticalThreshold = clampLive2DPeekCoordinate(
+        bounds.height * LIVE2D_PEEK_TRIGGER_RATIO,
+        LIVE2D_PEEK_TRIGGER_MIN_PX,
+        LIVE2D_PEEK_TRIGGER_MAX_PX
+    );
+    const nearLeft = bounds.left <= viewport.left + horizontalThreshold;
+    const nearRight = viewport.right - bounds.right <= horizontalThreshold;
+    if (!nearLeft && !nearRight) return null;
+    const nearTop = bounds.top <= viewport.top + verticalThreshold;
+    const nearBottom = viewport.bottom - bounds.bottom <= verticalThreshold;
+    const side = nearLeft && nearRight
+        ? (bounds.left <= viewport.right - bounds.right ? 'left' : 'right')
+        : (nearLeft ? 'left' : 'right');
+    let verticalEdge = '';
+    if (nearTop && nearBottom) {
+        verticalEdge = bounds.top + bounds.height / 2 <= viewport.top + viewport.height / 2
+            ? 'top'
+            : 'bottom';
+    } else if (nearTop) {
+        verticalEdge = 'top';
+    } else if (nearBottom) {
+        verticalEdge = 'bottom';
+    }
+    return {
+        edge: verticalEdge ? `${verticalEdge}-${side}` : side,
+        side,
+        verticalEdge
+    };
+}
+
+function getLive2DPeekRotationDegrees(anchor) {
+    if (!anchor || !anchor.side) return 0;
+    if (!anchor.verticalEdge) {
+        return anchor.side === 'left'
+            ? LIVE2D_PEEK_SIDE_ROTATION_DEGREES
+            : -LIVE2D_PEEK_SIDE_ROTATION_DEGREES;
+    }
+    if (anchor.verticalEdge === 'top') {
+        return anchor.side === 'left'
+            ? LIVE2D_PEEK_TOP_CORNER_ROTATION_DEGREES
+            : -LIVE2D_PEEK_TOP_CORNER_ROTATION_DEGREES;
+    }
+    return anchor.side === 'left'
+        ? LIVE2D_PEEK_CORNER_ROTATION_DEGREES
+        : -LIVE2D_PEEK_CORNER_ROTATION_DEGREES;
+}
+
+function getLive2DPeekRevealWidth(bounds) {
+    if (!bounds) return LIVE2D_PEEK_VISIBLE_MIN_PX;
+    const width = clampLive2DPeekCoordinate(
+        bounds.width * LIVE2D_PEEK_VISIBLE_RATIO,
+        LIVE2D_PEEK_VISIBLE_MIN_PX,
+        LIVE2D_PEEK_VISIBLE_MAX_PX
+    );
+    return Math.min(bounds.width, width);
+}
+
+function getLive2DPeekHeadAnchor(manager) {
+    if (!manager || typeof manager.getHeadScreenAnchor !== 'function') return null;
+    try {
+        const anchor = manager.getHeadScreenAnchor();
+        const x = Number(anchor && anchor.x);
+        const y = Number(anchor && anchor.y);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getLive2DPeekBodyRect(manager) {
+    if (!manager || typeof manager.getBodyScreenRectInfo !== 'function') return null;
+    try {
+        const info = manager.getBodyScreenRectInfo();
+        const rect = info && info.rect;
+        const centerX = Number(rect && (Number.isFinite(rect.centerX)
+            ? rect.centerX
+            : Number(rect.left) + Number(rect.width) * 0.5));
+        const bottom = Number(rect && rect.bottom);
+        return Number.isFinite(centerX) && Number.isFinite(bottom) ? { centerX, bottom } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getLive2DPeekFallbackHeadLocalPoint(model, bounds) {
+    if (!model || !bounds || typeof model.toLocal !== 'function' || typeof model.toGlobal !== 'function') {
+        return null;
+    }
+    try {
+        const localPoint = model.toLocal({
+            x: bounds.left + bounds.width * 0.5,
+            y: bounds.top + bounds.height * LIVE2D_PEEK_HEAD_Y_RATIO
+        });
+        const x = Number(localPoint && localPoint.x);
+        const y = Number(localPoint && localPoint.y);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getLive2DPeekGlobalPoint(model, localPoint) {
+    if (!model || !localPoint || typeof model.toGlobal !== 'function') return null;
+    try {
+        const point = model.toGlobal(localPoint);
+        const x = Number(point && point.x);
+        const y = Number(point && point.y);
+        return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getLive2DPeekInwardScaleX(model, side) {
+    const rawScaleX = model && model.scale && Number.isFinite(Number(model.scale.x))
+        ? Number(model.scale.x)
+        : 1;
+    const baseScaleX = rawScaleX === 0 ? 1 : rawScaleX;
+    return side === 'left' ? Math.abs(baseScaleX) : -Math.abs(baseScaleX);
+}
+
+function getLive2DPeekVerticalCorrection(bounds, viewport) {
+    if (!bounds || !viewport) return 0;
+    const margin = LIVE2D_PEEK_VISIBLE_MARGIN_PX;
+    if (bounds.bottom < viewport.top + margin) return viewport.top + margin - bounds.bottom;
+    if (bounds.top > viewport.bottom - margin) return viewport.bottom - margin - bounds.top;
+    return 0;
+}
+
+function getLive2DPeekPlacement(model, bounds, manager = null) {
+    if (!model || !bounds) return null;
+    const viewport = getLive2DPeekViewport(bounds, manager);
+    const triggerViewport = getLive2DPeekTriggerViewport(viewport);
+    const anchor = getLive2DPeekAnchor(bounds, triggerViewport);
+    if (!anchor) return null;
+    const { edge, side, verticalEdge } = anchor;
+
+    const baseX = Number(model.x) || 0;
+    const baseY = Number(model.y) || 0;
+    const baseRotation = Number.isFinite(Number(model.rotation)) ? Number(model.rotation) : 0;
+    const baseScaleX = model.scale && Number.isFinite(Number(model.scale.x)) ? Number(model.scale.x) : 1;
+    const targetRotationDegrees = getLive2DPeekRotationDegrees(anchor);
+    const targetRotation = targetRotationDegrees * Math.PI / 180;
+    const targetScaleX = getLive2DPeekInwardScaleX(model, side);
+    const baseHeadAnchor = getLive2DPeekHeadAnchor(manager);
+    const fallbackHeadLocalPoint = baseHeadAnchor
+        ? null
+        : getLive2DPeekFallbackHeadLocalPoint(model, bounds);
+    const fallbackBaseHeadAnchor = getLive2DPeekGlobalPoint(model, fallbackHeadLocalPoint);
+    const effectiveBaseHeadAnchor = baseHeadAnchor || fallbackBaseHeadAnchor;
+    const baseBodyRect = getLive2DPeekBodyRect(manager);
+    const baseHeadY = effectiveBaseHeadAnchor
+        ? effectiveBaseHeadAnchor.y
+        : bounds.top + bounds.height * LIVE2D_PEEK_HEAD_Y_RATIO;
+    const desiredHeadY = clampLive2DPeekCoordinate(
+        baseHeadY,
+        viewport.top + LIVE2D_PEEK_VISIBLE_MARGIN_PX,
+        viewport.bottom - LIVE2D_PEEK_VISIBLE_MARGIN_PX
+    );
+
+    let transformedBounds = null;
+    let transformedHeadAnchor = null;
+    let transformedHeadAnchorSource = '';
+    let transformedBodyRect = null;
+    try {
+        model.x = baseX;
+        model.y = baseY;
+        model.rotation = targetRotation;
+        if (model.scale) model.scale.x = targetScaleX;
+        transformedBounds = getLive2DPeekBounds(model);
+        transformedHeadAnchor = getLive2DPeekHeadAnchor(manager);
+        if (transformedHeadAnchor) {
+            transformedHeadAnchorSource = 'manager';
+        } else {
+            transformedHeadAnchor = getLive2DPeekGlobalPoint(model, fallbackHeadLocalPoint);
+            if (transformedHeadAnchor) transformedHeadAnchorSource = 'bounds-fallback';
+        }
+        transformedBodyRect = getLive2DPeekBodyRect(manager);
+    } catch (_) {
+        transformedBounds = null;
+    } finally {
+        model.x = baseX;
+        model.y = baseY;
+        model.rotation = baseRotation;
+        if (model.scale) model.scale.x = baseScaleX;
+    }
+    if (!transformedBounds) return null;
+
+    const revealWidth = getLive2DPeekRevealWidth(transformedBounds);
+    const headInset = clampLive2DPeekCoordinate(revealWidth * 0.42, 48, 84);
+    const desiredHeadX = side === 'left'
+        ? viewport.left + headInset
+        : viewport.right - headInset;
+    const useHeadAnchor = !!verticalEdge && !!transformedHeadAnchor;
+    const useWaistAnchor = !verticalEdge && !!(baseBodyRect && transformedBodyRect);
+    const desiredWaistX = side === 'left' ? viewport.left - 8 : viewport.right + 8;
+    let offsetX = useHeadAnchor
+        ? desiredHeadX - transformedHeadAnchor.x
+        : (useWaistAnchor
+        ? desiredWaistX - transformedBodyRect.centerX
+        : (transformedHeadAnchor
+            ? desiredHeadX - transformedHeadAnchor.x
+            : (side === 'left'
+            ? viewport.left + revealWidth - transformedBounds.right
+            : viewport.right - revealWidth - transformedBounds.left)));
+    const targetHeadY = transformedHeadAnchor
+        ? transformedHeadAnchor.y
+        : transformedBounds.top + transformedBounds.height * LIVE2D_PEEK_HEAD_Y_RATIO;
+    let offsetY;
+    if (useHeadAnchor) {
+        const desiredHeadInsetY = clampLive2DPeekCoordinate(revealWidth * 0.32, 36, 64);
+        const desiredHeadYAtEdge = verticalEdge === 'bottom'
+            ? viewport.bottom - desiredHeadInsetY
+            : viewport.top + desiredHeadInsetY;
+        offsetY = desiredHeadYAtEdge - transformedHeadAnchor.y;
+    } else if (useWaistAnchor) {
+        offsetY = baseBodyRect.bottom - transformedBodyRect.bottom;
+    } else if (verticalEdge === 'top') {
+        offsetY = viewport.top + revealWidth - transformedBounds.bottom;
+    } else if (verticalEdge === 'bottom') {
+        offsetY = viewport.bottom - revealWidth - transformedBounds.top;
+    } else {
+        offsetY = desiredHeadY - targetHeadY;
+    }
+
+    let targetBounds = null;
+    try {
+        model.x = baseX + offsetX;
+        model.y = baseY + offsetY;
+        model.rotation = targetRotation;
+        if (model.scale) model.scale.x = targetScaleX;
+        targetBounds = getLive2DPeekBounds(model);
+    } catch (_) {
+        targetBounds = null;
+    } finally {
+        model.x = baseX;
+        model.y = baseY;
+        model.rotation = baseRotation;
+        if (model.scale) model.scale.x = baseScaleX;
+    }
+    if (!targetBounds) return null;
+    offsetY += getLive2DPeekVerticalCorrection(targetBounds, viewport);
+
+    try {
+        model.x = baseX + offsetX;
+        model.y = baseY + offsetY;
+        model.rotation = targetRotation;
+        if (model.scale) model.scale.x = targetScaleX;
+        targetBounds = getLive2DPeekBounds(model);
+    } catch (_) {
+        targetBounds = null;
+    } finally {
+        model.x = baseX;
+        model.y = baseY;
+        model.rotation = baseRotation;
+        if (model.scale) model.scale.x = baseScaleX;
+    }
+    const visibleBounds = getLive2DPeekViewportIntersection(targetBounds, viewport);
+    if (!visibleBounds) return null;
+
+    return {
+        edge,
+        side,
+        x: baseX + offsetX,
+        y: baseY + offsetY,
+        rotation: targetRotation,
+        rotationDegrees: targetRotationDegrees,
+        scaleX: targetScaleX,
+        headAnchored: useHeadAnchor || !!transformedHeadAnchor,
+        headAnchorSource: transformedHeadAnchorSource,
+        waistAnchored: useWaistAnchor,
+        revealWidth,
+        visibleBounds
+    };
+}
+
+function animateLive2DPeekTransform(model, target, duration = LIVE2D_PEEK_ANIMATION_MS, shouldContinue = null) {
+    return new Promise((resolve) => {
+        if (!model || model.destroyed || !target) {
+            resolve(false);
+            return;
+        }
+        const start = {
+            x: Number(model.x) || 0,
+            y: Number(model.y) || 0,
+            rotation: Number.isFinite(Number(model.rotation)) ? Number(model.rotation) : 0,
+            scaleX: model.scale && Number.isFinite(Number(model.scale.x)) ? Number(model.scale.x) : 1
+        };
+        const startTime = performance.now();
+        const total = Math.max(0, Number(duration) || 0);
+        const apply = (progress) => {
+            const eased = EasingFunctions.easeOutCubic(progress);
+            model.x = start.x + (target.x - start.x) * eased;
+            model.y = start.y + (target.y - start.y) * eased;
+            model.rotation = start.rotation + (target.rotation - start.rotation) * eased;
+            if (model.scale) {
+                model.scale.x = start.scaleX + (target.scaleX - start.scaleX) * eased;
+            }
+        };
+        if (total <= 0) {
+            if (typeof shouldContinue === 'function' && !shouldContinue()) {
+                resolve(false);
+                return;
+            }
+            apply(1);
+            resolve(true);
+            return;
+        }
+        const step = (currentTime) => {
+            if (!model || model.destroyed) {
+                resolve(false);
+                return;
+            }
+            if (typeof shouldContinue === 'function' && !shouldContinue()) {
+                resolve(false);
+                return;
+            }
+            const progress = Math.min((currentTime - startTime) / total, 1);
+            apply(progress);
+            if (progress < 1) requestAnimationFrame(step);
+            else resolve(true);
+        };
+        requestAnimationFrame(step);
+    });
+}
+
+Live2DManager.prototype.isLive2DPeekActive = function () {
+    const state = this._live2DPeekState;
+    return !!(state && state.active && state.model && !state.model.destroyed);
+};
+
+Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options = {}) {
+    const state = this._live2DPeekState;
+    const model = state && state.model && !state.model.destroyed ? state.model : null;
+    const restore = options.restore !== false;
+    this._live2DPeekTransitionId = (this._live2DPeekTransitionId || 0) + 1;
+    if (state && state.active && model) {
+        if (restore) {
+            model.x = state.baseX;
+            model.y = state.baseY;
+        }
+        model.rotation = state.baseRotation;
+        if (model.scale && Number.isFinite(Number(state.baseScaleX))) {
+            model.scale.x = state.baseScaleX;
+        }
+    }
+    this._live2DPeekState = null;
+    if (document.body) {
+        document.body.classList.remove('neko-live2d-peek');
+    }
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+            detail: { active: false, reason }
+        }));
+    } catch (_) {}
+};
+
+Live2DManager.prototype.restoreLive2DPeek = async function (reason = 'manual-restore') {
+    const state = this._live2DPeekState;
+    const model = state && state.model && !state.model.destroyed ? state.model : null;
+    if (!state || !state.active || !model) return false;
+    const transitionId = state.transitionId;
+    const stillCurrent = () => {
+        const activeState = this._live2DPeekState;
+        return !!(activeState &&
+            activeState.active &&
+            activeState.model === model &&
+            activeState.transitionId === transitionId);
+    };
+    const animated = await animateLive2DPeekTransform(model, {
+        x: state.baseX,
+        y: state.baseY,
+        rotation: state.baseRotation,
+        scaleX: state.baseScaleX
+    }, LIVE2D_PEEK_ANIMATION_MS, stillCurrent);
+    if (!animated || !stillCurrent()) return false;
+    this.clearLive2DPeek(reason);
+    return true;
+};
+
+Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
+    if (!isLive2DPeekEnabled()) {
+        this.clearLive2DPeek('widget-mode-disabled');
+        return false;
+    }
+    if (isLive2DPeekDesktopRuntime()) {
+        await refreshLive2DPeekDisplayContext();
+    }
+    const bounds = getLive2DPeekBounds(model);
+    const target = getLive2DPeekPlacement(model, bounds, this);
+    if (!bounds || !target) {
+        this.clearLive2DPeek('drag-away-from-edge');
+        return false;
+    }
+    this.clearLive2DPeek('reapply', { restore: false });
+    const transitionId = (this._live2DPeekTransitionId || 0) + 1;
+    this._live2DPeekTransitionId = transitionId;
+    const baseX = Number(model.x) || 0;
+    const baseY = Number(model.y) || 0;
+    const baseRotation = Number.isFinite(Number(model.rotation)) ? Number(model.rotation) : 0;
+    const baseScaleX = model.scale && Number.isFinite(Number(model.scale.x)) ? Number(model.scale.x) : 1;
+    this._live2DPeekState = {
+        active: true,
+        edge: target.edge,
+        side: target.side,
+        model,
+        baseX,
+        baseY,
+        baseRotation,
+        baseScaleX,
+        transitionId,
+        peekX: target.x,
+        peekY: target.y,
+        peekRotation: target.rotation,
+        peekScaleX: target.scaleX,
+        headAnchored: target.headAnchored,
+        headAnchorSource: target.headAnchorSource,
+        waistAnchored: target.waistAnchored,
+        visibleBounds: target.visibleBounds
+    };
+    if (document.body) {
+        document.body.classList.add('neko-live2d-peek');
+    }
+    const stillCurrent = () => {
+        const activeState = this._live2DPeekState;
+        return !!(activeState &&
+            activeState.active &&
+            activeState.model === model &&
+            activeState.transitionId === transitionId);
+    };
+    const animated = await animateLive2DPeekTransform(
+        model,
+        target,
+        LIVE2D_PEEK_ANIMATION_MS,
+        stillCurrent
+    );
+    if (!animated || !stillCurrent()) return false;
+    model.x = target.x;
+    model.y = target.y;
+    model.rotation = target.rotation;
+    if (model.scale) {
+        model.scale.x = target.scaleX;
+    }
+    const finalBounds = getLive2DPeekBounds(model);
+    const viewport = getLive2DPeekViewport(finalBounds || bounds, this);
+    const visibleBounds = getLive2DPeekViewportIntersection(finalBounds, viewport) || target.visibleBounds;
+    if (this._live2DPeekState && this._live2DPeekState.model === model) {
+        this._live2DPeekState.visibleBounds = visibleBounds;
+    }
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+            detail: { active: true, edge: target.edge, visibleBounds }
+        }));
+    } catch (_) {}
+    return true;
+};
+
+function clearLive2DPeek(reason, options) {
+    const manager = window.live2dManager;
+    if (manager && typeof manager.clearLive2DPeek === 'function') {
+        manager.clearLive2DPeek(reason, options);
+    } else if (document.body) {
+        document.body.classList.remove('neko-live2d-peek');
+    }
+}
+
+function clearLive2DPeekOnDisabled(event) {
+    const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+    if (detail.enabled === false) {
+        clearLive2DPeek('widget-mode-disabled');
+    }
+}
+
+function clearLive2DPeekOnGoodbye(event) {
+    const restoreAnchor = captureLive2DPeekRestoreAnchor();
+    if (restoreAnchor && event) {
+        if (event.detail && typeof event.detail === 'object') {
+            event.detail.edgeAnchor = restoreAnchor;
+        } else {
+            event.__nekoLive2DPeekEdgeAnchor = restoreAnchor;
+        }
+    }
+    clearLive2DPeek('live2d-goodbye');
+}
+
+function captureLive2DPeekRestoreAnchor() {
+    const manager = window.live2dManager;
+    const state = manager && manager._live2DPeekState;
+    const model = state && state.active && state.model && !state.model.destroyed ? state.model : null;
+    const edge = state && String(state.edge || state.side || '');
+    const validEdges = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+    if (!manager || !model || !validEdges.includes(edge)) return null;
+    const bounds = getLive2DPeekBounds(model);
+    const viewport = getLive2DPeekViewport(bounds, manager);
+    const visibleBounds = state.visibleBounds || getLive2DPeekViewportIntersection(bounds, viewport);
+    if (!viewport || !visibleBounds || viewport.height <= 0) return null;
+    return {
+        kind: 'live2d-edge-peek',
+        edge,
+        side: state.side,
+        edgeAnchorRatio: clampLive2DPeekCoordinate(
+            visibleBounds.centerY / viewport.height,
+            0,
+            1
+        ),
+        facing: 'inward',
+        display: {
+            id: String((window.screen && (window.screen.id || window.screen.deviceId)) || ''),
+            width: viewport.width,
+            height: viewport.height,
+            scaleFactor: Number(window.devicePixelRatio) || 1
+        }
+    };
+}
+
+async function restoreLive2DPeekAnchor(anchor) {
+    if (!anchor || anchor.kind !== 'live2d-edge-peek') return false;
+    const manager = window.live2dManager;
+    const model = manager && manager.currentModel && !manager.currentModel.destroyed
+        ? manager.currentModel
+        : null;
+    const edge = String(anchor.edge || anchor.side || '');
+    const validEdges = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'];
+    const side = edge.endsWith('left') || edge === 'left' ? 'left' : (edge.endsWith('right') || edge === 'right' ? 'right' : '');
+    if (!manager || !model || !validEdges.includes(edge) || !side) return false;
+    manager.clearLive2DPeek('widget-mode-anchor-prepare', { restore: false });
+    let bounds = getLive2DPeekBounds(model);
+    const viewport = getLive2DPeekViewport(bounds, manager);
+    if (!bounds || !viewport) return false;
+    if (edge.startsWith('top-')) {
+        model.y += viewport.top - bounds.top;
+    } else if (edge.startsWith('bottom-')) {
+        model.y += viewport.bottom - bounds.bottom;
+    } else {
+        const ratio = clampLive2DPeekCoordinate(Number(anchor.edgeAnchorRatio), 0, 1);
+        const targetCenterY = viewport.top + viewport.height * ratio;
+        model.y += targetCenterY - (bounds.top + bounds.height / 2);
+    }
+    bounds = getLive2DPeekBounds(model);
+    if (!bounds) return false;
+    model.x += side === 'left'
+        ? viewport.left - bounds.left
+        : viewport.right - bounds.right;
+    return await manager._tryApplyLive2DPeek(model);
+}
+
+if (typeof window !== 'undefined') {
+    window.nekoLive2DPeek = {
+        clear: clearLive2DPeek,
+        isEnabled: isLive2DPeekEnabled,
+        captureRestoreAnchor: captureLive2DPeekRestoreAnchor,
+        restoreAnchor: restoreLive2DPeekAnchor
+    };
+    window.addEventListener('neko:widget-mode-state-changed', clearLive2DPeekOnDisabled);
+    window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye);
+    if (isLive2DPeekDesktopRuntime()) {
+        void refreshLive2DPeekDisplayContext();
+        window.addEventListener('electron-display-changed', () => {
+            live2DPeekDisplayContext = null;
+            void refreshLive2DPeekDisplayContext(true);
+        });
+    }
+}
+
 /**
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
@@ -163,10 +936,14 @@ Live2DManager.prototype._checkSnapRequired = async function (model, options = {}
         // 吸附 clamp 范围必须等同于真实可渲染像素（即 Pet 窗口的 CSS 像素尺寸）。
         // 多屏下 currentDisplay.workArea 可能大于当前窗口 innerHeight（窗口还未 resize 到新屏，或屏幕比主屏高），
         // 若直接拿 workArea 作边界，模型会被吸附到窗口像素外、被窗口边界裁成一条水平切割线。
+        const renderer = this.pixi_app && this.pixi_app.renderer;
+        const rendererScreen = renderer && renderer.screen;
+        const rendererW = Number(rendererScreen && rendererScreen.width);
+        const rendererH = Number(rendererScreen && rendererScreen.height);
         let screenLeft = 0;
         let screenTop = 0;
-        let screenRight = window.innerWidth;
-        let screenBottom = window.innerHeight;
+        let screenRight = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : window.innerWidth;
+        let screenBottom = Number.isFinite(rendererH) && rendererH > 0 ? rendererH : window.innerHeight;
 
         // 可选：读 workArea 做二次保险（取更小值），但绝不能超过 innerWidth/innerHeight
         if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
@@ -378,6 +1155,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
+    this.clearLive2DPeek('model-reload');
     model.interactive = true;
     // 移除 stage.hitArea = screen，避免阻挡背景点击
     // this.pixi_app.stage.interactive = true;
@@ -394,6 +1172,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let dragHintLastPointer = null;
     let dragHintApproachShown = false;
     let hasMoved = false;
+    let edgePeekStartedDrag = false;
+    let edgePeekDragCleared = false;
     const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
     const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
 
@@ -472,6 +1252,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             return;
         }
 
+        const edgePeekOnPointerDown = this.isLive2DPeekActive();
+        edgePeekStartedDrag = edgePeekOnPointerDown;
+        edgePeekDragCleared = false;
+        if (!edgePeekOnPointerDown) {
+            this.clearLive2DPeek('drag-start');
+        }
         this._isDraggingModel = true;
         if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
             this.boostLinuxX11InteractiveFPS(1400);
@@ -520,6 +1306,10 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (!hasMoved && clickDuration < CLICK_THRESHOLD_TIME) {
                 // 这是一个点击
                 console.log(`[Interaction] 检测到点击（时长: ${clickDuration}ms）`);
+                if (edgePeekStartedDrag) {
+                    await this.restoreLive2DPeek('click-restore');
+                    return; // edge peek click restores instead of triggering touch motions
+                }
                 
                 // 只在教程模式下，通过点击检测触发随机动画
                 // 非教程模式下，通过 hit 事件处理
@@ -559,6 +1349,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 if (!snapped) {
                     await this._savePositionAfterInteraction();
                 }
+                await this._tryApplyLive2DPeek(model);
                 // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
         }
@@ -601,6 +1392,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             );
             if (moveDistance > CLICK_THRESHOLD_DISTANCE) {
                 hasMoved = true;
+            }
+
+            if (edgePeekStartedDrag && hasMoved && !edgePeekDragCleared) {
+                this.clearLive2DPeek('drag-start', { restore: false });
+                dragStartPos.x = x - model.x;
+                dragStartPos.y = y - model.y;
+                edgePeekDragCleared = true;
             }
 
             model.x = x - dragStartPos.x;
@@ -691,6 +1489,12 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
 
     const onWheelScroll = (event) => {
         if (this.isLocked || !this.currentModel) return;
+        if (this.isLive2DPeekActive()) {
+            if (isWheelPointOnCurrentModel(event)) {
+                event.preventDefault();
+            }
+            return; // edge peek ignores wheel zoom
+        }
         if (!isWheelPointOnCurrentModel(event)) return;
         event.preventDefault();
 
@@ -736,6 +1540,13 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
 
     const onTouchStart = (event) => {
         if (this.isLocked || !this.currentModel) return;
+        if (this.isLive2DPeekActive()) {
+            if (event.touches && event.touches.length === 2) {
+                event.preventDefault();
+            }
+            isTouchZooming = false;
+            return; // edge peek ignores touch zoom start
+        }
 
         // 检测双指触摸
         if (event.touches.length === 2) {
@@ -748,6 +1559,13 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
 
     const onTouchMove = (event) => {
         if (this.isLocked || !this.currentModel || !isTouchZooming) return;
+        if (this.isLive2DPeekActive()) {
+            if (event.touches && event.touches.length === 2) {
+                event.preventDefault();
+            }
+            isTouchZooming = false;
+            return; // edge peek ignores touch zoom move
+        }
 
         // 双指缩放
         if (event.touches.length === 2) {
@@ -766,6 +1584,10 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
     const onTouchEnd = async (event) => {
         // 当手指数量小于2时，停止缩放
         if (event.touches.length < 2) {
+            if (this.isLive2DPeekActive()) {
+                isTouchZooming = false;
+                return; // edge peek ignores touch zoom end without saving peek state
+            }
             if (isTouchZooming) {
                 // 触摸缩放结束后自动保存位置和缩放
                 await this._savePositionAfterInteraction();
