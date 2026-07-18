@@ -100,6 +100,7 @@ OWNER_SUBMODULES = {
     "audio_duration_queue",
     "callback_render",
     "notices",
+    "voice_input_consumer",
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
 

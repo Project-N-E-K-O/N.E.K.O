@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 from main_logic.asr_client.lifecycle_contracts import FinalKey, VoiceTurnToken
 
+from .voice_input_consumer import VoiceInputConsumerBinding
+
 
 @dataclass(frozen=True, slots=True)
 class TranscriptEnvelope:
@@ -15,6 +17,7 @@ class TranscriptEnvelope:
     core_session_ref: object
     provider: str
     text: str
+    consumer_binding: VoiceInputConsumerBinding | None = None
 
     @property
     def final_key(self) -> FinalKey:

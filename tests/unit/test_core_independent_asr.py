@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from main_logic import core as core_facade
-from main_logic.core import LLMSessionManager
+from main_logic.core import LLMSessionManager, VoiceTranscriptEvent
 from main_logic.core.asr_runtime import AsrRuntimeMixin
 from main_logic.asr_client.detector_runtime import DetectorFeedResult
 from main_logic.asr_client.lifecycle_contracts import (
@@ -317,6 +317,138 @@ async def test_game_takeover_wins_even_if_provider_clear_fails() -> None:
     await runtime._suspend_independent_voice_input_for_game()
 
     assert runtime._asr_lifecycle.snapshot.state.value == "suspended"
+
+
+async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
+    runtime = _Runtime()
+    on_final = AsyncMock()
+    binding = runtime.bind_voice_input_consumer("game", on_final)
+
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
+    assert runtime._voice_input_accepts_pcm() is True
+
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+    await runtime._handle_independent_asr_final("play", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    event = on_final.await_args.args[0]
+    assert isinstance(event, VoiceTranscriptEvent)
+    assert event.text == "play"
+    assert event.provider == "qwen"
+    assert event.turn_token.turn_id > 0
+    runtime.handle_new_message.assert_not_awaited()
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._omni_mic_audio_bytes == 0
+
+    with pytest.raises(RuntimeError, match="RELEASE_LEASE_FIRST"):
+        runtime.unbind_voice_input_consumer(binding)
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        2,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
+    assert runtime.unbind_voice_input_consumer(binding) is True
+
+
+async def test_game_consumer_failure_never_falls_back_to_core() -> None:
+    runtime = _Runtime()
+    runtime.bind_voice_input_consumer(
+        "game",
+        AsyncMock(side_effect=RuntimeError("consumer failed")),
+    )
+    await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+    )
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+
+    await runtime._handle_independent_asr_final("play", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_game_final_cannot_cross_lease_back_to_core() -> None:
+    runtime = _Runtime()
+    on_final = AsyncMock()
+    runtime.bind_voice_input_consumer("game", on_final)
+    await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+    )
+    _install_ready_lifecycle(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "qwen")
+
+    await runtime._handle_voice_input_control(
+        "lease_sync",
+        2,
+        owner="core",
+        hard_muted=False,
+        focus_suppressed=False,
+    )
+    await runtime._handle_independent_asr_final("stale", epoch, "qwen")
+    await runtime._wait_asr_transcript_dispatch_idle()
+
+    on_final.assert_not_awaited()
+    runtime.handle_input_transcript.assert_not_awaited()
+    runtime.session.create_response.assert_not_awaited()
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_hard_mute_overrides_bound_game_consumer() -> None:
+    runtime = _Runtime()
+    runtime.bind_voice_input_consumer("game", AsyncMock())
+
+    await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=True,
+        focus_suppressed=False,
+    )
+
+    assert runtime._voice_input_accepts_pcm() is False
+    assert runtime._voice_input_suppression_reasons == {"hard_mute"}
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_game_owner_without_consumer_remains_fail_closed() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+
+    assert await runtime._handle_voice_input_control(
+        "lease_sync",
+        1,
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+    ) is True
+
+    assert runtime._voice_input_accepts_pcm() is False
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.SUSPENDED
+    assert runtime._omni_mic_audio_bytes == 0
 
 
 async def test_fresh_blocked_route_consumes_pcm_without_omni() -> None:
