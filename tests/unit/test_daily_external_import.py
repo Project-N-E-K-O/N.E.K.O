@@ -38,13 +38,20 @@ class _DailyHarness(FactStore):
     def _record_imported_day_fp_locked(self, name, fingerprint):
         self.state_fps.add(fingerprint)
 
-    def _clear_day_fp_locked(self, name, fingerprint):
-        self.state_fps.discard(fingerprint)
+    def _clear_day_fps_locked(self, name, fingerprints):
+        self.state_fps -= fingerprints
 
-    async def _allm_extract_facts(self, lanlan_name, messages):
+    async def _allm_extract_facts(
+        self, lanlan_name, messages, *, treat_malformed_as_failure=False,
+    ):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         self.extract_inputs.append(text)
-        return self._stub(text)
+        result = self._stub(text)
+        # 忠实模拟真实 _allm_extract_facts 的非数组处理：daily 传 strict → None
+        # （畸形当失败天，可重试），非 strict → []（对话路径容忍）。
+        if result is not None and not isinstance(result, list):
+            return None if treat_malformed_as_failure else []
+        return result
 
     async def _apersist_new_facts(
         self, lanlan_name, extracted, *,
@@ -597,6 +604,43 @@ async def test_concurrent_real_facts_before_persist_still_drops_this_write():
     )
     assert result["added"] == 0
     assert harness.persisted == []           # 本次写入被放弃
+
+
+@pytest.mark.asyncio
+async def test_stale_sidecar_healed_before_skip():
+    # skip 前自愈（CodeRabbit + Codex）：sidecar 里 fp 同时被 fact provenance 持有 =
+    # 陈旧（这天已有 fact 载体、不该在 sidecar，来自 exact-hash upgrade 残留 / 成功天
+    # 清理失败或中断——那清理在 persist 后、会被 skip 绕过而永不重跑）。开头清掉，
+    # 否则 facts 回滚后陈旧 sidecar 压制重抽自愈。
+    harness = _DailyHarness(lambda journal: [{"text": "x", "importance": 5}])
+    fp = harness._daily_fingerprint(["went hiking"], event_date="2026-07-12")
+    harness.state_fps.add(fp)                     # 陈旧 sidecar 指纹
+    harness.store.append({                        # fact provenance 也持有该天
+        "text": "carried fact", "importance": 5,
+        "external_import": {"day_fingerprint": fp},
+    })
+
+    result = await harness.aimport_external_daily(
+        "Neko", _daily("memories/2026-07-12.md", "2026-07-12", "went hiking"),
+        "hermes", "t",
+    )
+    # 这天靠 provenance skip；陈旧 sidecar 在 skip 前被自愈清除。
+    assert result == {"added": 0, "days": 1, "failed_days": 0, "skipped_days": 1}
+    assert harness.state_fps == set()             # 陈旧 sidecar 已清
+    assert harness.extract_inputs == []           # 零 LLM
+
+
+@pytest.mark.asyncio
+async def test_malformed_extraction_is_failed_day_not_sidecar_checkpoint():
+    # Codex：畸形非数组（如 {"facts": [...]}）是模型格式失败、不是确认空抽取。daily
+    # 传 treat_malformed_as_failure=True → 当 failed_day（可重试），**不**记 sidecar；
+    # 否则会被 checkpoint 成空抽取天、后续导入 skip LLM 静默丢该天 facts。
+    harness = _DailyHarness(lambda journal: {"facts": ["wrapped, not a list"]})
+    candidates = _daily("memories/2026-07-12.md", "2026-07-12", "some journal")
+
+    result = await harness.aimport_external_daily("Neko", candidates, "hermes", "t")
+    assert result == {"added": 0, "days": 1, "failed_days": 1, "skipped_days": 0}
+    assert harness.state_fps == set()             # 畸形不 checkpoint sidecar
 
 
 @pytest.mark.asyncio

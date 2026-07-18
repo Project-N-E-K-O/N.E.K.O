@@ -488,10 +488,20 @@ class FactStore:
 
     async def _allm_extract_facts(
         self, lanlan_name: str, messages: list,
+        *, treat_malformed_as_failure: bool = False,
     ) -> list[dict] | None:
         """Stage-1: pure extraction. Prompt carries no existing observations
         to avoid self-cycling (the LLM quoting an existing reflection back as a
-        new fact). Returns the raw LLM-extracted list, or None on terminal failure."""
+        new fact). Returns the raw LLM-extracted list, or None on terminal failure.
+
+        ``treat_malformed_as_failure``: a non-array payload (e.g. ``{"facts":
+        [...]}``) is a model-shape failure, not a confirmed empty extraction.
+        The conversation paths tolerate it as ``[]`` (advance the cursor; the
+        window is lossy but recoverable from live chat). Daily import passes
+        ``True`` so a malformed result becomes a failed day (retryable) rather
+        than being checkpointed in the sidecar as a fact-less day — a sidecar
+        checkpoint would skip the LLM on every later import and silently lose
+        that day's facts (Codex P2)."""
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
@@ -509,6 +519,12 @@ class FactStore:
         if extracted is None:
             return None
         if not isinstance(extracted, list):
+            if treat_malformed_as_failure:
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
+                    f"{type(extracted).__name__}，当作抽取失败（可重试，不 checkpoint）"
+                )
+                return None
             logger.warning(
                 f"[FactStore] {lanlan_name}: Stage-1 返回非数组 "
                 f"{type(extracted).__name__}，当作空列表处理"
@@ -1287,6 +1303,24 @@ class FactStore:
                 return True
         return False
 
+    async def _acollect_day_fp_sources(self, name: str) -> tuple[set[str], set[str]]:
+        """The two idempotency carriers, returned separately as
+        ``(sidecar_fps, provenance_fps)``.
+
+        provenance_fps scans active + archive (``aload_facts_full``) so a day
+        whose facts were archived still counts as carried. Callers union the two
+        for the skip filter, and diff them (``sidecar ∩ provenance``) to detect
+        stale sidecar entries a fact now carries — see the up-front self-heal in
+        ``aimport_external_daily``."""
+        state = await asyncio.to_thread(self._load_external_import_state, name)
+        sidecar_fps = self._state_daily_fingerprints(state)
+        provenance_fps: set[str] = set()
+        for f in await self.aload_facts_full(name):
+            meta = f.get('external_import')
+            if isinstance(meta, dict) and meta.get('day_fingerprint'):
+                provenance_fps.add(str(meta['day_fingerprint']))
+        return sidecar_fps, provenance_fps
+
     async def _aload_imported_day_fps(self, name: str) -> set[str]:
         """Union of processed-day fingerprints from two carriers, split by
         whether the day persisted any fact:
@@ -1317,13 +1351,8 @@ class FactStore:
         (a rival import that just persisted writes the active list, and a
         sidecar-only rival must not suppress this request's real facts).
         """
-        state = await asyncio.to_thread(self._load_external_import_state, name)
-        fps = self._state_daily_fingerprints(state)
-        for f in await self.aload_facts_full(name):
-            meta = f.get('external_import')
-            if isinstance(meta, dict) and meta.get('day_fingerprint'):
-                fps.add(str(meta['day_fingerprint']))
-        return fps
+        sidecar_fps, provenance_fps = await self._acollect_day_fp_sources(name)
+        return sidecar_fps | provenance_fps
 
     async def _arecord_unpersisted_day_fp(self, name: str, fingerprint: str) -> None:
         """Best-effort: record a day's fingerprint in the sidecar **iff no fact
@@ -1385,39 +1414,40 @@ class FactStore:
             indent=2, ensure_ascii=False,
         )
 
-    async def _aclear_day_fp_if_present(self, name: str, fingerprint: str) -> None:
-        """Best-effort: drop a day's fingerprint from the sidecar once a fact
-        carries it, so a fact-backed day never also lives in the sidecar.
+    async def _aclear_day_fps(self, name: str, fingerprints: set[str]) -> None:
+        """Best-effort: drop day fingerprints from the sidecar because a fact now
+        carries them, or the day re-extracts — either way they must not linger as
+        stale sidecar entries that a facts rollback couldn't self-heal (Codex P2).
 
-        Fires the write only when the sidecar actually holds this fingerprint —
-        a concurrent sidecar-only import (empty / all-dedup LLM outcome) wrote it
-        before this request's real facts landed. Left in place, the day would
-        have both a fact provenance entry and a stale sidecar entry, and a later
-        facts.json rollback would leave the sidecar to suppress the re-extraction
-        that restores the fact (Codex P2). Same per-character alock +
+        Fires the write only when the sidecar actually holds one of them. Used
+        both for the up-front self-heal (``sidecar ∩ provenance``) and for the
+        per-day clear after a day yields facts. Same per-character alock +
         best-effort contract as ``_arecord_unpersisted_day_fp``."""
+        if not fingerprints:
+            return
         try:
             async with self._get_persist_alock(name):
-                await asyncio.to_thread(self._clear_day_fp_locked, name, fingerprint)
+                await asyncio.to_thread(self._clear_day_fps_locked, name, fingerprints)
         except (MaintenanceModeError, OSError) as exc:
             logger.warning(
                 f"[FactStore] {name}: sidecar 清理陈旧指纹失败（无害，下次导入再清）: {exc}"
             )
 
-    def _clear_day_fp_locked(self, name: str, fingerprint: str) -> None:
+    def _clear_day_fps_locked(self, name: str, fingerprints: set[str]) -> None:
         path = self._external_import_state_path(name)
         if not os.path.exists(path):
-            return  # 绝大多数成功天无 sidecar 文件 → 只一次 stat、不碰盘。
+            return  # 无 sidecar 文件 → 只一次 stat、不碰盘。
         state = self._load_external_import_state(name)
         fps = self._state_daily_fingerprints(state)
-        if fingerprint not in fps:
+        to_drop = fps & fingerprints
+        if not to_drop:
             return
         assert_cloudsave_writable(
             self._config_manager,
             operation="save",
             target=f"memory/{name}/external_import_state.json",
         )
-        fps.discard(fingerprint)
+        fps -= to_drop
         daily = state.get('daily')
         if not isinstance(daily, dict):
             return
@@ -1490,9 +1520,17 @@ class FactStore:
             by_file.setdefault(str(cand.get("source_file") or ""), []).append(cand)
 
         # 逐日指纹幂等（对偶 persona folded_fingerprints）：已导入且内容未变的
-        # 天直接 skip，不进 LLM。双载体合并（有 fact 天靠 provenance，无 fact 天
-        # 靠 sidecar；含 archive 覆盖已归档天，见 _aload_imported_day_fps）。
-        imported_day_fps = await self._aload_imported_day_fps(lanlan_name)
+        # 天直接 skip，不进 LLM。双载体：有 fact 天靠 provenance（含 archive），无
+        # fact 天靠 sidecar。
+        sidecar_fps, provenance_fps = await self._acollect_day_fp_sources(lanlan_name)
+        # skip 前自愈：sidecar 里凡 fact provenance 也持有的指纹 = 陈旧（这天已有
+        # fact 载体、不该在 sidecar）→ 清掉。覆盖 exact-hash upgrade 残留、并发
+        # sidecar-only 残留、以及成功天即时清理失败/进程中断——那次清理在 persist
+        # 后、会被本处 skip 绕过而永不重跑（CodeRabbit + Codex）。
+        stale_sidecar = sidecar_fps & provenance_fps
+        if stale_sidecar:
+            await self._aclear_day_fps(lanlan_name, stale_sidecar)
+        imported_day_fps = sidecar_fps | provenance_fps
 
         day_dates = {
             source_file: next(
@@ -1553,8 +1591,12 @@ class FactStore:
                 )
                 # 只有 LLM 往返占并发槽；写盘走 _apersist_new_facts 的 per-character
                 # 锁自行互斥，放在槽外让别的日子的 LLM 调用尽早起跑。
+                # 畸形非数组当失败天（可重试）：否则会被当空抽取天 checkpoint 进
+                # sidecar、后续导入 skip LLM 而静默丢该天 facts（Codex P2）。
                 async with llm_slots:
-                    extracted = await self._allm_extract_facts(lanlan_name, messages)
+                    extracted = await self._allm_extract_facts(
+                        lanlan_name, messages, treat_malformed_as_failure=True,
+                    )
                 if extracted is None:
                     logger.warning(
                         f"[FactStore] {lanlan_name}: 外部 daily 抽取 LLM 失败，"
@@ -1600,22 +1642,14 @@ class FactStore:
             new_facts = await self._apersist_new_facts(
                 lanlan_name, day_extracted, semantic_dedup=True,
             )
-            # 有 fact 落盘的天不记 sidecar：指纹已在 fact provenance 里、与 facts
-            # 同处 cloudsave 同步/回滚单元，回滚后一起消失、重导自愈（若额外记
-            # sidecar，回滚后残留指纹永久压制重抽 → 记忆丢失）。new_facts 为空时
-            # 尝试记 sidecar，但 _arecord 会在锁内二次确认 active 无该天 provenance
-            # 才落——兜住「exact-hash 命中把 provenance upgrade 到既有 ai_disclosure
-            # fact」这类 new_facts 为空却有载体的天（Codex P2 follow-up）。
-            if new_facts:
-                # 真实 facts 落盘（provenance 载体）：清掉并发 sidecar-only 竞态可能
-                # 残留的该天 sidecar 指纹，维持「有 fact 载体的天不在 sidecar」不变式
-                # （Codex）。绝大多数成功天 sidecar 无此天 → 一次 stat 即返回。
-                await self._aclear_day_fp_if_present(lanlan_name, day_fps[source_file])
-            # else 全去重天（抽出 fact 但全 exact-hash 命中既有、无新载体）：**不记
-            # sidecar**。这天的内容已被既有 fact 承载，但那条 fact 带的是别的指纹、
-            # 与本天新指纹不在同一 cloudsave 回滚单元，记 sidecar 会在 facts 回滚后
-            # 残留压制重抽 → fact 回不来（Codex）。退回每次重导重抽（added=0、不丢
-            # 数据）；只有 LLM 判定完全无 fact 的空抽取天才靠 sidecar。
+            # 抽出 fact 的天（成功落新 fact，或全去重命中既有）都清掉该天可能残留的
+            # sidecar 指纹（并发对方空抽取先写下的）——这些天不该在 sidecar：
+            #  - 成功/upgrade 天：指纹已在 fact provenance，与 facts 同处回滚单元、
+            #    回滚后一起消失重导自愈；残留 sidecar 会在回滚后压制重抽 → 记忆丢失。
+            #  - 全去重天：不记 sidecar，靠「每次重抽自愈」保 rollback-safe（既有 fact
+            #    回滚后重抽会重新 append）；若被并发空抽取的 sidecar 挡住就破坏自愈。
+            # 绝大多数天 sidecar 无此指纹 → 一次 stat 即返回（Codex）。
+            await self._aclear_day_fps(lanlan_name, {day_fps[source_file]})
             return len(new_facts), False
 
         outcomes = await asyncio.gather(

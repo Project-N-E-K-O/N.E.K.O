@@ -266,7 +266,7 @@ class _DailyConcurrencyHarness(FactStore):
     async def _arecord_unpersisted_day_fp(self, lanlan_name, fingerprint):
         return None
 
-    async def _allm_extract_facts(self, lanlan_name, messages):
+    async def _allm_extract_facts(self, lanlan_name, messages, **_kwargs):
         text = "\n".join(getattr(m, "content", "") for m in messages)
         return await self._extract(text)
 
