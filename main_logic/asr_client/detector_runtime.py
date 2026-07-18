@@ -14,9 +14,14 @@ from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
 from ._voice_turn import _VoiceTurnAdapter
 from .detector_contracts import (
+    BoundDetectorTurn,
+    DetectorActivityEvent,
+    DetectorCandidateKey,
+    DetectorEvent,
     DetectorIngressIdentity,
     DetectorSubmitResult,
     DetectorSubmitStatus,
+    DetectorTurnEvent,
 )
 from .lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
@@ -63,6 +68,7 @@ class DetectorRuntime:
         coordinator: TurnCoordinator | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_endpointing_failure: Callable[[], Awaitable[None]] | None = None,
+        on_event: Callable[[DetectorEvent], Awaitable[None]] | None = None,
     ) -> None:
         if not 0.0 <= rnnoise_onset_probability <= 1.0:
             raise ValueError("RNNoise onset probability must be within [0, 1]")
@@ -91,6 +97,7 @@ class DetectorRuntime:
         self._semantic_turn_id = 1
         self._on_endpointing_failure = on_endpointing_failure
         self._on_turn_complete = on_turn_complete
+        self._on_event = on_event
         self._defer_turn_complete = False
         self._deferred_turn_complete = False
         self._failure_watch_task: asyncio.Task[None] | None = None
@@ -103,9 +110,16 @@ class DetectorRuntime:
         self._sequence_no = 0
         self._ingress_token: VoiceIngressToken | None = None
         self._candidate_open = False
+        self._candidate_generation = 0
+        self._bound_turns: dict[DetectorCandidateKey, BoundDetectorTurn] = {}
+        self._deferred_completions: dict[
+            DetectorCandidateKey, DetectorIngressIdentity
+        ] = {}
         if provider_policy is not None and provider_policy.endpoint_authority == "smart_turn":
-            if on_turn_complete is None:
-                raise ValueError("SmartTurn DetectorRuntime requires on_turn_complete")
+            if on_turn_complete is None and on_event is None:
+                raise ValueError(
+                    "SmartTurn DetectorRuntime requires a completion consumer"
+                )
             config = SmartTurnConfig(enabled=True)
             semantic_coordinator = coordinator or TurnCoordinator(
                 SmartTurnV3(
@@ -126,6 +140,7 @@ class DetectorRuntime:
                 self._defer_turn_complete = True
                 self._semantic_generation += 1
                 self._semantic_turn_id += 1
+                self._candidate_generation += 1
                 adapter = self._semantic_adapter
                 if adapter is not None:
                     await adapter.reset(
@@ -133,10 +148,52 @@ class DetectorRuntime:
                         buffer_epoch=0,
                         utterance_id=self._semantic_turn_id,
                     )
-                await on_turn_complete()
+                if on_turn_complete is not None:
+                    await on_turn_complete()
 
             async def activity(event: SpeechActivityEvent) -> None:
                 self._events.append(event)
+
+            async def scoped_activity(
+                event: SpeechActivityEvent,
+                identity: DetectorIngressIdentity,
+            ) -> None:
+                if self._on_event is None or identity.detector_epoch != self._detector_epoch:
+                    return
+                await self._on_event(
+                    DetectorActivityEvent(
+                        ingress=identity,
+                        candidate=DetectorCandidateKey(
+                            identity.detector_epoch,
+                            self._candidate_generation,
+                        ),
+                        activity=event,
+                    )
+                )
+
+            async def scoped_commit(
+                _generation: int,
+                _buffer_epoch: int,
+                _turn_id: int,
+                identity: DetectorIngressIdentity,
+            ) -> None:
+                if self._on_event is None or identity.detector_epoch != self._detector_epoch:
+                    return
+                candidate = DetectorCandidateKey(
+                    identity.detector_epoch,
+                    self._candidate_generation,
+                )
+                bound_turn = self._bound_turns.get(candidate)
+                if bound_turn is None:
+                    self._deferred_completions[candidate] = identity
+                    return
+                await self._on_event(
+                    DetectorTurnEvent(
+                        ingress=identity,
+                        bound_turn=bound_turn,
+                        kind="complete",
+                    )
+                )
 
             self._semantic_adapter = _VoiceTurnAdapter(
                 vad=self._vad,
@@ -144,6 +201,8 @@ class DetectorRuntime:
                 coordinator=semantic_coordinator,
                 on_commit=commit,
                 on_activity=activity,
+                on_scoped_commit=scoped_commit,
+                on_scoped_activity=scoped_activity,
                 smart_turn_required=True,
             )
 
@@ -158,6 +217,60 @@ class DetectorRuntime:
     @property
     def candidate_open(self) -> bool:
         return self._candidate_open
+
+    async def bind_candidate(
+        self,
+        candidate: DetectorCandidateKey,
+        turn_token: VoiceTurnToken,
+    ) -> BoundDetectorTurn | None:
+        if (
+            self._closed
+            or candidate.detector_epoch != self._detector_epoch
+            or (
+                candidate.candidate_generation != self._candidate_generation
+                and candidate not in self._deferred_completions
+            )
+        ):
+            return None
+        existing = self._bound_turns.get(candidate)
+        if existing is not None:
+            return existing if existing.turn_token == turn_token else None
+        bound = BoundDetectorTurn(candidate, turn_token)
+        self._bound_turns[candidate] = bound
+        deferred = self._deferred_completions.pop(candidate, None)
+        if deferred is not None and self._on_event is not None:
+            await self._on_event(
+                DetectorTurnEvent(
+                    ingress=deferred,
+                    bound_turn=bound,
+                    kind="complete",
+                )
+            )
+        return bound
+
+    async def force_speech_started(
+        self,
+        identity: DetectorIngressIdentity,
+    ) -> bool:
+        """Open continuous-upload mode without changing SmartTurn authority."""
+
+        if (
+            self._on_event is None
+            or self._closed
+            or identity.detector_epoch != self._detector_epoch
+        ):
+            return False
+        await self._on_event(
+            DetectorActivityEvent(
+                ingress=identity,
+                candidate=DetectorCandidateKey(
+                    identity.detector_epoch,
+                    self._candidate_generation,
+                ),
+                activity=SpeechActivityEvent.SPEECH_STARTED,
+            )
+        )
+        return True
 
     async def prepare_endpointing(
         self,
@@ -283,7 +396,11 @@ class DetectorRuntime:
             self._prepare_token = None
             self._prepare_epoch = None
             self._detector_epoch += 1
+            self._candidate_generation = 0
             self._candidate_open = False
+            self._ingress_token = None
+            self._bound_turns.clear()
+            self._deferred_completions.clear()
             adapter = self._semantic_adapter
             if adapter is not None:
                 adapter.unpin_smart_turn()
@@ -463,11 +580,15 @@ class DetectorRuntime:
                 utterance_id=self._semantic_turn_id,
                 pcm16=pcm16,
                 sample_rate_hz=sample_rate_hz,
+                detector_identity=identity,
             )
         except asyncio.QueueFull:
             self._detector_epoch += 1
+            self._candidate_generation = 0
             self._candidate_open = False
             self._ingress_token = None
+            self._bound_turns.clear()
+            self._deferred_completions.clear()
             self._semantic_generation += 1
             self._semantic_turn_id += 1
             asyncio.create_task(
@@ -499,9 +620,12 @@ class DetectorRuntime:
             if self._closed:
                 return
             self._detector_epoch += 1
+            self._candidate_generation = 0
             self._sequence_no = 0
             self._ingress_token = None
             self._candidate_open = False
+            self._bound_turns.clear()
+            self._deferred_completions.clear()
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
@@ -560,8 +684,11 @@ class DetectorRuntime:
                 return
             self._closed = True
             self._detector_epoch += 1
+            self._candidate_generation = 0
             self._candidate_open = False
             self._ingress_token = None
+            self._bound_turns.clear()
+            self._deferred_completions.clear()
             watch_task, self._failure_watch_task = self._failure_watch_task, None
             if watch_task is not None:
                 watch_task.cancel()
@@ -591,8 +718,11 @@ class DetectorRuntime:
                 self._available = False
                 return
             self._detector_epoch += 1
+            self._candidate_generation = 0
             self._candidate_open = False
             self._ingress_token = None
+            self._bound_turns.clear()
+            self._deferred_completions.clear()
             self._smart_turn_readiness = SmartTurnReadiness.FAILED
             callback = self._on_endpointing_failure
             if callback is not None and not self._closed:

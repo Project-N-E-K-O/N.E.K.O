@@ -3,6 +3,7 @@ import inspect
 import json
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from main_logic import core as core_facade
 from main_logic.core import LLMSessionManager, VoiceTranscriptEvent
 from main_logic.core.asr_runtime import AsrRuntimeMixin
-from main_logic.asr_client.detector_runtime import DetectorFeedResult
+from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.asr_client.lifecycle_contracts import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
@@ -19,6 +20,9 @@ from main_logic.asr_client.lifecycle_contracts import (
 from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 from main_logic.voice_turn.contracts import SpeechActivityEvent
+from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
+from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.core.asr_detector_dispatcher import CoreDetectorEventEnvelope
 from utils import preferences
 
 
@@ -142,6 +146,7 @@ async def test_independent_route_sends_pcm_to_asr_only() -> None:
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
     )
+    await runtime._asr_audio_dispatcher.wait_idle()
 
     assert consumed is True
     asr.stream_audio.assert_awaited_once_with(
@@ -150,6 +155,110 @@ async def test_independent_route_sends_pcm_to_asr_only() -> None:
     )
     assert runtime._asr_audio_bytes == 320
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_async_detector_orders_pre_roll_before_smart_turn_seal() -> None:
+    class Vad:
+        def load(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            return None
+
+    class Gate:
+        def feed(self, _pcm16: bytes):
+            return (
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.CANDIDATE_PAUSE,
+            )
+
+        def reset(self) -> None:
+            return None
+
+    class Coordinator:
+        state = CoordinatorState.IDLE
+
+        def push_audio(self, _pcm16: bytes) -> None:
+            return None
+
+        async def on_activity_event(self, event) -> None:
+            self.state = (
+                CoordinatorState.PAUSE_CANDIDATE
+                if event is SpeechActivityEvent.CANDIDATE_PAUSE
+                else CoordinatorState.SPEECH_ACTIVE
+            )
+
+        async def evaluate_buffered(self):
+            return SimpleNamespace(
+                status=EvaluationStatus.OK,
+                decision=TurnDecision.COMPLETE,
+            )
+
+        async def prepare_predictor(self) -> bool:
+            return True
+
+        async def reset(self) -> None:
+            self.state = CoordinatorState.IDLE
+
+        async def close(self) -> None:
+            self.state = CoordinatorState.CLOSED
+
+        async def unload_predictor(self) -> None:
+            return None
+
+    runtime = _Runtime()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.stream_audio = AsyncMock()
+    asr.signal_user_activity_end = AsyncMock()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_lifecycle = lifecycle
+    detector: DetectorRuntime
+
+    async def on_event(event) -> None:
+        assert runtime._asr_detector_dispatcher.submit_nowait(
+            CoreDetectorEventEnvelope(
+                event=event,
+                detector_ref=detector,
+                lifecycle_ref=lifecycle,
+                session_epoch=runtime._asr_session_epoch,
+            )
+        )
+
+    detector = DetectorRuntime(
+        vad=Vad(),
+        gate=Gate(),
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        coordinator=Coordinator(),
+        on_event=on_event,
+    )
+    runtime._asr_detector = detector
+    pcm16 = b"\x01\x00" * 160
+
+    assert await runtime._route_microphone_audio(
+        pcm16,
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    for _ in range(200):
+        if asr.signal_user_activity_end.await_count:
+            break
+        await asyncio.sleep(0.001)
+    await runtime._asr_detector_dispatcher.wait_idle()
+    await runtime._asr_audio_dispatcher.wait_idle()
+
+    asr.stream_audio.assert_awaited_once_with(pcm16, sample_rate_hz=16_000)
+    asr.signal_user_activity_end.assert_awaited_once()
+    assert runtime._omni_mic_audio_bytes == 0
+    await detector.close()
 
 
 @pytest.mark.parametrize(
@@ -244,6 +353,7 @@ async def test_local_speech_wake_uploads_pre_roll_to_independent_asr() -> None:
         b"\x02\x00" * 160,
         sample_rate_hz=16_000,
     )
+    await runtime._asr_audio_dispatcher.wait_idle()
 
     asr.stream_audio.assert_awaited_once_with(
         (b"\x01\x00" * 160) + (b"\x02\x00" * 160),
@@ -268,6 +378,7 @@ async def test_detector_failure_fails_open_to_same_independent_asr() -> None:
         b"\x01\x00" * 160,
         sample_rate_hz=16_000,
     )
+    await runtime._asr_audio_dispatcher.wait_idle()
 
     asr.stream_audio.assert_awaited_once_with(
         b"\x01\x00" * 160,
@@ -599,6 +710,7 @@ async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> N
         sample_rate_hz=16_000,
         rnnoise_available=False,
     )
+    await runtime._asr_audio_dispatcher.wait_idle()
 
     asr.stream_audio.assert_awaited_once()
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
@@ -1256,6 +1368,7 @@ async def test_asr_backpressure_reports_specific_blocking_status() -> None:
         b"\x00\x00" * 160,
         sample_rate_hz=16_000,
     )
+    await runtime._asr_audio_dispatcher.wait_idle()
 
     assert "ASR_STREAM_BACKPRESSURE" in runtime.send_status.await_args.args[0]
     assert runtime._asr_route_mode == "blocked"
