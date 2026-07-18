@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core import runtime_douyin_auth
 from plugin.plugins.neko_live.core.runtime_douyin_auth import normalize_cookie
 from plugin.plugins.neko_live.modules.douyin_live_ingest.webcast import DouyinWebcastInfo
@@ -127,7 +127,7 @@ def test_douyin_auth_has_no_network_login_or_browser_automation():
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_status_and_delete_are_redacted(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "Cookie: ttwid=secret-cookie; odin_tt=hidden-token",
@@ -172,7 +172,7 @@ async def test_douyin_cookie_import_status_and_delete_are_redacted(tmp_path):
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_invalid_input_returns_safe_failure(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import("Cookie: ttwid=secret-cookie\r\nX-Bad: token=hidden-token")
 
@@ -193,7 +193,7 @@ async def test_douyin_cookie_import_invalid_input_returns_safe_failure(tmp_path)
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_rejects_object_cookie_without_leaking_str(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     class _LooksLikeCookie:
         def __str__(self) -> str:
@@ -217,7 +217,7 @@ async def test_douyin_cookie_import_rejects_object_cookie_without_leaking_str(tm
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_keeps_short_safe_uid_shape(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "ttwid=real-cookie",
@@ -233,7 +233,7 @@ async def test_douyin_cookie_import_keeps_short_safe_uid_shape(tmp_path):
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_rejects_unsafe_uid_shape(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "ttwid=real-cookie",
@@ -252,7 +252,7 @@ async def test_douyin_cookie_import_rejects_unsafe_uid_shape(tmp_path):
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_redacts_cookie_shaped_uid_and_nickname(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "ttwid=real-cookie; odin_tt=real-token",
@@ -277,7 +277,7 @@ async def test_douyin_cookie_import_redacts_cookie_shaped_uid_and_nickname(tmp_p
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_redacts_cross_platform_credential_shapes(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "ttwid=real-cookie",
@@ -294,7 +294,7 @@ async def test_douyin_cookie_import_redacts_cross_platform_credential_shapes(tmp
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_redacts_generic_token_shapes(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     result = await runtime.douyin_cookie_import(
         "ttwid=real-cookie",
@@ -316,7 +316,7 @@ async def test_douyin_cookie_import_redacts_generic_token_shapes(tmp_path):
 @pytest.mark.asyncio
 async def test_douyin_cookie_import_does_not_stringify_uid_or_nickname_objects(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     class _LooksLikePublicText:
         def __str__(self) -> str:
@@ -342,7 +342,7 @@ async def test_douyin_cookie_import_does_not_stringify_uid_or_nickname_objects(t
 @pytest.mark.asyncio
 async def test_douyin_cookie_status_treats_non_string_cookie_as_logged_out(tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     class _LooksLikeCookie:
         def __str__(self) -> str:
@@ -366,7 +366,7 @@ async def test_douyin_cookie_status_treats_non_string_cookie_as_logged_out(tmp_p
 @pytest.mark.asyncio
 async def test_douyin_cookie_validate_fetches_room_metadata_without_leaking_cookie(monkeypatch, tmp_path):
     pytest.importorskip("cryptography")
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie", "uid": "douyin:42", "nickname": "viewer"}
     runtime.config.live_room_ref = "https://live.douyin.com/room-42?cookie=must-not-leak"
     calls: list[dict[str, str]] = []
@@ -396,7 +396,7 @@ async def test_douyin_cookie_validate_fetches_room_metadata_without_leaking_cook
 
 @pytest.mark.asyncio
 async def test_douyin_cookie_validate_requires_string_cookie_without_stringifying(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
 
     class _LooksLikeCookie:
         def __str__(self) -> str:
@@ -416,7 +416,7 @@ async def test_douyin_cookie_validate_requires_string_cookie_without_stringifyin
 
 @pytest.mark.asyncio
 async def test_douyin_cookie_validate_redacts_fetch_errors(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
 
     def fake_fetch(room_ref: str, *, cookie: str = "", timeout: float = 8.0) -> DouyinWebcastInfo:

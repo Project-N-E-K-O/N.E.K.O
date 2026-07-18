@@ -16,7 +16,7 @@ import pytest
 
 from plugin.plugins.neko_live.core.contracts import (
     LiveEvent,
-    RoastConfig,
+    LiveConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
@@ -93,7 +93,7 @@ class _FakeCtx:
         self.audit = _FakeAudit()
         self.event_bus = EventBus(self.audit)
         self.live_provider = SimpleNamespace(listener_state=lambda: {"viewer_count": viewer_count})
-        self.config = RoastConfig(
+        self.config = LiveConfig(
             rate_limit_seconds=rate_limit,
             activity_level=activity_level,  # type: ignore[arg-type]
             queue_limit=queue_limit,
@@ -849,7 +849,7 @@ async def test_support_event_without_text_still_enters_support_lane():
 
 def test_support_event_uses_priority_cooldown_lane():
     audit = _FakeAudit()
-    guard = SafetyGuard(RoastConfig(rate_limit_seconds=30), audit)
+    guard = SafetyGuard(LiveConfig(rate_limit_seconds=30), audit)
 
     normal = ViewerEvent(uid="1", nickname="u1", danmaku_text="hi", source="live_danmaku")
     gift = ViewerEvent(
@@ -868,7 +868,7 @@ def test_support_event_uses_priority_cooldown_lane():
 
 def test_super_chat_and_guard_do_not_share_gift_cooldown():
     audit = _FakeAudit()
-    guard = SafetyGuard(RoastConfig(rate_limit_seconds=30), audit)
+    guard = SafetyGuard(LiveConfig(rate_limit_seconds=30), audit)
     super_chat = ViewerEvent(
         uid="2",
         nickname="u2",

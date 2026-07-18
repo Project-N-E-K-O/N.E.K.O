@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from .contracts import RoastConfig, TriggerSource
+from .contracts import LiveConfig, TriggerSource
 
 
 class PermissionGate:
-    def __init__(self, config: RoastConfig) -> None:
+    def __init__(self, config: LiveConfig) -> None:
         self.config = config
 
-    def update(self, config: RoastConfig) -> None:
+    def update(self, config: LiveConfig) -> None:
         self.config = config
 
     def allows_source(self, source: TriggerSource) -> tuple[bool, str]:

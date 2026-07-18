@@ -31,7 +31,7 @@ async def test_startup_syncs_live_instructions_instead_of_unconditional_inject(m
             calls.append(("sync_developer", force))
             return "developer_not_injected"
 
-    monkeypatch.setattr("plugin.plugins.neko_live.core.runtime.RoastRuntime", Runtime)
+    monkeypatch.setattr("plugin.plugins.neko_live.core.runtime.LiveRuntime", Runtime)
     plugin = NekoLivePlugin(SimpleNamespace(logger=None))
 
     result = await plugin.startup()
@@ -105,7 +105,7 @@ async def test_startup_syncs_prompt_context_without_forcing_empty_restores(monke
         async def sync_developer_mode(self, *, announce=False, force=False):
             calls.append(("developer", announce, force))
 
-    monkeypatch.setattr(runtime_module, "RoastRuntime", FakeRuntime)
+    monkeypatch.setattr(runtime_module, "LiveRuntime", FakeRuntime)
     plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     monkeypatch.setattr(plugin, "register_dynamic_entry", lambda *args, **kwargs: None)
     monkeypatch.setattr(plugin, "_sync_developer_entries", lambda: None)

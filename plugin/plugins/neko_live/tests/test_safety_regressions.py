@@ -7,14 +7,14 @@ from plugin.plugins.neko_live.adapters.bili_auth_service import BiliAuthService
 from plugin.plugins.neko_live.adapters.neko_dispatcher import NekoDispatcher
 from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
-    RoastConfig,
+    LiveConfig,
     SafetyDecision,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
-from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_failure_results import fail_dispatcher
 from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
 from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
@@ -22,17 +22,17 @@ from plugin.plugins.neko_live.modules.bili_identity import BiliIdentityModule
 
 def test_safety_config_update_preserves_in_flight_count():
     audit = SimpleNamespace(record=lambda *_args, **_kwargs: None)
-    guard = SafetyGuard(RoastConfig(queue_limit=5), audit)
+    guard = SafetyGuard(LiveConfig(queue_limit=5), audit)
     guard.queue_size = 4
 
-    guard.update(RoastConfig(queue_limit=2))
+    guard.update(LiveConfig(queue_limit=2))
 
     assert guard.queue_size == 4
 
 
 def test_safety_snapshot_prunes_expired_failure_records(monkeypatch):
     audit = SimpleNamespace(record=lambda *_args, **_kwargs: None)
-    guard = SafetyGuard(RoastConfig(safety_window_seconds=10), audit)
+    guard = SafetyGuard(LiveConfig(safety_window_seconds=10), audit)
     guard._pipeline_failures = [80.0, 95.0]
     guard._output_failures = [70.0]
     monkeypatch.setattr(
@@ -250,7 +250,7 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
                 strength="normal",
             )
 
-    config = RoastConfig(live_enabled=True, roast_once_per_uid=True)
+    config = LiveConfig(live_enabled=True, roast_once_per_uid=True)
     ctx = SimpleNamespace(
         audit=Audit(),
         config=config,
@@ -268,7 +268,7 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
     event = ViewerEvent(
         uid="42",
         nickname="same",
@@ -349,7 +349,7 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result(
                 strength="normal",
             )
 
-    config = RoastConfig(live_enabled=True, roast_once_per_uid=True)
+    config = LiveConfig(live_enabled=True, roast_once_per_uid=True)
     ctx = SimpleNamespace(
         audit=Audit(),
         config=config,
@@ -368,7 +368,7 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result(
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(
             uid="42",
             nickname="same",

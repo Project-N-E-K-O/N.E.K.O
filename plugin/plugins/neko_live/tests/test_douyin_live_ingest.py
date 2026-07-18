@@ -10,9 +10,9 @@ from urllib.parse import quote
 
 import pytest
 
-from plugin.plugins.neko_live.core.contracts import InteractionResult, PipelineStep, RoastConfig, ViewerEvent
+from plugin.plugins.neko_live.core.contracts import InteractionResult, PipelineStep, LiveConfig, ViewerEvent
 from plugin.plugins.neko_live.core.event_bus import EventBus
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.modules.douyin_identity import DouyinIdentityModule
 from plugin.plugins.neko_live.modules.douyin_live_ingest import DouyinLiveIngestModule
 from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_adapter import DouyinLiveBridgeAdapter
@@ -91,7 +91,7 @@ class _LiveEventsCtx:
         self.audit = _Audit()
         self.event_bus = EventBus(self.audit)
         self.safety_guard = _Safety()
-        self.config = RoastConfig(rate_limit_seconds=0)
+        self.config = LiveConfig(rate_limit_seconds=0)
         self.payloads: list[dict] = []
 
     async def handle_live_payload(self, payload: dict):
@@ -1170,7 +1170,7 @@ async def test_douyin_identity_strips_avatar_url_query_and_fragment():
 
 @pytest.mark.asyncio
 async def test_douyin_provider_router_uses_douyin_identity_module(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     event = runtime.live_provider.normalize(
         {
@@ -1189,7 +1189,7 @@ async def test_douyin_provider_router_uses_douyin_identity_module(tmp_path):
 
 @pytest.mark.asyncio
 async def test_douyin_bridge_webcast_uid_becomes_viewer_profile_key(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     payload = DouyinLiveBridgeAdapter().map_message(
         {
@@ -1845,7 +1845,7 @@ def test_douyin_reconnect_state_redacts_transport_failure_secrets():
 
 @pytest.mark.asyncio
 async def test_douyin_start_listening_degrades_until_external_bridge_exists(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "https://live.douyin.com/example"
     runtime.douyin_live_ingest._bridge_supervisor = _MissingBridgeSupervisor()
@@ -1867,7 +1867,7 @@ async def test_douyin_start_listening_degrades_until_external_bridge_exists(tmp_
 
 @pytest.mark.asyncio
 async def test_douyin_connect_snapshot_exposes_external_bridge_failure_state(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "https://live.douyin.com/example"
     runtime.douyin_live_ingest._bridge_supervisor = _MissingBridgeSupervisor()
@@ -1886,7 +1886,7 @@ async def test_douyin_connect_snapshot_exposes_external_bridge_failure_state(tmp
 
 @pytest.mark.asyncio
 async def test_douyin_connect_snapshot_sanitizes_configured_room_ref(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "https://live.douyin.com/example?cookie=must-not-leak"
     runtime.douyin_live_ingest._bridge_supervisor = _MissingBridgeSupervisor()
@@ -1901,7 +1901,7 @@ async def test_douyin_connect_snapshot_sanitizes_configured_room_ref(tmp_path):
 
 @pytest.mark.asyncio
 async def test_douyin_connect_snapshot_normalizes_platform_alias(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "dy"
     runtime.config.live_room_ref = "https://live.douyin.com/example"
     runtime.douyin_live_ingest._bridge_supervisor = _MissingBridgeSupervisor()
@@ -1915,7 +1915,7 @@ async def test_douyin_connect_snapshot_normalizes_platform_alias(tmp_path):
 
 @pytest.mark.asyncio
 async def test_douyin_start_listening_builds_bridge_connection_plan_without_metadata_fetch(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
     runtime.douyin_live_ingest.ctx = runtime
@@ -1964,7 +1964,7 @@ async def test_douyin_start_listening_builds_bridge_connection_plan_without_meta
 
 @pytest.mark.asyncio
 async def test_douyin_start_listening_delegates_to_external_bridge_boundary(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
     runtime.douyin_live_ingest.ctx = runtime
@@ -2298,7 +2298,7 @@ def test_douyin_live_bridge_adapter_prefers_contributor_webcast_uid_for_gift_sig
 
 @pytest.mark.asyncio
 async def test_douyin_start_listening_uses_external_bridge_without_direct_attempt(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
     runtime.douyin_live_ingest.ctx = runtime
@@ -2355,7 +2355,7 @@ async def test_douyin_start_listening_uses_external_bridge_without_direct_attemp
 
 @pytest.mark.asyncio
 async def test_douyin_start_listening_reports_external_bridge_error(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
     runtime.douyin_live_ingest.ctx = runtime
@@ -2399,7 +2399,7 @@ async def test_douyin_start_listening_does_not_require_plugin_cookie(monkeypatch
         def __str__(self) -> str:
             return "ttwid=secret-cookie"
 
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": _LooksLikeCookie()}
     runtime.douyin_live_ingest.ctx = runtime
@@ -2435,7 +2435,7 @@ async def test_douyin_start_listening_does_not_require_plugin_cookie(monkeypatch
 
 @pytest.mark.asyncio
 async def test_douyin_connect_snapshot_exposes_unsupported_bridge_plan(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "room-42"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
@@ -2480,7 +2480,7 @@ async def test_douyin_connect_snapshot_exposes_unsupported_bridge_plan(monkeypat
 
 @pytest.mark.asyncio
 async def test_douyin_stop_listening_clears_transient_connection_error(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "room-42"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
@@ -2645,7 +2645,7 @@ def test_douyin_status_drops_object_state_and_event_type_projection():
 
 @pytest.mark.asyncio
 async def test_douyin_provider_router_normalizes_room_ref_before_config_save(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
 
     config = await runtime.set_live_room("https://live.douyin.com/room-42?from=copy")
@@ -2657,7 +2657,7 @@ async def test_douyin_provider_router_normalizes_room_ref_before_config_save(tmp
 
 @pytest.mark.asyncio
 async def test_douyin_lookup_uses_parser_without_network(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
 
     bad = await runtime.lookup_live_room("https://example.com/not-douyin")
@@ -2668,7 +2668,7 @@ async def test_douyin_lookup_uses_parser_without_network(tmp_path):
 
 @pytest.mark.asyncio
 async def test_douyin_lookup_audit_uses_safe_normalized_room_ref(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_credential = {"cookie": "ttwid=secret-cookie"}
     runtime.douyin_live_ingest.ctx = runtime
@@ -2699,7 +2699,7 @@ async def test_douyin_lookup_audit_uses_safe_normalized_room_ref(monkeypatch, tm
 
 @pytest.mark.asyncio
 async def test_douyin_lookup_audit_does_not_store_invalid_raw_room_ref(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
 
     result = await runtime.lookup_live_room("https://example.com/not-douyin?cookie=must-not-leak")
@@ -2712,7 +2712,7 @@ async def test_douyin_lookup_audit_does_not_store_invalid_raw_room_ref(tmp_path)
 
 @pytest.mark.asyncio
 async def test_douyin_lookup_uses_webcast_fetch_result(monkeypatch, tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     calls: list[dict[str, str]] = []
 
@@ -2910,7 +2910,7 @@ async def test_douyin_gift_event_reaches_live_events_as_safe_signal_only():
 
 @pytest.mark.asyncio
 async def test_douyin_gift_support_event_enters_pipeline_without_raw_leak(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     calls: list[ViewerEvent] = []
 
@@ -2980,7 +2980,7 @@ async def test_douyin_status_only_events_do_not_publish_to_live_events(event_typ
 
 @pytest.mark.asyncio
 async def test_douyin_dashboard_health_distinguishes_status_only_from_published(tmp_path):
-    runtime = RoastRuntime(_Plugin(tmp_path))
+    runtime = LiveRuntime(_Plugin(tmp_path))
     runtime.config.live_platform = "douyin"
     runtime.douyin_live_ingest.ctx = runtime
 

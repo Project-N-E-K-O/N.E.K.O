@@ -48,7 +48,7 @@ def normalize_live_platform(value: Any) -> str:
 
 
 @dataclass
-class RoastConfig:
+class LiveConfig:
     live_platform: str = "bilibili"
     live_room_ref: str = ""
     live_room_id: int = 0
@@ -85,7 +85,7 @@ class RoastConfig:
     stream_avoid_topics: str = ""
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any] | None) -> "RoastConfig":
+    def from_mapping(cls, data: dict[str, Any] | None) -> "LiveConfig":
         raw = dict(data or {})
         live_mode = _safe_text(raw.get("live_mode"), default="co_stream")
         if live_mode == "solo":

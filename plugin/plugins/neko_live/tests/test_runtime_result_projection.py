@@ -10,11 +10,11 @@ from plugin.plugins.neko_live.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModule
 
 
-def test_record_result_keeps_fake_support_claim_as_danmaku_signal(runtime: RoastRuntime) -> None:
+def test_record_result_keeps_fake_support_claim_as_danmaku_signal(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -36,7 +36,7 @@ def test_record_result_keeps_fake_support_claim_as_danmaku_signal(runtime: Roast
     assert latest["event_signal"] == "danmaku_signal"
 
 
-def test_record_result_exposes_real_gift_event_signal(runtime: RoastRuntime) -> None:
+def test_record_result_exposes_real_gift_event_signal(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -58,7 +58,7 @@ def test_record_result_exposes_real_gift_event_signal(runtime: RoastRuntime) -> 
     assert latest["event_signal"] == "gift_signal"
 
 
-def test_record_result_exposes_danmaku_response_profile_for_monitoring(runtime: RoastRuntime) -> None:
+def test_record_result_exposes_danmaku_response_profile_for_monitoring(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -107,7 +107,7 @@ def test_record_result_exposes_danmaku_response_profile_for_monitoring(runtime: 
     assert latest["room_theme"] == "small talk"
 
 
-def test_record_result_rejects_object_reply_review_metadata(runtime: RoastRuntime) -> None:
+def test_record_result_rejects_object_reply_review_metadata(runtime: LiveRuntime) -> None:
     class SpoofText:
         def __str__(self):
             return "room_bridge"
@@ -148,7 +148,7 @@ def test_record_result_rejects_object_reply_review_metadata(runtime: RoastRuntim
     assert "danmaku_anchor_hint" not in latest
 
 
-def test_recent_room_danmaku_context_groups_room_theme(runtime: RoastRuntime) -> None:
+def test_recent_room_danmaku_context_groups_room_theme(runtime: LiveRuntime) -> None:
     for uid, nickname, text in (
         ("1", "alice", "夜里选小甜食还是热饮？"),
         ("2", "bob", "1"),
@@ -181,7 +181,7 @@ def test_recent_room_danmaku_context_groups_room_theme(runtime: RoastRuntime) ->
     assert "do not re-ask the same choice" in rendered
 
 
-def test_record_result_exposes_spent_output_family_for_monitoring(runtime: RoastRuntime) -> None:
+def test_record_result_exposes_spent_output_family_for_monitoring(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -202,7 +202,7 @@ def test_record_result_exposes_spent_output_family_for_monitoring(runtime: Roast
     assert latest["spent_output_family"] == "food_drink,reward,audience_prompt"
 
 
-def test_record_result_does_not_expose_spent_output_family_for_dispatcher_placeholder(runtime: RoastRuntime) -> None:
+def test_record_result_does_not_expose_spent_output_family_for_dispatcher_placeholder(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -223,7 +223,7 @@ def test_record_result_does_not_expose_spent_output_family_for_dispatcher_placeh
     assert "spent_output_family" not in latest
 
 
-def test_record_result_does_not_expose_spent_output_family_for_dry_run_text(runtime: RoastRuntime) -> None:
+def test_record_result_does_not_expose_spent_output_family_for_dry_run_text(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=False,
@@ -247,7 +247,7 @@ def test_record_result_does_not_expose_spent_output_family_for_dry_run_text(runt
     assert runtime.recent_interaction_context(limit=1) == ["danmaku_response / live_danmaku from viewer: one more line"]
 
 
-def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRuntime) -> None:
+def test_record_result_exposes_active_topic_recent_skip_reason(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -285,7 +285,7 @@ def test_record_result_exposes_active_topic_recent_skip_reason(runtime: RoastRun
     ],
 )
 def test_record_result_uses_live_event_type_for_signal_observation(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     event_type: str,
     expected_signal: str,
 ) -> None:
@@ -312,7 +312,7 @@ def test_record_result_uses_live_event_type_for_signal_observation(
 
 
 @pytest.mark.asyncio
-async def test_handle_live_payload_routes_gift_to_support_events(runtime: RoastRuntime) -> None:
+async def test_handle_live_payload_routes_gift_to_support_events(runtime: LiveRuntime) -> None:
     runtime.config.dry_run = False
     runtime.config.live_mode = "solo_stream"
     runtime.config.live_enabled = True
@@ -358,7 +358,7 @@ async def test_handle_live_payload_routes_gift_to_support_events(runtime: RoastR
 
 
 @pytest.mark.asyncio
-async def test_handle_live_payload_accepts_signal_gift_count_and_value(runtime: RoastRuntime) -> None:
+async def test_handle_live_payload_accepts_signal_gift_count_and_value(runtime: LiveRuntime) -> None:
     runtime.config.dry_run = True
     runtime.config.live_mode = "solo_stream"
     runtime.config.live_enabled = True
@@ -397,7 +397,7 @@ async def test_handle_live_payload_accepts_signal_gift_count_and_value(runtime: 
     ],
 )
 async def test_handle_live_payload_routes_support_events_through_pipeline(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     event_type: str,
     expected_support_type: str,
     expected_signal: str,

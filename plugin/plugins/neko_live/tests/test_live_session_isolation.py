@@ -12,7 +12,7 @@ from plugin.plugins.neko_live.core.contracts import (
     ViewerEvent,
     ViewerIdentity,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core.runtime_live_listener import (
     start_live_listener,
     stop_live_listener,
@@ -22,7 +22,7 @@ from plugin.plugins.neko_live.modules.bili_live_ingest import BiliLiveIngestModu
 
 
 @pytest.mark.asyncio
-async def test_start_live_listener_starts_fresh_session_state(runtime: RoastRuntime) -> None:
+async def test_start_live_listener_starts_fresh_session_state(runtime: LiveRuntime) -> None:
     runtime.recent_results.append({"status": "pushed", "response_module": "warmup_hosting"})
     runtime.live_events._last_dispatch_at = 91.0
     runtime.live_events._last_decision_at = 92.0
@@ -58,7 +58,7 @@ async def test_start_live_listener_starts_fresh_session_state(runtime: RoastRunt
 
 
 @pytest.mark.asyncio
-async def test_late_result_from_previous_session_is_discarded(runtime: RoastRuntime) -> None:
+async def test_late_result_from_previous_session_is_discarded(runtime: LiveRuntime) -> None:
     assert await start_live_listener(runtime, 123) is True
     old_generation = runtime._live_session_generation
     old_event = ViewerEvent(
@@ -84,7 +84,7 @@ async def test_late_result_from_previous_session_is_discarded(runtime: RoastRunt
 
 
 @pytest.mark.asyncio
-async def test_pipeline_binds_live_event_to_current_session(runtime: RoastRuntime) -> None:
+async def test_pipeline_binds_live_event_to_current_session(runtime: LiveRuntime) -> None:
     assert await start_live_listener(runtime, 123) is True
     event = ViewerEvent(uid="", source="live_danmaku")
 
@@ -94,7 +94,7 @@ async def test_pipeline_binds_live_event_to_current_session(runtime: RoastRuntim
 
 
 @pytest.mark.asyncio
-async def test_stop_live_listener_invalidates_current_session(runtime: RoastRuntime) -> None:
+async def test_stop_live_listener_invalidates_current_session(runtime: LiveRuntime) -> None:
     assert await start_live_listener(runtime, 123) is True
     active_generation = runtime._live_session_generation
 
@@ -104,7 +104,7 @@ async def test_stop_live_listener_invalidates_current_session(runtime: RoastRunt
 
 
 @pytest.mark.asyncio
-async def test_room_switch_blocks_old_event_before_dispatch(runtime: RoastRuntime) -> None:
+async def test_room_switch_blocks_old_event_before_dispatch(runtime: LiveRuntime) -> None:
     identity_entered = asyncio.Event()
     resume_identity = asyncio.Event()
 
@@ -160,7 +160,7 @@ async def test_room_switch_blocks_old_event_before_dispatch(runtime: RoastRuntim
 
 @pytest.mark.asyncio
 async def test_room_switch_refreshes_context_before_syncing_instructions(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime.config.live_room_id = 123
@@ -245,7 +245,7 @@ def test_bili_event_captures_session_before_event_bus_handoff() -> None:
 
 
 def test_live_event_generation_survives_payload_projection(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     event = LiveEvent(
         type="danmaku",
@@ -276,7 +276,7 @@ def test_live_event_generation_survives_payload_projection(
 
 
 def test_douyin_normalize_preserves_internal_session_generation(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_platform = "douyin"
 
@@ -293,7 +293,7 @@ def test_douyin_normalize_preserves_internal_session_generation(
 
 @pytest.mark.asyncio
 async def test_live_event_is_blocked_while_listener_is_not_accepting(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     class _Dispatcher:
         def __init__(self) -> None:
@@ -328,7 +328,7 @@ async def test_live_event_is_blocked_while_listener_is_not_accepting(
 
 @pytest.mark.asyncio
 async def test_session_is_revalidated_after_waiting_for_uid_lock(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.live_room_context = {"live_status": "live"}
@@ -378,7 +378,7 @@ async def test_session_is_revalidated_after_waiting_for_uid_lock(
 
 
 @pytest.mark.asyncio
-async def test_session_reset_cancels_pending_event_tasks(runtime: RoastRuntime) -> None:
+async def test_session_reset_cancels_pending_event_tasks(runtime: LiveRuntime) -> None:
     wait_forever = asyncio.Event()
     live_task = asyncio.create_task(wait_forever.wait())
     support_task = asyncio.create_task(wait_forever.wait())
@@ -394,7 +394,7 @@ async def test_session_reset_cancels_pending_event_tasks(runtime: RoastRuntime) 
 
 
 @pytest.mark.asyncio
-async def test_invalidating_live_session_cancels_open_support_combo(runtime: RoastRuntime) -> None:
+async def test_invalidating_live_session_cancels_open_support_combo(runtime: LiveRuntime) -> None:
     await runtime.live_support_events.setup(runtime)
     scheduler = runtime.live_support_events._scheduler
     assert scheduler is not None

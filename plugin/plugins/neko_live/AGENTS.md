@@ -1,6 +1,6 @@
-# neko_roast Agent Rules
+# neko_live Agent Rules
 
-This file is for IDE agents and future contributors working inside `plugin/plugins/neko_roast`.
+This file is for IDE agents and future contributors working inside `plugin/plugins/neko_live`.
 
 ## Hard Rules
 
@@ -113,8 +113,8 @@ Reviewers should check at least:
 For docs-only PRs, state that no code tests were run because the change is documentation-only. For any PR touching Python, UI, i18n, contracts, config schema, manifest, or runtime behavior, run at least:
 
 ```powershell
-uv run pytest plugin/plugins/neko_roast/tests -q
-uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_roast
+uv run pytest plugin/plugins/neko_live/tests -q
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
 For packaged compatibility builds, also confirm `ui/panel_compat.tsx` keeps the full panel surface: it may import `@neko/plugin-ui`, but it must not contain relative imports, `window.NekoUiKit`, or `__modules`.

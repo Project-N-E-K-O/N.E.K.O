@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from plugin.plugins.neko_live.core import live_status
-from plugin.plugins.neko_live.core.contracts import RoastConfig
+from plugin.plugins.neko_live.core.contracts import LiveConfig
 
 
 def test_live_status_summary_blocks_until_stream_is_connected_and_output_ready():
-    config = RoastConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
+    config = LiveConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
 
     disconnected = live_status.live_status_summary(
         config=config,
@@ -29,7 +29,7 @@ def test_live_status_summary_blocks_until_stream_is_connected_and_output_ready()
 
 
 def test_live_status_summary_normalizes_platform_alias_from_connection_snapshot():
-    config = RoastConfig(
+    config = LiveConfig(
         live_platform="dy",
         live_room_ref="https://live.douyin.com/example?cookie=must-not-leak",
         live_room_id=12345,
@@ -51,7 +51,7 @@ def test_live_status_summary_normalizes_platform_alias_from_connection_snapshot(
 
 
 def test_live_status_summary_prefers_sanitized_connection_room_target():
-    config = RoastConfig(
+    config = LiveConfig(
         live_platform="bilibili",
         live_room_ref="https://live.bilibili.com/111",
         live_room_id=111,
@@ -86,7 +86,7 @@ def test_live_status_summary_does_not_stringify_room_target_objects():
         def __int__(self) -> int:
             return 12345
 
-    config = RoastConfig(live_platform="bilibili", live_enabled=True, dry_run=False)
+    config = LiveConfig(live_platform="bilibili", live_enabled=True, dry_run=False)
     config.live_room_ref = _LooksLikeRoomRef()  # type: ignore[assignment]
     config.live_room_id = _LooksLikeRoomId()  # type: ignore[assignment]
 
@@ -111,7 +111,7 @@ def test_live_status_summary_does_not_stringify_room_target_objects():
 
 
 def test_live_state_summary_marks_solo_warmup_before_first_viewer_activity():
-    config = RoastConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=True)
+    config = LiveConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=True)
 
     state = live_status.live_state_summary(
         config=config,
@@ -131,7 +131,7 @@ def test_live_state_summary_marks_solo_warmup_before_first_viewer_activity():
 
 
 def test_active_engagement_status_defers_when_idle_hosting_is_approaching():
-    config = RoastConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
+    config = LiveConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
 
     status = live_status.active_engagement_status(
         config=config,
@@ -154,7 +154,7 @@ def test_active_engagement_status_defers_when_idle_hosting_is_approaching():
 
 
 def test_live_director_status_routes_idle_takeover_to_active_engagement():
-    config = RoastConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
+    config = LiveConfig(live_room_id=42, live_enabled=True, live_mode="solo_stream", dry_run=False)
 
     director = live_status.live_director_status(
         config=config,

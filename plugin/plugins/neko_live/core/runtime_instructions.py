@@ -7,10 +7,10 @@ from typing import Any
 
 from .contracts_public import public_text
 from .instructions import (
-    NEKO_ROAST_DEVELOPER_ANNOUNCEMENT,
-    NEKO_ROAST_DEVELOPER_INSTRUCTIONS,
-    NEKO_ROAST_DEVELOPER_RESTORE_INSTRUCTIONS,
-    NEKO_ROAST_RESTORE_INSTRUCTIONS,
+    NEKO_LIVE_DEVELOPER_ANNOUNCEMENT,
+    NEKO_LIVE_DEVELOPER_INSTRUCTIONS,
+    NEKO_LIVE_DEVELOPER_RESTORE_INSTRUCTIONS,
+    NEKO_LIVE_RESTORE_INSTRUCTIONS,
 )
 
 
@@ -58,7 +58,7 @@ async def inject_developer_instructions(runtime: Any, *, force: bool = False) ->
     if runtime.developer_instructions_injected and not force:
         return "developer_already_injected"
     try:
-        output = await runtime.dispatcher.push_developer_instructions(NEKO_ROAST_DEVELOPER_INSTRUCTIONS)
+        output = await runtime.dispatcher.push_developer_instructions(NEKO_LIVE_DEVELOPER_INSTRUCTIONS)
     except Exception as exc:
         runtime.developer_instructions_injected = False
         message = str(exc).strip() or f"developer_instruction_inject_failed: {type(exc).__name__}"
@@ -73,7 +73,7 @@ async def restore_developer_instructions(runtime: Any, *, force: bool = False) -
     if not runtime.developer_instructions_injected and not force:
         return "developer_not_injected"
     try:
-        output = await runtime.dispatcher.push_developer_restore(NEKO_ROAST_DEVELOPER_RESTORE_INSTRUCTIONS)
+        output = await runtime.dispatcher.push_developer_restore(NEKO_LIVE_DEVELOPER_RESTORE_INSTRUCTIONS)
     except Exception as exc:
         message = str(exc).strip() or f"developer_instruction_restore_failed: {type(exc).__name__}"
         runtime.audit.record("developer_instructions_restore_failed", message, level="warning")
@@ -85,7 +85,7 @@ async def restore_developer_instructions(runtime: Any, *, force: bool = False) -
 
 async def announce_developer_mode(runtime: Any) -> str:
     try:
-        output = await runtime.dispatcher.push_developer_announcement(NEKO_ROAST_DEVELOPER_ANNOUNCEMENT)
+        output = await runtime.dispatcher.push_developer_announcement(NEKO_LIVE_DEVELOPER_ANNOUNCEMENT)
     except Exception as exc:
         message = str(exc).strip() or f"developer_mode_announce_failed: {type(exc).__name__}"
         runtime.audit.record("developer_mode_announce_failed", message, level="warning")
@@ -98,7 +98,7 @@ async def restore_instructions(runtime: Any, *, force: bool = False) -> str:
     if not runtime.instructions_injected and not force:
         return "not_injected"
     try:
-        output = await runtime.dispatcher.push_context_restore(NEKO_ROAST_RESTORE_INSTRUCTIONS)
+        output = await runtime.dispatcher.push_context_restore(NEKO_LIVE_RESTORE_INSTRUCTIONS)
     except Exception as exc:
         message = str(exc).strip() or f"instruction_restore_failed: {type(exc).__name__}"
         runtime.audit.record("instructions_restore_failed", message, level="warning")

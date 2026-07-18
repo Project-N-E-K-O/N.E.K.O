@@ -34,11 +34,11 @@ live provider
 
 For normal danmaku, if the safety/local cooldown is clear, the first valid event is dispatched immediately. If cooldown remains, the module opens a short window, keeps the highest-scoring candidate, then dispatches that candidate when the window ends.
 
-During live reply pressure, `live_events` also applies the existing `RoastConfig.queue_limit` before the pipeline. The pressure count is computed from recently pushed live danmaku replies plus the current selection buffer. Once the limit is reached, plain low-priority danmaku is dropped at the selection layer instead of being buffered or forwarded to the host callback queue. Explicit questions, active-engagement answers, guard/high-score events, and support signals remain eligible.
+During live reply pressure, `live_events` also applies the existing `LiveConfig.queue_limit` before the pipeline. The pressure count is computed from recently pushed live danmaku replies plus the current selection buffer. Once the limit is reached, plain low-priority danmaku is dropped at the selection layer instead of being buffered or forwarded to the host callback queue. Explicit questions, active-engagement answers, guard/high-score events, and support signals remain eligible.
 
 For normal danmaku, the same submit path also updates a short rolling context window. The prompt context includes only compact representative examples, theme labels, reply tips, static reply tactics, and transient viewer hints such as "often asks questions" or "likes tech/AI".
 
-Low-value danmaku selection happens inside this module, not in host/core. The public pacing knob is `RoastConfig.activity_level`; there is no separate user-facing reply-selection config. Runtime status exposes the derived `reply_selection_policy` only for debugging:
+Low-value danmaku selection happens inside this module, not in host/core. The public pacing knob is `LiveConfig.activity_level`; there is no separate user-facing reply-selection config. Runtime status exposes the derived `reply_selection_policy` only for debugging:
 
 - `selected`: the base selection policy used for `standard` and `active`; it skips low-information danmaku such as bare reactions, repeated digits, or empty short noise. Queue pressure is an additional independent gate and may still produce `selection.queue_limit` before pipeline.
 - `quiet`: used for `quiet`; also skips low-priority plain danmaku below the quiet score threshold, while questions, content requests, greetings, guards, and very high-score events still pass.

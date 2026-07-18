@@ -9,7 +9,7 @@ from plugin.plugins.neko_live.adapters.output_contract_bridge import (
 )
 from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
-    RoastConfig,
+    LiveConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
@@ -136,7 +136,7 @@ async def test_dispatcher_respects_non_deliverable_request():
 
 def test_avatar_roast_is_the_default_visual_input_owner():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     request = module.build_request(
         ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi", source="live_danmaku", live_mode="solo_stream"),
         ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
@@ -147,7 +147,7 @@ def test_avatar_roast_is_the_default_visual_input_owner():
 
 def test_danmaku_response_is_text_only_even_when_identity_has_avatar():
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     request = module.build_request(
         ViewerEvent(uid="42", nickname="viewer", danmaku_text="hi again", source="live_danmaku", live_mode="solo_stream"),
         ViewerIdentity(uid="42", nickname="viewer", avatar_bytes=b"avatar", avatar_mime="image/png"),
@@ -158,7 +158,7 @@ def test_danmaku_response_is_text_only_even_when_identity_has_avatar():
 
 def test_idle_hosting_is_text_only_even_when_identity_has_avatar():
     module = AvatarRoastModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     request = module.build_request(
         ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream"),
         ViewerIdentity(uid="__neko_idle__", nickname="NEKO", avatar_bytes=b"avatar", avatar_mime="image/png"),
