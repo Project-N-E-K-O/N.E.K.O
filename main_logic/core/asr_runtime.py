@@ -490,6 +490,10 @@ class AsrRuntimeMixin:
         if state is VoiceLifecycleState.DRAINING:
             lifecycle.discard_pending_turn()
             self._asr_pending_speech_confirmed = False
+            self._asr_pending_detector_candidate = None
+            detector = self._asr_detector
+            if detector is not None:
+                await detector.reset()
             await self._send_asr_status(
                 "ASR_INGRESS_BACKPRESSURE",
                 self._asr_provider or "unknown",
@@ -516,10 +520,25 @@ class AsrRuntimeMixin:
                 self._asr_provider or "unknown",
             )
             return
-        await self._handle_independent_asr_error(
-            self._asr_session_epoch,
+        if state in {
+            VoiceLifecycleState.PREWARMING,
+            VoiceLifecycleState.BACKOFF,
+            VoiceLifecycleState.ACTIVE,
+        }:
+            detector = self._asr_detector
+            lifecycle.invalidate_audio()
+            await self.abort_transport("detector_audio_backpressure")
+            if detector is not None and detector is self._asr_detector:
+                await detector.reset()
+            await self._send_asr_status(
+                "ASR_INGRESS_BACKPRESSURE",
+                self._asr_provider or "unknown",
+            )
+            await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
+            return
+        await self._send_asr_status(
+            "ASR_INGRESS_BACKPRESSURE",
             self._asr_provider or "unknown",
-            status_code="ASR_INGRESS_BACKPRESSURE",
         )
 
     async def _start_independent_asr_if_enabled(self, input_mode: str) -> None:
