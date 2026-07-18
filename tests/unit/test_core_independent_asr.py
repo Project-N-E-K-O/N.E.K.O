@@ -808,8 +808,12 @@ async def test_draining_pending_turn_overflow_discards_candidate_and_reports_bac
     )
 
     asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_session is asr
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
+    assert runtime._asr_sealed_turn_token is not None
     assert runtime._asr_lifecycle.pending_turn_bytes == 0
     assert runtime._asr_lifecycle.has_pending_turn is False
+    runtime._asr_detector.reset.assert_awaited_once()
     assert any(
         "ASR_INGRESS_BACKPRESSURE" in call.args[0]
         for call in runtime.send_status.await_args_list

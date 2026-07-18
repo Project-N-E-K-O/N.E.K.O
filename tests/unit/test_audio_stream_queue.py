@@ -19,6 +19,7 @@ from main_logic.asr_client.hot_swap_audio_buffer import (
 from main_logic.asr_client.lifecycle_contracts import (
     VoiceIngressToken,
     VoiceLifecycleEvent,
+    VoiceLifecycleState,
     VoiceRouteMode,
 )
 from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
@@ -179,7 +180,7 @@ async def test_audio_stream_queue_clears_whole_candidate_when_full():
     mgr._handle_audio_ingress_backpressure.assert_awaited_once()
 
 
-async def test_active_audio_queue_overflow_blocks_the_whole_turn():
+async def test_active_audio_queue_overflow_aborts_turn_then_resumes_local_listen():
     mgr = LLMSessionManager.__new__(LLMSessionManager)
     mgr.lanlan_name = "Test"
     mgr.send_status = AsyncMock()
@@ -210,8 +211,9 @@ async def test_active_audio_queue_overflow_blocks_the_whole_turn():
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
     await LLMSessionManager._enqueue_audio_stream_data(mgr, message)
 
-    assert mgr._asr_route_mode == "blocked"
-    assert mgr._asr_lifecycle is None
+    assert mgr._asr_route_mode == "independent"
+    assert mgr._asr_lifecycle is not None
+    assert mgr._asr_lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
     assert mgr._audio_stream_queue.empty()
     assert any(
         "ASR_INGRESS_BACKPRESSURE" in call.args[0]
