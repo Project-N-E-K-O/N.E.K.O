@@ -225,6 +225,55 @@ def _prepend_live_delivery_boundary(text: str, request: InteractionRequest) -> s
     return f"{base}\n\n{boundary}" if base else boundary
 
 
+def _mark_live_audience_speaker(metadata: dict[str, Any], request: InteractionRequest) -> None:
+    source = str(request.event.source or "").strip()
+    danmaku = str(request.event.danmaku_text or "").strip()
+    module = response_module_hint(request)
+    if (
+        source not in _NEKO_ROAST_AUDIENCE_SOURCES
+        or module not in {"avatar_roast", "danmaku_response"}
+        or not danmaku
+    ):
+        return
+    metadata["live_message_origin"] = "viewer_danmaku"
+    metadata["live_speaker_role"] = "viewer"
+
+
+def _prepend_live_audience_speaker_lock(
+    text: str,
+    metadata: dict[str, Any],
+    request: InteractionRequest,
+) -> str:
+    source = str(request.event.source or "").strip()
+    danmaku = str(request.event.danmaku_text or "").strip()
+    module = response_module_hint(request)
+    if (
+        source not in _NEKO_ROAST_AUDIENCE_SOURCES
+        or module not in {"avatar_roast", "danmaku_response"}
+        or not danmaku
+    ):
+        return text
+    if "NEKO Live audience speaker identity:" in text:
+        return text
+
+    viewer = str(metadata.get("danmaku_viewer_nickname") or "").strip()
+    if not viewer:
+        viewer = str(request.identity.nickname or request.event.nickname or "").strip()
+    viewer = " ".join(viewer.split())[:24] or "the current live viewer"
+    lock = "\n".join(
+        (
+            "NEKO Live audience speaker identity:",
+            "- message_origin: third-party live viewer danmaku",
+            f"- danmaku_author: {viewer}",
+            "- The current danmaku was written by danmaku_author, not by {MASTER_NAME}, the owner, the operator, or the human co-streamer.",
+            "- If the current danmaku is a question or request, danmaku_author is the questioner/requester.",
+            "- Answer danmaku_author in the public live room; never say or imply that the human streamer or owner asked this question.",
+        )
+    )
+    base = str(text or "").lstrip()
+    return f"{lock}\n\n{base}" if base else lock
+
+
 def _prepend_danmaku_visible_target_lock(text: str, metadata: dict[str, Any], request: InteractionRequest) -> str:
     if response_module_hint(request) != "danmaku_response":
         return text
@@ -436,6 +485,7 @@ class NekoDispatcher:
         metadata = metadata_for_request(request, demo=is_demo_event)
         if target_lanlan:
             metadata["target_lanlan"] = target_lanlan
+        _mark_live_audience_speaker(metadata, request)
         forced_reply = _unverified_support_claim_reply(request, metadata)
         if forced_reply:
             metadata["forced_reply_reason"] = "unverified_support_claim"
@@ -446,6 +496,11 @@ class NekoDispatcher:
             plugin=self.plugin,
         )
         parts[0]["text"] = _prepend_danmaku_visible_target_lock(
+            str(parts[0].get("text") or ""),
+            metadata,
+            request,
+        )
+        parts[0]["text"] = _prepend_live_audience_speaker_lock(
             str(parts[0].get("text") or ""),
             metadata,
             request,
