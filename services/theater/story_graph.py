@@ -21,10 +21,13 @@ def current_node(story: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]
     return node_by_id(story, str(state.get("current_node_id") or ""))
 
 
-def outgoing_nodes(story: dict[str, Any], state: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+def outgoing_nodes(
+    story: dict[str, Any], state: dict[str, Any]
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """按作者顺序返回当前可达的边和目标节点。"""  # noqa: DOCSTRING_CJK
     current_id = str(state.get("current_node_id") or "")
     completed = set(state.get("completed_node_ids") or [])
+    completed_goals = set(state.get("completed_goal_ids") or [])
     candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for edge in story.get("edges") or []:
         if not isinstance(edge, dict) or str(edge.get("from_node") or "") != current_id:
@@ -32,7 +35,18 @@ def outgoing_nodes(story: dict[str, Any], state: dict[str, Any]) -> list[tuple[d
         node = node_by_id(story, str(edge.get("to_node") or ""))
         if not node or str(node.get("node_id") or "") in completed:
             continue
-        if rules.node_is_available(node, state):
+        edge_goal_id = str(edge.get("goal_id") or "").strip()
+        node_goal_ids = {
+            str(item).strip()
+            for item in node.get("completes_goal_ids") or []
+            if str(item).strip()
+        }
+        if edge_goal_id in completed_goals or node_goal_ids.intersection(
+            completed_goals
+        ):
+            # 已完成 Goal 的入口与重复完成节点同时失效，点击、自然语言和恢复投影因此共享同一过滤结果。
+            continue
+        if rules.node_is_available(story, node, state):
             candidates.append((edge, node))
     return candidates
 
@@ -45,51 +59,55 @@ def suggestion_options(
 ) -> list[dict[str, Any]]:
     """从当前出边的目标节点生成稳定行动/对白选项。"""  # noqa: DOCSTRING_CJK
     options: list[dict[str, Any]] = []
-    overrides = state.get("choice_label_overrides") if isinstance(state.get("choice_label_overrides"), dict) else {}
     for edge, node in outgoing_nodes(story, state):
         # 隐藏语义边只参与自由输入路由，绝不能作为推荐按钮或恢复快照泄露给玩家。
         if str(edge.get("visibility") or "recommended") == "latent":
             continue
-        suggestions = [item for item in node.get("suggestions") or [] if isinstance(item, dict)]
-        matched = [item for item in suggestions if _suggestion_matches_edge(item, edge)] or suggestions[:1]
-        if not matched:
-            matched = [{"label": str(node.get("title") or "继续剧情")}]
-        for index, suggestion in enumerate(matched):
+        suggestions = [
+            item for item in node.get("suggestions") or [] if isinstance(item, dict)
+        ]
+        matched = [item for item in suggestions if _suggestion_matches_edge(item, edge)]
+        for suggestion in matched:
             static_label = str(suggestion.get("label") or "").strip()
-            if not static_label:
-                continue
-            choice_id = str(suggestion.get("choice_id") or f"choice_{node.get('node_id')}_{index + 1}")
-            # 模型只能改显示文案；ID、模式、目标和 callback 始终来自作者静态图。
+            choice_id = str(suggestion.get("choice_id") or "")
+            # Choice 的显示文案、ID、模式、目标和 callback 全部来自作者静态图。
             # 作者可以在对白按钮中引用当前猫娘名，避免把玩家自己的角色写死成某个默认名字。
-            author_label = _render_choice_label(static_label, lanlan_name)
-            label = _render_choice_label(str(overrides.get(choice_id) or author_label), lanlan_name)
-            guide = node.get("runtime_generation_guide") if isinstance(node.get("runtime_generation_guide"), dict) else {}
+            author_label = render_story_text(static_label, lanlan_name)
+            guide = (
+                node.get("runtime_generation_guide")
+                if isinstance(node.get("runtime_generation_guide"), dict)
+                else {}
+            )
             options.append(
                 {
                     "choice_id": choice_id,
-                    "label": label,
-                    # 作者原标签只在服务端校验模型改写，不会由 Projector 暴露给前端。
+                    "label": author_label,
+                    # 作者标签只在服务端演绎上下文中使用，Projector 不会重复暴露该字段。
                     "author_label": author_label,
-                    "choice_mode": _choice_mode(suggestion, static_label),
+                    "choice_mode": str(suggestion.get("choice_mode") or ""),
                     "target_node_id": str(node.get("node_id") or ""),
                     "callback": str(suggestion.get("callback") or ""),
                     # 目标节点的公开作者意图只供本轮自然语言路由和演绎使用；Projector 不会把它们暴露给前端。
                     "target_summary": str(node.get("summary") or ""),
                     "target_narrator_intent": str(guide.get("narrator_intent") or ""),
                     "target_catgirl_intent": str(guide.get("catgirl_raw_intent") or ""),
-                    "target_scripted_dialogue": str(node.get("scripted_dialogue") or ""),
+                    "target_scripted_dialogue": str(
+                        node.get("scripted_dialogue") or ""
+                    ),
                     # 作者完成表达只供服务端确定性路由，不属于玩家可见 Choice 文案。
                     "completion_phrases": [
-                        _render_choice_label(str(phrase), lanlan_name)
+                        render_story_text(str(phrase), lanlan_name)
                         for phrase in suggestion.get("completion_phrases") or []
                         if str(phrase or "").strip()
                     ],
                 }
             )
-    return _dedupe_options(options)
+    return options
 
 
-def latent_transition_options(story: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
+def latent_transition_options(
+    story: dict[str, Any], state: dict[str, Any]
+) -> list[dict[str, Any]]:
     """返回当前可达的作者隐藏语义边，供单轮模型做白名单意图判断。"""  # noqa: DOCSTRING_CJK
     options: list[dict[str, Any]] = []
     active_goal = str(state.get("active_goal_id") or "")
@@ -105,8 +123,12 @@ def latent_transition_options(story: dict[str, Any], state: dict[str, Any]) -> l
                 "goal_id": goal_id,
                 "intent_id": intent_id,
                 "intent_summary": str(edge.get("intent_summary") or ""),
-                "intent_examples": [str(item) for item in edge.get("intent_examples") or []],
-                "pullbacks_before_transition": int(edge.get("pullbacks_before_transition") or 0),
+                "intent_examples": [
+                    str(item) for item in edge.get("intent_examples") or []
+                ],
+                "pullbacks_before_transition": int(
+                    edge.get("pullbacks_before_transition") or 0
+                ),
                 "target_node_id": str(node.get("node_id") or ""),
                 "callback": str(edge.get("callback") or ""),
                 # 连续次数只帮助模型让回应保持语境；它属于内部路由状态，不会经过 Projector。
@@ -158,22 +180,27 @@ def resolve_authored_completion(
         return {}
     matched: list[dict[str, Any]] = []
     for option in suggestion_options(story, state, lanlan_name=lanlan_name):
-        phrase_keys = {_natural_input_key(phrase) for phrase in option.get("completion_phrases") or []}
+        phrase_keys = {
+            _natural_input_key(phrase)
+            for phrase in option.get("completion_phrases") or []
+        }
         if message_key in phrase_keys:
             matched.append(option)
     # 多个出口声明同一表达时不猜目标，交回模型按完整上下文处理。
     return matched[0] if len(matched) == 1 else {}
 
 
-def _render_choice_label(label: str, lanlan_name: str) -> str:
-    """把作者声明的当前猫娘名占位符替换为本场实际角色名。"""  # noqa: DOCSTRING_CJK
+def render_story_text(value: Any, lanlan_name: str) -> str:
+    """把作者公开文本中的当前猫娘占位符替换为本场实际角色名。"""  # noqa: DOCSTRING_CJK
     normalized_name = str(lanlan_name or "猫娘").strip() or "猫娘"
-    return str(label or "").replace("{{lanlan_name}}", normalized_name).strip()
+    return str(value or "").replace("{{lanlan_name}}", normalized_name).strip()
 
 
 def _natural_input_key(value: Any) -> str:
     """忽略自然输入中的空白和句末标点，但不做包含或模糊匹配。"""  # noqa: DOCSTRING_CJK
-    return re.sub(r"[\s，。！？、；：,.!?;:\"'“”‘’「」（）()…—]+", "", str(value or "")).casefold()
+    return re.sub(
+        r"[\s，。！？、；：,.!?;:\"'“”‘’「」（）()…—]+", "", str(value or "")
+    ).casefold()
 
 
 def _suggestion_matches_edge(suggestion: dict[str, Any], edge: dict[str, Any]) -> bool:
@@ -183,25 +210,3 @@ def _suggestion_matches_edge(suggestion: dict[str, Any], edge: dict[str, Any]) -
     return (not behavior or behavior == str(edge.get("behavior") or "")) and (
         not meaning or meaning == str(edge.get("meaning") or "")
     )
-
-
-def _choice_mode(suggestion: dict[str, Any], label: str) -> str:
-    """兼容旧剧本：显式值优先，带引号的第一人称句子归为对白。"""  # noqa: DOCSTRING_CJK
-    explicit = str(suggestion.get("choice_mode") or "").strip()
-    if explicit in {"action", "dialogue"}:
-        return explicit
-    if any(mark in label for mark in ('“', '”', '「', '」', '："', ':"')):
-        return "dialogue"
-    return "action"
-
-
-def _dedupe_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 Choice ID 去重，避免同一目标的重复边生成重复按钮。"""  # noqa: DOCSTRING_CJK
-    result: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for option in options:
-        if option["choice_id"] in seen:
-            continue
-        seen.add(option["choice_id"])
-        result.append(option)
-    return result

@@ -42,12 +42,13 @@ def _compatible_server() -> Iterator[tuple[str, list[dict[str, Any]]]]:
             length = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             requests.append(payload)
+            # Actor 只返回演出字段；自由输入路由 ID 已由独立 Router 协议负责。
             response = {
                 "id": "chatcmpl-light",
                 "object": "chat.completion",
                 "created": 1,
                 "model": payload.get("model"),
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"narration":"雨声轻了一点。","dialogue":"我听见你说的话了喵。","matched_choice_id":"","choice_rewrites":[]}'}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": '{"narration":"雨声轻了一点。","dialogue":"我听见你说的话了喵。","choice_rewrites":[]}'}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
             }
             encoded = json.dumps(response, ensure_ascii=False).encode("utf-8")
@@ -87,13 +88,11 @@ async def test_single_turn_uses_one_model_request():
             state={},
             recent_turns=[],
         )
-    # 模型仍只调用一次，但剧情推进旁白必须采用作者 callback，不能被模型改写已发生动作。
+    # Actor 仍只调用一次，并且不能重新承担已经拆给 Router 的路由职责。
     assert result == {
         "narration": "你把灯放在桌边。",
         "dialogue": "我听见你说的话了喵。",
         "choice_rewrites": [],
-        "matched_choice_id": "",
-        "observed_intent_id": "",
     }
     assert len(requests) == 1
     assert requests[0]["model"] == "theater-light-smoke"

@@ -1,0 +1,244 @@
+{
+  "id": "framework_contract_story",
+  "story_revision": "framework-contract-v1",
+  "title": "小剧场框架合同夹具",
+  "summary": "只用于验证小剧场通用加载、推进、支线和恢复合同，不代表正式剧本内容。",
+  "background": "这是一份只存在于测试目录中的中性 Story Package。玩家与当前猫娘位于一间公开测试室，共同核对桌上的测试牌、记录一次可观察的交换，并沿作者声明的静态路线结束演出。夹具不承载正式世界观、人物关系或待发布剧情，也不能出现在产品故事列表中。",
+  "theme": "验证作者合同与运行时状态边界",
+  "initial_scene_id": "scene_contract_setup",
+  "opening_dialogue": "测试牌已经放在桌上，我们从公开可见的步骤开始吧。",
+  "restrictions": [
+    "只有玩家与当前猫娘可以直接说话。",
+    "所有状态变化都必须来自作者 Choice 或通过合同校验的公开事实。"
+  ],
+  "scenario_card": {
+    "player_role": "参与框架合同验证的玩家",
+    "catgirl_role": "与玩家共同验证公开步骤的当前猫娘",
+    "primary_goal": "沿作者声明的测试路线完成一次公开交换。"
+  },
+  "seed": {
+    "user_role": "参与框架合同验证的玩家",
+    "opening_facts": [
+      {
+        "type": "fact",
+        "subject": "test_room",
+        "predicate": "contains",
+        "object": "public_test_token"
+      }
+    ],
+    "forbidden_assumptions": [
+      {
+        "subject": "outside_character",
+        "predicate": "speaks_directly",
+        "object": "scene_dialogue"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "scene_contract_setup",
+      "phase": "setup",
+      "title": "公开测试室",
+      "text": "桌面放着一枚带编号的测试牌，玩家与当前猫娘都能看见它。"
+    },
+    {
+      "id": "scene_contract_progress",
+      "phase": "progress",
+      "title": "合同验证区",
+      "text": "测试牌仍在双方视线内，记录板等待写入公开完成结果。"
+    },
+    {
+      "id": "scene_contract_ending",
+      "phase": "ending",
+      "title": "验证完成",
+      "text": "记录板已经写入结果，本次框架合同验证到此结束。"
+    }
+  ],
+  "stage_props": [
+    {
+      "id": "prop_public_test_token",
+      "label": "公开测试牌",
+      "public_hint": "双方都能看见、只用于验证状态投影的普通测试物件。",
+      "available_from_node": "node_contract_start"
+    }
+  ],
+  "clues": [],
+  "narrative_nodes": [
+    {
+      "node_id": "node_contract_start",
+      "belong_phase": "setup",
+      "node_type": "seed",
+      "title": "验证起点",
+      "summary": "双方尚未选择如何处理测试牌。",
+      "suggestions": []
+    },
+    {
+      "node_id": "node_contract_anchor",
+      "belong_phase": "setup",
+      "node_type": "core",
+      "title": "确认公开测试牌",
+      "summary": "玩家通过行动或对白确认桌上的公开测试牌。",
+      "scripted_dialogue": "测试牌的位置和编号都已经确认。",
+      "suggestions": [
+        {
+          "choice_id": "choice_confirm_test_token",
+          "choice_mode": "action",
+          "label": "拿起公开测试牌并确认编号",
+          "callback": "你拿起测试牌，公开确认了牌面编号。",
+          "completion_phrases": [
+            "拿起测试牌并确认编号",
+            "确认测试牌"
+          ]
+        },
+        {
+          "choice_id": "choice_confirm_test_plan",
+          "choice_mode": "dialogue",
+          "label": "“我们按公开步骤完成这次验证。”",
+          "callback": "你明确表示将按双方可见的步骤继续验证。",
+          "completion_phrases": [
+            "我们按公开步骤完成这次验证"
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "node_contract_exchange",
+      "belong_phase": "progress",
+      "node_type": "core",
+      "title": "完成公开交换",
+      "summary": "玩家把测试牌递给猫娘，双方共同确认交换已经完成。",
+      "scripted_dialogue": "我已经接到测试牌，公开交换完成了。",
+      "completes_goal_ids": [
+        "goal_complete_public_exchange"
+      ],
+      "script_action": {
+        "uses_props": [
+          "prop_public_test_token"
+        ]
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_complete_public_exchange",
+          "choice_mode": "action",
+          "label": "把测试牌递给她并共同确认结果",
+          "callback": "你把测试牌递给她，双方公开确认交换已经完成。",
+          "completion_phrases": [
+            "把测试牌递给她并共同确认结果",
+            "完成公开交换"
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "node_contract_ending",
+      "belong_phase": "ending",
+      "node_type": "ending",
+      "ending_id": "ending_contract_complete",
+      "title": "框架验证完成",
+      "summary": "玩家把验证结果写入记录板，本次演出结束。",
+      "scripted_dialogue": "记录已经完成，这次验证可以结束了。",
+      "suggestions": [
+        {
+          "choice_id": "choice_finish_contract_story",
+          "choice_mode": "action",
+          "label": "把公开结果写入记录板",
+          "callback": "你把双方确认的结果写入记录板，结束了本次验证。"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from_node": "node_contract_start",
+      "to_node": "node_contract_anchor",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_contract_anchor",
+      "to_node": "node_contract_exchange",
+      "visibility": "recommended",
+      "goal_id": "goal_complete_public_exchange"
+    },
+    {
+      "from_node": "node_contract_exchange",
+      "to_node": "node_contract_ending",
+      "visibility": "recommended"
+    }
+  ],
+  "ending_attractors": [
+    {
+      "id": "ending_contract_complete",
+      "required_facts": [],
+      "forbidden_facts": []
+    }
+  ],
+  "narrative_goals": [
+    {
+      "goal_id": "goal_complete_public_exchange",
+      "summary": "完成一次双方都能观察到的测试牌交换",
+      "completion_evidence": [
+        "player_selected_item",
+        "catgirl_received_item",
+        "public_exchange_completed"
+      ],
+      "convergence_fact_roles": [
+        "player_selected_item",
+        "catgirl_received_item",
+        "public_exchange_completed"
+      ],
+      "completion_fact_projections": [],
+      "converge_to_node_id": "node_contract_exchange",
+      "fallback_convergence_callback": "测试牌已经完成公开交换，双方回到记录板前。"
+    }
+  ],
+  "ending_domains": [],
+  "world_contract": {
+    "speaking_roles": [
+      "player",
+      "active_catgirl"
+    ],
+    "immutable_facts": [
+      {
+        "subject": "test_room",
+        "predicate": "contains",
+        "object": "public_test_token"
+      }
+    ],
+    "allowed_dynamic_fact_types": [
+      "ordinary_local_prop",
+      "ordinary_test_item",
+      "observable_action"
+    ],
+    "dynamic_content_slots": [
+      {
+        "slot_id": "slot_public_exchange_item",
+        "allowed_fact_type": "ordinary_test_item",
+        "allowed_traits": [
+          "publicly_observable",
+          "non_sensitive"
+        ],
+        "forbidden_traits": [
+          "private_secret",
+          "dangerous"
+        ]
+      }
+    ],
+    "forbidden_changes": [
+      "不得新增未声明的说话角色",
+      "不得把测试事实写成正式剧情设定"
+    ],
+    "branch_turn_budget": {
+      "default": 3,
+      "max": 4,
+      "max_nonprogress_turns": 2
+    },
+    "branch_abort_policy": {
+      "mode": "return_to_anchor",
+      "neutral_callback": "当前尝试停止后，双方仍回到公开测试牌所在的验证区。"
+    },
+    "allowed_ending_domains": [],
+    "convergence_goal_ids": [
+      "goal_complete_public_exchange"
+    ]
+  }
+}

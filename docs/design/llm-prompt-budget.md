@@ -223,6 +223,24 @@ callback（`enqueue_agent_callback`）会经 `_build_callback_instruction`（文
 | 翻译短文本 chunk | `TRANSLATION_CHUNK_MAX_TOKENS_SHORT` | 2000 |
 | 翻译长文本 chunk | `TRANSLATION_CHUNK_MAX_TOKENS_LONG` | 5000 |
 
+### 4.7 Theater
+
+| Component | 常量 | 默认 | 说明 |
+|---|---|---|---|
+| Router / 普通 Actor / 支线入口与活动 Actor 玩家原话 | `THEATER_TURN_USER_MESSAGE_MAX_TOKENS` | 140 | 当前原话必须完整落入该预算；一旦需要截断即以 `context_incomplete` 技术降级，截断片段不得参与路由、事实或公开演绎 |
+| Planner 意图摘要 | `THEATER_PLANNER_INTENT_MAX_TOKENS` | 120 | 必须完整落入预算；超限摘要不能调用 Planner 或继续复用 |
+| Planner 单条玩家证据 | `THEATER_PLANNER_EVIDENCE_MAX_TOKENS` | 60 | 每条证据必须完整落入预算；旧 Session 中超限证据整条拒绝，不用前缀凑齐规划阈值 |
+| 模型近期历史中的单条公开回合 | 固定职责边界 | 玩家/猫娘对白 60；猫娘旁白 24 | 只作为无权威演绎上下文；玩家消息超限时整条不进入 Prompt，猫娘同回合的对白或旁白任一超限时也整条退出，避免句尾否定、转折或同回合语义被裁掉 |
+| Scene Note | `MAX_SCENE_NOTE_CHARS` | 160 字符 | 写入时超限整条拒绝；Router、Planner、Handoff 与可提交 Fact 的 Actor 默认不读取，只有无权威普通 Actor 可按需读取合法短笔记 |
+| 普通 Actor 读取的已结束支线数 | `THEATER_BRANCH_RECALL_MAX_HISTORIES` | 4 | 只读取最近合法 Branch History |
+| 普通 Actor 召回的关键支线事实总数 | `THEATER_BRANCH_RECALL_MAX_FACTS` | 8 | 只取 History 通过 `key_fact_ids` 精确引用的已提交事实 |
+| Goal 摘要、事实三元组和公开实体 label 单字段截断 | `THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS` | 24 | 每个用户 Story Package 文本字段分别调用 `truncate_to_tokens` |
+| Branch Handoff Story/Scene 标题 | `THEATER_BRANCH_HANDOFF_TITLE_MAX_TOKENS` | 40 | Story 与 Scene 公开标题分别截断 |
+| Branch Handoff Story 主题 / 背景 | `THEATER_BRANCH_HANDOFF_THEME_MAX_TOKENS` / `THEATER_BRANCH_HANDOFF_BACKGROUND_MAX_TOKENS` | 60 / 240 | 只传公开题材语义，不传 Story ID 或合同字段 |
+| Branch Handoff Scene 正文 | `THEATER_BRANCH_HANDOFF_SCENE_TEXT_MAX_TOKENS` | 120 | 只传当前公开 Scene 文本 |
+| Branch Handoff 支线语义单字段 | `THEATER_BRANCH_HANDOFF_INTENT_MAX_TOKENS` | 100 | `seed_intent` 与 `objective` 必须分别完整落入预算，否则分类整体降级；不传完整 Patch |
+| Branch Handoff 玩家原话 | `THEATER_BRANCH_HANDOFF_USER_MESSAGE_MAX_TOKENS` | 140 | 供分类器返回两段可逐字核验的短摘录；超过预算时整轮降级，不对前缀做分类 |
+
 ## 5. 输出侧 `max_completion_tokens` 索引
 
 > 路由：caller 传 `max_completion_tokens=N`，`utils/llm_client.py` `ChatOpenAI._params()` 按 `base_url` 决定写进请求体的字段名（Anthropic → `max_tokens`，其他 → `max_completion_tokens`）。
@@ -234,6 +252,7 @@ callback（`enqueue_agent_callback`）会经 `_build_callback_instruction`（文
 | Emotion 分析 | `EMOTION_ANALYSIS_MAX_TOKENS` | 40 |
 | OpenClaw magic intent 分类 | `OPENCLAW_MAGIC_INTENT_MAX_TOKENS` | 80 |
 | 插件短描述生成 | `AGENT_PLUGIN_SHORTDESC_MAX_TOKENS` | 150 |
+| 小剧场 Branch Handoff 分类 | `THEATER_BRANCH_HANDOFF_OUTPUT_MAX_TOKENS` | 220 |
 | 插件粗筛 | `AGENT_PLUGIN_COARSE_MAX_TOKENS` | 300 |
 | Proactive Phase 2 abort fence | `PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS` | 300 |
 | 视觉/截图分析 | `VISION_ANALYSIS_MAX_TOKENS` | 500 |

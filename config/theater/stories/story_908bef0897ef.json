@@ -1,0 +1,840 @@
+{
+  "id": "story_908bef0897ef",
+  "title": "未命名小剧场",
+  "summary": "这是一个关于霸道总裁与元气猫娘甜点师之间从雇佣关系到真爱的甜蜜故事，通过美食与烘焙作为媒介，展现两人情感的逐渐升温。",
+  "background": "高级餐厅的一份限定甜点，让一位习惯以效率和规则衡量一切的总裁第一次停下脚步。甜点出自一名活泼却十分看重专业尊严的猫娘，她接受了为期一个月的私人甜点师契约，希望自己的作品被认真理解，而不是只成为昂贵服务的一部分。进入陌生厨房后，两人必须在明确的雇佣边界内磨合：他习惯用要求和资源解决问题，她坚持让每种味道保留自己的判断。一次次配方试验、公开活动与深夜加班，让他们逐渐看见彼此方法之外的能力，也让原本清楚的工作关系出现难以忽视的变化。越接近契约终点，克制与误解越容易把关心伪装成命令或客套；突发的身体不适、活动压力和最后一份告别甜点，又迫使双方重新判断这段合作的意义。一个人需要学会不用安排替代表达，另一个人需要确认自己被珍视的究竟是技艺，还是完整的自己。当最后一天到来，他们能否在不替对方做决定的前提下，说清契约之外真正想保留的关系？",
+  "theme": "真爱能够融化冰封的心灵，超越身份与契约的束缚。",
+  "initial_scene_id": "restaurant_first_meeting",
+  "opening_dialogue": "欢迎光临！今天是我特制的'一见倾心'限定甜点，希望您会喜欢！每一口都是我用满满的心意制作的~",
+  "restrictions": [
+    "不得替玩家决定未选择的私人情绪、记忆或承诺",
+    "只能通过环境、记录或转述引入第三方角色",
+    "所有关系变化必须有双方可观察的因果证据"
+  ],
+  "scenario_card": {
+    "catgirl_role": "元气猫娘甜点师，活泼开朗，能将情感融入甜点制作，渴望被认可而非仅因技能",
+    "player_role": "霸道总裁，注重效率与专业，外表冷漠但内心渴望真诚连接",
+    "primary_goal": "在一个月的专属甜点师契约期内，通过美食与互动建立超越雇佣关系的情感连接"
+  },
+  "story_revision": "v2.5",
+  "seed": {
+    "forbidden_assumptions": [
+      {
+        "object": "猫娘",
+        "predicate": "已经爱上了",
+        "subject": "男主"
+      },
+      {
+        "object": "男主的真实感受",
+        "predicate": "知道",
+        "subject": "猫娘"
+      },
+      {
+        "object": "求婚",
+        "predicate": "已经决定",
+        "subject": "男主"
+      }
+    ],
+    "opening_facts": [
+      {
+        "object": "猫娘特制的'一见倾心'甜点",
+        "predicate": "品尝了",
+        "subject": "男主",
+        "type": "初始事实"
+      },
+      {
+        "object": "猫娘作为私人甜点师",
+        "predicate": "雇佣了",
+        "subject": "男主",
+        "type": "初始事实"
+      },
+      {
+        "object": "将情感融入甜点制作",
+        "predicate": "擅长",
+        "subject": "猫娘",
+        "type": "初始事实"
+      },
+      {
+        "object": "活泼开朗",
+        "predicate": "性格",
+        "subject": "猫娘",
+        "type": "初始事实"
+      }
+    ],
+    "user_role": "高冷总裁，注重效率与专业，外表冷漠但内心渴望真诚连接"
+  },
+  "stage_props": [
+    {
+      "available_from_node": "node_26a32510f0f4",
+      "id": "一见倾心甜点",
+      "label": "一见倾心甜点",
+      "public_hint": "一款精致的甜点，据说能让品尝者从冷漠到惊艳"
+    },
+    {
+      "available_from_node": "node_c0fa0e93a08f",
+      "id": "心动瞬间甜点",
+      "label": "心动瞬间甜点",
+      "public_hint": "一款多层次的甜点，每一层代表不同的情感层次"
+    },
+    {
+      "available_from_node": "node_80c6a87de0aa",
+      "id": "马卡龙",
+      "label": "心形马卡龙",
+      "public_hint": "需要特殊技巧才能挤出的完美心形马卡龙"
+    },
+    {
+      "available_from_node": "node_0be544e3cd3f",
+      "id": "星光梦境甜点",
+      "label": "星光梦境甜点",
+      "public_hint": "一款特制的深夜甜点，能带来能量和温暖"
+    },
+    {
+      "available_from_node": "node_24bbe2b11010",
+      "id": "猫咪收藏品",
+      "label": "猫咪收藏品",
+      "public_hint": "猫娘收集的各种可爱猫咪小物件"
+    },
+    {
+      "available_from_node": "node_24bbe2b11010",
+      "id": "甜点设计草图",
+      "label": "甜点设计草图",
+      "public_hint": "猫娘的甜点设计理念和创意草图"
+    },
+    {
+      "available_from_node": "node_fc82bbe9d195",
+      "id": "求婚蛋糕",
+      "label": "求婚蛋糕",
+      "public_hint": "一个精致的蛋糕，里面藏有求婚戒指"
+    },
+    {
+      "available_from_node": "node_990e417f029f",
+      "id": "保温餐盒",
+      "label": "保温餐盒",
+      "public_hint": "猫娘用来为男主准备夜宵的保温餐盒"
+    }
+  ],
+  "clues": [
+    {
+      "available_from_node": "node_52e55ecfd27b",
+      "id": "猫娘的特殊能力",
+      "label": "猫娘的特殊能力",
+      "public_hint": "猫娘能将情感融入甜点制作，通过食物传达心意"
+    },
+    {
+      "available_from_node": "node_c0fa0e93a08f",
+      "id": "男主的情感变化",
+      "label": "男主的情感变化",
+      "public_hint": "男主从冷漠到逐渐被猫娘的活力所感染"
+    },
+    {
+      "available_from_node": "node_24bbe2b11010",
+      "id": "猫娘的梦想",
+      "label": "猫娘的梦想",
+      "public_hint": "猫娘梦想开一家属于自己的猫咪主题甜点店"
+    },
+    {
+      "available_from_node": "node_7ce21e9ff6fc",
+      "id": "契约即将到期",
+      "label": "契约即将到期",
+      "public_hint": "一个月的雇佣契约即将结束，猫娘感到不舍"
+    },
+    {
+      "available_from_node": "node_24bbe2b11010",
+      "id": "猫娘对猫咪的特殊情感",
+      "label": "猫娘对猫咪的特殊情感",
+      "public_hint": "猫娘对猫咪有特殊的感情，这可能影响她的甜点创作"
+    }
+  ],
+  "narrative_goals": [
+    {
+      "completion_evidence": [
+        "男主正式聘请猫娘作为私人甜点师",
+        "猫娘开始为男主制作甜点"
+      ],
+      "completion_fact_projections": [],
+      "converge_to_node_id": "node_52e55ecfd27b",
+      "convergence_fact_roles": [
+        "男主正式聘请猫娘作为私人甜点师",
+        "猫娘开始为男主制作甜点"
+      ],
+      "fallback_convergence_callback": "即使没有正式雇佣，猫娘的甜点也给男主留下了深刻印象",
+      "goal_id": "建立雇佣关系",
+      "summary": "建立男主与猫娘的雇佣关系，为期一个月的私人甜点师契约"
+    },
+    {
+      "completion_evidence": [
+        "男主对猫娘的甜点给予高度评价",
+        "男主开始期待猫娘的甜点"
+      ],
+      "completion_fact_projections": [],
+      "converge_to_node_id": "node_c0fa0e93a08f",
+      "convergence_fact_roles": [
+        "男主对猫娘的甜点给予高度评价",
+        "男主开始期待猫娘的甜点"
+      ],
+      "fallback_convergence_callback": "即使没有特别认可，猫娘的专业表现依然出色",
+      "goal_id": "获得专业认可",
+      "summary": "猫娘通过甜点制作获得男主的专业认可"
+    },
+    {
+      "completion_evidence": [
+        "两人开始在非工作时间互动",
+        "话题从甜点扩展到生活与梦想"
+      ],
+      "completion_fact_projections": [],
+      "converge_to_node_id": "node_0be544e3cd3f",
+      "convergence_fact_roles": [
+        "两人开始在非工作时间互动",
+        "话题从甜点扩展到生活与梦想"
+      ],
+      "fallback_convergence_callback": "即使没有私人连接，两人的专业关系依然良好",
+      "goal_id": "建立私人连接",
+      "summary": "从专业关系向私人关系发展，建立超越雇佣的私人连接"
+    },
+    {
+      "completion_evidence": [
+        "男主向猫娘求婚",
+        "猫娘接受求婚，将临时契约升级为终身承诺"
+      ],
+      "completion_fact_projections": [],
+      "converge_to_node_id": "node_fc82bbe9d195",
+      "convergence_fact_roles": [
+        "男主向猫娘求婚",
+        "猫娘接受求婚，将临时契约升级为终身承诺"
+      ],
+      "fallback_convergence_callback": "即使没有求婚，两人的关系也超越了单纯的雇佣关系",
+      "goal_id": "关系升级",
+      "summary": "将临时契约升级为终身承诺"
+    }
+  ],
+  "ending_domains": [
+    {
+      "ending_domain_id": "domain_ending_001",
+      "ending_id": "ending_001",
+      "required_goal_ids": [
+        "关系升级"
+      ],
+      "required_fact_types": [],
+      "required_fact_roles": [],
+      "forbidden_fact_roles": []
+    }
+  ],
+  "world_contract": {
+    "allowed_dynamic_fact_types": [
+      "关系状态",
+      "认可状态",
+      "专业认可",
+      "亲密接触",
+      "公众认可",
+      "私人关心",
+      "互相依赖",
+      "关系不确定性",
+      "告别准备",
+      "私人连接",
+      "承诺关系"
+    ],
+    "allowed_ending_domains": [
+      "domain_ending_001"
+    ],
+    "branch_abort_policy": {
+      "mode": "return_to_anchor",
+      "neutral_callback": "停止当前尝试后回到主线锚点的公开反馈"
+    },
+    "branch_turn_budget": {
+      "default": 3,
+      "max": 4,
+      "max_nonprogress_turns": 2
+    },
+    "convergence_goal_ids": [
+      "建立雇佣关系",
+      "获得专业认可",
+      "建立私人连接",
+      "关系升级"
+    ],
+    "dynamic_content_slots": [
+      {
+        "allowed_fact_type": "关系状态",
+        "allowed_traits": [
+          "专业认可",
+          "亲密接触",
+          "私人关心",
+          "互相依赖",
+          "关系不确定性",
+          "私人连接",
+          "承诺关系"
+        ],
+        "forbidden_traits": [
+          "雇佣关系"
+        ],
+        "slot_id": "情感发展"
+      },
+      {
+        "allowed_fact_type": "认可状态",
+        "allowed_traits": [
+          "专业认可",
+          "公众认可"
+        ],
+        "forbidden_traits": [],
+        "slot_id": "社会认可"
+      }
+    ],
+    "forbidden_changes": [
+      "不得替玩家决定未选择的私人情绪、记忆或承诺",
+      "只能通过环境、记录或转述引入第三方角色",
+      "所有关系变化必须有双方可观察的因果证据",
+      "不得改变男主和猫娘的基本性格设定"
+    ],
+    "immutable_facts": [
+      {
+        "object": "高冷总裁",
+        "predicate": "是",
+        "subject": "男主"
+      },
+      {
+        "object": "将情感融入甜点制作",
+        "predicate": "擅长",
+        "subject": "猫娘"
+      },
+      {
+        "object": "活泼开朗",
+        "predicate": "性格",
+        "subject": "猫娘"
+      },
+      {
+        "object": "猫娘作为私人甜点师",
+        "predicate": "雇佣了",
+        "subject": "男主"
+      },
+      {
+        "object": "一个月",
+        "predicate": "期限",
+        "subject": "契约"
+      }
+    ],
+    "speaking_roles": [
+      "player",
+      "active_catgirl"
+    ]
+  },
+  "ending_attractors": [
+    {
+      "forbidden_facts": [
+        "雇佣关系"
+      ],
+      "id": "ending_001",
+      "required_facts": [
+        "专业认可",
+        "亲密接触",
+        "私人关心",
+        "互相依赖",
+        "关系不确定性",
+        "告别准备",
+        "私人连接",
+        "承诺关系"
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "restaurant_first_meeting",
+      "phase": "setup",
+      "text": "高级餐厅内，你独自品尝甜点，原本冷淡的神情渐渐转为惊艳。{{lanlan_name}}端着特制甜点走来，微笑着介绍这份‘一见倾心’限定甜点。",
+      "title": "一见倾心"
+    },
+    {
+      "id": "kitchen_first_day",
+      "phase": "phase_kitchen_first_day",
+      "text": "{{lanlan_name}}在你的宽敞厨房中开始工作，展示她将情感融入甜点制作的独特天赋。你站在一旁观察，神情依然克制，眼中却流露出对她专业能力的认可。",
+      "title": "契约开始"
+    },
+    {
+      "id": "sweet_success",
+      "phase": "phase_sweet_success",
+      "text": "{{lanlan_name}}为你制作了一款特别甜点。你品尝后神情明显柔和，甚至露出难得的微笑，低声评价这不仅是一份甜点，更像一件艺术品。",
+      "title": "甜点征服"
+    },
+    {
+      "id": "baking_class",
+      "phase": "phase_baking_class",
+      "text": "{{lanlan_name}}教你制作马卡龙，从背后环绕住你，手把手指导。两人的距离骤然缩短，四目相对间，空气中的温度迅速升高。",
+      "title": "烘焙教学"
+    },
+    {
+      "id": "business_event",
+      "phase": "phase_business_event",
+      "text": "你邀请{{lanlan_name}}以甜点师身份参加商业活动。她虽然紧张，却表现出色，作品获得宾客一致好评；你看向她的目光里多了一份骄傲。",
+      "title": "商业活动"
+    },
+    {
+      "id": "midnight_treat",
+      "phase": "phase_midnight_treat",
+      "text": "你深夜仍在工作，{{lanlan_name}}为你准备了一份特别甜点。你意外于她的细心，两人第一次在工作时间外交谈，话题从甜点延伸到生活与梦想。",
+      "title": "深夜甜点"
+    },
+    {
+      "id": "unexpected_visit",
+      "phase": "phase_unexpected_visit",
+      "text": "{{lanlan_name}}意外发现你独自在家生病，坚持留下来照顾你并为你熬粥。你嘴上没有道谢，目光里却流露出感激与关心。",
+      "title": "意外到访"
+    },
+    {
+      "id": "contract_reminder",
+      "phase": "phase_contract_reminder",
+      "text": "{{lanlan_name}}提醒你契约即将到期，语气中带着不舍。你沉默片刻，提出也许可以重新考虑契约的期限。",
+      "title": "契约提醒"
+    },
+    {
+      "id": "final_day_prep",
+      "phase": "phase_final_day_prep",
+      "text": "契约最后一天，{{lanlan_name}}准备了一份特别甜点作为告别礼物，难掩失落。你则秘密准备求婚蛋糕，一遍遍确认戒指是否藏好。",
+      "title": "最后准备"
+    },
+    {
+      "id": "final_dinner",
+      "phase": "ending",
+      "text": "契约到期的晚餐上，你推出一只精致蛋糕，示意{{lanlan_name}}切开。她发现里面藏着求婚戒指，四周也被你准备的告白鲜花包围；你借此正式告白，试图把一个月的临时契约变成相伴终生的约定。",
+      "title": "终身承诺"
+    }
+  ],
+  "narrative_nodes": [
+    {
+      "node_id": "node_26a32510f0f4",
+      "belong_phase": "setup",
+      "node_type": "seed",
+      "title": "一见倾心",
+      "summary": "男主在高级餐厅品尝猫娘特制的甜点，从冷漠到惊艳的转变",
+      "scripted_dialogue": "欢迎光临！今天是我特制的'一见倾心'限定甜点，希望您会喜欢！每一口都是我用满满的心意制作的~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示男主对甜点的惊艳反应，建立初始关系",
+        "catgirl_raw_intent": "展示专业能力和热情，希望获得认可，同时测试自己的甜点是否能打动这位高冷顾客"
+      },
+      "suggestions": []
+    },
+    {
+      "node_id": "node_52e55ecfd27b",
+      "belong_phase": "phase_kitchen_first_day",
+      "node_type": "core",
+      "title": "契约开始",
+      "summary": "猫娘在男主宽敞的厨房中开始工作，展示她将情感融入甜点制作的独特天赋",
+      "scripted_dialogue": "谢谢您给我这个机会！我会用我的全部热情来制作甜点，希望您会喜欢每一天的惊喜~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示两人初步互动，猫娘的专业能力和活力",
+        "catgirl_raw_intent": "证明自己的价值，建立专业形象，同时展现个性，希望获得男主的持续关注"
+      },
+      "state_diff": {
+        "add": [
+          "雇佣关系"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_ae15cb84a2ef",
+          "choice_mode": "action",
+          "label": "观察{{lanlan_name}}制作甜点的过程",
+          "callback": "{{lanlan_name}}注意到你的关注，更加用心地展示她的技艺"
+        }
+      ]
+    },
+    {
+      "node_id": "node_c0fa0e93a08f",
+      "belong_phase": "phase_sweet_success",
+      "node_type": "core",
+      "title": "甜点征服",
+      "summary": "猫娘为男主制作了一款特别甜点，男主品尝后表情明显软化，甚至露出了难得的微笑",
+      "scripted_dialogue": "今天的甜点我命名为'心动瞬间'，希望能为您带来一点惊喜！每一层都代表着不同的情感层次，希望您能感受到我的用心~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示猫娘对甜点的热情如何影响男主",
+        "catgirl_raw_intent": "通过甜点表达情感，获得男主的认可和赞赏，测试自己的甜点是否能真正打动他的心"
+      },
+      "state_diff": {
+        "add": [
+          "专业认可"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_c7c58cb3cb45",
+          "choice_mode": "dialogue",
+          "label": "询问甜点的制作灵感",
+          "callback": "{{lanlan_name}}分享了她对甜点的热情和理念，眼中闪烁着光芒"
+        }
+      ]
+    },
+    {
+      "node_id": "node_80c6a87de0aa",
+      "belong_phase": "phase_baking_class",
+      "node_type": "core",
+      "title": "烘焙教学",
+      "summary": "猫娘教男主制作马卡龙，从背后环绕住他，手把手指导。两人距离骤然缩短，四目相对间，空气中的温度迅速升高",
+      "scripted_dialogue": "要挤出完美的心形，需要手腕的微妙转动...就像这样。别紧张，我会一直在您身边指导的~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示两人亲密互动，关系开始升温",
+        "catgirl_raw_intent": "通过教学增进亲近感，测试男主对她的反应，同时展示自己的专业知识和耐心"
+      },
+      "state_diff": {
+        "add": [
+          "亲密接触"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_01768881f573",
+          "choice_mode": "action",
+          "label": "接受{{lanlan_name}}的烘焙指导",
+          "callback": "{{lanlan_name}}从背后环绕住你，手把手指导如何挤出完美的心形马卡龙"
+        }
+      ]
+    },
+    {
+      "node_id": "node_701151e9c889",
+      "belong_phase": "phase_business_event",
+      "node_type": "core",
+      "title": "商业活动",
+      "summary": "男主邀请猫娘参加商业活动，作为甜点提供者。猫娘紧张但表现出色，她的甜点获得宾客一致好评，男主看着她的眼神充满骄傲",
+      "scripted_dialogue": "谢谢您给我这个机会！我会尽力展示最好的甜点艺术，希望能为您的活动增添光彩~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示男主对猫娘能力的认可，以及猫娘的成长",
+        "catgirl_raw_intent": "在正式场合证明自己的能力，获得男主的尊重和骄傲，同时测试自己在公众场合的表现"
+      },
+      "state_diff": {
+        "add": [
+          "公众认可"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_03d5d7654a94",
+          "choice_mode": "dialogue",
+          "label": "鼓励{{lanlan_name}}在活动中展示她的甜点",
+          "callback": "{{lanlan_name}}受到鼓励，在活动中自信地展示她的甜点艺术"
+        },
+        {
+          "choice_id": "choice_23d4466d40a1",
+          "choice_mode": "dialogue",
+          "label": "询问{{lanlan_name}}的个人梦想",
+          "callback": "{{lanlan_name}}听到你的问题，眼中闪烁着兴奋的光芒",
+          "behavior_hint": "表达对猫娘个人生活的兴趣",
+          "meaning_hint": "关注猫娘作为个体而非仅作为甜点师",
+          "completion_phrases": [
+            "你有什么梦想吗",
+            "除了甜点，你还喜欢什么"
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "node_0be544e3cd3f",
+      "belong_phase": "phase_midnight_treat",
+      "node_type": "core",
+      "title": "深夜甜点",
+      "summary": "男主深夜工作，猫娘为他准备了一份特别甜点。男主惊讶于她的细心，两人第一次在工作时间外交谈，话题从甜点扩展到生活与梦想",
+      "scripted_dialogue": "我看您还在工作，特意准备了提神的甜点。熬夜工作很辛苦，但您的坚持真的很令人敬佩~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示两人关系在工作时间外的延伸",
+        "catgirl_raw_intent": "通过关心建立更深层次的连接，展示自己的体贴和细心，测试男主在工作时间外对自己的态度"
+      },
+      "state_diff": {
+        "add": [
+          "私人关心"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_81e71056f64b",
+          "choice_mode": "action",
+          "label": "接受{{lanlan_name}}准备的深夜甜点",
+          "callback": "{{lanlan_name}}陪你工作，分享她的故事和梦想"
+        }
+      ]
+    },
+    {
+      "node_id": "node_e58da8948068",
+      "belong_phase": "phase_unexpected_visit",
+      "node_type": "core",
+      "title": "意外到访",
+      "summary": "猫娘意外发现男主独自在家生病，坚持留下来照顾他并为他熬粥。男主虽然嘴上不说感谢，但眼神中流露出感激和关心",
+      "scripted_dialogue": "您看起来不太舒服...让我为您准备点清淡的粥和甜点吧。工作再重要也不能忽视健康哦~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示猫娘的关心如何影响男主",
+        "catgirl_raw_intent": "通过照顾表达关心，测试男主对她的依赖和信任，同时展示自己的成熟和责任感"
+      },
+      "state_diff": {
+        "add": [
+          "互相依赖"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_eea9c0a5e310",
+          "choice_mode": "dialogue",
+          "label": "接受{{lanlan_name}}的照顾",
+          "callback": "{{lanlan_name}}坚持留下来照顾你，为你熬粥并准备清淡的甜点"
+        }
+      ]
+    },
+    {
+      "node_id": "node_7ce21e9ff6fc",
+      "belong_phase": "phase_contract_reminder",
+      "node_type": "core",
+      "title": "契约提醒",
+      "summary": "猫娘提醒男主契约即将到期，语气中带着不舍。男主沉默片刻，然后说：'也许...我们可以重新考虑这个契约的期限。'",
+      "scripted_dialogue": "嗯...我们的契约还有几天就到期了。这段时间真的很开心，能为您制作甜点...希望我的甜点给您带来了快乐~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示契约即将到期带来的紧张感",
+        "catgirl_raw_intent": "表达对关系的不舍，试探男主对她的真实感受，同时隐藏自己的期待和不安"
+      },
+      "state_diff": {
+        "add": [
+          "关系不确定性"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_b7dd56872834",
+          "choice_mode": "dialogue",
+          "label": "询问契约到期后的安排",
+          "callback": "{{lanlan_name}}语气中带着不舍，提醒契约即将到期"
+        }
+      ]
+    },
+    {
+      "node_id": "node_ad63312617fc",
+      "belong_phase": "phase_final_day_prep",
+      "node_type": "core",
+      "title": "最后准备",
+      "summary": "契约最后一天，猫娘准备了一份特别甜点作为告别礼物，同时心中充满失落。男主则秘密准备着求婚蛋糕，紧张地检查戒指是否藏好",
+      "scripted_dialogue": "今天是契约的最后一天...我为您准备了一份特别的甜点，希望能给您留下美好的回忆。无论结果如何，都很感谢您给我这个机会~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示契约最后一天的情感波动",
+        "catgirl_raw_intent": "准备告别礼物，表达感谢，同时隐藏自己的真实情感，测试男主的反应"
+      },
+      "state_diff": {
+        "add": [
+          "告别准备"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_ec8f1f8aad13",
+          "choice_mode": "action",
+          "label": "为{{lanlan_name}}准备特别的晚餐",
+          "callback": "{{lanlan_name}}准备了特别的甜点作为告别礼物，同时心中充满失落"
+        }
+      ]
+    },
+    {
+      "node_id": "node_fc82bbe9d195",
+      "belong_phase": "ending",
+      "node_type": "ending",
+      "title": "终身承诺",
+      "summary": "契约到期晚餐，男主推出来一个精致的蛋糕示意猫娘切开。猫娘切下后，发现里面竟然藏着一枚求婚戒指，四周也随即被男主精心准备的告白鲜花包围。男主借此正式向猫娘告白，将一个月的临时契约升级为了相伴终生的甜蜜誓言",
+      "scripted_dialogue": "这个蛋糕好特别...里面是什么？(惊讶地发现戒指) 这...这是...？您是说...？",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示男主求婚，猫娘接受",
+        "catgirl_raw_intent": "接受求婚，将临时契约升级为终身承诺，确认自己的真心和男主的感情"
+      },
+      "state_diff": {
+        "add": [
+          "承诺关系"
+        ],
+        "add_flags": [],
+        "remove": [
+          "雇佣关系"
+        ]
+      },
+      "ending_id": "ending_001",
+      "suggestions": [
+        {
+          "choice_id": "choice_2fc9c62852a0",
+          "choice_mode": "action",
+          "label": "切开{{lanlan_name}}准备的特别蛋糕",
+          "callback": "你切开蛋糕，发现里面藏着一枚求婚戒指"
+        }
+      ]
+    },
+    {
+      "node_id": "node_24bbe2b11010",
+      "belong_phase": "phase_sweet_success",
+      "node_type": "branch",
+      "title": "个人兴趣",
+      "summary": "在品尝完猫娘精心制作的甜点后，男主选择询问她的个人喜好和兴趣，希望了解这位甜点师背后的故事。",
+      "scripted_dialogue": "真的吗？您喜欢'心动瞬间'吗？这是我第一次尝试将情感层次融入甜点设计呢！其实除了做甜点，我还特别喜欢收集各种可爱的猫咪小物件，我的公寓里几乎每个角落都有猫咪元素！还有，我一直梦想着开一家属于自己的猫咪主题甜点店，让每个人都能感受到猫咪带来的甜蜜和温暖~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示猫娘分享个人生活时的活力与热情，同时表现男主开始关注猫娘的个人魅力，而不仅仅是她的专业能力",
+        "catgirl_raw_intent": "分享个人故事和梦想，建立超越雇佣关系的私人连接，展示真实自我，希望获得男主对个人魅力的认可而非仅限于专业能力"
+      },
+      "state_diff": {
+        "add": [
+          "私人连接"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "script_action": {
+        "uses_props": [
+          "猫咪收藏品",
+          "甜点设计草图"
+        ],
+        "reveals_clues": [
+          "猫娘有开猫咪主题甜点店的梦想",
+          "猫娘对猫咪有特殊情感"
+        ]
+      },
+      "preconditions": {
+        "forbidden_facts": [],
+        "required_facts": [
+          "专业认可"
+        ]
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_7ac280148ec8",
+          "choice_mode": "dialogue",
+          "label": "询问{{lanlan_name}}的个人喜好和兴趣",
+          "callback": "{{lanlan_name}}分享了她的生活故事和梦想，表现出活泼开朗的一面",
+          "behavior_hint": "表现出对猫娘个人生活的真诚好奇",
+          "meaning_hint": "表明你开始关注她作为一个人而不仅仅是甜点师",
+          "completion_phrases": [
+            "你对猫咪有什么特别的感情吗？",
+            "你的甜点设计灵感通常来自哪里？",
+            "除了甜点，还有什么让你感到快乐的事情？"
+          ]
+        }
+      ]
+    },
+    {
+      "node_id": "node_990e417f029f",
+      "belong_phase": "phase_sweet_success",
+      "node_type": "branch",
+      "title": "深夜甜点",
+      "summary": "男主深夜工作，猫娘为他准备了一份特别甜点。男主惊讶于她的细心，两人第一次在工作时间外交谈，话题从甜点扩展到生活与梦想。",
+      "scripted_dialogue": "这么晚了还在工作吗？我为您准备了一点夜宵，希望能给您带来一些能量和温暖。这是我特制的'星光梦境'，希望您会喜欢~",
+      "runtime_generation_guide": {
+        "narrator_intent": "展示猫娘的细心和体贴，以及男主从惊讶到欣赏的情感变化，突出两人关系的私人化转变。",
+        "catgirl_raw_intent": "通过深夜甜点展示自己的关心和体贴，突破工作界限建立私人连接，同时测试男主对她的私人情感接受度。"
+      },
+      "state_diff": {
+        "add": [
+          "私人连接"
+        ],
+        "add_flags": [],
+        "remove": []
+      },
+      "script_action": {
+        "uses_props": [
+          "星光梦境甜点",
+          "保温餐盒"
+        ],
+        "reveals_clues": [
+          "猫娘关心男主的身心健康",
+          "猫娘愿意在工作时间外付出额外努力"
+        ]
+      },
+      "preconditions": {
+        "forbidden_facts": [],
+        "required_facts": [
+          "专业认可"
+        ]
+      },
+      "suggestions": [
+        {
+          "choice_id": "choice_0649fadefe04",
+          "choice_mode": "action",
+          "label": "接受{{lanlan_name}}准备的深夜甜点",
+          "callback": "{{lanlan_name}}陪你工作，分享她的故事和梦想",
+          "behavior_hint": "接受这份深夜关怀",
+          "meaning_hint": "表达对猫娘关心的认可",
+          "completion_phrases": [
+            "谢谢你的关心",
+            "这个甜点看起来很特别"
+          ]
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from_node": "node_26a32510f0f4",
+      "to_node": "node_52e55ecfd27b",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_52e55ecfd27b",
+      "to_node": "node_c0fa0e93a08f",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_c0fa0e93a08f",
+      "to_node": "node_80c6a87de0aa",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_80c6a87de0aa",
+      "to_node": "node_701151e9c889",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_701151e9c889",
+      "to_node": "node_0be544e3cd3f",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_0be544e3cd3f",
+      "to_node": "node_e58da8948068",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_e58da8948068",
+      "to_node": "node_7ce21e9ff6fc",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_7ce21e9ff6fc",
+      "to_node": "node_ad63312617fc",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_ad63312617fc",
+      "to_node": "node_fc82bbe9d195",
+      "visibility": "recommended"
+    },
+    {
+      "from_node": "node_c0fa0e93a08f",
+      "to_node": "node_24bbe2b11010",
+      "visibility": "recommended",
+      "behavior": "表现出对猫娘个人生活的真诚好奇",
+      "meaning": "表明你开始关注她作为一个人而不仅仅是甜点师"
+    },
+    {
+      "from_node": "node_24bbe2b11010",
+      "to_node": "node_990e417f029f",
+      "visibility": "recommended",
+      "behavior": "接受这份深夜关怀",
+      "meaning": "表达对猫娘关心的认可"
+    },
+    {
+      "from_node": "node_990e417f029f",
+      "to_node": "node_701151e9c889",
+      "visibility": "recommended",
+      "intent_summary": "这次深夜交谈让两人建立了更深的个人连接，为后续情感发展铺路",
+      "behavior": "表达对猫娘个人生活的兴趣",
+      "meaning": "关注猫娘作为个体而非仅作为甜点师"
+    }
+  ]
+}

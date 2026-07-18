@@ -9,6 +9,15 @@
         active: '/api/theater/session/active',
     };
     const ACTIVE_SESSION_STORAGE_KEY = 'neko.theater.activeSession.v1';
+    // 这些结果都表示服务端已经保留旧存档，但不能把它安全解释到当前运行时或 Story。
+    const INCOMPATIBLE_SESSION_REASONS = new Set([
+        'session_upgrade_required',
+        'session_version_unsupported',
+        'session_story_unavailable',
+        'session_story_revision_mismatch',
+        'session_state_invalid',
+        'session_snapshot_missing',
+    ]);
     const state = {
         sessionId: '',
         storyId: '',
@@ -163,21 +172,56 @@
         }
     }
 
-    // 更新舞台右上角的用户可见状态。
-    function setStatus(text) {
-        $('theater-status').textContent = text;
+    // 只接受服务端定义的“保留但不可恢复”结果，普通网络或权限错误继续走原失败提示。
+    function incompatibleReason(result) {
+        const reason = String(result && result.reason || '');
+        return INCOMPATIBLE_SESSION_REASONS.has(reason) ? reason : '';
+    }
+
+    // 展示提示前仅释放页面内活动态；旧 Session 文件和本地恢复指针都继续保留。
+    function showCompatibilityNotice(result) {
+        const reason = incompatibleReason(result);
+        if (!reason) return false;
+        const preservedSessionId = String(result.session_id || state.sessionId || rememberedSession() || '').trim();
+        if (preservedSessionId) rememberSession(preservedSessionId);
+        state.restoreReason = reason;
+        state.sessionId = '';
+        state.stateRevision = null;
+        state.inputClosed = false;
+        $('theater-compatibility-notice').hidden = false;
+        // Grid 只有在提示实际显示时才增加一条内容轨道，正常演出布局保持原顺序。
+        document.querySelector('.theater-console').dataset.compatibilityVisible = 'true';
+        return true;
+    }
+
+    // 新演出成功创建或兼容 Session 恢复后撤下提示，不影响随后正常的输入锁定计算。
+    function hideCompatibilityNotice() {
+        state.restoreReason = '';
+        $('theater-compatibility-notice').hidden = true;
+        // 隐藏提示后同步撤掉额外轨道，防止工作区与选项区发生覆盖。
+        document.querySelector('.theater-console').dataset.compatibilityVisible = 'false';
+    }
+
+    // 更新舞台右上角的用户可见状态，并让稍晚初始化或后续切换的语言包读取当前状态 key。
+    function setStatus(key, fallback) {
+        const status = $('theater-status');
+        status.setAttribute('data-i18n', key);
+        status.textContent = t(key, fallback);
     }
 
     // 请求期间锁定所有共享同一 revision 的输入控件。
     function setBusy(busy) {
         state.busy = busy;
         const active = Boolean(state.sessionId);
+        const incompatible = Boolean(state.restoreReason);
         // 只有下拉框对应的故事已经由服务端加载完成，才允许发送明确的 story_id 开场。
         const storyReady = Boolean(state.storyId && state.stories.some(function (story) {
             return story && String(story.id || '') === state.storyId;
         }));
         $('theater-story-select').disabled = busy || active;
-        $('theater-start-btn').disabled = busy || active || !storyReady;
+        // 普通开始按钮不能越过存档提示；只有提示卡中的确认按钮能表达显式替换意图。
+        $('theater-start-btn').disabled = busy || active || incompatible || !storyReady;
+        $('theater-restart-btn').disabled = busy || active || !incompatible || !storyReady;
         $('theater-end-btn').disabled = busy || !active;
         $('theater-input').disabled = busy || !active || state.inputClosed;
         $('theater-send-btn').disabled = busy || !active || state.inputClosed;
@@ -273,7 +317,8 @@
         }
         const card = story.scenario_card || {};
         $('theater-story-intro-title').textContent = String(story.title || '');
-        $('theater-story-intro-brief').textContent = String(card.brief || story.summary || '');
+        // background 是唯一公开背景真源；不再用概要或开场 Scene 猜测作者背景。
+        $('theater-story-intro-background').textContent = String(story.background || '');
 
         // 每一项单独控制显隐，兼容尚未补齐开场卡字段的作者剧本。
         function renderRole(rowId, valueId, value) {
@@ -285,27 +330,15 @@
         renderRole('theater-catgirl-role-row', 'theater-catgirl-role', card.catgirl_role);
         renderRole('theater-story-goal-row', 'theater-story-goal', card.primary_goal);
 
-        // 规则默认折叠，身份与背景保持首屏可见，同时允许玩家随时展开核对边界。
-        const rules = $('theater-story-rules');
-        rules.textContent = '';
-        (Array.isArray(card.rules) ? card.rules : []).forEach(function (rule) {
-            const item = document.createElement('li');
-            item.textContent = String(rule || '');
-            rules.appendChild(item);
-        });
-        $('theater-story-rules-row').hidden = !rules.children.length;
         intro.hidden = false;
     }
 
-    // 未开场时预览作者声明的初始 Scene；数组顺序变化时不能提前展示后续场景或剧透。
+    // 未开场时只预览服务端公开的初始 Scene，浏览器不再接收后续场景数组。
     function previewSelectedStory() {
         const story = state.stories.find(function (item) { return item.id === state.storyId; });
-        const scenes = story && Array.isArray(story.scenes) ? story.scenes : [];
-        const scene = scenes.find(function (item) {
-            return item && item.scene_id === story.initial_scene_id;
-        }) || scenes[0] || null;
+        const scene = story && story.initial_scene || null;
         clearPerformanceLog();
-        renderScene(scene, story && story.summary || t('theater.ready', '准备中'), true);
+        renderScene(scene, t('theater.ready', '准备中'), true);
         renderStoryIntro(story);
     }
 
@@ -438,10 +471,15 @@
         renderEnding(payload.ending);
         if (payload.can_resume) {
             rememberSession(state.sessionId);
-            setStatus(t('theater.running', '进行中'));
+            // 休眠仍是可恢复生命周期，状态栏要提示玩家可以继续，不能误报为普通进行中或已结束。
+            const dormant = payload.session_lifecycle === 'dormant';
+            setStatus(
+                dormant ? 'theater.dormant' : 'theater.running',
+                dormant ? '演出已休眠，可以继续' : '进行中'
+            );
         } else {
             forgetSession();
-            setStatus(t('theater.ended', '已结束'));
+            setStatus('theater.ended', '已结束');
             // 落幕后释放前端活动指针，让玩家可以立即选择并开始下一份剧本。
             state.sessionId = '';
             state.stateRevision = null;
@@ -476,27 +514,44 @@
         return 'start_web_' + value;
     }
 
-    // 先按本地指针恢复，失败后再查询当前猫娘的服务端 active Session。
+    // 先按本地指针恢复，失败后以当前猫娘的服务端 active Session 作为最终真值。
     async function restoreActiveSession(preferredSessionId) {
         const preferred = String(preferredSessionId || rememberedSession() || '').trim();
-        state.restoreReason = '';
+        hideCompatibilityNotice();
         let result = preferred
             ? await requestJson(api.state + '?session_id=' + encodeURIComponent(preferred))
             : null;
         if (!result || !result.ok || !result.can_resume || result.stale) {
-            if (result && ['session_upgrade_required', 'session_version_unsupported'].includes(result.reason)) {
-                state.restoreReason = result.reason;
-            } else if (preferred) {
+            // 本地旧指针即使不兼容也不能覆盖服务端 active 真值；最终 active 不存在时才会清理它。
+            if (preferred && !incompatibleReason(result)) {
                 forgetSession();
             }
             result = await requestJson(api.active);
         }
-        if (result && ['session_upgrade_required', 'session_version_unsupported'].includes(result.reason)) {
-            state.restoreReason = result.reason;
+        if (showCompatibilityNotice(result)) {
+            return false;
         }
-        if (!result || !result.ok || !result.can_resume) return false;
+        if (!result || !result.ok || !result.can_resume) {
+            // 服务端确认没有活动演出后，失效或孤立的本地指针不再触发重复恢复。
+            if (preferred) forgetSession();
+            return false;
+        }
+        hideCompatibilityNotice();
         clearPerformanceLog();
         applyPayload(result, { restoring: true });
+        return true;
+    }
+
+    // 演出进行中发现 Story 或 Session 已不兼容时，保留草稿并回到显式重开提示。
+    function recoverIncompatibleSession(result) {
+        if (!showCompatibilityNotice(result)) return false;
+        clearPerformanceLog();
+        renderSuggestions([]);
+        renderBoard({});
+        renderTrace(null);
+        renderEnding(null);
+        previewSelectedStory();
+        setStatus('theater.sessionIncompatibleTitle', '旧演出无法继续');
         return true;
     }
 
@@ -516,7 +571,13 @@
         state.stateRevision = null;
         state.inputClosed = false;
         if (await restoreActiveSession('')) {
-            setStatus(t('theater.sessionUpdated', '场景已在其他窗口推进，请重新选择。'));
+            setStatus('theater.sessionUpdated', '场景已在其他窗口推进，请重新选择。');
+            return true;
+        }
+
+        // 当前 active 若是不兼容存档，恢复函数已经展示确认卡，不能再把状态伪装成普通就绪。
+        if (state.restoreReason) {
+            setStatus('theater.sessionIncompatibleTitle', '旧演出无法继续');
             return true;
         }
 
@@ -527,7 +588,7 @@
         renderTrace(null);
         renderEnding(null);
         previewSelectedStory();
-        setStatus(t('theater.ready', '准备中'));
+        setStatus('theater.ready', '准备中');
         return true;
     }
 
@@ -536,7 +597,7 @@
         if (!result || result.reason !== 'state_revision_conflict' || !result.retryable) return false;
         await restoreActiveSession(state.sessionId);
         if (pendingText) $('theater-input').value = pendingText;
-        setStatus(t('theater.sessionUpdated', '场景已在其他窗口推进，请重新选择。'));
+        setStatus('theater.sessionUpdated', '场景已在其他窗口推进，请重新选择。');
         return true;
     }
 
@@ -550,14 +611,15 @@
             renderStoryOptions(result.stories);
             if (!await restoreActiveSession()) {
                 previewSelectedStory();
-                setStatus(state.restoreReason
-                    ? t('theater.sessionUpgradeRequired', '旧版演绎无法继续，请开始一场新演出。')
-                    : t('theater.ready', '准备中'));
+                setStatus(
+                    state.restoreReason ? 'theater.sessionIncompatibleTitle' : 'theater.ready',
+                    state.restoreReason ? '旧演出无法继续' : '准备中'
+                );
             }
             // 故事列表写入 state 后重新计算按钮状态；加载前禁用，成功后才允许按所选 story_id 开场。
             setBusy(state.busy);
         } catch (_) {
-            setStatus(t('theater.failed', '加载失败'));
+            setStatus('theater.failed', '加载失败');
         }
     }
 
@@ -577,14 +639,18 @@
                     replace_incompatible_session: Boolean(state.restoreReason)
                 }
             });
-            if (!result || !result.ok) throw new Error('start');
+            if (!result || !result.ok) {
+                // 开场前服务端状态若刚好发生兼容性变化，仍需等待玩家在提示卡中再次明确确认。
+                if (recoverIncompatibleSession(result)) return;
+                throw new Error('start');
+            }
             state.inputClosed = false;
-            state.restoreReason = '';
+            hideCompatibilityNotice();
             applyPayload(result, { opening: true });
         } catch (_) {
             // 启动失败时恢复所选故事的 Scene 旁白，不能留下永远转动的空等待气泡。
             previewSelectedStory();
-            setStatus(t('theater.failed', '启动失败'));
+            setStatus('theater.failed', '启动失败');
         } finally {
             setGenerationLoading(false);
             setBusy(false);
@@ -614,6 +680,12 @@
             const result = await requestJson(api.input, { method: 'POST', body: body });
             if (!result || !result.ok) {
                 if (await recoverRevisionConflict(result, selected ? '' : message)) return;
+                if (recoverIncompatibleSession(result)) {
+                    if (optimistic) optimistic.remove();
+                    // Story 更新期间未提交的自由输入继续作为玩家草稿保留。
+                    if (!selected) input.value = message;
+                    return;
+                }
                 if (await recoverUnavailableSession(result)) {
                     if (optimistic) optimistic.remove();
                     // 失效回合没有提交成功，保留玩家草稿供恢复后确认、修改或再次发送。
@@ -626,7 +698,7 @@
         } catch (_) {
             if (optimistic) optimistic.remove();
             if (!selected) input.value = message;
-            setStatus(t('theater.failed', '提交失败'));
+            setStatus('theater.failed', '提交失败');
         } finally {
             setGenerationLoading(false);
             setBusy(false);
@@ -650,6 +722,10 @@
             });
             if (!result || !result.ok) {
                 if (await recoverRevisionConflict(result, '')) return;
+                if (recoverIncompatibleSession(result)) {
+                    if (optimistic) optimistic.remove();
+                    return;
+                }
                 if (await recoverUnavailableSession(result)) {
                     if (optimistic) optimistic.remove();
                     return;
@@ -659,7 +735,7 @@
             applyPayload(result);
         } catch (_) {
             if (optimistic) optimistic.remove();
-            setStatus(t('theater.failed', '离场失败'));
+            setStatus('theater.failed', '离场失败');
         } finally {
             setBusy(false);
         }
@@ -673,6 +749,8 @@
             previewSelectedStory();
         });
         $('theater-start-btn').addEventListener('click', startSession);
+        // 提示卡按钮复用唯一开场函数，并由 restoreReason 写入显式替换标记。
+        $('theater-restart-btn').addEventListener('click', startSession);
         $('theater-end-btn').addEventListener('click', endSession);
         $('theater-input-form').addEventListener('submit', function (event) {
             event.preventDefault();

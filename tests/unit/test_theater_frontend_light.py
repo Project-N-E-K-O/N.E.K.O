@@ -22,12 +22,12 @@ def test_frontend_keeps_action_dialogue_and_structured_turns():
 
 
 def test_frontend_renders_story_identity_before_start():
-    """棕色舞台内必须渲染剧本背景、玩家身份和猫娘身份，并随故事预览更新。"""  # noqa: DOCSTRING_CJK
+    """蓝色舞台卡内必须渲染剧本背景、玩家身份和猫娘身份，并随故事预览更新。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     for element_id in (
         "theater-story-intro",
-        "theater-story-intro-brief",
+        "theater-story-intro-background",
         "theater-player-role",
         "theater-catgirl-role",
         "theater-story-goal",
@@ -45,14 +45,16 @@ def test_frontend_renders_story_identity_before_start():
 
 
 def test_frontend_previews_authored_initial_scene():
-    """未开演预览必须按 initial_scene_id 选择场景，不能默认使用数组第一项。"""  # noqa: DOCSTRING_CJK
+    """未开演预览只能使用服务端单独公开的初始 Scene。"""  # noqa: DOCSTRING_CJK
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
-    assert "item.scene_id === story.initial_scene_id" in script
-    assert "story.scenes[0]" not in script
+    assert "story && story.initial_scene || null" in script
+    assert "story.scenes" not in script
+    assert "story.summary" not in script
+    assert "card.brief" not in script
 
 
-def test_frontend_uses_brown_stage_with_galaxy_video():
-    """舞台不显示英文副标题，并使用静音循环视频呈现金色银河背景。"""  # noqa: DOCSTRING_CJK
+def test_frontend_matches_neko_blue_cards_with_subtle_stage_motion():
+    """舞台必须复用 N.E.K.O 蓝白卡片体系，并把循环视频降为不抢正文的氛围层。"""  # noqa: DOCSTRING_CJK
     html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     styles = (ROOT / "static" / "css" / "theater.css").read_text(encoding="utf-8")
@@ -64,6 +66,18 @@ def test_frontend_uses_brown_stage_with_galaxy_video():
     assert "initGalaxyCanvas" not in script
     assert ".theater-stage > .theater-galaxy-video" in styles
     assert "object-fit: cover" in styles
+    # 视觉契约直接锁定通用设置使用的背景、品牌蓝和标题渐变，避免页面重新漂回独立棕色主题。
+    assert "--theater-bg: #e1f4ff" in styles
+    assert "--theater-accent: #17a7ff" in styles
+    assert "linear-gradient(to right, #4bd4fd, #17a7ff)" in styles
+    assert "html[data-theme=\"dark\"]" in styles
+    # 新视频直接使用品牌蓝，并恢复原背景的宽雾带层次；页面不再用旧金色资产所需的色相旋转。
+    assert "opacity: 0.55" in styles
+    assert "mix-blend-mode: normal" in styles
+    assert "hue-rotate" not in styles
+    # 舞台不能再叠加固定周期的小圆点，否则随机星尘会被看成规则网格。
+    assert "0 0 / 34px 34px" not in styles
+    assert "19px 27px / 59px 59px" not in styles
     assert (ROOT / "static" / "assets" / "theater" / "galaxy-flow-down-right-8s.mp4").is_file()
 
 
@@ -112,7 +126,8 @@ def test_frontend_right_aligns_adaptive_player_turns():
     assert "width: fit-content" in player_rule.group(1)
     assert "margin-left: auto" in player_rule.group(1)
     assert "text-align: right" in player_rule.group(1)
-    assert "rgba(83, 99, 156" in player_rule.group(1)
+    # 玩家气泡复用项目品牌蓝，但仍保留右对齐与内容自适应的剧情阅读语义。
+    assert "linear-gradient(135deg, var(--theater-accent), var(--theater-accent-strong))" in player_rule.group(1)
 
 
 def test_frontend_logs_each_scene_as_narration_and_animates_model_generation():
@@ -167,16 +182,43 @@ def test_frontend_removes_deferred_features():
 
 def test_frontend_restores_and_reuses_frozen_retry_body():
     """刷新恢复和网络重试继续使用服务端快照及同一序列化请求。"""  # noqa: DOCSTRING_CJK
+    html = (ROOT / "templates" / "theater.html").read_text(encoding="utf-8")
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     assert "restoreActiveSession" in script
     assert "const serializedBody" in script
     assert "state_revision_conflict" in script
-    assert "session_upgrade_required" in script
-    assert "theater.sessionUpgradeRequired" in script
+    # 六类不可安全解释的存档统一进入显式重开卡，普通开始按钮不得作为隐式确认。
+    for reason in (
+        "session_upgrade_required",
+        "session_version_unsupported",
+        "session_story_unavailable",
+        "session_story_revision_mismatch",
+        "session_state_invalid",
+        "session_snapshot_missing",
+    ):
+        assert f"'{reason}'" in script
+    assert 'id="theater-compatibility-notice"' in html
+    assert 'id="theater-restart-btn"' in html
+    assert "theater.sessionIncompatibleTitle" in script
+    assert "incompatible || !storyReady" in script
+    assert "dataset.compatibilityVisible = 'true'" in script
+    assert "dataset.compatibilityVisible = 'false'" in script
     assert "client_start_id: createClientStartId()" in script
     assert "replace_incompatible_session: Boolean(state.restoreReason)" in script
     assert "canRetryUnknownResult" in script
     assert "body.client_turn_id || body.client_start_id" in script
+
+
+def test_frontend_labels_resumable_dormant_session():
+    """可恢复的休眠演出必须显示独立提示，不能被误报为普通进行中或已结束。"""  # noqa: DOCSTRING_CJK
+    script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
+
+    assert "payload.session_lifecycle === 'dormant'" in script
+    assert "dormant ? 'theater.dormant' : 'theater.running'" in script
+    assert "status.setAttribute('data-i18n', key)" in script
+    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
+        payload = json.loads((ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8"))
+        assert payload["theater"]["dormant"]
 
 
 def test_frontend_recovers_stale_or_cross_character_session_without_reload():
@@ -196,7 +238,7 @@ def test_frontend_disables_start_until_selected_story_is_loaded():
     """故事列表未完成或失败时，开始按钮不得用空 story_id 启动默认剧本。"""  # noqa: DOCSTRING_CJK
     script = (ROOT / "static" / "js" / "theater.js").read_text(encoding="utf-8")
     assert "const storyReady = Boolean(state.storyId" in script
-    assert "busy || active || !storyReady" in script
+    assert "busy || active || incompatible || !storyReady" in script
 
 
 def test_frontend_recovers_after_ending_session_for_removed_story():

@@ -24,22 +24,29 @@ def _leave_active_session(page: Page) -> None:
 
 
 @pytest.mark.frontend
-def test_story_intro_exposes_concise_current_catgirl_background(mock_page: Page, running_server: str):
-    """开演前真实页面只展示开场背景，并把占位符替换为当前猫娘名。"""  # noqa: DOCSTRING_CJK
+def test_story_intro_separates_stable_background_from_initial_scene(mock_page: Page, running_server: str):
+    """开演前把测试 Story 的稳定背景与正在发生的开场动作分开。"""  # noqa: DOCSTRING_CJK
     _open_theater_page(mock_page, running_server)
     _leave_active_session(mock_page)
-    mock_page.locator("#theater-story-select").select_option("date_list_last_item_story")
+    public_backgrounds = mock_page.evaluate(
+        """async () => {
+            const payload = await fetch('/api/theater/stories').then(response => response.json());
+            return Object.fromEntries(payload.stories.map(story => [story.id, story.background]));
+        }"""
+    )
+    mock_page.locator("#theater-story-select").select_option("framework_contract_story")
     expect(mock_page.locator("#theater-story-intro")).to_be_visible()
-    intro_brief = mock_page.locator("#theater-story-intro-brief").inner_text()
-    assert 350 <= len(intro_brief) < 500
-    assert intro_brief.startswith("你与")
-    assert "当前猫娘" not in intro_brief
-    assert "{{lanlan_name}}" not in intro_brief
-    assert "提着一个牛皮纸袋来到门廊" in intro_brief
-    assert "两张淡蓝色的普通入场券" in intro_brief
-    assert intro_brief.endswith("挂坠正一点点滑向玄关的铜质钥匙盘。")
-    assert "你可以选择" not in intro_brief
-    assert "你需要回应" not in intro_brief
+    background = mock_page.locator("#theater-story-intro-background").inner_text()
+    assert background == public_backgrounds["framework_contract_story"]
+    assert "中性 Story Package" in background
+    assert "桌面放着一枚带编号的测试牌" not in background
+    expect(mock_page.locator("#theater-log")).to_contain_text(
+        "桌面放着一枚带编号的测试牌"
+    )
+    # 长简介由介绍卡自身滚动承载，不能通过裁字或题材专属前端分支规避正文。
+    assert mock_page.locator("#theater-story-intro").evaluate(
+        "element => getComputedStyle(element).overflowY"
+    ) in {"auto", "scroll"}
 
 
 @pytest.mark.frontend
@@ -47,9 +54,9 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
     """自由输入先得到回应，静态 Choice 随后仍能推进剧情。"""  # noqa: DOCSTRING_CJK
     _open_theater_page(mock_page, running_server)
     _leave_active_session(mock_page)
-    # 删除旧内置故事后，页面必须直接预览唯一的新甜蜜约会剧本。
+    # 浏览器 smoke 只读取测试目录中的中性 Story，不能重新依赖已删除的正式剧本。
     expect(mock_page.locator("#theater-story-select option")).to_have_count(1)
-    mock_page.locator("#theater-story-select").select_option("date_list_last_item_story")
+    mock_page.locator("#theater-story-select").select_option("framework_contract_story")
     expect(mock_page.locator("#theater-story-intro")).to_be_visible()
     assert mock_page.evaluate("document.querySelector('.theater-stage > #theater-story-intro') !== null")
     # 真实浏览器必须加载可播放的银河视频，并保持静音循环，避免干扰剧情音频。
@@ -59,9 +66,11 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
             return Boolean(video && video.autoplay && video.muted && video.loop && video.playsInline);
         }"""
     )
-    expect(mock_page.locator("#theater-story-intro-title")).to_contain_text("约会清单最后一项")
-    expect(mock_page.locator("#theater-player-role")).to_contain_text("七项清单")
-    expect(mock_page.locator("#theater-catgirl-role")).to_contain_text("朋友分寸")
+    expect(mock_page.locator("#theater-story-intro-title")).to_contain_text(
+        "小剧场框架合同夹具"
+    )
+    expect(mock_page.locator("#theater-player-role")).to_contain_text("框架合同验证")
+    expect(mock_page.locator("#theater-catgirl-role")).to_contain_text("公开步骤")
     # 折叠后舞台应缩为紧凑栏并释放高度，再次展开时背景介绍必须原样恢复。
     scene_text_before_collapse = mock_page.locator("#theater-log .theater-turn.narration").first.inner_text()
     expect(mock_page.locator("#theater-scene-text")).to_have_count(0)
@@ -97,7 +106,9 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
     expect(mock_page.locator("#theater-board-toggle")).to_have_attribute("aria-expanded", "true")
     expect(mock_page.locator(".theater-workspace")).to_have_attribute("data-board-expanded", "true")
     expect(mock_page.locator("#theater-board-groups")).to_be_visible()
-    expect(mock_page.locator("#theater-board-available-props")).to_contain_text("七项约会清单")
+    expect(mock_page.locator("#theater-board-available-props")).to_contain_text(
+        "公开测试牌"
+    )
 
     initial_choice_count = mock_page.locator(".theater-choice-button").count()
     pending_input_routes = []
@@ -160,11 +171,15 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
     # 同一 setup Scene 内推进只追加一次 callback，不能重复开场环境。
     expect(scene_narrations).to_have_count(1)
 
-    departure_callback = "你拿起搭在椅背上的外套，走到门口接受同行邀请；不久后，你们一同抵达旧街牌楼。"
-    festival_scene = "旧街牌楼挂满浅金色绢灯"
-    mock_page.locator("#theater-dialogue-choices .theater-choice-button").first.click()
-    expect(mock_page.locator("#theater-log")).to_contain_text(departure_callback, timeout=20000)
-    expect(mock_page.locator("#theater-log")).to_contain_text(festival_scene, timeout=20000)
+    exchange_callback = "你把测试牌递给她，双方公开确认交换已经完成。"
+    progress_scene = "测试牌仍在双方视线内，记录板等待写入公开完成结果。"
+    mock_page.locator("#theater-action-choices .theater-choice-button").first.click()
+    expect(mock_page.locator("#theater-log")).to_contain_text(
+        exchange_callback, timeout=20000
+    )
+    expect(mock_page.locator("#theater-log")).to_contain_text(
+        progress_scene, timeout=20000
+    )
     # 实时跨 Scene 必须先完成玩家选择的离开/抵达动作，再展示新环境，最后才是猫娘对白。
     live_order = mock_page.evaluate(
         """([callbackText, sceneText]) => Array.from(document.querySelectorAll('#theater-log .theater-turn')).map(
@@ -175,7 +190,7 @@ def test_light_theater_supports_roleplay_and_static_choice(mock_page: Page, runn
             if (row.classes.includes('dialogue')) result.lastDialogue = index;
             return result;
         }, { callback: -1, scene: -1, lastDialogue: -1 })""",
-        [departure_callback, festival_scene],
+        [exchange_callback, progress_scene],
     )
     assert 0 <= live_order["callback"] < live_order["scene"] < live_order["lastDialogue"]
     _leave_active_session(mock_page)
@@ -195,8 +210,52 @@ def test_light_theater_restores_after_reload(mock_page: Page, running_server: st
     expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
     assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") == session_id
     # 恢复没有完整历史可供重放，因此必须先用当前 Scene 建立环境，再展示快照回合。
-    expect(mock_page.locator("#theater-log .theater-turn.narration").first).to_contain_text("午后的客厅")
+    expect(mock_page.locator("#theater-log .theater-turn.narration").first).to_contain_text(
+        "桌面放着一枚带编号的测试牌"
+    )
     expect(mock_page.locator(".theater-choice-button").first).to_be_visible()
+    _leave_active_session(mock_page)
+
+
+@pytest.mark.frontend
+def test_dormant_session_restores_with_resumable_status(
+    mock_page: Page, running_server: str
+):
+    """休眠快照恢复后应保留输入和 Choice，并显示可继续而不是已结束。"""  # noqa: DOCSTRING_CJK
+    _open_theater_page(mock_page, running_server)
+    _leave_active_session(mock_page)
+    mock_page.locator("#theater-start-btn").click()
+    expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
+    session_id = mock_page.evaluate(
+        "window.localStorage.getItem('neko.theater.activeSession.v1')"
+    )
+    payload = mock_page.evaluate(
+        """async sessionId => fetch(
+            '/api/theater/session/state?session_id=' + encodeURIComponent(sessionId)
+        ).then(response => response.json())""",
+        session_id,
+    )
+    payload["session_lifecycle"] = "dormant"
+
+    mock_page.route(
+        "**/api/theater/session/state**",
+        lambda route: route.fulfill(status=200, json=payload),
+    )
+    mock_page.reload(wait_until="domcontentloaded")
+
+    expect(mock_page.locator("#theater-status")).to_have_text(
+        "演出已休眠，可以继续", timeout=8000
+    )
+    expect(mock_page.locator("#theater-input")).to_be_enabled()
+    expect(mock_page.locator(".theater-choice-button").first).to_be_visible()
+    assert (
+        mock_page.evaluate(
+            "window.localStorage.getItem('neko.theater.activeSession.v1')"
+        )
+        == session_id
+    )
+
+    mock_page.unroute("**/api/theater/session/state**")
     _leave_active_session(mock_page)
 
 
@@ -241,6 +300,57 @@ def test_stale_input_without_active_session_reopens_start_controls(mock_page: Pa
     mock_page.reload(wait_until="domcontentloaded")
     expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
     assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") == session_id
+    _leave_active_session(mock_page)
+
+
+@pytest.mark.frontend
+def test_incompatible_save_requires_explicit_restart_and_keeps_old_pointer(mock_page: Page, running_server: str):
+    """不兼容存档应保留旧指针并只允许提示卡发出显式重开请求。"""  # noqa: DOCSTRING_CJK
+    old_session_id = "theater_preserved_incompatible_smoke"
+    observed_requests = []
+    start_payloads = []
+
+    # 先通过正式离场协议清理前一测试可能留下的真实 active，避免 mock 提示遮住后端测试状态。
+    mock_page.on("request", lambda request: observed_requests.append((request.method, request.url)))
+    _open_theater_page(mock_page, running_server)
+    _leave_active_session(mock_page)
+
+    # 浏览器侧模拟服务端已保留但无法恢复的 Story revision 存档，不伪造任何剧本专属内容。
+    mock_page.route(
+        "**/api/theater/session/active",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"ok":false,"reason":"session_story_revision_mismatch",'
+                f'"session_id":"{old_session_id}"}}'
+            ),
+        ),
+    )
+
+    def capture_start(route):
+        """记录正式开场请求后交给真实后端，验证页面发送的是现有协议。"""  # noqa: DOCSTRING_CJK
+        start_payloads.append(route.request.post_data_json)
+        route.continue_()
+
+    mock_page.route("**/api/theater/session/start", capture_start)
+    mock_page.reload(wait_until="domcontentloaded")
+
+    expect(mock_page.locator("#theater-compatibility-notice")).to_be_visible(timeout=8000)
+    expect(mock_page.locator("#theater-compatibility-title")).to_have_text("旧演出无法继续")
+    expect(mock_page.locator("#theater-start-btn")).to_be_disabled()
+    expect(mock_page.locator("#theater-restart-btn")).to_be_enabled()
+    assert mock_page.evaluate("window.localStorage.getItem('neko.theater.activeSession.v1')") == old_session_id
+
+    mock_page.locator("#theater-restart-btn").click()
+    expect(mock_page.locator("#theater-input")).to_be_enabled(timeout=8000)
+    expect(mock_page.locator("#theater-compatibility-notice")).to_be_hidden()
+    assert start_payloads and start_payloads[0]["replace_incompatible_session"] is True
+    assert all(method != "DELETE" for method, _ in observed_requests)
+
+    # 清理真实后端新建的 smoke Session，避免拦截的旧响应影响正式离场查询。
+    mock_page.unroute("**/api/theater/session/active")
+    mock_page.unroute("**/api/theater/session/start")
     _leave_active_session(mock_page)
 
 

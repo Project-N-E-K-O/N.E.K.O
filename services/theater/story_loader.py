@@ -1,16 +1,32 @@
-"""加载并校验轻量小剧场 Story Package。"""  # noqa: DOCSTRING_CJK
+"""加载并公开轻量小剧场 Story Package。"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from utils.file_utils import read_json_async
 
+from . import story_contracts
+from .story_contracts import (
+    StoryRootNotObjectError as StoryRootNotObjectError,
+    initial_node_id as initial_node_id,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_STORY_DIR = PROJECT_ROOT / "config" / "theater" / "stories"
+
+
+async def validate_story_file(story_path: Path) -> dict[str, Any]:
+    """严格校验作者显式指定的单个 Story 文件，不扫描同目录其他内容。"""  # noqa: DOCSTRING_CJK
+    path = Path(story_path)
+    payload = await read_json_async(path)
+    if not isinstance(payload, dict):
+        # 单文件作者工具需要把 JSON 语法、根类型和 Story 合同错误稳定地区分开。
+        raise StoryRootNotObjectError("Theater story root must be an object")
+    # 内部校验器会返回深拷贝，调用方不能借返回值修改刚读取的作者输入。
+    return story_contracts.validate_story_package(payload, path)
 
 
 async def list_stories(*, story_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -19,38 +35,51 @@ async def list_stories(*, story_dir: Path | None = None) -> list[dict[str, Any]]
     return [public_story(story) for story in stories]
 
 
-async def load_story(story_id: str | None, *, story_dir: Path | None = None) -> dict[str, Any]:
-    """按 ID 加载正式故事；空 ID 或未知 ID 使用目录中的第一份故事。"""  # noqa: DOCSTRING_CJK
+async def load_story(
+    story_id: str | None, *, story_dir: Path | None = None
+) -> dict[str, Any]:
+    """按 ID 加载正式故事；只有空 ID 才使用目录中的第一份故事。"""  # noqa: DOCSTRING_CJK
     stories = await _load_config_stories(story_dir or CONFIG_STORY_DIR)
     if not stories:
         return {}
     normalized_id = str(story_id or "").strip()
+    if not normalized_id:
+        # 未指定 Story 时使用稳定排序的默认项；显式错误 ID 不能偷换成另一位作者的内容。
+        return stories[0]
     for story in stories:
         if str(story.get("id") or "") == normalized_id:
             return story
-    # 默认值只依赖排序后的正式 JSON，不再维护第二套代码内 Story 协议。
-    return stories[0]
+    raise FileNotFoundError(normalized_id)
+
+
+async def load_story_exact(
+    story_id: str, *, story_dir: Path | None = None
+) -> dict[str, Any]:
+    """按 Session 保存的稳定 ID 严格加载 Story，禁止缺失故事回退到其他作者内容。"""  # noqa: DOCSTRING_CJK
+    normalized_id = str(story_id or "").strip()
+    if not normalized_id:
+        raise FileNotFoundError(normalized_id)
+    return await load_story(normalized_id, story_dir=story_dir)
 
 
 def public_story(story: dict[str, Any]) -> dict[str, Any]:
     """只公开故事选择页需要的信息。"""  # noqa: DOCSTRING_CJK
+    initial_scene = scene_by_id(story, str(story.get("initial_scene_id") or ""))
     public: dict[str, Any] = {
         "id": str(story.get("id") or ""),
         "title": str(story.get("title") or ""),
-        "summary": str(story.get("summary") or ""),
-        # 预览与正式开场必须使用同一个作者入口，不能依赖 scenes 数组的排列顺序。
-        "initial_scene_id": str(story.get("initial_scene_id") or ""),
-        "scenes": [public_scene(scene) for scene in story.get("scenes") or [] if isinstance(scene, dict)],
+        # background 是玩家背景的唯一作者真源；summary 和未来 Scene 都不属于选剧接口。
+        "background": str(story.get("background") or ""),
+        # 开演前只需要作者指定的初始 Scene，不能把后续转折和结局提前送进浏览器。
+        "initial_scene": public_scene(initial_scene),
     }
     card = story.get("scenario_card")
     if isinstance(card, dict):
-        # 开场卡只保留玩家已知信息，隐藏线索和内部规则不会发送给前端。
+        # scenario_card 只保留结构化公开身份与目标；背景和生成约束各有独立真源。
         public["scenario_card"] = {
-            "brief": str(card.get("brief") or ""),
             "player_role": str(card.get("player_role") or ""),
             "catgirl_role": str(card.get("catgirl_role") or ""),
             "primary_goal": str(card.get("primary_goal") or ""),
-            "rules": [str(item) for item in card.get("rules") or [] if str(item).strip()],
         }
     return public
 
@@ -70,27 +99,18 @@ def scene_for_phase(story: dict[str, Any], phase: str) -> dict[str, Any]:
     for scene in scenes:
         if str(scene.get("phase") or scene.get("id") or "") == phase:
             return scene
-    return scenes[0] if scenes else {"id": phase or "setup", "phase": phase or "setup", "title": "", "text": ""}
+    # Loader 已保证每个作者阶段都有 Scene；运行时不再拿数组第一项冒充缺失场景。
+    return {}
 
 
 def scene_by_id(story: dict[str, Any], scene_id: str) -> dict[str, Any]:
     """按稳定 ID 读取场景，不用 phase 猜测作者指定的开场。"""  # noqa: DOCSTRING_CJK
     for scene in story.get("scenes") or []:
-        if isinstance(scene, dict) and str(scene.get("id") or "") == str(scene_id or ""):
+        if isinstance(scene, dict) and str(scene.get("id") or "") == str(
+            scene_id or ""
+        ):
             return scene
     return {}
-
-
-def initial_node_id(story: dict[str, Any]) -> str:
-    """取得静态图入口；优先选择 setup 阶段的 seed 节点。"""  # noqa: DOCSTRING_CJK
-    nodes = [node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)]
-    for node in nodes:
-        if node.get("node_type") == "seed" and node.get("belong_phase") == "setup":
-            return str(node.get("node_id") or "")
-    for node in nodes:
-        if node.get("belong_phase") == "setup":
-            return str(node.get("node_id") or "")
-    return str(nodes[0].get("node_id") or "") if nodes else ""
 
 
 async def _load_config_stories(story_dir: Path) -> list[dict[str, Any]]:
@@ -100,82 +120,8 @@ async def _load_config_stories(story_dir: Path) -> list[dict[str, Any]]:
     stories: list[dict[str, Any]] = []
     for path in sorted(story_dir.glob("*.json")):
         payload = await read_json_async(path)
-        if isinstance(payload, dict):
-            stories.append(_validate_story(payload, path))
+        if not isinstance(payload, dict):
+            # 坏文件不能被目录扫描静默跳过，否则作者会误以为内容已经成功发布。
+            raise StoryRootNotObjectError("Theater story root must be an object")
+        stories.append(story_contracts.validate_story_package(payload, path))
     return stories
-
-
-def _validate_story(story: dict[str, Any], path: Path) -> dict[str, Any]:
-    """执行当前轻量协议检查，阻止断边和无入口故事进入运行时。"""  # noqa: DOCSTRING_CJK
-    required = ("id", "title", "initial_scene_id", "scenes", "narrative_nodes", "edges")
-    missing = [key for key in required if not story.get(key)]
-    if missing:
-        raise ValueError(f"Theater story {path} missing fields: {', '.join(missing)}")
-    scenes = [scene for scene in story.get("scenes") or [] if isinstance(scene, dict)]
-    scene_ids = [str(scene.get("id") or "") for scene in scenes]
-    if not scene_ids or any(not scene_id for scene_id in scene_ids) or len(scene_ids) != len(set(scene_ids)):
-        raise ValueError(f"Theater story {path} has invalid or duplicate scene ids")
-    if str(story.get("initial_scene_id") or "") not in scene_ids:
-        raise ValueError(f"Theater story {path} initial scene references unknown scene")
-    nodes = [node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)]
-    node_ids = [str(node.get("node_id") or "") for node in nodes]
-    if not node_ids or any(not node_id for node_id in node_ids) or len(node_ids) != len(set(node_ids)):
-        raise ValueError(f"Theater story {path} has invalid or duplicate node ids")
-    transition_ids: set[str] = set()
-    latent_intents_by_node: set[tuple[str, str]] = set()
-    for edge in story.get("edges") or []:
-        if not isinstance(edge, dict):
-            raise ValueError(f"Theater story {path} has invalid edge")
-        if str(edge.get("from_node") or "") not in node_ids or str(edge.get("to_node") or "") not in node_ids:
-            raise ValueError(f"Theater story {path} edge references unknown node")
-        # v2.4 沿用原 edges 数组；未声明可见性的旧边等同推荐边，避免迁移无关 Story Package。
-        visibility = str(edge.get("visibility") or "recommended").strip()
-        if visibility not in {"recommended", "latent"}:
-            raise ValueError(f"Theater story {path} edge has invalid visibility: {visibility}")
-        if visibility != "latent":
-            continue
-        # 隐藏语义边必须完全由作者声明。模型只能返回 intent_id，不能补写目标、阈值或事实。
-        transition_id = str(edge.get("transition_id") or "").strip()
-        goal_id = str(edge.get("goal_id") or "").strip()
-        intent_id = str(edge.get("intent_id") or "").strip()
-        intent_summary = str(edge.get("intent_summary") or "").strip()
-        examples = [str(item).strip() for item in edge.get("intent_examples") or [] if str(item).strip()]
-        pullbacks = edge.get("pullbacks_before_transition")
-        if not transition_id or not goal_id or not intent_id or not intent_summary or not examples:
-            raise ValueError(f"Theater story {path} latent edge is missing routing metadata")
-        if isinstance(pullbacks, bool) or not isinstance(pullbacks, int) or pullbacks < 0:
-            raise ValueError(f"Theater story {path} latent edge has invalid pullback threshold")
-        if transition_id in transition_ids:
-            raise ValueError(f"Theater story {path} has duplicate transition id: {transition_id}")
-        intent_key = (str(edge.get("from_node") or ""), intent_id)
-        if intent_key in latent_intents_by_node:
-            raise ValueError(f"Theater story {path} has ambiguous latent intent at one node: {intent_id}")
-        transition_ids.add(transition_id)
-        latent_intents_by_node.add(intent_key)
-    if not initial_node_id(story):
-        raise ValueError(f"Theater story {path} has no setup node")
-    _validate_reachable_ending(story, path)
-    return deepcopy(story)
-
-
-def _validate_reachable_ending(story: dict[str, Any], path: Path) -> None:
-    """确保作者静态图至少存在一条从开场抵达落幕的路径。"""  # noqa: DOCSTRING_CJK
-    adjacency: dict[str, list[str]] = {}
-    for edge in story.get("edges") or []:
-        adjacency.setdefault(str(edge.get("from_node") or ""), []).append(str(edge.get("to_node") or ""))
-    nodes = {str(node.get("node_id") or ""): node for node in story.get("narrative_nodes") or [] if isinstance(node, dict)}
-    start = initial_node_id(story)
-    pending = [start]
-    visited: set[str] = set()
-    while pending:
-        node_id = pending.pop()
-        if node_id in visited:
-            continue
-        visited.add(node_id)
-        pending.extend(adjacency.get(node_id, []))
-    reachable_ending = any(
-        node_id in visited and (str(node.get("node_type") or "") == "ending" or not adjacency.get(node_id))
-        for node_id, node in nodes.items()
-    )
-    if not reachable_ending:
-        raise ValueError(f"Theater story {path} has no reachable ending")

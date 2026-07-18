@@ -1,0 +1,675 @@
+{
+  "schema_version": 1,
+  "dataset_id": "theater_narrative_eval_v1",
+  "data_policy": "synthetic_only_no_user_data",
+  "topics": [
+    {
+      "id": "orbital_garden",
+      "label": "轨道温室里的种子舱检修"
+    },
+    {
+      "id": "harbor_puppet_stage",
+      "label": "海港木偶剧场的开演准备"
+    },
+    {
+      "id": "desert_observatory",
+      "label": "沙漠天文台的流星图校准"
+    }
+  ],
+  "cases": [
+    {
+      "id": "route_orbital_exact",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "route",
+      "context": {
+        "summary": "值班员刚完成温室巡检，尚未开启种子舱支线。",
+        "player_input": "我想去种子舱检查冷凝管。"
+      },
+      "expected": {
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_seed_capsule",
+          "reason_code": "player_new_action"
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_seed_capsule",
+          "reason_code": "player_new_action"
+        }
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": true,
+        "failure_code": null,
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "route_puppet_wrong_target",
+      "source": "synthetic",
+      "topic_id": "harbor_puppet_stage",
+      "dimension": "route",
+      "context": {
+        "summary": "演员正在后台整理提线木偶，港口钟楼还没有进入当前情节。",
+        "player_input": "我们去道具间找丢失的铜铃吧。"
+      },
+      "expected": {
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_prop_room_bell",
+          "reason_code": "player_new_action"
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_harbor_clock",
+          "reason_code": "player_new_action"
+        }
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "semantic_mismatch",
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "route_observatory_context_missing",
+      "source": "synthetic",
+      "topic_id": "desert_observatory",
+      "dimension": "route",
+      "context": {
+        "summary": "候选输出没有收到玩家刚才指定的观测穹顶编号。",
+        "player_input": "把四号穹顶的镜面重新校准。"
+      },
+      "expected": {
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_dome_four",
+          "reason_code": "player_new_action"
+        }
+      },
+      "observed": {
+        "context_status": "missing",
+        "delivery": "normal"
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "context_missing",
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "route_orbital_technical_degraded",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "route",
+      "context": {
+        "summary": "路线所需上下文完整，但分类服务本轮进入技术降级。",
+        "player_input": "先去外环关闭营养液阀门。"
+      },
+      "expected": {
+        "route": {
+          "kind": "enter_branch",
+          "target_id": "branch_outer_valve",
+          "reason_code": "player_new_action"
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "technical_degraded"
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "technical_degraded",
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "fact_puppet_anchor_exact",
+      "source": "synthetic",
+      "topic_id": "harbor_puppet_stage",
+      "dimension": "fact_memory",
+      "context": {
+        "summary": "先前已确认铜铃藏在蓝幕布后的二号木箱里。",
+        "player_input": "你还记得铜铃放在哪里吗？"
+      },
+      "expected": {
+        "fact_memory": {
+          "required_anchors": [
+            {
+              "key": "bell_crate",
+              "value": "crate_two"
+            },
+            {
+              "key": "curtain_color",
+              "value": "blue"
+            }
+          ],
+          "forbidden_contradictions": [
+            {
+              "key": "bell_crate",
+              "value": "crate_five"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "fact_memory": {
+          "recalled_facts": [
+            {
+              "key": "bell_crate",
+              "value": "crate_two"
+            },
+            {
+              "key": "curtain_color",
+              "value": "blue"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": true,
+        "failure_code": null,
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "fact_observatory_anchor_missing",
+      "source": "synthetic",
+      "topic_id": "desert_observatory",
+      "dimension": "fact_memory",
+      "context": {
+        "summary": "星图编号和校准角度都已在前文公开确认。",
+        "player_input": "按刚才的数据继续校准。"
+      },
+      "expected": {
+        "fact_memory": {
+          "required_anchors": [
+            {
+              "key": "chart_id",
+              "value": "meteor_chart_c7"
+            },
+            {
+              "key": "mirror_angle",
+              "value": "twelve_degrees"
+            }
+          ],
+          "forbidden_contradictions": [
+            {
+              "key": "mirror_angle",
+              "value": "twenty_degrees"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "fact_memory": {
+          "recalled_facts": [
+            {
+              "key": "chart_id",
+              "value": "meteor_chart_c7"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "semantic_mismatch",
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "fact_orbital_contradiction",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "fact_memory",
+      "context": {
+        "summary": "密封记录明确写着种子舱编号为 M7。",
+        "player_input": "确认舱号后再打开外壳。"
+      },
+      "expected": {
+        "fact_memory": {
+          "required_anchors": [
+            {
+              "key": "capsule_code",
+              "value": "m7"
+            }
+          ],
+          "forbidden_contradictions": [
+            {
+              "key": "capsule_code",
+              "value": "k2"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "fact_memory": {
+          "recalled_facts": [
+            {
+              "key": "capsule_code",
+              "value": "k2"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": []
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "semantic_mismatch",
+        "human_review_pending": false
+      }
+    },
+    {
+      "id": "choice_observatory_contract_pass",
+      "source": "synthetic",
+      "topic_id": "desert_observatory",
+      "dimension": "choice_alignment",
+      "context": {
+        "summary": "角色询问先修正镜面还是先核对星图。",
+        "player_input": "让我决定下一步。"
+      },
+      "expected": {
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_align_mirror",
+              "input_kind": "choice",
+              "author_core": "align_mirror_first"
+            },
+            {
+              "id": "choice_verify_chart",
+              "input_kind": "choice",
+              "author_core": "verify_chart_first"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "narration": "风沙敲着穹顶，你想先处理哪一项？",
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_align_mirror",
+              "input_kind": "choice",
+              "author_core": "align_mirror_first",
+              "text": "先调整镜面"
+            },
+            {
+              "id": "choice_verify_chart",
+              "input_kind": "choice",
+              "author_core": "verify_chart_first",
+              "text": "先核对星图"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "dialogue_choice_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": true,
+        "failure_code": null,
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "choice_puppet_wrong_input_type",
+      "source": "synthetic",
+      "topic_id": "harbor_puppet_stage",
+      "dimension": "choice_alignment",
+      "context": {
+        "summary": "开演前只能从两个作者按钮中选择一项。",
+        "player_input": "给我看看可以做什么。"
+      },
+      "expected": {
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_raise_curtain",
+              "input_kind": "choice",
+              "author_core": "raise_curtain_now"
+            },
+            {
+              "id": "choice_test_bell",
+              "input_kind": "choice",
+              "author_core": "test_bell_first"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "narration": "观众席已经安静下来。",
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_raise_curtain",
+              "input_kind": "free_input",
+              "author_core": "raise_curtain_now",
+              "text": "现在拉开幕布"
+            },
+            {
+              "id": "choice_test_bell",
+              "input_kind": "choice",
+              "author_core": "test_bell_first",
+              "text": "先试一下铜铃"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "dialogue_choice_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "contract_violation",
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "choice_orbital_author_core_mismatch",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "choice_alignment",
+      "context": {
+        "summary": "作者按钮要求在关闭阀门和标记泄漏点之间选择。",
+        "player_input": "我来选处理顺序。"
+      },
+      "expected": {
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_close_valve",
+              "input_kind": "choice",
+              "author_core": "close_nutrient_valve"
+            },
+            {
+              "id": "choice_mark_leak",
+              "input_kind": "choice",
+              "author_core": "mark_condensation_leak"
+            }
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "narration": "警报灯交替闪烁，你伸手指向控制台。",
+        "choice_alignment": {
+          "choices": [
+            {
+              "id": "choice_close_valve",
+              "input_kind": "choice",
+              "author_core": "open_nutrient_valve",
+              "text": "关闭营养液阀门"
+            },
+            {
+              "id": "choice_mark_leak",
+              "input_kind": "choice",
+              "author_core": "mark_condensation_leak",
+              "text": "先标记泄漏点"
+            }
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "dialogue_choice_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "semantic_mismatch",
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "persona_observatory_pending",
+      "source": "synthetic",
+      "topic_id": "desert_observatory",
+      "dimension": "persona",
+      "context": {
+        "summary": "角色设定为谨慎、寡言的夜班观测员。",
+        "player_input": "你觉得这次校准稳妥吗？"
+      },
+      "expected": {
+        "evaluation": "human_only"
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "dialogue": "数据还差最后一轮复核，我不想催你。"
+      },
+      "human_review": {
+        "criteria": [
+          "persona_consistency"
+        ]
+      },
+      "manual_label": {
+        "verdict": null,
+        "failure_code": null,
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "persona_puppet_pending",
+      "source": "synthetic",
+      "topic_id": "harbor_puppet_stage",
+      "dimension": "persona",
+      "context": {
+        "summary": "角色设定为爱夸张表演、遇到正事却很可靠的木偶师。",
+        "player_input": "铜铃找不到会不会影响开场？"
+      },
+      "expected": {
+        "evaluation": "human_only"
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "dialogue": "没有铃声的序幕？那可像没有潮水的港口——不过备用铃我已经拿来了。"
+      },
+      "human_review": {
+        "criteria": [
+          "persona_consistency"
+        ]
+      },
+      "manual_label": {
+        "verdict": null,
+        "failure_code": null,
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "persona_orbital_pending",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "persona",
+      "context": {
+        "summary": "角色设定为乐观但严格遵守温室安全流程的维护员。",
+        "player_input": "能不能跳过气密检查？"
+      },
+      "expected": {
+        "evaluation": "human_only"
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "dialogue": "当然能——等我们把安全清单一项不漏地做完以后。"
+      },
+      "human_review": {
+        "criteria": [
+          "persona_consistency"
+        ]
+      },
+      "manual_label": {
+        "verdict": null,
+        "failure_code": null,
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "convergence_puppet_structure_pass",
+      "source": "synthetic",
+      "topic_id": "harbor_puppet_stage",
+      "dimension": "convergence",
+      "context": {
+        "summary": "铜铃已找回、幕布已升起，支线应收束到正式开演节点。",
+        "player_input": "让演出开始吧。"
+      },
+      "expected": {
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_harbor_show_begins",
+          "required_fact_keys": [
+            "bell_recovered",
+            "curtain_raised"
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_harbor_show_begins",
+          "resolved_fact_keys": [
+            "bell_recovered",
+            "curtain_raised",
+            "audience_ready"
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "convergence_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": true,
+        "failure_code": null,
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "convergence_observatory_wrong_target",
+      "source": "synthetic",
+      "topic_id": "desert_observatory",
+      "dimension": "convergence",
+      "context": {
+        "summary": "星图已经校准完成，剧情应回到共同观看流星雨的节点。",
+        "player_input": "把结果记录下来，然后一起等流星。"
+      },
+      "expected": {
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_shared_meteor_watch",
+          "required_fact_keys": [
+            "chart_calibrated",
+            "dome_secured"
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_abandon_observatory",
+          "resolved_fact_keys": [
+            "chart_calibrated",
+            "dome_secured"
+          ]
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "convergence_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "semantic_mismatch",
+        "human_review_pending": true
+      }
+    },
+    {
+      "id": "convergence_orbital_contract_violation",
+      "source": "synthetic",
+      "topic_id": "orbital_garden",
+      "dimension": "convergence",
+      "context": {
+        "summary": "阀门和冷凝管都已处理，支线应返回温室巡检结束节点。",
+        "player_input": "确认安全后结束检修。"
+      },
+      "expected": {
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_greenhouse_safe",
+          "required_fact_keys": [
+            "valve_closed",
+            "leak_sealed"
+          ]
+        }
+      },
+      "observed": {
+        "context_status": "complete",
+        "delivery": "normal",
+        "convergence": {
+          "status": "converged",
+          "target_node_id": "ending_greenhouse_safe"
+        }
+      },
+      "human_review": {
+        "criteria": [
+          "convergence_naturalness"
+        ]
+      },
+      "manual_label": {
+        "verdict": false,
+        "failure_code": "contract_violation",
+        "human_review_pending": true
+      }
+    }
+  ]
+}

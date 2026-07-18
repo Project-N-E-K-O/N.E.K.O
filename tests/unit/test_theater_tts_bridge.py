@@ -106,9 +106,9 @@ async def test_theater_tts_rechecks_current_catgirl_before_queue(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_router_passes_current_config_for_locked_recheck(monkeypatch):
-    """开场 Router 必须把当前配置管理器交给 Runtime 做锁内角色重验。"""  # noqa: DOCSTRING_CJK
-    captured = {}
+async def test_start_router_passes_current_config_without_scanning_sessions(monkeypatch):
+    """开场只转交当前配置做锁内重验，不得再扫描其他小剧场 Session。"""  # noqa: DOCSTRING_CJK
+    captured = {"cleanup_calls": 0}
 
     class _FakeConfigManager:
         """提供开场所需的当前猫娘和数据目录。"""  # noqa: DOCSTRING_CJK
@@ -126,16 +126,25 @@ async def test_start_router_passes_current_config_for_locked_recheck(monkeypatch
         captured.update(kwargs)
         return {"ok": False, "reason": "session_character_mismatch"}
 
-    async def _noop_cleanup(_root):
-        """跳过与本测试无关的过期 Session 清理。"""  # noqa: DOCSTRING_CJK
+    async def _record_cleanup(_root):
+        """记录旧休眠扫描；方案 A 完成后开场不得再进入这个兼容写入点。"""  # noqa: DOCSTRING_CJK
+        captured["cleanup_calls"] += 1
+
+    async def _noop_speech(_response):
+        """跳过与本测试无关的开场对白播放。"""  # noqa: DOCSTRING_CJK
         return None
 
     config_manager = _FakeConfigManager()
     monkeypatch.setattr(theater_router, "get_config_manager", lambda: config_manager)
     monkeypatch.setattr(theater_router.runtime, "start_session", _start_session)
-    monkeypatch.setattr(theater_router, "_cleanup_expired_theater_sessions", _noop_cleanup)
+    monkeypatch.setattr(
+        theater_router.runtime,
+        "cleanup_expired_sessions",
+        _record_cleanup,
+        raising=False,
+    )
     monkeypatch.setattr(theater_router, "_validate_theater_local_mutation", lambda *_args: None)
-    monkeypatch.setattr(theater_router, "_speak_committed_dialogue", _noop_cleanup)
+    monkeypatch.setattr(theater_router, "_speak_committed_dialogue", _noop_speech)
 
     class _FakeRequest:
         """提供最小合法开场 JSON。"""  # noqa: DOCSTRING_CJK
@@ -148,3 +157,4 @@ async def test_start_router_passes_current_config_for_locked_recheck(monkeypatch
 
     assert captured["lanlan_name"] == "测试猫娘"
     assert captured["config_manager"] is config_manager
+    assert captured["cleanup_calls"] == 0

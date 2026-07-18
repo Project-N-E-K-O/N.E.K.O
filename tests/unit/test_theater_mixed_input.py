@@ -1,4 +1,4 @@
-"""按七成自由输入、三成作者选项压力测试当前正式剧本。"""  # noqa: DOCSTRING_CJK
+"""按七成自由输入、三成作者选项压力测试中性 Story 夹具。"""  # noqa: DOCSTRING_CJK
 
 from copy import deepcopy
 
@@ -6,6 +6,7 @@ import pytest
 
 from services.theater import runtime, session_store
 from services.theater.turn_service import MAX_IDEMPOTENT_RESULTS, MAX_RECENT_TURN_MESSAGES
+from tests.utils.theater_story_fixture import THEATER_TEST_STORY_ID
 
 
 # 同时覆盖正常互动、关系试探和明显越界请求，验证自由文本不会改写作者权威状态。
@@ -32,19 +33,10 @@ AUTHORITATIVE_STATE_KEYS = (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("story_id", "choice_turns", "ending_id"),
-    (
-        ("date_list_last_item_story", 15, "ending_last_item_is_tomorrow"),
-    ),
-)
-async def test_seventy_thirty_mixed_inputs_keep_story_controllable(
-    tmp_path,
-    story_id: str,
-    choice_turns: int,
-    ending_id: str,
-):
+async def test_seventy_thirty_mixed_inputs_keep_story_controllable(tmp_path):
     """七成自由输入不得推进或污染剧情，三成作者选项最终必须正常通关。"""  # noqa: DOCSTRING_CJK
+    story_id = THEATER_TEST_STORY_ID
+    choice_turns = 3
     root = tmp_path / story_id
     result = await runtime.start_session(root, lanlan_name="测试猫娘", story_id=story_id)
     session_id = result["session_id"]
@@ -109,7 +101,7 @@ async def test_seventy_thirty_mixed_inputs_keep_story_controllable(
 
     assert submitted_free_turns == free_turns
     assert submitted_free_turns / revision == pytest.approx(0.7, abs=0.012)
-    assert result["ending"]["ending_id"] == ending_id
+    assert result["ending"]["ending_id"] == "ending_contract_complete"
     assert result["can_resume"] is False
 
     # 压力测试结束后，持久化上下文和重试缓存必须保持固定上限。

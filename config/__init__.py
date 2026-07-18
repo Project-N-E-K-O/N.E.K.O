@@ -1736,6 +1736,80 @@ OPENCLAW_MAGIC_INTENT_MAX_TOKENS = 80
 - 用途：判断用户输入是 /clear /new /stop /daemon-approve 中的哪个。
 - 上游：LLM 输出固定 JSON ~15 token，80 留 5x 安全垫。"""
 
+# ---- Theater: Runtime Branch Planner ----
+THEATER_PLANNER_TIMEOUT_SECONDS = 15.0
+"""小剧场 Runtime Branch Planner 单次请求的硬超时。
+- 用途：Planner 只在自由意图达到支线阈值时调用一次，超时后保守留在作者节点。
+- 上游：summary tier 的结构化 Patch 生成；不做自动重试。"""
+
+THEATER_PLANNER_OUTPUT_MAX_TOKENS = 900
+"""小剧场 Runtime Branch Patch 候选的输出 token 上限。
+- 用途：容纳事实许可、Beat 和出口组成的完整 JSON，同时阻止开放式长文输出。
+- 上游：Planner 模型生成的未校验候选；服务端合同校验通过前不写 Session。"""
+
+THEATER_PLANNER_INTENT_MAX_TOKENS = 120
+"""小剧场 Planner 所接收自由意图摘要的 token 上限。
+- 用途：保留玩家连续行动目标，避免 Router 摘要异常放大 Planner 上下文。
+- 上游：服务端 dynamic_intent.intent_summary。"""
+
+THEATER_PLANNER_EVIDENCE_MAX_TOKENS = 60
+"""小剧场 Planner 单条玩家意图证据的 token 上限。
+- 用途：最近三条证据必须分别完整落入预算；任一超界时停止规划，不能只使用前缀。
+- 上游：服务端 dynamic_intent.evidence_messages。"""
+
+THEATER_BRANCH_ACTOR_OUTPUT_MAX_TOKENS = 700
+"""小剧场活动支线 Actor 的结构化输出 token 上限。
+- 用途：容纳短旁白、猫娘对白和每轮有限个 Branch Fact Candidate。
+- 上游：已验证 Patch 下的支线回合输出；候选仍需经过服务端合同校验。"""
+
+THEATER_TURN_USER_MESSAGE_MAX_TOKENS = 140
+"""小剧场 Router 与 Actor 接收的本轮玩家原话 token 上限。
+- 用途：限制普通路由、普通 Actor、支线入口 Actor 和活动支线 Actor 的单条输入。
+- 安全边界：当前原话超过上限时必须整体技术降级，不能让截断后的片段参与权威提交。"""
+
+THEATER_BRANCH_HANDOFF_OUTPUT_MAX_TOKENS = 220
+"""小剧场活动支线转交分类的结构化输出 token 上限。
+- 用途：只容纳分类、下一意图摘要、两段原话摘录和置信度五个固定字段。
+- 上游：活动支线自由输入的单次轻量 Router；坏输出不做 Repair。"""
+
+THEATER_BRANCH_HANDOFF_TITLE_MAX_TOKENS = 40
+"""活动支线转交分类所接收 Story/Scene 公开标题的单字段 token 上限。"""
+
+THEATER_BRANCH_HANDOFF_THEME_MAX_TOKENS = 60
+"""活动支线转交分类所接收 Story 公开主题的 token 上限。"""
+
+THEATER_BRANCH_HANDOFF_BACKGROUND_MAX_TOKENS = 240
+"""活动支线转交分类所接收 Story 公开背景的 token 上限。"""
+
+THEATER_BRANCH_HANDOFF_SCENE_TEXT_MAX_TOKENS = 120
+"""活动支线转交分类所接收当前 Scene 公开正文的 token 上限。"""
+
+THEATER_BRANCH_HANDOFF_INTENT_MAX_TOKENS = 100
+"""活动支线转交分类所接收 seed_intent/objective 单字段的 token 上限。"""
+
+THEATER_BRANCH_HANDOFF_USER_MESSAGE_MAX_TOKENS = 140
+"""活动支线转交分类所接收本轮玩家原话的 token 上限。"""
+
+THEATER_BRANCH_FACT_CANDIDATE_MAX_ITEMS = 6
+"""小剧场单个活动支线回合允许提交的事实候选条数上限。
+- 用途：Actor 解析与服务端合同提交共用同一边界，防止候选数组放大 Session。
+- 上游：活动支线 Actor 的 fact_candidates。"""
+
+THEATER_BRANCH_RECALL_MAX_FACTS = 8
+"""小剧场普通 Actor 单轮最多召回的已结束支线事实数。
+- 用途：只保留近期 History 精确引用的少量公开事实，避免长剧本持续放大 prompt。
+- 上游：服务端 Branch History 的 key_fact_ids。"""
+
+THEATER_BRANCH_RECALL_MAX_HISTORIES = 4
+"""小剧场普通 Actor 单轮最多读取的已结束支线 History 数。
+- 用途：限制历史分段数量，并让事实总预算优先覆盖最近完成的用户剧情。
+- 上游：服务端 story_state.branch_history。"""
+
+THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS = 24
+"""小剧场单个支线召回语义字段的 token 上限。
+- 用途：限制用户 Story Package 提供的 Goal 摘要和事实三元组进入普通 Actor 的体积。
+- 上游：已验证 Branch Fact 与 Narrative Goal 的作者文本。"""
+
 # ---- Main: session / avatar / omni ----
 SESSION_ARCHIVE_TRIGGER_TOKENS = 5000
 """会话历史归档触发的累计 token 总量。
@@ -2562,6 +2636,23 @@ __all__ = [
     'COMPUTER_USE_MAX_TOKENS',
     'LLM_PING_MAX_TOKENS',
     'OPENCLAW_MAGIC_INTENT_MAX_TOKENS',
+    'THEATER_PLANNER_TIMEOUT_SECONDS',
+    'THEATER_PLANNER_OUTPUT_MAX_TOKENS',
+    'THEATER_PLANNER_INTENT_MAX_TOKENS',
+    'THEATER_PLANNER_EVIDENCE_MAX_TOKENS',
+    'THEATER_BRANCH_ACTOR_OUTPUT_MAX_TOKENS',
+    'THEATER_TURN_USER_MESSAGE_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_OUTPUT_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_TITLE_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_THEME_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_BACKGROUND_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_SCENE_TEXT_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_INTENT_MAX_TOKENS',
+    'THEATER_BRANCH_HANDOFF_USER_MESSAGE_MAX_TOKENS',
+    'THEATER_BRANCH_FACT_CANDIDATE_MAX_ITEMS',
+    'THEATER_BRANCH_RECALL_MAX_FACTS',
+    'THEATER_BRANCH_RECALL_MAX_HISTORIES',
+    'THEATER_BRANCH_RECALL_FIELD_MAX_TOKENS',
     'SESSION_ARCHIVE_TRIGGER_TOKENS',
     'SESSION_TURN_THRESHOLD',
     'USER_DIRECTIVE_TTL_SECONDS',

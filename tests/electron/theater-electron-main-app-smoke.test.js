@@ -27,7 +27,7 @@ function getElectronBinary(pcRoot) {
   return electron;
 }
 
-/** 启动隔离后端：真实提供 theater 模板与脚本，并记录刷新恢复所需的接口调用次数。 */
+/** 启动隔离后端：真实提供 theater 模板与脚本，并保存一次输入后的公开恢复快照。 */
 function startFakeBackend() {
   return new Promise((resolve, reject) => {
     const theaterHtml = fs.readFileSync(path.join(repoRoot, 'templates', 'theater.html'), 'utf8')
@@ -37,21 +37,24 @@ function startFakeBackend() {
     let startRequests = 0;
     let stateRequests = 0;
     let activeRequests = 0;
+    let turnRequests = 0;
+    let stateRevision = 0;
+    let latestDialogue = '第一次启动的公开对白。';
+    let lastTurnRequest = null;
 
     // 只返回玩家可见恢复字段，确保 Electron smoke 与正式公开 session 协议一致。
-    function publicSessionSnapshot(dialogueText) {
+    function publicSessionSnapshot() {
       return {
         ok: true,
         session_id: 'electron_restore_session',
         story_id: 'electron_restore_story',
-        state_revision: 0,
+        state_revision: stateRevision,
         can_resume: true,
         stale: false,
         phase: 'setup',
-        scene: { id: 'electron_scene', text: '桌上的剧本仍停在同一页。' },
+        scene: { scene_id: 'electron_scene', title: '桌边', text: '桌上的剧本仍停在同一页。' },
         narration: { text: '' },
-        dialogue: { text: dialogueText },
-        reply: { role: 'assistant', text: dialogueText },
+        dialogue: { text: latestDialogue },
         scenario_board: {
           available_props: [{ id: 'prop_note', label: '折叠便笺', public_hint: '尚未展开。' }],
           used_props: [],
@@ -59,7 +62,6 @@ function startFakeBackend() {
           flags: [],
         },
         scenario_trace: null,
-        suggestions: ['展开折叠便笺'],
         suggestion_options: [
           { choice_id: 'choice_open_note', label: '展开折叠便笺', choice_mode: 'action' },
         ],
@@ -73,7 +75,24 @@ function startFakeBackend() {
       res.end(JSON.stringify(payload));
     }
 
-    const server = http.createServer((req, res) => {
+    // 读取真实 theater.js 发出的 JSON，避免用测试旁路伪造玩家回合。
+    function readJsonBody(req) {
+      return new Promise((bodyResolve, bodyReject) => {
+        let rawBody = '';
+        req.setEncoding('utf8');
+        req.on('data', (chunk) => { rawBody += chunk; });
+        req.on('end', () => {
+          try {
+            bodyResolve(rawBody ? JSON.parse(rawBody) : {});
+          } catch (error) {
+            bodyReject(error);
+          }
+        });
+        req.on('error', bodyReject);
+      });
+    }
+
+    const server = http.createServer(async (req, res) => {
       const url = new URL(req.url || '/', 'http://127.0.0.1');
       if (url.pathname === '/health') {
         sendJson(res, { app: 'N.E.K.O', service: 'main' });
@@ -82,19 +101,43 @@ function startFakeBackend() {
       if (url.pathname === '/api/theater/stories') {
         sendJson(res, {
           ok: true,
-          stories: [{ id: 'electron_restore_story', title: 'Electron 恢复剧本', summary: '验证刷新恢复。' }],
+          stories: [{
+            id: 'electron_restore_story',
+            title: 'Electron 恢复剧本',
+            background: '桌边留着一张尚未展开的便笺，等待两位参与者继续确认。',
+            initial_scene: {
+              scene_id: 'electron_scene',
+              title: '桌边',
+              text: '桌上的剧本仍停在同一页。',
+            },
+          }],
         });
         return;
       }
       if (url.pathname === '/api/theater/session/start') {
         sessionActive = true;
         startRequests += 1;
-        sendJson(res, publicSessionSnapshot('第一次启动的公开对白。'));
+        sendJson(res, publicSessionSnapshot());
+        return;
+      }
+      if (url.pathname === '/api/theater/session/input') {
+        const body = await readJsonBody(req);
+        turnRequests += 1;
+        lastTurnRequest = {
+          session_id: String(body.session_id || ''),
+          input_kind: String(body.input_kind || ''),
+          client_turn_id: String(body.client_turn_id || ''),
+          base_revision: body.base_revision,
+          message: String(body.message || ''),
+        };
+        stateRevision += 1;
+        latestDialogue = '我听见你说要检查便笺了，我们现在就一起看。';
+        sendJson(res, publicSessionSnapshot());
         return;
       }
       if (url.pathname === '/api/theater/session/state') {
         stateRequests += 1;
-        sendJson(res, publicSessionSnapshot('刷新后恢复的公开对白。'));
+        sendJson(res, publicSessionSnapshot());
         return;
       }
       if (url.pathname === '/api/theater/session/active') {
@@ -102,13 +145,13 @@ function startFakeBackend() {
         sendJson(
           res,
           sessionActive
-            ? publicSessionSnapshot('服务端活动会话的公开对白。')
+            ? publicSessionSnapshot()
             : { ok: false, reason: 'active_session_not_found' },
         );
         return;
       }
       if (url.pathname === '/__smoke-metrics') {
-        sendJson(res, { startRequests, stateRequests, activeRequests });
+        sendJson(res, { startRequests, stateRequests, activeRequests, turnRequests, lastTurnRequest });
         return;
       }
       res.setHeader('content-type', 'text/html; charset=utf-8');
@@ -185,6 +228,7 @@ const pcMainPath = process.env.NEKO_PC_MAIN_PATH;
 let openedTheater = false;
 let finished = false;
 let theaterLoadCount = 0;
+let submittedLogBeforeReload = '';
 
 // Finish the smoke with a machine-readable result line before exiting Electron.
 function finish(code, payload) {
@@ -216,23 +260,28 @@ async function openTheaterFromPet(win) {
   }
 }
 
-// 第一次加载真实启动 session，第二次加载验证 theater.js 从公开快照恢复且没有重复启动。
+// 第一次加载真实开演并提交玩家输入，第二次加载验证公开快照恢复且没有重复提交。
 async function inspectTheaterWindow(win) {
   if (finished || !win || win.isDestroyed()) return;
   theaterLoadCount += 1;
   try {
     if (theaterLoadCount === 1) {
-      const started = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('start-timeout'); }; await waitFor(() => document.querySelectorAll('#theater-story-select option').length > 0 && !document.querySelector('#theater-start-btn').disabled); document.querySelector('#theater-start-btn').click(); await waitFor(() => !document.querySelector('#theater-input').disabled && localStorage.getItem('neko.theater.activeSession.v1') === 'electron_restore_session'); return { startedLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1') }; })()");
-      if (!started.startedLog.includes('第一次启动的公开对白。') || started.sessionPointer !== 'electron_restore_session') {
+      const started = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate, label) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error(label); }; await waitFor(() => document.querySelectorAll('#theater-story-select option').length > 0 && !document.querySelector('#theater-start-btn').disabled, 'start-ready-timeout'); document.querySelector('#theater-start-btn').click(); await waitFor(() => !document.querySelector('#theater-input').disabled && localStorage.getItem('neko.theater.activeSession.v1') === 'electron_restore_session', 'start-session-timeout'); const input = document.querySelector('#theater-input'); input.value = '请先检查折叠便笺'; document.querySelector('#theater-input-form').requestSubmit(); await waitFor(() => !input.disabled && document.querySelector('#theater-log').innerText.includes('请先检查折叠便笺') && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。'), 'submit-input-timeout'); return { submittedLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1') }; })()");
+      if (!started.submittedLog.includes('第一次启动的公开对白。')
+          || !started.submittedLog.includes('请先检查折叠便笺')
+          || !started.submittedLog.includes('我听见你说要检查便笺了，我们现在就一起看。')
+          || started.sessionPointer !== 'electron_restore_session') {
         finish(4, { error: 'initial-session-state-mismatch', ...started });
         return;
       }
+      submittedLogBeforeReload = started.submittedLog;
       // 使用真实 webContents.reload 模拟桌面窗口刷新，保留同一 Electron storage partition。
       win.webContents.reload();
       return;
     }
 
-    const result = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('restore-timeout'); }; await waitFor(() => !document.querySelector('#theater-input').disabled && document.querySelector('#theater-log').innerText.includes('刷新后恢复的公开对白。')); const metrics = await fetch('/__smoke-metrics').then((response) => response.json()); return { href: location.href, hasTheaterRoot: !!document.querySelector('[data-theater-app]'), hasHostClose: !!(window.nekoHost && typeof window.nekoHost.closeWindow === 'function'), hasMinimize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.minimize === 'function'), hasMaximize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.maximize === 'function'), hasMaximizedProbe: !!(window.nekoWindowControl && typeof window.nekoWindowControl.isMaximized === 'function'), restoredLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1'), startRequests: metrics.startRequests, stateRequests: metrics.stateRequests, activeRequests: metrics.activeRequests }; })()");
+    const result = await win.webContents.executeJavaScript("(async () => { const waitFor = async (predicate) => { const deadline = Date.now() + 8000; while (Date.now() < deadline) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 50)); } throw new Error('restore-timeout'); }; await waitFor(() => !document.querySelector('#theater-input').disabled && document.querySelector('#theater-log').innerText.includes('我听见你说要检查便笺了，我们现在就一起看。')); const metrics = await fetch('/__smoke-metrics').then((response) => response.json()); return { href: location.href, hasTheaterRoot: !!document.querySelector('[data-theater-app]'), hasHostClose: !!(window.nekoHost && typeof window.nekoHost.closeWindow === 'function'), hasMinimize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.minimize === 'function'), hasMaximize: !!(window.nekoWindowControl && typeof window.nekoWindowControl.maximize === 'function'), hasMaximizedProbe: !!(window.nekoWindowControl && typeof window.nekoWindowControl.isMaximized === 'function'), restoredLog: document.querySelector('#theater-log').innerText, sessionPointer: localStorage.getItem('neko.theater.activeSession.v1'), startRequests: metrics.startRequests, stateRequests: metrics.stateRequests, activeRequests: metrics.activeRequests, turnRequests: metrics.turnRequests, lastTurnRequest: metrics.lastTurnRequest }; })()");
+    result.submittedLogBeforeReload = submittedLogBeforeReload;
     const parent = BrowserWindow.getAllWindows().find((candidate) => isPetBackendWindow(candidate));
     result.parentIsClean = !!parent && await parent.webContents.executeJavaScript("!document.querySelector('[data-theater-app]') && !Array.from(document.scripts).some((item) => item.src.includes('/static/js/theater.js'))");
     const ok = result.hasTheaterRoot
@@ -243,6 +292,13 @@ async function inspectTheaterWindow(win) {
       && result.parentIsClean
       && result.sessionPointer === 'electron_restore_session'
       && result.startRequests === 1
+      && result.turnRequests === 1
+      && result.lastTurnRequest
+      && result.lastTurnRequest.session_id === 'electron_restore_session'
+      && result.lastTurnRequest.input_kind === 'free_input'
+      && result.lastTurnRequest.message === '请先检查折叠便笺'
+      && result.lastTurnRequest.base_revision === 0
+      && result.lastTurnRequest.client_turn_id.startsWith('turn_web_')
       && result.stateRequests >= 1;
     finish(ok ? 0 : 4, result);
   } catch (error) {
@@ -318,7 +374,7 @@ async function runMainAppSmoke() {
   }
 }
 
-test('Electron PC main app restores the theater session after a real child-window reload', {
+test('Electron PC main app submits input and restores the theater session after a real child-window reload', {
   skip: process.env.NEKO_RUN_ELECTRON_MAIN_SMOKE === '1'
     ? false
     : 'set NEKO_RUN_ELECTRON_MAIN_SMOKE=1 to run the PC main-app theater smoke validation',
@@ -332,10 +388,15 @@ test('Electron PC main app restores the theater session after a real child-windo
   assert.match(result.stdout, /"hasMinimize":true/);
   assert.match(result.stdout, /"hasMaximize":true/);
   assert.match(result.stdout, /"hasMaximizedProbe":true/);
-  // 恢复后仍是同一 session，启动接口只调用一次，公开状态接口负责重建页面。
+  // 玩家输入只提交一次；刷新后仍是同一 Session，并由公开状态接口重建已经提交的回复。
   assert.match(result.stdout, /"sessionPointer":"electron_restore_session"/);
   assert.match(result.stdout, /"startRequests":1/);
+  assert.match(result.stdout, /"turnRequests":1/);
+  assert.match(result.stdout, /"input_kind":"free_input"/);
+  assert.match(result.stdout, /"message":"请先检查折叠便笺"/);
+  assert.match(result.stdout, /"base_revision":0/);
+  assert.match(result.stdout, /"client_turn_id":"turn_web_[^"]+"/);
   assert.match(result.stdout, /"stateRequests":[1-9][0-9]*/);
   assert.match(result.stdout, /"parentIsClean":true/);
-  assert.match(result.stdout, /刷新后恢复的公开对白。/);
+  assert.match(result.stdout, /我听见你说要检查便笺了，我们现在就一起看。/);
 });

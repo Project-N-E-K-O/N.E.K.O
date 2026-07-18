@@ -9,6 +9,14 @@ _project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..')
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 
+# 小剧场测试只读取测试目录中的中性 Story，避免测试重新依赖已删除的正式剧本。
+_theater_test_story_dir = (
+    _Path(__file__).resolve().parent / "fixtures" / "theater" / "stories"
+)
+from services.theater import story_loader as _theater_story_loader
+
+_theater_story_loader.CONFIG_STORY_DIR = _theater_test_story_dir
+
 
 def _ensure_yui_origin_unpacked():
     # Some tests read static/yui-origin/* directly (Live2D model). The model is

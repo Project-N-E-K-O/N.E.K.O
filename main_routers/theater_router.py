@@ -55,14 +55,6 @@ def _validate_theater_local_mutation(request: Request, data: dict[str, Any]):
     )
 
 
-async def _cleanup_expired_theater_sessions(root: Path) -> None:
-    """在 theater 入口请求中机会性清理过期 session，不阻断用户打开页面。"""  # noqa: DOCSTRING_CJK
-    try:
-        await runtime.cleanup_expired_sessions(root)
-    except Exception as exc:
-        logger.warning("小剧场过期 session 清理失败: %s", exc)
-
-
 async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
     """把已提交公开对白交给当前猫娘 TTS，失败时只降级文字演绎。"""  # noqa: DOCSTRING_CJK
     if response.get("ok") is not True:
@@ -114,22 +106,14 @@ async def _speak_committed_dialogue(response: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/stories")
 async def list_theater_stories():
-    """返回故事列表，并在打开小剧场时顺手清理过期 session。"""  # noqa: DOCSTRING_CJK
-    await _cleanup_expired_theater_sessions(_theater_root())
+    """只读返回公开故事列表，不改变任何 Session 生命周期。"""  # noqa: DOCSTRING_CJK
     stories = await runtime.list_stories()
-    lanlan_name = _resolve_lanlan_name(None) or "Lan"
-    for story in stories:
-        card = story.get("scenario_card") if isinstance(story, dict) else None
-        if isinstance(card, dict):
-            # 故事 JSON 不能写死创作时的角色名；列表接口以服务端当前猫娘替换公开背景占位符，
-            # 保证切换角色后预览卡与随后创建的 1v1 Session 指向同一个角色。
-            card["brief"] = str(card.get("brief") or "").replace("{{lanlan_name}}", lanlan_name)
     return {"ok": True, "stories": stories}
 
 
 @router.post("/session/start")
 async def start_theater_session(request: Request):
-    """启动小剧场 session，并在创建新 session 前清理过期旧状态。"""  # noqa: DOCSTRING_CJK
+    """启动小剧场 Session；生命周期只由玩家操作和明确管理事件改变。"""  # noqa: DOCSTRING_CJK
     data = await request.json()
     if not isinstance(data, dict):
         data = {}
@@ -138,7 +122,6 @@ async def start_theater_session(request: Request):
         return validation_error
     lanlan_name = _resolve_lanlan_name(data.get("lanlan_name")) or "Lan"
     root = _theater_root()
-    await _cleanup_expired_theater_sessions(root)
     result = await runtime.start_session(
         root,
         lanlan_name=lanlan_name,

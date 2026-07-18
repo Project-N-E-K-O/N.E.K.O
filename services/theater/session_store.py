@@ -14,6 +14,18 @@ from utils.logger_config import get_module_logger
 _SESSION_ID_RE = re.compile(r"^theater_[a-f0-9-]{36}$")
 # 轻量架构只接受当前协议存档；旧重型 Session 不做高风险字段迁移。
 SESSION_SCHEMA_VERSION = 1
+# Session 终止原因只接受框架固定枚举；休眠不属于终止，不能写入这组原因。
+SESSION_END_REASONS = frozenset(
+    {
+        "story_complete",
+        "branch_ending_domain",
+        "user_exit",
+        "replaced_by_new_session",
+        "character_switch",
+        "management_end",
+        "start_publish_failed",
+    }
+)
 _ACTIVE_BY_ROOT_AND_LANLAN: dict[tuple[str, str], str] = {}
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
 _ACTIVE_INDEX_LOCKS: dict[str, asyncio.Lock] = {}
@@ -52,7 +64,36 @@ async def character_guard(root: Path, lanlan_name: str):
 def state_revision(session: dict[str, Any]) -> int:
     """读取非负 revision；旧存档缺失时从零开始。"""  # noqa: DOCSTRING_CJK
     value = session.get("state_revision")
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
+
+
+def lifecycle_fields_valid(session: dict[str, Any]) -> bool:
+    """校验可选休眠时间和固定终止原因，不猜测修复任意外部文本。"""  # noqa: DOCSTRING_CJK
+    dormant_at = session.get("dormant_at")
+    if dormant_at is not None and (
+        not isinstance(dormant_at, int)
+        or isinstance(dormant_at, bool)
+        or dormant_at <= 0
+    ):
+        return False
+    ended_at = session.get("ended_at")
+    if ended_at is not None and (
+        not isinstance(ended_at, int) or isinstance(ended_at, bool) or ended_at <= 0
+    ):
+        return False
+    end_reason = session.get("end_reason")
+    if end_reason is not None and (
+        not isinstance(end_reason, str)
+        or end_reason not in SESSION_END_REASONS
+        or ended_at is None
+    ):
+        # 终止原因必须伴随合法结束时间；旧结束存档可以缺原因，但活动 Session 不能携带孤儿原因。
+        return False
+    return True
 
 
 async def set_active_session(root: Path, lanlan_name: str, session_id: str) -> None:
@@ -63,7 +104,9 @@ async def set_active_session(root: Path, lanlan_name: str, session_id: str) -> N
             active[lanlan_name] = session_id
             await save_active_sessions(root, active)
             # 磁盘提交成功后再更新内存，避免写失败时两份索引分叉。
-            _ACTIVE_BY_ROOT_AND_LANLAN[_active_cache_key(root, lanlan_name)] = session_id
+            _ACTIVE_BY_ROOT_AND_LANLAN[_active_cache_key(root, lanlan_name)] = (
+                session_id
+            )
 
 
 async def clear_active_session(root: Path, lanlan_name: str, session_id: str) -> None:
@@ -109,7 +152,9 @@ async def load_session(root: Path, session_id: str) -> dict[str, Any] | None:
     return session
 
 
-async def load_session_with_status(root: Path, session_id: str) -> tuple[dict[str, Any] | None, str]:
+async def load_session_with_status(
+    root: Path, session_id: str
+) -> tuple[dict[str, Any] | None, str]:
     """读取 Session，并区分不存在、旧版本和不支持版本。"""  # noqa: DOCSTRING_CJK
     if not _SESSION_ID_RE.match(str(session_id or "")):
         return None, "session_not_found"
@@ -172,7 +217,11 @@ async def _recover_active_sessions(root: Path, *, reason: str) -> dict[str, str]
         await save_active_sessions(root, rebuilt)
     except OSError as write_exc:
         # 只读或短暂 IO 故障时仍返回内存重建结果，不能让附属索引阻断普通角色切换。
-        logger.warning("小剧场活动索引重建写盘失败: path=%s err=%s", active_sessions_path(root), write_exc)
+        logger.warning(
+            "小剧场活动索引重建写盘失败: path=%s err=%s",
+            active_sessions_path(root),
+            write_exc,
+        )
     return rebuilt
 
 
@@ -191,16 +240,24 @@ async def _rebuild_active_sessions(root: Path) -> dict[str, str]:
         if not lanlan_name:
             continue
         timestamp = session.get("updated_at") or session.get("started_at") or 0
-        normalized_timestamp = timestamp if isinstance(timestamp, int) and not isinstance(timestamp, bool) else 0
+        normalized_timestamp = (
+            timestamp
+            if isinstance(timestamp, int) and not isinstance(timestamp, bool)
+            else 0
+        )
         candidate = (normalized_timestamp, session_id)
         if candidate > latest_by_lanlan.get(lanlan_name, (-1, "")):
             latest_by_lanlan[lanlan_name] = candidate
-    return {lanlan_name: candidate[1] for lanlan_name, candidate in latest_by_lanlan.items()}
+    return {
+        lanlan_name: candidate[1] for lanlan_name, candidate in latest_by_lanlan.items()
+    }
 
 
 async def save_active_sessions(root: Path, active: dict[str, str]) -> None:
     """把 theater active 索引原子写入文件，供进程重启后恢复 stale 判断。"""  # noqa: DOCSTRING_CJK
-    await atomic_write_json_async(active_sessions_path(root), active, ensure_ascii=False, indent=2)
+    await atomic_write_json_async(
+        active_sessions_path(root), active, ensure_ascii=False, indent=2
+    )
 
 
 async def list_session_ids(root: Path) -> list[str]:
