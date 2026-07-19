@@ -763,6 +763,55 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     expect(inactivePayload).not.toHaveProperty('tool');
   });
 
+  it('republishes localized rps result labels when locale initialization completes', async () => {
+    (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
+    let localeReady = false;
+    vi.stubGlobal('safeT', (key: string, fallback: unknown) => {
+      const defaultValue = typeof fallback === 'string'
+        ? fallback
+        : (fallback as { defaultValue?: string }).defaultValue ?? key;
+      if (!localeReady) return defaultValue;
+      if (key === 'chat.avatarToolRpsResultUserWin') return '你赢了';
+      if (key === 'chat.avatarToolRpsResultAvatarWin') return '{{name}}赢了';
+      if (key === 'chat.avatarToolRpsResultDraw') return '平局';
+      return defaultValue;
+    });
+    const onStateChange = vi.fn<(payload: AvatarToolStatePayload) => void>();
+
+    render(
+      <Harness
+        onInteraction={vi.fn()}
+        onStateChange={onStateChange}
+        providers={createProviders()}
+        toolId="rps"
+      />,
+    );
+    selectTool();
+
+    await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+      roundChoiceResultLabels: {
+        user_win: 'You win',
+        avatar_win: 'Yui wins',
+        draw: 'Draw',
+      },
+    })));
+
+    localeReady = true;
+    act(() => window.dispatchEvent(new Event('localechange')));
+
+    await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+      roundChoiceResultLabels: {
+        user_win: '你赢了',
+        avatar_win: 'Yui赢了',
+        draw: '平局',
+      },
+    })));
+  });
+
   it('ignores a matching pointer release from the wrong button', () => {
     const onInteraction = vi.fn();
     render(<Harness onInteraction={onInteraction} providers={createProviders()} />);

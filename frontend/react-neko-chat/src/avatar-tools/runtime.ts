@@ -250,6 +250,7 @@ export function useAvatarToolRuntime({
   const [transientEffects, setTransientEffects] = useState<AvatarToolTransientVisualEffect[]>([]);
   const [roundChoiceAvatarGestureState, setRoundChoiceAvatarGestureState] =
     useState<AvatarToolRoundChoiceAvatarGestureState | null>(null);
+  const [localeRevision, setLocaleRevision] = useState(0);
 
   const generationRef = useRef(0);
   const sessionRef = useRef<RuntimeSession | null>(null);
@@ -283,7 +284,7 @@ export function useAvatarToolRuntime({
   const overlayEffectActive = overlayEffectExecution !== null;
   const roundChoiceResultLabels = useMemo(
     () => getAvatarToolRoundResultLabels(avatarName),
-    [avatarName],
+    [avatarName, localeRevision],
   );
   const presentation = useMemo(() => deriveAvatarToolPresentation({
     activeToolId,
@@ -1280,6 +1281,12 @@ export function useAvatarToolRuntime({
     publishState();
   }, [onStateChange, publishState]);
   useEffect(() => { deactivateCallbackRef.current = onDeactivate; }, [onDeactivate]);
+
+  useLayoutEffect(() => {
+    const refreshLocalizedContent = () => setLocaleRevision(revision => revision + 1);
+    window.addEventListener('localechange', refreshLocalizedContent);
+    return () => window.removeEventListener('localechange', refreshLocalizedContent);
+  }, []);
 
   useEffect(() => {
     if (
