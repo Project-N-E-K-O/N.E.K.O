@@ -336,11 +336,6 @@ async def push_activity_signal(request: Request):
         )
     except Exception:
         logger.debug("Game Mode semantic classification failed", exc_info=True)
-        try:
-            from main_logic.game_mode_resource_protection import protector as game_mode_protector
-            await game_mode_protector.record_semantic_error()
-        except Exception:
-            logger.debug("Game Mode semantic fuse update failed", exc_info=True)
 
     _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
     # Bound the dict: in practice lanlan_names are 1-3, but if an

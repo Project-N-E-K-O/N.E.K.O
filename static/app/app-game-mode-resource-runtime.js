@@ -292,10 +292,18 @@
         state.appliedOriginDelta = { x: 0, y: 0 };
     }
 
+    async function releaseCompactWindow(payload) {
+        if (!payload || payload.resource_session_id !== state.sessionId || !targetsThisWindow(payload)) return;
+        state.compactEnabled = false;
+        await releaseCompactLease();
+        await acknowledge(state.phase, 'disabled');
+    }
+
     function handleMessage(payload) {
         if (!payload || payload.source !== 'game_mode_resource_protection') return;
         if (payload.type === 'game_mode_resource_protection_enter') void enter(payload);
         if (payload.type === 'game_mode_resource_protection_restore') void restore(payload);
+        if (payload.type === 'game_mode_resource_protection_compact_release') void releaseCompactWindow(payload);
     }
 
     function bindInteractions() {

@@ -319,6 +319,7 @@ class GameModeResourceProtector:
     ) -> dict[str, Any]:
         async with self._lock:
             previous_resource_protection = self._settings["resource_protection_on_game"]
+            previous_compact_pet_window = self._settings["compact_pet_window_enabled"]
             self._settings = {
                 "resource_protection_on_game": (
                     previous_resource_protection
@@ -334,6 +335,23 @@ class GameModeResourceProtector:
             if previous_resource_protection and not self._settings["resource_protection_on_game"]:
                 await self._restore_resource_session_locked("resource-protection-disabled")
                 self._clear_resource_candidates_locked()
+            elif (
+                previous_compact_pet_window
+                and not self._settings["compact_pet_window_enabled"]
+                and self._state.get("resource_session_phase") != "idle"
+            ):
+                resource_session_id = self._state.get("resource_session_id")
+                resource_windows = self._state.get("resource_windows") or {}
+                for window_state in resource_windows.values():
+                    window_state["compact_lease"] = "disabled"
+                await self._broadcaster({
+                    "type": "game_mode_resource_protection_compact_release",
+                    "source": "game_mode_resource_protection",
+                    "resource_session_id": resource_session_id,
+                    "pet_instance_ids": sorted(resource_windows.keys()),
+                    "reason": "compact-window-disabled",
+                    "timestamp": self._time(),
+                })
             self._persist_locked()
             return self.settings_snapshot()
 

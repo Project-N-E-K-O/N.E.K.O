@@ -179,6 +179,27 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (!bodyClasses.has('neko-game-resource-deep')) throw new Error('deep body class missing');
         if (activityCalls.length) throw new Error('resource deep sleep must keep Activity Signal alive');
 
+        emit('neko:game-mode-beta-message', {{
+          type: 'game_mode_resource_protection_compact_release',
+          source: 'game_mode_resource_protection',
+          resource_session_id: 'session-1',
+          pet_instance_ids: ['pet-1'],
+          reason: 'compact-window-disabled',
+        }});
+        await new Promise(resolve => setImmediate(resolve));
+        const compactReleaseState = context.window.nekoGameModeResourceRuntime.getState();
+        if (compactReleaseState.sessionId !== 'session-1' || compactReleaseState.phase !== 'deep_sleep') {{
+          throw new Error('compact release ended resource protection session');
+        }}
+        if (compactReleaseState.compactEnabled || compactReleaseState.compactAcquired) {{
+          throw new Error('compact release kept lease state enabled');
+        }}
+        const compactReleaseAck = fetchCalls
+          .filter(x => x.url === '/api/game-mode-beta/resource/ack')
+          .map(x => JSON.parse(x.options.body))
+          .find(x => x.resource_session_id === 'session-1' && x.compact_lease === 'disabled');
+        if (!compactReleaseAck) throw new Error('compact release ACK missing');
+
         const exited = await context.window.nekoGameModeResourceRuntime.exitCurrentSession();
         if (!exited) throw new Error('explicit exit failed');
         if (!managerCalls.some(x => x[0] === 'phase' && x[1] === 'idle')) throw new Error('idle restore missing');

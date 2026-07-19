@@ -514,3 +514,50 @@ async def test_resource_protection_uses_dynamic_diagnostic_sampling_interval_and
         assert events[-1]["reason"] == "resource-protection-disabled"
     finally:
         await protector.set_enabled(False)
+
+
+@pytest.mark.asyncio
+async def test_disabling_compact_window_releases_active_leases_without_ending_protection():
+    events = []
+
+    async def broadcaster(payload):
+        events.append(payload)
+        return 1
+
+    protector = GameModeResourceProtector(
+        sampler=normal_sample,
+        broadcaster=broadcaster,
+        time_fn=lambda: 1010.0,
+    )
+    await protector.set_enabled(True)
+    try:
+        await protector.register_window(pet_instance_id="pet-a")
+        for timestamp in (1000.0, 1005.0, 1010.0):
+            await protector.ingest_game_snapshot(exact_game=True, observed_at=timestamp)
+        session_id = protector.snapshot()["resource_session_id"]
+
+        await protector.set_settings(
+            resource_protection_on_game=True,
+            compact_pet_window_enabled=False,
+        )
+
+        state = protector.snapshot()
+        assert state["resource_session_phase"] == "soft_protected"
+        assert state["resource_session_id"] == session_id
+        assert state["resource_windows"]["pet-a"]["compact_lease"] == "disabled"
+        assert [event["type"] for event in events] == [
+            "game_mode_resource_protection_enter",
+            "game_mode_resource_protection_compact_release",
+        ]
+        assert events[-1]["resource_session_id"] == session_id
+        assert events[-1]["pet_instance_ids"] == ["pet-a"]
+        assert events[-1]["reason"] == "compact-window-disabled"
+    finally:
+        await protector.set_enabled(False)
+
+
+def test_activity_signal_has_no_removed_semantic_fuse_fallback():
+    source = Path("main_routers/system_router/activity_signal.py").read_text(encoding="utf-8")
+
+    assert "record_semantic_error" not in source
+    assert "Game Mode semantic fuse update failed" not in source
