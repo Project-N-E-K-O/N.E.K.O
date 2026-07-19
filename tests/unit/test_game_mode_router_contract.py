@@ -132,7 +132,7 @@ def test_game_mode_beta_http_enabled_flag_coerces_common_text_values():
 
 
 def test_game_mode_beta_router_is_registered_on_main_app():
-    source = Path("app/main_server.py").read_text(encoding="utf-8")
+    source = Path("app/main_server/web_app.py").read_text(encoding="utf-8")
 
     assert "from main_routers.game_mode_router import router as game_mode_router" in source
     assert "app.include_router(game_mode_router)" in source

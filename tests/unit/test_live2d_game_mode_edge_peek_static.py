@@ -129,7 +129,11 @@ def test_live2d_game_mode_edge_peek_click_restores_and_drag_exits_without_click_
     touch_source = source.split("Live2DManager.prototype.setupTouchZoom = function", 1)[1]
     touch_source = touch_source.split("Live2DManager.prototype.enableMouseTracking", 1)[0]
 
-    assert "const edgePeekOnPointerDown = this.isLive2DGameModeEdgePeekActive();" in drag_source
+    assert "const edgePeekOnPointerDown = this.isLive2DPeekActive();" in drag_source
+    assert "const gameModePeekOnPointerDown = this.isLive2DGameModeEdgePeekActive();" in drag_source
+    assert "edgePeekStartedDrag = edgePeekOnPointerDown || gameModePeekOnPointerDown;" in drag_source
+    assert "? 'widget'" in drag_source
+    assert ": (gameModePeekOnPointerDown ? 'game-mode' : '');" in drag_source
     assert "await this.restoreLive2DGameModeEdgePeek('click-restore');" in drag_source
     assert "this.clearLive2DGameModeEdgePeek('drag-start', { restore: false });" in drag_source
     assert "return; // edge peek click restores instead of triggering touch motions" in drag_source
@@ -148,22 +152,24 @@ def test_live2d_game_mode_edge_peek_reports_viewport_intersection_bounds():
     interaction_source = _source(LIVE2D_INTERACTION_PATH)
     edge_peek_source = _edge_peek_source()
     bounds_source = core_source.split("getModelScreenBounds() {", 1)[1]
-    bounds_source = bounds_source.split("const model = this.currentModel;", 1)[0]
+    bounds_source = bounds_source.split("// 复位模型位置和缩放到初始状态", 1)[0]
+    game_mode_bounds_source = bounds_source.split(
+        "const gameModeEdgePeekState = this._live2DGameModeEdgePeekState;", 1
+    )[1].split("if (typeof model.getBounds !== 'function')", 1)[0]
     viewport_source = interaction_source.split("function getLive2DGameModeEdgePeekViewport(bounds = null, manager = null)", 1)[1]
     viewport_source = viewport_source.split("function getLive2DGameModeEdgePeekViewportIntersection", 1)[0]
 
-    assert "const edgePeekState = this._live2DGameModeEdgePeekState;" in bounds_source
-    assert "edgePeekState.active" in bounds_source
-    assert "model.getBounds()" in bounds_source
-    assert "const viewportLeft = 0;" in bounds_source
-    assert "const viewportTop = 0;" in bounds_source
-    assert "const visibleLeft = Math.max(left, viewportLeft);" in bounds_source
-    assert "const visibleRight = Math.min(right, viewportRight);" in bounds_source
-    assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in bounds_source
-    assert "const screen = renderer && renderer.screen;" in bounds_source
-    assert "Number.isFinite(rendererW) && rendererW > 0" in bounds_source
-    assert "maskPoints" not in bounds_source
-    assert "drawPolygon" not in bounds_source
+    assert "gameModeEdgePeekState.active" in game_mode_bounds_source
+    assert "gameModeModel.getBounds()" in game_mode_bounds_source
+    assert "const visibleLeft = Math.max(left, 0);" in game_mode_bounds_source
+    assert "const visibleRight = Math.min(right, viewportRight);" in game_mode_bounds_source
+    assert "const visibleTop = Math.max(top, 0);" in game_mode_bounds_source
+    assert "const visibleBottom = Math.min(bottom, viewportBottom);" in game_mode_bounds_source
+    assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in game_mode_bounds_source
+    assert "const screen = renderer && renderer.screen;" in game_mode_bounds_source
+    assert "Number.isFinite(rendererW) && rendererW > 0" in game_mode_bounds_source
+    assert "maskPoints" not in game_mode_bounds_source
+    assert "drawPolygon" not in game_mode_bounds_source
     assert "const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;" in edge_peek_source
     assert "const screen = renderer && renderer.screen;" in edge_peek_source
     assert "const viewportW = Number.isFinite(rendererW) && rendererW > 0 ? rendererW : Number(window.innerWidth);" in edge_peek_source
