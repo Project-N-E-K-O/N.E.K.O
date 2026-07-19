@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
 import {
+  resolveAvatarToolHeadAnchor,
   useAvatarToolRuntime,
   type AvatarToolRuntimeProviders,
 } from './runtime';
@@ -73,6 +74,27 @@ function Harness({
       <output aria-label="active tool">{runtime.activeToolId ?? 'inactive'}</output>
       <output aria-label="within avatar range">{String(runtime.visualModel.withinAvatarRange)}</output>
       <output aria-label="effective tool variant">{runtime.effectiveVariant}</output>
+      <output aria-label="avatar gesture phase">
+        {runtime.visualModel.roundChoiceAvatarGesture?.phase ?? 'hidden'}
+      </output>
+      <output aria-label="avatar gesture variant">
+        {runtime.visualModel.roundChoiceAvatarGesture?.variant ?? 'none'}
+      </output>
+      <output aria-label="avatar gesture anchor">
+        {runtime.visualModel.roundChoiceAvatarGesture
+          ? `${runtime.visualModel.roundChoiceAvatarGesture.anchor.x},${runtime.visualModel.roundChoiceAvatarGesture.anchor.y}`
+          : 'none'}
+      </output>
+      <output aria-label="confirmed round">
+        {runtime.roundChoiceRound
+          ? [
+            runtime.roundChoiceRound.userGesture,
+            runtime.roundChoiceRound.userVariant,
+            runtime.roundChoiceRound.avatarGesture,
+            runtime.roundChoiceRound.avatarVariant,
+          ].join(':')
+          : 'none'}
+      </output>
     </>
   );
 }
@@ -109,6 +131,7 @@ function createProviders(overrides: AvatarToolRuntimeProviders = {}): AvatarTool
     monotonicNow: () => 0,
     random: () => 0.9,
     prepareVisuals: () => undefined,
+    getHeadAnchor: () => ({ x: 150, y: 90, coordinateSpace: 'viewport-css-pixel' }),
     ...overrides,
   };
 }
@@ -116,6 +139,25 @@ function createProviders(overrides: AvatarToolRuntimeProviders = {}): AvatarTool
 function selectTool() {
   fireEvent.click(screen.getByRole('button', { name: 'select tool' }), { clientX: 10, clientY: 10 });
 }
+
+describe('avatar tool head anchor adapter', () => {
+  it('moves a reliable head point to the head top and falls back to the model top center', () => {
+    expect(resolveAvatarToolHeadAnchor({
+      head: { x: 123, y: 145 },
+      bubbleHeadRect: { left: 100, top: 112, width: 46, height: 66 },
+      bounds: INITIAL_BOUNDS,
+    })).toEqual({ x: 123, y: 112, coordinateSpace: 'viewport-css-pixel' });
+    expect(resolveAvatarToolHeadAnchor({
+      head: { x: 123, y: 145 },
+      bounds: INITIAL_BOUNDS,
+    })).toEqual({ x: 123, y: 100, coordinateSpace: 'viewport-css-pixel' });
+    expect(resolveAvatarToolHeadAnchor({
+      head: { x: Number.NaN, y: 45 },
+      bounds: INITIAL_BOUNDS,
+    })).toEqual({ x: 150, y: 100, coordinateSpace: 'viewport-css-pixel' });
+    expect(resolveAvatarToolHeadAnchor({ head: null, bounds: null })).toBeNull();
+  });
+});
 
 describe('useAvatarToolRuntime press lifecycle', () => {
   beforeEach(() => {
@@ -293,6 +335,170 @@ describe('useAvatarToolRuntime press lifecycle', () => {
       expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
       act(() => vi.advanceTimersByTime(1));
       expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('tertiary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the current catgirl cycling hand only inside the raw range and cycles it in the same session', () => {
+    vi.useFakeTimers();
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const view = render(
+      <Harness onInteraction={vi.fn()} providers={createProviders()} toolId="rps" />,
+    );
+    const flushPointerMove = () => {
+      const callback = frameCallbacks.shift();
+      expect(callback).toBeTypeOf('function');
+      act(() => callback!(0));
+    };
+
+    try {
+      selectTool();
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('hidden');
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+      flushPointerMove();
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('cycling');
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('primary');
+      expect(screen.getByRole('status', { name: 'avatar gesture anchor' })).toHaveTextContent('150,90');
+
+      act(() => vi.advanceTimersByTime(240));
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('secondary');
+
+      fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
+      flushPointerMove();
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('hidden');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('freezes the user hand on press while the catgirl hand keeps cycling', () => {
+    vi.useFakeTimers();
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const view = render(
+      <Harness onInteraction={vi.fn()} providers={createProviders()} toolId="rps" />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+      const frameCallback = frameCallbacks.shift();
+      expect(frameCallback).toBeTypeOf('function');
+      act(() => frameCallback!(0));
+      act(() => vi.advanceTimersByTime(100));
+      fireEvent.pointerDown(window, {
+        button: 0,
+        pointerId: 70,
+        clientX: 150,
+        clientY: 150,
+      });
+
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(139));
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('secondary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains the final hand through range exit with only the last reliable hit bounds', () => {
+    vi.useFakeTimers();
+    const random = vi.fn(() => 0.9);
+    const getHeadAnchor = vi.fn((fallbackBounds: typeof INITIAL_BOUNDS | null) => fallbackBounds ? ({
+      x: fallbackBounds.left + fallbackBounds.width / 2,
+      y: fallbackBounds.top,
+      coordinateSpace: 'viewport-css-pixel' as const,
+    }) : null);
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ random, getHeadAnchor })}
+        toolId="rps"
+      />,
+    );
+    const flushPointerMove = () => {
+      const callback = frameCallbacks.shift();
+      expect(callback).toBeTypeOf('function');
+      act(() => callback!(0));
+    };
+
+    try {
+      selectTool();
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+      flushPointerMove();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 71, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 71, clientX: 150, clientY: 150 });
+
+      expect(random).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status', { name: 'confirmed round' })).toHaveTextContent('rock:primary:paper:tertiary');
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('final');
+      expect(screen.getByRole('status', { name: 'avatar gesture variant' })).toHaveTextContent('tertiary');
+
+      fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
+      flushPointerMove();
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('final');
+      expect(screen.getByRole('status', { name: 'avatar gesture anchor' })).toHaveTextContent('150,100');
+      act(() => vi.advanceTimersByTime(240));
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('final');
+      expect(screen.getByRole('status', { name: 'avatar gesture anchor' })).toHaveTextContent('150,100');
+      act(() => vi.advanceTimersByTime(1_359));
+      expect(screen.getByRole('status', { name: 'confirmed round' })).toHaveTextContent('rock:primary:paper:tertiary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'confirmed round' })).toHaveTextContent('none');
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('hidden');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not choose a current catgirl hand for an invalid rps release and clears a final hand on blur', () => {
+    vi.useFakeTimers();
+    const random = vi.fn(() => 0.5);
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ random })}
+        toolId="rps"
+      />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 72, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { pointerId: 72, clientX: 160, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 72, clientX: 160, clientY: 150 });
+      expect(random).not.toHaveBeenCalled();
+      expect(screen.getByRole('status', { name: 'confirmed round' })).toHaveTextContent('none');
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 73, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 73, clientX: 150, clientY: 150 });
+      expect(random).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status', { name: 'confirmed round' })).not.toHaveTextContent('none');
+      fireEvent.blur(window);
+      expect(screen.getByRole('status', { name: 'confirmed round' })).toHaveTextContent('none');
+      expect(screen.getByRole('status', { name: 'avatar gesture phase' })).toHaveTextContent('hidden');
     } finally {
       view.unmount();
       vi.useRealTimers();

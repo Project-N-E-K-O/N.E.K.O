@@ -257,6 +257,7 @@ describe('avatar tool runtime rules', () => {
   });
 
   it('freezes and confirms the visible rps choice without creating a host commit', () => {
+    const random = vi.fn(() => 0.9);
     expect(resolveAvatarToolPointerDown(context({
       toolId: 'rps',
       rangeVariant: 'tertiary',
@@ -269,14 +270,47 @@ describe('avatar tool runtime rules', () => {
       toolId: 'rps',
       rangeVariant: 'tertiary',
       visibleVariant: 'secondary',
+      random,
     }));
     expect(command).toEqual({
       rangeVariant: 'secondary',
-      roundChoiceCycle: 'resume',
+      roundChoiceCycle: 'confirm',
       roundChoiceHoldMs: 1600,
+      roundChoiceUserGesture: 'scissors',
+      roundChoiceUserVariant: 'secondary',
+      roundChoiceAvatarGesture: 'paper',
+      roundChoiceAvatarVariant: 'tertiary',
       sound: 'rps-confirm',
     });
+    expect(random).toHaveBeenCalledTimes(1);
     expect(command).not.toHaveProperty('commit');
+
+    const invalidRandom = vi.fn(() => 0.5);
+    expect(resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      hit: null,
+      random: invalidRandom,
+    }))).toEqual({});
+    expect(invalidRandom).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [0, 'rock', 'primary'],
+    [1 / 3, 'scissors', 'secondary'],
+    [2 / 3, 'paper', 'tertiary'],
+  ] as const)('maps rps random boundary %s to %s from the declared choice', (randomValue, gesture, variant) => {
+    const random = vi.fn(() => randomValue);
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      visibleVariant: 'primary',
+      random,
+    }));
+
+    expect(command).toMatchObject({
+      roundChoiceAvatarGesture: gesture,
+      roundChoiceAvatarVariant: variant,
+    });
+    expect(random).toHaveBeenCalledTimes(1);
   });
 
   it('applies interaction locks generically and preserves hammer-only easter eggs', () => {

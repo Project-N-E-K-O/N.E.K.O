@@ -3,6 +3,7 @@ import {
   getAvatarToolRegistration,
   type AvatarToolEffectId,
   type AvatarToolId,
+  type AvatarToolRoundChoiceGesture,
   type AvatarToolSoundId,
   type AvatarToolTouchZone,
   type AvatarToolVariantId,
@@ -406,8 +407,12 @@ export type AvatarToolCommand = {
   effect?: AvatarToolEffectId;
   effectMode?: string;
   pressFeedback?: 'until-pointer-release';
-  roundChoiceCycle?: 'pause' | 'resume';
+  roundChoiceCycle?: 'pause' | 'confirm';
   roundChoiceHoldMs?: number;
+  roundChoiceUserGesture?: AvatarToolRoundChoiceGesture;
+  roundChoiceUserVariant?: AvatarToolVariantId;
+  roundChoiceAvatarGesture?: AvatarToolRoundChoiceGesture;
+  roundChoiceAvatarVariant?: AvatarToolVariantId;
   resetOutsideVariantAfterMs?: number;
 };
 

@@ -136,12 +136,26 @@ function createRoundChoiceHandlers(
       rangeVariant: context.visibleVariant,
       roundChoiceCycle: 'pause',
     } : {},
-    commit: (context: AvatarToolRuleContext): AvatarToolCommand => context.hit ? {
-      rangeVariant: context.visibleVariant,
-      roundChoiceCycle: 'resume',
-      roundChoiceHoldMs: profile.confirmation.holdMs,
-      sound: profile.confirmation.sound,
-    } : {},
+    commit: (context: AvatarToolRuleContext): AvatarToolCommand => {
+      if (!context.hit) return {};
+      const userChoice = profile.choices.find(choice => choice.variant === context.visibleVariant);
+      if (!userChoice) return {};
+      const choiceIndex = Math.min(
+        profile.choices.length - 1,
+        Math.max(0, Math.floor(context.random() * profile.choices.length)),
+      );
+      const avatarChoice = profile.choices[choiceIndex];
+      return {
+        rangeVariant: context.visibleVariant,
+        roundChoiceCycle: 'confirm',
+        roundChoiceHoldMs: profile.confirmation.holdMs,
+        roundChoiceUserGesture: userChoice.gesture,
+        roundChoiceUserVariant: userChoice.variant,
+        roundChoiceAvatarGesture: avatarChoice.gesture,
+        roundChoiceAvatarVariant: avatarChoice.variant,
+        sound: profile.confirmation.sound,
+      };
+    },
     pointerRelease: () => ({}),
   };
 }

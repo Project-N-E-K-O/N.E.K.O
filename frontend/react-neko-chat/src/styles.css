@@ -110,6 +110,23 @@ svg {
   height: 80px;
 }
 
+.avatar-tool-round-choice-avatar-gesture {
+  position: fixed;
+  z-index: 100005;
+  pointer-events: none;
+  user-select: none;
+  transform: translate3d(-50%, calc(-100% - 24px), 0);
+  transform-origin: center bottom;
+  will-change: left, top;
+}
+
+.avatar-tool-round-choice-avatar-gesture-image {
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
 .avatar-tool-random-scatter-particle {
   --drop-drift-x: 0px;
   --drop-drift-y: -96px;

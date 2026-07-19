@@ -10,6 +10,7 @@ import {
   type FixedParticleEffectRecipe,
 } from './catalog';
 import {
+  clampAvatarToolHeadGestureAnchor,
   createAvatarToolDisposer,
   createAvatarToolEffectExecution,
   createAvatarToolVariantState,
@@ -387,6 +388,26 @@ describe('avatar tool presentation', () => {
 });
 
 describe('avatar tool visual runtime geometry', () => {
+  it('keeps the head gesture above its anchor and inside the viewport', () => {
+    const anchor = { x: -20, y: 0, coordinateSpace: 'viewport-css-pixel' as const };
+    expect(clampAvatarToolHeadGestureAnchor(anchor, 80, 80, 300, 200)).toEqual({
+      x: 48,
+      y: 112,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+    expect(clampAvatarToolHeadGestureAnchor(
+      { ...anchor, x: 400, y: 400 },
+      80,
+      80,
+      300,
+      200,
+    )).toEqual({
+      x: 252,
+      y: 192,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+  });
+
   it('preserves the current pointer and in-range anchors for every tool', () => {
     const pointer = { x: 100, y: 100 };
     const transforms = Object.fromEntries(AVAILABLE_COMPACT_AVATAR_TOOLS.map(item => [item.id, {

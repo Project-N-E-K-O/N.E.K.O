@@ -429,6 +429,25 @@ export type AvatarToolImpactEffectVisualModel = ActiveHammerSwingEffectExecution
   impactImagePath: string;
 };
 
+export type AvatarToolHeadAnchor = {
+  x: number;
+  y: number;
+  coordinateSpace: 'viewport-css-pixel';
+};
+
+export type AvatarToolRoundChoiceAvatarGestureState = {
+  variant: AvatarToolVariantId;
+  phase: 'cycling' | 'final';
+  anchor: AvatarToolHeadAnchor;
+};
+
+export type AvatarToolRoundChoiceAvatarGestureVisualModel =
+  AvatarToolRoundChoiceAvatarGestureState & {
+    imagePath: string;
+    displayWidth: number;
+    displayHeight: number;
+  };
+
 export type AvatarToolVisualModel = {
   activeTool: AvatarToolItem | null;
   activeToolId: AvatarToolId | null;
@@ -440,6 +459,7 @@ export type AvatarToolVisualModel = {
   overlayCompact: boolean;
   overlayImagePath: string;
   overlayEffect: AvatarToolImpactEffectVisualModel | null;
+  roundChoiceAvatarGesture: AvatarToolRoundChoiceAvatarGestureVisualModel | null;
   transientEffects: AvatarToolTransientVisualEffect[];
 };
 
@@ -453,9 +473,11 @@ export function buildAvatarToolVisualModel({
   overlayActive,
   overlayCompact,
   overlayEffectExecution,
+  roundChoiceAvatarGestureState,
   transientEffects,
-}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect'> & {
+}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect' | 'roundChoiceAvatarGesture'> & {
   overlayEffectExecution: ActiveHammerSwingEffectExecution | null;
+  roundChoiceAvatarGestureState: AvatarToolRoundChoiceAvatarGestureState | null;
 }) : AvatarToolVisualModel {
   const activeImagePaths = activeTool ? resolveAvatarToolImagePaths(activeTool, effectiveVariant) : null;
   const overlayEffect = activeTool && overlayEffectExecution ? {
@@ -463,6 +485,12 @@ export function buildAvatarToolVisualModel({
     pointerImagePath: resolveAvatarToolImagePaths(activeTool, effectiveVariant).pointerImagePath,
     idleImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.idle).iconImagePath,
     impactImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.impact).iconImagePath,
+  } : null;
+  const roundChoiceAvatarGesture = activeTool && roundChoiceAvatarGestureState ? {
+    ...roundChoiceAvatarGestureState,
+    imagePath: resolveAvatarToolImagePaths(activeTool, roundChoiceAvatarGestureState.variant).iconImagePath,
+    displayWidth: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayWidth,
+    displayHeight: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayHeight,
   } : null;
   return {
     activeTool,
@@ -477,6 +505,7 @@ export function buildAvatarToolVisualModel({
       ? (overlayCompact ? activeImagePaths?.pointerImagePath ?? '' : activeImagePaths?.iconImagePath ?? '')
       : '',
     overlayEffect,
+    roundChoiceAvatarGesture,
     transientEffects,
   };
 }
@@ -541,6 +570,26 @@ export function getAvatarToolOverlayTransform(
     compact,
     pointer,
   );
+}
+
+export function clampAvatarToolHeadGestureAnchor(
+  anchor: AvatarToolHeadAnchor,
+  displayWidth: number,
+  displayHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): AvatarToolHeadAnchor {
+  const gutter = 8;
+  const headGap = 24;
+  const minX = gutter + displayWidth / 2;
+  const maxX = viewportWidth - gutter - displayWidth / 2;
+  const minY = gutter + displayHeight + headGap;
+  const maxY = viewportHeight - gutter;
+  return {
+    x: maxX >= minX ? Math.min(Math.max(anchor.x, minX), maxX) : viewportWidth / 2,
+    y: maxY >= minY ? Math.min(Math.max(anchor.y, minY), maxY) : Math.max(gutter, viewportHeight - gutter),
+    coordinateSpace: anchor.coordinateSpace,
+  };
 }
 
 // Stable React renderer ------------------------------------------------------
@@ -677,10 +726,42 @@ export default function AvatarToolVisuals({ model }: { model: AvatarToolVisualMo
     </div>
   ) : null;
 
+  const roundChoiceAvatarGesture = model.roundChoiceAvatarGesture;
+  const roundChoiceAvatarGestureAnchor = roundChoiceAvatarGesture
+    ? clampAvatarToolHeadGestureAnchor(
+      roundChoiceAvatarGesture.anchor,
+      roundChoiceAvatarGesture.displayWidth,
+      roundChoiceAvatarGesture.displayHeight,
+      typeof window === 'undefined' ? 0 : window.innerWidth,
+      typeof window === 'undefined' ? 0 : window.innerHeight,
+    )
+    : null;
+  const roundChoiceAvatarGestureVisual = roundChoiceAvatarGesture ? (
+    <div
+      className={`avatar-tool-round-choice-avatar-gesture is-${roundChoiceAvatarGesture.phase}`}
+      aria-hidden="true"
+      style={{
+        left: `${roundChoiceAvatarGestureAnchor?.x ?? roundChoiceAvatarGesture.anchor.x}px`,
+        top: `${roundChoiceAvatarGestureAnchor?.y ?? roundChoiceAvatarGesture.anchor.y}px`,
+      }}
+    >
+      <img
+        className="avatar-tool-round-choice-avatar-gesture-image"
+        src={roundChoiceAvatarGesture.imagePath}
+        alt=""
+        style={{
+          width: `${roundChoiceAvatarGesture.displayWidth}px`,
+          height: `${roundChoiceAvatarGesture.displayHeight}px`,
+        }}
+      />
+    </div>
+  ) : null;
+
   const visuals = (
     <>
       {toolVisual}
       {impactEffectVisual}
+      {roundChoiceAvatarGestureVisual}
     </>
   );
 
