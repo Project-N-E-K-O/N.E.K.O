@@ -27,14 +27,23 @@ def test_game_mode_resource_runtime_event_driven_contract():
       }};
       const bodyClasses = new Set();
       let hostContract = null;
-      const manager = {{
-        setGameModeResourceProtection(phase) {{ managerCalls.push(['phase', phase]); }},
-        translateModelByScreenPixels(x, y) {{ managerCalls.push(['translate', x, y]); }},
+      const makeManager = (localCalls = null) => ({{
+        setGameModeResourceProtection(phase) {{
+          const call = ['phase', phase];
+          managerCalls.push(call);
+          if (localCalls) localCalls.push(call);
+        }},
+        translateModelByScreenPixels(x, y) {{
+          const call = ['translate', x, y];
+          managerCalls.push(call);
+          if (localCalls) localCalls.push(call);
+        }},
         getModelScreenBounds() {{ return {{ left: 100, top: 120, width: 200, height: 300 }}; }},
-      }};
+      }});
+      const manager = makeManager();
       const host = {{
         acquireCompactLease(payload) {{ hostCalls.push(['acquire', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: -700, y: -40 }} }}); }},
-        updateCompactLease(payload) {{ hostCalls.push(['update', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: 0, y: 0 }} }}); }},
+        updateCompactLease(payload) {{ hostCalls.push(['update', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: -700, y: -40 }} }}); }},
         suspendCompactLeaseForDrag(payload) {{ hostCalls.push(['suspend', payload]); return Promise.resolve({{ ok: true }}); }},
         resumeCompactLeaseAfterDrag(payload) {{ hostCalls.push(['resume', payload]); return Promise.resolve({{ ok: true, originDelta: {{ x: 700, y: 40 }} }}); }},
         releaseCompactLease(payload) {{
@@ -119,15 +128,23 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (hostCalls.filter(x => x[0] === 'acquire').length !== 1) throw new Error('compact acquire missing');
         if (!managerCalls.some(x => x[0] === 'translate' && x[1] === -700 && x[2] === -40)) throw new Error('origin compensation missing');
 
+        const replacementManagerCalls = [];
+        context.window.live2dManager = makeManager(replacementManagerCalls);
         emit('live2d-model-loaded');
         await new Promise(resolve => setImmediate(resolve));
         if (hostCalls.filter(x => x[0] === 'update').length !== 1) throw new Error('compact update missing');
+        if (!replacementManagerCalls.some(x => x[0] === 'translate' && x[1] === -700 && x[2] === -40)) {{
+          throw new Error('replacement model did not receive compact origin compensation');
+        }}
 
         hostContract = null;
+        context.window.live2dManager = makeManager();
         emit('live2d-model-loaded');
         await new Promise(resolve => setImmediate(resolve));
         if (context.window.nekoGameModeResourceRuntime.getState().compactAcquired !== false) throw new Error('unsupported host kept stale compact state');
         hostContract = {{ petInstanceId: 'pet-1', hostCapabilities: {{ compactPetWindowLeaseV1: true }} }};
+        const recoveredManagerCalls = [];
+        context.window.live2dManager = makeManager(recoveredManagerCalls);
         emit('live2d-model-loaded');
         await new Promise(resolve => setImmediate(resolve));
         if (hostCalls.filter(x => x[0] === 'acquire').length !== 2) throw new Error('compact lease did not reacquire after host recovery');
@@ -166,7 +183,7 @@ def test_game_mode_resource_runtime_event_driven_contract():
         if (!exited) throw new Error('explicit exit failed');
         if (!managerCalls.some(x => x[0] === 'phase' && x[1] === 'idle')) throw new Error('idle restore missing');
         if (!hostCalls.some(x => x[0] === 'release')) throw new Error('lease release missing');
-        const netTranslation = managerCalls
+        const netTranslation = recoveredManagerCalls
           .filter(x => x[0] === 'translate')
           .reduce((sum, x) => [sum[0] + x[1], sum[1] + x[2]], [0, 0]);
         if (netTranslation[0] !== 0 || netTranslation[1] !== 0) throw new Error('compact origin compensation not restored');
@@ -184,7 +201,7 @@ def test_game_mode_resource_runtime_event_driven_contract():
         }});
         await new Promise(resolve => setImmediate(resolve));
         await context.window.nekoGameModeResourceRuntime.exitCurrentSession();
-        const secondNetTranslation = managerCalls
+        const secondNetTranslation = recoveredManagerCalls
           .filter(x => x[0] === 'translate')
           .reduce((sum, x) => [sum[0] + x[1], sum[1] + x[2]], [0, 0]);
         if (secondNetTranslation[0] !== 0 || secondNetTranslation[1] !== 0) throw new Error('failed release left origin compensation applied');

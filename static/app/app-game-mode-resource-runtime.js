@@ -346,10 +346,13 @@
         });
     }
 
-    function reapplyAfterModelChange() {
+    function reapplyAfterModelChange(event) {
         if (!state.sessionId) return;
         applyManagerPhase(state.phase);
         if (state.compactEnabled) {
+            if (event && event.type) {
+                state.appliedOriginDelta = { x: 0, y: 0 };
+            }
             void acquireCompactLease(state.compactAcquired
                 ? 'updateCompactLease'
                 : 'acquireCompactLease');
