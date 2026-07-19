@@ -396,7 +396,7 @@ function showGameModeBetaMutationFailure(error) {
     console.warn('[GameModeBeta] settings mutation failed:', error);
     const message = window.t
         ? window.t('settings.gameModeBeta.toggleFailed')
-        : '挂边模式 Beta 切换失败，请稍后重试。';
+        : '游戏资源保护切换失败，请稍后重试。';
     if (typeof window.showStatusToast === 'function') {
         window.showStatusToast(message, 3000);
     }
@@ -584,7 +584,7 @@ function createAdvancedSettingsSidePanel(manager, prefix, popup) {
 
     const gameModeItem = manager._createSettingsToggleItem({
         id: 'game-mode-beta',
-        label: window.t ? window.t('settings.toggles.gameModeBeta') : '挂边模式 Beta',
+        label: window.t ? window.t('settings.toggles.gameModeBeta') : '游戏资源保护 Beta',
         labelKey: 'settings.toggles.gameModeBeta',
         tooltipKey: 'settings.toggles.gameModeBetaTooltip',
         alwaysTinted: true

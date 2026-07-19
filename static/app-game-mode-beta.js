@@ -185,7 +185,7 @@
                 next ? 'settings.gameModeBeta.enabledNotice' : 'settings.gameModeBeta.disabledNotice',
                 next
                     ? '游戏资源保护已开启；Side Mode 仍可通过拖动 Live2D 到屏幕边缘使用。'
-                    : '游戏资源保护已关闭。Live2D 将恢复普通边缘吸附行为。'
+                    : '游戏资源保护已关闭。'
             ));
             return true;
         } catch (error) {
@@ -249,10 +249,6 @@
                 pet_instance_id: host.petInstanceId,
             }, { keepalive: true }).catch(function () {});
         });
-        window.addEventListener('DOMContentLoaded', function () {
-            void refreshState();
-            startHostRegistration();
-        }, { once: true });
     }
 
     function getState() {
@@ -277,8 +273,13 @@
     };
 
     bindEvents();
-    if (document.readyState !== 'loading') {
+    const initGameModeBeta = function () {
         void refreshState();
         startHostRegistration();
+    };
+    if (document.readyState === 'loading') {
+        window.addEventListener('DOMContentLoaded', initGameModeBeta, { once: true });
+    } else {
+        initGameModeBeta();
     }
 })();

@@ -60,7 +60,8 @@ def test_app_game_mode_beta_resource_bridge_contract():
         const doc = new EventTargetLike();
         const calls = [];
         const registrations = [];
-        doc.readyState = 'complete';
+        let resumeBindings = 0;
+        doc.readyState = 'interactive';
         doc.querySelectorAll = () => [];
         win.document = doc;
         win.window = win;
@@ -74,7 +75,7 @@ def test_app_game_mode_beta_resource_bridge_contract():
         }};
         win.nekoGameModeHost = {{
           getContract: async () => ({host_contract}),
-          onSystemResume: () => {{}},
+          onSystemResume: () => {{ resumeBindings += 1; }},
         }};
         win.addEventListener('neko:game-mode-resource-registration', (event) => registrations.push(event.detail));
 
@@ -126,9 +127,11 @@ def test_app_game_mode_beta_resource_bridge_contract():
           setInterval: win.setInterval,
           clearInterval: win.clearInterval,
         }});
+        win.dispatchEvent({{ type: 'DOMContentLoaded' }});
 
         (async () => {{
           await new Promise((resolve) => setTimeout(resolve, 0));
+          if (resumeBindings !== 1) throw new Error(`startup initialized ${{resumeBindings}} times`);
           const api = win.nekoGameModeBeta;
           if (!api) throw new Error('bridge missing');
           if ('handleAuto' + 'SwitchEvent' in api) throw new Error('model switch handler leaked');
@@ -197,8 +200,10 @@ def test_app_game_mode_beta_is_home_only_and_versioned():
 
     index_source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     chat_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' in index_source
-    assert '/static/app-game-mode-beta.js?v={{ static_asset_version }}' not in chat_source
+    assert "/static/app-game-mode-beta.js?v={{ static_asset_version }}" in index_source
+    assert (
+        "/static/app-game-mode-beta.js?v={{ static_asset_version }}" not in chat_source
+    )
     assert APP_GAME_MODE_BETA_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
 
 
@@ -213,11 +218,68 @@ def test_game_mode_locale_contract_is_resource_only():
         "restore" + "Failed",
         "signal" + "Unavailable",
     }
-    for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
-        payload = json.loads(
-            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(encoding="utf-8")
-        )["settings"]["gameModeBeta"]
+    expected_notices = {
+        "en": (
+            "Game resource protection is off.",
+            "Failed to switch game resource protection. Please try again later.",
+            "Game Resource Protection Beta",
+            "resource",
+        ),
+        "es": (
+            "La protección de recursos durante juegos está desactivada.",
+            "No se pudo cambiar la protección de recursos durante juegos. Inténtalo de nuevo más tarde.",
+            "Protección de recursos en juegos Beta",
+            "recursos",
+        ),
+        "ja": (
+            "ゲーム中のリソース保護を無効にしました。",
+            "ゲーム中のリソース保護を切り替えられませんでした。しばらくしてから再試行してください。",
+            "ゲームリソース保護 Beta",
+            "リソース",
+        ),
+        "ko": (
+            "게임 리소스 보호가 꺼졌습니다.",
+            "게임 리소스 보호를 전환하지 못했습니다. 잠시 후 다시 시도하세요.",
+            "게임 리소스 보호 Beta",
+            "리소스",
+        ),
+        "pt": (
+            "A proteção de recursos durante jogos está desativada.",
+            "Não foi possível alternar a proteção de recursos durante jogos. Tente novamente mais tarde.",
+            "Proteção de recursos em jogos Beta",
+            "recursos",
+        ),
+        "ru": (
+            "Защита ресурсов во время игр выключена.",
+            "Не удалось переключить защиту ресурсов во время игр. Повторите попытку позже.",
+            "Защита игровых ресурсов Beta",
+            "ресурсов",
+        ),
+        "zh-CN": (
+            "游戏资源保护已关闭。",
+            "游戏资源保护切换失败，请稍后重试。",
+            "游戏资源保护 Beta",
+            "资源",
+        ),
+        "zh-TW": (
+            "遊戲資源保護已關閉。",
+            "遊戲資源保護切換失敗，請稍後重試。",
+            "遊戲資源保護 Beta",
+            "資源",
+        ),
+    }
+    for locale, notices in expected_notices.items():
+        settings = json.loads(
+            (PROJECT_ROOT / "static" / "locales" / f"{locale}.json").read_text(
+                encoding="utf-8"
+            )
+        )["settings"]
+        payload = settings["gameModeBeta"]
         assert forbidden.isdisjoint(payload)
         assert "resourceProtectionOnGame" in payload
         assert "compactPetWindow" in payload
         assert "exitResourceProtection" in payload
+        assert (payload["disabledNotice"], payload["toggleFailed"]) == notices[:2]
+        toggles = settings["toggles"]
+        assert toggles["gameModeBeta"] == notices[2]
+        assert notices[3] in toggles["gameModeBetaTooltip"].lower()
