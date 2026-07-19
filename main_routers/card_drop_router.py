@@ -3,8 +3,9 @@
 Drop decisions remain in the private NEKO-PC forge-dropper, while this service
 owns the installation-local credit ledger. The community may read and reserve
 credits only after its JWT has been synced through the native one-time ticket.
-This router also owns the community Steam login
-(``/steam-login`` / ``/steam-callback`` / ``/auth-status``).
+Desktop community login is OAuth PKCE via ``main_routers.community_oauth``
+(``/api/card-drop/oauth/*`` + ``/oauth/callback``). Legacy password/Steam
+endpoints return 410. ``/auth-status`` remains here.
 
 The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
 """
@@ -470,6 +471,8 @@ def _save_social_session(
     *,
     local_user_id: str,
     auth_source: str,
+    auth_public_url: str | None = None,
+    client_id: str | None = None,
 ) -> bool:
     normalized_user_id = _normalize_local_user_id(local_user_id)
     normalized_source = _normalize_auth_source(auth_source)
@@ -482,11 +485,18 @@ def _save_social_session(
         "schema_version": _SOCIAL_SESSION_SCHEMA_VERSION,
         "baseUrl": (base or _social_base_url()).strip().rstrip("/"),
         "token": access,
+        "access_token": access,
         "local_user_id": normalized_user_id,
         "auth_source": normalized_source,
     }
     if refresh:
         data["refresh_token"] = refresh
+    auth_url = (auth_public_url or "").strip().rstrip("/")
+    if auth_url:
+        data["auth_public_url"] = auth_url
+    oauth_client = (client_id or "").strip()
+    if oauth_client:
+        data["client_id"] = oauth_client
     try:
         _write_private_json(p, data)
     except OSError as exc:
@@ -1196,42 +1206,14 @@ async def forge_facts_endpoint(
     return JSONResponse(payload, headers=cors)
 
 
-@router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")
-async def login_endpoint(request: Request, payload: dict = Body(...)):
-    _require_local_mutation_ticket(request, payload)
-    email = (payload.get("email") or "").strip()
-    password = payload.get("password") or ""
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="missing_email_or_password")
-    base = _social_base_url()
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    user, bind = await _finish_login(base, _relay(r))
-    return {"user": user, "bind": bind}
+@router.post("/login", summary="已移除：请使用统一账号 OAuth（/api/card-drop/oauth/start）")
+async def login_endpoint(request: Request, payload: dict = Body(default=None)):
+    raise HTTPException(status_code=410, detail="legacy_community_login_removed")
 
 
-@router.post("/register", summary="邮箱密码注册社区账号（存 JWT + 迁移游客卡）")
-async def register_endpoint(request: Request, payload: dict = Body(...)):
-    _require_local_mutation_ticket(request, payload)
-    email = (payload.get("email") or "").strip()
-    password = payload.get("password") or ""
-    display_name = (payload.get("display_name") or "").strip() or None
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="missing_email_or_password")
-    body = {"email": email, "password": password}
-    if display_name:
-        body["display_name"] = display_name
-    base = _social_base_url()
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.post(f"{base}/api/auth/register", json=body)
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    user, bind = await _finish_login(base, _relay(r))
-    return {"user": user, "bind": bind}
+@router.post("/register", summary="已移除：请使用统一账号 OAuth（/api/card-drop/oauth/start）")
+async def register_endpoint(request: Request, payload: dict = Body(default=None)):
+    raise HTTPException(status_code=410, detail="legacy_community_login_removed")
 
 
 @router.post("/logout", summary="登出（清本地 JWT）")
@@ -1267,94 +1249,21 @@ def _steam_callback_html(title: str, sub: str, *, status_code: int = 200) -> HTM
     )
 
 
-@router.get("/steam-login", summary="返回 Steam 登录授权 URL（前端用浏览器打开）")
+@router.get("/steam-login", summary="已移除：请使用统一账号 OAuth（/api/card-drop/oauth/start）")
 async def steam_login_endpoint(request: Request):
-    if not _local_request_source_allowed(request):
-        raise HTTPException(status_code=403, detail="origin_not_allowed")
-    base = _social_base_url()
-    callback = _neko_steam_callback_url(request)
-    pending = _mark_steam_pending()
-    if not pending:
-        # state 没落盘 → 回调无法本地校验，必失败；不如在入口直接报错，别让用户白跑一趟 Steam。
-        raise HTTPException(status_code=503, detail="steam_login_state_unavailable")
-    state, code_challenge = pending
-    # PKCE：code_challenge 进 authorize URL，配对的 verifier 已落盘 pending，回调换 token 才出示。
-    authorize_url = (
-        f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
-        f"&state={quote(state, safe='')}"
-        f"&code_challenge={quote(code_challenge, safe='')}"
-        f"&code_challenge_method=S256"
-    )
-    return {"authorize_url": authorize_url, "callback": callback}
+    raise HTTPException(status_code=410, detail="legacy_community_login_removed")
 
 
 @router.get(
     "/steam-callback",
-    summary="Steam 登录回调：存 JWT + 迁移游客卡，返回提示页",
+    summary="已移除：请使用统一账号 OAuth（/oauth/callback）",
     response_class=HTMLResponse,
 )
 async def steam_callback_endpoint(
-    code: str = Query(..., min_length=1),
-    state: str = Query(..., min_length=1),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
 ):
-    # 校验 state（与发起登录时一致）+ 一次性窗口，挡 login-CSRF / 重放；同时取回 PKCE verifier。
-    ok, code_verifier = _consume_steam_pending(state)
-    if not ok:
-        return _steam_callback_html("登录会话已失效", "请回到 NEKO 重新点一次「Steam 登录」。")
-    base = _social_base_url()
-    # 用一次性 code 服务端换 token（token 不经浏览器 URL/历史/日志）。
-    # PKCE：带上发起登录时落盘的 code_verifier，云端校验 sha256(verifier)==challenge，把短码
-    # 绑定到「发起登录的这台 NEKO」。老 pending（无 verifier）→ 不带，云端也不强制（向后兼容）。
-    exchange_body: dict = {"code": code}
-    if code_verifier:
-        exchange_body["code_verifier"] = code_verifier
-    access_token: str | None = None
-    refresh_token: str | None = None
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.post(
-                f"{base}/api/auth/oauth/native/exchange", json=exchange_body
-            )
-        if r.status_code == 200:
-            d = r.json() or {}
-            access_token = d.get("access_token")
-            refresh_token = d.get("refresh_token")
-        else:
-            logger.info("card_drop: steam-callback exchange returned %s", r.status_code)
-    except (httpx.HTTPError, OSError, ValueError) as exc:
-        logger.info("card_drop: steam-callback exchange failed: %s", exc)
-    if not access_token:
-        return _steam_callback_html("登录失败", "换取登录凭证失败，请回到 NEKO 重试。")
-    identity_lookup = await _lookup_cloud_identity(base, access_token)
-    if identity_lookup.identity is None:
-        logger.info(
-            "card_drop: steam-callback identity verification failed (%s)",
-            identity_lookup.failure or "rejected",
-        )
-        return _steam_callback_html("登录失败", "无法验证社区身份，请回到 NEKO 重试。")
-    user = identity_lookup.identity.user
-    try:
-        bind = await _store_session(
-            base,
-            access_token,
-            refresh_token,
-            user,
-            auth_source=identity_lookup.identity.auth_source,
-        )
-    except _ClientBindingConflict:
-        return _steam_callback_html(
-            "登录冲突",
-            "这台设备已经绑定其他社区账号，本次登录未生效；原登录状态保持不变。",
-            status_code=409,
-        )
-    except _InvalidIdentityResponse:
-        return _steam_callback_html("登录失败", "社区身份响应无效，请回到 NEKO 重试。")
-    name = user.get("display_name") or "你"
-    if bind.get("bound"):
-        sub = "卡片会存进你的卡册了，可以关掉本页回到 NEKO。"
-    else:
-        sub = "已登录，但游客卡迁移没完成（稍后可重试）。可关掉本页回到 NEKO。"
-    return _steam_callback_html(f"已登录，欢迎 {name}", sub)
+    raise HTTPException(status_code=410, detail="legacy_community_login_removed")
 
 
 def _credit_error(exc: Exception) -> HTTPException:
@@ -1365,11 +1274,14 @@ def _credit_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail=str(exc))
 
 
-def _require_credit_browser(request: Request) -> dict[str, str]:
+async def _require_credit_browser(request: Request) -> dict[str, str]:
     cors = _credit_cors_headers(request)
     if cors is None:
         raise HTTPException(status_code=403, detail="origin_not_allowed")
-    if not _facts_request_is_authenticated(request):
+    auth_state = await _facts_request_auth_state(request)
+    if auth_state == "unavailable":
+        raise HTTPException(status_code=503, detail="identity_verification_unavailable")
+    if auth_state != "match":
         raise HTTPException(status_code=401, detail="local_session_mismatch")
     return cors
 
@@ -1399,7 +1311,7 @@ async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
 
 @router.get("/credits", summary="读取 N.E.K.O 本机有效锻造券与待恢复预占")
 async def credits_endpoint(request: Request):
-    cors = _require_credit_browser(request)
+    cors = await _require_credit_browser(request)
     from main_logic.forge_credit_ledger import list_credits
 
     return JSONResponse(list_credits(), headers=cors)
@@ -1433,7 +1345,7 @@ async def local_credit_summary_endpoint(request: Request):
 
 @router.post("/credits/{credit_id}/reservations", summary="为一次云端铸造幂等预占本机券")
 async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dict = Body(...)):
-    cors = _require_credit_browser(request)
+    cors = await _require_credit_browser(request)
     from main_logic.forge_credit_ledger import reserve_credit
 
     try:
@@ -1448,7 +1360,7 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
 async def commit_credit_endpoint(
     request: Request, credit_id: str, operation_id: str, payload: dict = Body(...),
 ):
-    cors = _require_credit_browser(request)
+    cors = await _require_credit_browser(request)
     from main_logic.forge_credit_ledger import commit_credit
 
     try:
@@ -1461,7 +1373,7 @@ async def commit_credit_endpoint(
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")
 async def release_credit_endpoint(request: Request, credit_id: str, operation_id: str):
-    cors = _require_credit_browser(request)
+    cors = await _require_credit_browser(request)
     from main_logic.forge_credit_ledger import release_credit
 
     try:

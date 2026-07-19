@@ -2193,6 +2193,7 @@
         "socialOpenFailed": "Failed to open social window: {{error}}",
         "socialUnavailable": "Social service unavailable",
         "socialDisabled": "Social service is disabled",
+        "socialOAuthPrompt": "Complete unified account login in your browser",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",

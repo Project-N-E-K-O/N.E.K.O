@@ -90,25 +90,17 @@ def test_consume_backward_compat_no_verifier(pending_path):
 
 
 @pytest.mark.unit
-def test_steam_login_url_carries_code_challenge(pending_path):
+def test_steam_login_returns_410_legacy_removed(pending_path):
     app = FastAPI()
     app.include_router(C.router)
     resp = TestClient(app).get("/api/card-drop/steam-login")
-    assert resp.status_code == 200
-    url = resp.json()["authorize_url"]
-    # authorize URL must carry redirect_to + state + code_challenge (+ S256 method)
-    assert "code_challenge=" in url
-    assert "code_challenge_method=S256" in url
-    assert "state=" in url
-    assert "redirect_to=" in url
-    # URL 里的 code_challenge 必须等于落盘 verifier 的 S256（端到端绑定）
-    data = json.loads(pending_path.read_text(encoding="utf-8"))
-    expected = _challenge_for(data["code_verifier"])
-    assert f"code_challenge={expected}" in url
+    assert resp.status_code == 410
+    assert resp.json() == {"detail": "legacy_community_login_removed"}
+    assert not pending_path.exists()
 
 
 @pytest.mark.unit
-def test_steam_login_rejects_cross_site_before_replacing_pending(pending_path):
+def test_steam_login_410_does_not_replace_pending(pending_path):
     original = C._mark_steam_pending()
     assert original is not None
     original_data = pending_path.read_text(encoding="utf-8")
@@ -120,17 +112,6 @@ def test_steam_login_rejects_cross_site_before_replacing_pending(pending_path):
         "/api/card-drop/steam-login",
         headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
     )
-    blind_navigation = client.get(
-        "/api/card-drop/steam-login",
-        headers={"Sec-Fetch-Site": "cross-site"},
-    )
-
-    assert evil_origin.status_code == 403
-    assert evil_origin.json() == {"detail": "origin_not_allowed"}
-    assert blind_navigation.status_code == 403
-    assert blind_navigation.json() == {"detail": "origin_not_allowed"}
-    assert pending_path.read_text(encoding="utf-8") == original_data
-
     same_origin = client.get(
         "/api/card-drop/steam-login",
         headers={
@@ -138,5 +119,8 @@ def test_steam_login_rejects_cross_site_before_replacing_pending(pending_path):
             "Sec-Fetch-Site": "same-origin",
         },
     )
-    assert same_origin.status_code == 200
-    assert pending_path.read_text(encoding="utf-8") != original_data
+
+    assert evil_origin.status_code == 410
+    assert same_origin.status_code == 410
+    assert evil_origin.json() == {"detail": "legacy_community_login_removed"}
+    assert pending_path.read_text(encoding="utf-8") == original_data

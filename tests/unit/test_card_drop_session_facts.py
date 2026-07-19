@@ -625,6 +625,7 @@ def test_social_session_prefers_electron_user_data_and_clear_removes_legacy(tmp_
         "schema_version": 2,
         "baseUrl": "https://community.example",
         "token": "token-a",
+        "access_token": "token-a",
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "refresh-a",
@@ -910,6 +911,7 @@ def test_legacy_web_sync_persists_v2_identity_metadata(client, tmp_path, monkeyp
         "schema_version": 2,
         "baseUrl": "https://community.example",
         "token": "legacy-access",
+        "access_token": "legacy-access",
         "local_user_id": USER_A_ID,
         "auth_source": "legacy",
         "refresh_token": "legacy-refresh",
@@ -1217,19 +1219,8 @@ def test_sync_session_skips_legacy_client_binding_and_replaces_session(
     assert saved_session["refresh_token"] == "wrong-new-refresh"
 
 
-def test_local_login_bind_ownership_conflict_returns_409_and_preserves_session(
-    client, tmp_path, monkeypatch,
-):
+def test_legacy_local_login_returns_410(client, tmp_path, monkeypatch):
     auth, session, old_auth, old_session = _existing_session_files(tmp_path, monkeypatch)
-    login_out = {
-        "tokens": {"access_token": "wrong-new-token", "refresh_token": "wrong-new-refresh"},
-        "user": {
-            "id": USER_A_ID,
-            "display_name": "New User",
-            "email": "new@example.com",
-        },
-    }
-    _cloud_client(monkeypatch, login=login_out)
 
     response = client.post(
         "/api/card-drop/login",
@@ -1240,51 +1231,26 @@ def test_local_login_bind_ownership_conflict_returns_409_and_preserves_session(
         },
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "client_already_bound_to_other_user"}
+    assert response.status_code == 410
+    assert response.json() == {"detail": "legacy_community_login_removed"}
     assert json.loads(auth.read_text(encoding="utf-8")) == old_auth
     assert json.loads(session.read_text(encoding="utf-8")) == old_session
 
 
 @pytest.mark.parametrize(
-    ("path", "payload"),
+    "path",
     [
-        (
-            "/api/card-drop/login",
-            {"email": "user@example.com", "password": "password123"},
-        ),
-        (
-            "/api/card-drop/register",
-            {"email": "user@example.com", "password": "password123"},
-        ),
+        "/api/card-drop/login",
+        "/api/card-drop/register",
     ],
 )
-def test_local_password_auth_requires_local_origin_and_sync_ticket(
-    client, monkeypatch, path, payload,
-):
-    class _UnexpectedCloudClient:
-        async def __aenter__(self):
-            raise AssertionError("cloud auth must not run before local authorization")
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    monkeypatch.setattr(C.httpx, "AsyncClient", lambda *args, **kwargs: _UnexpectedCloudClient())
-    ticket = _issue_sync_ticket(client)
-
-    cross_site = client.post(
+def test_legacy_password_auth_returns_410(client, path):
+    response = client.post(
         path,
-        headers={"Origin": "https://attacker.example"},
-        json={**payload, "sync_ticket": ticket},
+        json={"email": "user@example.com", "password": "password123"},
     )
-    assert cross_site.status_code == 403
-    assert cross_site.json() == {"detail": "origin_not_allowed"}
-    assert C._sync_ticket_is_valid(ticket)
-
-    missing_ticket = client.post(path, json=payload)
-    assert missing_ticket.status_code == 403
-    assert missing_ticket.json() == {"detail": "invalid_sync_ticket"}
-    assert C._sync_ticket_is_valid(ticket)
+    assert response.status_code == 410
+    assert response.json() == {"detail": "legacy_community_login_removed"}
 
 
 @pytest.mark.asyncio

@@ -33,6 +33,18 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
     assert "native_sync: String(ticketJson.sync_ticket)" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    assert "social_base_url" in listener
+    assert "/feed" in listener
+    # Feed first; Desktop OAuth only after open when not logged in.
+    assert "fetch('/api/card-drop/auth-status', { cache: 'no-store' })" in listener
+    assert "fetch('/api/card-drop/oauth/start'" in listener
+    assert "请在浏览器完成统一账号登录" in listener
+    assert listener.index("openExternal(url)") < listener.index(
+        "fetch('/api/card-drop/auth-status'"
+    )
+    assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
+        "fetch('/api/card-drop/oauth/start'"
+    )
     protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
     assert protocol_guard in listener
     assert listener.index(protocol_guard) < listener.index(

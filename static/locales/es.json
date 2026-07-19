@@ -2193,6 +2193,7 @@
         "socialOpenFailed": "No se pudo abrir la ventana social: {{error}}",
         "socialUnavailable": "Servicio social no disponible",
         "socialDisabled": "El servicio social está deshabilitado",
+        "socialOAuthPrompt": "Completa el inicio de sesión de la cuenta unificada en el navegador",
         "welcomeBack": "¡{{name}} ha vuelto!",
         "title": "Proyecto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",

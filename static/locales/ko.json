@@ -2193,6 +2193,7 @@
         "socialOpenFailed": "소셜 창을 열지 못했습니다: {{error}}",
         "socialUnavailable": "소셜 서비스를 사용할 수 없습니다",
         "socialDisabled": "소셜 서비스가 비활성화되었습니다",
+        "socialOAuthPrompt": "브라우저에서 통합 계정 로그인을 완료해 주세요",
         "welcomeBack": "{{name}}이 돌아왔습니다!",
         "title": "프로젝트 N.E.K.O.",
         "catgirlResting": "{{name}}은(는) 쉬고 있습니다...",

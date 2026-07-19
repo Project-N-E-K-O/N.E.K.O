@@ -2193,6 +2193,7 @@
         "socialOpenFailed": "ソーシャルウィンドウを開けませんでした：{{error}}",
         "socialUnavailable": "ソーシャルサービスを利用できません",
         "socialDisabled": "ソーシャルサービスは無効です",
+        "socialOAuthPrompt": "ブラウザで統一アカウントのログインを完了してください",
         "welcomeBack": "{{name}}が戻りました！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}は休憩中...",

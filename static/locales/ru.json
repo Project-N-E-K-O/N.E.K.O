@@ -2193,6 +2193,7 @@
         "socialOpenFailed": "Не удалось открыть окно сообщества: {{error}}",
         "socialUnavailable": "Сервис сообщества недоступен",
         "socialDisabled": "Сервис сообщества отключён",
+        "socialOAuthPrompt": "Завершите вход в единый аккаунт в браузере",
         "welcomeBack": "{{name}} вернулась!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} отдыхает...",

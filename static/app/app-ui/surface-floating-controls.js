@@ -295,15 +295,62 @@
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
                 url = targetUrl.toString();
+                // 先打开猫娘社区；Desktop 未登录时再额外拉起平台 Desktop OAuth（不挡社区）。
                 if (useExternal) {
                     await window.electronShell.openExternal(url);
-                    return;
+                } else {
+                    // about:blank 仍与 opener 同源，可在跨站导航前主动切断反向引用。
+                    popupRef.opener = null;
+                    popupRef.location.replace(url);
+                    try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
+                    popupRef = null;
                 }
-                // about:blank 仍与 opener 同源，可在跨站导航前主动切断反向引用。
-                popupRef.opener = null;
-                popupRef.location.replace(url);
-                try { popupRef.focus && popupRef.focus(); } catch (_) { /* ignore */ }
-                popupRef = null;
+                let communityLoggedIn = false;
+                try {
+                    const statusRes = await fetch('/api/card-drop/auth-status', { cache: 'no-store' });
+                    if (statusRes.ok) {
+                        const statusJson = await statusRes.json();
+                        communityLoggedIn = !!(statusJson && statusJson.logged_in);
+                    }
+                } catch (statusErr) {
+                    console.warn('[social] auth-status fetch failed (non-fatal):', statusErr);
+                }
+                if (!communityLoggedIn) {
+                    try {
+                        const oauthRes = await fetch('/api/card-drop/oauth/start', {
+                            method: 'POST',
+                            cache: 'no-store',
+                        });
+                        if (oauthRes.ok) {
+                            const oauthJson = await oauthRes.json();
+                            const authUrl = oauthJson && oauthJson.auth_url
+                                ? String(oauthJson.auth_url)
+                                : '';
+                            if (authUrl) {
+                                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                                    await window.electronShell.openExternal(authUrl);
+                                } else {
+                                    window.open(authUrl, '_blank', 'noopener,noreferrer');
+                                }
+                                if (typeof window.showStatusToast === 'function') {
+                                    const oauthPromptKey = 'app.socialOAuthPrompt';
+                                    const oauthPrompt = (typeof window.t === 'function')
+                                        ? window.t(oauthPromptKey)
+                                        : '';
+                                    window.showStatusToast(
+                                        (oauthPrompt && oauthPrompt !== oauthPromptKey)
+                                            ? oauthPrompt
+                                            : '请在浏览器完成统一账号登录',
+                                        4000
+                                    );
+                                }
+                            }
+                        }
+                    } catch (oauthErr) {
+                        console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
+                    }
+                }
+                return;
             } catch (err) {
                 closePopup();
                 console.error('[social] open failed:', err);

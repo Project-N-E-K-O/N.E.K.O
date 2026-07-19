@@ -182,6 +182,10 @@ from main_routers.card_drop_router import (  # noqa
     _local_mutation_origin_allowed as _card_forge_mutation_origin_allowed,
     router as card_drop_router,
 )
+from main_routers.community_oauth import (  # noqa
+    callback_router as community_oauth_callback_router,
+    router as community_oauth_router,
+)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -387,6 +391,8 @@ app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(card_drop_router)  # Must precede the pages fallback router.
+app.include_router(community_oauth_router)
+app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.
 app.include_router(
     cookies_login_router
 )  # Cookies登录相关路由，放在最后以避免与其他API路由冲突
