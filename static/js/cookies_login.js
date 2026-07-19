@@ -49,6 +49,14 @@ const PLATFORM_CONFIG_DATA = {
         cookieStringDescKey: 'cookiesLogin.fields.youtubeCookie.desc',
         fields: []
     },
+    'twitch': {
+        name: 'Twitch',
+        nameKey: 'cookiesLogin.twitch',
+        theme: '#9146ff',
+        instructionKey: 'cookiesLogin.instructions.twitch',
+        authMode: 'deviceCode',
+        fields: []
+    },
     'douyin': {
         name: '抖音', 
         nameKey: 'cookiesLogin.douyin', 
@@ -199,6 +207,7 @@ function initPlatformConfig() {
             cookieStringMode: data.cookieStringMode === true,
             cookieStringLabel: data.cookieStringLabelKey ? safeT(data.cookieStringLabelKey, '完整 Cookie') : '',
             cookieStringDesc: data.cookieStringDescKey ? safeT(data.cookieStringDescKey, '粘贴 Request Headers 中完整的 Cookie 值') : '',
+            authMode: data.authMode || '',
             fields: data.fields.map(field => ({
                 key: field.key,
                 mapKey: field.mapKey,
@@ -621,6 +630,10 @@ function switchTab(platformKey, btnElement, isReRender = false) {
     }
     currentPlatform = platformKey;
     const config = PLATFORM_CONFIG[platformKey];
+    const tutorialBanner = document.querySelector('.tutorial-banner');
+    if (tutorialBanner) tutorialBanner.style.display = config.authMode ? 'none' : '';
+    const encryptRow = document.getElementById('encrypt-toggle')?.parentElement;
+    if (encryptRow) encryptRow.style.display = config.authMode ? 'none' : '';
     // 更新选项卡文本
     if (btnElement) {
         document.querySelectorAll('.tab-btn').forEach(btn =>{
@@ -639,7 +652,15 @@ function switchTab(platformKey, btnElement, isReRender = false) {
             descBox.style.display = 'none'; 
         }
     }
-    showQRLogin(PLATFORM_CONFIG_DATA[platformKey], platformKey)
+    if (config.authMode === 'deviceCode') {
+        const qrLoginBox = document.getElementById('QRLogin');
+        if (qrLoginBox) {
+            qrLoginBox.replaceChildren();
+            qrLoginBox.style.display = 'none';
+        }
+    } else {
+        showQRLogin(PLATFORM_CONFIG_DATA[platformKey], platformKey);
+    }
     // 更新动态 Cookies 配置字段
     const fieldsContainer = document.getElementById('dynamic-fields');
     if (fieldsContainer) {
@@ -651,7 +672,17 @@ function switchTab(platformKey, btnElement, isReRender = false) {
         }
 
         const placeholderBase = safeT('cookiesLogin.pasteHere', '在此粘贴');
-        if (config.cookieStringMode) {
+        if (config.authMode === 'deviceCode') {
+            fieldsContainer.innerHTML = `
+            <div class="field-group">
+                <label for="input-twitch-client-id">
+                    <span>${DOMPurify.sanitize(safeT('cookiesLogin.twitchAuth.clientId', 'Twitch Developer Client ID'))} <span class="req-star">*</span></span>
+                    <span class="desc">${DOMPurify.sanitize(safeT('cookiesLogin.twitchAuth.clientIdDesc', 'Create a public app in the Twitch Developer Console and paste its Client ID.'))}</span>
+                </label>
+                <input type="text" id="input-twitch-client-id" autocomplete="off" autocapitalize="off" spellcheck="false" class="credential-input">
+            </div>
+            <div id="twitch-device-result" aria-live="polite"></div>`;
+        } else if (config.cookieStringMode) {
             fieldsContainer.innerHTML = `
             <div class="field-group">
                 <label for="input-cookie-string">
@@ -705,14 +736,105 @@ function switchTab(platformKey, btnElement, isReRender = false) {
     // 更新提交按钮文本
     const submitText = document.getElementById('submit-text');
     if (submitText) {
-        const translatedText = safeT('cookiesLogin.saveConfig', '保存配置');
+        const translatedText = config.authMode === 'deviceCode'
+            ? safeT('cookiesLogin.twitchAuth.start', '开始 Twitch 授权')
+            : safeT('cookiesLogin.saveConfig', '保存配置');
         submitText.textContent = `${config.name} ${translatedText}`;
+    }
+}
+
+function twitchClientId() {
+    return document.getElementById('input-twitch-client-id')?.value.trim() || '';
+}
+
+function renderTwitchDeviceCode(result) {
+    const container = document.getElementById('twitch-device-result');
+    if (!container) return;
+    container.textContent = '';
+    const card = document.createElement('div');
+    card.className = 'tutorial-banner';
+    card.style.marginTop = '18px';
+    const instruction = document.createElement('div');
+    instruction.textContent = safeT('cookiesLogin.twitchAuth.authorizeHint', 'Open the Twitch activation page and enter this code:');
+    const link = document.createElement('a');
+    link.href = result.verification_uri;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = result.verification_uri;
+    link.style.display = 'block';
+    link.style.margin = '8px 0';
+    const code = document.createElement('strong');
+    code.textContent = result.user_code;
+    code.style.fontSize = '20px';
+    code.style.letterSpacing = '0.08em';
+    const checkButton = document.createElement('button');
+    checkButton.type = 'button';
+    checkButton.className = 'submit-btn';
+    checkButton.style.marginTop = '14px';
+    checkButton.textContent = safeT('cookiesLogin.twitchAuth.check', '我已授权，检查状态');
+    checkButton.addEventListener('click', () => checkTwitchDeviceCode(checkButton));
+    card.append(instruction, link, code, checkButton);
+    container.appendChild(card);
+}
+
+async function startTwitchDeviceCode() {
+    const clientId = twitchClientId();
+    if (!/^[A-Za-z0-9]{8,80}$/.test(clientId)) {
+        showAlert(false, safeT('cookiesLogin.twitchAuth.invalidClientId', '请输入有效的 Twitch Client ID'));
+        document.getElementById('input-twitch-client-id')?.focus();
+        return;
+    }
+    const submitBtn = document.getElementById('submit-btn');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+        const response = await fetch('/api/auth/twitch/device/start', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId })
+        });
+        const result = await response.json();
+        if (response.ok && result.success) {
+            renderTwitchDeviceCode(result);
+            showAlert(true, safeT('cookiesLogin.twitchAuth.started', 'Twitch 授权已启动，请在浏览器完成确认'));
+        } else {
+            showAlert(false, safeT('cookiesLogin.twitchAuth.startFailed', '无法启动 Twitch 授权，请检查 Client ID 和网络'));
+        }
+    } catch (_) {
+        showAlert(false, safeT('cookiesLogin.networkError', '网络请求失败，请检查连接'));
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
+    }
+}
+
+async function checkTwitchDeviceCode(button) {
+    const clientId = twitchClientId();
+    if (button) button.disabled = true;
+    try {
+        const response = await fetch('/api/auth/twitch/device/check', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId })
+        });
+        const result = await response.json();
+        if (response.ok && result.success && result.logged_in) {
+            showAlert(true, safeT('cookiesLogin.twitchAuth.authorized', 'Twitch 凭证已加密保存'));
+            document.getElementById('twitch-device-result')?.replaceChildren();
+            refreshStatusList();
+        } else if (response.ok && result.pending) {
+            showAlert(true, safeT('cookiesLogin.twitchAuth.pending', '授权尚未完成，请在 Twitch 页面确认后重试'));
+        } else {
+            showAlert(false, safeT('cookiesLogin.twitchAuth.checkFailed', '授权检查失败，请重新开始授权'));
+        }
+    } catch (_) {
+        showAlert(false, safeT('cookiesLogin.networkError', '网络请求失败，请检查连接'));
+    } finally {
+        if (button) button.disabled = false;
     }
 }
 
 // 提交当前平台的 Cookies 配置
 async function submitCurrentCookie() {
     const config = PLATFORM_CONFIG[currentPlatform];
+    if (config.authMode === 'deviceCode') {
+        await startTwitchDeviceCode();
+        return;
+    }
     let cookieString = '';
 
     if (config.cookieStringMode) {

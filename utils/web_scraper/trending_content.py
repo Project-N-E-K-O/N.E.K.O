@@ -39,6 +39,7 @@ from .platform_helpers import (
     build_xhh_request_params,
 )
 from .youtube_feed import fetch_youtube_home_feed
+from .twitch_feed import fetch_twitch_top_categories
 
 
 XHH_API_BASE = "https://api.xiaoheihe.cn"
@@ -756,7 +757,7 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Fetch video content based on the user's region
     
     Chinese region: Bilibili homepage videos
-    non-Chinese region: YouTube Home Feed
+    non-Chinese region: Twitch category discovery, with YouTube as a fallback
     
     Args:
         limit: maximum amount of content
@@ -764,14 +765,26 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dict with success status and video content
     """
-    return await _fetch_content_by_region(
-        china_fetch_func=fetch_bilibili_trending,
-        non_china_fetch_func=fetch_youtube_home_feed,
-        limit=limit,
-        content_key='video',
-        china_log_msg="检测到中文区域，获取B站视频内容",
-        non_china_log_msg="检测到非中文区域，获取 YouTube 首页 Feed"
-    )
+    if is_china_region():
+        return await _fetch_content_by_region(
+            china_fetch_func=fetch_bilibili_trending,
+            non_china_fetch_func=fetch_youtube_home_feed,
+            limit=limit,
+            content_key='video',
+            china_log_msg="检测到中文区域，获取B站视频内容",
+            non_china_log_msg="检测到非中文区域，获取 YouTube 首页 Feed",
+        )
+
+    twitch_result = await fetch_twitch_top_categories(limit)
+    if twitch_result.get("success"):
+        return {"success": True, "region": "non-china", "video": twitch_result}
+
+    youtube_result = await fetch_youtube_home_feed(limit)
+    response = {"success": bool(youtube_result.get("success")), "region": "non-china", "video": youtube_result}
+    if not response["success"]:
+        source = youtube_result.get("source") or "video"
+        response["error"] = youtube_result.get("error") or f"{source} 获取失败（无错误详情）"
+    return response
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     """
@@ -1459,6 +1472,17 @@ def _format_youtube_videos(videos: List[Dict], limit: int = 5) -> List[str]:
     output_lines.append("")
     return output_lines
 
+
+def _format_twitch_categories(categories: List[Dict], limit: int = 5) -> List[str]:
+    """Format public Twitch categories as lightweight conversation material."""
+    output_lines = ["[Twitch live categories]"]
+    for index, category in enumerate(categories[:limit], 1):
+        title = category.get("title", "")
+        if title:
+            output_lines.append(f"{index}. {title}")
+    output_lines.append("")
+    return output_lines
+
 def _format_reddit_posts(posts: List[Dict], limit: int = 5) -> List[str]:
     """Format the Reddit post list"""
     output_lines = ["【Reddit Hot Posts】"]
@@ -1553,7 +1577,7 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
     
     Formats automatically by region:
     - Chinese region: Bilibili video content
-    - non-Chinese region: YouTube Home Feed
+    - non-Chinese region: Twitch categories, with YouTube fallback
     
     Args:
         video_content: result returned by fetch_video_content
@@ -1573,9 +1597,12 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
     else:
         if video_data.get('success'):
             videos = video_data.get('videos', [])
-            output_lines = _format_youtube_videos(videos)
+            if video_data.get("source") == "twitch":
+                output_lines = _format_twitch_categories(videos)
+            else:
+                output_lines = _format_youtube_videos(videos)
             return "\n".join(output_lines)
-        return "Unable to fetch YouTube recommendations at the moment"
+        return "Unable to fetch Twitch or YouTube recommendations at the moment"
 
 def format_news_content(news_content: Dict[str, Any]) -> str:
     """

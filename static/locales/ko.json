@@ -3787,6 +3787,7 @@
         "bilibili": "빌리빌리 (Bilibili)",
         "xhh": "Xiaoheihe",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "도인 (Douyin)",
         "kuaishou": "쾌수 (Kuaishou)",
         "weibo": "위보 (Weibo)",
@@ -3812,7 +3813,15 @@
         "noCookies": "먼저 쿠키를 설정하세요",
         "statusLoadFailed": "상태 로드 실패",
         "thisPlatform": "이 플랫폼",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Twitch Developer Console에서 공개 앱을 만들고 Client ID를 입력하세요. Client Secret은 요청하거나 저장하지 않습니다.",
+            "start": "Twitch 인증 시작", "authorizeHint": "Twitch 활성화 페이지를 열고 다음 코드를 입력하세요:", "check": "인증했습니다. 상태 확인",
+            "invalidClientId": "유효한 Twitch Client ID를 입력하세요", "started": "Twitch 인증을 시작했습니다. 브라우저에서 확인을 완료하세요",
+            "startFailed": "Twitch 인증을 시작할 수 없습니다. Client ID와 네트워크를 확인하세요", "authorized": "Twitch 자격 증명을 암호화해 저장했습니다",
+            "pending": "인증이 아직 완료되지 않았습니다. Twitch에서 확인한 후 다시 시도하세요", "checkFailed": "인증 확인에 실패했습니다. 다시 시작하세요"
+        },
         "instructions": {
+            "twitch": "<b>Device Code 인증:</b> Twitch Developer Console에서 공개 앱을 만들고 Client ID를 입력한 다음 안내를 따르세요.",
             "bilibili": "<b>대상:</b> <b>bilibili.com</b>에 접속하여 해당 쿠키를 가져오세요.",
             "xhh": "<b>권장:</b> 아래 QR 로그인을 사용하거나 <b>xiaoheihe.cn</b>에 로그인한 뒤 쿠키를 직접 입력하세요.",
             "youtube": "<b>1. Cookie 가져오기</b><br>YouTube에 로그인된 브라우저에서:<br>1. <b>youtube.com</b> 열기<br>2. F12 → Network 누르기<br>3. 페이지를 새로고침하고 <code>youtubei/v1/browse</code> 요청 선택<br>4. Request Headers에서 전체 Cookie 값 복사",

@@ -3787,6 +3787,7 @@
         "bilibili": "Bilíbili",
         "xhh": "Xiaoheihe",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3812,7 +3813,15 @@
         "noCookies": "Por favor configure os cookies primeiro",
         "statusLoadFailed": "Falha no carregamento do status",
         "thisPlatform": "esta plataforma",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Crie um aplicativo público no Twitch Developer Console e informe o Client ID. O Client Secret não é solicitado nem armazenado.",
+            "start": "Iniciar autorização da Twitch", "authorizeHint": "Abra a página de ativação da Twitch e informe este código:", "check": "Já autorizei; verificar status",
+            "invalidClientId": "Informe um Twitch Client ID válido", "started": "A autorização da Twitch foi iniciada; conclua a confirmação no navegador",
+            "startFailed": "Não foi possível iniciar a autorização da Twitch. Verifique o Client ID e a rede.", "authorized": "A credencial da Twitch foi criptografada e salva",
+            "pending": "A autorização ainda não terminou. Confirme na Twitch e tente novamente", "checkFailed": "Falha ao verificar a autorização. Inicie novamente."
+        },
         "instructions": {
+            "twitch": "<b>Autorização por Device Code:</b> crie um aplicativo público no Twitch Developer Console, informe o Client ID e siga as instruções.",
             "bilibili": "<b>Target:</b> Vá para <b>bilibili.com</b> para buscar esses cookies.",
             "xhh": "<b>Recomendado:</b> use o login por QR abaixo ou entre em <b>xiaoheihe.cn</b> e preencha os cookies manualmente.",
             "youtube": "<b>1. Obtenha o Cookie</b><br>Em um navegador conectado ao YouTube:<br>1. Abra <b>youtube.com</b><br>2. Pressione F12 → Network<br>3. Atualize a página e selecione uma solicitação <code>youtubei/v1/browse</code><br>4. Copie o valor completo do Cookie em Request Headers",

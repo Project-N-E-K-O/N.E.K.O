@@ -3787,6 +3787,7 @@
         "bilibili": "Bilibili",
         "xhh": "小黑盒",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "抖音",
         "kuaishou": "快手",
         "weibo": "微博",
@@ -3812,7 +3813,15 @@
         "noCookies": "请先配置 Cookies",
         "statusLoadFailed": "状态加载失败",
         "thisPlatform": "此平台",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "在 Twitch Developer Console 创建公开应用并填写 Client ID；不会要求或保存 Client Secret。",
+            "start": "开始 Twitch 授权", "authorizeHint": "打开 Twitch 激活页面并输入以下代码：", "check": "我已授权，检查状态",
+            "invalidClientId": "请输入有效的 Twitch Client ID", "started": "Twitch 授权已启动，请在浏览器完成确认",
+            "startFailed": "无法启动 Twitch 授权，请检查 Client ID 和网络", "authorized": "Twitch 凭证已加密保存",
+            "pending": "授权尚未完成，请在 Twitch 页面确认后重试", "checkFailed": "授权检查失败，请重新开始授权"
+        },
         "instructions": {
+            "twitch": "<b>Device Code 授权：</b>在 Twitch Developer Console 创建公开应用，填入 Client ID 后按提示完成授权。",
             "bilibili": "<b>目标：</b>请前往 <b>bilibili.com</b>获取这些 Cookies。",
             "xhh": "<b>推荐：</b>点击下方扫码登录；也可前往 <b>xiaoheihe.cn</b> 登录后手动填写 Cookies。",
             "youtube": "<b>1. 获取 Cookie</b><br>在已登录 YouTube 的浏览器中：<br>1. 打开 <b>youtube.com</b><br>2. 按 F12 → Network<br>3. 刷新页面，选择一个 <code>youtubei/v1/browse</code> 请求<br>4. 在 Request Headers 中复制完整的 Cookie 值",
