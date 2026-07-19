@@ -515,7 +515,7 @@ async def test_video_region_route_always_propagates_failure_error(monkeypatch):
     result = await trending_content.fetch_video_content(limit=7)
 
     assert result["success"] is False
-    assert result["error"] == "youtube 获取失败（无错误详情）"
+    assert result["error"] == "Twitch 与 YouTube 获取失败（无错误详情）"
 
 
 def test_youtube_video_format_and_source_links():

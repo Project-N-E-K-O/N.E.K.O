@@ -183,6 +183,10 @@ function getQrStatusMessage(status, message) {
 
 let PLATFORM_CONFIG = {};
 let currentPlatform = 'netease';
+let twitchDevicePollTimeout = null;
+let twitchDevicePollInFlight = false;
+let twitchDevicePollActive = false;
+let twitchDevicePollIntervalMs = 5000;
 
 // 当语言切换时，重新初始化平台配置
 function initPlatformConfig() {
@@ -275,6 +279,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const firstTab = document.querySelector('.tab-btn');
     if (firstTab) switchTab('netease', firstTab);
     refreshStatusList();
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        clearTwitchDevicePollTimer();
+    } else if (twitchDevicePollActive) {
+        scheduleTwitchDevicePoll();
+    }
 });
 
 /**
@@ -622,6 +634,14 @@ function switchTab(platformKey, btnElement, isReRender = false) {
         return;
     }
 
+    const previousPlatform = currentPlatform;
+    const existingTwitchResult = isReRender && previousPlatform === 'twitch'
+        ? document.getElementById('twitch-device-result')
+        : null;
+    if (!isReRender && previousPlatform !== platformKey) {
+        stopTwitchDevicePoll();
+    }
+
     stopQrPoll();
     currentQrKey = null;
     if (qrRefreshTimeout) {
@@ -630,7 +650,7 @@ function switchTab(platformKey, btnElement, isReRender = false) {
     }
     currentPlatform = platformKey;
     const config = PLATFORM_CONFIG[platformKey];
-    const tutorialBanner = document.querySelector('.tutorial-banner');
+    const tutorialBanner = document.querySelector('#main-panel > .tutorial-banner');
     if (tutorialBanner) tutorialBanner.style.display = config.authMode ? 'none' : '';
     const encryptRow = document.getElementById('encrypt-toggle')?.parentElement;
     if (encryptRow) encryptRow.style.display = config.authMode ? 'none' : '';
@@ -682,6 +702,10 @@ function switchTab(platformKey, btnElement, isReRender = false) {
                 <input type="text" id="input-twitch-client-id" autocomplete="off" autocapitalize="off" spellcheck="false" class="credential-input">
             </div>
             <div id="twitch-device-result" aria-live="polite"></div>`;
+            const freshTwitchResult = fieldsContainer.querySelector('#twitch-device-result');
+            if (existingTwitchResult && freshTwitchResult) {
+                freshTwitchResult.replaceWith(existingTwitchResult);
+            }
         } else if (config.cookieStringMode) {
             fieldsContainer.innerHTML = `
             <div class="field-group">
@@ -747,6 +771,38 @@ function twitchClientId() {
     return document.getElementById('input-twitch-client-id')?.value.trim() || '';
 }
 
+function clearTwitchDevicePollTimer() {
+    if (twitchDevicePollTimeout) {
+        clearTimeout(twitchDevicePollTimeout);
+        twitchDevicePollTimeout = null;
+    }
+}
+
+function stopTwitchDevicePoll() {
+    twitchDevicePollActive = false;
+    clearTwitchDevicePollTimer();
+}
+
+function scheduleTwitchDevicePoll() {
+    clearTwitchDevicePollTimer();
+    if (!twitchDevicePollActive || currentPlatform !== 'twitch' || document.hidden) return;
+    twitchDevicePollTimeout = setTimeout(async () => {
+        twitchDevicePollTimeout = null;
+        const outcome = await checkTwitchDeviceCode(null, true);
+        if (outcome === 'pending' || outcome === 'in_flight') {
+            scheduleTwitchDevicePoll();
+        }
+    }, twitchDevicePollIntervalMs);
+}
+
+function startTwitchDevicePoll(intervalSeconds) {
+    stopTwitchDevicePoll();
+    const seconds = Number(intervalSeconds);
+    twitchDevicePollIntervalMs = Math.max(1, Math.min(Number.isFinite(seconds) ? seconds : 5, 60)) * 1000;
+    twitchDevicePollActive = true;
+    scheduleTwitchDevicePoll();
+}
+
 function renderTwitchDeviceCode(result) {
     const container = document.getElementById('twitch-device-result');
     if (!container) return;
@@ -784,6 +840,7 @@ async function startTwitchDeviceCode() {
         document.getElementById('input-twitch-client-id')?.focus();
         return;
     }
+    stopTwitchDevicePoll();
     const submitBtn = document.getElementById('submit-btn');
     if (submitBtn) submitBtn.disabled = true;
     try {
@@ -793,6 +850,7 @@ async function startTwitchDeviceCode() {
         const result = await response.json();
         if (response.ok && result.success) {
             renderTwitchDeviceCode(result);
+            startTwitchDevicePoll(result.interval);
             showAlert(true, safeT('cookiesLogin.twitchAuth.started', 'Twitch 授权已启动，请在浏览器完成确认'));
         } else {
             showAlert(false, safeT('cookiesLogin.twitchAuth.startFailed', '无法启动 Twitch 授权，请检查 Client ID 和网络'));
@@ -804,7 +862,9 @@ async function startTwitchDeviceCode() {
     }
 }
 
-async function checkTwitchDeviceCode(button) {
+async function checkTwitchDeviceCode(button, automatic = false) {
+    if (twitchDevicePollInFlight) return 'in_flight';
+    twitchDevicePollInFlight = true;
     const clientId = twitchClientId();
     if (button) button.disabled = true;
     try {
@@ -813,17 +873,27 @@ async function checkTwitchDeviceCode(button) {
         });
         const result = await response.json();
         if (response.ok && result.success && result.logged_in) {
+            stopTwitchDevicePoll();
             showAlert(true, safeT('cookiesLogin.twitchAuth.authorized', 'Twitch 凭证已加密保存'));
             document.getElementById('twitch-device-result')?.replaceChildren();
             refreshStatusList();
+            return 'authorized';
         } else if (response.ok && result.pending) {
-            showAlert(true, safeT('cookiesLogin.twitchAuth.pending', '授权尚未完成，请在 Twitch 页面确认后重试'));
+            if (!automatic) {
+                showAlert(true, safeT('cookiesLogin.twitchAuth.pending', '授权尚未完成，请在 Twitch 页面确认后重试'));
+            }
+            return 'pending';
         } else {
+            stopTwitchDevicePoll();
             showAlert(false, safeT('cookiesLogin.twitchAuth.checkFailed', '授权检查失败，请重新开始授权'));
+            return 'failed';
         }
     } catch (_) {
+        stopTwitchDevicePoll();
         showAlert(false, safeT('cookiesLogin.networkError', '网络请求失败，请检查连接'));
+        return 'failed';
     } finally {
+        twitchDevicePollInFlight = false;
         if (button) button.disabled = false;
     }
 }
@@ -1089,4 +1159,5 @@ function showAlert(success, message) {
 // 内存泄漏防护：当窗口关闭或页面卸载前，强制清理所有挂起的定时器
 window.addEventListener('beforeunload', () => {
     clearAlertTimer();
+    stopTwitchDevicePoll();
 });

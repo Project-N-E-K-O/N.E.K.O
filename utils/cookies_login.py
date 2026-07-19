@@ -178,9 +178,12 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
-        logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
-        for k, v in list(cookies.items())[:3]: # 仅展示前三个键
-            logger.info(f"   - {k}: {mask_string(v)}")
+        # OAuth bearer material must never enter logs, even in partially masked
+        # form. Cookie-based platforms retain the existing diagnostic summary.
+        if platform != 'twitch':
+            logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
+            for k, v in list(cookies.items())[:3]: # 仅展示前三个键
+                logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
     except Exception as e:

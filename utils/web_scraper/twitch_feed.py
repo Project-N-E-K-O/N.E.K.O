@@ -83,7 +83,12 @@ async def fetch_twitch_live_streams(limit: int = 10) -> dict[str, Any]:
         if response.status_code == 401:
             client_id, access_token, user_id = await _auth_service.followed_stream_access(force_refresh=True)
             if not client_id or not access_token or not user_id:
-                raise RuntimeError("Twitch credential refresh failed")
+                return {
+                    "success": False,
+                    "source": "twitch",
+                    "videos": [],
+                    "error": "Twitch followed-stream access requires reauthorization",
+                }
             response = await get_external_http_client().get(
                 _FOLLOWED_STREAMS_URL,
                 params={"user_id": user_id, "first": bounded_limit},

@@ -12,7 +12,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from utils.cookies_login import load_cookies_from_file, save_cookies_to_file
 from utils.external_http_client import get_external_http_client
@@ -50,7 +50,7 @@ class TwitchAuthService:
         })
         device_code = _text(data.get("device_code"), 512)
         user_code = _text(data.get("user_code"), 64)
-        verification_uri = _verification_uri(data.get("verification_uri"))
+        verification_uri = _verification_uri(data.get("verification_uri"), user_code)
         expires_in = _positive_int(data.get("expires_in"), 0, 3600)
         interval = _positive_int(data.get("interval"), 5, 60)
         if status != 200 or not all((device_code, user_code, verification_uri, expires_in)):
@@ -242,17 +242,33 @@ def _positive_int(value: Any, default: int, maximum: int) -> int:
     return number if 0 < number <= maximum else default
 
 
-def _verification_uri(value: Any) -> str:
+def _verification_uri(value: Any, user_code: str = "") -> str:
     value = _text(value, 200)
     try:
         parsed = urlsplit(value)
     except ValueError:
         return ""
-    if parsed.scheme != "https" or parsed.hostname not in {"twitch.tv", "www.twitch.tv"} or parsed.path != "/activate" or parsed.username or parsed.password or parsed.fragment:
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"twitch.tv", "www.twitch.tv"}
+        or parsed.path != "/activate"
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
         return ""
+    if parsed.query:
+        try:
+            query = parse_qs(parsed.query, strict_parsing=True)
+        except ValueError:
+            return ""
+        if query != {"public": ["true"], "device-code": [user_code]}:
+            return ""
     return value
 
 
 def _oauth_error(data: Any) -> str:
     value = _text(data.get("message"), 80).lower() if isinstance(data, dict) else ""
-    return value if value in {"authorization_pending", "slow_down", "expired_token"} else ""
+    if value in {"authorization_pending", "slow_down", "expired_token"}:
+        return value
+    return "expired_token" if "expired" in value else ""

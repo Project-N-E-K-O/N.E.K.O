@@ -180,15 +180,17 @@ async def get_supported_platforms():
 @router.post("/cookies/save", summary="保存Cookie")
 async def save_cookie(data: CookieSubmit):
     try:
-        if data.platform == "twitch":
-            raise HTTPException(
-                status_code=400,
-                detail="Twitch 凭证只能通过 Device Code 授权保存",
-            )
         # 1. 验证平台是否支持
         supported_platforms = login_manager.get_supported_platforms()
         if data.platform not in supported_platforms:
             raise HTTPException(status_code=400, detail=f"不支持的平台: {data.platform}")
+        platform_info = supported_platforms[data.platform]
+        if "manual" not in platform_info.get("methods", []):
+            method = platform_info.get("default_method") or "平台专用授权流程"
+            raise HTTPException(
+                status_code=400,
+                detail=f"{platform_info['name']} 凭证只能通过 {method} 授权保存",
+            )
             
         # 2. 解析与验证
         cookies = parse_cookie_string(data.cookie_string)

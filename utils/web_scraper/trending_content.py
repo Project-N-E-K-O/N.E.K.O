@@ -807,7 +807,7 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     }
     if not success:
         errors = [str(item.get("error")) for item in (twitch_result, youtube_result) if item.get("error")]
-        response["error"] = "; ".join(errors) if errors else "youtube 获取失败（无错误详情）"
+        response["error"] = "; ".join(errors) if errors else "Twitch 与 YouTube 获取失败（无错误详情）"
     return response
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
@@ -1498,7 +1498,12 @@ def _format_youtube_videos(videos: List[Dict], limit: int = 5) -> List[str]:
 
 
 def _format_twitch_live_streams(streams: List[Dict], limit: int = 5) -> List[str]:
-    """Format followed Twitch live streams as lightweight conversation material."""
+    """Format followed Twitch live streams as lightweight conversation material.
+
+    The English header and viewer unit are intentional: this is structured LLM
+    context rather than user-interface copy. Keep them aligned with the fixture
+    in ``test_twitch_feed.py``.
+    """
     output_lines = ["[Followed Twitch live streams]"]
     for index, stream in enumerate(streams[:limit], 1):
         title = stream.get("title", "")

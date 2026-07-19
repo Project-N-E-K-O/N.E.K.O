@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from utils import twitch_auth
+from utils import cookies_login, twitch_auth
 from utils.web_scraper import trending_content, twitch_feed
 
 
@@ -63,6 +63,44 @@ async def test_twitch_live_streams_use_encrypted_credential_and_public_projectio
 
 
 @pytest.mark.asyncio
+async def test_twitch_live_streams_report_reauthorization_when_401_refresh_fails(monkeypatch):
+    credential_calls = []
+    request_count = 0
+
+    class _Response:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise AssertionError("401 response should not reach raise_for_status")
+
+    class _Client:
+        async def get(self, _url, **_kwargs):
+            nonlocal request_count
+            request_count += 1
+            return _Response()
+
+    async def _credential(*, force_refresh=False):
+        credential_calls.append(force_refresh)
+        if force_refresh:
+            return "", "", ""
+        return "clientid123", "expired-token", "42"
+
+    monkeypatch.setattr(twitch_feed._auth_service, "followed_stream_access", _credential)
+    monkeypatch.setattr(twitch_feed, "get_external_http_client", lambda: _Client())
+
+    result = await twitch_feed.fetch_twitch_live_streams(limit=5)
+
+    assert result == {
+        "success": False,
+        "source": "twitch",
+        "videos": [],
+        "error": "Twitch followed-stream access requires reauthorization",
+    }
+    assert credential_calls == [False, True]
+    assert request_count == 1
+
+
+@pytest.mark.asyncio
 async def test_twitch_device_exchange_sends_scopes_and_saves_only_after_validation(monkeypatch):
     requests = []
 
@@ -71,7 +109,8 @@ async def test_twitch_device_exchange_sends_scopes_and_saves_only_after_validati
         if url.endswith("/device"):
             return 200, {
                 "device_code": "device-code", "user_code": "ABCD-EFGH",
-                "verification_uri": "https://www.twitch.tv/activate", "expires_in": 900, "interval": 5,
+                "verification_uri": "https://www.twitch.tv/activate?public=true&device-code=ABCD-EFGH",
+                "expires_in": 900, "interval": 5,
             }
         if url.endswith("/token"):
             return 200, {"access_token": "access-secret", "refresh_token": "refresh-secret"}
@@ -125,6 +164,34 @@ async def test_twitch_status_reports_saved_follow_credential(monkeypatch):
     assert "access-secret" not in str(result)
 
 
+def test_twitch_oauth_response_validation_handles_expiry_and_strict_activation_url():
+    assert twitch_auth._oauth_error({"message": "The device code has expired."}) == "expired_token"
+    assert twitch_auth._verification_uri("https://www.twitch.tv/activate") == "https://www.twitch.tv/activate"
+    documented_uri = "https://www.twitch.tv/activate?public=true&device-code=ABCD-EFGH"
+    assert twitch_auth._verification_uri(documented_uri, "ABCD-EFGH") == documented_uri
+    assert twitch_auth._verification_uri("https://www.twitch.tv/activate?state=injected", "ABCD-EFGH") == ""
+
+
+def test_twitch_save_never_logs_masked_bearer_material(tmp_path, monkeypatch):
+    credential_file = tmp_path / "twitch_credentials.json"
+    messages = []
+    monkeypatch.setattr(cookies_login, "CONFIG_DIR", tmp_path)
+    monkeypatch.setitem(cookies_login.COOKIE_FILES, "twitch", credential_file)
+    monkeypatch.setattr(cookies_login.logger, "info", lambda message: messages.append(str(message)))
+
+    assert cookies_login.save_cookies_to_file("twitch", {
+        "access_token": "access-secret-value",
+        "refresh_token": "refresh-secret-value",
+        "client_id": "clientid123",
+    }) is True
+
+    rendered = "\n".join(messages)
+    assert "access_token" not in rendered
+    assert "refresh_token" not in rendered
+    assert "acce...alue" not in rendered
+    assert "refr...alue" not in rendered
+
+
 def test_twitch_media_credential_ui_is_localized_in_every_locale():
     for locale_path in Path("static/locales").glob("*.json"):
         payload = json.loads(locale_path.read_text(encoding="utf-8"))
@@ -132,6 +199,22 @@ def test_twitch_media_credential_ui_is_localized_in_every_locale():
         assert section["twitch"]
         assert section["instructions"]["twitch"]
         assert section["twitchAuth"]["start"]
+
+
+def test_twitch_device_ui_polls_and_preserves_active_authorization_card():
+    source = Path("static/js/cookies_login.js").read_text(encoding="utf-8")
+
+    assert "startTwitchDevicePoll(result.interval)" in source
+    assert "if (twitchDevicePollInFlight) return 'in_flight'" in source
+    assert "freshTwitchResult.replaceWith(existingTwitchResult)" in source
+    assert "document.addEventListener('visibilitychange'" in source
+
+
+def test_cookie_save_rejects_non_manual_platforms_from_login_manager_metadata():
+    source = Path("main_routers/cookies_login_router.py").read_text(encoding="utf-8")
+
+    assert 'if "manual" not in platform_info.get("methods", [])' in source
+    assert 'if data.platform == "twitch"' not in source
 
 
 @pytest.mark.asyncio
