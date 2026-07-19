@@ -4,7 +4,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
-APP_GAME_MODE_BETA_PATH = PROJECT_ROOT / "static" / "app-game-mode-beta.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -224,10 +223,9 @@ def test_live2d_game_mode_edge_peek_animations_do_not_outlive_cleared_state():
     assert "if (!animated || !stillCurrent()) return false;" in edge_peek_source
 
 
-def test_live2d_game_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_cat():
+def test_live2d_game_mode_edge_peek_clears_on_disable_goodbye_and_reset():
     interaction_source = _source(LIVE2D_INTERACTION_PATH)
     core_source = _source(LIVE2D_CORE_PATH)
-    game_mode_source = _source(APP_GAME_MODE_BETA_PATH)
 
     assert "window.addEventListener('neko:game-mode-beta-state', clearLive2DGameModeEdgePeekOnDisabled)" in interaction_source
     assert "window.addEventListener('live2d-goodbye-click', clearLive2DGameModeEdgePeekOnGoodbye)" in interaction_source
@@ -235,7 +233,6 @@ def test_live2d_game_mode_edge_peek_clears_on_disable_goodbye_reset_and_auto_cat
     assert "clearLive2DGameModeEdgePeek('live2d-goodbye')" in interaction_source
     assert "this.clearLive2DGameModeEdgePeek('model-reload')" in interaction_source
     assert "this.clearLive2DGameModeEdgePeek('reset-model-position')" in core_source
-    assert "window.nekoLive2DGameModeEdgePeek.clear('game-mode-auto')" in game_mode_source
     assert "let lastViewportW = window.innerWidth;" in core_source
     assert "let lastViewportH = window.innerHeight;" in core_source
     assert "vw === lastViewportW && vh === lastViewportH" in core_source

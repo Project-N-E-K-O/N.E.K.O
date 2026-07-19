@@ -1609,15 +1609,8 @@
                     console.log(window.t('console.catgirlSwitchedReceived'), response);
                 }
 
-                if (response.type === 'game_mode_auto_switch') {
-                    try {
-                        window.dispatchEvent(new CustomEvent('neko:game-mode-beta-auto-switch', {
-                            detail: response,
-                        }));
-                    } catch (_) {}
-                    return;
-                }
-                if (typeof response.type === 'string' && response.type.indexOf('game_mode_') === 0) {
+                if (typeof response.type === 'string'
+                        && response.type.indexOf('game_mode_resource_protection_') === 0) {
                     try {
                         window.dispatchEvent(new CustomEvent('neko:game-mode-beta-message', {
                             detail: response,

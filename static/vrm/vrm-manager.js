@@ -82,15 +82,6 @@ class VRMManager {
         return this._activeLoadToken === loadToken;
     }
 
-    cancelActiveModelLoadForGameMode(reason = 'game-mode-protection') {
-        if (!['preparing', 'settling'].includes(this._loadState)) return false;
-        this._activeLoadToken += 1;
-        this._loadState = 'cancelled';
-        this._nekoGameModeReloadRequired = true;
-        this._nekoGameModeLoadCancelReason = reason;
-        return true;
-    }
-
     _waitForSceneStability(scene, loadToken, options = {}) {
         const requiredStableFrames = options.requiredStableFrames || 2;
         const maxFrames = options.maxFrames || 24;

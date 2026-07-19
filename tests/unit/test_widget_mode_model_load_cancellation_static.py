@@ -40,6 +40,6 @@ def test_vrm_and_mmd_keep_their_full_pending_load_lifecycle() -> None:
 def test_live2d_keeps_generic_superseded_load_protection() -> None:
     source = (ROOT / "static" / "live2d" / "live2d-model.js").read_text(encoding="utf-8")
 
-    assert ": 'LoadSuperseded';" in source
+    assert "cancelError.name = 'LoadSuperseded';" in source
     assert "error.name === 'LoadSuperseded'" in source
     assert "_isLoadTokenActive" in source

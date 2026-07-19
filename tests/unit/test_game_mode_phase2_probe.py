@@ -21,10 +21,9 @@ def test_phase2_probe_accepts_clean_default_off_and_debug_health():
                 "state": {
                     "enabled": False,
                     "pressure_state": "normal",
-                    "trigger_reason": None,
-                    "auto_switch_active": False,
-                    "manual_override": False,
-                    "suppressed_until": None,
+                    "resource_session_phase": "idle",
+                    "resource_session_id": None,
+                    "registered_window_count": 0,
                 },
             },
         },
@@ -36,8 +35,8 @@ def test_phase2_probe_accepts_clean_default_off_and_debug_health():
                     "enabled": False,
                     "pressure_state": "normal",
                     "last_samples": [],
-                    "trigger_reason": None,
-                    "suppressed_until": None,
+                    "resource_session_phase": "idle",
+                    "resource_session_id": None,
                 },
             },
         },
@@ -75,7 +74,7 @@ def test_phase2_probe_auto_discovers_backend_and_reuses_selected_base_url(monkey
             return {
                 "ok": True,
                 "status": 200,
-                "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "trigger_reason": None}},
+                "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "resource_session_phase": "idle", "resource_session_id": None}},
             }
         if base_url == "http://127.0.0.1:48912" and path == "/api/debug/health":
             return {
@@ -117,7 +116,8 @@ def test_phase2_probe_reports_restart_default_off_failures():
                 "state": {
                     "enabled": True,
                     "pressure_state": "protected",
-                    "trigger_reason": {"metric": "gpu", "percent": 91, "duration_seconds": 30},
+                    "resource_session_phase": "soft_protected",
+                    "resource_session_id": "resource-1",
                 },
             },
         }
@@ -133,7 +133,8 @@ def test_phase2_probe_reports_restart_default_off_failures():
     assert report["ok"] is False
     assert "expected enabled=false after restart" in report["failures"]
     assert "expected pressure_state=normal after restart" in report["failures"]
-    assert "expected trigger_reason=null after restart" in report["failures"]
+    assert "expected resource_session_phase=idle after restart" in report["failures"]
+    assert "expected resource_session_id=null after restart" in report["failures"]
 
 
 def test_phase2_probe_reports_missing_debug_health_game_mode():
@@ -141,7 +142,7 @@ def test_phase2_probe_reports_missing_debug_health_game_mode():
         "/api/game-mode-beta/state": {
             "ok": True,
             "status": 200,
-            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "trigger_reason": None}},
+            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "resource_session_phase": "idle", "resource_session_id": None}},
         },
         "/api/debug/health": {
             "ok": True,
@@ -181,7 +182,7 @@ def test_phase2_probe_inspects_debug_health_log_with_rotation_summary(tmp_path):
         "/api/game-mode-beta/state": {
             "ok": True,
             "status": 200,
-            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "trigger_reason": None}},
+            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "resource_session_phase": "idle", "resource_session_id": None}},
         },
     }
 
@@ -213,7 +214,7 @@ def test_phase2_probe_reports_missing_debug_health_log(tmp_path):
         return {
             "ok": True,
             "status": 200,
-            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "trigger_reason": None}},
+            "data": {"success": True, "state": {"enabled": False, "pressure_state": "normal", "resource_session_phase": "idle", "resource_session_id": None}},
         }
 
     report = probe.run_probe(

@@ -25,14 +25,7 @@ def _client(*, secure: bool = True) -> TestClient:
     return client
 
 
-def test_game_mode_beta_http_state_enable_manual_restore_and_disable_flow(monkeypatch):
-    monkeypatch.setenv("NEKO_GAME_MODE_DEBUG", "1")
-
-    async def delivered(_payload):
-        return 1
-
-    monkeypatch.setattr(game_mode_router_module.protector, "_broadcaster", delivered)
-
+def test_game_mode_beta_http_state_enable_and_disable_flow():
     with _client() as client:
         try:
             client.post("/api/game-mode-beta/enabled", json={"enabled": False})
@@ -42,76 +35,18 @@ def test_game_mode_beta_http_state_enable_manual_restore_and_disable_flow(monkey
             state = state_response.json()["state"]
             assert state["enabled"] is False
             assert state["pressure_state"] == "normal"
-            assert state["trigger_reason"] is None
 
             enable_response = client.post("/api/game-mode-beta/enabled", json={"enabled": True})
             assert enable_response.status_code == 200
-            enabled_state = enable_response.json()["state"]
-            assert enabled_state["enabled"] is True
-
-            trigger_response = client.post(
-                "/api/game-mode-beta/debug/trigger",
-                json={"reason": "http-contract", "percent": 97},
-            )
-            assert trigger_response.status_code == 200
-            trigger_state = trigger_response.json()["state"]
-            assert trigger_state["auto_switch_active"] is True
-
-            restore_response = client.post("/api/game-mode-beta/manual-restore")
-            assert restore_response.status_code == 200
-            restore_state = restore_response.json()["state"]
-            assert restore_state["enabled"] is True
-            assert restore_state["manual_override"] is True
-            assert restore_state["auto_switch_active"] is False
-            assert restore_state["suppressed_until"] is not None
+            assert enable_response.json()["state"]["enabled"] is True
 
             disable_response = client.post("/api/game-mode-beta/enabled", json={"enabled": False})
             assert disable_response.status_code == 200
             disabled_state = disable_response.json()["state"]
             assert disabled_state["enabled"] is False
-            assert disabled_state["pressure_state"] == "normal"
-            assert disabled_state["trigger_reason"] is None
-            assert disabled_state["suppressed_until"] is None
-            assert disabled_state["manual_override"] is False
+            assert disabled_state["resource_session_phase"] == "idle"
         finally:
             client.post("/api/game-mode-beta/enabled", json={"enabled": False})
-
-
-def test_game_mode_beta_http_manual_restore_without_auto_switch_does_not_start_cooldown():
-    with _client() as client:
-        try:
-            client.post("/api/game-mode-beta/enabled", json={"enabled": False})
-            enable_response = client.post("/api/game-mode-beta/enabled", json={"enabled": True})
-            assert enable_response.status_code == 200
-
-            restore_response = client.post("/api/game-mode-beta/manual-restore")
-            assert restore_response.status_code == 200
-            restore_state = restore_response.json()["state"]
-            assert restore_state["enabled"] is True
-            assert restore_state["manual_override"] is False
-            assert restore_state["auto_switch_active"] is False
-            assert restore_state["suppressed_until"] is None
-        finally:
-            client.post("/api/game-mode-beta/enabled", json={"enabled": False})
-
-
-def test_game_mode_beta_http_debug_trigger_stays_gated_for_normal_runtime(monkeypatch):
-    monkeypatch.delenv("NEKO_GAME_MODE_DEBUG", raising=False)
-    monkeypatch.delenv("NEKO_DEBUG", raising=False)
-
-    with _client() as client:
-        try:
-            client.post("/api/game-mode-beta/enabled", json={"enabled": False})
-            response = client.post("/api/game-mode-beta/debug/trigger", json={"reason": "debug", "percent": 97})
-
-            assert response.status_code == 404
-            assert response.json()["detail"] == "debug trigger unavailable"
-            state = client.get("/api/game-mode-beta/state").json()["state"]
-            assert state["enabled"] is False
-            assert state["trigger_reason"] is None
-        finally:
-            client.post("/api/game-mode-beta/enabled", json={"enabled": False})
-
 
 def test_game_mode_beta_http_enabled_flag_coerces_common_text_values():
     with _client() as client:
@@ -279,51 +214,40 @@ async def test_game_mode_broadcast_serializes_sends_with_session_lock(monkeypatc
     ("path", "payload"),
     [
         ("/api/game-mode-beta/enabled", {"enabled": True}),
-        ("/api/game-mode-beta/manual-restore", {}),
-        ("/api/game-mode-beta/settings", {"auto_cat_on_game": True}),
+        ("/api/game-mode-beta/settings", {"resource_protection_on_game": True}),
         ("/api/game-mode-beta/windows/register", {"pet_instance_id": "pet-a"}),
         ("/api/game-mode-beta/windows/unregister", {"pet_instance_id": "pet-a"}),
-        ("/api/game-mode-beta/ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
-        ("/api/game-mode-beta/deep-sleep-ack", {"cycle_id": "cycle", "pet_instance_id": "pet-a"}),
         ("/api/game-mode-beta/resource/ack", {"resource_session_id": "session", "pet_instance_id": "pet-a", "phase": "soft_protected"}),
         ("/api/game-mode-beta/resource/interaction", {"resource_session_id": "session", "pet_instance_id": "pet-a", "interaction": "click"}),
         ("/api/game-mode-beta/resource/exit", {"resource_session_id": "session"}),
-        ("/api/game-mode-beta/reset-candidate", {}),
-        ("/api/game-mode-beta/debug/trigger", {}),
     ],
 )
-def test_game_mode_mutations_require_local_csrf(monkeypatch, path, payload):
-    monkeypatch.setenv("NEKO_GAME_MODE_DEBUG", "1")
+def test_game_mode_mutations_require_local_csrf(path, payload):
     with _client(secure=False) as client:
         response = client.post(path, json=payload)
     assert response.status_code == 403
     assert response.json()["error_code"] == "csrf_validation_failed"
 
-
-def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():
+def test_game_mode_beta_settings_endpoint_has_resource_only_contract():
+    legacy_fields = {"auto" + "_cat_on_game", "game" + "_trigger_mode"}
     with _client() as client:
         original = client.get("/api/game-mode-beta/settings").json()
         try:
             assert set(original) == {
-                "auto_cat_on_game",
-                "game_trigger_mode",
                 "resource_protection_on_game",
                 "compact_pet_window_enabled",
             }
+            assert set(original).isdisjoint(legacy_fields)
 
             response = client.post(
                 "/api/game-mode-beta/settings",
                 json={
-                    "auto_cat_on_game": True,
-                    "game_trigger_mode": "instant",
                     "resource_protection_on_game": False,
                     "compact_pet_window_enabled": False,
                 },
             )
             assert response.status_code == 200
             assert response.json() == {
-                "auto_cat_on_game": True,
-                "game_trigger_mode": "instant",
                 "resource_protection_on_game": False,
                 "compact_pet_window_enabled": False,
             }
@@ -331,17 +255,20 @@ def test_game_mode_beta_settings_endpoint_has_independent_exact_contract():
         finally:
             client.post("/api/game-mode-beta/settings", json=original)
 
-
-def test_game_mode_beta_settings_endpoint_rejects_invalid_mode_and_non_boolean_toggle():
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"resource_protection_on_game": "yes"},
+        {"compact_pet_window_enabled": 1},
+    ],
+)
+def test_game_mode_beta_settings_endpoint_rejects_non_boolean_toggles(payload):
     with _client() as client:
-        response = client.post(
-            "/api/game-mode-beta/settings",
-            json={"auto_cat_on_game": "yes", "game_trigger_mode": "guess"},
-        )
-        assert response.status_code == 400
+        response = client.post("/api/game-mode-beta/settings", json=payload)
+    assert response.status_code == 400
 
-
-def test_game_mode_beta_window_registration_and_ack_contract():
+def test_game_mode_beta_window_registration_has_resource_only_contract():
+    legacy_keys = {"join_" + "as_cat", "cycle_" + "id", "cycle_" + "phase"}
     with _client() as client:
         try:
             client.post("/api/game-mode-beta/enabled", json={"enabled": True})
@@ -355,19 +282,9 @@ def test_game_mode_beta_window_registration_and_ack_contract():
                 },
             )
             assert registration.status_code == 200
-            assert registration.json()["join_as_cat"] is False
-            assert registration.json()["resource_session_active"] is False
-
-            stale_ack = client.post(
-                "/api/game-mode-beta/ack",
-                json={
-                    "cycle_id": "stale",
-                    "pet_instance_id": "pet-contract",
-                    "status": "protected",
-                },
-            )
-            assert stale_ack.status_code == 200
-            assert stale_ack.json()["state"]["cycle_phase"] == "idle"
+            payload = registration.json()
+            assert payload["resource_session_active"] is False
+            assert set(payload).isdisjoint(legacy_keys)
         finally:
             client.post(
                 "/api/game-mode-beta/windows/unregister",
@@ -375,6 +292,21 @@ def test_game_mode_beta_window_registration_and_ack_contract():
             )
             client.post("/api/game-mode-beta/enabled", json={"enabled": False})
 
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/game-mode-beta/manual" + "-restore",
+        "/api/game-mode-beta/" + "ack",
+        "/api/game-mode-beta/deep-sleep" + "-ack",
+        "/api/game-mode-beta/reset" + "-candidate",
+        "/api/game-mode-beta/debug/" + "trigger",
+    ],
+)
+def test_removed_model_switching_routes_return_not_found(path):
+    with _client() as client:
+        response = client.post(path, json={})
+    assert response.status_code == 404
 
 def test_game_mode_beta_resource_session_endpoints_validate_and_forward(monkeypatch):
     ack = AsyncMock(return_value={"resource_session_phase": "soft_protected"})

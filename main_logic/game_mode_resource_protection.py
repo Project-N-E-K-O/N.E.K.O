@@ -4,11 +4,10 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 
-"""Game Mode Beta resource pressure protection.
+"""Game Mode Beta runtime resource protection.
 
-This module owns the runtime-only state for Game Mode Beta. The feature is a
-manual opt-in resource pressure guard: once enabled, sustained system CPU,
-memory, or GPU pressure asks the frontend to enter the existing cat form.
+The feature uses Activity Tracker's exact-game signal to lower avatar runtime
+cost without changing the active model or entering cat form.
 """
 from __future__ import annotations
 
@@ -29,33 +28,20 @@ logger = logging.getLogger(__name__)
 PRESSURE_THRESHOLD_PERCENT = 85.0
 SAMPLE_INTERVAL_SECONDS = 5.0
 SUSTAINED_SAMPLE_COUNT = 6
-MANUAL_RESTORE_COOLDOWN_SECONDS = 10 * 60
 LAST_SAMPLE_LIMIT = SUSTAINED_SAMPLE_COUNT
 
 GAME_CONFIRM_SNAPSHOT_COUNT = 3
 GAME_CONFIRM_MIN_SECONDS = 10.0
-GAME_SIGNAL_TTL_SECONDS = 15.0
 RESOURCE_SIGNAL_TTL_SECONDS = 30.0
 RESOURCE_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS = 30.0
 RESOURCE_TARGET_FPS = 15
-GAME_SMART_SAMPLE_COUNT = 2
-GAME_SMART_THRESHOLDS = {
-    "cpu_percent": ("cpu", 70.0),
-    "memory_percent": ("memory", 80.0),
-    "gpu_percent": ("gpu", 90.0),
-}
-SWITCH_ACK_TIMEOUT_SECONDS = 5.0
-SWITCH_RETRY_BACKOFF_SECONDS = 30.0
 DEEP_SLEEP_DELAY_SECONDS = 90.0
 WINDOW_REGISTRATION_TTL_SECONDS = 20.0
 
 DEFAULT_GAME_MODE_SETTINGS = {
-    "auto_cat_on_game": False,
-    "game_trigger_mode": "smart",
     "resource_protection_on_game": True,
     "compact_pet_window_enabled": True,
 }
-VALID_GAME_TRIGGER_MODES = {"smart", "instant"}
 
 MetricSample = dict[str, Any]
 Sampler = Callable[[], MetricSample]
@@ -69,7 +55,7 @@ _METRIC_ERROR_LOGGED: dict[str, str] = {}
 
 
 class GameModeSettingsStore:
-    """Persist only user settings and the manual-restore cooldown."""
+    """Persist resource-protection settings only."""
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = Path(path) if path is not None else None
@@ -253,16 +239,8 @@ class GameModeResourceProtector:
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._windows: dict[str, dict[str, Any]] = {}
-        self._window_acks: dict[str, dict[str, Any]] = {}
-        self._deep_sleep_acks: dict[str, bool] = {}
         persisted = self._store.load_settings() if self._store is not None else {}
         self._settings = self._normalize_settings(persisted)
-        raw_suppressed_until = persisted.get("suppressed_until")
-        self._persisted_suppressed_until = (
-            float(raw_suppressed_until)
-            if isinstance(raw_suppressed_until, (int, float))
-            else None
-        )
         self._state = self._new_state()
 
     def set_broadcaster(self, broadcaster: Broadcaster) -> None:
@@ -271,12 +249,7 @@ class GameModeResourceProtector:
     @staticmethod
     def _normalize_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
         source = raw if isinstance(raw, dict) else {}
-        mode = source.get("game_trigger_mode")
-        if mode not in VALID_GAME_TRIGGER_MODES:
-            mode = DEFAULT_GAME_MODE_SETTINGS["game_trigger_mode"]
         return {
-            "auto_cat_on_game": source.get("auto_cat_on_game") is True,
-            "game_trigger_mode": mode,
             "resource_protection_on_game": source.get("resource_protection_on_game") is not False,
             "compact_pet_window_enabled": source.get("compact_pet_window_enabled") is not False,
         }
@@ -286,34 +259,8 @@ class GameModeResourceProtector:
             "enabled": False,
             "pressure_state": "normal",
             "last_samples": [],
-            "trigger_reason": None,
-            "suppressed_until": None,
             "high_sample_count": 0,
-            "auto_switch_active": False,
-            "auto_switch_source": None,
-            "manual_override": False,
-            "prompt_shown": False,
             "last_event": None,
-            "cycle_id": None,
-            "cycle_phase": "idle",
-            "cycle_trigger": None,
-            "cycle_started_at": None,
-            "ack_deadline": None,
-            "expected_window_count": 0,
-            "ack_success_count": 0,
-            "ack_failure_count": 0,
-            "owned_window_count": 0,
-            "deep_sleep_due_at": None,
-            "deep_sleep_success_count": 0,
-            "game_snapshot_count": 0,
-            "game_first_seen_at": None,
-            "game_last_signal_at": None,
-            "game_confirmed": False,
-            "game_smart_high_count": 0,
-            "semantic_signal_notice_shown": False,
-            "semantic_fuse_enabled": os.environ.get("NEKO_GAME_MODE_SEMANTIC_ENABLED", "1") != "0",
-            "semantic_error_count": 0,
-            "retry_not_before": None,
             "resource_session_id": None,
             "resource_session_phase": "idle",
             "resource_enter_snapshot_count": 0,
@@ -327,7 +274,6 @@ class GameModeResourceProtector:
 
     def snapshot(self) -> dict[str, Any]:
         snap = dict(self._state)
-        snap.pop("expected_window_ids", None)
         snap["last_samples"] = list(self._state.get("last_samples") or [])
         snap["settings"] = dict(self._settings)
         snap["registered_window_count"] = len(self._active_window_ids(self._time()))
@@ -347,37 +293,20 @@ class GameModeResourceProtector:
     def _persist_locked(self) -> None:
         if self._store is None:
             return
-        payload = dict(self._settings)
-        payload["suppressed_until"] = self._persisted_suppressed_until
-        self._store.save(payload)
+        self._store.save(dict(self._settings))
 
     async def set_enabled(self, enabled: bool) -> dict[str, Any]:
         async with self._lock:
             if enabled:
                 self._state["enabled"] = True
                 self._state["pressure_state"] = "normal"
-                now = self._time()
-                if (
-                    isinstance(self._persisted_suppressed_until, (int, float))
-                    and self._persisted_suppressed_until > now
-                ):
-                    self._state["suppressed_until"] = self._persisted_suppressed_until
-                elif self._persisted_suppressed_until is not None:
-                    self._persisted_suppressed_until = None
-                    self._persist_locked()
                 self._state["last_event"] = {"type": "enabled", "ts": self._time()}
                 self._ensure_task_locked()
                 logger.info("[GameModeBeta] enabled")
             else:
                 if self._state.get("resource_session_phase") != "idle":
                     await self._restore_resource_session_locked("game-mode-disabled")
-                if self._state.get("auto_switch_active"):
-                    await self._broadcast_restore_locked("game-mode-disabled")
-                if self._store is None:
-                    self._persisted_suppressed_until = None
                 self._state = self._new_state()
-                self._window_acks.clear()
-                self._deep_sleep_acks.clear()
                 self._cancel_task_locked()
                 logger.info("[GameModeBeta] disabled and runtime state cleared")
             return self.snapshot()
@@ -385,19 +314,12 @@ class GameModeResourceProtector:
     async def set_settings(
         self,
         *,
-        auto_cat_on_game: bool,
-        game_trigger_mode: str,
         resource_protection_on_game: bool | None = None,
         compact_pet_window_enabled: bool | None = None,
     ) -> dict[str, Any]:
-        if game_trigger_mode not in VALID_GAME_TRIGGER_MODES:
-            raise ValueError("game_trigger_mode must be 'smart' or 'instant'")
         async with self._lock:
-            previous_auto_cat = self._settings["auto_cat_on_game"]
             previous_resource_protection = self._settings["resource_protection_on_game"]
             self._settings = {
-                "auto_cat_on_game": auto_cat_on_game is True,
-                "game_trigger_mode": game_trigger_mode,
                 "resource_protection_on_game": (
                     previous_resource_protection
                     if resource_protection_on_game is None
@@ -409,8 +331,6 @@ class GameModeResourceProtector:
                     else compact_pet_window_enabled is True
                 ),
             }
-            if previous_auto_cat and not self._settings["auto_cat_on_game"]:
-                self._clear_game_candidate_locked()
             if previous_resource_protection and not self._settings["resource_protection_on_game"]:
                 await self._restore_resource_session_locked("resource-protection-disabled")
                 self._clear_resource_candidates_locked()
@@ -443,14 +363,8 @@ class GameModeResourceProtector:
                 resource_windows = dict(self._state.get("resource_windows") or {})
                 resource_windows[window_id] = self._new_resource_window_state(now)
                 self._state["resource_windows"] = resource_windows
-            cycle_active = self._state.get("cycle_phase") in {"switching", "protected", "deep_sleep"}
             resource_active = self._state.get("resource_session_phase") != "idle"
             return {
-                "cycle_active": cycle_active,
-                "cycle_id": self._state.get("cycle_id") if cycle_active else None,
-                "cycle_phase": self._state.get("cycle_phase"),
-                "join_as_cat": cycle_active and window_type == "pet",
-                "deep_sleep_due_at": self._state.get("deep_sleep_due_at"),
                 "resource_session_active": resource_active,
                 "resource_session_id": self._state.get("resource_session_id") if resource_active else None,
                 "resource_session_phase": self._state.get("resource_session_phase"),
@@ -467,35 +381,6 @@ class GameModeResourceProtector:
             resource_windows = dict(self._state.get("resource_windows") or {})
             resource_windows.pop(window_id, None)
             self._state["resource_windows"] = resource_windows
-            removed_ack = self._window_acks.pop(window_id, None)
-            self._deep_sleep_acks.pop(window_id, None)
-            if self._state.get("cycle_phase") == "switching":
-                expected = set(self._state.get("expected_window_ids") or [])
-                if window_id in expected:
-                    expected.discard(window_id)
-                    self._state["expected_window_ids"] = sorted(expected)
-                    self._state["expected_window_count"] = len(expected)
-                    self._refresh_ack_counts_locked()
-                    if not expected:
-                        await self._fail_switch_locked("targets-disconnected")
-                    elif expected.issubset(self._window_acks):
-                        if any(self._window_acks[item]["status"] == "failed" for item in expected):
-                            await self._fail_switch_locked("ack-failed")
-                        else:
-                            await self._finalize_switch_locked()
-            if removed_ack and removed_ack.get("status") == "protected":
-                owned_count = sum(
-                    1 for ack in self._window_acks.values() if ack.get("status") == "protected"
-                )
-                self._state["owned_window_count"] = owned_count
-                self._state["auto_switch_active"] = owned_count > 0
-                if (
-                    owned_count == 0
-                    and self._state.get("cycle_phase") in {"protected", "deep_sleep"}
-                ):
-                    self._state["pressure_state"] = "normal"
-                    self._state["trigger_reason"] = None
-                    self._end_cycle_locked()
             return self.snapshot()
 
     async def acknowledge_resource_phase(
@@ -580,88 +465,6 @@ class GameModeResourceProtector:
             return RESOURCE_DIAGNOSTIC_SAMPLE_INTERVAL_SECONDS
         return SAMPLE_INTERVAL_SECONDS
 
-    async def acknowledge_switch(
-        self,
-        *,
-        cycle_id: str,
-        pet_instance_id: str,
-        status: str,
-    ) -> dict[str, Any]:
-        async with self._lock:
-            phase = self._state.get("cycle_phase")
-            if cycle_id != self._state.get("cycle_id") or phase not in {"switching", "protected", "deep_sleep"}:
-                return self.snapshot()
-            window_id = str(pet_instance_id or "").strip()
-            if not window_id:
-                return self.snapshot()
-            normalized_status = status if status in {"protected", "already_protected", "failed"} else "failed"
-            self._window_acks[window_id] = {
-                "status": normalized_status,
-                "ts": self._time(),
-            }
-            if phase in {"protected", "deep_sleep"}:
-                owned = sum(1 for ack in self._window_acks.values() if ack.get("status") == "protected")
-                self._state["owned_window_count"] = owned
-                self._state["auto_switch_active"] = owned > 0
-                if normalized_status == "failed" and owned == 0:
-                    await self._fail_switch_locked("late-join-failed")
-                elif normalized_status == "already_protected" and owned == 0:
-                    self._state["pressure_state"] = "normal"
-                    self._state["trigger_reason"] = None
-                    self._state["last_event"] = {"type": "already_protected", "ts": self._time()}
-                    self._end_cycle_locked(preserve_last_event=True)
-                return self.snapshot()
-            self._refresh_ack_counts_locked()
-            expected = set(self._state.get("expected_window_ids") or [])
-            if expected and expected.issubset(self._window_acks):
-                if any(self._window_acks[item]["status"] == "failed" for item in expected):
-                    await self._fail_switch_locked("ack-failed")
-                else:
-                    await self._finalize_switch_locked()
-            return self.snapshot()
-
-    async def acknowledge_deep_sleep(
-        self,
-        *,
-        cycle_id: str,
-        pet_instance_id: str,
-        success: bool,
-    ) -> dict[str, Any]:
-        async with self._lock:
-            if cycle_id != self._state.get("cycle_id") or self._state.get("cycle_phase") != "deep_sleep":
-                return self.snapshot()
-            window_id = str(pet_instance_id or "").strip()
-            if window_id:
-                self._deep_sleep_acks[window_id] = success is True
-                self._state["deep_sleep_success_count"] = sum(self._deep_sleep_acks.values())
-            return self.snapshot()
-
-    async def mark_manual_restore(self, pet_instance_id: str | None = None) -> dict[str, Any]:
-        async with self._lock:
-            now = self._time()
-            if self._state.get("enabled") and self._state.get("auto_switch_active"):
-                self._state["suppressed_until"] = now + MANUAL_RESTORE_COOLDOWN_SECONDS
-                self._persisted_suppressed_until = self._state["suppressed_until"]
-                self._persist_locked()
-                self._state["manual_override"] = True
-                if pet_instance_id:
-                    ack = self._window_acks.get(str(pet_instance_id))
-                    if ack and ack.get("status") == "protected":
-                        ack["status"] = "restored"
-                else:
-                    for ack in self._window_acks.values():
-                        if ack.get("status") == "protected":
-                            ack["status"] = "restored"
-                owned_count = sum(1 for ack in self._window_acks.values() if ack.get("status") == "protected")
-                self._state["owned_window_count"] = owned_count
-                self._state["auto_switch_active"] = owned_count > 0
-                if not self._state["auto_switch_active"]:
-                    self._end_cycle_locked()
-                self._state["pressure_state"] = "normal"
-                self._state["last_event"] = {"type": "manual_restore", "ts": now}
-                logger.info("[GameModeBeta] manual restore cooldown started")
-            return self.snapshot()
-
     async def ingest_game_snapshot(
         self,
         *,
@@ -671,76 +474,11 @@ class GameModeResourceProtector:
     ) -> dict[str, Any]:
         async with self._lock:
             now = self._time() if observed_at is None else float(observed_at)
-            self._state["semantic_error_count"] = 0
             await self._ingest_resource_game_snapshot_locked(
                 exact_game=exact_game,
                 valid=valid,
                 now=now,
             )
-            if not self._semantic_entry_available_locked(now):
-                return self.snapshot()
-            if not valid:
-                await self._expire_game_signal_locked(now)
-                return self.snapshot()
-            self._state["semantic_signal_notice_shown"] = False
-            self._state["game_last_signal_at"] = now
-            if not exact_game:
-                self._clear_game_candidate_locked(keep_last_signal=True)
-                return self.snapshot()
-            if int(self._state.get("game_snapshot_count") or 0) == 0:
-                self._state["game_first_seen_at"] = now
-            self._state["game_snapshot_count"] = int(self._state.get("game_snapshot_count") or 0) + 1
-            first_seen = float(self._state.get("game_first_seen_at") or now)
-            confirmed = (
-                self._state["game_snapshot_count"] >= GAME_CONFIRM_SNAPSHOT_COUNT
-                and now - first_seen >= GAME_CONFIRM_MIN_SECONDS
-            )
-            self._state["game_confirmed"] = confirmed
-            if confirmed and self._settings["game_trigger_mode"] == "instant":
-                await self._trigger_locked(
-                    "exact_game",
-                    {"ts": now, "errors": {}},
-                    None,
-                    trigger_source="game_semantic",
-                    duration_seconds=now - first_seen,
-                )
-            return self.snapshot()
-
-    async def reset_game_candidate(self, reason: str = "external-reset") -> dict[str, Any]:
-        async with self._lock:
-            self._clear_game_candidate_locked()
-            self._state["last_event"] = {"type": "game_candidate_reset", "reason": reason, "ts": self._time()}
-            return self.snapshot()
-
-    async def record_semantic_error(self) -> dict[str, Any]:
-        async with self._lock:
-            if not self._state.get("enabled") or not self._settings.get("auto_cat_on_game"):
-                return self.snapshot()
-            count = int(self._state.get("semantic_error_count") or 0) + 1
-            self._state["semantic_error_count"] = count
-            self._clear_game_candidate_locked()
-            if count >= 3:
-                self._state["semantic_fuse_enabled"] = False
-                self._state["last_event"] = {"type": "semantic_fuse_open", "ts": self._time()}
-                logger.warning("[GameModeBeta] semantic entry disabled after repeated local failures")
-            return self.snapshot()
-
-    async def debug_trigger(self, reason: str = "debug", percent: float = 99.0) -> dict[str, Any]:
-        sample = {
-            "ts": self._time(),
-            "cpu_percent": percent,
-            "memory_percent": None,
-            "gpu_percent": None,
-            "gpu_vram_percent": None,
-            "neko_cpu_percent": None,
-            "neko_memory_mb": None,
-            "errors": {},
-        }
-        async with self._lock:
-            if not self._state.get("enabled"):
-                self._state["enabled"] = True
-                self._ensure_task_locked()
-            await self._trigger_locked(reason, sample, percent)
             return self.snapshot()
 
     def _ensure_task_locked(self) -> None:
@@ -780,16 +518,6 @@ class GameModeResourceProtector:
         self._state["last_samples"] = samples[-LAST_SAMPLE_LIMIT:]
 
         high_reason, _high_percent = self._high_pressure_reason(sample)
-        now = self._time()
-        suppressed_until = self._state.get("suppressed_until")
-        if isinstance(suppressed_until, (int, float)) and suppressed_until <= now:
-            self._state["suppressed_until"] = None
-            self._persisted_suppressed_until = None
-            self._persist_locked()
-            self._state["last_event"] = {"type": "cooldown_ended", "ts": now}
-            logger.info("[GameModeBeta] manual restore cooldown ended")
-
-        await self._apply_game_smart_sample_locked(sample, now)
 
         if high_reason is None:
             if self._state.get("pressure_state") != "normal":
@@ -799,10 +527,6 @@ class GameModeResourceProtector:
             return
 
         self._state["high_sample_count"] = int(self._state.get("high_sample_count") or 0) + 1
-
-        if self._state.get("auto_switch_active"):
-            self._state["pressure_state"] = "protected"
-            return
 
         self._state["pressure_state"] = "high"
         # Resource pressure is diagnostic only. Sampling remains available to
@@ -952,211 +676,6 @@ class GameModeResourceProtector:
             return None, None
         return max(candidates, key=lambda item: item[1])
 
-    async def _trigger_locked(
-        self,
-        reason: str,
-        sample: MetricSample,
-        percent: float | None,
-        *,
-        trigger_source: str = "resource_pressure",
-        duration_seconds: float | None = None,
-    ) -> None:
-        now = self._time()
-        if self._state.get("cycle_phase") != "idle":
-            return
-        if not self._trigger_allowed_locked(now):
-            return
-        duration = duration_seconds
-        if duration is None:
-            duration = max(
-                SAMPLE_INTERVAL_SECONDS,
-                int(self._state.get("high_sample_count") or SUSTAINED_SAMPLE_COUNT) * SAMPLE_INTERVAL_SECONDS,
-            )
-        cycle_id = uuid.uuid4().hex
-        expected_window_ids = self._active_window_ids(now)
-        payload = {
-            "type": "game_mode_auto_switch",
-            "source": "game_mode_auto",
-            "reason": reason,
-            "percent": percent,
-            "duration_seconds": duration,
-            "sample": sample,
-            "timestamp": now,
-            "cycle_id": cycle_id,
-            "trigger_source": trigger_source,
-            "ack_timeout_seconds": SWITCH_ACK_TIMEOUT_SECONDS,
-            "deep_sleep_after_seconds": DEEP_SLEEP_DELAY_SECONDS,
-        }
-        self._state["auto_switch_active"] = True
-        self._state["auto_switch_source"] = "game_mode_auto"
-        self._state["manual_override"] = False
-        self._state["prompt_shown"] = True
-        self._state["pressure_state"] = "protected"
-        self._state["trigger_reason"] = {
-            "metric": reason,
-            "percent": percent,
-            "duration_seconds": duration,
-        }
-        self._state["cycle_id"] = cycle_id
-        self._state["cycle_phase"] = "switching" if expected_window_ids else "protected"
-        self._state["cycle_trigger"] = trigger_source
-        self._state["cycle_started_at"] = now
-        self._state["expected_window_ids"] = expected_window_ids
-        self._state["expected_window_count"] = len(expected_window_ids)
-        self._state["ack_deadline"] = now + SWITCH_ACK_TIMEOUT_SECONDS if expected_window_ids else None
-        self._state["deep_sleep_due_at"] = now + DEEP_SLEEP_DELAY_SECONDS if not expected_window_ids else None
-        self._window_acks.clear()
-        self._deep_sleep_acks.clear()
-        self._clear_game_candidate_locked()
-        delivered = await self._broadcaster(payload)
-        if delivered <= 0:
-            await self._fail_switch_locked("not-delivered")
-            return
-        self._state["last_event"] = {"type": "auto_switch", "ts": now, "delivered": delivered}
-        logger.info(
-            "[GameModeBeta] auto switch requested: reason=%s percent=%s duration=%ss delivered=%s",
-            reason,
-            percent,
-            duration,
-            delivered,
-        )
-
-    def _trigger_allowed_locked(self, now: float) -> bool:
-        if not self._state.get("enabled"):
-            return False
-        suppressed_until = self._state.get("suppressed_until")
-        if isinstance(suppressed_until, (int, float)) and suppressed_until > now:
-            return False
-        retry_not_before = self._state.get("retry_not_before")
-        if isinstance(retry_not_before, (int, float)) and retry_not_before > now:
-            return False
-        return True
-
-    def _semantic_entry_available_locked(self, now: float) -> bool:
-        return bool(
-            self._state.get("enabled")
-            and self._settings.get("auto_cat_on_game")
-            and self._state.get("semantic_fuse_enabled")
-            and self._state.get("cycle_phase") == "idle"
-            and self._trigger_allowed_locked(now)
-        )
-
-    async def _apply_game_smart_sample_locked(self, sample: MetricSample, now: float) -> None:
-        if not (
-            self._semantic_entry_available_locked(now)
-            and self._settings.get("game_trigger_mode") == "smart"
-            and self._state.get("game_confirmed")
-        ):
-            self._state["game_smart_high_count"] = 0
-            return
-        candidates: list[tuple[str, float]] = []
-        for key, (metric, threshold) in GAME_SMART_THRESHOLDS.items():
-            value = sample.get(key)
-            if isinstance(value, (int, float)) and value >= threshold:
-                candidates.append((metric, float(value)))
-        if not candidates:
-            self._state["game_smart_high_count"] = 0
-            return
-        self._state["game_smart_high_count"] = min(
-            GAME_SMART_SAMPLE_COUNT,
-            int(self._state.get("game_smart_high_count") or 0) + 1,
-        )
-        # Smart-mode pressure thresholds are retained as diagnostics only.
-        # Exact-game instant mode is the sole semantic auto-transition path.
-
-    def _clear_game_candidate_locked(self, *, keep_last_signal: bool = False) -> None:
-        last_signal = self._state.get("game_last_signal_at") if keep_last_signal else None
-        self._state["game_snapshot_count"] = 0
-        self._state["game_first_seen_at"] = None
-        self._state["game_last_signal_at"] = last_signal
-        self._state["game_confirmed"] = False
-        self._state["game_smart_high_count"] = 0
-
-    async def _expire_game_signal_locked(self, now: float) -> None:
-        last_signal = self._state.get("game_last_signal_at")
-        if not isinstance(last_signal, (int, float)) or now - last_signal <= GAME_SIGNAL_TTL_SECONDS:
-            return
-        had_candidate = bool(self._state.get("game_snapshot_count") or self._state.get("game_confirmed"))
-        self._clear_game_candidate_locked()
-        if had_candidate and not self._state.get("semantic_signal_notice_shown"):
-            self._state["semantic_signal_notice_shown"] = True
-            await self._broadcaster({
-                "type": "game_mode_semantic_signal_unavailable",
-                "source": "game_mode_auto",
-                "timestamp": now,
-            })
-
-    def _refresh_ack_counts_locked(self) -> None:
-        expected = set(self._state.get("expected_window_ids") or [])
-        relevant = [self._window_acks[item] for item in expected if item in self._window_acks]
-        self._state["ack_success_count"] = sum(
-            1 for ack in relevant if ack.get("status") in {"protected", "already_protected"}
-        )
-        self._state["ack_failure_count"] = sum(1 for ack in relevant if ack.get("status") == "failed")
-
-    async def _finalize_switch_locked(self) -> None:
-        now = self._time()
-        owned = sum(1 for ack in self._window_acks.values() if ack.get("status") == "protected")
-        if owned == 0:
-            self._state["auto_switch_active"] = False
-            self._state["pressure_state"] = "normal"
-            self._state["trigger_reason"] = None
-            self._state["last_event"] = {"type": "already_protected", "ts": now}
-            self._end_cycle_locked(preserve_last_event=True)
-            return
-        self._state["cycle_phase"] = "protected"
-        self._state["ack_deadline"] = None
-        self._state["owned_window_count"] = owned
-        self._state["auto_switch_active"] = owned > 0
-        self._state["pressure_state"] = "protected"
-        self._state["deep_sleep_due_at"] = now + DEEP_SLEEP_DELAY_SECONDS if owned else None
-        self._state["last_event"] = {"type": "switch_confirmed", "ts": now, "owned": owned}
-        await self._broadcaster({
-            "type": "game_mode_switch_confirmed",
-            "source": "game_mode_auto",
-            "cycle_id": self._state.get("cycle_id"),
-            "deep_sleep_after_seconds": DEEP_SLEEP_DELAY_SECONDS,
-            "timestamp": now,
-        })
-
-    async def _fail_switch_locked(self, reason: str) -> None:
-        now = self._time()
-        self._state["retry_not_before"] = now + SWITCH_RETRY_BACKOFF_SECONDS
-        self._state["last_event"] = {"type": "switch_failed", "reason": reason, "ts": now}
-        await self._broadcaster({
-            "type": "game_mode_switch_failed",
-            "source": "game_mode_auto",
-            "cycle_id": self._state.get("cycle_id"),
-            "retry_after_seconds": SWITCH_RETRY_BACKOFF_SECONDS,
-            "timestamp": now,
-        })
-        self._state["auto_switch_active"] = False
-        self._state["pressure_state"] = "normal"
-        self._state["trigger_reason"] = None
-        self._end_cycle_locked(preserve_last_event=True)
-
-    def _end_cycle_locked(self, *, preserve_last_event: bool = False) -> None:
-        last_event = self._state.get("last_event")
-        for key, value in (
-            ("cycle_id", None),
-            ("cycle_phase", "idle"),
-            ("cycle_trigger", None),
-            ("cycle_started_at", None),
-            ("ack_deadline", None),
-            ("expected_window_count", 0),
-            ("ack_success_count", 0),
-            ("ack_failure_count", 0),
-            ("owned_window_count", 0),
-            ("deep_sleep_due_at", None),
-            ("deep_sleep_success_count", 0),
-        ):
-            self._state[key] = value
-        self._state.pop("expected_window_ids", None)
-        self._window_acks.clear()
-        self._deep_sleep_acks.clear()
-        if preserve_last_event:
-            self._state["last_event"] = last_event
-
     async def _maintain_lifecycle_locked(self, now: float) -> None:
         last_resource_signal = self._state.get("resource_last_signal_at")
         if (
@@ -1165,45 +684,6 @@ class GameModeResourceProtector:
             and now - last_resource_signal > RESOURCE_SIGNAL_TTL_SECONDS
         ):
             await self._restore_resource_session_locked("activity-signal-unavailable")
-        await self._expire_game_signal_locked(now)
-        if self._state.get("cycle_phase") == "switching":
-            deadline = self._state.get("ack_deadline")
-            if isinstance(deadline, (int, float)) and now >= deadline:
-                await self._fail_switch_locked("ack-timeout")
-                return
-        if self._state.get("cycle_phase") == "protected":
-            due_at = self._state.get("deep_sleep_due_at")
-            if isinstance(due_at, (int, float)) and now >= due_at:
-                owned_ids = [
-                    window_id
-                    for window_id, ack in self._window_acks.items()
-                    if ack.get("status") == "protected"
-                ]
-                self._state["cycle_phase"] = "deep_sleep"
-                self._state["deep_sleep_due_at"] = None
-                self._state["last_event"] = {"type": "deep_sleep_requested", "ts": now}
-                await self._broadcaster({
-                    "type": "game_mode_deep_sleep",
-                    "source": "game_mode_auto",
-                    "cycle_id": self._state.get("cycle_id"),
-                    "pet_instance_ids": owned_ids,
-                    "timestamp": now,
-                })
-
-    async def _broadcast_restore_locked(self, reason: str) -> None:
-        owned_ids = [
-            window_id
-            for window_id, ack in self._window_acks.items()
-            if ack.get("status") == "protected"
-        ]
-        await self._broadcaster({
-            "type": "game_mode_restore",
-            "source": "game_mode_auto",
-            "cycle_id": self._state.get("cycle_id"),
-            "pet_instance_ids": owned_ids,
-            "reason": reason,
-            "timestamp": self._time(),
-        })
 
 
 protector = GameModeResourceProtector(

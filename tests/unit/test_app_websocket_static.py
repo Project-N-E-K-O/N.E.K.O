@@ -42,17 +42,19 @@ def test_websocket_has_no_widget_mode_capability_or_lifecycle_protocol():
     assert "neko:widget-mode-message" not in frontend_source
 
 
-def test_game_mode_auto_switch_websocket_event_is_relayed_to_frontend():
+def test_websocket_relays_only_game_resource_protection_events():
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
-    game_mode_block = source.split("if (response.type === 'game_mode_auto_switch')", 1)[1].split(
+    game_mode_block = source.split("response.type.indexOf('game_mode_resource_protection_')", 1)[1].split(
         "// -------- gemini_response --------",
         1,
     )[0]
 
-    assert "new CustomEvent('neko:game-mode-beta-auto-switch'" in game_mode_block
+    assert "new CustomEvent('neko:game-mode-beta-message'" in game_mode_block
     assert "detail: response" in game_mode_block
     assert "return;" in game_mode_block
+    assert "game_mode_" + "auto_switch" not in source
+    assert "neko:game-mode-beta-" + "auto-switch" not in source
 
 
 def test_websocket_marks_only_pages_with_game_mode_listener_as_capable():

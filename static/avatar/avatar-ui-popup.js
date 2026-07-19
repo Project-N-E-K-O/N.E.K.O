@@ -424,24 +424,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         gap: '10px'
     });
 
-    const autoRow = document.createElement('label');
-    Object.assign(autoRow.style, {
-        display: 'flex', alignItems: 'center', gap: '8px', minHeight: '28px',
-        fontSize: '12px', color: 'var(--neko-popup-text, #333)', cursor: 'pointer'
-    });
-    const autoCheckbox = document.createElement('input');
-    autoCheckbox.type = 'checkbox';
-    autoCheckbox.id = `${prefix}-game-mode-auto-cat-on-game`;
-    autoCheckbox.style.flexShrink = '0';
-    const autoLabel = document.createElement('span');
-    autoLabel.textContent = window.t
-        ? window.t('settings.gameModeBeta.autoCatOnGame')
-        : '检测到游戏时让非 Live2D 模型自动变猫';
-    autoLabel.setAttribute('data-i18n', 'settings.gameModeBeta.autoCatOnGame');
-    autoRow.appendChild(autoCheckbox);
-    autoRow.appendChild(autoLabel);
-    panel.appendChild(autoRow);
-
     const createProtectionToggle = function (idSuffix, i18nKey, fallback) {
         const row = document.createElement('label');
         Object.assign(row.style, {
@@ -470,40 +452,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         'settings.gameModeBeta.compactPetWindow',
         'Windows 桌宠临时缩小透明窗口'
     );
-
-    const modeLabel = document.createElement('div');
-    modeLabel.textContent = window.t ? window.t('settings.gameModeBeta.triggerMode') : '触发模式';
-    modeLabel.setAttribute('data-i18n', 'settings.gameModeBeta.triggerMode');
-    Object.assign(modeLabel.style, {
-        fontSize: '11px', color: 'var(--neko-popup-muted, #777)'
-    });
-    panel.appendChild(modeLabel);
-
-    const modeGroup = document.createElement('div');
-    modeGroup.setAttribute('role', 'radiogroup');
-    Object.assign(modeGroup.style, {
-        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', width: '100%'
-    });
-    const modeButtons = {};
-    [
-        ['smart', 'settings.gameModeBeta.smartMode', '智能判断'],
-        ['instant', 'settings.gameModeBeta.instantMode', '检测到即触发']
-    ].forEach(function (entry) {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.dataset.mode = entry[0];
-        button.textContent = window.t ? window.t(entry[1]) : entry[2];
-        button.setAttribute('data-i18n', entry[1]);
-        button.setAttribute('role', 'radio');
-        Object.assign(button.style, {
-            minWidth: '0', minHeight: '30px', padding: '5px 6px', border: '1px solid var(--neko-popup-indicator-border, #ccc)',
-            borderRadius: '6px', background: 'transparent', color: 'var(--neko-popup-text, #333)',
-            fontSize: '11px', cursor: 'pointer', whiteSpace: 'normal', lineHeight: '1.25'
-        });
-        modeButtons[entry[0]] = button;
-        modeGroup.appendChild(button);
-    });
-    panel.appendChild(modeGroup);
 
     const privacy = document.createElement('p');
     privacy.textContent = window.t
@@ -536,8 +484,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         const settings = api && typeof api.getSettings === 'function'
             ? api.getSettings()
             : {
-                auto_cat_on_game: false,
-                game_trigger_mode: 'smart',
                 resource_protection_on_game: true,
                 compact_pet_window_enabled: true
             };
@@ -549,10 +495,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
             && gameModeState.backendState.resource_session_phase !== 'idle'
         );
         syncing = true;
-        autoCheckbox.checked = settings.auto_cat_on_game === true;
-        autoCheckbox.disabled = !mainEnabled;
-        autoRow.style.opacity = mainEnabled ? '1' : '0.5';
-        autoRow.style.cursor = mainEnabled ? 'pointer' : 'default';
         resourceProtectionToggle.checkbox.checked = settings.resource_protection_on_game !== false;
         compactWindowToggle.checkbox.checked = settings.compact_pet_window_enabled !== false;
         [resourceProtectionToggle, compactWindowToggle].forEach(function (toggle) {
@@ -562,16 +504,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         });
         exitProtectionButton.style.display = resourceActive ? 'block' : 'none';
         exitProtectionButton.disabled = !resourceActive;
-        Object.keys(modeButtons).forEach(function (mode) {
-            const button = modeButtons[mode];
-            const selected = settings.game_trigger_mode === mode;
-            button.disabled = !mainEnabled;
-            button.setAttribute('aria-checked', selected ? 'true' : 'false');
-            button.style.opacity = mainEnabled ? '1' : '0.5';
-            button.style.cursor = mainEnabled ? 'pointer' : 'default';
-            button.style.background = selected ? 'var(--neko-popup-selected-hover, rgba(68,183,254,0.15))' : 'transparent';
-            button.style.borderColor = selected ? 'var(--neko-popup-accent, #44b7fe)' : 'var(--neko-popup-indicator-border, #ccc)';
-        });
         syncing = false;
     };
 
@@ -593,10 +525,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
             });
     };
 
-    autoCheckbox.addEventListener('change', function () {
-        if (syncing || autoCheckbox.disabled || !window.nekoGameModeBeta) return;
-        persistSettings({ auto_cat_on_game: autoCheckbox.checked });
-    });
     resourceProtectionToggle.checkbox.addEventListener('change', function () {
         if (syncing || resourceProtectionToggle.checkbox.disabled || !window.nekoGameModeBeta) return;
         persistSettings({ resource_protection_on_game: resourceProtectionToggle.checkbox.checked });
@@ -612,14 +540,6 @@ function createGameModeBetaDetailPanel(manager, prefix, mainToggleItem) {
         if (!runtime || typeof runtime.exitCurrentSession !== 'function') return;
         exitProtectionButton.disabled = true;
         void Promise.resolve(runtime.exitCurrentSession()).finally(render);
-    });
-    Object.keys(modeButtons).forEach(function (mode) {
-        modeButtons[mode].addEventListener('click', function (event) {
-            event.preventDefault();
-            event.stopPropagation();
-            if (modeButtons[mode].disabled || !window.nekoGameModeBeta) return;
-            persistSettings({ game_trigger_mode: mode });
-        });
     });
     window.addEventListener('neko:game-mode-beta-state', render);
     if (window.nekoGameModeBeta && typeof window.nekoGameModeBeta.refreshSettings === 'function') {

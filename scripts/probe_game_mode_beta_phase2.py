@@ -95,20 +95,12 @@ def normalize_game_mode_state(payload: Any) -> dict[str, Any] | None:
 def summarize_state(state: dict[str, Any] | None) -> str:
     if not state:
         return "state unavailable"
-    reason = state.get("trigger_reason")
-    reason_text = "none"
-    if isinstance(reason, dict):
-        metric = reason.get("metric") or reason.get("reason") or "?"
-        percent = reason.get("percent", "?")
-        duration = reason.get("duration_seconds", "?")
-        reason_text = f"{metric} {percent}% / {duration}s"
     return (
         f"enabled={state.get('enabled')}, "
         f"pressure_state={state.get('pressure_state')}, "
-        f"auto_switch_active={state.get('auto_switch_active')}, "
-        f"manual_override={state.get('manual_override')}, "
-        f"suppressed_until={state.get('suppressed_until')}, "
-        f"trigger_reason={reason_text}"
+        f"resource_session_phase={state.get('resource_session_phase')}, "
+        f"resource_session_id={state.get('resource_session_id')}, "
+        f"registered_window_count={state.get('registered_window_count')}"
     )
 
 
@@ -120,8 +112,10 @@ def _check_default_off(state: dict[str, Any] | None) -> list[str]:
         failures.append("expected enabled=false after restart")
     if state.get("pressure_state") != "normal":
         failures.append("expected pressure_state=normal after restart")
-    if state.get("trigger_reason") is not None:
-        failures.append("expected trigger_reason=null after restart")
+    if state.get("resource_session_phase") != "idle":
+        failures.append("expected resource_session_phase=idle after restart")
+    if state.get("resource_session_id") is not None:
+        failures.append("expected resource_session_id=null after restart")
     return failures
 
 
