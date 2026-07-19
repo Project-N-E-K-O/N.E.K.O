@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AVAILABLE_AVATAR_TOOLS } from '../avatarTools';
+import {
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
+  AVAILABLE_FULL_AVATAR_TOOLS,
+  DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
+  MAX_ACTIVE_AVATAR_TOOLS,
+  sanitizeAvatarToolIds,
+} from '../avatarTools';
 import {
   AVATAR_TOOL_DEFINITIONS,
   AVATAR_TOOL_REGISTRY,
@@ -11,10 +17,10 @@ import {
 } from './catalog';
 
 describe('avatar tool definitions', () => {
-  it('registers exactly the three supported tools once with explicit desktop capability', () => {
+  it('registers the fourth ordinary tool once with explicit desktop capability', () => {
     const ids = AVATAR_TOOL_DEFINITIONS.map(definition => definition.id);
 
-    expect(ids).toEqual(['lollipop', 'fist', 'hammer']);
+    expect(ids).toEqual(['lollipop', 'fist', 'hammer', 'rps']);
     expect(new Set(ids).size).toBe(ids.length);
     expect(AVATAR_TOOL_REGISTRY).toHaveLength(ids.length);
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
@@ -26,12 +32,13 @@ describe('avatar tool definitions', () => {
     });
   });
 
-  it('projects canonical definitions into the shared UI catalog', () => {
-    expect(AVAILABLE_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
+  it('projects all definitions into Compact while keeping Full on its fixed three tools', () => {
+    expect(AVAILABLE_COMPACT_AVATAR_TOOLS.map(tool => tool.id)).toEqual(
       AVATAR_TOOL_DEFINITIONS.map(definition => definition.id),
     );
+    expect(AVAILABLE_FULL_AVATAR_TOOLS.map(tool => tool.id)).toEqual(['lollipop', 'fist', 'hammer']);
     AVATAR_TOOL_DEFINITIONS.forEach((definition) => {
-      const tool = AVAILABLE_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
+      const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(candidate => candidate.id === definition.id);
       expect(tool).toMatchObject({
         id: definition.id,
         labelKey: definition.label.key,
@@ -44,6 +51,16 @@ describe('avatar tool definitions', () => {
         pointerNaturalHeight: definition.visual.naturalHeight,
       });
     });
+  });
+
+  it('keeps the three-slot defaults while allowing Compact to equip rps', () => {
+    expect(MAX_ACTIVE_AVATAR_TOOLS).toBe(3);
+    expect(DEFAULT_ACTIVE_AVATAR_TOOL_IDS).toEqual(['lollipop', 'fist', 'hammer']);
+    expect(sanitizeAvatarToolIds(['rps', 'fist', 'rps', 'hammer', 'lollipop'])).toEqual([
+      'rps',
+      'fist',
+      'hammer',
+    ]);
   });
 
   it('keeps NEKO visual geometry as the product source of truth', () => {
@@ -77,6 +94,7 @@ describe('avatar tool definitions', () => {
     const lollipop = getAvatarToolRegistration('lollipop').definition.interaction;
     const fist = getAvatarToolRegistration('fist').definition.interaction;
     const hammer = getAvatarToolRegistration('hammer').definition.interaction;
+    const rps = getAvatarToolRegistration('rps').definition.interaction;
 
     expect(lollipop).toMatchObject({
       kind: 'progressive-release',
@@ -111,6 +129,16 @@ describe('avatar tool definitions', () => {
       outsideFeedback: { variant: 'secondary', resetAfterMs: 220 },
       touchZone: 'release',
       touchZones: ['ear', 'head', 'face', 'body'],
+    });
+    expect(rps).toEqual({
+      kind: 'round-choice',
+      choices: [
+        { gesture: 'rock', variant: 'primary' },
+        { gesture: 'scissors', variant: 'secondary' },
+        { gesture: 'paper', variant: 'tertiary' },
+      ],
+      cycle: { outsideIntervalMs: 240, rangeIntervalMs: 720 },
+      confirmation: { sound: 'rps-confirm', holdMs: 1600 },
     });
     expect(lollipop).not.toHaveProperty('touchZone');
     expect(lollipop).not.toHaveProperty('chance');
@@ -360,6 +388,33 @@ describe('avatar tool definition validation', () => {
 
     expect(() => validateAvatarToolDefinition(missingSound)).toThrow(/sounds must contain/);
     expect(() => validateAvatarToolDefinition(incompleteTimeline)).toThrow(/windup, swing, impact, recover and idle/);
+  });
+
+  it('keeps round-choice resources closed over the current profile references', () => {
+    const rps = getAvatarToolRegistration('rps').definition;
+    if (rps.interaction.kind !== 'round-choice') throw new Error('rps must use round-choice');
+    const lollipop = getAvatarToolRegistration('lollipop').definition;
+    const extraSound = asDefinition({
+      ...rps,
+      sounds: [...rps.sounds, { ...rps.sounds[0], id: 'rps-extra' }],
+    });
+    const extraEffect = asDefinition({
+      ...rps,
+      effects: [lollipop.effects[0]],
+    });
+    const missingConfirmation = asDefinition({ ...rps, sounds: [] });
+    const invalidHold = asDefinition({
+      ...rps,
+      interaction: {
+        ...rps.interaction,
+        confirmation: { ...rps.interaction.confirmation, holdMs: 0 },
+      },
+    });
+
+    expect(() => validateAvatarToolDefinition(extraSound)).toThrow(/only the confirmation sound/);
+    expect(() => validateAvatarToolDefinition(extraEffect)).toThrow(/unreferenced effects/);
+    expect(() => validateAvatarToolDefinition(missingConfirmation)).toThrow(/sounds must contain/);
+    expect(() => validateAvatarToolDefinition(invalidHold)).toThrow(/holdMs must be positive/);
   });
 
   it('rejects duplicate sound ids inside one definition but reuses matching cross-definition resources', () => {

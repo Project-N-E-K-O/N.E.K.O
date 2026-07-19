@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 describe('desktop avatar tool contract', () => {
-  it('projects inactive and all three active definitions with strict JSON round trips', () => {
+  it('projects inactive and all four active definitions with strict JSON round trips', () => {
     const inactive = buildDesktopAvatarToolContract(null);
     expect(Object.keys(inactive).sort()).toEqual(['definition', 'runtimePolicy', 'wireVersion']);
     expect(inactive).toEqual({ wireVersion: 1, definition: null, runtimePolicy: null });
@@ -120,6 +120,26 @@ describe('desktop avatar tool contract', () => {
       ],
       easterEgg: { scale: 5, anchorOffset: { x: 322.11, y: 259.27 } },
     });
+
+    const rps = buildDesktopAvatarToolContract('rps');
+    expect(rps.definition?.visual?.presentation).toMatchObject({
+      inRangeVariantSource: 'range',
+      outsideVariantSource: 'range',
+    });
+    expect(rps.definition?.interaction).toEqual(expect.objectContaining({
+      profile: {
+        kind: 'round-choice',
+        choices: [
+          { gesture: 'rock', variant: 'primary' },
+          { gesture: 'scissors', variant: 'secondary' },
+          { gesture: 'paper', variant: 'tertiary' },
+        ],
+        cycle: { outsideIntervalMs: 240, rangeIntervalMs: 720 },
+        confirmation: { sound: 'rps-confirm', holdMs: 1600 },
+      },
+      sounds: [expect.objectContaining({ id: 'rps-confirm' })],
+      effects: [],
+    }));
   });
 
   it('preserves a tool-specific touch-zone subset in the desktop contract', () => {

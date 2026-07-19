@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AVAILABLE_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
+import { AVAILABLE_COMPACT_AVATAR_TOOLS, type AvatarToolId } from '../avatarTools';
 import type { AvatarInteractionPayload, AvatarToolStatePayload } from '../message-schema';
 import {
   useAvatarToolRuntime,
@@ -64,7 +64,7 @@ function Harness({
     getToolLabel: item => item.id,
     providers,
   });
-  const tool = AVAILABLE_AVATAR_TOOLS.find(item => item.id === toolId)!;
+  const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === toolId)!;
   return (
     <>
       <button type="button" onClick={event => runtime.selectTool(tool, event)}>
@@ -91,7 +91,7 @@ function SwitchingHarness({
   });
   return (
     <>
-      {AVAILABLE_AVATAR_TOOLS.slice(0, 2).map(tool => (
+      {AVAILABLE_COMPACT_AVATAR_TOOLS.slice(0, 2).map(tool => (
         <button key={tool.id} type="button" onClick={event => runtime.selectTool(tool, event)}>
           select {tool.id}
         </button>
@@ -108,6 +108,7 @@ function createProviders(overrides: AvatarToolRuntimeProviders = {}): AvatarTool
     now: () => 1_000,
     monotonicNow: () => 0,
     random: () => 0.9,
+    prepareVisuals: () => undefined,
     ...overrides,
   };
 }
@@ -162,6 +163,140 @@ describe('useAvatarToolRuntime press lifecycle', () => {
     fireEvent.pointerCancel(window, { pointerId: 7, clientX: 150, clientY: 150 });
     expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
     expect(onInteraction).not.toHaveBeenCalled();
+  });
+
+  it('cycles rps choices, freezes the visible choice, and confirms locally without a host commit', () => {
+    vi.useFakeTimers();
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness onInteraction={onInteraction} providers={createProviders()} toolId="rps" />,
+    );
+
+    try {
+      selectTool();
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+
+      act(() => vi.advanceTimersByTime(240));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      expect(onInteraction).not.toHaveBeenCalled();
+      expect(audioInstances).toHaveLength(2);
+      expect(audioInstances.some(audio => audio.play.mock.calls.length === 1)).toBe(true);
+
+      fireEvent.pointerDown(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 8, clientX: 150, clientY: 150 });
+      expect(audioInstances).toHaveLength(2);
+      expect(onInteraction).not.toHaveBeenCalled();
+
+      act(() => vi.advanceTimersByTime(1_599));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('tertiary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not cycle or accept an rps press before its declared visuals are ready', async () => {
+    vi.useFakeTimers();
+    let markReady: (() => void) | undefined;
+    const readiness = new Promise<void>((resolve) => { markReady = resolve; });
+    const view = render(
+      <Harness
+        onInteraction={vi.fn()}
+        providers={createProviders({ prepareVisuals: () => readiness })}
+        toolId="rps"
+      />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 7, clientX: 150, clientY: 150 });
+      act(() => vi.advanceTimersByTime(240));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      expect(audioInstances.every(audio => audio.play.mock.calls.length === 0)).toBe(true);
+
+      await act(async () => { markReady?.(); });
+      act(() => vi.advanceTimersByTime(719));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('resumes the same rps sequence without confirmation after a moved release', () => {
+    vi.useFakeTimers();
+    const onInteraction = vi.fn();
+    const view = render(
+      <Harness onInteraction={onInteraction} providers={createProviders()} toolId="rps" />,
+    );
+
+    try {
+      selectTool();
+      fireEvent.pointerDown(window, { button: 0, pointerId: 9, clientX: 150, clientY: 150 });
+      fireEvent.pointerMove(window, { pointerId: 9, clientX: 160, clientY: 150 });
+      fireEvent.pointerUp(window, { button: 0, pointerId: 9, clientX: 160, clientY: 150 });
+
+      expect(onInteraction).not.toHaveBeenCalled();
+      expect(audioInstances.every(audio => audio.play.mock.calls.length === 0)).toBe(true);
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(720));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reschedules the next rps tick at raw range boundaries without changing the visible choice', () => {
+    vi.useFakeTimers();
+    const frameCallbacks: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    });
+    const view = render(
+      <Harness onInteraction={vi.fn()} providers={createProviders()} toolId="rps" />,
+    );
+    const flushPointerMove = () => {
+      const callback = frameCallbacks.shift();
+      expect(callback).toBeTypeOf('function');
+      act(() => callback!(0));
+    };
+
+    try {
+      selectTool();
+      act(() => vi.advanceTimersByTime(120));
+
+      fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
+      flushPointerMove();
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(719));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('primary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+
+      fireEvent.pointerMove(window, { clientX: 400, clientY: 400 });
+      flushPointerMove();
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+      act(() => vi.advanceTimersByTime(239));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('secondary');
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByRole('status', { name: 'effective tool variant' })).toHaveTextContent('tertiary');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('blocks a second interaction while the active recipe owns the generic effect lock', () => {

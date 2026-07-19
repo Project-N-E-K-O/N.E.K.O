@@ -4,6 +4,7 @@ import {
   AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_INTERACTION_INTENSITIES,
   AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS,
+  AVATAR_TOOL_ROUND_CHOICE_GESTURES,
   AVATAR_TOOL_TOUCH_ZONES,
   AVATAR_TOOL_VARIANT_IDS,
   getAvatarToolRegistration,
@@ -316,10 +317,47 @@ const lockedImpactProfileSchema = z.object({
   }
 });
 
+const roundChoiceProfileSchema = z.object({
+  kind: z.literal('round-choice'),
+  choices: z.array(z.object({
+    gesture: z.enum(AVATAR_TOOL_ROUND_CHOICE_GESTURES),
+    variant: avatarToolVariantIdSchema,
+  }).strict()).length(3),
+  cycle: z.object({
+    outsideIntervalMs: positiveNumberSchema,
+    rangeIntervalMs: positiveNumberSchema,
+  }).strict(),
+  confirmation: z.object({
+    sound: identifierSchema,
+    holdMs: positiveNumberSchema,
+  }).strict(),
+}).strict().superRefine((profile, context) => {
+  const gestures = profile.choices.map(choice => choice.gesture);
+  const variants = profile.choices.map(choice => choice.variant);
+  if (
+    new Set(gestures).size !== AVATAR_TOOL_ROUND_CHOICE_GESTURES.length
+    || new Set(variants).size !== AVATAR_TOOL_VARIANT_IDS.length
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['choices'],
+      message: 'must map every gesture and variant exactly once',
+    });
+  }
+  if (profile.cycle.rangeIntervalMs <= profile.cycle.outsideIntervalMs) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['cycle', 'rangeIntervalMs'],
+      message: 'must be greater than outsideIntervalMs',
+    });
+  }
+});
+
 const interactionProfileSchema = z.union([
   progressiveReleaseProfileSchema,
   pressReleaseProfileSchema,
   lockedImpactProfileSchema,
+  roundChoiceProfileSchema,
 ]);
 
 function collectInteractionReferences(profile: z.infer<typeof interactionProfileSchema>) {
@@ -329,6 +367,9 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
   if (profile.kind === 'press-release') {
     return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
   }
+  if (profile.kind === 'round-choice') {
+    return { sounds: [profile.confirmation.sound], effects: [] };
+  }
   return {
     sounds: [profile.chance.sound, profile.feedback.sound],
     effects: [profile.feedback.effect],
@@ -337,7 +378,7 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
 export const desktopAvatarToolInteractionSchema = z.object({
   profile: interactionProfileSchema,
   sounds: z.array(soundResourceSchema).min(1).max(16),
-  effects: z.array(effectRecipeSchema).min(1).max(16),
+  effects: z.array(effectRecipeSchema).max(16),
 }).strict().superRefine((interaction, context) => {
   const soundIds = interaction.sounds.map(sound => sound.id);
   const effectIds = interaction.effects.map(effect => effect.id);
@@ -611,6 +652,23 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
       },
     };
   }
+  if (profile.kind === 'round-choice') {
+    return {
+      kind: profile.kind,
+      choices: profile.choices.map(choice => ({
+        gesture: choice.gesture,
+        variant: choice.variant,
+      })),
+      cycle: {
+        outsideIntervalMs: profile.cycle.outsideIntervalMs,
+        rangeIntervalMs: profile.cycle.rangeIntervalMs,
+      },
+      confirmation: {
+        sound: profile.confirmation.sound,
+        holdMs: profile.confirmation.holdMs,
+      },
+    };
+  }
   return {
     kind: profile.kind,
     actionId: profile.actionId,
@@ -647,6 +705,9 @@ function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
   }
   if (profile.kind === 'press-release') {
     return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
+  }
+  if (profile.kind === 'round-choice') {
+    return { sounds: new Set([profile.confirmation.sound]), effects: new Set<string>() };
   }
   return {
     sounds: new Set([profile.chance.sound, profile.feedback.sound]),

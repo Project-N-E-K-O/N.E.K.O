@@ -1,7 +1,7 @@
 import type { CSSProperties, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   resolveAvatarToolImagePaths,
   type AvatarToolId,
   type AvatarToolItem,
@@ -239,6 +239,49 @@ export function prewarmAvatarToolSounds(toolId: AvatarToolId, disposer: AvatarTo
   });
 }
 
+const visualPreparation = new Map<AvatarToolId, Promise<void>>();
+
+export function prepareAvatarToolVisuals(toolId: AvatarToolId): Promise<void> {
+  const existing = visualPreparation.get(toolId);
+  if (existing) return existing;
+  if (typeof Image === 'undefined') return Promise.resolve();
+
+  const definition = getAvatarToolRegistration(toolId).definition;
+  const paths = new Set<string>();
+  Object.values(definition.visual.variants).forEach((variant) => {
+    paths.add(withAvatarToolAssetVersion(variant.iconImagePath));
+    paths.add(withAvatarToolAssetVersion(variant.pointerImagePath));
+  });
+  const preparation = Promise.all(Array.from(paths, imagePath => new Promise<void>((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      image.removeEventListener('load', decode);
+      image.removeEventListener('error', finish);
+      resolve();
+    };
+    const decode = () => {
+      if (typeof image.decode !== 'function') {
+        finish();
+        return;
+      }
+      try {
+        image.decode().catch(() => undefined).then(finish);
+      } catch {
+        finish();
+      }
+    };
+    image.addEventListener('load', decode, { once: true });
+    image.addEventListener('error', finish, { once: true });
+    image.src = imagePath;
+    if (image.complete) decode();
+  }))).then(() => undefined);
+  visualPreparation.set(toolId, preparation);
+  return preparation;
+}
+
 export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer) {
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return;
   let cleanup = () => {};
@@ -287,7 +330,7 @@ export type AvatarToolPresentation = {
 };
 
 export function getAvatarTool(toolId: AvatarToolId | null): AvatarToolItem | null {
-  return AVAILABLE_AVATAR_TOOLS.find(item => item.id === toolId) ?? null;
+  return AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === toolId) ?? null;
 }
 
 export function createAvatarToolVariantState(

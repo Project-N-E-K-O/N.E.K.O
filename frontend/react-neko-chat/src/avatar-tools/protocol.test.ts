@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { AVAILABLE_AVATAR_TOOLS } from '../avatarTools';
+import { AVAILABLE_COMPACT_AVATAR_TOOLS } from '../avatarTools';
 import { avatarInteractionPayloadSchema as messageSchemaExport } from '../message-schema';
 import {
   AVATAR_TOOL_REGISTRY,
@@ -22,6 +22,7 @@ const BASE_PAYLOAD = {
 } as const;
 
 function declaredFacts(profile: AvatarToolInteractionProfile) {
+  if (profile.kind === 'round-choice') return null;
   if (profile.kind === 'progressive-release') {
     return {
       actions: profile.stages.map(stage => ({
@@ -66,6 +67,15 @@ describe('avatar interaction payload contract', () => {
   it('derives every accepted action, intensity, touch zone and chance field from registrations', () => {
     AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
       const facts = declaredFacts(definition.interaction);
+      if (!facts) {
+        expect(avatarInteractionPayloadSchema.safeParse({
+          ...BASE_PAYLOAD,
+          toolId: definition.id,
+          actionId: 'confirm',
+          intensity: 'normal',
+        }).success).toBe(false);
+        return;
+      }
       facts.actions.forEach(({ actionId, intensities }) => {
         const touchZone = facts.touchZones[0];
         expect(avatarInteractionPayloadSchema.safeParse({
@@ -199,7 +209,7 @@ describe('avatar tool payload builders', () => {
   });
 
   it('keeps the single-window pointer state lightweight', () => {
-    const tool = AVAILABLE_AVATAR_TOOLS.find(item => item.id === 'fist')!;
+    const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === 'fist')!;
     const payload = buildAvatarToolPointerStatePayload({
       activeTool: tool,
       variant: 'primary',
@@ -216,7 +226,7 @@ describe('avatar tool payload builders', () => {
   });
 
   it('builds a desktop handoff with descriptor facts but no live pointer state', () => {
-    const tool = AVAILABLE_AVATAR_TOOLS.find(item => item.id === 'hammer')!;
+    const tool = AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === 'hammer')!;
     const payload = buildAvatarToolSelectionStatePayload({ activeTool: tool });
 
     expect(Object.keys(payload).sort()).toEqual([

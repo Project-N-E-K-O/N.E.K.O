@@ -128,6 +128,24 @@ function createLockedImpactHandlers(
   };
 }
 
+function createRoundChoiceHandlers(
+  profile: Extract<AvatarToolInteractionProfile, { kind: 'round-choice' }>,
+): AvatarToolRuleHandlers {
+  return {
+    pointerDown: (context: AvatarToolRuleContext) => context.hit && !context.interactionLocked ? {
+      rangeVariant: context.visibleVariant,
+      roundChoiceCycle: 'pause',
+    } : {},
+    commit: (context: AvatarToolRuleContext): AvatarToolCommand => context.hit ? {
+      rangeVariant: context.visibleVariant,
+      roundChoiceCycle: 'resume',
+      roundChoiceHoldMs: profile.confirmation.holdMs,
+      sound: profile.confirmation.sound,
+    } : {},
+    pointerRelease: () => ({}),
+  };
+}
+
 export function createAvatarToolProfileHandlers(
   definition: AvatarToolDefinition,
 ): AvatarToolRuleHandlers {
@@ -137,6 +155,9 @@ export function createAvatarToolProfileHandlers(
   }
   if (profile.kind === 'press-release') {
     return createPressReleaseHandlers(definition, profile);
+  }
+  if (profile.kind === 'round-choice') {
+    return createRoundChoiceHandlers(profile);
   }
   return createLockedImpactHandlers(definition, profile);
 }

@@ -1,8 +1,9 @@
 import type { AvatarToolRuleHandlers } from './interaction';
 import { createAvatarToolProfileHandlers } from './profileInterpreter';
 
-export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer'] as const;
+export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer', 'rps'] as const;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
+export const AVATAR_TOOL_ROUND_CHOICE_GESTURES = ['rock', 'scissors', 'paper'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
 export const AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS = [
@@ -66,6 +67,7 @@ export function hasValidAvatarToolAssetVersion(path: string): boolean {
 
 export type AvatarToolId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
 export type AvatarToolVariantId = typeof AVATAR_TOOL_VARIANT_IDS[number];
+export type AvatarToolRoundChoiceGesture = typeof AVATAR_TOOL_ROUND_CHOICE_GESTURES[number];
 export type AvatarToolInteractionIntensity = typeof AVATAR_TOOL_INTERACTION_INTENSITIES[number];
 export type AvatarToolTouchZone = typeof AVATAR_TOOL_TOUCH_ZONES[number];
 export type AvatarToolSoundId = string;
@@ -278,10 +280,27 @@ export type LockedImpactProfile = {
   };
 };
 
+export type RoundChoiceProfile = {
+  kind: 'round-choice';
+  choices: ReadonlyArray<{
+    gesture: AvatarToolRoundChoiceGesture;
+    variant: AvatarToolVariantId;
+  }>;
+  cycle: {
+    outsideIntervalMs: number;
+    rangeIntervalMs: number;
+  };
+  confirmation: {
+    sound: AvatarToolSoundId;
+    holdMs: number;
+  };
+};
+
 export type AvatarToolInteractionProfile =
   | ProgressiveReleaseProfile
   | PressReleaseProfile
-  | LockedImpactProfile;
+  | LockedImpactProfile
+  | RoundChoiceProfile;
 
 export type AvatarToolDefinition = {
   definitionVersion: 1;
@@ -662,6 +681,40 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
     requireSound(interaction.feedback.sound);
     requireEffect(interaction.feedback.effect);
     assertVariant(definition, interaction.feedback.effectVariant, 'interaction.feedback.effectVariant');
+    return;
+  }
+  if (interaction.kind === 'round-choice') {
+    const choices = interaction.choices ?? [];
+    const gestures = choices.map(choice => choice.gesture);
+    const variants = choices.map(choice => choice.variant);
+    if (
+      choices.length !== AVATAR_TOOL_VARIANT_IDS.length
+      || new Set(gestures).size !== AVATAR_TOOL_ROUND_CHOICE_GESTURES.length
+      || new Set(variants).size !== AVATAR_TOOL_VARIANT_IDS.length
+      || !AVATAR_TOOL_ROUND_CHOICE_GESTURES.every(gesture => gestures.includes(gesture))
+      || !AVATAR_TOOL_VARIANT_IDS.every(variant => variants.includes(variant))
+    ) {
+      fail(definition, 'round choices must map every gesture and variant exactly once');
+    }
+    choices.forEach((choice, index) => {
+      if (!AVATAR_TOOL_ROUND_CHOICE_GESTURES.includes(choice.gesture)) {
+        fail(definition, `interaction.choices[${index}].gesture is unsupported`);
+      }
+      assertVariant(definition, choice.variant, `interaction.choices[${index}].variant`);
+    });
+    assertPositive(definition, interaction.cycle?.outsideIntervalMs, 'interaction.cycle.outsideIntervalMs');
+    assertPositive(definition, interaction.cycle?.rangeIntervalMs, 'interaction.cycle.rangeIntervalMs');
+    if (interaction.cycle.rangeIntervalMs <= interaction.cycle.outsideIntervalMs) {
+      fail(definition, 'interaction.cycle.rangeIntervalMs must be greater than outsideIntervalMs');
+    }
+    requireSound(interaction.confirmation.sound);
+    assertPositive(definition, interaction.confirmation.holdMs, 'interaction.confirmation.holdMs');
+    if (definition.sounds.length !== 1 || definition.sounds[0]?.id !== interaction.confirmation.sound) {
+      fail(definition, 'round-choice sounds must contain only the confirmation sound');
+    }
+    if (definition.effects.length !== 0) {
+      fail(definition, 'round-choice must not declare unreferenced effects');
+    }
     return;
   }
   assertWireIdentifier(definition, interaction.actionId, 'interaction.actionId');
@@ -1124,12 +1177,105 @@ export const HAMMER_AVATAR_TOOL_DEFINITION = {
   },
 } as const satisfies AvatarToolDefinition;
 
+// Rock paper scissors --------------------------------------------------------
+
+export const RPS_AVATAR_TOOL_DEFINITION = {
+  definitionVersion: 1,
+  id: 'rps',
+  label: {
+    key: 'chat.toolRps',
+    fallback: '猜拳',
+  },
+  capability: {
+    desktopVisual: true,
+    desktopInteraction: true,
+  },
+  visual: {
+    initialVariant: 'primary',
+    variants: {
+      primary: {
+        iconImagePath: '/static/assets/avatar-tools/rps/rock-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/rps/rock-pointer.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      secondary: {
+        iconImagePath: '/static/assets/avatar-tools/rps/scissors-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/rps/scissors-pointer.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+      tertiary: {
+        iconImagePath: '/static/assets/avatar-tools/rps/paper-icon.png',
+        pointerImagePath: '/static/assets/avatar-tools/rps/paper-pointer.png',
+        menuOffsetX: 0,
+        menuOffsetY: 0,
+      },
+    },
+    presentation: {
+      inRangeVariantSource: 'range',
+      outsideVariantSource: 'range',
+      effectActiveImageKind: 'pointer',
+    },
+    menuScale: 1,
+    hotspotX: 40,
+    hotspotY: 40,
+    naturalWidth: 80,
+    naturalHeight: 80,
+    pointer: {
+      displayWidth: 80,
+      displayHeight: 80,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 0.62,
+      renderedAnchor: {
+        x: 24.8,
+        y: 24.8,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+    inRange: {
+      displayWidth: 80,
+      displayHeight: 80,
+      displayCoordinateSpace: 'pre-scale-css-pixel',
+      scale: 1,
+      renderedAnchor: {
+        x: 40,
+        y: 40,
+        coordinateSpace: 'final-css-pixel',
+      },
+    },
+  },
+  sounds: [{
+    id: 'rps-confirm',
+    src: '/static/sounds/avatar-tools/rps/confirm.mp3',
+    volume: 0.9,
+  }],
+  effects: [],
+  interaction: {
+    kind: 'round-choice',
+    choices: [
+      { gesture: 'rock', variant: 'primary' },
+      { gesture: 'scissors', variant: 'secondary' },
+      { gesture: 'paper', variant: 'tertiary' },
+    ],
+    cycle: {
+      outsideIntervalMs: 240,
+      rangeIntervalMs: 720,
+    },
+    confirmation: {
+      sound: 'rps-confirm',
+      holdMs: 1600,
+    },
+  },
+} as const satisfies AvatarToolDefinition;
+
 // Registry -------------------------------------------------------------------
 
 export const AVATAR_TOOL_REGISTRY = [
   registerAvatarTool(LOLLIPOP_AVATAR_TOOL_DEFINITION),
   registerAvatarTool(FIST_AVATAR_TOOL_DEFINITION),
   registerAvatarTool(HAMMER_AVATAR_TOOL_DEFINITION),
+  registerAvatarTool(RPS_AVATAR_TOOL_DEFINITION),
 ] as const satisfies ReadonlyArray<AvatarToolRegistration>;
 
 const registrationById = new Map<AvatarToolId, AvatarToolRegistration>();

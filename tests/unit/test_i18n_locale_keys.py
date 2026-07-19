@@ -217,6 +217,13 @@ def test_avatar_tool_rps_ui_keys_exist_in_all_locales():
 
 
 @pytest.mark.unit
+def test_avatar_tool_rps_uses_the_confirmed_chinese_name():
+    for locale_name in ("zh-CN.json", "zh-TW.json"):
+        data = json.loads((LOCALES_DIR / locale_name).read_text(encoding="utf-8"))
+        assert data["chat"]["toolRps"] == "猜拳"
+
+
+@pytest.mark.unit
 def test_avatar_tool_rps_announcement_placeholders_are_consistent():
     mismatches: dict[str, dict[str, list[str]]] = {}
 

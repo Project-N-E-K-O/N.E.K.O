@@ -161,6 +161,7 @@ function context(overrides: Partial<AvatarToolRuleContext> = {}): AvatarToolRule
     },
     rangeVariant: 'primary',
     outsideVariant: 'primary',
+    visibleVariant: 'primary',
     interactionLocked: false,
     recordBurst: vi.fn(() => 1),
     random: vi.fn(() => 0.9),
@@ -253,6 +254,29 @@ describe('avatar tool runtime rules', () => {
     expect(command.commit).toBeUndefined();
     expect(command.outsideVariant).toBe('secondary');
     expect(command.resetOutsideVariantAfterMs).toBe(220);
+  });
+
+  it('freezes and confirms the visible rps choice without creating a host commit', () => {
+    expect(resolveAvatarToolPointerDown(context({
+      toolId: 'rps',
+      rangeVariant: 'tertiary',
+      visibleVariant: 'secondary',
+    }))).toEqual({
+      rangeVariant: 'secondary',
+      roundChoiceCycle: 'pause',
+    });
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      rangeVariant: 'tertiary',
+      visibleVariant: 'secondary',
+    }));
+    expect(command).toEqual({
+      rangeVariant: 'secondary',
+      roundChoiceCycle: 'resume',
+      roundChoiceHoldMs: 1600,
+      sound: 'rps-confirm',
+    });
+    expect(command).not.toHaveProperty('commit');
   });
 
   it('applies interaction locks generically and preserves hammer-only easter eggs', () => {

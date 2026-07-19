@@ -406,6 +406,8 @@ export type AvatarToolCommand = {
   effect?: AvatarToolEffectId;
   effectMode?: string;
   pressFeedback?: 'until-pointer-release';
+  roundChoiceCycle?: 'pause' | 'resume';
+  roundChoiceHoldMs?: number;
   resetOutsideVariantAfterMs?: number;
 };
 
@@ -416,6 +418,7 @@ export type AvatarToolRuleContext = {
   hit: AvatarRangeHit | null;
   rangeVariant: AvatarToolVariantId;
   outsideVariant: AvatarToolVariantId;
+  visibleVariant: AvatarToolVariantId;
   interactionLocked: boolean;
   recordBurst(key: string, windowMs: number): number;
   random(): number;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AVAILABLE_AVATAR_TOOLS } from '../avatarTools';
+import { AVAILABLE_COMPACT_AVATAR_TOOLS } from '../avatarTools';
 import {
   AVATAR_TOOL_DEFINITIONS,
   FIST_REWARD_DROP_EFFECT_RECIPE,
@@ -290,6 +290,7 @@ describe('avatar tool presentation', () => {
       lollipop: 'primary',
       fist: 'primary',
       hammer: 'primary',
+      rps: 'primary',
     });
   });
 
@@ -388,7 +389,7 @@ describe('avatar tool presentation', () => {
 describe('avatar tool visual runtime geometry', () => {
   it('preserves the current pointer and in-range anchors for every tool', () => {
     const pointer = { x: 100, y: 100 };
-    const transforms = Object.fromEntries(AVAILABLE_AVATAR_TOOLS.map(item => [item.id, {
+    const transforms = Object.fromEntries(AVAILABLE_COMPACT_AVATAR_TOOLS.map(item => [item.id, {
       pointer: getAvatarToolOverlayTransform(item, true, pointer),
       inRange: getAvatarToolOverlayTransform(item, false, pointer),
     }]));
@@ -405,6 +406,10 @@ describe('avatar tool visual runtime geometry', () => {
       hammer: {
         pointer: 'translate3d(74px, 71.92px, 0)',
         inRange: 'translate3d(50px, 46px, 0)',
+      },
+      rps: {
+        pointer: 'translate3d(75.2px, 75.2px, 0)',
+        inRange: 'translate3d(60px, 60px, 0)',
       },
     });
   });

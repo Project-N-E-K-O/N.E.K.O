@@ -174,6 +174,9 @@ function deriveAvatarInteractionContractFacts(
       chanceField: profile.chance.field,
     };
   }
+  if (profile.kind === 'round-choice') {
+    throw new Error('round-choice does not produce a host interaction payload');
+  }
   return {
     actions: [{
       actionId: profile.actionId,
@@ -240,12 +243,14 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
 const avatarInteractionPayloadSchemaByToolId = new Map<
   string,
   ReturnType<typeof createAvatarInteractionPayloadSchema>
->(
-  AVATAR_TOOL_REGISTRY.map(({ definition }) => [
+>();
+AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
+  if (definition.interaction.kind === 'round-choice') return;
+  avatarInteractionPayloadSchemaByToolId.set(
     definition.id,
     createAvatarInteractionPayloadSchema(definition),
-  ]),
-);
+  );
+});
 
 const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
