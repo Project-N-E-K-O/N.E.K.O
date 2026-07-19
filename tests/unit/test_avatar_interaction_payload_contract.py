@@ -1,3 +1,6 @@
+import asyncio
+from collections import deque
+
 import pytest
 
 from config.prompts.avatar_interaction_contract import (
@@ -131,6 +134,74 @@ def test_rps_payload_normalizer_accepts_the_nine_canonical_rounds(
     assert "action_id" not in normalized
     assert "intensity" not in normalized
     assert "touch_zone" not in normalized
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_fields(
+    monkeypatch,
+):
+    from main_logic.core import greeting
+
+    class FakeOfflineClient:
+        _is_responding = False
+
+        def update_max_response_length(self, _max_length):
+            return None
+
+        async def prompt_ephemeral(self, *_args, **_kwargs):
+            return True
+
+    class RuntimeHarness(greeting.GreetingMixin):
+        def __init__(self):
+            self.is_active = True
+            self.session = FakeOfflineClient()
+            self.lanlan_name = "YUI"
+            self.master_name = "Alice"
+            self.user_language = "en"
+            self._recent_avatar_interaction_ids = deque(maxlen=32)
+            self._recent_avatar_interaction_id_set = set()
+            self._last_avatar_interaction_at = 0
+            self._last_avatar_interaction_speak_at = 0
+            self.avatar_interaction_cooldown_ms = 0
+            self.avatar_interaction_speak_cooldown_ms = 0
+            self._proactive_write_lock = asyncio.Lock()
+            self.lock = asyncio.Lock()
+            self.current_speech_id = ""
+            self._pending_turn_meta = None
+            self.acks = []
+
+        def _get_text_guard_max_length(self):
+            return 1000
+
+        async def send_avatar_interaction_ack(
+            self, interaction_id, accepted, reason, **kwargs
+        ):
+            self.acks.append((interaction_id, accepted, reason, kwargs))
+
+    monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
+    runtime = RuntimeHarness()
+
+    result = await runtime.handle_avatar_interaction({
+        "interactionId": "rps-runtime-delivery",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 1,
+        "userGesture": "rock",
+        "avatarGesture": "scissors",
+        "roundResult": "user_win",
+    })
+
+    assert result == {
+        "accepted": True,
+        "interaction_id": "rps-runtime-delivery",
+    }
+    assert runtime.acks == [(
+        "rps-runtime-delivery",
+        True,
+        "delivered",
+        {"turn_id": runtime.current_speech_id},
+    )]
 
 
 @pytest.mark.unit

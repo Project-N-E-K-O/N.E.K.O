@@ -172,6 +172,21 @@ describe('desktop avatar tool contract', () => {
     expect(() => desktopAvatarToolContractSchema.parse(contract)).not.toThrow();
   });
 
+  it('rejects an empty effect list when the selected profile references an effect', () => {
+    const contract = cloneJson(buildDesktopAvatarToolContract('rps'));
+    if (!contract.definition?.interaction) throw new Error('invalid fixture');
+    contract.definition.interaction.effects = [];
+
+    const parsed = desktopAvatarToolContractSchema.safeParse(contract);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: 'missing referenced effect rps-round-reveal' }),
+      ]));
+    }
+  });
+
   it('versions only declared asset paths exactly once and preserves referenced resources only', () => {
     window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'wire 1';
     AVATAR_TOOL_DEFINITIONS.forEach((source) => {
