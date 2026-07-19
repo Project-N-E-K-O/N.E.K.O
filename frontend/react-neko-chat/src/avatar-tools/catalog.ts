@@ -1,14 +1,26 @@
 import type { AvatarToolRuleHandlers } from './interaction';
-import { createAvatarToolProfileHandlers } from './profileInterpreter';
+import {
+  AVATAR_TOOL_ROUND_CHOICE_GESTURES,
+  createAvatarToolProfileHandlers,
+  type AvatarToolRoundChoiceGesture,
+} from './profileInterpreter';
+
+export {
+  AVATAR_TOOL_ROUND_CHOICE_GESTURES,
+  AVATAR_TOOL_ROUND_RESULTS,
+  resolveAvatarToolRoundResult,
+  type AvatarToolRoundChoiceGesture,
+  type AvatarToolRoundResult,
+} from './profileInterpreter';
 
 export const AVATAR_TOOL_DEFINITION_IDS = ['lollipop', 'fist', 'hammer', 'rps'] as const;
 export const AVATAR_TOOL_VARIANT_IDS = ['primary', 'secondary', 'tertiary'] as const;
-export const AVATAR_TOOL_ROUND_CHOICE_GESTURES = ['rock', 'scissors', 'paper'] as const;
 export const AVATAR_TOOL_INTERACTION_INTENSITIES = ['normal', 'rapid', 'burst', 'easter_egg'] as const;
 export const AVATAR_TOOL_TOUCH_ZONES = ['ear', 'head', 'face', 'body'] as const;
 export const AVATAR_TOOL_RESERVED_PAYLOAD_FIELDS = [
   'interactionId', 'target', 'pointer', 'textContext', 'timestamp',
   'toolId', 'actionId', 'intensity', 'touchZone', 'clientX', 'clientY',
+  'userGesture', 'avatarGesture', 'roundResult',
 ] as const;
 const AVATAR_TOOL_WIRE_IDENTIFIER_PATTERN = /^[a-z][a-z0-9_-]*$/;
 const AVATAR_TOOL_WIRE_IDENTIFIER_MAX_LENGTH = 64;
@@ -67,7 +79,6 @@ export function hasValidAvatarToolAssetVersion(path: string): boolean {
 
 export type AvatarToolId = typeof AVATAR_TOOL_DEFINITION_IDS[number];
 export type AvatarToolVariantId = typeof AVATAR_TOOL_VARIANT_IDS[number];
-export type AvatarToolRoundChoiceGesture = typeof AVATAR_TOOL_ROUND_CHOICE_GESTURES[number];
 export type AvatarToolInteractionIntensity = typeof AVATAR_TOOL_INTERACTION_INTENSITIES[number];
 export type AvatarToolTouchZone = typeof AVATAR_TOOL_TOUCH_ZONES[number];
 export type AvatarToolSoundId = string;
@@ -149,10 +160,25 @@ export type HammerSwingEffectRecipe = {
   };
 };
 
+export type RoundRevealPhase = 'approach' | 'impact' | 'result' | 'recover' | 'idle';
+
+export type RoundRevealEffectRecipe = {
+  id: string;
+  kind: 'round-reveal';
+  interactionLock: 'effect-lifetime';
+  separationPx: number;
+  resultOffsetY: number;
+  timeline: ReadonlyArray<{
+    phase: RoundRevealPhase;
+    delayMs: number;
+  }>;
+};
+
 export type AvatarToolEffectRecipe =
   | FixedParticleEffectRecipe
   | RandomScatterEffectRecipe
-  | HammerSwingEffectRecipe;
+  | HammerSwingEffectRecipe
+  | RoundRevealEffectRecipe;
 
 export type AvatarToolVisualVariant = {
   iconImagePath: string;
@@ -292,7 +318,11 @@ export type RoundChoiceProfile = {
   };
   confirmation: {
     sound: AvatarToolSoundId;
-    holdMs: number;
+  };
+  reveal: {
+    effect: AvatarToolEffectId;
+    userWinSound: AvatarToolSoundId;
+    otherResultSound: AvatarToolSoundId;
   };
 };
 
@@ -631,6 +661,35 @@ function validateEffects(definition: AvatarToolDefinition) {
       assertFinite(definition, effect.easterEgg?.anchorOffset?.y, `${effectPath}.easterEgg.anchorOffset.y`);
       return;
     }
+    if (effect.kind === 'round-reveal') {
+      if (effect.interactionLock !== 'effect-lifetime') {
+        fail(definition, `${effectPath} must lock interaction for its effect lifetime`);
+      }
+      assertPositive(definition, effect.separationPx, `${effectPath}.separationPx`);
+      assertFinite(definition, effect.resultOffsetY, `${effectPath}.resultOffsetY`);
+      const expectedPhases = ['approach', 'impact', 'result', 'recover', 'idle'];
+      const timeline: RoundRevealEffectRecipe['timeline'] = effect.timeline ?? [];
+      if (
+        timeline.length !== expectedPhases.length
+        || timeline.some((entry, timelineIndex) => entry.phase !== expectedPhases[timelineIndex])
+      ) {
+        fail(definition, 'round-reveal timeline must contain approach, impact, result, recover and idle in order');
+      }
+      timeline.forEach((entry, timelineIndex) => {
+        assertFinite(definition, entry.delayMs, `${effectPath}.timeline[${timelineIndex}].delayMs`);
+        if (entry.delayMs < 0) fail(definition, 'round-reveal timeline delays must not be negative');
+        if (timelineIndex === 0 && entry.delayMs !== 0) {
+          fail(definition, 'round-reveal approach must start at 0ms');
+        }
+        if (timelineIndex > 0 && entry.delayMs <= timeline[timelineIndex - 1].delayMs) {
+          fail(definition, 'round-reveal timeline delays after approach must be strictly increasing');
+        }
+      });
+      if ((timeline[3]?.delayMs ?? 0) - (timeline[2]?.delayMs ?? 0) < 2000) {
+        fail(definition, 'round-reveal result must remain visible for at least 2000ms');
+      }
+      return;
+    }
     fail(definition, `effects[${index}].kind is unsupported`);
   });
 }
@@ -708,12 +767,25 @@ function validateInteractionReferences(definition: AvatarToolDefinition) {
       fail(definition, 'interaction.cycle.rangeIntervalMs must be greater than outsideIntervalMs');
     }
     requireSound(interaction.confirmation.sound);
-    assertPositive(definition, interaction.confirmation.holdMs, 'interaction.confirmation.holdMs');
-    if (definition.sounds.length !== 1 || definition.sounds[0]?.id !== interaction.confirmation.sound) {
-      fail(definition, 'round-choice sounds must contain only the confirmation sound');
+    requireSound(interaction.reveal.userWinSound);
+    requireSound(interaction.reveal.otherResultSound);
+    requireEffect(interaction.reveal.effect);
+    const referencedSounds = new Set([
+      interaction.confirmation.sound,
+      interaction.reveal.userWinSound,
+      interaction.reveal.otherResultSound,
+    ]);
+    if (
+      definition.sounds.length !== referencedSounds.size
+      || definition.sounds.some(sound => !referencedSounds.has(sound.id))
+    ) {
+      fail(definition, 'round-choice sounds must match confirmation and result references exactly');
     }
-    if (definition.effects.length !== 0) {
-      fail(definition, 'round-choice must not declare unreferenced effects');
+    if (definition.effects.length !== 1 || definition.effects[0]?.id !== interaction.reveal.effect) {
+      fail(definition, 'round-choice effects must contain only the referenced round reveal');
+    }
+    if (definition.effects[0]?.kind !== 'round-reveal') {
+      fail(definition, 'round-choice reveal effect must be round-reveal');
     }
     return;
   }
@@ -1245,12 +1317,37 @@ export const RPS_AVATAR_TOOL_DEFINITION = {
       },
     },
   },
-  sounds: [{
-    id: 'rps-confirm',
-    src: '/static/sounds/avatar-tools/rps/confirm.mp3',
-    volume: 0.9,
+  sounds: [
+    {
+      id: 'rps-confirm',
+      src: '/static/sounds/avatar-tools/rps/confirm.mp3',
+      volume: 0.9,
+    },
+    {
+      id: 'rps-user-win',
+      src: '/static/sounds/avatar-tools/rps/user-win.mp3',
+      volume: 0.9,
+    },
+    {
+      id: 'rps-other-result',
+      src: '/static/sounds/avatar-tools/rps/other-result.mp3',
+      volume: 0.9,
+    },
+  ],
+  effects: [{
+    id: 'rps-round-reveal',
+    kind: 'round-reveal',
+    interactionLock: 'effect-lifetime',
+    separationPx: 54,
+    resultOffsetY: 62,
+    timeline: [
+      { phase: 'approach', delayMs: 0 },
+      { phase: 'impact', delayMs: 520 },
+      { phase: 'result', delayMs: 760 },
+      { phase: 'recover', delayMs: 3160 },
+      { phase: 'idle', delayMs: 3340 },
+    ],
   }],
-  effects: [],
   interaction: {
     kind: 'round-choice',
     choices: [
@@ -1264,7 +1361,11 @@ export const RPS_AVATAR_TOOL_DEFINITION = {
     },
     confirmation: {
       sound: 'rps-confirm',
-      holdMs: 1600,
+    },
+    reveal: {
+      effect: 'rps-round-reveal',
+      userWinSound: 'rps-user-win',
+      otherResultSound: 'rps-other-result',
     },
   },
 } as const satisfies AvatarToolDefinition;

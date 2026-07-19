@@ -11,12 +11,15 @@ import {
 } from './catalog';
 import {
   clampAvatarToolHeadGestureAnchor,
+  clampAvatarToolRoundRevealAnchor,
   createAvatarToolDisposer,
   createAvatarToolEffectExecution,
   createAvatarToolVariantState,
   deriveAvatarToolPresentation,
   getAvatarToolOverlayTransform,
   getAvatarToolOverlayTransformFromDefinition,
+  getAvatarToolRoundResultLabel,
+  getAvatarToolRoundResultLabels,
   playAvatarToolSound,
   prewarmAvatarToolSounds,
   resolveAvatarToolVisualPresentation,
@@ -405,6 +408,27 @@ describe('avatar tool visual runtime geometry', () => {
       x: 252,
       y: 192,
       coordinateSpace: 'viewport-css-pixel',
+    });
+  });
+
+  it('keeps the complete round reveal in view and never invents an avatar name', () => {
+    const anchor = { x: -20, y: 0, coordinateSpace: 'viewport-css-pixel' as const };
+    expect(clampAvatarToolRoundRevealAnchor(anchor, 80, 80, 54, 62, 300, 200)).toEqual({
+      x: 106,
+      y: 76,
+      coordinateSpace: 'viewport-css-pixel',
+    });
+    expect(getAvatarToolRoundResultLabel('user_win', '')).toBe('You win');
+    expect(getAvatarToolRoundResultLabel('draw', '')).toBe('Draw');
+    expect(getAvatarToolRoundResultLabel('avatar_win', '')).toBe('');
+    expect(getAvatarToolRoundResultLabels(' Yui ')).toEqual({
+      user_win: 'You win',
+      avatar_win: 'Yui wins',
+      draw: 'Draw',
+    });
+    expect(getAvatarToolRoundResultLabels('')).toEqual({
+      user_win: 'You win',
+      draw: 'Draw',
     });
   });
 

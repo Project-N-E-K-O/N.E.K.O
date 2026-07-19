@@ -7,10 +7,12 @@ import {
 } from './catalog';
 import {
   avatarInteractionPayloadSchema,
+  avatarToolStatePayloadSchema,
   buildAvatarInteractionPayload,
   buildAvatarToolPointerStatePayload,
   buildAvatarToolSelectionStatePayload,
   getAvatarToolStatePayloadKey,
+  resolveAvatarToolRoundResult,
   type AvatarInteractionPayload,
 } from './protocol';
 
@@ -68,12 +70,6 @@ describe('avatar interaction payload contract', () => {
     AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
       const facts = declaredFacts(definition.interaction);
       if (!facts) {
-        expect(avatarInteractionPayloadSchema.safeParse({
-          ...BASE_PAYLOAD,
-          toolId: definition.id,
-          actionId: 'confirm',
-          intensity: 'normal',
-        }).success).toBe(false);
         return;
       }
       facts.actions.forEach(({ actionId, intensities }) => {
@@ -129,6 +125,52 @@ describe('avatar interaction payload contract', () => {
     });
   });
 
+  it.each([
+    ['rock', 'rock', 'draw'],
+    ['rock', 'scissors', 'user_win'],
+    ['rock', 'paper', 'avatar_win'],
+    ['scissors', 'rock', 'avatar_win'],
+    ['scissors', 'scissors', 'draw'],
+    ['scissors', 'paper', 'user_win'],
+    ['paper', 'rock', 'user_win'],
+    ['paper', 'scissors', 'avatar_win'],
+    ['paper', 'paper', 'draw'],
+  ] as const)('accepts the canonical rps fact tuple %s/%s/%s', (
+    userGesture,
+    avatarGesture,
+    roundResult,
+  ) => {
+    expect(resolveAvatarToolRoundResult(userGesture, avatarGesture)).toBe(roundResult);
+    expect(avatarInteractionPayloadSchema.safeParse({
+      ...BASE_PAYLOAD,
+      toolId: 'rps',
+      userGesture,
+      avatarGesture,
+      roundResult,
+    }).success).toBe(true);
+  });
+
+  it('rejects incomplete, contradictory, or generic-action rps payloads', () => {
+    const valid = {
+      ...BASE_PAYLOAD,
+      toolId: 'rps',
+      userGesture: 'rock',
+      avatarGesture: 'scissors',
+      roundResult: 'user_win',
+    } as const;
+    [
+      { ...valid, roundResult: 'avatar_win' },
+      { ...valid, userGesture: 'unknown' },
+      { ...valid, avatarGesture: 'unknown' },
+      { ...valid, userGesture: 'unknown', avatarGesture: 'unknown', roundResult: 'draw' },
+      { ...valid, roundResult: 'unknown' },
+      { ...valid, userGesture: undefined },
+      { ...valid, actionId: 'play', intensity: 'normal' },
+    ].forEach((payload) => {
+      expect(avatarInteractionPayloadSchema.safeParse(payload).success).toBe(false);
+    });
+  });
+
   it('rejects undeclared actions, intensities and cross-tool facts', () => {
     const invalidPayloads = [
       { ...BASE_PAYLOAD, toolId: 'lollipop', actionId: 'bonk', intensity: 'normal' },
@@ -158,6 +200,7 @@ describe('avatar interaction payload contract', () => {
     type HammerPayload = Extract<AvatarInteractionPayload, { toolId: 'hammer' }>;
     type HammerEasterPayload = Extract<HammerPayload, { intensity: 'easter_egg' }>;
     type HammerRegularPayload = Extract<HammerPayload, { easterEgg?: false }>;
+    type RpsPayload = Extract<AvatarInteractionPayload, { toolId: 'rps' }>;
 
     expectTypeOf<LollipopPayload['actionId']>().toEqualTypeOf<'offer' | 'tease' | 'tap_soft'>();
     expectTypeOf<LollipopPayload['intensity']>().toEqualTypeOf<'normal' | 'rapid' | 'burst'>();
@@ -172,6 +215,9 @@ describe('avatar interaction payload contract', () => {
     expectTypeOf<HammerPayload['touchZone']>().toEqualTypeOf<'ear' | 'head' | 'face' | 'body'>();
     expectTypeOf<HammerEasterPayload['easterEgg']>().toEqualTypeOf<true>();
     expectTypeOf<HammerRegularPayload['easterEgg']>().toEqualTypeOf<false | undefined>();
+    expectTypeOf<RpsPayload['userGesture']>().toEqualTypeOf<'rock' | 'scissors' | 'paper'>();
+    expectTypeOf<RpsPayload['avatarGesture']>().toEqualTypeOf<'rock' | 'scissors' | 'paper'>();
+    expectTypeOf<RpsPayload['roundResult']>().toEqualTypeOf<'user_win' | 'avatar_win' | 'draw'>();
   });
 });
 describe('avatar tool payload builders', () => {
@@ -203,6 +249,25 @@ describe('avatar tool payload builders', () => {
     expect(() => buildAvatarInteractionPayload(invalidCommit)).toThrow();
   });
 
+  it('builds one strict rps fact payload without generic action fields', () => {
+    const payload = buildAvatarInteractionPayload({
+      toolId: 'rps',
+      userGesture: 'rock',
+      avatarGesture: 'scissors',
+      roundResult: 'user_win',
+      clientX: 3,
+      clientY: 4,
+    });
+    expect(payload).toEqual(expect.objectContaining({
+      toolId: 'rps',
+      userGesture: 'rock',
+      avatarGesture: 'scissors',
+      roundResult: 'user_win',
+    }));
+    expect(payload).not.toHaveProperty('actionId');
+    expect(payload).not.toHaveProperty('intensity');
+  });
+
   it('deduplicates state payloads independently of timestamps', () => {
     const base = { active: false, toolId: null, tool: null, timestamp: 1 } as const;
     expect(getAvatarToolStatePayloadKey(base)).toBe(getAvatarToolStatePayloadKey({ ...base, timestamp: 99 }));
@@ -223,6 +288,25 @@ describe('avatar tool payload builders', () => {
     });
 
     expect(payload).not.toHaveProperty('desktopContract');
+  });
+
+  it('publishes complete localized round-choice labels and rejects them for other profiles', () => {
+    const rps = AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === 'rps')!;
+    const labels = { user_win: 'You win', avatar_win: 'Yui wins', draw: 'Draw' };
+    const payload = buildAvatarToolSelectionStatePayload({
+      activeTool: rps,
+      roundChoiceResultLabels: labels,
+    });
+    expect(payload.roundChoiceResultLabels).toEqual(labels);
+    expect(() => avatarToolStatePayloadSchema.parse({
+      ...payload,
+      toolId: 'hammer',
+      desktopContract: undefined,
+    })).toThrow(/require a round-choice tool/);
+    expect(avatarToolStatePayloadSchema.parse({
+      ...payload,
+      roundChoiceResultLabels: { user_win: 'You win', draw: 'Draw' },
+    }).roundChoiceResultLabels).toEqual({ user_win: 'You win', draw: 'Draw' });
   });
 
   it('builds a desktop handoff with descriptor facts but no live pointer state', () => {

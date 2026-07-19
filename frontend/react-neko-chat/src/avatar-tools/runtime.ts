@@ -19,10 +19,12 @@ import {
   playAvatarToolSound,
   prepareAvatarToolVisuals,
   prewarmAvatarToolSounds,
-  type ActiveHammerSwingEffectExecution,
+  type ActiveAvatarToolEffectExecution,
   type AvatarToolDisposer,
   type AvatarToolHeadAnchor,
   type AvatarToolRoundChoiceAvatarGestureState,
+  type AvatarToolRoundRevealFacts,
+  type ActiveRoundRevealEffectExecution,
   type AvatarToolTransientVisualEffect,
 } from './presentation';
 import {
@@ -44,6 +46,7 @@ import {
   createAvatarToolVariantState,
   deriveAvatarToolPresentation,
   getAvatarToolOverlayTransform,
+  getAvatarToolRoundResultLabels,
   getAvatarToolPointer,
   getAvatarTool,
   getMonotonicNow,
@@ -56,11 +59,11 @@ import {
   resolveAvatarToolPointerDown,
   resolveAvatarToolPointerRelease,
   type AvatarToolCommand,
+  type AvatarToolRoundChoiceConfirmation,
 } from './interaction';
 import {
   getAvatarToolEffectRecipe,
   getAvatarToolRegistration,
-  type AvatarToolRoundChoiceGesture,
   type AvatarToolVariantId,
 } from './catalog';
 import {
@@ -133,14 +136,9 @@ type RuntimeRoundChoiceCycle = {
   timeoutId: number | null;
   avatarVariant: AvatarToolVariantId;
   avatarTimeoutId: number | null;
-  round: AvatarToolRoundChoiceRound | null;
-};
-
-export type AvatarToolRoundChoiceRound = {
-  userGesture: AvatarToolRoundChoiceGesture;
-  userVariant: AvatarToolVariantId;
-  avatarGesture: AvatarToolRoundChoiceGesture;
-  avatarVariant: AvatarToolVariantId;
+  round: AvatarToolRoundRevealFacts | null;
+  revealTimeoutIds: number[];
+  roundAudioStops: Array<() => void>;
 };
 
 type AvatarReactionBubbleAnchorSnapshot = {
@@ -217,6 +215,7 @@ type UseAvatarToolRuntimeOptions = {
   onStateChange?: (payload: AvatarToolStatePayload) => void;
   getToolLabel: (item: AvatarToolItem) => string;
   onDeactivate?: () => void;
+  avatarName?: string;
   providers?: AvatarToolRuntimeProviders;
 };
 
@@ -229,6 +228,7 @@ export function useAvatarToolRuntime({
   onStateChange,
   getToolLabel,
   onDeactivate,
+  avatarName = '',
   providers,
 }: UseAvatarToolRuntimeOptions) {
   const collectBounds = providers?.collectBounds ?? collectAvatarToolBounds;
@@ -246,11 +246,10 @@ export function useAvatarToolRuntime({
   const [overCompactZone, setOverCompactZone] = useState(false);
   const [insideHostWindow, setInsideHostWindow] = useState(true);
   const [overlayEffectExecution, setOverlayEffectExecution] =
-    useState<ActiveHammerSwingEffectExecution | null>(null);
+    useState<ActiveAvatarToolEffectExecution | null>(null);
   const [transientEffects, setTransientEffects] = useState<AvatarToolTransientVisualEffect[]>([]);
   const [roundChoiceAvatarGestureState, setRoundChoiceAvatarGestureState] =
     useState<AvatarToolRoundChoiceAvatarGestureState | null>(null);
-  const [roundChoiceRound, setRoundChoiceRound] = useState<AvatarToolRoundChoiceRound | null>(null);
 
   const generationRef = useRef(0);
   const sessionRef = useRef<RuntimeSession | null>(null);
@@ -263,7 +262,7 @@ export function useAvatarToolRuntime({
   const rangeVariantsRef = useRef(rangeVariants);
   const outsideVariantsRef = useRef(outsideVariants);
   const presentedVariantRef = useRef<AvatarToolVariantId>('primary');
-  const overlayEffectExecutionRef = useRef<ActiveHammerSwingEffectExecution | null>(null);
+  const overlayEffectExecutionRef = useRef<ActiveAvatarToolEffectExecution | null>(null);
   const interactionLockRef = useRef(false);
   const interactionCallbackRef = useRef(onInteraction);
   const stateCallbackRef = useRef(onStateChange);
@@ -282,6 +281,10 @@ export function useAvatarToolRuntime({
   const effectVisualIdRef = useRef(0);
 
   const overlayEffectActive = overlayEffectExecution !== null;
+  const roundChoiceResultLabels = useMemo(
+    () => getAvatarToolRoundResultLabels(avatarName),
+    [avatarName],
+  );
   const presentation = useMemo(() => deriveAvatarToolPresentation({
     activeToolId,
     rangeVariants,
@@ -430,6 +433,7 @@ export function useAvatarToolRuntime({
         activeTool: currentTool,
         avatarRangeVariant: currentTool ? rangeVariantsRef.current[currentTool.id] : undefined,
         outsideRangeVariant: currentTool ? outsideVariantsRef.current[currentTool.id] : undefined,
+        roundChoiceResultLabels: roundChoiceResultLabels ?? undefined,
       });
       const key = getAvatarToolStatePayloadKey(payload);
       if (key === lastStateKeyRef.current) return;
@@ -457,12 +461,13 @@ export function useAvatarToolRuntime({
       insideHostWindow: insideHostRef.current,
       pointer: latestPointerRef.current,
       label: current.activeTool ? toolLabelCallbackRef.current(current.activeTool) : undefined,
+      roundChoiceResultLabels: roundChoiceResultLabels ?? undefined,
     });
     const key = getAvatarToolStatePayloadKey(payload);
     if (key === lastStateKeyRef.current) return;
     lastStateKeyRef.current = key;
     callback(payload);
-  }, [ownsLocalPointerRuntime]);
+  }, [ownsLocalPointerRuntime, roundChoiceResultLabels]);
 
   const publishInactiveState = useCallback(() => {
     const callback = stateCallbackRef.current;
@@ -500,7 +505,6 @@ export function useAvatarToolRuntime({
     interactionLockRef.current = false;
     setTransientEffects([]);
     setRoundChoiceAvatarGestureState(null);
-    setRoundChoiceRound(null);
     const nextRangeVariants = createAvatarToolVariantState();
     const nextOutsideVariants = createAvatarToolVariantState();
     setRangeVariants(nextRangeVariants);
@@ -515,6 +519,19 @@ export function useAvatarToolRuntime({
     setRangeVariants(nextRange);
     publishState();
   }, [publishState]);
+
+  const clearRoundChoiceReveal = useCallback((session: RuntimeSession) => {
+    const cycle = session.roundChoice;
+    if (!cycle) return;
+    cycle.revealTimeoutIds.forEach(timeoutId => session.disposer.clearTimeout(timeoutId));
+    cycle.revealTimeoutIds = [];
+    cycle.roundAudioStops.forEach(stop => stop());
+    cycle.roundAudioStops = [];
+    if (overlayEffectExecutionRef.current?.kind !== 'round-reveal') return;
+    overlayEffectExecutionRef.current = null;
+    setOverlayEffectExecution(null);
+    interactionLockRef.current = false;
+  }, []);
 
   const stopRoundChoiceAvatarGesture = useCallback((session: RuntimeSession) => {
     const cycle = session.roundChoice;
@@ -531,14 +548,12 @@ export function useAvatarToolRuntime({
     if (!cycle || !session.disposer.isCurrent()) return;
     if (cycle.avatarTimeoutId !== null) session.disposer.clearTimeout(cycle.avatarTimeoutId);
     cycle.avatarTimeoutId = null;
-    const finalVisible = cycle.status === 'confirmed' && cycle.round !== null;
-    if ((!cycle.rawHitActive && !finalVisible) || cycle.status === 'preparing') {
+    if (!cycle.rawHitActive || cycle.status === 'preparing') {
       setRoundChoiceAvatarGestureState(null);
       return;
     }
     const update = (advance: boolean) => {
-      const keepFinalVisible = cycle.status === 'confirmed' && cycle.round !== null;
-      if (!session.disposer.isCurrent() || (!cycle.rawHitActive && !keepFinalVisible)) {
+      if (!session.disposer.isCurrent() || !cycle.rawHitActive) {
         stopRoundChoiceAvatarGesture(session);
         return;
       }
@@ -550,15 +565,13 @@ export function useAvatarToolRuntime({
       }
       const anchor = getHeadAnchor(cycle.rawHitBounds);
       const nextState: AvatarToolRoundChoiceAvatarGestureState | null = anchor ? {
-        variant: cycle.round?.avatarVariant ?? cycle.avatarVariant,
-        phase: cycle.round ? 'final' : 'cycling',
+        variant: cycle.avatarVariant,
         anchor,
       } : null;
       setRoundChoiceAvatarGestureState(previous => (
         previous
         && nextState
         && previous.variant === nextState.variant
-        && previous.phase === nextState.phase
         && previous.anchor.x === nextState.anchor.x
         && previous.anchor.y === nextState.anchor.y
           ? previous
@@ -576,7 +589,6 @@ export function useAvatarToolRuntime({
     const cycle = session.roundChoice;
     if (!cycle) return;
     cycle.round = null;
-    setRoundChoiceRound(null);
     if (cycle.rawHitActive && cycle.status !== 'preparing') {
       startRoundChoiceAvatarGesture(session);
     } else {
@@ -586,33 +598,32 @@ export function useAvatarToolRuntime({
 
   const confirmRoundChoice = useCallback((
     session: RuntimeSession,
-    userGesture: AvatarToolRoundChoiceGesture,
-    userVariant: AvatarToolVariantId,
-    avatarGesture: AvatarToolRoundChoiceGesture,
-    avatarVariant: AvatarToolVariantId,
+    confirmation: AvatarToolRoundChoiceConfirmation,
   ) => {
     const cycle = session.roundChoice;
     if (!cycle) return;
-    const round = { userGesture, userVariant, avatarGesture, avatarVariant };
+    const round: AvatarToolRoundRevealFacts = {
+      userGesture: confirmation.userGesture,
+      userVariant: confirmation.userVariant,
+      avatarGesture: confirmation.avatarGesture,
+      avatarVariant: confirmation.avatarVariant,
+      roundResult: confirmation.roundResult,
+    };
     cycle.round = round;
-    cycle.avatarVariant = avatarVariant;
-    setRoundChoiceRound(round);
-    startRoundChoiceAvatarGesture(session);
-  }, [startRoundChoiceAvatarGesture]);
+    cycle.avatarVariant = confirmation.avatarVariant;
+    stopRoundChoiceAvatarGesture(session);
+  }, [stopRoundChoiceAvatarGesture]);
 
-  const resumeRoundChoiceCycle = useCallback((session: RuntimeSession, confirmationHoldMs?: number) => {
+  const resumeRoundChoiceCycle = useCallback((session: RuntimeSession) => {
     const cycle = session.roundChoice;
     if (!cycle || !session.disposer.isCurrent()) return;
     if (cycle.timeoutId !== null) session.disposer.clearTimeout(cycle.timeoutId);
-    cycle.status = confirmationHoldMs === undefined ? 'running' : 'confirmed';
+    cycle.status = 'running';
     const advance = () => {
       if (
-        (cycle.status !== 'running' && cycle.status !== 'confirmed')
+        cycle.status !== 'running'
         || !session.disposer.isCurrent()
       ) return;
-      const confirmationEnded = cycle.status === 'confirmed';
-      cycle.status = 'running';
-      if (confirmationEnded) clearRoundChoiceRound(session);
       const currentVariant = rangeVariantsRef.current[session.toolId];
       const currentIndex = cycle.variants.indexOf(currentVariant);
       const nextVariant = cycle.variants[(currentIndex + 1 + cycle.variants.length) % cycle.variants.length];
@@ -620,23 +631,83 @@ export function useAvatarToolRuntime({
       const intervalMs = cycle.rawHitActive ? cycle.rangeIntervalMs : cycle.outsideIntervalMs;
       cycle.timeoutId = session.disposer.setTimeout(advance, intervalMs);
     };
-    const intervalMs = confirmationHoldMs
-      ?? (cycle.rawHitActive ? cycle.rangeIntervalMs : cycle.outsideIntervalMs);
+    const intervalMs = cycle.rawHitActive ? cycle.rangeIntervalMs : cycle.outsideIntervalMs;
     cycle.timeoutId = session.disposer.setTimeout(advance, intervalMs);
-  }, [clearRoundChoiceRound, setRoundChoiceVariants]);
+  }, [setRoundChoiceVariants]);
+
+  const startRoundChoiceReveal = useCallback((
+    session: RuntimeSession,
+    effectId: string,
+    resultSound: string,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const cycle = session.roundChoice;
+    const round = cycle?.round;
+    if (!cycle || !round || !session.disposer.isCurrent()) return;
+    const recipe = getAvatarToolEffectRecipe(session.toolId, effectId);
+    if (recipe.kind !== 'round-reveal') return;
+    const anchor = getHeadAnchor(cycle.rawHitBounds);
+    if (!anchor) return;
+    clearRoundChoiceReveal(session);
+    cycle.status = 'confirmed';
+    interactionLockRef.current = true;
+    const executionBase = {
+      kind: recipe.kind,
+      recipe,
+      interactionLock: recipe.interactionLock,
+      round,
+      userStart: { x: clientX, y: clientY },
+      anchor,
+      avatarName,
+    } as const;
+    const setPhase = (phase: ActiveRoundRevealEffectExecution['phase']) => {
+      const execution: ActiveRoundRevealEffectExecution = { ...executionBase, phase };
+      overlayEffectExecutionRef.current = execution;
+      setOverlayEffectExecution(execution);
+    };
+    setPhase('approach');
+    recipe.timeline.forEach(({ phase, delayMs }, timelineIndex) => {
+      if (timelineIndex === 0) return;
+      const timeoutId = session.disposer.setTimeout(() => {
+        cycle.revealTimeoutIds = cycle.revealTimeoutIds.filter(id => id !== timeoutId);
+        if (phase === 'result') {
+          cycle.roundAudioStops.push(playAvatarToolSound(resultSound, session.disposer));
+        }
+        if (phase === 'idle') {
+          clearRoundChoiceReveal(session);
+          clearRoundChoiceRound(session);
+          resumeRoundChoiceCycle(session);
+          updateOverlayPosition();
+          publishState();
+          return;
+        }
+        setPhase(phase);
+      }, delayMs);
+      cycle.revealTimeoutIds.push(timeoutId);
+    });
+  }, [
+    avatarName,
+    clearRoundChoiceReveal,
+    clearRoundChoiceRound,
+    getHeadAnchor,
+    publishState,
+    resumeRoundChoiceCycle,
+    updateOverlayPosition,
+  ]);
 
   const cancelRoundChoiceState = useCallback((session: RuntimeSession) => {
     const cycle = session.roundChoice;
     if (!cycle) return;
     if (cycle.status === 'confirmed') {
+      clearRoundChoiceReveal(session);
       cycle.round = null;
-      setRoundChoiceRound(null);
       stopRoundChoiceAvatarGesture(session);
       resumeRoundChoiceCycle(session);
       return;
     }
     if (cycle.round) clearRoundChoiceRound(session);
-  }, [clearRoundChoiceRound, resumeRoundChoiceCycle, stopRoundChoiceAvatarGesture]);
+  }, [clearRoundChoiceReveal, clearRoundChoiceRound, resumeRoundChoiceCycle, stopRoundChoiceAvatarGesture]);
 
   const updateRoundChoiceRawHit = useCallback((session: RuntimeSession, hit: AvatarRangeHit | null) => {
     const cycle = session.roundChoice;
@@ -646,8 +717,8 @@ export function useAvatarToolRuntime({
     if (cycle.rawHitActive === rawHitActive) return;
     cycle.rawHitActive = rawHitActive;
     if (cycle.status === 'running') resumeRoundChoiceCycle(session);
+    if (cycle.status === 'confirmed' && overlayEffectExecutionRef.current?.kind === 'round-reveal') return;
     if (rawHitActive) startRoundChoiceAvatarGesture(session);
-    else if (cycle.status === 'confirmed' && cycle.round) startRoundChoiceAvatarGesture(session);
     else stopRoundChoiceAvatarGesture(session);
   }, [resumeRoundChoiceCycle, startRoundChoiceAvatarGesture, stopRoundChoiceAvatarGesture]);
 
@@ -675,6 +746,8 @@ export function useAvatarToolRuntime({
         avatarVariant: profile.choices[0].variant,
         avatarTimeoutId: null,
         round: null,
+        revealTimeoutIds: [],
+        roundAudioStops: [],
       } : null,
     };
     sessionRef.current = session;
@@ -857,9 +930,8 @@ export function useAvatarToolRuntime({
       setOutsideVariants(next);
     }
     if (command.commit) emit(command.commit);
-    if (command.sound) playAvatarToolSound(command.sound, session.disposer);
     if (command.pressFeedback === 'until-pointer-release') session.pressFeedbackActive = true;
-    if (command.roundChoiceCycle && session.roundChoice) {
+    if ((command.roundChoiceCycle || command.roundChoiceConfirmation) && session.roundChoice) {
       const cycle = session.roundChoice;
       if (cycle.timeoutId !== null) {
         session.disposer.clearTimeout(cycle.timeoutId);
@@ -868,20 +940,22 @@ export function useAvatarToolRuntime({
       if (command.roundChoiceCycle === 'pause') {
         cycle.status = 'pressed';
         if (cycle.round) clearRoundChoiceRound(session);
-      } else if (
-        command.roundChoiceUserGesture
-        && command.roundChoiceUserVariant
-        && command.roundChoiceAvatarGesture
-        && command.roundChoiceAvatarVariant
-      ) {
-        resumeRoundChoiceCycle(session, command.roundChoiceHoldMs);
-        confirmRoundChoice(
+      } else if (command.roundChoiceConfirmation) {
+        const confirmation = command.roundChoiceConfirmation;
+        confirmRoundChoice(session, confirmation);
+        startRoundChoiceReveal(
           session,
-          command.roundChoiceUserGesture,
-          command.roundChoiceUserVariant,
-          command.roundChoiceAvatarGesture,
-          command.roundChoiceAvatarVariant,
+          confirmation.revealEffect,
+          confirmation.resultSound,
+          clientX,
+          clientY,
         );
+      }
+    }
+    if (command.sound) {
+      const stopSound = playAvatarToolSound(command.sound, session.disposer);
+      if (command.roundChoiceConfirmation && session.roundChoice) {
+        session.roundChoice.roundAudioStops.push(stopSound);
       }
     }
     if (command.effect) executeEffect(command.effect, command.effectMode, clientX, clientY);
@@ -899,7 +973,14 @@ export function useAvatarToolRuntime({
       }, command.resetOutsideVariantAfterMs);
     }
     publishState();
-  }, [clearRoundChoiceRound, confirmRoundChoice, emit, executeEffect, publishState, resumeRoundChoiceCycle]);
+  }, [
+    clearRoundChoiceRound,
+    confirmRoundChoice,
+    emit,
+    executeEffect,
+    publishState,
+    startRoundChoiceReveal,
+  ]);
 
   const releasePressFeedback = useCallback((cancelOutsideFeedback: boolean) => {
     const session = sessionRef.current;
@@ -1029,8 +1110,8 @@ export function useAvatarToolRuntime({
     const handlePointerCancel = (event: PointerEvent) => {
       const session = sessionRef.current;
       const press = session?.press;
-      if (press && press.pointerId !== event.pointerId) return;
-      if (session) cancelRoundChoiceState(session);
+      if (!session || !press || press.pointerId !== event.pointerId) return;
+      cancelRoundChoiceState(session);
       releasePressFeedback(true);
     };
     const handleBlur = () => {
@@ -1111,7 +1192,9 @@ export function useAvatarToolRuntime({
     };
     const hide = () => {
       const activeSession = sessionRef.current;
-      if (activeSession) cancelRoundChoiceState(activeSession);
+      const roundRevealActive = activeSession?.roundChoice?.status === 'confirmed'
+        && overlayEffectExecutionRef.current?.kind === 'round-reveal';
+      if (activeSession && !roundRevealActive) cancelRoundChoiceState(activeSession);
       releasePressFeedback(true);
       boundsCacheRef.current.expiresAt = 0;
       latestTargetRef.current = null;
@@ -1255,7 +1338,6 @@ export function useAvatarToolRuntime({
     effectiveVariant,
     selectTool,
     clearTool,
-    roundChoiceRound,
     setInsideHostWindow: (value: boolean) => {
       insideHostRef.current = value;
       setInsideHostWindow(value);

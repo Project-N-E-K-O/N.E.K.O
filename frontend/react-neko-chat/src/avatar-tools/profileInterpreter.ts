@@ -9,6 +9,41 @@ import type {
   AvatarToolRuleHandlers,
 } from './interaction';
 
+export const AVATAR_TOOL_ROUND_CHOICE_GESTURES = ['rock', 'scissors', 'paper'] as const;
+export const AVATAR_TOOL_ROUND_RESULTS = ['user_win', 'avatar_win', 'draw'] as const;
+
+export type AvatarToolRoundChoiceGesture = typeof AVATAR_TOOL_ROUND_CHOICE_GESTURES[number];
+export type AvatarToolRoundResult = typeof AVATAR_TOOL_ROUND_RESULTS[number];
+
+export function resolveAvatarToolRoundResult(
+  userGesture: AvatarToolRoundChoiceGesture,
+  avatarGesture: AvatarToolRoundChoiceGesture,
+): AvatarToolRoundResult;
+export function resolveAvatarToolRoundResult(
+  userGesture: string,
+  avatarGesture: string,
+): AvatarToolRoundResult | null;
+export function resolveAvatarToolRoundResult(
+  userGesture: string,
+  avatarGesture: string,
+): AvatarToolRoundResult | null {
+  if (
+    userGesture === avatarGesture
+    && AVATAR_TOOL_ROUND_CHOICE_GESTURES.some(gesture => gesture === userGesture)
+  ) return 'draw';
+  if (
+    (userGesture === 'rock' && avatarGesture === 'scissors')
+    || (userGesture === 'scissors' && avatarGesture === 'paper')
+    || (userGesture === 'paper' && avatarGesture === 'rock')
+  ) return 'user_win';
+  if (
+    (avatarGesture === 'rock' && userGesture === 'scissors')
+    || (avatarGesture === 'scissors' && userGesture === 'paper')
+    || (avatarGesture === 'paper' && userGesture === 'rock')
+  ) return 'avatar_win';
+  return null;
+}
+
 function createCommit(
   definition: AvatarToolDefinition,
   context: AvatarToolRuleContext,
@@ -129,6 +164,7 @@ function createLockedImpactHandlers(
 }
 
 function createRoundChoiceHandlers(
+  definition: AvatarToolDefinition,
   profile: Extract<AvatarToolInteractionProfile, { kind: 'round-choice' }>,
 ): AvatarToolRuleHandlers {
   return {
@@ -145,14 +181,25 @@ function createRoundChoiceHandlers(
         Math.max(0, Math.floor(context.random() * profile.choices.length)),
       );
       const avatarChoice = profile.choices[choiceIndex];
+      const roundChoiceResult = resolveAvatarToolRoundResult(userChoice.gesture, avatarChoice.gesture);
       return {
         rangeVariant: context.visibleVariant,
-        roundChoiceCycle: 'confirm',
-        roundChoiceHoldMs: profile.confirmation.holdMs,
-        roundChoiceUserGesture: userChoice.gesture,
-        roundChoiceUserVariant: userChoice.variant,
-        roundChoiceAvatarGesture: avatarChoice.gesture,
-        roundChoiceAvatarVariant: avatarChoice.variant,
+        commit: createCommit(definition, context, {
+          userGesture: userChoice.gesture,
+          avatarGesture: avatarChoice.gesture,
+          roundResult: roundChoiceResult,
+        }),
+        roundChoiceConfirmation: {
+          userGesture: userChoice.gesture,
+          userVariant: userChoice.variant,
+          avatarGesture: avatarChoice.gesture,
+          avatarVariant: avatarChoice.variant,
+          roundResult: roundChoiceResult,
+          revealEffect: profile.reveal.effect,
+          resultSound: roundChoiceResult === 'user_win'
+            ? profile.reveal.userWinSound
+            : profile.reveal.otherResultSound,
+        },
         sound: profile.confirmation.sound,
       };
     },
@@ -171,7 +218,7 @@ export function createAvatarToolProfileHandlers(
     return createPressReleaseHandlers(definition, profile);
   }
   if (profile.kind === 'round-choice') {
-    return createRoundChoiceHandlers(profile);
+    return createRoundChoiceHandlers(definition, profile);
   }
   return createLockedImpactHandlers(definition, profile);
 }

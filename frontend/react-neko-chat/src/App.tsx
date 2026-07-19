@@ -857,6 +857,7 @@ function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -1080,6 +1081,7 @@ function CompactChatApp({
     onInteraction: onAvatarInteraction,
     onStateChange: onAvatarToolStateChange,
     getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;

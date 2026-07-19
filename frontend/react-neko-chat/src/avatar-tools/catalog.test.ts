@@ -138,7 +138,12 @@ describe('avatar tool definitions', () => {
         { gesture: 'paper', variant: 'tertiary' },
       ],
       cycle: { outsideIntervalMs: 240, rangeIntervalMs: 720 },
-      confirmation: { sound: 'rps-confirm', holdMs: 1600 },
+      confirmation: { sound: 'rps-confirm' },
+      reveal: {
+        effect: 'rps-round-reveal',
+        userWinSound: 'rps-user-win',
+        otherResultSound: 'rps-other-result',
+      },
     });
     expect(lollipop).not.toHaveProperty('touchZone');
     expect(lollipop).not.toHaveProperty('chance');
@@ -393,6 +398,15 @@ describe('avatar tool definition validation', () => {
   it('keeps round-choice resources closed over the current profile references', () => {
     const rps = getAvatarToolRegistration('rps').definition;
     if (rps.interaction.kind !== 'round-choice') throw new Error('rps must use round-choice');
+    const roundRevealEffect = rps.effects[0];
+    if (roundRevealEffect?.kind !== 'round-reveal') throw new Error('rps must use round-reveal');
+    expect(roundRevealEffect.timeline).toEqual([
+      { phase: 'approach', delayMs: 0 },
+      { phase: 'impact', delayMs: 520 },
+      { phase: 'result', delayMs: 760 },
+      { phase: 'recover', delayMs: 3160 },
+      { phase: 'idle', delayMs: 3340 },
+    ]);
     const lollipop = getAvatarToolRegistration('lollipop').definition;
     const extraSound = asDefinition({
       ...rps,
@@ -403,18 +417,27 @@ describe('avatar tool definition validation', () => {
       effects: [lollipop.effects[0]],
     });
     const missingConfirmation = asDefinition({ ...rps, sounds: [] });
-    const invalidHold = asDefinition({
+    const invalidTimeline = asDefinition({
       ...rps,
-      interaction: {
-        ...rps.interaction,
-        confirmation: { ...rps.interaction.confirmation, holdMs: 0 },
-      },
+      effects: [{ ...roundRevealEffect, timeline: roundRevealEffect.timeline.slice(1) }],
+    });
+    const shortResult = asDefinition({
+      ...rps,
+      effects: [{
+        ...roundRevealEffect,
+        timeline: roundRevealEffect.timeline.map(entry => (
+          entry.phase === 'recover' ? { ...entry, delayMs: 1200 }
+            : entry.phase === 'idle' ? { ...entry, delayMs: 1380 }
+              : entry
+        )),
+      }],
     });
 
-    expect(() => validateAvatarToolDefinition(extraSound)).toThrow(/only the confirmation sound/);
-    expect(() => validateAvatarToolDefinition(extraEffect)).toThrow(/unreferenced effects/);
+    expect(() => validateAvatarToolDefinition(extraSound)).toThrow(/match confirmation and result references exactly/);
+    expect(() => validateAvatarToolDefinition(extraEffect)).toThrow(/missing effect rps-round-reveal/);
     expect(() => validateAvatarToolDefinition(missingConfirmation)).toThrow(/sounds must contain/);
-    expect(() => validateAvatarToolDefinition(invalidHold)).toThrow(/holdMs must be positive/);
+    expect(() => validateAvatarToolDefinition(invalidTimeline)).toThrow(/approach, impact, result, recover and idle/);
+    expect(() => validateAvatarToolDefinition(shortResult)).toThrow(/at least 2000ms/);
   });
 
   it('rejects duplicate sound ids inside one definition but reuses matching cross-definition resources', () => {

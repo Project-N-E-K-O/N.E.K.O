@@ -205,10 +205,57 @@ const hammerSwingEffectSchema = z.object({
   });
 });
 
+const roundRevealTimelineEntrySchema = z.object({
+  phase: z.enum(['approach', 'impact', 'result', 'recover', 'idle']),
+  delayMs: nonNegativeNumberSchema,
+}).strict();
+
+const roundRevealEffectSchema = z.object({
+  id: identifierSchema,
+  kind: z.literal('round-reveal'),
+  interactionLock: z.literal('effect-lifetime'),
+  separationPx: positiveNumberSchema,
+  resultOffsetY: finiteNumberSchema,
+  timeline: z.array(roundRevealTimelineEntrySchema).length(5),
+}).strict().superRefine((effect, context) => {
+  const expected = ['approach', 'impact', 'result', 'recover', 'idle'] as const;
+  effect.timeline.forEach((entry, index) => {
+    if (entry.phase !== expected[index]) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'phase'],
+        message: `must be ${expected[index]}`,
+      });
+    }
+    if (index === 0 && entry.delayMs !== 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'delayMs'],
+        message: 'approach must start at 0ms',
+      });
+    }
+    if (index > 0 && entry.delayMs <= effect.timeline[index - 1].delayMs) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timeline', index, 'delayMs'],
+        message: 'must be strictly increasing',
+      });
+    }
+  });
+  if (effect.timeline[3].delayMs - effect.timeline[2].delayMs < 2000) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['timeline', 3, 'delayMs'],
+      message: 'result must remain visible for at least 2000ms',
+    });
+  }
+});
+
 const effectRecipeSchema = z.union([
   fixedParticlesEffectSchema,
   randomScatterEffectSchema,
   hammerSwingEffectSchema,
+  roundRevealEffectSchema,
 ]);
 
 const progressiveReleaseProfileSchema = z.object({
@@ -329,7 +376,11 @@ const roundChoiceProfileSchema = z.object({
   }).strict(),
   confirmation: z.object({
     sound: identifierSchema,
-    holdMs: positiveNumberSchema,
+  }).strict(),
+  reveal: z.object({
+    effect: identifierSchema,
+    userWinSound: identifierSchema,
+    otherResultSound: identifierSchema,
   }).strict(),
 }).strict().superRefine((profile, context) => {
   const gestures = profile.choices.map(choice => choice.gesture);
@@ -368,7 +419,10 @@ function collectInteractionReferences(profile: z.infer<typeof interactionProfile
     return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
   }
   if (profile.kind === 'round-choice') {
-    return { sounds: [profile.confirmation.sound], effects: [] };
+    return {
+      sounds: [profile.confirmation.sound, profile.reveal.userWinSound, profile.reveal.otherResultSound],
+      effects: [profile.reveal.effect],
+    };
   }
   return {
     sounds: [profile.chance.sound, profile.feedback.sound],
@@ -560,6 +614,16 @@ function projectEffect(effect: AvatarToolEffectRecipe) {
       delayMs: projectRange(effect.delayMs),
     };
   }
+  if (effect.kind === 'round-reveal') {
+    return {
+      id: effect.id,
+      kind: effect.kind,
+      interactionLock: effect.interactionLock,
+      separationPx: effect.separationPx,
+      resultOffsetY: effect.resultOffsetY,
+      timeline: effect.timeline.map(entry => ({ phase: entry.phase, delayMs: entry.delayMs })),
+    };
+  }
   return {
     id: effect.id,
     kind: effect.kind,
@@ -665,7 +729,11 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
       },
       confirmation: {
         sound: profile.confirmation.sound,
-        holdMs: profile.confirmation.holdMs,
+      },
+      reveal: {
+        effect: profile.reveal.effect,
+        userWinSound: profile.reveal.userWinSound,
+        otherResultSound: profile.reveal.otherResultSound,
       },
     };
   }
@@ -707,7 +775,14 @@ function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
     return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
   }
   if (profile.kind === 'round-choice') {
-    return { sounds: new Set([profile.confirmation.sound]), effects: new Set<string>() };
+    return {
+      sounds: new Set([
+        profile.confirmation.sound,
+        profile.reveal.userWinSound,
+        profile.reveal.otherResultSound,
+      ]),
+      effects: new Set([profile.reveal.effect]),
+    };
   }
   return {
     sounds: new Set([profile.chance.sound, profile.feedback.sound]),

@@ -158,6 +158,7 @@ print(json.dumps({
             },
             "acceptsTouchZone": tool_contract["touch_zone"],
             "booleanField": tool_contract["boolean_field"],
+            "roundChoice": tool_contract["round_choice"],
         }
         for tool_id, tool_contract in AVATAR_INTERACTION_TOOL_CONTRACT.items()
     },
@@ -175,6 +176,7 @@ print(json.dumps({
         ])),
         acceptsTouchZone: tool.acceptsTouchZone,
         booleanField: tool.booleanField && tool.booleanField.output,
+        roundChoice: tool.roundChoice,
       },
     ])),
   };
@@ -228,6 +230,65 @@ test('avatar interaction host normalizer isolates each tool special fields', () 
   assert.equal(hammer.touch_zone, 'head');
   assert.equal(hammer.reward_drop, undefined);
   assert.equal(hammer.easter_egg, true);
+});
+
+test('avatar interaction host normalizer accepts exactly the nine canonical rps rounds', () => {
+  const { normalizeAvatarInteractionPayload: normalize } = loadAppButtons();
+  const rounds = [
+    ['rock', 'rock', 'draw'],
+    ['rock', 'scissors', 'user_win'],
+    ['rock', 'paper', 'avatar_win'],
+    ['scissors', 'rock', 'avatar_win'],
+    ['scissors', 'scissors', 'draw'],
+    ['scissors', 'paper', 'user_win'],
+    ['paper', 'rock', 'user_win'],
+    ['paper', 'scissors', 'avatar_win'],
+    ['paper', 'paper', 'draw'],
+  ];
+  for (const [userGesture, avatarGesture, roundResult] of rounds) {
+    const normalized = normalize({
+      interactionId: `rps-${userGesture}-${avatarGesture}`,
+      toolId: 'rps',
+      target: 'avatar',
+      pointer: { clientX: 12, clientY: 34 },
+      timestamp: 1234,
+      userGesture,
+      avatarGesture,
+      roundResult,
+    });
+    assert.deepEqual(
+      [normalized.user_gesture, normalized.avatar_gesture, normalized.round_result],
+      [userGesture, avatarGesture, roundResult],
+    );
+    assert.equal(normalized.action_id, undefined);
+    assert.equal(normalized.intensity, undefined);
+    assert.equal(normalized.touch_zone, undefined);
+  }
+});
+
+test('avatar interaction host normalizer rejects incomplete, contradictory, and extra rps facts', () => {
+  const { normalizeAvatarInteractionPayload: normalize } = loadAppButtons();
+  const valid = {
+    interactionId: 'rps-strict',
+    toolId: 'rps',
+    target: 'avatar',
+    timestamp: 1,
+    userGesture: 'rock',
+    avatarGesture: 'scissors',
+    roundResult: 'user_win',
+  };
+  for (const payload of [
+    { ...valid, roundResult: 'avatar_win' },
+    { ...valid, userGesture: 'unknown' },
+    { ...valid, userGesture: 'unknown', avatarGesture: 'unknown', roundResult: 'draw' },
+    { ...valid, avatarGesture: undefined },
+    { ...valid, actionId: 'play' },
+    { ...valid, intensity: 'normal' },
+    { ...valid, touchZone: 'head' },
+    { ...valid, userVariant: 'primary' },
+  ]) {
+    assert.equal(normalize(payload), null);
+  }
 });
 
 test('avatar interaction host normalizer rejects unsupported tools and preserves wire facts', () => {
@@ -483,6 +544,36 @@ print(json.dumps([
   assert.deepEqual(cases.map(canonicalHost), backend);
 });
 
+test('the host rps payload is accepted unchanged as one backend round', () => {
+  const { normalizeAvatarInteractionPayload: normalize } = loadAppButtons();
+  const hostPayload = normalize({
+    interactionId: 'rps-host-backend',
+    toolId: 'rps',
+    target: 'avatar',
+    pointer: { clientX: 10, clientY: 20 },
+    timestamp: 100,
+    userGesture: 'scissors',
+    avatarGesture: 'paper',
+    roundResult: 'user_win',
+  });
+  const backendScript = String.raw`
+import json
+import sys
+from config.prompts.avatar_interaction_contract import normalize_avatar_interaction_payload
+
+print(json.dumps(normalize_avatar_interaction_payload(json.loads(sys.argv[1])), sort_keys=True))
+`;
+  const backend = runPythonContractScript(backendScript, [JSON.stringify(hostPayload)]);
+
+  assert.equal(backend.interaction_id, hostPayload.interaction_id);
+  assert.equal(backend.tool_id, 'rps');
+  assert.equal(backend.user_gesture, hostPayload.user_gesture);
+  assert.equal(backend.avatar_gesture, hostPayload.avatar_gesture);
+  assert.equal(backend.round_result, hostPayload.round_result);
+  assert.equal(backend.action_id, undefined);
+  assert.equal(backend.intensity, undefined);
+});
+
 test('avatar interaction host sends without owning model emotion state', async () => {
   const appliedEmotions = [];
   const harness = createLifecycleHarness({
@@ -507,6 +598,36 @@ test('avatar interaction host sends without owning model emotion state', async (
   });
   harness.advance(2200);
   assert.deepEqual(appliedEmotions, []);
+});
+
+test('rps reuses the established pending-turn and ack gate', async () => {
+  const harness = createLifecycleHarness();
+  const round = interactionId => ({
+    interactionId,
+    toolId: 'rps',
+    target: 'avatar',
+    pointer: { clientX: 10, clientY: 20 },
+    timestamp: 100,
+    userGesture: 'rock',
+    avatarGesture: 'scissors',
+    roundResult: 'user_win',
+  });
+
+  assert.equal(await harness.appButtons.sendAvatarInteractionPayload(round('rps-ack-1')), true);
+  assert.equal(await harness.appButtons.sendAvatarInteractionPayload(round('rps-ack-2')), false);
+  assert.deepEqual(
+    [harness.sent[0].user_gesture, harness.sent[0].avatar_gesture, harness.sent[0].round_result],
+    ['rock', 'scissors', 'user_win'],
+  );
+  assert.equal(harness.sent[0].action_id, undefined);
+  assert.equal(harness.sent[0].intensity, undefined);
+
+  harness.dispatch('neko-avatar-interaction-ack', {
+    interactionId: 'rps-ack-1',
+    accepted: false,
+  });
+  harness.advance(600);
+  assert.equal(await harness.appButtons.sendAvatarInteractionPayload(round('rps-ack-2')), true);
 });
 
 test('avatar interaction continuation keeps slow replies pending until a late ack', async () => {

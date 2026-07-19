@@ -74,6 +74,18 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
+def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_approach():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert ".avatar-tool-round-reveal.is-result .avatar-tool-round-reveal-hand.is-user" in styles
+    assert "animation: avatar-tool-rps-user-separate" in styles
+    assert "animation: avatar-tool-rps-avatar-separate" in styles
+    assert "@keyframes avatar-tool-rps-user-separate" in styles
+    assert "@keyframes avatar-tool-rps-avatar-separate" in styles
+    assert ".avatar-tool-round-reveal.is-user_win.is-approach .avatar-tool-round-reveal-hand.is-user" in styles
+    assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
+
+
 def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
@@ -243,6 +255,31 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     # never does — it restores via lastRestorableChatSurfaceMode.
     assert "if (mode !== 'compact' && mode !== 'full') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
+
+
+def test_avatar_tool_result_name_tracks_the_current_catgirl():
+    geometry_path = (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "app"
+        / "app-react-chat-window"
+        / "geometry-and-messages.js"
+    )
+    source = geometry_path.read_text(encoding="utf-8")
+
+    name_block = source.split("function getConfiguredAssistantName()", 1)[1].split(
+        "function getCurrentAssistantName()",
+        1,
+    )[0]
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+
+    assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
+        "window.lanlan_config && window.lanlan_config.lanlan_name"
+    )
+    assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
 
 
 def test_goodbye_composer_hidden_survives_surface_mode_switches():

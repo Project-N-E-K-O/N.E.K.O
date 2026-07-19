@@ -135,10 +135,29 @@ describe('desktop avatar tool contract', () => {
           { gesture: 'paper', variant: 'tertiary' },
         ],
         cycle: { outsideIntervalMs: 240, rangeIntervalMs: 720 },
-        confirmation: { sound: 'rps-confirm', holdMs: 1600 },
+        confirmation: { sound: 'rps-confirm' },
+        reveal: {
+          effect: 'rps-round-reveal',
+          userWinSound: 'rps-user-win',
+          otherResultSound: 'rps-other-result',
+        },
       },
-      sounds: [expect.objectContaining({ id: 'rps-confirm' })],
-      effects: [],
+      sounds: [
+        expect.objectContaining({ id: 'rps-confirm' }),
+        expect.objectContaining({ id: 'rps-user-win' }),
+        expect.objectContaining({ id: 'rps-other-result' }),
+      ],
+      effects: [expect.objectContaining({
+        id: 'rps-round-reveal',
+        kind: 'round-reveal',
+        timeline: [
+          { phase: 'approach', delayMs: 0 },
+          { phase: 'impact', delayMs: 520 },
+          { phase: 'result', delayMs: 760 },
+          { phase: 'recover', delayMs: 3160 },
+          { phase: 'idle', delayMs: 3340 },
+        ],
+      })],
     }));
   });
 

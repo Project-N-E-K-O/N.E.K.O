@@ -11,8 +11,8 @@ from config.prompts.prompts_avatar_interaction import (
 
 
 @pytest.mark.unit
-def test_avatar_interaction_contract_is_limited_to_the_three_established_tools():
-    assert set(AVATAR_INTERACTION_TOOL_CONTRACT) == {"lollipop", "fist", "hammer"}
+def test_avatar_interaction_contract_declares_three_action_tools_and_rps_round_facts():
+    assert set(AVATAR_INTERACTION_TOOL_CONTRACT) == {"lollipop", "fist", "hammer", "rps"}
     assert AVATAR_INTERACTION_TOOL_CONTRACT["lollipop"]["actions"] == {
         "offer": frozenset({"normal"}),
         "tease": frozenset({"normal"}),
@@ -24,6 +24,115 @@ def test_avatar_interaction_contract_is_limited_to_the_three_established_tools()
     assert AVATAR_INTERACTION_TOOL_CONTRACT["hammer"]["actions"] == {
         "bonk": frozenset({"normal", "rapid", "burst", "easter_egg"}),
     }
+    assert AVATAR_INTERACTION_TOOL_CONTRACT["rps"] == {
+        "actions": {},
+        "touch_zone": False,
+        "boolean_field": None,
+        "round_choice": True,
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("user_gesture", "avatar_gesture", "round_result"),
+    [
+        ("rock", "rock", "draw"),
+        ("rock", "scissors", "user_win"),
+        ("rock", "paper", "avatar_win"),
+        ("scissors", "rock", "avatar_win"),
+        ("scissors", "scissors", "draw"),
+        ("scissors", "paper", "user_win"),
+        ("paper", "rock", "user_win"),
+        ("paper", "scissors", "avatar_win"),
+        ("paper", "paper", "draw"),
+    ],
+)
+def test_rps_payload_normalizer_accepts_the_nine_canonical_rounds(
+    user_gesture, avatar_gesture, round_result
+):
+    normalized = normalize_avatar_interaction_payload({
+        "interactionId": f"rps-{user_gesture}-{avatar_gesture}",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 1,
+        "userGesture": user_gesture,
+        "avatarGesture": avatar_gesture,
+        "roundResult": round_result,
+    })
+    assert normalized is not None
+    assert normalized["user_gesture"] == user_gesture
+    assert normalized["avatar_gesture"] == avatar_gesture
+    assert normalized["round_result"] == round_result
+    assert "action_id" not in normalized
+    assert "intensity" not in normalized
+    assert "touch_zone" not in normalized
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "extra_or_override",
+    [
+        {"roundResult": "avatar_win"},
+        {"userGesture": "unknown"},
+        {"userGesture": "unknown", "avatarGesture": "unknown", "roundResult": "draw"},
+        {"avatarGesture": None},
+        {"actionId": "play"},
+        {"intensity": "normal"},
+        {"touchZone": "head"},
+        {"userVariant": "primary"},
+    ],
+)
+def test_rps_payload_normalizer_rejects_incomplete_contradictory_or_extra_facts(
+    extra_or_override,
+):
+    assert normalize_avatar_interaction_payload({
+        "interactionId": "rps-strict",
+        "toolId": "rps",
+        "target": "avatar",
+        "timestamp": 1,
+        "userGesture": "rock",
+        "avatarGesture": "scissors",
+        "roundResult": "user_win",
+        **extra_or_override,
+    }) is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("locale", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_rps_temporary_prompt_uses_the_same_round_and_current_avatar_name(locale):
+    payload = {
+        "tool_id": "rps",
+        "user_gesture": "paper",
+        "avatar_gesture": "rock",
+        "round_result": "user_win",
+    }
+    instruction = _build_avatar_interaction_instruction(
+        locale, "YUI", "Alice", payload
+    )
+    memory = _build_avatar_interaction_memory_meta(locale, payload, "Alice")
+
+    assert "Alice" in instruction
+    assert "YUI" in instruction
+    assert "\n" not in instruction
+    assert memory == {
+        "memory_note": "",
+        "memory_dedupe_key": "rps_round",
+        "memory_dedupe_rank": 1,
+    }
+
+
+@pytest.mark.unit
+def test_rps_prompt_and_memory_reject_a_contradictory_round():
+    payload = {
+        "tool_id": "rps",
+        "user_gesture": "rock",
+        "avatar_gesture": "scissors",
+        "round_result": "avatar_win",
+    }
+    with pytest.raises(ValueError, match="rps round facts"):
+        _build_avatar_interaction_instruction("en", "YUI", "Alice", payload)
+    with pytest.raises(ValueError, match="rps round facts"):
+        _build_avatar_interaction_memory_meta("en", payload, "Alice")
 
 
 @pytest.mark.unit

@@ -4,6 +4,7 @@ import {
   type AvatarToolEffectId,
   type AvatarToolId,
   type AvatarToolRoundChoiceGesture,
+  type AvatarToolRoundResult,
   type AvatarToolSoundId,
   type AvatarToolTouchZone,
   type AvatarToolVariantId,
@@ -399,6 +400,16 @@ type AvatarToolInteractionCommitFromPayload<Payload extends AvatarInteractionPay
 export type AvatarToolInteractionCommit =
   AvatarToolInteractionCommitFromPayload<AvatarInteractionPayload>;
 
+export type AvatarToolRoundChoiceConfirmation = {
+  userGesture: AvatarToolRoundChoiceGesture;
+  userVariant: AvatarToolVariantId;
+  avatarGesture: AvatarToolRoundChoiceGesture;
+  avatarVariant: AvatarToolVariantId;
+  roundResult: AvatarToolRoundResult;
+  revealEffect: AvatarToolEffectId;
+  resultSound: AvatarToolSoundId;
+};
+
 export type AvatarToolCommand = {
   commit?: AvatarToolInteractionCommit;
   rangeVariant?: AvatarToolVariantId;
@@ -407,12 +418,8 @@ export type AvatarToolCommand = {
   effect?: AvatarToolEffectId;
   effectMode?: string;
   pressFeedback?: 'until-pointer-release';
-  roundChoiceCycle?: 'pause' | 'confirm';
-  roundChoiceHoldMs?: number;
-  roundChoiceUserGesture?: AvatarToolRoundChoiceGesture;
-  roundChoiceUserVariant?: AvatarToolVariantId;
-  roundChoiceAvatarGesture?: AvatarToolRoundChoiceGesture;
-  roundChoiceAvatarVariant?: AvatarToolVariantId;
+  roundChoiceCycle?: 'pause';
+  roundChoiceConfirmation?: AvatarToolRoundChoiceConfirmation;
   resetOutsideVariantAfterMs?: number;
 };
 

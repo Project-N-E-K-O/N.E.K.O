@@ -256,7 +256,7 @@ describe('avatar tool runtime rules', () => {
     expect(command.resetOutsideVariantAfterMs).toBe(220);
   });
 
-  it('freezes and confirms the visible rps choice without creating a host commit', () => {
+  it('freezes the visible rps choice and commits the same unique round facts', () => {
     const random = vi.fn(() => 0.9);
     expect(resolveAvatarToolPointerDown(context({
       toolId: 'rps',
@@ -273,17 +273,33 @@ describe('avatar tool runtime rules', () => {
       random,
     }));
     expect(command).toEqual({
+      commit: {
+        toolId: 'rps',
+        userGesture: 'scissors',
+        avatarGesture: 'paper',
+        roundResult: 'user_win',
+        clientX: 120,
+        clientY: 140,
+      },
       rangeVariant: 'secondary',
-      roundChoiceCycle: 'confirm',
-      roundChoiceHoldMs: 1600,
-      roundChoiceUserGesture: 'scissors',
-      roundChoiceUserVariant: 'secondary',
-      roundChoiceAvatarGesture: 'paper',
-      roundChoiceAvatarVariant: 'tertiary',
+      roundChoiceConfirmation: {
+        userGesture: 'scissors',
+        userVariant: 'secondary',
+        avatarGesture: 'paper',
+        avatarVariant: 'tertiary',
+        roundResult: 'user_win',
+        revealEffect: 'rps-round-reveal',
+        resultSound: 'rps-user-win',
+      },
       sound: 'rps-confirm',
     });
     expect(random).toHaveBeenCalledTimes(1);
-    expect(command).not.toHaveProperty('commit');
+    expect(command.commit).toEqual(expect.objectContaining({
+      toolId: 'rps',
+      userGesture: 'scissors',
+      avatarGesture: 'paper',
+      roundResult: 'user_win',
+    }));
 
     const invalidRandom = vi.fn(() => 0.5);
     expect(resolveAvatarToolCommit(context({
@@ -307,10 +323,38 @@ describe('avatar tool runtime rules', () => {
     }));
 
     expect(command).toMatchObject({
-      roundChoiceAvatarGesture: gesture,
-      roundChoiceAvatarVariant: variant,
+      roundChoiceConfirmation: {
+        avatarGesture: gesture,
+        avatarVariant: variant,
+      },
     });
     expect(random).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['rock', 0, 'draw'],
+    ['rock', 1 / 3, 'user_win'],
+    ['rock', 2 / 3, 'avatar_win'],
+    ['scissors', 0, 'avatar_win'],
+    ['scissors', 1 / 3, 'draw'],
+    ['scissors', 2 / 3, 'user_win'],
+    ['paper', 0, 'user_win'],
+    ['paper', 1 / 3, 'avatar_win'],
+    ['paper', 2 / 3, 'draw'],
+  ] as const)('computes the unique rps result for %s at random boundary %s', (userGesture, randomValue, result) => {
+    const profile = getAvatarToolRegistration('rps').definition.interaction;
+    if (profile.kind !== 'round-choice') throw new Error('invalid fixture');
+    const userChoice = profile.choices.find(choice => choice.gesture === userGesture);
+    if (!userChoice) throw new Error('invalid fixture');
+    const command = resolveAvatarToolCommit(context({
+      toolId: 'rps',
+      visibleVariant: userChoice.variant,
+      random: () => randomValue,
+    }));
+    expect(command.roundChoiceConfirmation?.roundResult).toBe(result);
+    expect(command.roundChoiceConfirmation?.resultSound).toBe(
+      result === 'user_win' ? 'rps-user-win' : 'rps-other-result',
+    );
   });
 
   it('applies interaction locks generically and preserves hammer-only easter eggs', () => {

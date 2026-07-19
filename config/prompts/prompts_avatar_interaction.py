@@ -16,7 +16,7 @@
 Avatar-interaction prompt templates and payload normalizers.
 
 Used when the frontend reports a tool-based avatar interaction
-(lollipop / fist / hammer) — these helpers validate the payload,
+(lollipop / fist / hammer / rps) — these helpers validate the payload,
 localize event facts, and compose the model instruction + memory note
 that drive the runtime reaction.
 """
@@ -36,8 +36,10 @@ from config._runtime import (
     truncate_to_tokens,
 )
 from config.prompts.avatar_interaction_contract import (
+    AVATAR_INTERACTION_ROUND_GESTURES as _AVATAR_INTERACTION_ROUND_GESTURES,
     AVATAR_INTERACTION_TOUCH_ZONE_TOOLS as _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS,
     normalize_avatar_interaction_intensity as _normalize_avatar_interaction_intensity,
+    resolve_avatar_interaction_round_result as _resolve_avatar_interaction_round_result,
 )
 
 
@@ -527,6 +529,70 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
 }
 
 
+# Temporary fact-only bridge for the first RPS dialogue integration. The final
+# dialogue style is intentionally deferred; these strings only preserve the
+# already-resolved round and ask for one natural response from the current avatar.
+_AVATAR_INTERACTION_RPS_PROMPT_PROFILES = {
+    "zh": {
+        "template": "{actor}刚和{avatar}完成一局猜拳：{actor}出{user_gesture}，{avatar}出{avatar_gesture}，结果是{result}。请以{avatar}的身份根据本局事实简短自然地回应。",
+        "gestures": {"rock": "石头", "scissors": "剪刀", "paper": "布"},
+        "results": {"user_win": "{actor}获胜", "avatar_win": "{avatar}获胜", "draw": "平局"},
+    },
+    "zh-TW": {
+        "template": "{actor}剛和{avatar}完成一局猜拳：{actor}出{user_gesture}，{avatar}出{avatar_gesture}，結果是{result}。請以{avatar}的身分根據本局事實簡短自然地回應。",
+        "gestures": {"rock": "石頭", "scissors": "剪刀", "paper": "布"},
+        "results": {"user_win": "{actor}獲勝", "avatar_win": "{avatar}獲勝", "draw": "平手"},
+    },
+    "en": {
+        "template": "{actor} and {avatar} just completed one round of rock-paper-scissors: {actor} played {user_gesture}, {avatar} played {avatar_gesture}, and the result was {result}. Reply briefly and naturally as {avatar}, based only on this round.",
+        "gestures": {"rock": "rock", "scissors": "scissors", "paper": "paper"},
+        "results": {"user_win": "{actor} won", "avatar_win": "{avatar} won", "draw": "a draw"},
+    },
+    "ja": {
+        "template": "{actor}と{avatar}がじゃんけんを1回終えました。{actor}は{user_gesture}、{avatar}は{avatar_gesture}を出し、結果は{result}です。今回の事実だけをもとに、{avatar}として短く自然に返答してください。",
+        "gestures": {"rock": "グー", "scissors": "チョキ", "paper": "パー"},
+        "results": {"user_win": "{actor}の勝ち", "avatar_win": "{avatar}の勝ち", "draw": "あいこ"},
+    },
+    "ko": {
+        "template": "{actor}와 {avatar}가 가위바위보 한 판을 마쳤다. {actor}는 {user_gesture}, {avatar}는 {avatar_gesture}를 냈고 결과는 {result}이다. 이 판의 사실만 바탕으로 {avatar}로서 짧고 자연스럽게 답해라.",
+        "gestures": {"rock": "바위", "scissors": "가위", "paper": "보"},
+        "results": {"user_win": "{actor} 승리", "avatar_win": "{avatar} 승리", "draw": "무승부"},
+    },
+    "ru": {
+        "template": "{actor} и {avatar} только что закончили один раунд игры «камень, ножницы, бумага»: {actor} выбрал(а) {user_gesture}, {avatar} — {avatar_gesture}; результат: {result}. Ответь кратко и естественно от лица {avatar}, опираясь только на этот раунд.",
+        "gestures": {"rock": "камень", "scissors": "ножницы", "paper": "бумагу"},
+        "results": {"user_win": "победа: {actor}", "avatar_win": "победа: {avatar}", "draw": "ничья"},
+    },
+    "es": {
+        "template": "{actor} y {avatar} acaban de terminar una ronda de piedra, papel o tijera: {actor} sacó {user_gesture}, {avatar} sacó {avatar_gesture} y el resultado fue {result}. Responde de forma breve y natural como {avatar}, basándote solo en esta ronda.",
+        "gestures": {"rock": "piedra", "scissors": "tijera", "paper": "papel"},
+        "results": {"user_win": "ganó {actor}", "avatar_win": "ganó {avatar}", "draw": "empate"},
+    },
+    "pt": {
+        "template": "{actor} e {avatar} acabaram de concluir uma rodada de pedra, papel e tesoura: {actor} jogou {user_gesture}, {avatar} jogou {avatar_gesture} e o resultado foi {result}. Responda de forma breve e natural como {avatar}, com base apenas nesta rodada.",
+        "gestures": {"rock": "pedra", "scissors": "tesoura", "paper": "papel"},
+        "results": {"user_win": "{actor} venceu", "avatar_win": "{avatar} venceu", "draw": "empate"},
+    },
+}
+
+
+def _require_rps_round_facts(payload: dict) -> tuple[str, str, str]:
+    user_gesture = str(payload.get("user_gesture") or "").strip().lower()
+    avatar_gesture = str(payload.get("avatar_gesture") or "").strip().lower()
+    round_result = str(payload.get("round_result") or "").strip().lower()
+    expected_result = _resolve_avatar_interaction_round_result(
+        user_gesture, avatar_gesture
+    )
+    if (
+        user_gesture not in _AVATAR_INTERACTION_ROUND_GESTURES
+        or avatar_gesture not in _AVATAR_INTERACTION_ROUND_GESTURES
+        or not expected_result
+        or round_result != expected_result
+    ):
+        raise ValueError("Invalid rps round facts")
+    return user_gesture, avatar_gesture, round_result
+
+
 def _require_avatar_interaction_facts(tool_id: str, action_id: str, payload: dict) -> str:
     intensity = _normalize_avatar_interaction_intensity(
         tool_id, action_id, payload.get("intensity")
@@ -811,6 +877,23 @@ def _build_avatar_interaction_instruction(
     """Build the localized event fact sent to the model for an interaction."""
     locale = _avatar_interaction_locale(language)
     tool_id = payload["tool_id"]
+    if tool_id == "rps":
+        user_gesture, avatar_gesture, round_result = _require_rps_round_facts(payload)
+        profile = _AVATAR_INTERACTION_RPS_PROMPT_PROFILES.get(
+            locale, _AVATAR_INTERACTION_RPS_PROMPT_PROFILES["en"]
+        )
+        actor = _avatar_interaction_prompt_actor(locale, master_name)
+        avatar = str(lanlan_name or "").strip()
+        result = str(profile["results"][round_result]).format(
+            actor=actor, avatar=avatar
+        )
+        return str(profile["template"]).format(
+            actor=actor,
+            avatar=avatar,
+            user_gesture=profile["gestures"][user_gesture],
+            avatar_gesture=profile["gestures"][avatar_gesture],
+            result=result,
+        )
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 
@@ -869,6 +952,13 @@ def _build_avatar_interaction_memory_meta(
     fallback = _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK
     master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
+    if tool_id == "rps":
+        _require_rps_round_facts(payload)
+        return {
+            "memory_note": "",
+            "memory_dedupe_key": "rps_round",
+            "memory_dedupe_rank": 1,
+        }
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 
