@@ -263,6 +263,10 @@ async def get_platform_cookies(platform: str):
     supported = login_manager.get_supported_platforms()
     if platform not in supported:
         raise HTTPException(status_code=400, detail="平台无效")
+
+    if platform == "twitch":
+        status_data = await twitch_auth_service.status()
+        return {"success": True, "data": status_data}
             
     cookies = await asyncio.to_thread(load_cookies_from_file, platform)
     if not cookies:

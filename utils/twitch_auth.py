@@ -21,7 +21,7 @@ from utils.external_http_client import get_external_http_client
 _DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 _VALIDATE_URL = "https://id.twitch.tv/oauth2/validate"
-_SCOPES = ("user:read:chat",)
+_SCOPES = ("user:read:follows",)
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9]{8,80}$")
 
 
@@ -101,8 +101,11 @@ class TwitchAuthService:
 
     async def status(self) -> dict[str, Any]:
         credential = await _load()
-        if not _credential_present(credential):
-            return {"success": True, "platform": "twitch", "logged_in": False, "has_cookies": False}
+        if not _credential_present(credential) or not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
+            return {
+                "success": True, "platform": "twitch", "logged_in": False, "has_cookies": False,
+                "requires_reauthorization": bool(credential),
+            }
         return _public_status(credential, refreshed=False)
 
     async def access_token(self, *, force_refresh: bool = False) -> tuple[str, str]:
@@ -129,6 +132,15 @@ class TwitchAuthService:
         if refreshed is None or not await _save(refreshed):
             return "", ""
         return client_id, _secret(refreshed, "access_token")
+
+    async def followed_stream_access(self, *, force_refresh: bool = False) -> tuple[str, str, str]:
+        """Return the credential context required by ``/streams/followed``."""
+        credential = await _load()
+        if not set(_SCOPES).issubset(_scopes(credential.get("scopes") if credential else "")):
+            return "", "", ""
+        user_id = _text(credential.get("user_id") if credential else "", 64)
+        client_id, access_token = await self.access_token(force_refresh=force_refresh)
+        return (client_id, access_token, user_id) if client_id and access_token and user_id else ("", "", "")
 
 
 async def _request(method: str, url: str, *, headers: dict[str, str] | None = None, data: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
@@ -179,6 +191,17 @@ def _public_status(credential: dict[str, str], *, refreshed: bool) -> dict[str, 
         "login": _login(credential.get("login")), "user_id": _text(credential.get("user_id"), 64),
         "expires_at": _text(credential.get("expires_at"), 24), "refreshed": refreshed,
     }
+
+
+def _credential_present(data: Any) -> bool:
+    """Return whether the encrypted store contains a complete OAuth credential."""
+    return (
+        isinstance(data, dict)
+        and bool(_client_id(data.get("client_id")))
+        and bool(_secret(data, "access_token"))
+        and bool(_secret(data, "refresh_token"))
+        and bool(_text(data.get("user_id"), 64))
+    )
 
 
 def _error(code: str) -> dict[str, Any]:

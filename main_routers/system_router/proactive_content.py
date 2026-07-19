@@ -81,7 +81,8 @@ def _log_video_content(lanlan_name: str, video_content: dict):
         titles = [video.get('title', '') for video in videos[:5]]
         if titles:
             source = "B站视频" if region == 'china' else (
-                "Twitch 直播分类" if video_data.get("source") == "twitch" else "YouTube视频"
+                "Twitch 与 YouTube 视频" if video_data.get("source") == "mixed" else
+                "Twitch 直播" if video_data.get("source") == "twitch" else "YouTube视频"
             )
             print(f"[{lanlan_name}] 成功获取{source}:")
             for title in titles:
