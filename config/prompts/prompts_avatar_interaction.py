@@ -529,49 +529,81 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
 }
 
 
-# Temporary fact-only bridge for the first RPS dialogue integration. The final
-# dialogue style is intentionally deferred; these strings only preserve the
-# already-resolved round and ask for one natural response from the current avatar.
+# RPS uses the same direct-event prompt responsibility as the other avatar tools:
+# preserve the already-validated interaction facts and let the current persona,
+# relationship, and conversation context determine the natural reaction.
 _AVATAR_INTERACTION_RPS_PROMPT_PROFILES = {
     "zh": {
-        "template": "{actor}刚和{avatar}完成一局猜拳：{actor}出{user_gesture}，{avatar}出{avatar_gesture}，结果是{result}。请以{avatar}的身份根据本局事实简短自然地回应。",
+        "template": "{actor}刚刚和{avatar}玩了一局猜拳。{actor}出{user_gesture}，{avatar}出{avatar_gesture}，本局{result}。请结合当前人格、关系和对话语境，像刚玩完这一局一样自然接话，不必先复述胜负。",
         "gestures": {"rock": "石头", "scissors": "剪刀", "paper": "布"},
-        "results": {"user_win": "{actor}获胜", "avatar_win": "{avatar}获胜", "draw": "平局"},
+        "results": {
+            "user_win": "{actor}赢、{avatar}输",
+            "avatar_win": "{avatar}赢、{actor}输",
+            "draw": "平手",
+        },
     },
     "zh-TW": {
-        "template": "{actor}剛和{avatar}完成一局猜拳：{actor}出{user_gesture}，{avatar}出{avatar_gesture}，結果是{result}。請以{avatar}的身分根據本局事實簡短自然地回應。",
+        "template": "{actor}剛剛和{avatar}玩了一局猜拳。{actor}出{user_gesture}，{avatar}出{avatar_gesture}，這局{result}。請結合目前的人格、關係和對話脈絡，像剛玩完這一局一樣自然接話，不必先重述勝負。",
         "gestures": {"rock": "石頭", "scissors": "剪刀", "paper": "布"},
-        "results": {"user_win": "{actor}獲勝", "avatar_win": "{avatar}獲勝", "draw": "平手"},
+        "results": {
+            "user_win": "{actor}贏、{avatar}輸",
+            "avatar_win": "{avatar}贏、{actor}輸",
+            "draw": "平手",
+        },
     },
     "en": {
-        "template": "{actor} and {avatar} just completed one round of rock-paper-scissors: {actor} played {user_gesture}, {avatar} played {avatar_gesture}, and the result was {result}. Reply briefly and naturally as {avatar}, based only on this round.",
+        "template": "{actor} and {avatar} just played a round of rock-paper-scissors. {actor} chose {user_gesture}, {avatar} chose {avatar_gesture}, and {result}. Respond naturally as if the round had just ended, in keeping with the current personality, relationship, and conversation context, without first restating the outcome.",
         "gestures": {"rock": "rock", "scissors": "scissors", "paper": "paper"},
-        "results": {"user_win": "{actor} won", "avatar_win": "{avatar} won", "draw": "a draw"},
+        "results": {
+            "user_win": "{actor} won while {avatar} lost",
+            "avatar_win": "{avatar} won while {actor} lost",
+            "draw": "the round was a draw",
+        },
     },
     "ja": {
-        "template": "{actor}と{avatar}がじゃんけんを1回終えました。{actor}は{user_gesture}、{avatar}は{avatar_gesture}を出し、結果は{result}です。今回の事実だけをもとに、{avatar}として短く自然に返答してください。",
+        "template": "{actor}と{avatar}が今、じゃんけんを一回しました。{actor}は{user_gesture}を、{avatar}は{avatar_gesture}を出し、{result}。現在の人格、関係、会話の流れを保ち、じゃんけんを終えた直後のように自然に言葉を返してください。最初に勝敗を言い直す必要はありません。",
         "gestures": {"rock": "グー", "scissors": "チョキ", "paper": "パー"},
-        "results": {"user_win": "{actor}の勝ち", "avatar_win": "{avatar}の勝ち", "draw": "あいこ"},
+        "results": {
+            "user_win": "{actor}の勝ち、{avatar}の負けでした",
+            "avatar_win": "{avatar}の勝ち、{actor}の負けでした",
+            "draw": "あいこでした",
+        },
     },
     "ko": {
-        "template": "{actor}와 {avatar}가 가위바위보 한 판을 마쳤다. {actor}는 {user_gesture}, {avatar}는 {avatar_gesture}를 냈고 결과는 {result}이다. 이 판의 사실만 바탕으로 {avatar}로서 짧고 자연스럽게 답해라.",
+        "template": "방금 {actor} 낸 손은 {user_gesture}, {avatar}의 손은 {avatar_gesture}로 가위바위보 한 판이 끝났고, {result}. 현재 성격과 관계, 대화 맥락을 이어 방금 판을 마친 것처럼 자연스럽게 말해라. 먼저 승패를 되풀이할 필요는 없다.",
         "gestures": {"rock": "바위", "scissors": "가위", "paper": "보"},
-        "results": {"user_win": "{actor} 승리", "avatar_win": "{avatar} 승리", "draw": "무승부"},
+        "results": {
+            "user_win": "{avatar}는 이번 판에서 졌다",
+            "avatar_win": "{avatar}는 이번 판에서 이겼다",
+            "draw": "이번 판은 비겼다",
+        },
     },
     "ru": {
-        "template": "{actor} и {avatar} только что закончили один раунд игры «камень, ножницы, бумага»: {actor} выбрал(а) {user_gesture}, {avatar} — {avatar_gesture}; результат: {result}. Ответь кратко и естественно от лица {avatar}, опираясь только на этот раунд.",
-        "gestures": {"rock": "камень", "scissors": "ножницы", "paper": "бумагу"},
-        "results": {"user_win": "победа: {actor}", "avatar_win": "победа: {avatar}", "draw": "ничья"},
+        "template": "{actor} и {avatar} только что сыграли один раунд в «камень, ножницы, бумага». Ход {actor}: {user_gesture}; ход {avatar}: {avatar_gesture}; {result}. Сохраняя нынешний характер, отношения и контекст разговора, ответь естественно, как сразу после раунда. Не нужно сначала повторять его исход.",
+        "gestures": {"rock": "камень", "scissors": "ножницы", "paper": "бумага"},
+        "results": {
+            "user_win": "победитель — {actor}, проигравшая сторона — {avatar}",
+            "avatar_win": "победитель — {avatar}, проигравшая сторона — {actor}",
+            "draw": "получилась ничья",
+        },
     },
     "es": {
-        "template": "{actor} y {avatar} acaban de terminar una ronda de piedra, papel o tijera: {actor} sacó {user_gesture}, {avatar} sacó {avatar_gesture} y el resultado fue {result}. Responde de forma breve y natural como {avatar}, basándote solo en esta ronda.",
+        "template": "{actor} y {avatar} acaban de jugar una ronda de piedra, papel o tijera. {actor} sacó {user_gesture} y {avatar} sacó {avatar_gesture}; {result}. Mantén la personalidad, la relación y el contexto de la conversación actuales, y responde con naturalidad como justo después de la ronda, sin empezar por repetir el resultado.",
         "gestures": {"rock": "piedra", "scissors": "tijera", "paper": "papel"},
-        "results": {"user_win": "ganó {actor}", "avatar_win": "ganó {avatar}", "draw": "empate"},
+        "results": {
+            "user_win": "ganó {actor} y perdió {avatar}",
+            "avatar_win": "ganó {avatar} y perdió {actor}",
+            "draw": "la ronda terminó en empate",
+        },
     },
     "pt": {
-        "template": "{actor} e {avatar} acabaram de concluir uma rodada de pedra, papel e tesoura: {actor} jogou {user_gesture}, {avatar} jogou {avatar_gesture} e o resultado foi {result}. Responda de forma breve e natural como {avatar}, com base apenas nesta rodada.",
+        "template": "{actor} e {avatar} acabaram de jogar uma rodada de pedra, papel e tesoura. {actor} jogou {user_gesture} e {avatar} jogou {avatar_gesture}; {result}. Mantenha a personalidade, a relação e o contexto atuais da conversa, e responda naturalmente como logo após a rodada, sem começar repetindo o resultado.",
         "gestures": {"rock": "pedra", "scissors": "tesoura", "paper": "papel"},
-        "results": {"user_win": "{actor} venceu", "avatar_win": "{avatar} venceu", "draw": "empate"},
+        "results": {
+            "user_win": "{actor} venceu e {avatar} perdeu",
+            "avatar_win": "{avatar} venceu e {actor} perdeu",
+            "draw": "a rodada terminou empatada",
+        },
     },
 }
 
@@ -628,6 +660,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}连续用锤子敲了你好几下]",
             "easter_egg": "[{master}用放大彩蛋锤敲了你一下]",
         },
+        "rps": {
+            "user_win": "[和{master}猜拳，输了]",
+            "avatar_win": "[和{master}猜拳，赢了]",
+            "draw": "[和{master}猜拳，平手]",
+        },
     },
     "en": {
         "lollipop": {
@@ -643,6 +680,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master} bonked you once with a hammer]",
             "rapid": "[{master} bonked you several times with a hammer]",
             "easter_egg": "[{master} hit you once with the enlarged easter-egg hammer]",
+        },
+        "rps": {
+            "user_win": "[Lost to {master} at rock-paper-scissors]",
+            "avatar_win": "[Beat {master} at rock-paper-scissors]",
+            "draw": "[Drew with {master} at rock-paper-scissors]",
         },
     },
     "zh-TW": {
@@ -660,6 +702,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}連續用槌子敲了你好幾下]",
             "easter_egg": "[{master}用放大彩蛋槌敲了你一下]",
         },
+        "rps": {
+            "user_win": "[和{master}猜拳，輸了]",
+            "avatar_win": "[和{master}猜拳，贏了]",
+            "draw": "[和{master}猜拳，平手]",
+        },
     },
     "ja": {
         "lollipop": {
@@ -675,6 +722,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master}がハンマーであなたを一度叩いた]",
             "rapid": "[{master}がハンマーであなたを何度か続けて叩いた]",
             "easter_egg": "[{master}が拡大イースターエッグのハンマーであなたを一度叩いた]",
+        },
+        "rps": {
+            "user_win": "[{master}とのじゃんけんに負けた]",
+            "avatar_win": "[{master}とのじゃんけんに勝った]",
+            "draw": "[{master}とのじゃんけんはあいこだった]",
         },
     },
     "ko": {
@@ -695,6 +747,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}이 망치로 너를 여러 번 연달아 쳤다]",
             "easter_egg": "[{master}이 확대 이스터에그 망치로 너를 한 번 쳤다]",
         },
+        "rps": {
+            "user_win": "[{master} 상대 가위바위보에서 짐]",
+            "avatar_win": "[{master} 상대 가위바위보에서 이김]",
+            "draw": "[{master} 상대 가위바위보에서 비김]",
+        },
     },
     "ru": {
         # 俄语过去时随主语性别变（дал / дала）。master_name 是任意字符串，无法静态
@@ -713,6 +770,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master} несколько раз подряд стукнул тебя молотком]",
             "easter_egg": "[{master} один раз стукнул тебя увеличенным пасхальным молотком]",
         },
+        "rps": {
+            "user_win": "[Проигрыш {master} в игре «камень, ножницы, бумага»]",
+            "avatar_win": "[Победа над {master} в игре «камень, ножницы, бумага»]",
+            "draw": "[Ничья с {master} в игре «камень, ножницы, бумага»]",
+        },
     },
     "es": {
         "lollipop": {
@@ -729,6 +791,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master} te golpeó varias veces seguidas con un martillo]",
             "easter_egg": "[{master} te dio un golpe con el martillo de easter egg ampliado]",
         },
+        "rps": {
+            "user_win": "[Perdiste contra {master} a piedra, papel o tijera]",
+            "avatar_win": "[Ganaste a {master} a piedra, papel o tijera]",
+            "draw": "[Empataste con {master} a piedra, papel o tijera]",
+        },
     },
     "pt": {
         "lollipop": {
@@ -744,6 +811,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master} bateu em você uma vez com um martelo]",
             "rapid": "[{master} bateu em você várias vezes seguidas com um martelo]",
             "easter_egg": "[{master} bateu em você uma vez com o martelo de easter egg ampliado]",
+        },
+        "rps": {
+            "user_win": "[Perdeu para {master} no jogo de pedra, papel e tesoura]",
+            "avatar_win": "[Venceu {master} no jogo de pedra, papel e tesoura]",
+            "draw": "[Empatou com {master} no jogo de pedra, papel e tesoura]",
         },
     },
 }
@@ -953,9 +1025,12 @@ def _build_avatar_interaction_memory_meta(
     master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
     if tool_id == "rps":
-        _require_rps_round_facts(payload)
+        _, _, round_result = _require_rps_round_facts(payload)
+        memory_note = templates.get("rps", {}).get(round_result, "").format(
+            master=master
+        )
         return {
-            "memory_note": "",
+            "memory_note": memory_note,
             "memory_dedupe_key": "rps_round",
             "memory_dedupe_rank": 1,
         }

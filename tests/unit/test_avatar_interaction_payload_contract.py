@@ -10,6 +10,81 @@ from config.prompts.prompts_avatar_interaction import (
 )
 
 
+_RPS_CANONICAL_ROUNDS = (
+    ("rock", "rock", "draw"),
+    ("rock", "scissors", "user_win"),
+    ("rock", "paper", "avatar_win"),
+    ("scissors", "rock", "avatar_win"),
+    ("scissors", "scissors", "draw"),
+    ("scissors", "paper", "user_win"),
+    ("paper", "rock", "user_win"),
+    ("paper", "scissors", "avatar_win"),
+    ("paper", "paper", "draw"),
+)
+_RPS_GESTURE_LABELS = {
+    "zh": {"rock": "石头", "scissors": "剪刀", "paper": "布"},
+    "zh-TW": {"rock": "石頭", "scissors": "剪刀", "paper": "布"},
+    "en": {"rock": "rock", "scissors": "scissors", "paper": "paper"},
+    "ja": {"rock": "グー", "scissors": "チョキ", "paper": "パー"},
+    "ko": {"rock": "바위", "scissors": "가위", "paper": "보"},
+    "ru": {"rock": "камень", "scissors": "ножницы", "paper": "бумага"},
+    "es": {"rock": "piedra", "scissors": "tijera", "paper": "papel"},
+    "pt": {"rock": "pedra", "scissors": "tesoura", "paper": "papel"},
+}
+_RPS_PROMPT_RESULT_MARKERS = {
+    "zh": {
+        "user_win": "Alice赢、YUI输",
+        "avatar_win": "YUI赢、Alice输",
+        "draw": "本局平手",
+    },
+    "zh-TW": {
+        "user_win": "Alice贏、YUI輸",
+        "avatar_win": "YUI贏、Alice輸",
+        "draw": "這局平手",
+    },
+    "en": {
+        "user_win": "Alice won while YUI lost",
+        "avatar_win": "YUI won while Alice lost",
+        "draw": "the round was a draw",
+    },
+    "ja": {
+        "user_win": "Aliceの勝ち、YUIの負けでした",
+        "avatar_win": "YUIの勝ち、Aliceの負けでした",
+        "draw": "あいこでした",
+    },
+    "ko": {
+        "user_win": "YUI는 이번 판에서 졌다",
+        "avatar_win": "YUI는 이번 판에서 이겼다",
+        "draw": "이번 판은 비겼다",
+    },
+    "ru": {
+        "user_win": "победитель — Alice, проигравшая сторона — YUI",
+        "avatar_win": "победитель — YUI, проигравшая сторона — Alice",
+        "draw": "получилась ничья",
+    },
+    "es": {
+        "user_win": "ganó Alice y perdió YUI",
+        "avatar_win": "ganó YUI y perdió Alice",
+        "draw": "la ronda terminó en empate",
+    },
+    "pt": {
+        "user_win": "Alice venceu e YUI perdeu",
+        "avatar_win": "YUI venceu e Alice perdeu",
+        "draw": "a rodada terminou empatada",
+    },
+}
+_RPS_MEMORY_NOTES = {
+    "zh": {"user_win": "[和Alice猜拳，输了]", "avatar_win": "[和Alice猜拳，赢了]", "draw": "[和Alice猜拳，平手]"},
+    "zh-TW": {"user_win": "[和Alice猜拳，輸了]", "avatar_win": "[和Alice猜拳，贏了]", "draw": "[和Alice猜拳，平手]"},
+    "en": {"user_win": "[Lost to Alice at rock-paper-scissors]", "avatar_win": "[Beat Alice at rock-paper-scissors]", "draw": "[Drew with Alice at rock-paper-scissors]"},
+    "ja": {"user_win": "[Aliceとのじゃんけんに負けた]", "avatar_win": "[Aliceとのじゃんけんに勝った]", "draw": "[Aliceとのじゃんけんはあいこだった]"},
+    "ko": {"user_win": "[Alice 상대 가위바위보에서 짐]", "avatar_win": "[Alice 상대 가위바위보에서 이김]", "draw": "[Alice 상대 가위바위보에서 비김]"},
+    "ru": {"user_win": "[Проигрыш Alice в игре «камень, ножницы, бумага»]", "avatar_win": "[Победа над Alice в игре «камень, ножницы, бумага»]", "draw": "[Ничья с Alice в игре «камень, ножницы, бумага»]"},
+    "es": {"user_win": "[Perdiste contra Alice a piedra, papel o tijera]", "avatar_win": "[Ganaste a Alice a piedra, papel o tijera]", "draw": "[Empataste con Alice a piedra, papel o tijera]"},
+    "pt": {"user_win": "[Perdeu para Alice no jogo de pedra, papel e tesoura]", "avatar_win": "[Venceu Alice no jogo de pedra, papel e tesoura]", "draw": "[Empatou com Alice no jogo de pedra, papel e tesoura]"},
+}
+
+
 @pytest.mark.unit
 def test_avatar_interaction_contract_declares_three_action_tools_and_rps_round_facts():
     assert set(AVATAR_INTERACTION_TOOL_CONTRACT) == {"lollipop", "fist", "hammer", "rps"}
@@ -35,17 +110,7 @@ def test_avatar_interaction_contract_declares_three_action_tools_and_rps_round_f
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("user_gesture", "avatar_gesture", "round_result"),
-    [
-        ("rock", "rock", "draw"),
-        ("rock", "scissors", "user_win"),
-        ("rock", "paper", "avatar_win"),
-        ("scissors", "rock", "avatar_win"),
-        ("scissors", "scissors", "draw"),
-        ("scissors", "paper", "user_win"),
-        ("paper", "rock", "user_win"),
-        ("paper", "scissors", "avatar_win"),
-        ("paper", "paper", "draw"),
-    ],
+    _RPS_CANONICAL_ROUNDS,
 )
 def test_rps_payload_normalizer_accepts_the_nine_canonical_rounds(
     user_gesture, avatar_gesture, round_result
@@ -99,26 +164,72 @@ def test_rps_payload_normalizer_rejects_incomplete_contradictory_or_extra_facts(
 
 @pytest.mark.unit
 @pytest.mark.parametrize("locale", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
-def test_rps_temporary_prompt_uses_the_same_round_and_current_avatar_name(locale):
+def test_rps_prompt_and_memory_use_the_validated_round_in_all_locales(locale):
+    for user_gesture, avatar_gesture, round_result in _RPS_CANONICAL_ROUNDS:
+        payload = {
+            "tool_id": "rps",
+            "user_gesture": user_gesture,
+            "avatar_gesture": avatar_gesture,
+            "round_result": round_result,
+        }
+        instruction = _build_avatar_interaction_instruction(
+            locale, "YUI", "Alice", payload
+        )
+        memory = _build_avatar_interaction_memory_meta(locale, payload, "Alice")
+
+        assert "Alice" in instruction
+        assert "YUI" in instruction
+        assert _RPS_GESTURE_LABELS[locale][user_gesture] in instruction
+        assert _RPS_GESTURE_LABELS[locale][avatar_gesture] in instruction
+        assert _RPS_PROMPT_RESULT_MARKERS[locale][round_result] in instruction
+        assert "\n" not in instruction
+
+        assert memory["memory_note"] == _RPS_MEMORY_NOTES[locale][round_result]
+        assert memory["memory_dedupe_key"] == "rps_round"
+        assert memory["memory_dedupe_rank"] == 1
+
+        forbidden_temporary_limits = (
+            "based only on this round",
+            "今回の事実だけ",
+            "이 판의 사실만",
+            "опираясь только на этот раунд",
+            "basándote solo en esta ronda",
+            "com base apenas nesta rodada",
+        )
+        assert not any(
+            fragment in instruction for fragment in forbidden_temporary_limits
+        )
+
+
+@pytest.mark.unit
+def test_rps_prompt_and_memory_use_localized_neutral_actor_when_name_is_empty():
     payload = {
         "tool_id": "rps",
-        "user_gesture": "paper",
-        "avatar_gesture": "rock",
+        "user_gesture": "rock",
+        "avatar_gesture": "scissors",
         "round_result": "user_win",
     }
-    instruction = _build_avatar_interaction_instruction(
-        locale, "YUI", "Alice", payload
-    )
-    memory = _build_avatar_interaction_memory_meta(locale, payload, "Alice")
-
-    assert "Alice" in instruction
-    assert "YUI" in instruction
-    assert "\n" not in instruction
-    assert memory == {
-        "memory_note": "",
-        "memory_dedupe_key": "rps_round",
-        "memory_dedupe_rank": 1,
+    expected_actors = {
+        "zh": ("对方", "对方"),
+        "zh-TW": ("對方", "對方"),
+        "en": ("The other person", "they"),
+        "ja": ("相手", "相手"),
+        "ko": ("상대가", "상대"),
+        "ru": ("Собеседник", "собеседник"),
+        "es": ("Esa persona", "esa persona"),
+        "pt": ("A outra pessoa", "a outra pessoa"),
     }
+
+    for locale, (prompt_actor, memory_actor) in expected_actors.items():
+        instruction = _build_avatar_interaction_instruction(locale, "YUI", "", payload)
+        memory = _build_avatar_interaction_memory_meta(locale, payload, "")
+
+        assert prompt_actor in instruction
+        assert memory_actor in memory["memory_note"]
+        assert not any(
+            forbidden in instruction or forbidden in memory["memory_note"]
+            for forbidden in ("主人", "master", "ご主人", "주인", "Хозяин")
+        )
 
 
 @pytest.mark.unit
