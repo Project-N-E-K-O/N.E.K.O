@@ -2067,24 +2067,9 @@ class AsrRuntimeMixin:
             self._asr_transcript_dispatcher.submit(envelope)
         await self._send_asr_lifecycle_state(VoiceLifecycleState.WARM_IDLE)
 
-        if (
-            detector_ref is not None
-            and not has_pending_turn
-            and self._asr_lifecycle is lifecycle_ref
-            and self._asr_detector is detector_ref
-        ):
-            try:
-                await detector_ref.reset()
-            except Exception:
-                logger.warning(
-                    "[%s] detector reset failed after ASR final",
-                    self.lanlan_name,
-                )
-
         await self._activate_pending_independent_turn(epoch)
         if (
-            has_pending_turn
-            and detector_ref is not None
+            detector_ref is not None
             and self._asr_lifecycle is lifecycle_ref
             and self._asr_detector is detector_ref
         ):

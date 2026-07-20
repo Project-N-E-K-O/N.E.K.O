@@ -753,6 +753,37 @@ async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> N
     assert runtime._omni_mic_audio_bytes == 0
 
 
+async def test_optimization_disabled_provider_route_never_prepares_smart_turn() -> None:
+    runtime = _Runtime()
+    runtime._voice_input_resource_optimization_enabled = False
+    asr = type("Asr", (), {"is_ready": True, "stream_audio": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_provider = "qwen"
+    runtime._asr_route_mode = "independent"
+    runtime._asr_lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "provider"),
+        shadow_mode=False,
+        resource_optimization_enabled=False,
+    )
+    runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = _ReadyDetector()
+    detector.prepare_endpointing = AsyncMock()
+    runtime._asr_detector = detector
+
+    await runtime._route_microphone_audio(
+        b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        rnnoise_available=False,
+    )
+    await runtime._asr_audio_dispatcher.wait_idle()
+
+    asr.stream_audio.assert_awaited_once()
+    detector.prepare_endpointing.assert_not_awaited()
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_smart_turn_lease is None
+    assert runtime._omni_mic_audio_bytes == 0
+
+
 async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -> None:
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -807,6 +838,24 @@ async def test_draining_next_speech_waits_for_old_final_then_starts_new_turn() -
     runtime.handle_input_transcript.reset_mock()
     await runtime._handle_independent_asr_final("stale-old-turn", epoch, "qwen")
     runtime.handle_input_transcript.assert_not_awaited()
+
+
+async def test_final_without_observed_pending_preserves_racing_next_onset() -> None:
+    runtime = _Runtime()
+    await _start_and_seal_turn(runtime, "gemini")
+    detector = runtime._asr_detector
+    assert isinstance(detector, _ReadyDetector)
+
+    await runtime._handle_independent_asr_final(
+        "first",
+        runtime._asr_session_epoch,
+        "gemini",
+    )
+
+    # A next onset may be admitted after final acceptance but before cleanup.
+    # Releasing the completed turn preserves that audio; a full reset loses it.
+    detector.reset.assert_not_awaited()
+    detector.release_deferred_turn.assert_awaited_once_with()
 
 
 async def test_draining_pending_turn_overflow_discards_candidate_and_reports_backpressure() -> None:
