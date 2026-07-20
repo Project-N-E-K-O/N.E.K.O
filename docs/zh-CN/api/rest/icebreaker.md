@@ -5,7 +5,7 @@
 新用户引导（"破冰"）相关端点。破冰是一段引导对话，而非小游戏：它拥有独立的生命周期状态，与游戏 route 生命周期相互隔离。破冰可以追加上下文、播报固定的引导台词，但它绝不会让 `/api/game/route/active` 报告存在一个已打开的小游戏窗口。
 
 ::: info
-所有写操作端点（`/route/start`、`/route/end`、`/context`、`/choice`、`/speak`）都是本地写操作端点，受与后端其余部分相同的 CSRF / 本地请求校验保护。校验失败返回 `{ "ok": false, "reason": "csrf_validation_failed" }`。
+所有写操作端点（`/route/start`、`/route/end`、`/context`、`/free-text/interpret`、`/choice`、`/speak`）都是本地写操作端点，受与后端其余部分相同的 CSRF / 本地请求校验保护。校验失败返回 `{ "ok": false, "reason": "csrf_validation_failed" }`。
 :::
 
 ::: info
@@ -151,6 +151,14 @@
   "state": "<route 状态>"
 }
 ```
+
+### `POST /api/icebreaker/free-text/interpret`
+
+将自由文本答案映射到当前引导选项。JSON 必填字段为 `lanlan_name`、`session_id`、`user_text` 和非空 `options` 列表；可选上下文包括 `assistant_line`、近期自由文本轮次和偏题连续次数。
+
+路由必须已激活，且 `session_id` 必须匹配。校验失败、过期会话、未配置模型、超时和解析失败都使用 `{ "ok": false, "reason": "..." }`；成功时返回规范化后的选项和方法元数据。
+
+---
 
 ### `POST /api/icebreaker/choice`
 

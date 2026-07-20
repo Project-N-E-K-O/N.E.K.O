@@ -137,12 +137,18 @@ I.mod = window.appUi;
 
     function isModelRenderingActive(type, manager) {
         if (!manager) return false;
+        // 各形态的空闲低频 tick 模式下，rAF id / ticker.started 都是"停"的假象
+        // （渲染由 setInterval 驱动）——必须把 _idleTickMode 也算作"在渲染"，
+        // 否则 goodbye 资源暂停会漏掉它们。
         if (type === 'live2d') {
             const ticker = manager.pixi_app && manager.pixi_app.ticker;
-            return !!(ticker && ticker.started !== false);
+            return !!(ticker && (ticker.started !== false || manager._idleTickMode));
         }
-        if (type === 'vrm' || type === 'mmd') {
-            return !!manager._animationFrameId;
+        if (type === 'vrm') {
+            return !!(manager._animationFrameId || manager._idleTickMode);
+        }
+        if (type === 'mmd') {
+            return !!(manager._animationFrameId || (manager.core && manager.core._idleTickMode));
         }
         if (type === 'pngtuber') {
             const container = manager.container || document.getElementById('pngtuber-container');

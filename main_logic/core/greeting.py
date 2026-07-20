@@ -378,15 +378,28 @@ class GreetingMixin:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
-    async def trigger_cat_greeting(self, duration_seconds: float, tier: str, was_auto: bool) -> None:
+    async def trigger_cat_greeting(
+        self,
+        duration_seconds: float,
+        tier: str,
+        was_auto: bool,
+        episode: dict | None = None,
+        *,
+        has_started_autonomous_action: bool = False,
+    ) -> None:
         """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
         Dual of trigger_greeting, but with independent timing: it doesn't query
         last_conversation_gap, instead using the cat-dwell duration measured and
         passed in by the frontend (the datetime gap is "since the last
         conversation", this is "how long she stayed a cat" — two clocks that don't
-        interfere). Flow: pick the behavior/duration tier → build the guiding
-        prompt → proactively start a text session → deliver.
+        interfere). A valid episode has already passed the router enum
+        allowlist and remains request-local; it becomes the factual cat-form
+        scene for this one prompt without altering guards or persistent state.
+        A literal verified runner-start bit can only open the short-return
+        delivery gate; it never turns a non-completed action into a scene.
+        Flow: pick the behavior/duration tier → build the guiding prompt →
+        proactively start a text session → deliver.
         """
         if self.is_goodbye_silent():
             logger.info("[%s] trigger_cat_greeting: goodbye silent, skipping", self.lanlan_name)
@@ -404,11 +417,38 @@ class GreetingMixin:
 
         _lang = normalize_language_code(self.user_language, format='short')
         from config.prompts.prompts_proactive import (
-            get_cat_greeting_prompt, get_cat_greeting_reason_hint, get_time_of_day_hint,
+            CAT_GREETING_SILENT_BELOW_SECONDS,
+            get_cat_greeting_episode_prompt, get_cat_greeting_episode_scene,
+            get_cat_greeting_prompt,
+            get_cat_greeting_reason_hint,
+            get_cat_greeting_started_return_prompt,
         )
         from utils.time_format import format_elapsed as _format_elapsed
-        # < 3min 静默由 get_cat_greeting_prompt 内部判定，返回 None 时不触发。
-        template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
+        episode_scene = get_cat_greeting_episode_scene(episode, _lang)
+        has_started_autonomous_action = has_started_autonomous_action is True
+        short_return = duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS
+        # A strict runner start permits a short return to be delivered, but
+        # only strict done evidence may become ``episode_scene``. Without a
+        # scene, use the neutral wrapper rather than legacy templates that
+        # would invent waiting, sleep, or a completed action.
+        if short_return and not has_started_autonomous_action:
+            logger.debug(
+                "[%s] trigger_cat_greeting: duration %.0fs below threshold without a started action, skipping",
+                self.lanlan_name,
+                duration_seconds,
+            )
+            return
+        if episode_scene:
+            template = get_cat_greeting_episode_prompt(
+                behavior,
+                duration_seconds,
+                _lang,
+                allow_short_started=has_started_autonomous_action,
+            )
+        elif short_return:
+            template = get_cat_greeting_started_return_prompt(_lang)
+        else:
+            template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
         if not template:
             logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
             return
@@ -435,18 +475,43 @@ class GreetingMixin:
             logger.warning("[%s] trigger_cat_greeting: session is not text mode after start, aborting", self.lanlan_name)
             return
 
-        # 与 time_hint 一样，reason_hint 先 format 好 {master} 再注入主模板。
+        # reason_hint 先 format 好 {master} 再注入猫形态 return 模板。
         reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
-        elapsed = _format_elapsed(_lang, duration_seconds)
-        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+        # The short started path has no duration wording at all. Do not turn
+        # a ten-second action into a fabricated one-minute return sentence.
+        elapsed = "" if short_return else _format_elapsed(_lang, duration_seconds)
+        # Cat return is a closed experience prompt. Do not import the general
+        # proactive time-of-day hint here: its meal/late-night suggestions can
+        # replace the actual cat-form episode with an unrelated greeting.
+        # Legacy cat templates still accept this placeholder for compatibility,
+        # but it is deliberately empty on this path.
+        time_hint = ""
 
         instruction = template.format(
             reason_hint=reason_hint, elapsed=elapsed, name=self.lanlan_name,
             master=self.master_name, time_hint=time_hint,
+            cat_form_scene=episode_scene,
         )
         print(f"[trigger_cat_greeting] instruction:\n{instruction}")
-        logger.info("[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s elapsed=%s, delivering",
-                    self.lanlan_name, behavior, duration_seconds, was_auto, elapsed)
+        episode_marker = "-"
+        if isinstance(episode, dict):
+            episode_kind = episode.get("kind")
+            episode_highlight = episode.get("highlight")
+            if episode_kind in ("activity", "rest_after_activity", "rested"):
+                episode_marker = str(episode_kind)
+                if episode_highlight in ("played_yarn", "ate_snack", "small_move", "social_ping"):
+                    episode_marker += ":" + str(episode_highlight)
+        logger.info(
+            "[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s "
+            "started_action=%s elapsed=%s episode=%s, delivering",
+            self.lanlan_name,
+            behavior,
+            duration_seconds,
+            was_auto,
+            has_started_autonomous_action,
+            elapsed,
+            episode_marker,
+        )
 
         # ── 投递前最终检查：构建 instruction 期间语音可能已接管 ──
         if self._is_voice_session_active_or_starting():

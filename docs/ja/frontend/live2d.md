@@ -1,46 +1,67 @@
-# Live2D 統合
+# Live2D モデル
 
-## 概要
+## ランタイム
 
-N.E.K.O. は Pixi.js 経由の Cubism SDK を使用して Live2D モデルをレンダリングします。モデルはメインのチャットインターフェースに表示され、会話で検出された感情に反応します。
+Live2D はメインページの `#live2d-canvas` に描画されます。現在の実装は次のファイルに分割されています。
 
-## モデルソース
+- `static/live2d/live2d-core.js`
+- `static/live2d/live2d-model.js`
+- `static/live2d/live2d-emotion.js`
+- `static/live2d/live2d-interaction.js`
+- `static/live2d/live2d-init.js`
+- `static/live2d/live2d-ui-buttons.js`
 
-| ソース | 場所 |
-|--------|----------|
-| 組み込み | `static/` ディレクトリ |
-| ユーザーインポート | `user_live2d/` ディレクトリ |
-| Steam Workshop | `workshop/` ディレクトリ（自動マウント） |
+`live2d-init.js` が `window.live2dManager` を作成し、共通の `window.LanLan1` 互換メソッドを公開します。モデルマネージャーのプレビューも同じレンダラーモジュールを使い、別の旧 Live2D ページ実装はありません。
+
+## モデルと配信元
+
+モデルは Cubism `.model3.json` と、それが参照する `.moc3`、テクスチャ、モーション、表情、任意の物理ファイルから検出されます。モデル内の相対ディレクトリ構造を維持してください。
+
+`GET /api/live2d/models` は次を統合します。
+
+- プロジェクトの静的モデルディレクトリにある同梱モデル
+- `/user_live2d` から配信されるユーザーモデル（設定によっては書き込み可能な `/user_live2d_local` シャドウも使用）
+- `/workshop/{item_id}/...` から配信されるインストール済み Steam Workshop モデル
+
+API が返す URL を使い、絶対ファイルシステムパスから URL を作らないでください。
 
 ## 感情マッピング
 
-各 Live2D モデルは、感情ラベルから表情やモーションへのマッピングを定義できます：
+エディターとランタイムは次の論理構造を使います。
 
 ```json
 {
-  "happy": { "expression": "f01", "motion": "idle_01" },
-  "sad": { "expression": "f03", "motion": "idle_02" },
-  "angry": { "expression": "f05", "motion": "idle_03" }
+  "motions": { "happy": ["motions/happy.motion3.json"] },
+  "expressions": { "happy": ["expressions/happy.exp3.json"] }
 }
 ```
 
-感情はバックエンドの感情分析エンドポイント（`POST /api/emotion/analysis`、`main_routers/system_router.py` で定義）によって検出されます。フロントエンドはアシスタントのテキストをこのエンドポイントに送信し、返された感情をモデルに適用します。バックエンドは同時に、同期メッセージキュー経由でモニターシステムに `emotion` 更新をプッシュします。
+`EmotionMapping` があればサーバーはそれを優先し、なければ `FileReferences.Motions` と表情名のプレフィックスからグループを導出します。保存時は標準 Cubism の `FileReferences.Motions` と `FileReferences.Expressions` に書き込みます。モーションと表情のパスは相対パスで、モデルディレクトリ外へ移動できません。
 
-## UI コンポーネント
+`window.LanLan1.setEmotion(name)` は現在のレンダラーへ委譲します。Live2D では設定済みの表情とモーションを適用し、一方がない場合は安全にフォールバックします。特殊な `常驻` グループは表情専用です。
 
-| モジュール | 用途 |
-|--------|---------|
-| `live2d-ui-buttons.js` | コントロールボタン（モデル切り替え、設定） |
-| `avatar-ui-drag.js` | モデル配置のためのドラッグとズーム（VRM/MMD と共用） |
-| `common-ui-hud.js` | ヘッドアップディスプレイオーバーレイ（共通、全アバタータイプ対応） |
-| `avatar-ui-popup.js` | ポップアップダイアログとメニュー（VRM/MMD と共用） |
+## 管理ページ
 
-## モデル管理ページ
+- `/model_manager` でモデルの選択、インポート、プレビュー、削除を行います。
+- `/live2d_emotion_manager` で感情グループをモーションと表情へ割り当てます。
+- `/live2d_parameter_editor` で保存済みレイアウト/パラメーター設定を編集します。
 
-- `/model_manager` -- モデルの閲覧、アップロード、削除
-- `/live2d_parameter_editor` -- モデルパラメータの微調整
-- `/live2d_emotion_manager` -- 感情とアニメーションのマッピング設定
+## API 概要
 
-## API エンドポイント
+| メソッド | エンドポイント | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/live2d/models` | ローカルと Workshop モデルを一覧。`?simple=true` は名前だけを返す |
+| `GET`、`POST` | `/api/live2d/model_config/{model_name}` | Cubism 設定を読み取り、モーションと表情だけを更新 |
+| `GET`、`POST` | `/api/live2d/emotion_mapping/{model_name}` | 感情グループを読み取りまたは保存 |
+| `GET` | `/api/live2d/model_files/{model_name}` | 検証済みモデルリソースを一覧 |
+| `GET` | `/api/live2d/model_parameters/{model_name}` | Cubism パラメーターのメタデータを確認 |
+| `GET`、`POST` | `/api/live2d/load_model_parameters/{model_name}`、`/api/live2d/save_model_parameters/{model_name}` | パラメーター設定の読み込みまたは保存 |
+| `POST` | `/api/live2d/upload_model` | 複数ファイルのモデルパッケージをインポート |
+| `POST` | `/api/live2d/upload_file/{model_name}` | モーションまたは表情ファイルを追加。上限 50 MB |
+| `DELETE` | `/api/live2d/model/{model_name}` | ユーザーモデルを削除 |
 
-完全な REST エンドポイントリファレンスは [Live2D API](/ja/api/rest/live2d) を参照してください。
+ID ベース版（`model_config_by_id` と `model_files_by_id`）は、公開アイテム ID を安定した識別子にする Workshop モデルをサポートします。
+
+## ホスト境界
+
+Live2D のアセットと初期化は `index.html` で動作し、そのテンプレートを読み込む Electron ペットウィンドウも含みます。独立した `/chat` と `/subtitle` は第二のアバターを描画しません。クロスウィンドウ命令は別の Live2D マネージャーを初期化せず、メインページへ転送してください。

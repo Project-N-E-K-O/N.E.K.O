@@ -11,6 +11,9 @@
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_SEQUENCE_STORAGE_KEY = 'yuiGuidePcOverlaySequence';
+    const PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
+    const PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES = 6;
+    const PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     const CONTROL_BANNER_TEXT_KEY = 'tutorial.yuiGuide.controlBanner';
     const CONTROL_BANNER_FALLBACK_TEXT = 'The catgirl is controlling the mouse';
     const CONTROL_BANNER_INTERRUPT_EMPHASIS_MS = 2000;
@@ -111,6 +114,7 @@
         let remoteReady = false;
         let failed = false;
         let lastKey = '';
+        let deferredReconciliationTimer = 0;
         const createCompleteStateStore = OverlayRendererApi.createPcOverlayCompleteStateStore
             || (window.TutorialOverlayRenderer && window.TutorialOverlayRenderer.createPcOverlayCompleteStateStore);
         if (typeof createCompleteStateStore !== 'function') {
@@ -145,46 +149,131 @@
         };
         const syncRunIdFromStorage = () => adoptRunId(readStoredRunId());
 
-        const nextSequence = () => {
-            const wallSequence = Date.now() * 1000;
-            let storedSequence = 0;
+        const readStoredSequence = () => {
             try {
-                storedSequence = Math.max(
+                return Math.max(
                     0,
                     Math.floor(Number(window.localStorage.getItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY)) || 0)
                 );
             } catch (_) {
-                storedSequence = 0;
+                return 0;
             }
+        };
 
-            sequence = Math.max(sequence + 1, storedSequence + 1, wallSequence);
+        const nextSequence = (minimumSequence) => {
+            const wallSequence = Date.now() * 1000;
+            const sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
+            const storedSequence = readStoredSequence();
+
+            sequence = Math.max(sequence + 1, storedSequence + 1, sequenceFloor + 1, wallSequence);
             try {
                 window.localStorage.setItem(PC_OVERLAY_SEQUENCE_STORAGE_KEY, String(sequence));
             } catch (_) {}
             return sequence;
         };
 
-        const handleStaleResult = (result, patch, force, retried, attemptedRunId) => {
-            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
-                return;
+        const clearDeferredReconciliation = () => {
+            if (deferredReconciliationTimer) {
+                window.clearTimeout(deferredReconciliationTimer);
+                deferredReconciliationTimer = 0;
             }
-            if (syncRunIdFromStorage()) {
-                send(patch, force, true);
-                return;
-            }
-            rotateRunId();
-            send(patch, force, true);
         };
-        const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId) => {
-            if (!result || result.stale !== true || retried || cleared || attemptedRunId !== runId) {
+        const scheduleDeferredReconciliation = (retryCount, attemptedSequence) => {
+            clearDeferredReconciliation();
+            deferredReconciliationTimer = window.setTimeout(() => {
+                deferredReconciliationTimer = 0;
+                if (cleared || readStoredSequence() > attemptedSequence) {
+                    return;
+                }
+                send({}, true, retryCount + 1);
+            }, PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
+        };
+
+        const handleStaleResult = (result, patch, force, retried, attemptedRunId, attemptedSequence) => {
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (attemptedSequence !== sequence) {
+                return;
+            }
+            const activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence > attemptedSequence
+            ) {
+                return;
+            }
+            const isSameRunSequenceStale = !!(
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence === attemptedSequence
+                && !cleared
+                && attemptedRunId === runId
+            );
+            if (isSameRunSequenceStale) {
+                if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    sequence = nextSequence(result.activeSequence);
+                    send(patch, true, retryCount + 1);
+                } else if (retryCount < PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount, attemptedSequence);
+                }
+                return;
+            }
+            if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
                 return;
             }
             if (syncRunIdFromStorage()) {
-                sendCursorOnly(cursor, true);
+                send(patch, force, retryCount + 1);
                 return;
             }
             rotateRunId();
-            sendCursorOnly(cursor, true);
+            send(patch, force, retryCount + 1);
+        };
+        const handleCursorOnlyStaleResult = (result, cursor, retried, attemptedRunId, attemptedSequence) => {
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (attemptedSequence !== sequence) {
+                return;
+            }
+            const activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+            if (
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence > attemptedSequence
+            ) {
+                return;
+            }
+            const isSameRunSequenceStale = !!(
+                result
+                && result.stale === true
+                && result.reason === 'stale-sequence'
+                && result.activeTutorialRunId === attemptedRunId
+                && activeSequence === attemptedSequence
+                && !cleared
+                && attemptedRunId === runId
+            );
+            if (isSameRunSequenceStale) {
+                if (retryCount < PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                    sequence = nextSequence(result.activeSequence);
+                    sendCursorOnly(cursor, retryCount + 1);
+                } else if (retryCount < PC_OVERLAY_MAX_TOTAL_SAME_RUN_STALE_RETRIES) {
+                    scheduleDeferredReconciliation(retryCount, attemptedSequence);
+                }
+                return;
+            }
+            if (!result || result.stale !== true || retryCount > 0 || cleared || attemptedRunId !== runId) {
+                return;
+            }
+            if (syncRunIdFromStorage()) {
+                sendCursorOnly(cursor, retryCount + 1);
+                return;
+            }
+            rotateRunId();
+            sendCursorOnly(cursor, retryCount + 1);
         };
 
         const getAssetUrl = (assetPath) => {
@@ -459,6 +548,10 @@
             if (cleared) {
                 return;
             }
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (retryCount === 0) {
+                clearDeferredReconciliation();
+            }
             syncRunIdFromStorage();
             const payload = completeStateStore.applyPatch(patch || {});
             const key = JSON.stringify(payload || {});
@@ -468,11 +561,10 @@
             lastKey = key;
             if (!active) {
                 active = true;
-                const beginRunId = runId;
                 try {
                     Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
                         if (result && result.stale === true) {
-                            handleStaleResult(result, patch, force, retried === true, beginRunId);
+                            // The paired update carries the state and owns stale retries.
                             return;
                         }
                         if (result && result.ok === false) {
@@ -491,16 +583,17 @@
                 }
             }
             sequence = nextSequence();
+            const updateSequence = sequence;
             const updateRunId = runId;
             try {
                 Promise.resolve(host.update({
                     tutorialRunId: runId,
                     sceneId: doc && doc.body ? (doc.body.getAttribute('data-yui-guide-scene') || '') : '',
-                    sequence: sequence,
+                    sequence: updateSequence,
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleStaleResult(result, patch, force, retried === true, updateRunId);
+                        handleStaleResult(result, patch, force, retryCount, updateRunId, updateSequence);
                         return;
                     }
                     if (result && result.ok === false) {
@@ -525,15 +618,18 @@
             if (cleared || !cursor) {
                 return;
             }
+            const retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+            if (retryCount === 0) {
+                clearDeferredReconciliation();
+            }
             syncRunIdFromStorage();
             const payload = completeStateStore.applyPatch({ cursor: cursor });
             if (!active) {
                 active = true;
-                const beginRunId = runId;
                 try {
                     Promise.resolve(host.begin({ tutorialRunId: runId })).then((result) => {
                         if (result && result.stale === true) {
-                            handleCursorOnlyStaleResult(result, cursor, retried === true, beginRunId);
+                            // The paired cursor update carries the state and owns stale retries.
                             return;
                         }
                         if (result && result.ok === false) {
@@ -552,16 +648,17 @@
                 }
             }
             sequence = nextSequence();
+            const updateSequence = sequence;
             const updateRunId = runId;
             try {
                 Promise.resolve(host.update({
                     tutorialRunId: runId,
                     sceneId: doc && doc.body ? (doc.body.getAttribute('data-yui-guide-scene') || '') : '',
-                    sequence: sequence,
+                    sequence: updateSequence,
                     payload: payload
                 })).then((result) => {
                     if (result && result.stale === true) {
-                        handleCursorOnlyStaleResult(result, cursor, retried === true, updateRunId);
+                        handleCursorOnlyStaleResult(result, cursor, retryCount, updateRunId, updateSequence);
                         return;
                     }
                     if (result && result.ok === false) {
@@ -677,6 +774,7 @@
                 }, durationMs + 900);
             },
             clear() {
+                clearDeferredReconciliation();
                 active = false;
                 cleared = true;
                 lastKey = '';

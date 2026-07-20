@@ -39,6 +39,7 @@ import CompactExportHistoryPanel, {
   type CompactExportPreviewResult,
 } from './CompactExportHistoryPanel';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { swapImageToMemeLoadFailedSticker } from './memeImageFallback';
 import { i18n } from './i18n';
 import {
   type ChatMessage,
@@ -1719,6 +1720,10 @@ function CompactChatApp({
     setLoadedMemeOverlayKey(compactMemeOverlayLoadKey);
     scheduleCompactMemeGeometryRefresh();
   }, [compactMemeOverlayLoadKey, scheduleCompactMemeGeometryRefresh]);
+  const handleCompactMemeOverlayImageError = useCallback((event: React.SyntheticEvent<HTMLImageElement>) => {
+    swapImageToMemeLoadFailedSticker(event.currentTarget, compactMemeOverlay?.url || '');
+    markCompactMemeOverlayImageSettled();
+  }, [compactMemeOverlay?.url, markCompactMemeOverlayImageSettled]);
   const handleCompactMemeOverlayImageRef = useCallback((node: HTMLImageElement | null) => {
     if (!node?.complete) return;
     markCompactMemeOverlayImageSettled();
@@ -5698,6 +5703,7 @@ function CompactChatApp({
   // 兜底），不再随历史区收起而隐藏——否则历史默认折叠的 A/B closed 分支会连带看不到主动分享音乐条。
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
+  const compactMemeOverlayImageLoadingProps = { loading: 'eager' as const, fetchpriority: 'high' as const };
   const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
@@ -5715,13 +5721,14 @@ function CompactChatApp({
             IntersectionObserver 判定。注：表情包「常显、不被同轮台词顶掉」靠的是上面 compactMemeOverlay
             的 role 收起逻辑，不是这个属性。 */}
         <img
+          key={compactMemeOverlay.url}
           src={compactMemeOverlay.url}
           alt={compactMemeOverlay.alt}
-          loading="eager"
+          {...compactMemeOverlayImageLoadingProps}
           decoding="async"
           ref={handleCompactMemeOverlayImageRef}
           onLoad={markCompactMemeOverlayImageSettled}
-          onError={markCompactMemeOverlayImageSettled}
+          onError={handleCompactMemeOverlayImageError}
         />
         {/* 关闭叉：overlay 整体 pointer-events:none（点击穿透到桌面/下层），唯独这个按钮 CSS 里单独开
             auto 才接得住点击；点了把当前 meme id 记进 dismissedMemeId（会话级），下一张新 meme 照常显示。

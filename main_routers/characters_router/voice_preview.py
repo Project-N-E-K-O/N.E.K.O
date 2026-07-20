@@ -43,7 +43,11 @@ from utils.tts.providers.elevenlabs import (
 from utils.config_manager import (
     get_reserved,
 )
-from utils.dashscope_region import DASHSCOPE_GLOBAL_LOCK, configure_dashscope_sdk_urls
+from utils.dashscope_region import (
+    DASHSCOPE_GLOBAL_LOCK,
+    configure_dashscope_sdk_urls,
+    prefer_dashscope_websocket_ipv4,
+)
 from utils.doubao_tts import (
     DOUBAO_TTS_DEFAULT_BASE_URL,
     DOUBAO_TTS_DEFAULT_CONTEXT_TEXTS,
@@ -65,22 +69,15 @@ from utils.tts import provider_registry as tts_provider_registry
 from utils.voice_clone import (
     MinimaxVoiceCloneClient,
     MinimaxVoiceCloneError,
-    get_minimax_base_url,
     MimoVoiceCloneClient,
     MimoVoiceCloneError,
 )
-from utils.language_utils import is_supported_language_code, normalize_language_code
+from utils.tts.providers.minimax import get_minimax_base_url
+from utils.voice_design import MimoVoiceDesignClient, MimoVoiceDesignError
+from utils.voice_preview_text import normalize_voice_preview_language
 
-
-def _normalize_voice_preview_language(raw_language: object) -> str | None:
-    """Normalize the voice preview language; returns None for invalid values so other sources can be tried."""
-    raw = str(raw_language or "").strip()
-    if not raw or not is_supported_language_code(raw):
-        return None
-    normalized = normalize_language_code(raw, format="full")
-    if normalized in VOICE_PREVIEW_TEXTS:
-        return normalized
-    return None
+# Backward-compatible private alias for existing router-package imports.
+_normalize_voice_preview_language = normalize_voice_preview_language
 
 
 def _get_voice_preview_language(request: Request, language: object = None, i18n_language: object = None) -> str:
@@ -505,6 +502,48 @@ async def get_voice_preview(
         # voiceclone 模型一次性合成预览句（对偶 MiniMax 的克隆试听；避免落到下方
         # CosyVoice/DashScope 通用分支拿着 mimo-clone-* 的 id 误合成）。
         if provider == 'mimo':
+            if (voice_data or {}).get('source') == 'design':
+                design_prompt = str((voice_data or {}).get('design_prompt') or '').strip()
+                if not design_prompt:
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo designed voice is missing its description: {voice_id}',
+                        'code': 'MIMO_VOICE_DESIGN_PROMPT_MISSING',
+                    }, status_code=400)
+                mimo_api_key = _config_manager.get_tts_api_key('mimo')
+                if not mimo_api_key:
+                    return JSONResponse({
+                        'success': False,
+                        'error': 'MIMO_API_KEY_MISSING',
+                        'code': 'MIMO_API_KEY_MISSING',
+                    }, status_code=400)
+                if str(preview_core_config.get('assistApi') or '').strip().lower() == 'mimo':
+                    mimo_base_url = (preview_core_config.get('OPENROUTER_URL') or '').strip()
+                else:
+                    mimo_base_url = str((voice_data or {}).get('mimo_base_url') or '').strip()
+                try:
+                    mimo_client = MimoVoiceDesignClient(api_key=mimo_api_key, base_url=mimo_base_url or None)
+                    audio_data = await mimo_client.synthesize_design_preview(design_prompt, text=text)
+                    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                    logger.info(
+                        f"MiMo designed voice {voice_id} preview generated, size: {len(audio_data)} bytes"
+                    )
+                    return {'success': True, 'audio': audio_base64, 'mime_type': 'audio/wav'}
+                except MimoVoiceDesignError as exc:
+                    logger.error(f"MiMo designed voice {voice_id} preview failed: {exc}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo preview generation failed: {str(exc)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                    }, status_code=502)
+                except Exception as exc:
+                    logger.error(f"MiMo designed voice {voice_id} preview raised an error: {exc}")
+                    return JSONResponse({
+                        'success': False,
+                        'error': f'MiMo preview generation failed: {str(exc)}',
+                        'code': 'MIMO_VOICE_PREVIEW_FAILED',
+                    }, status_code=500)
+
             sample_b64 = (voice_data or {}).get('clone_sample_b64') or ''
             if not sample_b64:
                 return JSONResponse({
@@ -555,6 +594,7 @@ async def get_voice_preview(
                 return JSONResponse({
                     'success': False,
                     'error': f'MiMo 预览生成失败: {str(e)}',
+                    'code': 'MIMO_VOICE_PREVIEW_FAILED',
                 }, status_code=500)
 
         if provider == 'doubao_tts':
@@ -635,16 +675,15 @@ async def get_voice_preview(
             from main_logic.tts_client._infra import _resample_audio
             clone_data_uri = _build_vllm_omni_clone_data_uri(voice_data)
             ref_text = str((voice_data or {}).get('clone_ref_text') or '').strip()
-            # base_url：优先 voice_meta 存的 vllm_omni_base_url，缺省回落
-            # preview_core_config 的 ttsModelUrl。无配置 URL 时返回 400 —— 不硬编码
-            # 任何内网端点（旧实现 fallback 到固定 IP，推到公共仓库后必失败且泄漏拓扑）。
-            base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
+            # 配置优先级：先用 preview_core_config 的 ttsModelUrl，再 fallback 到
+            # voice_data 里持久化的 vllm_omni_base_url，避免历史“固定内网地址”回退。
+            base_url = str(
+                (preview_core_config or {}).get('ttsModelUrl')
+                or (preview_core_config or {}).get('TTS_MODEL_URL')
+                or ''
+            ).strip()
             if not base_url:
-                base_url = str(
-                    (preview_core_config or {}).get('ttsModelUrl')
-                    or (preview_core_config or {}).get('TTS_MODEL_URL')
-                    or ''
-                ).strip()
+                base_url = str((voice_data or {}).get('vllm_omni_base_url') or '').strip()
             if not base_url:
                 return JSONResponse({
                     'success': False,
@@ -944,10 +983,27 @@ async def get_voice_preview(
         except Exception as e:
             logger.warning("DashScope 预览地域 URL 读取失败，回退到默认地域: %s", e, exc_info=True)
             tts_api_config = {}
-        preview_base_url = cosyvoice_base_url or tts_api_config.get('base_url', '')
+        if provider == 'cosyvoice_intl':
+            preview_base_url = (
+                cosyvoice_base_url
+                or (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or ''
+            )
+        else:
+            preview_base_url = (
+                (tts_api_config or {}).get('ttsModelUrl')
+                or (tts_api_config or {}).get('TTS_MODEL_URL')
+                or cosyvoice_base_url
+                or ''
+            )
 
         from utils.api_config_loader import get_cosyvoice_clone_model
-        clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
+        clone_model = (
+            (voice_data or {}).get('design_model')
+            or (voice_data or {}).get('clone_model')
+            or get_cosyvoice_clone_model(provider)
+        )
 
         def _do_preview_synthesize():
             import dashscope
@@ -957,7 +1013,7 @@ async def get_voice_preview(
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
             # 这里把整个 call 都圈进锁，因为 SpeechSynthesizer.call 是同步的
             # 一次性请求，锁持续时间 ~ 几秒，不会卡 event loop（在 to_thread 里跑）。
-            with DASHSCOPE_GLOBAL_LOCK:
+            with DASHSCOPE_GLOBAL_LOCK, prefer_dashscope_websocket_ipv4():
                 dashscope.api_key = audio_api_key
                 try:
                     configure_dashscope_sdk_urls(

@@ -1,6 +1,6 @@
 import type {
   AvatarToolVariantId as CatalogAvatarToolVariantId,
-  AvatarToolDefinitionId,
+  AvatarToolId,
   AvatarToolDefinition,
   AvatarToolManagerIconVisual,
 } from './avatar-tools/catalog';
@@ -11,7 +11,7 @@ import {
 
 export { withAvatarToolAssetVersion };
 
-export type AvatarToolId = AvatarToolDefinitionId;
+export type { AvatarToolId } from './avatar-tools/catalog';
 
 export type AvatarToolVariantId = CatalogAvatarToolVariantId;
 

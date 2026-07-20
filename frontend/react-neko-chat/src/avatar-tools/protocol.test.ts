@@ -8,8 +8,8 @@ import {
 import {
   avatarInteractionPayloadSchema,
   buildAvatarInteractionPayload,
-  buildAvatarToolDescriptorStatePayload,
-  buildAvatarToolStatePayload,
+  buildAvatarToolPointerStatePayload,
+  buildAvatarToolSelectionStatePayload,
   getAvatarToolStatePayloadKey,
   type AvatarInteractionPayload,
 } from './protocol';
@@ -22,7 +22,7 @@ const BASE_PAYLOAD = {
 } as const;
 
 function declaredFacts(profile: AvatarToolInteractionProfile) {
-  if (profile.kind === 'progressive-release-v1') {
+  if (profile.kind === 'progressive-release') {
     return {
       actions: profile.stages.map(stage => ({
         actionId: stage.actionId,
@@ -35,7 +35,7 @@ function declaredFacts(profile: AvatarToolInteractionProfile) {
       chanceIntensity: null,
     };
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return {
       actions: [{
         actionId: profile.actionId,
@@ -200,7 +200,7 @@ describe('avatar tool payload builders', () => {
 
   it('keeps the single-window pointer state lightweight', () => {
     const tool = AVAILABLE_AVATAR_TOOLS.find(item => item.id === 'fist')!;
-    const payload = buildAvatarToolStatePayload({
+    const payload = buildAvatarToolPointerStatePayload({
       activeTool: tool,
       variant: 'primary',
       avatarRangeVariant: 'primary',
@@ -217,7 +217,7 @@ describe('avatar tool payload builders', () => {
 
   it('builds a desktop handoff with descriptor facts but no live pointer state', () => {
     const tool = AVAILABLE_AVATAR_TOOLS.find(item => item.id === 'hammer')!;
-    const payload = buildAvatarToolDescriptorStatePayload({ activeTool: tool });
+    const payload = buildAvatarToolSelectionStatePayload({ activeTool: tool });
 
     expect(Object.keys(payload).sort()).toEqual([
       'active',
@@ -241,7 +241,7 @@ describe('avatar tool payload builders', () => {
   });
 
   it('publishes an inactive desktop handoff without active variants or a page visual descriptor', () => {
-    const payload = buildAvatarToolDescriptorStatePayload({ activeTool: null });
+    const payload = buildAvatarToolSelectionStatePayload({ activeTool: null });
 
     expect(Object.keys(payload).sort()).toEqual([
       'active',

@@ -29,8 +29,8 @@ import {
 } from './interaction';
 import {
   buildAvatarInteractionPayload,
-  buildAvatarToolDescriptorStatePayload,
-  buildAvatarToolStatePayload,
+  buildAvatarToolPointerStatePayload,
+  buildAvatarToolSelectionStatePayload,
   getAvatarToolStatePayloadKey,
   type AvatarToolPointer,
 } from './protocol';
@@ -334,7 +334,7 @@ export function useAvatarToolRuntime({
     const toolId = activeToolIdRef.current;
     if (!ownsLocalPointerRuntime) {
       const currentTool = getAvatarTool(toolId);
-      const payload = buildAvatarToolDescriptorStatePayload({
+      const payload = buildAvatarToolSelectionStatePayload({
         activeTool: currentTool,
         avatarRangeVariant: currentTool ? rangeVariantsRef.current[currentTool.id] : undefined,
         outsideRangeVariant: currentTool ? outsideVariantsRef.current[currentTool.id] : undefined,
@@ -354,7 +354,7 @@ export function useAvatarToolRuntime({
       insideHostWindow: insideHostRef.current,
       effectActive: overlayEffectExecutionRef.current !== null,
     });
-    const payload = buildAvatarToolStatePayload({
+    const payload = buildAvatarToolPointerStatePayload({
       activeTool: current.activeTool,
       variant: current.effectiveVariant,
       avatarRangeVariant: current.avatarRangeVariant,
@@ -375,7 +375,7 @@ export function useAvatarToolRuntime({
   const publishInactiveState = useCallback(() => {
     const callback = stateCallbackRef.current;
     if (!callback) return;
-    const payload = ownsLocalPointerRuntime ? buildAvatarToolStatePayload({
+    const payload = ownsLocalPointerRuntime ? buildAvatarToolPointerStatePayload({
       activeTool: null,
       variant: 'primary',
       avatarRangeVariant: 'primary',
@@ -385,7 +385,7 @@ export function useAvatarToolRuntime({
       overCompactZone: false,
       insideHostWindow: insideHostRef.current,
       pointer: latestPointerRef.current,
-    }) : buildAvatarToolDescriptorStatePayload({
+    }) : buildAvatarToolSelectionStatePayload({
       activeTool: null,
     });
     const key = getAvatarToolStatePayloadKey(payload);
@@ -534,7 +534,7 @@ export function useAvatarToolRuntime({
       random,
       mode: effectMode,
     });
-    if (execution.kind === 'fixed-particles-v1' || execution.kind === 'random-scatter-v1') {
+    if (execution.kind === 'fixed-particles' || execution.kind === 'random-scatter') {
       const visuals: AvatarToolTransientVisualEffect[] = [...execution.visuals];
       setTransientEffects(current => [...current, ...visuals]);
       visuals.forEach(visual => session.disposer.setTimeout(() => {

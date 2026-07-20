@@ -145,7 +145,7 @@ watcher.start()
 
 callable の `filter(predicate)`、`where(predicate)`、`sort(key=callable)` は materialize 済み snapshot に対する local-only 変換で、`watch()` では replay できません。watcher chain では上例のように structured `filter(field=value, ...)` と `sort(by=...)` を使います。
 
-最近の memory record は `await self.bus.memory.get(bucket_id="default", limit=...)`、semantic lookup は `await self.ctx.query_memory("default", query)` を使います。旧高レベル `self.memory` / `MemoryClient` API は削除済みです。
+`await self.bus.memory.get(bucket_id="default", limit=...)` で、host が保持する最近のユーザー発話イベントを読み取れます。この bucket は件数制限付きでメモリ上にのみ保持され、TTL は 1 時間です。キャラクターの永続的な facts、reflections、persona ではありません。旧高レベル `self.memory` / `MemoryClient` API は削除済みです。`self.ctx.query_memory(...)` は互換性のため残っていますが、非推奨の placeholder endpoint を呼ぶだけなので semantic recall として扱わないでください。
 
 ---
 

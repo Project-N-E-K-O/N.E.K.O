@@ -147,9 +147,13 @@ def test_goodbye_resource_suspend_pauses_only_active_render_loops_and_restores_o
     get_manager = _js_function_block(source, "getModelManagerByType")
 
     assert "if (type === 'live2d')" in is_rendering
-    assert "ticker && ticker.started !== false" in is_rendering
-    assert "if (type === 'vrm' || type === 'mmd')" in is_rendering
-    assert "return !!manager._animationFrameId;" in is_rendering
+    # 空闲低频 tick 模式（round-2）下 ticker.started/rAF id 为"停"的假象，
+    # isModelRenderingActive 必须把 _idleTickMode 也算作在渲染
+    assert "ticker.started !== false || manager._idleTickMode" in is_rendering
+    assert "if (type === 'vrm')" in is_rendering
+    assert "manager._animationFrameId || manager._idleTickMode" in is_rendering
+    assert "if (type === 'mmd')" in is_rendering
+    assert "manager.core && manager.core._idleTickMode" in is_rendering
     assert "if (type === 'pngtuber')" in is_rendering
     assert "document.getElementById('pngtuber-container')" in is_rendering
     assert "container.style.display !== 'none'" in is_rendering

@@ -1,6 +1,15 @@
 /**
  * VRM Manager - 物理控制版 (修复更新顺序)
  */
+
+// 空闲低频 tick 模式常量（对齐 live2d-core.js / mmd-core.js 的同名机制）：
+// 无活动时把 rAF 驱动的渲染链切到 setInterval，避免 120Hz 屏上 rAF 请求
+// 让 Blink 以显示器刷新率空跑主帧生命周期。弹簧骨物理用真实 elapsed dt，
+// 33ms 步长在 0.05s 防爆 clamp 之内，稳定性与 rAF 路径一致。
+const VRM_IDLE_FPS = 30;
+const VRM_INTERACTIVE_FPS_HOLD_MS = 900;
+const VRM_IDLE_FPS_GOVERNOR_INTERVAL_MS = 300;
+
 class VRMManager {
     constructor() {
         this.scene = null;
@@ -296,6 +305,8 @@ class VRMManager {
 
         if (!this._mouseMoveHandler) {
             this._mouseMoveHandler = (event) => {
+                // 供空闲低频 governor 判定"光标最近在动"（legacy 视线跟随路径）
+                this._lastLookAtPointerMoveAt = performance.now();
                 this._setLookAtTargetByMouse(event.clientX, event.clientY);
             };
             document.addEventListener('mousemove', this._mouseMoveHandler, { passive: true });
@@ -653,30 +664,14 @@ class VRMManager {
     }
 
     startAnimateLoop() {
+        // 先退出空闲低频 tick 模式（不复跑 rAF，下面自建新链），避免双驱动
+        this._exitIdleTickMode(false);
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
         this._lastRenderTime = 0;
 
-        const animateLoop = () => {
-            // 检查渲染器、场景和相机是否都存在，如果任何一个被 dispose 了则取消动画循环
-            if (!this.renderer || !this.scene || !this.camera) {
-                if (this._animationFrameId) {
-                    cancelAnimationFrame(this._animationFrameId);
-                    this._animationFrameId = null;
-                }
-                return;
-            }
-
-            this._animationFrameId = requestAnimationFrame(animateLoop);
-
-            // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
-            const now = performance.now();
-            const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
-            if (targetFps > 0) {
-                const frameInterval = 1000 / targetFps;
-                if (now - this._lastRenderTime < frameInterval * 0.9) return;
-            }
-            this._lastRenderTime = now;
-
+        // 帧体：rAF 驱动与空闲低频 interval 共用（interval 直接调用本函数，
+        // 定时器周期即节流器，不经过 rAF 驱动里的 targetFrameRate 跳帧）
+        const renderFrame = (frameNow) => {
             // 获取时间增量并限制最大值，防止切屏或卡顿导致物理"爆炸"
             let delta = this.clock ? this.clock.getDelta() : 0.016;
             delta = Math.min(delta, 0.05);
@@ -686,7 +681,9 @@ class VRMManager {
             if (this.currentModel && this.currentModel.vrm) {
                 // 0. 主灯跟随相机
                 if (this.mainLight && this.camera) {
-                    const lightOffset = new window.THREE.Vector3(0.2, 0.5, 1.5);
+                    // 复用 scratch 向量：本分支每渲染帧都会执行，避免逐帧 new Vector3
+                    if (!this._mainLightOffsetScratch) this._mainLightOffsetScratch = new window.THREE.Vector3();
+                    const lightOffset = this._mainLightOffsetScratch.set(0.2, 0.5, 1.5);
                     lightOffset.applyQuaternion(this.camera.quaternion);
                     this.mainLight.position.copy(this.camera.position).add(lightOffset);
 
@@ -740,7 +737,10 @@ class VRMManager {
                 // low: 仅 lookAt + expressions；medium: 隔帧物理；high: 每帧物理
                 const quality = window.renderQuality || 'medium';
                 if (this.enablePhysics && quality !== 'low') {
-                    if (quality === 'medium') {
+                    // 空闲低频模式下绕过 medium 的隔帧物理：30fps 地板上再隔帧会让
+                    // 弹簧骨物理退化到 15Hz/66.7ms 步长，超出 50ms 防爆 clamp 的设计
+                    // 意图且发丝/裙摆可见抖动；30Hz 全帧物理成本 ≈ medium@60 不变
+                    if (quality === 'medium' && !this._idleTickMode) {
                         this._physicsFrameSkip = (this._physicsFrameSkip || 0) + 1;
                         if (this._physicsFrameSkip % 2 === 0) {
                             this.currentModel.vrm.update(delta * 2);
@@ -797,8 +797,165 @@ class VRMManager {
                 this.renderer.render(this.scene, this.camera);
             }
         };
+        this._renderFrame = renderFrame;
+
+        const animateLoop = () => {
+            // 检查渲染器、场景和相机是否都存在，如果任何一个被 dispose 了则取消动画循环
+            if (!this.renderer || !this.scene || !this.camera) {
+                if (this._animationFrameId) {
+                    cancelAnimationFrame(this._animationFrameId);
+                    this._animationFrameId = null;
+                }
+                return;
+            }
+
+            this._animationFrameId = requestAnimationFrame(animateLoop);
+
+            // 帧率限制：根据 targetFrameRate 跳帧（0 = 不限帧，跟随 VSync）
+            const now = performance.now();
+            const targetFps = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+            if (targetFps > 0) {
+                const frameInterval = 1000 / targetFps;
+                if (now - this._lastRenderTime < frameInterval * 0.9) return;
+            }
+            this._lastRenderTime = now;
+            renderFrame(now);
+        };
+        this._rafDriver = animateLoop;
 
         this._animationFrameId = requestAnimationFrame(animateLoop);
+        this._startIdleFpsGovernor();
+    }
+
+    // ═══════ 空闲低频 tick 模式（对齐 live2d-core.js / mmd-core.js 的同名机制）═══════
+
+    _resolveIdleFps() {
+        const raw = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : 60;
+        const configured = Number.isFinite(raw) ? raw : 60;
+        return configured === 0 ? VRM_IDLE_FPS : Math.min(VRM_IDLE_FPS, configured);
+    }
+
+    _enterIdleTickMode() {
+        if (this._idleTickMode) return;
+        if (!this.renderer || !this.scene || !this.camera) return;
+        // 外部已暂停（pauseRendering 后 rAF 链不存在）：不接管
+        if (!this._animationFrameId) return;
+        this._idleTickMode = true;
+        cancelAnimationFrame(this._animationFrameId);
+        this._animationFrameId = null;
+        const intervalMs = Math.max(16, Math.round(1000 / Math.max(1, this._resolveIdleFps())));
+        this._idleTickTimer = setInterval(() => {
+            if (!this._idleTickMode) return;
+            if (!this.renderer || !this.scene || !this.camera) { this._exitIdleTickMode(false); return; }
+            // 外部代码绕过 startAnimateLoop 拉起了 rAF 链：让位
+            if (this._animationFrameId) { this._exitIdleTickMode(false); return; }
+            // 纯浏览器隐藏标签页对齐 rAF 暂停语义（Electron 宠物窗关了节流，不受影响）
+            if (typeof document !== 'undefined' && document.hidden) return;
+            try {
+                if (this._renderFrame) this._renderFrame(performance.now());
+            } catch (e) {
+                if (!this._idleTickErrorLogged) {
+                    this._idleTickErrorLogged = true;
+                    console.warn('[VRM Manager] 空闲低频 tick 渲染异常（同类后续不再打印）:', e);
+                }
+            }
+        }, intervalMs);
+    }
+
+    _exitIdleTickMode(restartRaf = true) {
+        if (!this._idleTickMode) return;
+        this._idleTickMode = false;
+        if (this._idleTickTimer) {
+            clearInterval(this._idleTickTimer);
+            this._idleTickTimer = null;
+        }
+        if (restartRaf && this.renderer && this.scene && this.camera &&
+            !this._animationFrameId && this._rafDriver) {
+            this._lastRenderTime = 0;
+            this._animationFrameId = requestAnimationFrame(this._rafDriver);
+        }
+    }
+
+    // 有交互/活动时升回 rAF 满帧，并安排在 durationMs 后无活动则回落空闲低频
+    _boostInteractiveFPS(durationMs = VRM_INTERACTIVE_FPS_HOLD_MS) {
+        this._exitIdleTickMode();
+        if (this._idleFpsRestoreTimer) clearTimeout(this._idleFpsRestoreTimer);
+        // 豁免页：只升频、不安排衰减——衰减会在 governor 缺席时把渲染拖回空闲模式
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            this._idleFpsRestoreTimer = null;
+            return;
+        }
+        this._idleFpsRestoreTimer = setTimeout(() => {
+            this._idleFpsRestoreTimer = null;
+            if (this.renderer && this.scene && this.camera && !this._hasRenderActivity()) {
+                this._enterIdleTickMode();
+            }
+        }, Math.max(100, Number(durationMs) || VRM_INTERACTIVE_FPS_HOLD_MS));
+    }
+
+    // 需要满帧的活动：口型同步、非 idle VRMA 播放、拖拽、光标跟踪余温、
+    // 相机变化余温（OrbitControls 阻尼收敛）、模型加载/入场阶段
+    _hasRenderActivity() {
+        try { if (this.animation && this.animation.lipSyncActive) return true; } catch (_) {}
+        try { if (window.appState && window.appState.lipSyncActive) return true; } catch (_) {}
+        try {
+            if (this.animation && this.animation.vrmaIsPlaying && !this.animation.isIdleAnimation) return true;
+        } catch (_) {}
+        try { if (this.interaction && this.interaction.isDragging) return true; } catch (_) {}
+        try {
+            const cf = this._cursorFollow;
+            if (cf && typeof cf.isEnabled === 'function' && cf.isEnabled() &&
+                cf._lastPointerMoveAt && (performance.now() - cf._lastPointerMoveAt) < VRM_INTERACTIVE_FPS_HOLD_MS) return true;
+        } catch (_) {}
+        try {
+            if (this._lastLookAtPointerMoveAt &&
+                (performance.now() - this._lastLookAtPointerMoveAt) < VRM_INTERACTIVE_FPS_HOLD_MS) return true;
+        } catch (_) {}
+        try {
+            if (this._lastCameraChangeAt &&
+                (performance.now() - this._lastCameraChangeAt) < VRM_INTERACTIVE_FPS_HOLD_MS) return true;
+        } catch (_) {}
+        try {
+            if (this._lastInteractionBoostTs &&
+                (performance.now() - this._lastInteractionBoostTs) < VRM_INTERACTIVE_FPS_HOLD_MS) return true;
+        } catch (_) {}
+        try {
+            if (this._loadState === 'preparing' || this._loadState === 'settling') return true;
+        } catch (_) {}
+        return false;
+    }
+
+    _startIdleFpsGovernor() {
+        this._stopIdleFpsGovernor();
+        // 页面级豁免：小游戏 demo 等用自有 rAF 循环驱动骨骼姿态的页面，
+        // 活动探测看不见它们的动画，节流会造成可见卡顿——由页面声明退出
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
+        // 启动/加载视为活动：先满帧，随后自动衰减
+        this._boostInteractiveFPS();
+        this._idleFpsGovernorTimer = setInterval(() => {
+            // 自终止：dispose / 场景销毁后自动停摆并释放闭包引用
+            if (!this.renderer || !this.scene || !this.camera) { this._stopIdleFpsGovernor(); return; }
+            // 外部暂停（rAF 链与空闲模式都不存在）：不接管，resume 会重启 governor
+            if (!this._idleTickMode && !this._animationFrameId) return;
+            if (this._hasRenderActivity()) {
+                this._boostInteractiveFPS();
+            } else if (!this._idleTickMode && !this._idleFpsRestoreTimer) {
+                // 自愈：外部直接重启 rAF 链后无人再带我们回空闲模式
+                this._enterIdleTickMode();
+            }
+        }, VRM_IDLE_FPS_GOVERNOR_INTERVAL_MS);
+    }
+
+    _stopIdleFpsGovernor() {
+        if (this._idleFpsGovernorTimer) {
+            clearInterval(this._idleFpsGovernorTimer);
+            this._idleFpsGovernorTimer = null;
+        }
+        if (this._idleFpsRestoreTimer) {
+            clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
+        }
+        this._exitIdleTickMode(false);
     }
 
     toggleSpringBone(enable) {
@@ -981,10 +1138,20 @@ class VRMManager {
      * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
      */
     pauseRendering() {
+        // 空闲低频模式下 _animationFrameId 为 null（interval 驱动），必须显式
+        // 退出该模式（不复跑），否则暂停对 interval 无效、渲染继续
+        const wasIdleTicking = this._idleTickMode === true;
+        this._exitIdleTickMode(false);
+        if (this._idleFpsRestoreTimer) {
+            clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
+        }
         if (this._animationFrameId) {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;
             console.log('[VRM Manager] 渲染循环已暂停');
+        } else if (wasIdleTicking) {
+            console.log('[VRM Manager] 渲染循环已暂停（自空闲低频模式）');
         }
     }
 
@@ -1011,7 +1178,14 @@ class VRMManager {
         const loadToken = ++this._activeLoadToken;
         this._loadState = 'preparing';
         this._isModelReadyForInteraction = false;
-        return this._loadModelInternal(modelUrl, options, loadToken);
+        // .catch 而非 await：本函数按竞态契约不得 await（见 static contract 测试），
+        // 失败路径必须复位加载态——_hasRenderActivity 把 preparing/settling 视为
+        // 活动，卡在 preparing 会让空闲 governor 永久 boost、本会话节流失效，
+        // 且加载前画布已置 opacity 0，旧场景会在不可见画布上满帧空转。
+        return this._loadModelInternal(modelUrl, options, loadToken).catch((e) => {
+            if (this._isLoadTokenActive(loadToken)) this._loadState = 'idle';
+            throw e;
+        });
     }
 
     /**
@@ -1450,16 +1624,23 @@ class VRMManager {
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
-        // 1. 取消动画循环（最关键）
+        // 1. 取消动画循环（最关键）；先停 governor（一并清衰减计时器、
+        //    退出空闲低频模式且不复跑）
+        this._stopIdleFpsGovernor();
         if (this._animationFrameId) {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;
         }
 
-        // 2. 清理 UI 更新循环
-        if (this._uiUpdateLoopId) {
+        // 2. 清理 UI 更新循环（!= null：兼容 _updateFloatingButtonsPositionNow
+        //    留下的 0 哨兵；一并清空闲低频模式的 pending 再入定时器）
+        if (this._uiUpdateLoopId != null) {
             cancelAnimationFrame(this._uiUpdateLoopId);
             this._uiUpdateLoopId = null;
+        }
+        if (this._uiLoopIdleTimeout) {
+            clearTimeout(this._uiLoopIdleTimeout);
+            this._uiLoopIdleTimeout = null;
         }
 
         // 3. 清理重试定时器（loadModel 中的 tryPlayAnimation 重试）

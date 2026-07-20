@@ -1,30 +1,23 @@
 # Configuration Overview
 
-N.E.K.O. uses a layered configuration system with multiple sources. Configuration values are resolved in priority order from highest to lowest.
+N.E.K.O. has three separate configuration surfaces. They do not share one universal precedence chain.
 
-## Priority chain
+| Surface | Recommended editor | Runtime source |
+| --- | --- | --- |
+| User settings, characters, API keys | Web UI | JSON under the selected N.E.K.O. data root |
+| Provider definitions and model-role defaults | Maintainer-edited repository data | `config/api_providers.json` plus code fallbacks |
+| Ports and selected runtime switches | Environment or desktop port settings | `config/network.py`, `config/memory_settings.py`, and `port_config.json` |
 
-1. **Environment variables** (highest) — `NEKO_*` prefix
-2. **User config files** — `core_config.json`, `user_preferences.json`
-3. **API provider config** — `api_providers.json`
-4. **Code defaults** (lowest) — `config/__init__.py`
+For a normal installation, start N.E.K.O. and use the Web UI. Do not edit bundled files merely to change a personal API key.
 
-## Quick reference
+## References
 
-| What to configure | Where |
-|-------------------|-------|
-| API keys and providers | [Environment Variables](./environment-vars) or Web UI at `/api_key` |
-| Config file locations | [Config Files](./config-files) |
-| Available AI providers | [API Providers](./api-providers) |
-| Model selection per task | [Model Configuration](./model-config) |
-| How overrides work | [Config Priority](./config-priority) |
+- [Config files](./config-files): writable files and storage roots
+- [API providers](./api-providers): provider-schema contract
+- [Model configuration](./model-config): role-based model resolution
+- [Environment variables](./environment-vars): variables actually read by current code
+- [Config priority](./config-priority): precedence by configuration surface
 
-## Web UI configuration
-
-The easiest way to configure N.E.K.O. is through the Web UI:
-
-- **API keys:** `http://localhost:48911/api_key`
-- **Character settings:** `http://localhost:48911/character_card_manager`
-- **Model management:** `http://localhost:48911/model_manager`
-
-Changes made through the Web UI are persisted to the appropriate config files automatically.
+::: warning Secrets
+Keep API keys out of Git, screenshots, issue reports, and logs. The Web UI writes them to local user configuration.
+:::
