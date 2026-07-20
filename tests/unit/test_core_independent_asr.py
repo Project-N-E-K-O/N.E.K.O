@@ -98,6 +98,7 @@ class _ReadyDetector:
         self.reset = AsyncMock(side_effect=self._reset)
         self.close = AsyncMock()
         self.release_deferred_turn = AsyncMock()
+        self.pin_endpointing_session = AsyncMock(return_value=True)
 
     async def prepare_endpointing(self, token):
         self._token = token
@@ -1781,6 +1782,105 @@ async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) 
     asr.connect.assert_awaited_once_with()
     assert runtime._asr_session is asr
     assert runtime._asr_route_mode == "independent"
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_disabled_optimization_connects_transport_without_inventing_turn_identity(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    detector = _ReadyDetector()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("gemini")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "DetectorRuntime",
+        MagicMock(return_value=detector),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    detector.pin_endpointing_session.assert_not_awaited()
+    asr.connect.assert_awaited_once_with()
+    asr.stream_audio.assert_not_awaited()
+    assert runtime._asr_session is asr
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
+    assert runtime._asr_route_mode == "independent"
+    assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_disabled_optimization_streaming_route_never_pins_smart_turn(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    runtime.core_api_type = "qwen"
+    detector = _ReadyDetector()
+    asr = type("Asr", (), {})()
+    asr.is_ready = True
+    asr.connect = AsyncMock()
+    asr.close = AsyncMock()
+    asr.stream_audio = AsyncMock()
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=_selection("qwen", "provider")),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(return_value=asr),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "DetectorRuntime",
+        MagicMock(return_value=detector),
+    )
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    detector.pin_endpointing_session.assert_not_awaited()
+    asr.connect.assert_awaited_once_with()
+    assert runtime._asr_session is asr
+    assert runtime._asr_lifecycle.provider_policy.endpoint_authority == "provider"
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.LOCAL_LISTEN
     assert runtime._omni_mic_audio_bytes == 0
 
 
