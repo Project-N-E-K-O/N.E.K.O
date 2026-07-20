@@ -736,7 +736,6 @@ class IndependentAsrRuntime:
             _attach_partial_callback(candidate_session, on_partial)
             return candidate_session
 
-        asr_session = None
         try:
             self._asr_provider = provider
             self._asr_lifecycle = VoiceInputLifecycleController(
@@ -797,40 +796,15 @@ class IndependentAsrRuntime:
             self._asr_transport_selection = selection
             lifecycle = self._asr_lifecycle
             if not self._voice_input_resource_optimization_enabled:
-                lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
-
-                async def prepare_continuous_endpointing() -> bool:
-                    if not await detector_ref.pin_endpointing_session():
-                        return False
-                    return await self._ensure_smart_turn_ready(lifecycle, epoch)
-
-                smart_turn_task = asyncio.create_task(
-                    prepare_continuous_endpointing(),
-                    name="independent-asr-session-smart-turn",
-                )
-                transport_task = asyncio.create_task(
-                    self._restart_transport(max_attempts=1),
-                    name="independent-asr-session-transport",
-                )
-                smart_turn_ready, _transport_result = await asyncio.gather(
-                    smart_turn_task,
-                    transport_task,
-                    return_exceptions=True,
-                )
+                await self._restart_transport(max_attempts=1)
                 if (
-                    smart_turn_ready is not True
-                    or epoch != self._asr_session_epoch
+                    epoch != self._asr_session_epoch
                     or lifecycle is not self._asr_lifecycle
                     or self._asr_session is None
                     or not getattr(self._asr_session, "is_ready", True)
                 ):
                     raise RuntimeError("ASR_CONTINUOUS_STARTUP_FAILED")
-                lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
-                await self._send_asr_lifecycle_state(VoiceLifecycleState.ACTIVE)
-            else:
-                await self._send_asr_lifecycle_state(
-                    VoiceLifecycleState.LOCAL_LISTEN
-                )
+            await self._send_asr_lifecycle_state(VoiceLifecycleState.LOCAL_LISTEN)
             await self._send_asr_status("ASR_INDEPENDENT_READY", provider)
             return AsrStartResult(AsrStartStatus.READY, provider=provider)
         except asyncio.CancelledError:
