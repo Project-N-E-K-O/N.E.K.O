@@ -311,30 +311,34 @@ async function loadCharacterCards() {
 
     // 获取角色数据
     const characterData = await loadCharacterData();
-    if (!characterData) return;
+    // 页面初始化、工坊同步和导入都可能并发触发刷新。旧请求晚返回时必须整轮退出，
+    // 不能只淘汰它的模型扫描，否则它会用导入前的快照覆盖最新列表。
+    if (!characterData || loadSequence !== characterCardLoadSequence) return;
 
     // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
     // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
     const modelScanPromise = scanModels(loadSequence);
 
-    // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
-    window.characterCards = [];
+    // 先在局部数组中组装完整快照，确认仍是最新一轮后再一次性提交到 UI；
+    // 避免并发刷新通过共享 window.characterCards 相互追加或清空。
+    const nextCharacterCards = [];
     let idCounter = 1;
 
     // 只处理猫娘数据，忽略其他角色类型（包括主人）
     const catgirls = characterData['猫娘'] || {};
     for (const [name, data] of Object.entries(catgirls)) {
-        window.characterCards.push(buildCharacterCardEntry(name, data, idCounter++));
+        nextCharacterCards.push(buildCharacterCardEntry(name, data, idCounter++));
     }
 
     // 从character_cards文件夹加载角色卡
     try {
-        const response = await fetch('/api/characters/character-card/list');
+        const response = await fetch('/api/characters/character-card/list', { cache: 'no-store' });
         if (response.ok) {
             const data = await response.json();
+            if (loadSequence !== characterCardLoadSequence) return;
             if (data.success) {
                 for (const card of data.character_cards) {
-                    window.characterCards.push({
+                    nextCharacterCards.push({
                         id: idCounter++,
                         name: card.name,
                         description: card.description,
@@ -347,29 +351,32 @@ async function loadCharacterCards() {
     } catch (error) {
         console.error('从character_cards文件夹加载角色卡失败:', error);
     }
+    if (loadSequence !== characterCardLoadSequence) return;
 
     // 扫描模型文件夹中的 character_settings JSON 文件仅用于旧格式兼容，不能阻塞角色管理主列表。
     const characterSettingsStartId = idCounter;
 
-    // 渲染角色卡列表（改为下拉选单）
-    refreshCharacterCardSelectOptions();
-
-    // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
-    globalCharacterCards = window.characterCards || [];
-
     // 获取当前猫娘
+    let currentCatgirl = '';
     try {
-        const currentResp = await fetch('/api/characters/current_catgirl');
+        const currentResp = await fetch('/api/characters/current_catgirl', { cache: 'no-store' });
         const currentData = await currentResp.json();
-        window._workshopCurrentCatgirl = currentData.current_catgirl || '';
-    } catch (e) {
-        window._workshopCurrentCatgirl = '';
-    }
+        currentCatgirl = currentData.current_catgirl || '';
+    } catch (e) {}
+    if (loadSequence !== characterCardLoadSequence) return;
 
     // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）
-    await loadCardFaceNames();
+    await loadCardFaceNames(loadSequence);
+    if (loadSequence !== characterCardLoadSequence) return;
     // 预取卡面元数据（作者/创建时间/来源）
-    await loadCardMetas();
+    await loadCardMetas(loadSequence);
+    if (loadSequence !== characterCardLoadSequence) return;
+
+    // 只有最新一轮加载可以提交共享状态和重绘列表。
+    window.characterCards = nextCharacterCards;
+    globalCharacterCards = nextCharacterCards;
+    window._workshopCurrentCatgirl = currentCatgirl;
+    refreshCharacterCardSelectOptions();
 
     // 渲染卡片/列表视图
     renderCharaCardsView();
@@ -418,11 +425,12 @@ async function loadCharacterCards() {
 // 已设置卡面的猫娘名集合（避免无卡面的 404 控制台噪声）
 window._cardFaceNames = window._cardFaceNames || new Set();
 const CHARACTER_MANAGER_CARD_MAKER_WINDOW_NAME = 'neko_card_maker';
-async function loadCardFaceNames() {
+async function loadCardFaceNames(loadSequence) {
     try {
-        const resp = await fetch('/api/characters/card-faces');
+        const resp = await fetch('/api/characters/card-faces', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) return;
         if (data && data.success && Array.isArray(data.names)) {
             window._cardFaceNames = new Set(data.names);
         }
@@ -781,11 +789,12 @@ async function showProfileNameRequiredDialog(key = 'character.fillProfileNameFir
 
 // 卡面元数据缓存 { name: { author, origin, created_at, updated_at } }
 window._cardMetas = window._cardMetas || {};
-async function loadCardMetas() {
+async function loadCardMetas(loadSequence) {
     try {
-        const resp = await fetch('/api/characters/card-metas');
+        const resp = await fetch('/api/characters/card-metas', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
+        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) return;
         if (data && data.success && data.metas && typeof data.metas === 'object') {
             window._cardMetas = data.metas;
         }
