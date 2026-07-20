@@ -1922,7 +1922,10 @@ class VRMManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
-        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
+        const resourceProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+        const effectiveEnabled = enabled
+            && !resourceProtected
+            && window.nekoYuiGuideFaceForwardLock !== true;
 
         if (this._cursorFollow) {
             this._cursorFollow.setEnabled(effectiveEnabled);
