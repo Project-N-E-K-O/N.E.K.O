@@ -61,3 +61,27 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  indexnow:
+    name: Notify IndexNow
+    if: github.repository == 'Project-N-E-K-O/N.E.K.O'
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Submit changed documentation URLs
+        env:
+          INDEXNOW_BASE_SHA: ${{ github.event.before }}
+          INDEXNOW_HEAD_SHA: ${{ github.sha }}
+        run: node docs/scripts/submit-indexnow.mjs

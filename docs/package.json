@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
-    "preview": "vitepress preview"
+    "preview": "vitepress preview",
+    "indexnow": "node scripts/submit-indexnow.mjs",
+    "test:indexnow": "node --test scripts/submit-indexnow.test.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.6.3",
