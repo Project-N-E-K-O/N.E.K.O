@@ -136,13 +136,20 @@ def _read_main_server_port() -> int:
 
 
 def _build_allowed_cors_origins(port: int) -> frozenset[str]:
-    return frozenset(
-        {
-            f"http://127.0.0.1:{port}",
-            f"http://localhost:{port}",
-            f"http://[::1]:{port}",
-        }
-    )
+    origins = {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    }
+    if port == 80:
+        origins.update(
+            {
+                "http://127.0.0.1",
+                "http://localhost",
+                "http://[::1]",
+            }
+        )
+    return frozenset(origins)
 
 
 _ALLOWED_CORS_ORIGINS = _build_allowed_cors_origins(_read_main_server_port())

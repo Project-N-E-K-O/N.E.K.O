@@ -491,6 +491,47 @@ def test_local_credit_summary_is_same_origin_only_and_omits_credit_details(
     assert denied.json() == {"detail": "origin_not_allowed"}
 
 
+def test_credit_auth_failures_keep_validated_cors_headers(client, monkeypatch):
+    async def auth_state(request):
+        token = C._request_bearer_token(request)
+        return "unavailable" if token == "unavailable-token" else "mismatch"
+
+    monkeypatch.setattr(C, "_facts_request_auth_state", auth_state)
+
+    mismatch = client.get(
+        "/api/card-drop/credits",
+        headers={
+            "Origin": "https://community.example",
+            "Authorization": "Bearer another-user-token",
+        },
+    )
+    assert mismatch.status_code == 401
+    assert mismatch.json() == {"detail": "local_session_mismatch"}
+    assert mismatch.headers["access-control-allow-origin"] == "https://community.example"
+
+    unavailable = client.get(
+        "/api/card-drop/credits",
+        headers={
+            "Origin": "https://community.example",
+            "Authorization": "Bearer unavailable-token",
+        },
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "identity_verification_unavailable"}
+    assert unavailable.headers["access-control-allow-origin"] == "https://community.example"
+
+    denied = client.get(
+        "/api/card-drop/credits",
+        headers={
+            "Origin": "https://attacker.example",
+            "Authorization": "Bearer another-user-token",
+        },
+    )
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": "origin_not_allowed"}
+    assert "access-control-allow-origin" not in denied.headers
+
+
 def test_sync_ticket_is_short_lived_and_single_use(client):
     ticket = _issue_sync_ticket(client)
 

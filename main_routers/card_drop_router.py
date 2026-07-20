@@ -1280,9 +1280,17 @@ async def _require_credit_browser(request: Request) -> dict[str, str]:
         raise HTTPException(status_code=403, detail="origin_not_allowed")
     auth_state = await _facts_request_auth_state(request)
     if auth_state == "unavailable":
-        raise HTTPException(status_code=503, detail="identity_verification_unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail="identity_verification_unavailable",
+            headers=cors,
+        )
     if auth_state != "match":
-        raise HTTPException(status_code=401, detail="local_session_mismatch")
+        raise HTTPException(
+            status_code=401,
+            detail="local_session_mismatch",
+            headers=cors,
+        )
     return cors
 
 

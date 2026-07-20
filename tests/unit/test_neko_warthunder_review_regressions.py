@@ -118,6 +118,33 @@ def test_data_layer_cors_uses_configured_main_server_port(monkeypatch: pytest.Mo
     assert all(name != "Access-Control-Allow-Origin" for name, _value in emitted)
 
 
+def test_data_layer_cors_accepts_normalized_http_origins_on_port_80(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "80")
+    wt_server_module = _load_wt_server_module(monkeypatch)
+
+    assert wt_server_module._ALLOWED_CORS_ORIGINS == frozenset(
+        {
+            "http://127.0.0.1:80",
+            "http://localhost:80",
+            "http://[::1]:80",
+            "http://127.0.0.1",
+            "http://localhost",
+            "http://[::1]",
+        }
+    )
+
+    handler = wt_server_module._Handler.__new__(wt_server_module._Handler)
+    emitted: list[tuple[str, str]] = []
+    handler.send_header = lambda name, value: emitted.append((name, value))
+    handler.headers = {"Origin": "http://localhost"}
+
+    handler._cors()
+
+    assert ("Access-Control-Allow-Origin", "http://localhost") in emitted
+
+
 def test_data_layer_cors_supports_legacy_main_server_port_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -221,6 +221,8 @@ def commit_credit(credit_id: str, operation_id: str, card_id: str, now: datetime
         raise ValueError("invalid_card_id") from exc
     with _LOCK:
         data = _load()
+        if _expire(data, current):
+            _save(data)
         credit = next((c for c in data["credits"] if c.get("id") == credit_id), None)
         if credit is None:
             raise LookupError("credit_not_found")
@@ -235,9 +237,14 @@ def commit_credit(credit_id: str, operation_id: str, card_id: str, now: datetime
         return {"committed": True, "credit": _public_credit(credit)}
 
 
-def release_credit(credit_id: str, operation_id: str) -> dict:
+def release_credit(
+    credit_id: str, operation_id: str, now: datetime | None = None
+) -> dict:
+    current = now or _now()
     with _LOCK:
         data = _load()
+        if _expire(data, current):
+            _save(data)
         credit = next((c for c in data["credits"] if c.get("id") == credit_id), None)
         if credit is None:
             raise LookupError("credit_not_found")
