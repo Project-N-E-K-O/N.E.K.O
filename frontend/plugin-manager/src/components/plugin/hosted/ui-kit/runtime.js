@@ -1297,6 +1297,7 @@ function Input(props) {
     type: props.type || 'text',
     value: props.value ?? '',
     placeholder: props.placeholder || '',
+    disabled: props.disabled,
     min: props.min,
     max: props.max,
     step: props.step,
@@ -1339,14 +1340,14 @@ function Slider(props) {
     props.showValue === false ? null : h('output', { className: 'neko-slider-value' }, String(value))
   );
 }
-function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value ?? '', placeholder: props.placeholder || '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
+function Textarea(props) { return h('textarea', { className: 'neko-textarea ' + (props.className || ''), value: props.value ?? '', placeholder: props.placeholder || '', disabled: props.disabled, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onCompositionStart: (event) => { event.target.__nekoComposing = true; }, onCompositionEnd: (event) => { event.target.__nekoComposing = false; if (props.onChange) props.onChange(event.target.value); }, onInput: (event) => props.onChange && props.onChange(event.target.value) }); }
 function Select(props) {
   const options = normalizeOptions(props.options);
-  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value ?? '', 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
+  return h('select', { className: 'neko-select ' + (props.className || ''), value: props.value ?? '', disabled: props.disabled, 'aria-invalid': props.invalid || props.error ? 'true' : undefined, 'data-invalid': props.invalid || props.error ? 'true' : undefined, onChange: (event) => props.onChange && props.onChange(event.target.value) },
     options.map((option) => {
       const value = optionValue(option);
       const label = optionLabel(option);
-      return h('option', { value }, label);
+      return h('option', { value, selected: String(props.value ?? '') === String(value) }, label);
     })
   );
 }

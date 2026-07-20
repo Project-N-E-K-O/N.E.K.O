@@ -384,6 +384,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '重複匯入同一外掛時會先檢查版本，並透過可回復的安全升級取代原目錄，不會建立帶後綴的副本。',
+      planFailed: '無法檢查安裝套件。',
+      upgradeTitle: '升級 {plugin}？',
+      upgradeBody: '版本 {current} 將替換為 {target}。正在執行的外掛會短暫重新啟動。',
+      upgradeConfirm: '升級外掛',
+      upgradeCancelled: '已取消升級。',
+      upgradeSucceeded: '{plugin} 已成功升級。',
+      blockedBundleConflict: '此整合包包含已安裝的外掛，請逐一升級其中的外掛。',
+      blockedDirectoryConflict: '目標目錄屬於另一個外掛，未進行任何變更。',
+      blockedLegacyPlugin: '仍安裝著此前版本的外掛。請先解除安裝 {plugin} 再繼續。',
+      rollbackCompleted: '升級失敗，已回復先前的版本。',
+      rollbackIncomplete: '升級失敗且回復未完整完成，請先檢查外掛狀態再繼續。'
+    },
     dialog: {
       title: '包管理執行記錄',
       subtitle: '保留最近 {count} 條執行結果'

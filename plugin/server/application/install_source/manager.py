@@ -633,6 +633,8 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
     # —— plugin_id (may be "") ——
     raw_plugin_id = raw.get("plugin_id", "")
     plugin_id = raw_plugin_id if isinstance(raw_plugin_id, str) else ""
+    raw_package_id = raw.get("package_id", "")
+    package_id = raw_package_id.strip() if isinstance(raw_package_id, str) else ""
 
     # —— Timestamps ——
     installed_at = _normalize_ts(raw.get("installed_at"), now=now)
@@ -669,6 +671,7 @@ def _parse_entry(  # noqa: C901 — 10-step flow is intentionally explicit
         removed=removed,
         removed_at=removed_at,
         source_detail=source_detail,
+        package_id=package_id,
     )
 
 
@@ -874,6 +877,11 @@ def _serialize_entry_for_json(entry: LockEntry) -> dict[str, Any]:
         "last_seen_at": entry.last_seen_at,
         "removed": entry.removed,
     }
+
+    # Optional for backward-compatible lock-file parsing and stable rewrites
+    # of legacy rows. New imported/market installs always populate it.
+    if entry.package_id:
+        out["package_id"] = entry.package_id
 
     # removed_at only present when removed=True.
     if entry.removed:
@@ -1327,6 +1335,7 @@ class InstallSourceManager:
         directory_path: Path,
         package_filename: str,
         package_sha256: str,
+        package_id: str = "",
     ) -> None:
         """Record an ``imported`` install in the lock snapshot (Req 9.*).
 
@@ -1424,6 +1433,7 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     source_detail=detail,
+                    package_id=package_id,
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 9.4)
@@ -1438,6 +1448,7 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
+                    package_id=package_id or existing.package_id,
                 )
 
             new_lock = self._replace_entry(
@@ -1457,6 +1468,7 @@ class InstallSourceManager:
         plugin_market_id: str,
         version: str,
         package_url: str,
+        package_id: str = "",
     ) -> None:
         """Record a ``market`` install in the lock snapshot (Req 10.*).
 
@@ -1586,6 +1598,7 @@ class InstallSourceManager:
                     removed=False,
                     removed_at=None,
                     source_detail=detail,
+                    package_id=package_id,
                 )
             else:
                 # Idempotent overwrite: preserve installed_at (Req 10.4)
@@ -1602,6 +1615,7 @@ class InstallSourceManager:
                     last_seen_at=now,
                     removed=False,
                     removed_at=None,
+                    package_id=package_id or existing.package_id,
                 )
 
             new_lock = self._replace_entry(
@@ -1672,6 +1686,7 @@ class InstallSourceManager:
         plugin_id: str,
         market_detail: dict[str, Any],
         is_upgrade: bool,
+        package_id: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Shared body of :meth:`record_market_install` / :meth:`record_market_upgrade`.
 
@@ -1738,6 +1753,7 @@ class InstallSourceManager:
                 removed=False,
                 removed_at=None,
                 source_detail=detail,
+                package_id=package_id or (existing.package_id if existing is not None else ""),
             )
 
             try:
@@ -1768,6 +1784,7 @@ class InstallSourceManager:
         directory_name: str,
         plugin_id: str,
         market_detail: dict[str, Any],
+        package_id: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Record a fresh ``channel="market"`` install (design §3.2 / Req 4).
 
@@ -1807,6 +1824,7 @@ class InstallSourceManager:
             plugin_id=plugin_id,
             market_detail=market_detail,
             is_upgrade=False,
+            package_id=package_id,
         )
 
     def record_market_upgrade(
@@ -1816,6 +1834,7 @@ class InstallSourceManager:
         directory_name: str,
         plugin_id: str,
         market_detail: dict[str, Any],
+        package_id: str = "",
     ) -> tuple[LockEntry, list[str]]:
         """Record a ``channel="market"`` upgrade (design §3.2 / Req 4).
 
@@ -1843,7 +1862,48 @@ class InstallSourceManager:
             plugin_id=plugin_id,
             market_detail=market_detail,
             is_upgrade=True,
+            package_id=package_id,
         )
+
+    def restore_entry_for_rollback(self, entry: LockEntry) -> None:
+        """Restore one exact pre-upgrade entry without clobbering other rows.
+
+        Market upgrade writes the replacement entry before lifecycle restart.
+        If that restart fails, filesystem rollback must restore this lock row
+        as part of the same transaction. Replacing only the matching primary
+        key preserves unrelated install-source updates.
+        """
+
+        with self._lock:
+            old_lock = self._current
+            now = self._now_iso()
+            try:
+                self._current = self._replace_entry(old_lock, entry, updated_at=now)
+                self.save()
+            except Exception as exc:
+                self._current = old_lock
+                raise InstallSourceError(
+                    "lock_write_failed",
+                    f"failed to restore install-source entry for {entry.plugin_id}: {exc}",
+                    details={
+                        "plugin_id": entry.plugin_id,
+                        "root_id": entry.root_id,
+                        "directory_name": entry.directory_name,
+                    },
+                ) from exc
+
+    def package_id_for_directory(self, directory_path: Path) -> str:
+        """Return the recorded profile key for an installed plugin directory."""
+
+        root_id, directory_name = classify_plugin_path(
+            directory_path,
+            builtin_root=self.builtin_root,
+            user_root=self.user_root,
+        )
+        entry = self._find_entry(self._current, root_id, directory_name)
+        if entry is None or entry.removed:
+            return ""
+        return entry.package_id
 
     def find_active_market_entry(self, plugin_ref: str) -> LockEntry | None:
         """Return the active (non-removed) market entry for ``plugin_ref``, if any.

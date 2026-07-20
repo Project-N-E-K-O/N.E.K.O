@@ -62,6 +62,8 @@ class VRMManager {
         this._initThreePromise = null;
         this._isDisposed = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
         this._loadState = 'idle';
         this._isModelReadyForInteraction = false;
 
@@ -1166,6 +1168,17 @@ class VRMManager {
     }
 
     async loadModel(modelUrl, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelUrl, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelUrl, options = {}) {
         // 并发正确性由 vrm-core.loadModel 的 token 守卫兜底，实现「后到者胜」：每次 loadModel
         // 在入口同步 bump _activeLoadToken 取代前一轮；被取代的旧加载在 core 内触碰共享
         // scene/currentModel 之前的守卫处 bail，不会交错改写共享状态或留下幽灵模型。

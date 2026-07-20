@@ -1165,9 +1165,10 @@ function CompactChatApp({
   const compactExportHistoryToggleLabel = compactExportHistoryOpen
     ? i18n('chat.compactHistoryToggleClose', 'Hide history')
     : i18n('chat.compactHistoryToggleOpen', 'Show history');
-  const compactExportControlsButtonLabel = compactExportControlsVisible
-    ? i18n('chat.compactHistoryControlsHide', 'Hide history actions')
-    : i18n('chat.compactHistoryControlsShow', 'Show history actions');
+  const compactExportControlsButtonLabel = i18n(
+    'chat.compactHistoryExport',
+    'Export conversation history',
+  );
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.

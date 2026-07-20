@@ -838,8 +838,7 @@
         "compactExportHistory": "Histórico",
         "compactHistoryToggleOpen": "Mostrar histórico",
         "compactHistoryToggleClose": "Ocultar histórico",
-        "compactHistoryControlsShow": "Mostrar ações do histórico",
-        "compactHistoryControlsHide": "Ocultar ações do histórico",
+    "compactHistoryExport": "Exportar histórico da conversa",
         "compactExportControlsCollapse": "Ocultar controles de seleção",
         "compactExportControlsExpand": "Mostrar controles de seleção",
         "exportAction": "Exportar",
@@ -2633,7 +2632,8 @@
             "language": "Linguagem",
             "general": "Em geral",
             "mediaCredentials": "Credenciais de mídia",
-            "characterCardManager": "Gerenciador de Cartões de Personagem"
+            "characterCardManager": "Gerenciador de Cartões de Personagem",
+            "advancedSettings": "Configurações avançadas"
         },
         "language": {
             "title": "Selecione o idioma",
@@ -2648,12 +2648,19 @@
             "chatIntervalBase": "Intervalo Mínimo",
             "visionInterval": "Intervalo de Percepção"
         },
+        "widgetMode": {
+            "enabledNotice": "O Modo de encaixe na borda Beta está ativo.",
+            "disabledNotice": "O Modo de encaixe na borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
+            "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde."
+        },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
             "mergeMessages": "Mesclar mensagens",
             "avatarReactionBubble": "Bolha de Expressão",
             "focusCognition": "Modo de concentração",
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
+            "widgetMode": "Modo de encaixe na borda Beta",
+            "widgetModeTooltip": "Ative manualmente o modo de encaixe para o Live2D espiar por seis âncoras da borda.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
             "autoCat": "Modo gato automático",

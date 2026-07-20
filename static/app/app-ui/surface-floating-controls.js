@@ -368,6 +368,10 @@
 
         // 睡觉按钮（请她离开）
         window.addEventListener('live2d-goodbye-click', (event) => {
+            const goodbyeDetail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const live2DPeekEdgeAnchor = goodbyeDetail.edgeAnchor
+                || (event && event.__nekoLive2DPeekEdgeAnchor)
+                || null;
             const goodbyeTransitionToken = I.reserveNekoModelCatTransition('model-to-cat');
             if (!goodbyeTransitionToken) {
                 console.log('[App] 模型/猫切换进行中，忽略本次请她离开点击');
@@ -737,7 +741,10 @@
                 }
             }
             if (useLive2dReturn && live2dReturnContainer) {
-                activeReturnButtonContainer = I.showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, { deferReveal: true });
+                activeReturnButtonContainer = I.showReturnBallContainer(live2dReturnContainer, savedGoodbyeRect, {
+                    deferReveal: true,
+                    edgeAnchor: live2DPeekEdgeAnchor
+                });
             } else {
                 I.hideReturnBallContainer(live2dReturnContainer);
             }
@@ -930,7 +937,13 @@
                 : I.getVisibleIdleReturnBallContainer();
             if (!container) return;
             if (container.style.display === 'none') {
-                I.showReturnBallContainer(container, returnRect);
+                if (container.__nekoLive2DPeekEdgeAnchor) {
+                    I.showReturnBallContainer(container, returnRect, {
+                        edgeAnchor: container.__nekoLive2DPeekEdgeAnchor
+                    });
+                } else {
+                    I.showReturnBallContainer(container, returnRect);
+                }
             }
             I.revealReturnBallContainer(container, 'return-ball-model-viewport-blocked');
         }

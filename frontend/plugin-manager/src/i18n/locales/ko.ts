@@ -384,6 +384,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: '같은 플러그인을 다시 가져오면 버전을 확인하고 롤백 가능한 안전한 교체를 수행하며 접미사가 붙은 복사본을 만들지 않습니다.',
+      planFailed: '설치 패키지를 검사할 수 없습니다.',
+      upgradeTitle: '{plugin}을(를) 업그레이드할까요?',
+      upgradeBody: '버전 {current}이(가) {target}(으)로 교체됩니다. 실행 중인 플러그인은 잠시 재시작됩니다.',
+      upgradeConfirm: '플러그인 업그레이드',
+      upgradeCancelled: '업그레이드를 취소했습니다.',
+      upgradeSucceeded: '{plugin}이(가) 성공적으로 업그레이드되었습니다.',
+      blockedBundleConflict: '이 번들에는 이미 설치된 플러그인이 있습니다. 플러그인을 하나씩 업그레이드하세요.',
+      blockedDirectoryConflict: '대상 디렉터리가 다른 플러그인에 속하므로 변경하지 않았습니다.',
+      blockedLegacyPlugin: '이 플러그인의 이전 버전이 아직 설치되어 있습니다. 계속하기 전에 {plugin}을(를) 제거하세요.',
+      rollbackCompleted: '업그레이드에 실패하여 이전 버전을 복원했습니다.',
+      rollbackIncomplete: '업그레이드에 실패했고 롤백도 완료되지 않았습니다. 계속하기 전에 플러그인 상태를 확인하세요.'
+    },
     dialog: {
       title: '패키지 작업 기록',
       subtitle: '최근 {count}개의 결과를 표시합니다'

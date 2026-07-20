@@ -41,6 +41,9 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
+        this._modelLoadState = 'idle';
         this._headScreenAnchorProjection = null;
 
         // 事件处理器
@@ -111,11 +114,23 @@ class MMDManager {
     // ═══════════════════ 模型加载 ═══════════════════
 
     async loadModel(modelPath, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelPath, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelPath, options = {}) {
         if (!this.core) throw new Error('MMDCore 未初始化');
 
         this._isModelReadyForInteraction = false;
         this._activeLoadToken++;
         const loadToken = this._activeLoadToken;
+        this._modelLoadState = 'loading';
 
         try {
             const modelInfo = await this.core.loadModel(modelPath, options, loadToken);
@@ -168,6 +183,7 @@ class MMDManager {
 
             return modelInfo;
         } catch (error) {
+            if (this._activeLoadToken !== loadToken) return null;
             console.error('[MMD Manager] 模型加载失败:', error);
 
             // 已被新的加载请求取代或已 dispose：不再回退，避免迟到的回退加载
@@ -228,6 +244,10 @@ class MMDManager {
                 }
             } else {
                 throw error;
+            }
+        } finally {
+            if (this._activeLoadToken === loadToken && this._modelLoadState === 'loading') {
+                this._modelLoadState = this._isModelReadyForInteraction ? 'ready' : 'idle';
             }
         }
     }

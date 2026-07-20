@@ -172,6 +172,73 @@ def test_saved_design_voice_preview_uses_runtime_endpoint(mock_page: Page, runni
 
 
 @pytest.mark.frontend
+def test_voice_preview_error_uses_styled_notice(mock_page: Page, running_server: str):
+    native_dialogs = []
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.on("dialog", lambda dialog: (native_dialogs.append(dialog.message), dialog.dismiss()))
+        mock_page.route(
+            "**/api/characters/voices",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voices": {},
+                    "free_voices": {
+                        "previewErrorTest": "preview-error-test",
+                    },
+                    "pinned_voices": [],
+                    "native_voices": {},
+                }),
+            ),
+        )
+        mock_page.route(
+            "**/api/characters/voice_preview?*",
+            lambda route: route.fulfill(
+                status=500,
+                content_type="application/json",
+                body=json.dumps({"error": "preview backend unavailable"}),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        item = mock_page.locator('.voice-list-item[data-voice-id="preview-error-test"]')
+        expect(item).to_be_visible()
+        preview_button = item.locator(".voice-preview-btn")
+        preview_button.click()
+
+        notice = mock_page.locator(".voice-preview-notice-backdrop")
+        expect(notice).to_be_visible(timeout=20000)
+        expect(mock_page.locator(".voice-preview-notice-title")).to_have_text("预览")
+        expect(mock_page.locator(".voice-preview-notice-message")).to_contain_text("preview backend unavailable")
+        ok_button = mock_page.locator(".voice-preview-notice-ok")
+        expect(ok_button).to_be_focused()
+        assert native_dialogs == []
+
+        mock_page.keyboard.press("Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Shift+Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Escape")
+        expect(notice).to_have_count(0)
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voices")
+        mock_page.unroute("**/api/characters/voice_preview?*")
+
+
+@pytest.mark.frontend
 def test_voice_clone_page_load(mock_page: Page, running_server: str):
     """Test that the voice clone page loads with all expected UI elements."""
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))

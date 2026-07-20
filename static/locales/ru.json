@@ -838,8 +838,7 @@
         "compactExportHistory": "История",
         "compactHistoryToggleOpen": "Показать историю",
         "compactHistoryToggleClose": "Скрыть историю",
-        "compactHistoryControlsShow": "Показать действия истории",
-        "compactHistoryControlsHide": "Скрыть действия истории",
+    "compactHistoryExport": "Экспорт истории диалога",
         "compactExportControlsCollapse": "Скрыть элементы выбора",
         "compactExportControlsExpand": "Показать элементы выбора",
         "exportAction": "Экспорт",
@@ -2633,7 +2632,8 @@
             "language": "Язык",
             "general": "Общие",
             "mediaCredentials": "Настройка медиа-учётных данных",
-            "characterCardManager": "Управление карточками персонажей"
+            "characterCardManager": "Управление карточками персонажей",
+            "advancedSettings": "Расширенные настройки"
         },
         "language": {
             "title": "Выберите язык",
@@ -2648,12 +2648,19 @@
             "chatIntervalBase": "Минимальный интервал",
             "visionInterval": "Интервал восприятия"
         },
+        "widgetMode": {
+            "enabledNotice": "Режим крепления к краю Beta включён.",
+            "disabledNotice": "Режим крепления к краю Beta выключен. Live2D снова использует обычное прилипание к краям.",
+            "toggleFailed": "Не удалось переключить Режим крепления к краю Beta. Повторите попытку позже."
+        },
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
             "mergeMessages": "Объединение сообщений",
             "avatarReactionBubble": "Пузырек эмоций",
             "focusCognition": "Режим сосредоточения",
             "focusCognitionTooltip": "Когда включено, она сосредотачивается и думает глубже, когда вы откровенничаете или задаёте сложный вопрос; выключено полностью отключает сосредоточение.",
+            "widgetMode": "Режим крепления к краю Beta",
+            "widgetModeTooltip": "Включите режим крепления вручную, чтобы Live2D мог выглядывать из шести точек у края экрана.",
             "slopFilter": "Естественная речь",
             "slopFilterTooltip": "Уменьшает повторяющиеся и шаблонные обороты в прошлых ответах, чтобы её речь звучала естественнее.",
             "autoCat": "Авторежим кота",
