@@ -50,6 +50,12 @@ test('VRM enables mouse tracking while resource protection is idle', () => {
     assert.deepEqual(calls, [true]);
 });
 
+test('VRM enables mouse tracking before resource protection is initialized', () => {
+    const { calls } = applyMouseTrackingPreference(undefined);
+
+    assert.deepEqual(calls, [true]);
+});
+
 test('VRM keeps mouse tracking disabled while the Yui face-forward lock is active', () => {
     const { calls } = applyMouseTrackingPreference('idle', true);
 
