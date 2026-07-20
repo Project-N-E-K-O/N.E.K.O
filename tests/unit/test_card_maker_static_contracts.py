@@ -62,6 +62,45 @@ def test_character_card_manager_parts_load_in_dependency_order():
     assert script_positions == sorted(script_positions)
 
 
+def test_character_card_import_keeps_non_blocking_progress_visible_until_completion():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+    styles = (PROJECT_ROOT / "static" / "css" / "character_card_manager.css").read_text(encoding="utf-8")
+    template = (PROJECT_ROOT / "templates" / "character_card_manager.html").read_text(encoding="utf-8")
+    transfer = (CHARACTER_CARD_MANAGER_JS_DIR / "character-data-and-transfer.js").read_text(encoding="utf-8")
+    master_profile = (CHARACTER_CARD_MANAGER_JS_DIR / "master-profile.js").read_text(encoding="utf-8")
+    previews = (CHARACTER_CARD_MANAGER_JS_DIR / "model-previews.js").read_text(encoding="utf-8")
+    workshop = (CHARACTER_CARD_MANAGER_JS_DIR / "workshop-card-and-upload.js").read_text(encoding="utf-8")
+
+    assert template.count('id="message-area"') == 1
+    assert template.index('id="message-area"') < template.index('id="uploadToWorkshopModal"')
+    assert "messageArea.parentElement !== document.body" in core
+    assert "if (type !== 'importing')" in core
+    assert "const cfg = { icon: 'ccm-toast-spinner'" in core
+    assert "@keyframes ccm-toast-spin" in styles
+    assert "card.dismiss = dismiss;" in core
+    assert "showMessage(loadingText, 'importing', 0)" in transfer
+    assert "function showToast(" not in core
+    assert "showAutoSaveToast" not in master_profile
+    assert "auto-save-toast" not in template
+    assert "auto-save-toast" not in styles
+    assert "requestAnimationFrame(() => requestAnimationFrame(resolve))" in transfer
+    assert transfer.count("importNotice.dismiss();") == 2
+    assert "character.importCardSuccess" not in transfer
+    assert "steam.characterCardsRefreshed" not in transfer
+    assert "steam.scanningModels" not in workshop
+    assert "steam.scanningVoices" not in workshop
+    assert "steam.scanComplete" not in workshop
+    assert "steam.characterCardLoaded" not in workshop
+    assert "live2d.loadingModel" not in previews
+    assert "live2d.modelLoadSuccess" not in previews
+    assert "steam.vrmPreviewLoaded" not in previews
+    assert "steam.mmdPreviewLoaded" not in previews
+    assert "steam.live2dPreviewLoaded" not in previews
+    assert "character.importCardFailed" in transfer
+    assert "steam.voiceScanError" in workshop
+    assert "live2d.modelLoadFailed" in previews
+
+
 def test_model_manager_parts_load_in_dependency_order():
     discovered_names = {path.name for path in MODEL_MANAGER_JS_DIR.glob("*.js")}
     assert discovered_names == set(MODEL_MANAGER_PART_NAMES)

@@ -353,29 +353,6 @@
         .card-hide-btn:hover, .list-hide-btn:hover {
             background: rgba(64, 197, 241, 0.12);
         }
-        /* 自动保存提示 */
-        .auto-save-toast {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: #e8f5e9;
-            border: 2px solid #4caf50;
-            border-radius: 999px;
-            padding: 8px 20px;
-            color: #2e7d32;
-            font-size: 0.9rem;
-            font-weight: 500;
-            z-index: 100000;
-            opacity: 0;
-            transform: translateY(-10px);
-            transition: opacity 0.3s ease, transform 0.3s ease;
-            pointer-events: none;
-            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.2);
-        }
-        .auto-save-toast.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
         /* 卡片左上角隐藏按钮 */
         .card-hide-corner {
             position: absolute;
@@ -711,6 +688,9 @@
 </div>
 </div>
 
+<!-- 全局非模态通知必须位于页面顶层，避免被任一隐藏的模态框连带隐藏。 -->
+<div id="message-area"></div>
+
 <!-- 上传到创意工坊模态框 -->
 <div id="uploadToWorkshopModal" class="modal" onclick="closeUploadModalOnOutsideClick(event)" style="display: none;">
 <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 900px;">
@@ -719,8 +699,6 @@
 <button class="modal-close" onclick="closeUploadModal()">&times;</button>
 </div>
 <div class="modal-body" style="padding: 20px;">
-<div id="message-area"></div>
-                
 <div class="control-group">
 <div class="control-label" data-i18n="steam.title">标题</div>
 <div id="item-title" class="control-input" style="background-color: #f5f5f5; padding: 8px 12px; border-radius: 4px; min-height: 20px;"></div>
