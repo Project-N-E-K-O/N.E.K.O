@@ -61,6 +61,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
         self._message_task: Optional[asyncio.Task] = None
         self._settle_memory_tasks: set[asyncio.Task] = set()
         self._shutdown_event = asyncio.Event()
+        self._auth_state_lock = asyncio.Lock()
         self._wechat_sessions: dict[str, dict[str, Any]] = {}  # user_id → {history, last_activity}
 
     # ------------------------------------------------------------------ config
@@ -77,9 +78,10 @@ class WechatIntegrationPlugin(NekoPluginBase):
         self._settings = await self.config_store.create_empty()
         return dict(self._settings)
 
-    async def _persist_config(self) -> bool:
+    async def _persist_config(self, settings: Optional[dict[str, Any]] = None) -> bool:
         try:
-            self._settings = await self.config_store.save(self._settings)
+            candidate = self._settings if settings is None else settings
+            self._settings = await self.config_store.save(candidate)
             return True
         except Exception as e:
             self.logger.error(f"持久化微信配置失败: {e}")
@@ -317,29 +319,35 @@ class WechatIntegrationPlugin(NekoPluginBase):
         if not self.wechat_client:
             return Err(SdkError("微信客户端未初始化"))
 
-        if not self._login_session:
+        login_session = self._login_session
+        if not login_session:
             return Ok({
                 **self._build_dashboard_state(),
                 "message": self.i18n.t("messages.no_qrcode", default="没有活跃的登录会话，请先获取二维码"),
             })
 
         try:
-            data = await self.wechat_client.poll_qrcode_status(self._login_session.qrcode)
+            data = await self.wechat_client.poll_qrcode_status(login_session.qrcode)
         except asyncio.TimeoutError:
             return Ok(self._build_dashboard_state())
         except Exception as e:
             self.logger.error(f"轮询微信扫码状态失败: {e}")
-            self._login_session.status = "error"
-            self._login_session.error = str(e)
+            if self._login_session is login_session:
+                login_session.status = "error"
+                login_session.error = str(e)
+            return Ok(self._build_dashboard_state())
+
+        # Logout or QR refresh may replace the session while the API call is in flight.
+        if self._login_session is not login_session:
             return Ok(self._build_dashboard_state())
 
         status = str(data.get("status") or "wait").strip()
-        self._login_session.status = status
+        login_session.status = status
 
         if status == "expired":
             self._qr_expired_count += 1
             if self._qr_expired_count > 3:
-                self._login_session.error = self.i18n.t("errors.qr_max_retry", default="二维码已过期，超过重试次数，请刷新二维码")
+                login_session.error = self.i18n.t("errors.qr_max_retry", default="二维码已过期，超过重试次数，请刷新二维码")
                 return Ok(self._build_dashboard_state())
             # Auto-refresh
             try:
@@ -347,7 +355,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 new_data = await self.wechat_client.get_qrcode(bot_type=bot_type)
                 new_qrcode = str(new_data.get("qrcode") or "").strip()
                 new_img = str(new_data.get("qrcode_img_content") or "").strip()
-                if new_qrcode and new_img:
+                if new_qrcode and new_img and self._login_session is login_session:
                     self._login_session = LoginSession(qrcode=new_qrcode, qrcode_img_content=new_img)
                     self.logger.info(f"[wechat_integration] 二维码已过期，已自动刷新 ({self._qr_expired_count}/3)")
             except Exception as e:
@@ -361,33 +369,41 @@ class WechatIntegrationPlugin(NekoPluginBase):
             user_id = data.get("ilink_user_id")
 
             if not bot_token:
-                self._login_session.error = self.i18n.t("errors.no_token", default="登录确认但未返回凭证")
-                self._login_session.status = "error"
+                login_session.error = self.i18n.t("errors.no_token", default="登录确认但未返回凭证")
+                login_session.status = "error"
                 return Ok(self._build_dashboard_state())
 
-            self._login_session.bot_token = str(bot_token)
-            self._login_session.account_id = str(account_id) if account_id else None
-            self._login_session.base_url = str(base_url) if base_url else None
-            self._login_session.user_id = str(user_id) if user_id else None
+            async with self._auth_state_lock:
+                if self._login_session is not login_session:
+                    return Ok(self._build_dashboard_state())
 
-            # Save credentials
-            self._settings["token"] = self._login_session.bot_token
-            if self._login_session.account_id:
-                self._settings["account_id"] = self._login_session.account_id
-            if self._login_session.user_id:
-                self._settings["user_id"] = self._login_session.user_id
-            if self._login_session.base_url:
-                self._settings["base_url"] = self._login_session.base_url.rstrip("/")
+                login_session.bot_token = str(bot_token)
+                login_session.account_id = str(account_id) if account_id else None
+                login_session.base_url = str(base_url) if base_url else None
+                login_session.user_id = str(user_id) if user_id else None
 
-            await self._persist_config()
-            self._sync_client_from_settings()
+                # Persist a copy so a failed write cannot partially mutate runtime auth state.
+                logged_in_settings = dict(self._settings)
+                logged_in_settings["token"] = login_session.bot_token
+                if login_session.account_id:
+                    logged_in_settings["account_id"] = login_session.account_id
+                if login_session.user_id:
+                    logged_in_settings["user_id"] = login_session.user_id
+                if login_session.base_url:
+                    logged_in_settings["base_url"] = login_session.base_url.rstrip("/")
+
+                if not await self._persist_config(logged_in_settings):
+                    login_session.status = "error"
+                    login_session.error = self.i18n.t("errors.login_persist_failed", default="无法保存登录凭证")
+                    return Ok(self._build_dashboard_state())
+                self._sync_client_from_settings()
 
             self.logger.info(
-                f"[wechat_integration] 登录成功: account_id={self._login_session.account_id} user_id={self._login_session.user_id}"
+                f"[wechat_integration] 登录成功: account_id={login_session.account_id} user_id={login_session.user_id}"
             )
 
         if status == "error":
-            self._login_session.error = str(data.get("error") or data.get("errmsg") or "未知错误")
+            login_session.error = str(data.get("error") or data.get("errmsg") or "未知错误")
 
         return Ok(self._build_dashboard_state())
 
@@ -418,28 +434,48 @@ class WechatIntegrationPlugin(NekoPluginBase):
         input_schema={"type": "object", "properties": {}},
     )
     async def logout(self, **_):
-        # Stop the authenticated background loop before invalidating its token.
+        logged_out_settings = dict(self._settings)
+        for key in ("token", "account_id", "user_id", "sync_buf"):
+            logged_out_settings[key] = ""
+
+        # Commit the disk state first. If this fails, runtime stays logged in and
+        # remains consistent with what the next plugin start would restore.
+        async with self._auth_state_lock:
+            if not await self._persist_config(logged_out_settings):
+                return Err(SdkError(
+                    self.i18n.t("errors.logout_failed", default="退出登录失败：无法清除本地登录凭证")
+                ))
+            self._sync_client_from_settings()
+            self._login_session = None
+
         await self.stop_auto_reply()
         self._shutdown_event.set()
         self._running = False
         self._message_task = None
 
-        self._login_session = None
         self._qr_expired_count = 0
         self._sync_buf = ""
         self._context_tokens.clear()
+
+        active_sessions = list(self._wechat_sessions.values())
+        if active_sessions:
+            results = await asyncio.gather(
+                *(
+                    self._settle_memory_session(
+                        str(session.get("her_name") or ""), reason="logout"
+                    )
+                    for session in active_sessions
+                    if session.get("memory_enabled") and session.get("history")
+                ),
+                return_exceptions=True,
+            )
+            failures = sum(result is not True for result in results)
+            if failures:
+                self.logger.warning(
+                    "[wechat_integration] failed to settle %d active memory session(s) on logout",
+                    failures,
+                )
         self._wechat_sessions.clear()
-
-        for key in ("token", "account_id", "user_id", "sync_buf"):
-            self._settings[key] = ""
-
-        if self.wechat_client:
-            self.wechat_client.token = None
-
-        if not await self._persist_config():
-            return Err(SdkError(
-                self.i18n.t("errors.logout_failed", default="退出登录失败：无法清除本地登录凭证")
-            ))
 
         self.logger.info("[wechat_integration] logged out and cleared local credentials")
         return Ok(self._build_dashboard_state())

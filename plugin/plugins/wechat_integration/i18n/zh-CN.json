@@ -21,6 +21,7 @@
   "entries.send_message.description": "向指定微信用户发送一条文本消息。需要先在消息监听中收到过该用户的消息。",
   "errors.qr_max_retry": "二维码已过期，超过重试次数，请刷新二维码",
   "errors.no_token": "登录确认但未返回凭证",
+  "errors.login_persist_failed": "无法保存登录凭证",
   "errors.not_logged_in": "未登录，请先扫码登录",
   "errors.send_failed": "发送失败：未找到该用户的 context_token，请先通过消息监听接收一条该用户的消息。",
   "errors.logout_failed": "退出登录失败：无法清除本地登录凭证",
