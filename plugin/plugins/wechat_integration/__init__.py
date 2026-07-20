@@ -248,6 +248,7 @@ class WechatIntegrationPlugin(NekoPluginBase):
                 {"id": "start_login", "entry_id": "start_login"},
                 {"id": "poll_login_status", "entry_id": "poll_login_status"},
                 {"id": "refresh_qrcode", "entry_id": "refresh_qrcode"},
+                {"id": "logout", "entry_id": "logout"},
                 {"id": "save_settings", "entry_id": "save_settings"},
                 {"id": "get_dashboard_state", "entry_id": "get_dashboard_state"},
                 {"id": "start_auto_reply", "entry_id": "start_auto_reply"},
@@ -400,6 +401,48 @@ class WechatIntegrationPlugin(NekoPluginBase):
     async def refresh_qrcode(self, **_):
         # Reuse start_login logic
         return await self.start_login()
+
+    @ui.action(
+        id="logout",
+        label=tr("ui.actions.logout", default="退出登录"),
+        tone="danger",
+        refresh_context=True,
+    )
+    @plugin_entry(
+        id="logout",
+        name=tr("entries.logout.name", default="退出登录"),
+        description=tr(
+            "entries.logout.description",
+            default="停止微信消息监听并清除本机保存的登录凭证。",
+        ),
+        input_schema={"type": "object", "properties": {}},
+    )
+    async def logout(self, **_):
+        # Stop the authenticated background loop before invalidating its token.
+        await self.stop_auto_reply()
+        self._shutdown_event.set()
+        self._running = False
+        self._message_task = None
+
+        self._login_session = None
+        self._qr_expired_count = 0
+        self._sync_buf = ""
+        self._context_tokens.clear()
+        self._wechat_sessions.clear()
+
+        for key in ("token", "account_id", "user_id", "sync_buf"):
+            self._settings[key] = ""
+
+        if self.wechat_client:
+            self.wechat_client.token = None
+
+        if not await self._persist_config():
+            return Err(SdkError(
+                self.i18n.t("errors.logout_failed", default="退出登录失败：无法清除本地登录凭证")
+            ))
+
+        self.logger.info("[wechat_integration] logged out and cleared local credentials")
+        return Ok(self._build_dashboard_state())
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存设置"), refresh_context=True)
     @plugin_entry(
