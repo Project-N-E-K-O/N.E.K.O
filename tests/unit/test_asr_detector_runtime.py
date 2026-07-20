@@ -170,6 +170,26 @@ class _OverflowAdapter:
         return None
 
 
+class _SpeakerShadowSpy:
+    def __init__(self) -> None:
+        self.frames: list[tuple[bytes, int, object]] = []
+        self.reset_calls = 0
+        self.close_calls = 0
+
+    def submit(self, pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
+        self.frames.append((pcm16, sample_rate_hz, candidate))
+        return True
+
+    async def reset(self) -> None:
+        self.reset_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+    def snapshot(self) -> dict[str, int]:
+        return {"submitted_frame_count": len(self.frames)}
+
+
 def _smart_turn_policy() -> AsrProviderPolicy:
     return AsrProviderPolicy(
         transport="streaming",
@@ -971,6 +991,35 @@ async def test_submit_audio_uses_chunk_peak_for_prewarm_and_emits_once() -> None
     assert [event.kind for event in events] == ["prewarm"]
     assert events[0].candidate == first.candidate == second.candidate
     await detector.close()
+
+
+async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        speaker_shadow=shadow,
+        on_turn_complete=AsyncMock(),
+    )
+    pcm16 = b"\x01\x00" * 160
+
+    result = await detector.submit_audio(
+        pcm16,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+
+    assert result.status is DetectorSubmitStatus.ACCEPTED
+    assert shadow.frames == [(pcm16, 16_000, result.candidate)]
+    assert detector.speaker_shadow_metrics == {"submitted_frame_count": 1}
+    await detector.reset()
+    await detector.close()
+    assert shadow.reset_calls == 1
+    assert shadow.close_calls == 1
 
 
 async def test_session_smart_turn_pin_survives_turn_lease_then_reset_releases_it() -> None:
