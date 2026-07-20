@@ -667,21 +667,36 @@ jobs:
         include:
           - os: windows-latest
             platform: win
+            portable_key: win
+            builder_platform: windows
+            portable_dir: dist/win-unpacked
             python_artifact: python-backend-win
             electron_args: '--win'
             artifact_name: desktop-win-x64
           - os: macos-15
             platform: mac-x64
+            portable_key: mac_x64
+            builder_platform: macos
+            portable_arch_args: '--x64'
+            portable_dir: dist/portable-stage/mac/N.E.K.O.app
             python_artifact: python-backend-mac-x64
             electron_args: '--mac --x64'
             artifact_name: desktop-mac-x64
           - os: macos-latest
             platform: mac-arm64
+            portable_key: mac_arm64
+            builder_platform: macos
+            portable_arch_args: '--arm64'
+            portable_dir: dist/portable-stage/mac-arm64/N.E.K.O.app
             python_artifact: python-backend-mac-arm64
             electron_args: '--mac --arm64'
             artifact_name: desktop-mac-arm64
           - os: ubuntu-latest
             platform: linux
+            portable_key: linux_x64
+            builder_platform: linux
+            portable_arch_args: '--x64'
+            portable_dir: dist/portable-stage/linux-unpacked
             python_artifact: python-backend-linux
             electron_args: '--linux'
             artifact_name: desktop-linux-x64
@@ -819,24 +834,50 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Download previous stable Portable manifest
-        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+      # Build a separate marked unpacked tree for the self-managed Portable
+      # channel. On macOS the marker is added by afterPack before signing.
+      - name: Build Electron app (macOS/Linux Portable directory)
+        if: runner.os != 'Windows'
+        working-directory: electron-app
+        run: node scripts/build-electron-distribution.js ${{ matrix.builder_platform }} --dir ${{ matrix.portable_arch_args }} --publish never -c.directories.output=dist/portable-stage
+        env:
+          NEKO_PORTABLE_BUILD: '1'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Download previous stable Portable manifests
+        if: startsWith(github.ref, 'refs/tags/v')
         working-directory: electron-app
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PORTABLE_KEY: ${{ matrix.portable_key }}
         run: |
           set -euo pipefail
           mkdir -p previous-portable
           PREVIOUS_URL="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
-            --jq '[.assets[] | select(.name | endswith("_win_manifest.json"))][0].browser_download_url // empty' \
+            --jq "[.assets[] | select(.name | endswith(\"_${PORTABLE_KEY}_manifest.json\"))][0].browser_download_url // empty" \
             2>/dev/null || true)"
           if [[ -n "$PREVIOUS_URL" ]]; then
             curl --fail --location --retry 3 "$PREVIOUS_URL" \
-              --output previous-portable/previous-win-manifest.json
-            echo "Downloaded previous stable Portable manifest"
+              --output "previous-portable/previous-${PORTABLE_KEY}-manifest.json"
+            echo "Downloaded previous stable ${PORTABLE_KEY} Portable manifest"
           else
-            echo "No previous Portable manifest found; this release will contain a full ZIP only"
+            echo "No previous ${PORTABLE_KEY} Portable manifest found; this release will contain a full package only"
+          fi
+          if [[ "$PORTABLE_KEY" == "linux_x64" ]]; then
+            APPIMAGE_URL="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+              --jq '[.assets[] | select(.name | endswith("_linux_x64_appimage_manifest.json"))][0].browser_download_url // empty' \
+              2>/dev/null || true)"
+            if [[ -n "$APPIMAGE_URL" ]]; then
+              curl --fail --location --retry 3 "$APPIMAGE_URL" \
+                --output previous-portable/previous-linux_x64_appimage-manifest.json
+            fi
           fi
 
       - name: Create Windows Portable full and differential update assets
@@ -852,6 +893,51 @@ jobs:
           PORTABLE_VERSION="$(node -p "require('./package.json').version")"
           node scripts/create-portable-update.js \
             --dir dist/win-unpacked \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
+
+      - name: Create macOS/Linux Portable directory update assets
+        if: runner.os != 'Windows'
+        working-directory: electron-app
+        shell: bash
+        env:
+          PORTABLE_KEY: ${{ matrix.portable_key }}
+          PORTABLE_DIR: ${{ matrix.portable_dir }}
+        run: |
+          set -euo pipefail
+          PREVIOUS_ARGS=()
+          PREVIOUS="previous-portable/previous-${PORTABLE_KEY}-manifest.json"
+          if [[ -f "$PREVIOUS" ]]; then PREVIOUS_ARGS=(--previous "$PREVIOUS"); fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          PLATFORM=linux
+          ARCH=x64
+          [[ "$PORTABLE_KEY" == mac_* ]] && PLATFORM=darwin
+          [[ "$PORTABLE_KEY" == "mac_arm64" ]] && ARCH=arm64
+          node scripts/create-portable-update.js \
+            --dir "$PORTABLE_DIR" \
+            --platform "$PLATFORM" \
+            --arch "$ARCH" \
+            --version "$PORTABLE_VERSION" \
+            --out dist/portable-update \
+            "${PREVIOUS_ARGS[@]}"
+
+      - name: Create Linux AppImage full and differential update assets
+        if: runner.os == 'Linux'
+        working-directory: electron-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          APPIMAGES=(dist/*.AppImage)
+          [[ ${#APPIMAGES[@]} -eq 1 ]] || { echo "Expected exactly one AppImage"; exit 1; }
+          PREVIOUS_ARGS=()
+          PREVIOUS=previous-portable/previous-linux_x64_appimage-manifest.json
+          if [[ -f "$PREVIOUS" ]]; then PREVIOUS_ARGS=(--previous "$PREVIOUS"); fi
+          PORTABLE_VERSION="$(node -p "require('./package.json').version")"
+          node scripts/create-portable-update.js \
+            --appimage "${APPIMAGES[0]}" \
+            --arch x64 \
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
             "${PREVIOUS_ARGS[@]}"
@@ -914,7 +1000,7 @@ jobs:
           find artifacts/desktop-* -type f \( \
             -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
-            -o -name "latest*.yml" -o -name "*_win_manifest.json" \
+            -o -name "latest*.yml" -o -name "*_manifest.json" -o -name "*_delta.bin" \
           \) -exec cp {} release/ \; 2>/dev/null || true
 
           echo "=== Nightly release files ==="
@@ -968,7 +1054,7 @@ jobs:
           NOTES
           )"
 
-  # Stable tags publish the ZIP Portable update channel. If a release was
+  # Stable tags publish every self-managed Portable update channel. If a release was
   # created manually first, upload --clobber updates its assets in place.
   publish-stable-portable:
     if: (github.repository == 'Project-N-E-K-O/N.E.K.O' || github.repository == 'xxynet/N.E.K.O') && startsWith(github.ref, 'refs/tags/v') && needs.build-electron.result == 'success'
@@ -977,23 +1063,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Windows desktop artifact
+      - name: Download all desktop artifacts
         uses: actions/download-artifact@v4
         with:
-          name: desktop-win-x64
-          path: artifacts/desktop-win-x64
+          pattern: desktop-*
+          path: artifacts
+          merge-multiple: false
 
       - name: Collect Portable update assets
         run: |
           set -euo pipefail
           mkdir -p release
-          find artifacts/desktop-win-x64 -type f \( \
-            -name "N.E.K.O_*_win.zip" -o \
-            -name "N.E.K.O_*_win_manifest.json" -o \
-            -name "N.E.K.O_*_win_delta.zip" \
-          \) -exec cp {} release/ \;
+          find artifacts -type f -name "N.E.K.O_*" -path "*/portable-update/*" -exec cp {} release/ \;
           test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_win.zip"
           test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_win_manifest.json"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_mac_x64.tar.gz"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_mac_x64_manifest.json"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_mac_arm64.tar.gz"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_mac_arm64_manifest.json"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64.tar.gz"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64_manifest.json"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64_appimage.AppImage"
+          test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64_appimage_manifest.json"
           ls -lah release/
 
       - name: Create or update stable GitHub Release
