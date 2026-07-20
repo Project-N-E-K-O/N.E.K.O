@@ -774,6 +774,13 @@ _PUBLIC_DOCS: dict[str, str] = {
     "testbench_USER_MANUAL": "testbench_USER_MANUAL.md",
     "testbench_ARCHITECTURE_OVERVIEW": "testbench_ARCHITECTURE_OVERVIEW.md",
     "external_events_guide": "external_events_guide.md",
+    "memory_export_guide": "memory_export_guide.md",
+    # Clean, self-contained explainer for the 代码线索 (开发者) sub-page (P32):
+    # what the leads mean, how the 反推 works and where it stops being reliable.
+    # Deliberately separate from the internal 裁决 doc
+    # (MEMORY_CODE_INFERENCE_FEASIBILITY.md, which stays out of /docs) so the
+    # testbench-served surface never leaks blueprint / phase internals.
+    "code_leads_guide": "code_leads_guide.md",
     "CHANGELOG": "CHANGELOG.md",
 }
 
@@ -845,6 +852,14 @@ def _rewrite_internal_doc_links(html: str) -> str:
         "P24_BLUEPRINT.md",
         "P25_BLUEPRINT.md",
         "P26_BLUEPRINT.md",
+        "P30_BLUEPRINT.md",
+        "P30_BLUEPRINT",
+        "P31_BLUEPRINT.md",
+        "P31_BLUEPRINT",
+        "P32_BLUEPRINT.md",
+        "P32_BLUEPRINT",
+        "MEMORY_CODE_INFERENCE_FEASIBILITY.md",
+        "MEMORY_CODE_INFERENCE_FEASIBILITY",
     }
 
     def _rewrite(match: _re.Match) -> str:

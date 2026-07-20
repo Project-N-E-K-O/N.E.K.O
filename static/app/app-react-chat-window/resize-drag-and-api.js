@@ -16,6 +16,28 @@
     const I = window.__appReactChatWindowParts || (window.__appReactChatWindowParts = {});
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
+    function dispatchMinimizedYarnDragPhase(phase, dragState, shell) {
+        if (!dragState || !dragState.minimizedYarn || !shell || typeof window.dispatchEvent !== 'function') return;
+        var rect = shell.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return;
+        window.dispatchEvent(new CustomEvent('neko:chat-yarn-user-drag', {
+            detail: {
+                phase: phase,
+                sessionId: dragState.yarnSessionId,
+                source: 'react-chat-window',
+                coordinateSpace: 'viewport',
+                moved: dragState.moved === true,
+                screenRect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height
+                },
+                timestamp: Date.now()
+            }
+        }));
+    }
+
     function isCompactDragSurfaceTarget(target) {
         if (!target || typeof target.closest !== 'function') return false;
         if (target.closest('[data-compact-no-drag="true"]')) return false;
@@ -36,7 +58,9 @@
             startClientX: clientX,
             startClientY: clientY,
             compactSurface: compactSurface,
-            moved: false
+            moved: false,
+            minimizedYarn: !!(I.minimized && !I.isElectronChatWindow()),
+            yarnSessionId: `react-yarn:${Date.now()}:${(I.yarnDragSequence = (I.yarnDragSequence || 0) + 1)}`
         };
 
         shell.classList.add('is-dragging');
@@ -44,6 +68,7 @@
         if (compactSurface) {
             I.scheduleCompactMinimizeBallTracking();
         }
+        dispatchMinimizedYarnDragPhase('start', I.dragState, shell);
     }
 
     function updateDrag(clientX, clientY) {
@@ -70,6 +95,7 @@
         }
         var clamped = I.clampPosition(left, top);
         I.applyPosition(clamped.left, clamped.top);
+        dispatchMinimizedYarnDragPhase('move', I.dragState, I.getShell());
     }
 
     I.stopDrag = function stopDrag(options) {
@@ -79,6 +105,7 @@
 
         var wasMoved = I.dragState.moved;
         var wasCompactSurface = !!I.dragState.compactSurface;
+        var completedDragState = I.dragState;
 
         var shell = I.getShell();
         if (shell) {
@@ -92,6 +119,7 @@
                 I.rememberExpandedShellPosition(rect.left, rect.top);
                 I.persistPosition(rect.left, rect.top);
             }
+            dispatchMinimizedYarnDragPhase(opts.suppressClick ? 'cancel' : 'end', completedDragState, shell);
         }
 
         I.dragState = null;
@@ -866,7 +894,7 @@
         rotateCompactToolWheel: I.rotateCompactToolWheel,
         setCompactToolWheelIndex: I.setCompactToolWheelIndex,
         setCompactHistoryOpen: I.setCompactHistoryOpen,
-        deactivateToolCursor: I.deactivateToolCursor,
+        deactivateAvatarTool: I.deactivateAvatarTool,
         appendMessage: I.appendMessage,
         updateMessage: I.updateMessage,
         removeMessage: I.removeMessage,
@@ -892,6 +920,18 @@
         prepareCompactHistoryDropSubmit: I.prepareCompactHistoryDropSubmit,
         setOnAvatarInteraction: function (handler) {
             I.state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
+            if (I.state.onAvatarInteraction && I.state.pendingAvatarInteractions.length) {
+                var avatarInteractionHandler = I.state.onAvatarInteraction;
+                var pendingInteractions = I.state.pendingAvatarInteractions.slice();
+                I.state.pendingAvatarInteractions = [];
+                pendingInteractions.forEach(function (detail) {
+                    try {
+                        avatarInteractionHandler(detail);
+                    } catch (error) {
+                        console.error('[ReactChatWindow] queued onAvatarInteraction failed:', error);
+                    }
+                });
+            }
         },
         setOnAvatarToolStateChange: function (handler) {
             I.state.onAvatarToolStateChange = typeof handler === 'function' ? handler : null;

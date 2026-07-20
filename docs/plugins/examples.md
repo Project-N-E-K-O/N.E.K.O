@@ -146,7 +146,8 @@ class MonitoredPlugin(NekoPluginBase):
     @after_entry(target="*")
     def log_results(self, *, entry_id, result, **_):
         """Log every entry point result."""
-        self.logger.info(f"[{entry_id}] result={result}")
+        # Do not persist raw result payloads; they may contain user content.
+        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
 
     # --- Entry points ---
 

@@ -633,6 +633,8 @@
     <script src="/static/subtitle/subtitle-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-state.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-cat-mind.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app/app-cat-mind-debug.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-ui/bootstrap-goodbye-and-toasts.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-ui/model-display.js?v={{ static_asset_version }}"></script>
     <script src="/static/app/app-ui/return-transitions.js?v={{ static_asset_version }}"></script>
@@ -1382,6 +1384,18 @@
         window.addEventListener('neko:screenshot-result', function(e) {
             var result = e.detail;
             if (result && result.dataUrl) {
+                if (window.appButtons && typeof window.appButtons.enqueueCapturedScreenshotResult === 'function') {
+                    window.appButtons.enqueueCapturedScreenshotResult(result).catch(function(error) {
+                        console.warn('[Screenshot] proxy result queue failed:', error);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                typeof window.t === 'function' ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25',
+                                5000
+                            );
+                        }
+                    });
+                    return;
+                }
                 // 优先写入旧版 pending list DOM，再由 syncPendingComposerAttachments
                 // 自动同步到 React Chat，确保 legacy sendTextPayloadInternal 和 React 都读到同一套数据。
                 if (typeof window.addScreenshotToList === 'function') {

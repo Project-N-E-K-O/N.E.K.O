@@ -3,9 +3,34 @@
 
     const DEFAULT_PLACEHOLDER = '/static/icons/default_character_card.png';
     const IMAGE_KEYS = ['idle_image', 'talking_image', 'drag_image', 'click_image', 'happy_image', 'sad_image', 'angry_image', 'surprised_image'];
+    const EMOTION_IMAGE_KEYS = {
+        happy: 'happy_image',
+        sad: 'sad_image',
+        angry: 'angry_image',
+        surprised: 'surprised_image'
+    };
+    const CLEAR_EMOTIONS = new Set(['neutral', 'idle', 'default', 'none', 'clear', '']);
+    const DEFAULT_EMOTION_DURATION_MS = 5000;
     const SCALE_MIN = 0.1;
     const SCALE_MAX = 5;
     const REMIX_FRAME_SPEED_MULTIPLIER = 4;
+    const REMIX_EYE_POINTER_FOLLOW_MULTIPLIER = 6.5;
+    const REMIX_BLINK_POINTER_FOLLOW_MULTIPLIER = 3.0;
+    const REMIX_EYE_POINTER_DELAY_MULTIPLIER = 0.55;
+    const REMIX_BLINK_POINTER_DELAY_MULTIPLIER = 0.8;
+    const REMIX_EYE_TARGET_FOLLOW_MULTIPLIER = 1.55;
+    const REMIX_BLINK_TARGET_FOLLOW_MULTIPLIER = 1.15;
+    const REMIX_LAYERED_CANVAS_PADDING_RATIO = 0.12;
+    const REMIX_LAYERED_CANVAS_PADDING_MIN = 48;
+    const REMIX_LAYERED_CANVAS_PADDING_MAX = 160;
+    const REMIX_MESH_DEFORM_STRENGTH = 0.28;
+    const PNGTUBER_PLUS_VISIBLE_VALUES = new Set([0, 10, 20, 30, 1, 21, 12, 32, 3, 13, 4, 15, 26, 36, 27, 38]);
+    // 空闲低频驱动（对齐 live2d-core.js round-2 模式）：呼吸是 0.32Hz 正弦、
+    // 峰值速度 ~2.6px/s，20fps 与满帧视觉无差；动画循环空闲态压到 30fps
+    // （弹簧物理 dt 33ms 在各处 0.05s clamp 之内），活动时仍走 rAF 满帧。
+    const PNGTUBER_BREATHING_IDLE_FPS = 20;
+    const PNGTUBER_ANIMATION_IDLE_FPS = 30;
+    const PNGTUBER_FULL_RATE_HOLD_MS = 900;
 
     function clampNumber(value, min, max, fallback) {
         const parsed = Number(value);
@@ -31,6 +56,14 @@
         if (!path) return '';
         if (/^https?:\/\//i.test(path) || path.startsWith('/')) return path;
         return path;
+    }
+
+    function isPNGTuberPlusLayerVisible(showTalk, showBlink, speaking, blinking) {
+        const value = (Number(showTalk) || 0)
+            + ((Number(showBlink) || 0) * 3)
+            + (speaking ? 10 : 0)
+            + (blinking ? 20 : 0);
+        return PNGTUBER_PLUS_VISIBLE_VALUES.has(value);
     }
 
     function resolveSiblingAsset(baseUrl, value) {
@@ -85,6 +118,10 @@
         normalized.mobile_scale = clampNumber(source.mobile_scale, SCALE_MIN, SCALE_MAX, Math.min(normalized.scale, 1));
         normalized.mobile_offset_x = Number.isFinite(Number(source.mobile_offset_x)) ? Number(source.mobile_offset_x) : 0;
         normalized.mobile_offset_y = Number.isFinite(Number(source.mobile_offset_y)) ? Number(source.mobile_offset_y) : 0;
+        const sourceAnchor = String(source.position_anchor || '').toLowerCase();
+        normalized.position_anchor = (sourceAnchor === 'center' || sourceAnchor === 'bottom_right')
+            ? sourceAnchor
+            : ((normalized.offset_x || normalized.offset_y || normalized.mobile_offset_x || normalized.mobile_offset_y) ? 'bottom_right' : 'center');
         normalized.mirror = !!source.mirror;
         normalized.adapter = sanitizePath(source.adapter);
         const layeredMetadata = normalizeAssetPath(source.layered_metadata || source.metadata);
@@ -112,15 +149,27 @@
             this.layeredBlinkEndTimer = null;
             this.layeredStateIndex = 0;
             this.layeredStateReturnTimer = null;
+            this.layeredToggleVisibility = new Map();
+            this.layeredLayerById = new Map();
             this.layeredAnimationFrame = null;
             this.layeredAnimationStart = 0;
+            this.layeredCanvasPadding = 0;
             this.layeredBreathingFrame = null;
             this.layeredBreathingStart = 0;
+            this.layeredPhysicsByLayer = new Map();
+            this.remixModelMotionState = null;
+            this.layeredDragVelocity = { x: 0, y: 0, at: 0 };
+            this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this._boundLayeredHotkey = (event) => this.handleLayeredHotkey(event);
             this._boundLayeredPlayEvent = (event) => this.handleLayeredPlayEvent(event);
+            this._boundLayeredPointerMove = (event) => this.handleLayeredPointerMove(event);
             this._layeredHotkeysAttached = false;
             this._layeredPlayEventAttached = false;
+            this._layeredPointerAttached = false;
             this.state = 'idle';
+            this.currentEmotion = null;
+            this.emotionImage = '';
+            this.emotionTimer = null;
             this.returnIdleTimer = null;
             this.isSpeaking = false;
             this.speakingMouthTimer = null;
@@ -157,6 +206,7 @@
             this.isLocked = false;
             this._lockIconElement = null;
             this._lockIconImages = null;
+            this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false;
             this._pngtuberFloatingControlsVisible = true;
             this._pngtuberControlsHover = false;
             this._pngtuberHideButtonsTimer = null;
@@ -164,6 +214,28 @@
             this._lastPngtuberPointerX = null;
             this._lastPngtuberPointerY = null;
             this._renderingPaused = false;
+        }
+
+        setMouseTrackingEnabled(enabled) {
+            this._mouseTrackingEnabled = enabled !== false;
+            window.mouseTrackingEnabled = this._mouseTrackingEnabled;
+            if (this._mouseTrackingEnabled) {
+                this.attachLayeredPointerTracking();
+            } else {
+                this.detachLayeredPointerTracking();
+                this.resetLayeredPointerTracking();
+                if (this.isLayeredActive()) {
+                    this.startLayeredAnimationLoop({ preserveTimeline: true });
+                }
+            }
+        }
+
+        isMouseTrackingEnabled() {
+            return this._mouseTrackingEnabled !== false;
+        }
+
+        resetLayeredPointerTracking() {
+            this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
         }
 
         ensureContainer() {
@@ -366,14 +438,21 @@
 
         stopLayeredAnimationLoop() {
             if (this.layeredAnimationFrame) {
-                cancelAnimationFrame(this.layeredAnimationFrame);
+                if (this._layeredAnimationDriveMode === 'timer') {
+                    clearTimeout(this.layeredAnimationFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredAnimationFrame);
+                }
                 this.layeredAnimationFrame = null;
             }
+            this._layeredAnimationDriveMode = null;
         }
 
         attachLayeredHotkeys() {
             if (this._layeredHotkeysAttached || !this.isLayeredActive()) return;
-            if (this.getLayeredStateCount() <= 1 && !this.hasLayeredAssetActions()) return;
+            const toggles = this.layeredToggleEntries();
+            if (toggles.length === 0
+                && this.getLayeredStateCount() <= 1 && !this.hasLayeredAssetActions()) return;
             window.addEventListener('keydown', this._boundLayeredHotkey, true);
             this._layeredHotkeysAttached = true;
         }
@@ -396,6 +475,41 @@
             this._layeredPlayEventAttached = false;
         }
 
+        attachLayeredPointerTracking() {
+            if (this._layeredPointerAttached || !this.isMouseTrackingEnabled() || !this.isLayeredActive() || !this.hasLayeredPointerTracking()) return;
+            const eventName = window.PointerEvent ? 'pointermove' : 'mousemove';
+            window.addEventListener(eventName, this._boundLayeredPointerMove, { passive: true });
+            this._layeredPointerAttached = true;
+            this._layeredPointerEventName = eventName;
+        }
+
+        detachLayeredPointerTracking() {
+            if (!this._layeredPointerAttached) return;
+            window.removeEventListener(this._layeredPointerEventName || 'pointermove', this._boundLayeredPointerMove);
+            this._layeredPointerAttached = false;
+            this._layeredPointerEventName = '';
+        }
+
+        handleLayeredPointerMove(event) {
+            if (!this.isMouseTrackingEnabled()) return;
+            if (!this.isLayeredActive() || !this.canvasElement || typeof this.canvasElement.getBoundingClientRect !== 'function') return;
+            if (this._dragState || this._touchZoomState) {
+                this.layeredPointer.active = false;
+                return;
+            }
+            const rect = this.canvasElement.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            const targetX = ((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2));
+            const targetY = ((event.clientY - (rect.top + rect.height / 2)) / (rect.height / 2));
+            this.layeredPointer.targetX = Math.max(-1, Math.min(1, targetX));
+            this.layeredPointer.targetY = Math.max(-1, Math.min(1, targetY));
+            this.layeredPointer.clientX = event.clientX;
+            this.layeredPointer.clientY = event.clientY;
+            this.layeredPointer.active = true;
+            this.layeredPointer.at = performance.now();
+            this.startLayeredAnimationLoop({ preserveTimeline: true });
+        }
+
         handleLayeredPlayEvent(event) {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
             const target = detail.animation ?? detail.state ?? detail.index ?? detail.key;
@@ -410,6 +524,15 @@
             return Math.max(1, Number(this.layeredMetadata.state_count) || 1);
         }
 
+        normalizeLayeredTargetName(value) {
+            return String(value ?? '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+        }
+
+        layeredStateCatalog() {
+            const catalog = this.layeredMetadata && this.layeredMetadata.state_catalog;
+            return Array.isArray(catalog) ? catalog : [];
+        }
+
         resolveLayeredAnimationTarget(target) {
             const stateCount = this.getLayeredStateCount();
             if (typeof target === 'number' && Number.isFinite(target)) {
@@ -422,12 +545,21 @@
                 const numeric = Number(text);
                 return numeric >= 1 ? Math.min(stateCount - 1, numeric - 1) : 0;
             }
-            const normalized = text.toLowerCase();
+            const normalized = this.normalizeLayeredTargetName(text);
+            const catalogMatch = this.layeredStateCatalog().find((record) => {
+                const aliases = Array.isArray(record.aliases) ? record.aliases : [];
+                return [record.name, record.label, record.hotkey, ...aliases].some((value) => {
+                    return this.normalizeLayeredTargetName(value) === normalized;
+                });
+            });
+            if (catalogMatch) {
+                return Math.max(0, Math.min(stateCount - 1, Number(catalogMatch.state_index) || 0));
+            }
             const hotkeys = Array.isArray(this.layeredMetadata?.hotkeys) ? this.layeredMetadata.hotkeys : [];
             const matched = hotkeys.find((hotkey) => {
-                return String(hotkey.key || '').toLowerCase() === normalized
-                    || String(hotkey.label || '').toLowerCase() === normalized
-                    || String(hotkey.name || '').toLowerCase() === normalized;
+                return this.normalizeLayeredTargetName(hotkey.key) === normalized
+                    || this.normalizeLayeredTargetName(hotkey.label) === normalized
+                    || this.normalizeLayeredTargetName(hotkey.name) === normalized;
             });
             if (matched) {
                 return Math.max(0, Math.min(stateCount - 1, Number(matched.state_index) || 0));
@@ -439,13 +571,22 @@
             if (!this.isLayeredActive()) return false;
             const stateCount = this.getLayeredStateCount();
             const nextIndex = Math.max(0, Math.min(stateCount - 1, Number(index) || 0));
+            const previousIndex = this.layeredStateIndex;
             if (this.layeredStateReturnTimer) {
                 clearTimeout(this.layeredStateReturnTimer);
                 this.layeredStateReturnTimer = null;
             }
             this.layeredStateIndex = nextIndex;
+            // 状态切换后的 900ms 满帧余温：切换过渡（贴图换装/弹跳）以 rAF 满帧渲染
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
             this.drawLayeredState();
             this.restartLayeredAnimationLoop();
+            if ((options.source === 'hotkey' || options.source === 'alt-one-cycle-hotkey')
+                && previousIndex !== nextIndex
+                && this.isLayeredPlusModel()
+                && this.layeredRuntimeFeatureEnabled('costume_change_bounce')) {
+                this.startCostumeChangeHopAnimation();
+            }
             window.dispatchEvent(new CustomEvent('pngtuber-layered-state-changed', {
                 detail: {
                     stateIndex: this.layeredStateIndex,
@@ -470,6 +611,150 @@
                 returnToDefaultAfterMs: options.returnToDefaultAfterMs,
                 source: options.source || 'api'
             });
+        }
+
+        layeredEmotionTarget(emotionName) {
+            const mappings = this.layeredMetadata && this.layeredMetadata.emotion_mappings;
+            if (mappings && typeof mappings === 'object') {
+                const mapping = mappings[emotionName];
+                if (typeof mapping === 'number' && Number.isFinite(mapping)) return mapping;
+                if (mapping && typeof mapping === 'object' && Number.isFinite(Number(mapping.state_index))) {
+                    return Number(mapping.state_index);
+                }
+            }
+            const fallbackOrder = { happy: 1, sad: 2, angry: 3, surprised: 4 };
+            const fallbackIndex = fallbackOrder[emotionName];
+            // The state-count fallback targets Remix's neutral/happy/sad/angry/
+            // surprised state ordering. Plus imports always expose 10 costume
+            // states that are not emotions, so skip the fallback for them —
+            // Plus models only drive emotions when they ship explicit
+            // emotion_mappings.
+            if (fallbackIndex !== undefined && !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5) return fallbackIndex;
+            return null;
+        }
+
+        layeredEmotionSupported() {
+            const mappings = this.layeredMetadata && this.layeredMetadata.emotion_mappings;
+            if (mappings && typeof mappings === 'object') {
+                return Object.keys(mappings).some((emotion) => !CLEAR_EMOTIONS.has(this.normalizeEmotionName(emotion)));
+            }
+            return !this.isLayeredPlusModel() && this.getLayeredStateCount() >= 5;
+        }
+
+        normalizedLayeredEventKey(event) {
+            return String(event?.key || '').trim().toLowerCase();
+        }
+
+        normalizeLayeredToggleKey(key) {
+            const text = String(key || '').trim();
+            return text && !['null', 'none'].includes(text.toLowerCase()) ? text : '';
+        }
+
+        layeredToggleEntries() {
+            const toggles = this.layeredMetadata && this.layeredMetadata.toggles;
+            if (!toggles || typeof toggles !== 'object') return [];
+            if (Array.isArray(toggles)) {
+                return toggles
+                    .map((entry) => {
+                        const key = this.normalizeLayeredToggleKey(entry?.key);
+                        const layerIds = Array.isArray(entry?.layer_ids) ? entry.layer_ids : [];
+                        return key ? { key, layerIds: layerIds.map((id) => String(id)) } : null;
+                    })
+                    .filter(Boolean);
+            }
+            return Object.entries(toggles)
+                .map(([key, layerIds]) => {
+                    const normalizedKey = this.normalizeLayeredToggleKey(key);
+                    const ids = Array.isArray(layerIds) ? layerIds : [layerIds];
+                    return normalizedKey ? { key: normalizedKey, layerIds: ids.map((id) => String(id)) } : null;
+                })
+                .filter(Boolean);
+        }
+
+        layeredToggleEntriesForEvent(event) {
+            // Imported toggle keys are bare keypresses (e.g. "1".."0"). Reserved
+            // runtime shortcuts (Alt+1 cycle, Alt+2 asset action) share those base
+            // keys, so ignore modified events here — otherwise a toggle bound to
+            // "1"/"2" would swallow Alt+1/Alt+2 before the reserved checks run.
+            if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return [];
+            const eventKey = this.normalizedLayeredEventKey(event);
+            if (!eventKey) return [];
+            return this.layeredToggleEntries().filter((entry) => String(entry.key || '').toLowerCase() === eventKey);
+        }
+
+        initializeLayeredToggleState(layers) {
+            this.layeredToggleVisibility = new Map();
+            this.layeredLayerById = new Map();
+            (Array.isArray(layers) ? layers : []).forEach((layer) => {
+                this.layerIdentityKeys(layer).forEach((id) => {
+                    this.layeredLayerById.set(id, layer);
+                });
+                const toggle = this.normalizeLayeredToggleKey(layer.toggle || layer.state?.toggle);
+                if (toggle) {
+                    const id = this.primaryLayerId(layer);
+                    if (id) this.layeredToggleVisibility.set(id, true);
+                }
+            });
+            this.layeredToggleEntries().forEach((entry) => {
+                entry.layerIds.forEach((id) => this.layeredToggleVisibility.set(String(id), true));
+            });
+        }
+
+        primaryLayerId(layer) {
+            return this.layerIdentityKeys(layer)[0] || '';
+        }
+
+        layerIdentityKeys(layer) {
+            return [
+                layer?.identification,
+                layer?.sprite_id,
+                layer?.id,
+                layer?.key,
+                layer?.order
+            ]
+                .filter((value) => value !== undefined && value !== null && String(value).trim() !== '')
+                .map((value) => String(value));
+        }
+
+        isLayerToggleVisible(layer) {
+            const ids = this.layerIdentityKeys(layer);
+            return !ids.some((id) => this.layeredToggleVisibility.get(id) === false);
+        }
+
+        layerToggleAncestors(layer) {
+            if (Array.isArray(layer?.parent_chain)) {
+                return layer.parent_chain.map((id) => String(id)).filter(Boolean);
+            }
+            const chain = [];
+            const visited = new Set(this.layerIdentityKeys(layer));
+            let parentId = layer?.parent_id ?? layer?.parentId;
+            while (parentId !== undefined && parentId !== null && String(parentId).trim() !== '') {
+                const id = String(parentId);
+                if (visited.has(id)) break;
+                visited.add(id);
+                chain.push(id);
+                const parent = this.layeredLayerById.get(id);
+                if (!parent) break;
+                parentId = parent.parent_id ?? parent.parentId;
+            }
+            return chain;
+        }
+
+        hasHiddenLayeredToggleAncestor(layer) {
+            return this.layerToggleAncestors(layer).some((id) => this.layeredToggleVisibility.get(id) === false);
+        }
+
+        toggleLayeredVisibilityForEvent(event) {
+            const entries = this.layeredToggleEntriesForEvent(event);
+            if (entries.length === 0) return false;
+            entries.forEach((entry) => {
+                entry.layerIds.forEach((id) => {
+                    const key = String(id);
+                    const current = this.layeredToggleVisibility.get(key);
+                    this.layeredToggleVisibility.set(key, current === false);
+                });
+            });
+            return true;
         }
 
         isLayeredCycleHotkey(event) {
@@ -542,6 +827,16 @@
             )) {
                 return;
             }
+            const hasToggleMatch = this.layeredToggleEntriesForEvent(event).length > 0;
+            if (hasToggleMatch) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (this.toggleLayeredVisibilityForEvent(event)) {
+                    this.drawLayeredState();
+                    this.restartLayeredAnimationLoop();
+                }
+                return;
+            }
             if (this.isLayeredCycleHotkey(event)) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -552,7 +847,6 @@
                 event.preventDefault();
                 event.stopPropagation();
                 this.togglePrimaryLayeredAssetAction();
-                return;
             }
         }
 
@@ -560,11 +854,19 @@
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
             this.detachLayeredPlayEvent();
+            this.detachLayeredPointerTracking();
             this.layeredMetadata = null;
             this.layeredImages = new Map();
             this._fallbackLayersBySpriteId = new Map();
             this._fallbackLayersBySpriteIdSource = null;
             this.layeredStateIndex = 0;
+            this.layeredToggleVisibility = new Map();
+            this.layeredLayerById = new Map();
+            this.layeredCanvasPadding = 0;
+            this.layeredPhysicsByLayer = new Map();
+            this.remixModelMotionState = null;
+            this.layeredDragVelocity = { x: 0, y: 0, at: 0 };
+            this.layeredPointer = { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
             this.layeredAssetVisibility = new Map();
             this.layeredAssetActionActive = false;
             if (!this.isLayeredConfigured()) return false;
@@ -586,21 +888,36 @@
                 if (this.layeredImages.size === 0) throw new Error('no layer images loaded');
                 this.layeredMetadata = metadata;
                 this.layeredStateIndex = 0;
+                this.initializeLayeredToggleState(layers);
                 this.ensureContainer();
                 const canvas = this.canvasElement;
                 const canvasInfo = metadata.canvas || {};
-                canvas.width = Math.max(1, Number(canvasInfo.width) || 1);
-                canvas.height = Math.max(1, Number(canvasInfo.height) || 1);
+                const baseCanvasWidth = Math.max(1, Number(canvasInfo.width) || 1);
+                const baseCanvasHeight = Math.max(1, Number(canvasInfo.height) || 1);
+                this.layeredCanvasPadding = Math.max(
+                    REMIX_LAYERED_CANVAS_PADDING_MIN,
+                    Math.min(
+                        REMIX_LAYERED_CANVAS_PADDING_MAX,
+                        Math.ceil(Math.max(baseCanvasWidth, baseCanvasHeight) * REMIX_LAYERED_CANVAS_PADDING_RATIO)
+                    )
+                );
+                canvas.width = baseCanvasWidth + this.layeredCanvasPadding * 2;
+                canvas.height = baseCanvasHeight + this.layeredCanvasPadding * 2;
                 canvas.style.aspectRatio = `${canvas.width} / ${canvas.height}`;
                 this.startLayeredBlinkLoop();
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
                 this.attachLayeredPlayEvent();
+                this.attachLayeredPointerTracking();
                 return true;
             } catch (error) {
                 console.warn('[PNGTuber] layered adapter disabled, falling back to image mode:', error);
                 this.layeredMetadata = null;
                 this.layeredImages = new Map();
+                this.layeredCanvasPadding = 0;
+                this.layeredToggleVisibility = new Map();
+                this.layeredLayerById = new Map();
+                this.detachLayeredPointerTracking();
                 this._fallbackLayersBySpriteId = new Map();
                 this._fallbackLayersBySpriteIdSource = null;
                 return false;
@@ -612,8 +929,13 @@
                 ? this.layeredMetadata.layers
                 : [];
             return layers.some((layer) => {
-                const state = layer.state || {};
-                return Number(layer.showBlink || 0) !== 0 || !!state.should_blink;
+                if (Number(layer.showBlink || 0) !== 0) return true;
+                // Scan every state, not just the default one: a model may only
+                // blink in a non-default state reached via Alt+1/emotion, and
+                // checking layer.state alone would leave its blink loop disabled.
+                const states = Array.isArray(layer.states) ? layer.states : [];
+                if (states.some((state) => !!(state && state.should_blink))) return true;
+                return !!(layer.state && layer.state.should_blink);
             });
         }
 
@@ -646,21 +968,14 @@
             if (assetVisibility === false) return false;
             if (layer.inactive_asset_ancestor && !assetForcedVisible) return false;
             const mode = stateName === 'talking' ? 'talking' : 'idle';
-            const layerState = this.layerStateForCurrentIndex(layer);
+            const layerState = this.layerStateForRender(layer, stateName);
             if (layerState.folder) return false;
             if (layerState.visible === false && !assetForcedVisible) return false;
             if (layerState.ancestor_visible === false && !assetForcedVisible) return false;
             if (layerState.ancestor_visible === undefined && layer.ancestor_visible === false && !assetForcedVisible) return false;
-            const showTalk = Number(layer.showTalk || 0);
-            if (showTalk !== 0) {
-                if (mode === 'idle' && showTalk !== 1) return false;
-                if (mode === 'talking' && showTalk !== 2) return false;
-            }
-            const showBlink = Number(layer.showBlink || 0);
-            if (showBlink !== 0) {
-                if (!this.layeredBlinking && showBlink === 2) return false;
-                if (this.layeredBlinking && showBlink === 1) return false;
-            }
+            if (!this.isLayerToggleVisible(layer)) return false;
+            if (this.hasHiddenLayeredToggleAncestor(layer)) return false;
+            if (!isPNGTuberPlusLayerVisible(layer.showTalk, layer.showBlink, mode === 'talking', this.layeredBlinking)) return false;
 
             const shouldTalk = !!(layerState.effective_should_talk ?? layerState.should_talk);
             if (shouldTalk) {
@@ -682,6 +997,33 @@
             return states[this.layeredStateIndex] || layer.state || {};
         }
 
+        layerStateHasTalkingMouth(layerState) {
+            return !!(layerState && (layerState.effective_should_talk ?? layerState.should_talk));
+        }
+
+        layerStateForRender(layer, stateName = this.state || 'idle') {
+            const currentState = this.layerStateForCurrentIndex(layer);
+            if (this.isLayeredPlusModel() || this.layerStateHasTalkingMouth(currentState)) {
+                return currentState;
+            }
+            const states = Array.isArray(layer.states) ? layer.states : [];
+            const defaultState = states[0] || layer.state || {};
+            return this.layerStateHasTalkingMouth(defaultState) ? defaultState : currentState;
+        }
+
+        isLayeredRemixModel() {
+            return this.isLayeredActive()
+                && (this.config.source_format === 'pngtube_remix_pngremix'
+                    || this.layeredMetadata?.source_format === 'pngtube_remix_pngremix');
+        }
+
+        isLayeredPlusModel() {
+            return this.isLayeredActive()
+                && (this.config.source_format === 'pngtuber_plus_save'
+                    || this.layeredMetadata?.source_format === 'pngtuber_plus_save'
+                    || this.layeredMetadata?.source_format === 'pngtuber-plus');
+        }
+
         layeredRuntimeFeatureEnabled(featureName) {
             const features = this.layeredMetadata && this.layeredMetadata.runtime_features;
             if (!features || typeof features !== 'object') return false;
@@ -690,6 +1032,7 @@
 
         stateHasMotion(layerState) {
             const layerMotionEnabled = this.layeredRuntimeFeatureEnabled('layer_motion');
+            const spriteSheetEnabled = this.layeredRuntimeFeatureEnabled('sprite_sheet_animation');
             const hasXMotion = layerMotionEnabled
                 && Math.abs(Number(layerState.xAmp) || 0) > 0.0001
                 && Math.abs(Number(layerState.xFrq) || 0) > 0.0001;
@@ -699,18 +1042,177 @@
             const hasWiggleMotion = layerMotionEnabled
                 && Math.abs(Number(layerState.wiggle_amp) || 0) > 0.0001
                 && Math.abs(Number(layerState.wiggle_freq || layerState.rot_frq) || 0) > 0.0001;
-            const hasFrameAnimation = this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')
-                && this.stateHasFrameAnimation(layerState);
-            return hasXMotion || hasYMotion || hasWiggleMotion || hasFrameAnimation;
+            const hasFrameAnimation = spriteSheetEnabled && this.stateHasFrameAnimation(layerState);
+            return hasXMotion || hasYMotion || hasWiggleMotion || this.stateHasRemixLayerOscillation(layerState) || hasFrameAnimation;
         }
 
-        stateFrameInfo(layer, layerState, img, timestamp = performance.now()) {
+        stateHasRemixLayerOscillation(layerState) {
+            if (!layerState || !layerState.physics) return false;
+            return (Math.abs(Number(layerState.rot_frq) || 0) > 0.0001
+                    && Math.abs(Number(layerState.rdragStr) || 0) > 0.0001)
+                || (!!layerState.should_rotate && Math.abs(Number(layerState.should_rot_speed) || 0) > 0.0001);
+        }
+
+        stateHasRemixPhysics(layerState) {
+            if (!layerState) return false;
+            if (this.stateHasRemixMouseFollow(layerState)) return true;
+            if (this.layeredRuntimeFeatureEnabled('physics_v2')
+                && (this.remixValue(layerState, 'tip_point', null) !== null
+                    || Math.abs(this.remixNumber(layerState, 'mesh_phys_x', 0)) > 0.0001
+                    || Math.abs(this.remixNumber(layerState, 'mesh_phys_y', 0)) > 0.0001
+                    || Math.abs(this.remixNumber(layerState, 'chain_rot_min', 0)) > 0.0001
+                    || Math.abs(this.remixNumber(layerState, 'chain_rot_max', 0)) > 0.0001
+                    || this.remixBool(layerState, 'drag_snap'))) return true;
+            if (!layerState.physics && !layerState.wiggle && !layerState.wiggle_physics) return false;
+            return Math.abs(Number(layerState.rdragStr) || 0) > 0.0001
+                || Math.abs(Number(layerState.dragSpeed) || 0) > 0.0001
+                || Math.abs(Number(layerState.stretchAmount) || 0) > 0.0001
+                || Math.abs(Number(layerState.rot_frq) || 0) > 0.0001;
+        }
+
+        plusStateHasPhysics(layerState) {
+            if (!layerState || !this.isLayeredPlusModel()) return false;
+            return Math.abs(Number(layerState.xAmp) || 0) > 0.0001
+                || Math.abs(Number(layerState.yAmp) || 0) > 0.0001
+                || Math.abs(Number(layerState.rdragStr) || 0) > 0.0001
+                || Math.abs(Number(layerState.dragSpeed) || 0) > 0.0001
+                || Math.abs(Number(layerState.stretchAmount) || 0) > 0.0001
+                || this.stateHasFrameAnimation(layerState);
+        }
+
+        remixStatePrefix() {
+            if ((this.state || 'idle') === 'scream') return 'scream_';
+            if ((this.state || 'idle') === 'talking') return 'mo_';
+            return '';
+        }
+
+        remixDirectValue(layerState, key) {
+            if (!layerState) return undefined;
+            const prefix = layerState.shared_movement ? '' : this.remixStatePrefix();
+            const prefixedKey = `${prefix}${key}`;
+            return prefix && Object.prototype.hasOwnProperty.call(layerState, prefixedKey)
+                ? layerState[prefixedKey]
+                : layerState[key];
+        }
+
+        remixLegacyFollowValue(layerState, key) {
+            if (!layerState || layerState.updated_follow_movement === true) return undefined;
+            const legacyNumber = (legacyKey) => {
+                const value = Number(this.remixDirectValue(layerState, legacyKey));
+                return Number.isFinite(value) ? value : 0;
+            };
+            const hasLegacyMotion = (legacyKeys) => legacyKeys
+                .some((legacyKey) => Math.abs(legacyNumber(legacyKey)) > 0.0001);
+
+            if ((key === 'pos_x_min' || key === 'pos_x_max') && hasLegacyMotion(['look_at_mouse_pos'])) {
+                const value = Math.abs(legacyNumber('look_at_mouse_pos'));
+                return key === 'pos_x_min' ? -value : value;
+            }
+            if ((key === 'pos_y_min' || key === 'pos_y_max') && hasLegacyMotion(['look_at_mouse_pos_y'])) {
+                const value = Math.abs(legacyNumber('look_at_mouse_pos_y'));
+                return key === 'pos_y_min' ? -value : value;
+            }
+            if (key === 'pos_invert_x' && hasLegacyMotion(['look_at_mouse_pos'])) {
+                return legacyNumber('look_at_mouse_pos') < 0;
+            }
+            if (key === 'pos_invert_y' && hasLegacyMotion(['look_at_mouse_pos_y'])) {
+                return legacyNumber('look_at_mouse_pos_y') < 0;
+            }
+            if ((key === 'rot_min' || key === 'rot_max') && hasLegacyMotion(['mouse_rotation', 'mouse_rotation_max'])) {
+                return key === 'rot_min' ? legacyNumber('mouse_rotation') : legacyNumber('mouse_rotation_max');
+            }
+            if ((key === 'scale_x_min' || key === 'scale_x_max') && hasLegacyMotion(['mouse_scale_x', 'mouse_scale_x_max'])) {
+                return key === 'scale_x_min' ? legacyNumber('mouse_scale_x') : legacyNumber('mouse_scale_x_max');
+            }
+            if ((key === 'scale_y_min' || key === 'scale_y_max') && hasLegacyMotion(['mouse_scale_y', 'mouse_scale_y_max'])) {
+                return key === 'scale_y_min' ? legacyNumber('mouse_scale_y') : legacyNumber('mouse_scale_y_max');
+            }
+            return undefined;
+        }
+
+        remixValue(layerState, key, fallback = 0) {
+            if (!layerState) return fallback;
+            const legacyValue = this.remixLegacyFollowValue(layerState, key);
+            if (legacyValue !== undefined) return legacyValue;
+            const value = this.remixDirectValue(layerState, key);
+            if (value !== undefined && value !== null) return value;
+            return fallback;
+        }
+
+        remixNumber(layerState, key, fallback = 0) {
+            const value = Number(this.remixValue(layerState, key, fallback));
+            return Number.isFinite(value) ? value : fallback;
+        }
+
+        remixBool(layerState, key) {
+            return !!this.remixValue(layerState, key, false);
+        }
+
+        remixIgnoresModelBounce(layerState) {
+            return this.remixBool(layerState, 'ignore_bounce') && !this.remixBool(layerState, 'static_obj');
+        }
+
+        remixFollowType(layerState, key) {
+            const value = Number(this.remixValue(layerState, key, 15));
+            return Number.isFinite(value) ? value : 15;
+        }
+
+        remixHasLegacyFollowMotion(layerState, keys) {
+            if (!layerState || layerState.updated_follow_movement === true) return false;
+            return keys.some((key) => Math.abs(Number(this.remixDirectValue(layerState, key)) || 0) > 0.0001);
+        }
+
+        remixPositionFollowsMouse(layerState) {
+            return this.remixFollowType(layerState, 'follow_type') === 0
+                || this.remixHasLegacyFollowMotion(layerState, ['look_at_mouse_pos', 'look_at_mouse_pos_y']);
+        }
+
+        remixRotationFollowsMouse(layerState) {
+            return this.remixFollowType(layerState, 'follow_type2') === 0
+                || this.remixHasLegacyFollowMotion(layerState, ['mouse_rotation', 'mouse_rotation_max']);
+        }
+
+        remixScaleFollowsMouse(layerState) {
+            return this.remixFollowType(layerState, 'follow_type3') === 0
+                || this.remixHasLegacyFollowMotion(layerState, ['mouse_scale_x', 'mouse_scale_x_max', 'mouse_scale_y', 'mouse_scale_y_max']);
+        }
+
+        stateHasRemixMouseFollow(layerState) {
+            if (!layerState) return false;
+            return this.remixPositionFollowsMouse(layerState)
+                || this.remixRotationFollowsMouse(layerState)
+                || this.remixScaleFollowsMouse(layerState);
+        }
+
+        stateHasAnimateToMouseSheet(layerState) {
+            if (!layerState) return false;
+            return layerState.non_animated_sheet === true
+                && this.remixBool(layerState, 'animate_to_mouse')
+                && (Math.max(1, Math.floor(Number(layerState.hframes) || 1)) > 1
+                    || Math.max(1, Math.floor(Number(layerState.vframes) || 1)) > 1);
+        }
+
+        stateHasPointerTracking(layerState) {
+            return this.stateHasRemixMouseFollow(layerState) || this.stateHasAnimateToMouseSheet(layerState);
+        }
+
+        hasLayeredPointerTracking() {
+            if (!this.layeredMetadata || !Array.isArray(this.layeredMetadata.layers)) return false;
+            return this.layeredMetadata.layers.some((layer) => {
+                const states = Array.isArray(layer.states) ? layer.states : [];
+                if (states.some((state) => this.stateHasPointerTracking(state))) return true;
+                return this.stateHasPointerTracking(layer.state || {});
+            });
+        }
+
+        stateFrameInfo(layer, layerState, img, timestamp = performance.now(), overrideFrame = null) {
             const imageWidth = Number(layer.image_width || img.width) || img.width;
             const imageHeight = Number(layer.image_height || img.height) || img.height;
             const hframes = Math.max(1, Math.floor(Number(layerState.hframes) || Number(layer.hframes) || 1));
-            const declaredFrames = Math.floor(Number(layerState.frames) || Number(layer.frames) || hframes);
+            const vframes = Math.max(1, Math.floor(Number(layerState.vframes) || Number(layer.vframes) || 1));
+            const declaredFrames = Math.floor(Number(layerState.frames) || Number(layer.frames) || hframes * vframes);
             const frames = Math.max(1, declaredFrames);
-            const rows = Math.max(1, Math.ceil(frames / hframes));
+            const rows = Math.max(vframes, Math.ceil(frames / hframes));
             const hasSheet = hframes > 1 || rows > 1;
             const computedFrameWidth = imageWidth / hframes;
             const computedFrameHeight = imageHeight / rows;
@@ -730,14 +1232,16 @@
             ));
             const legacyFullSheetX = hasSheet && !explicitFrameWidth && layerWidth >= imageWidth;
             const legacyFullSheetY = hasSheet && !explicitFrameHeight && layerHeight >= imageHeight;
-            let frame = Math.max(0, Math.floor(Number(layerState.frame) || 0));
+            let frame = overrideFrame === null || overrideFrame === undefined
+                ? Math.max(0, Math.floor(Number(layerState.frame) || 0))
+                : Math.max(0, Math.floor(Number(overrideFrame) || 0));
             const speed = Math.max(0, Number(layerState.animation_speed) || Number(layer.animation_speed) || 0);
             const canAnimate = this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')
                 && frames > 1
                 && speed > 0
                 && hasSheet
                 && layerState.non_animated_sheet !== true;
-            if (canAnimate) {
+            if (overrideFrame === null && canAnimate) {
                 const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
                 frame = Math.floor(elapsedSeconds * speed * REMIX_FRAME_SPEED_MULTIPLIER) % frames;
             }
@@ -752,6 +1256,7 @@
                 frame,
                 frames,
                 hframes,
+                vframes,
                 animated: canAnimate,
                 legacyOffsetX: legacyFullSheetX ? (imageWidth - frameWidth) / 2 : 0,
                 legacyOffsetY: legacyFullSheetY ? (imageHeight - frameHeight) / 2 : 0
@@ -759,28 +1264,81 @@
         }
 
         stateHasFrameAnimation(layerState) {
+            if (this.stateHasAnimateToMouseSheet(layerState)) return true;
             const hframes = Math.max(1, Math.floor(Number(layerState.hframes) || 1));
-            const frames = Math.max(1, Math.floor(Number(layerState.frames) || hframes));
+            const vframes = Math.max(1, Math.floor(Number(layerState.vframes) || 1));
+            const frames = Math.max(1, Math.floor(Number(layerState.frames) || hframes * vframes));
             const speed = Math.max(0, Number(layerState.animation_speed) || 0);
             return frames > 1
                 && speed > 0
-                && (hframes > 1 || Math.ceil(frames / hframes) > 1)
+                && (hframes > 1 || vframes > 1 || Math.ceil(frames / hframes) > 1)
                 && layerState.non_animated_sheet !== true;
         }
 
         hasMotionLayersForCurrentState(stateName = this.state || 'idle') {
             if (!this.isLayeredActive()) return false;
+            if (this.stateHasModelMotion(stateName) || this.layeredPointerNeedsFrame()) return true;
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
-            return layers.some((layer) => (
-                this.shouldRenderLayer(layer, stateName)
-                && this.stateHasMotion(this.layerStateForCurrentIndex(layer))
-            ));
+            return layers.some((layer) => {
+                if (!this.shouldRenderLayer(layer, stateName)) return false;
+                const layerState = this.layerStateForRender(layer, stateName);
+                return this.stateHasMotion(layerState)
+                    || this.plusStateHasPhysics(layerState)
+                    || (this.stateHasRemixPhysics(layerState)
+                        && (this.layeredRuntimeFeatureEnabled('physics_v2') || this.layeredPhysicsNeedsFrame()));
+            });
+        }
+
+        // 当前状态是否有"有效帧率超过空闲地板"的贴图动画：
+        // sheet 帧率 = animation_speed × REMIX_FRAME_SPEED_MULTIPLIER，
+        // 超过 PNGTUBER_ANIMATION_IDLE_FPS 时 30fps 采样会持续丢帧，需保持 rAF。
+        _layeredStateHasFastSheetAnimation(stateName = this.state || 'idle') {
+            if (!this.layeredRuntimeFeatureEnabled('sprite_sheet_animation')) return false;
+            const layers = Array.isArray(this.layeredMetadata && this.layeredMetadata.layers)
+                ? this.layeredMetadata.layers : [];
+            return layers.some((layer) => {
+                if (!this.shouldRenderLayer(layer, stateName)) return false;
+                const layerState = this.layerStateForRender(layer, stateName);
+                if (!layerState || !this.stateHasFrameAnimation(layerState)) return false;
+                const speed = Math.max(0, Number(layerState.animation_speed) || 0);
+                return speed * REMIX_FRAME_SPEED_MULTIPLIER > PNGTUBER_ANIMATION_IDLE_FPS;
+            });
+        }
+
+        // 动画循环是否需要 rAF 满帧：拖拽/触摸缩放、说话相关帧、非 idle 状态、
+        // 指针/物理仍需逐帧、弹簧未静定、高速贴图动画、或换装/拖拽释放后的
+        // 满帧余温。否则以 PNGTUBER_ANIMATION_IDLE_FPS 定时器低频驱动（避免
+        // rAF 请求把 Blink 主帧调度顶到显示器刷新率——live2d round-2 同款策略）。
+        _layeredAnimationNeedsFullRate(timestamp) {
+            try {
+                // 页面级豁免（demo/模型管理器等）：与 VRM/MMD governor 的豁免对齐
+                if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return true;
+                if (this._dragState || this._touchZoomState) return true;
+                if (this.isSpeaking || this.lipSyncFrame || this.talkingHopFrame || this.speakingBounceFrame) return true;
+                if ((this.state || 'idle') !== 'idle') return true;
+                if (typeof this.layeredPointerNeedsFrame === 'function' && this.layeredPointerNeedsFrame(timestamp)) return true;
+                if (typeof this.layeredPhysicsNeedsFrame === 'function' && this.layeredPhysicsNeedsFrame(timestamp)) return true;
+                const motion = this.remixModelMotionState;
+                if (motion && (Math.abs(motion.x || 0) > 0.02 || Math.abs(motion.y || 0) > 0.02 || Math.abs(motion.yVel || 0) > 1)) return true;
+                if (this._layeredFullRateHoldUntil && timestamp < this._layeredFullRateHoldUntil) return true;
+                if (this._layeredStateHasFastSheetAnimation()) return true;
+            } catch (_) { return true; }
+            return false;
         }
 
         startLayeredAnimationLoop(options = {}) {
             if (this._renderingPaused) return;
             this.startLayeredBreathingLoop();
-            if (this.layeredAnimationFrame) return;
+            if (this.layeredAnimationFrame) {
+                // 已在低频定时器驱动中且此刻需要满帧：立即升频，不等下一拍
+                if (this._layeredAnimationDriveMode === 'timer' && this._layeredAnimationTick &&
+                    this._layeredAnimationNeedsFullRate(performance.now())) {
+                    clearTimeout(this.layeredAnimationFrame);
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(this._layeredAnimationTick);
+                }
+                return;
+            }
             if (!this.isLayeredActive() || !this.hasMotionLayersForCurrentState()) return;
             if (!options.preserveTimeline || !this.layeredAnimationStart) {
                 this.layeredAnimationStart = performance.now();
@@ -790,9 +1348,28 @@
                     this.stopLayeredAnimationLoop();
                     return;
                 }
-                this.drawLayeredState(this.state || 'idle', timestamp);
-                this.layeredAnimationFrame = requestAnimationFrame(tick);
+                // 隐藏标签页跳过 canvas 绘制但保持链条（timer 驱动路径专用；
+                // rAF 路径在隐藏标签页本身就会被浏览器暂停）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.drawLayeredState(this.state || 'idle', timestamp);
+                }
+                if (!this.hasMotionLayersForCurrentState()) {
+                    this.stopLayeredAnimationLoop();
+                    return;
+                }
+                if (this._layeredAnimationNeedsFullRate(timestamp)) {
+                    this._layeredAnimationDriveMode = 'raf';
+                    this.layeredAnimationFrame = requestAnimationFrame(tick);
+                } else {
+                    this._layeredAnimationDriveMode = 'timer';
+                    this.layeredAnimationFrame = setTimeout(
+                        () => tick(performance.now()),
+                        Math.round(1000 / PNGTUBER_ANIMATION_IDLE_FPS)
+                    );
+                }
             };
+            this._layeredAnimationTick = tick;
+            this._layeredAnimationDriveMode = 'raf';
             this.layeredAnimationFrame = requestAnimationFrame(tick);
         }
 
@@ -837,33 +1414,891 @@
             if (this._renderingPaused) return;
             if (this.layeredBreathingFrame || !this.layeredBreathingEnabled()) return;
             this.layeredBreathingStart = this.layeredBreathingStart || performance.now();
+            // 呼吸是 0.32Hz 正弦（峰值速度 ~2.6px/s），全程用 20fps 定时器驱动即可：
+            // 视觉与满帧 rAF 无差，且不会让 Blink 以显示器刷新率空跑主帧。
+            // 拖拽/说话等高频视觉各自的路径会直接调 applyTransform，不依赖本循环。
+            const breathingIntervalMs = Math.round(1000 / PNGTUBER_BREATHING_IDLE_FPS);
+            // 页面级豁免（demo/模型管理器等）：保持原 rAF 满帧驱动
+            const breathingUsesTimer = window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ !== true;
             const tick = (timestamp) => {
                 if (!this.layeredBreathingEnabled() || !this.container || this.container.style.display === 'none') {
                     this.stopLayeredBreathingLoop();
                     return;
                 }
-                this.applyAnimationTransform(timestamp);
-                this.updateOverlayPositionsForAnimation(timestamp);
-                this.layeredBreathingFrame = requestAnimationFrame(tick);
+                // 纯浏览器隐藏标签页跳过绘制但保持链条（rAF 暂停语义的近似；
+                // Electron 宠物窗禁用了节流，不受影响）
+                if (!(typeof document !== 'undefined' && document.hidden)) {
+                    this.applyAnimationTransform(timestamp);
+                    this.updateOverlayPositionsForAnimation(timestamp);
+                }
+                if (breathingUsesTimer) {
+                    this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+                } else {
+                    this.layeredBreathingFrame = requestAnimationFrame(tick);
+                }
             };
-            this.layeredBreathingFrame = requestAnimationFrame(tick);
+            if (breathingUsesTimer) {
+                this._layeredBreathingDriveMode = 'timer';
+                this.layeredBreathingFrame = setTimeout(() => tick(performance.now()), breathingIntervalMs);
+            } else {
+                this._layeredBreathingDriveMode = 'raf';
+                this.layeredBreathingFrame = requestAnimationFrame(tick);
+            }
         }
 
         stopLayeredBreathingLoop() {
             if (this.layeredBreathingFrame) {
-                cancelAnimationFrame(this.layeredBreathingFrame);
+                if (this._layeredBreathingDriveMode === 'timer') {
+                    clearTimeout(this.layeredBreathingFrame);
+                } else {
+                    cancelAnimationFrame(this.layeredBreathingFrame);
+                }
                 this.layeredBreathingFrame = null;
             }
+            this._layeredBreathingDriveMode = null;
             this.layeredBreathingStart = 0;
+        }
+
+        remixTick(timestamp = performance.now()) {
+            return Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
         }
 
         motionValue(amplitude, frequency, timestamp, phase = 0) {
             const amp = Number(amplitude) || 0;
-            const freq = Math.abs(Number(frequency) || 0);
+            const freq = Number(frequency) || 0;
             if (!amp || !freq) return 0;
-            const elapsedSeconds = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000);
-            const hz = Math.max(0.05, freq * 10);
-            return Math.sin(elapsedSeconds * Math.PI * 2 * hz + phase) * amp;
+            return Math.sin(this.remixTick(timestamp) * freq + phase) * amp;
+        }
+
+        remixStateMotionParams(stateName = this.state || 'idle') {
+            const settings = this.currentRemixStateSettings();
+            const key = stateName === 'talking' ? 'state_param_mo' : 'state_param_mc';
+            const params = settings && typeof settings[key] === 'object' ? settings[key] : null;
+            return params || {};
+        }
+
+        stateHasModelMotion(stateName = this.state || 'idle') {
+            const settings = this.currentRemixStateSettings();
+            const animation = String(stateName === 'talking' ? settings.current_mo_anim : (settings.current_mc_anim || '')).toLowerCase();
+            if (animation.includes('bouncy') || animation.includes('bounce') || animation.includes('wobble') || animation.includes('float') || animation.includes('squish')) return true;
+            const params = this.remixStateMotionParams(stateName);
+            return (Math.abs(Number(params.xAmp) || 0) > 0.0001 && Math.abs(Number(params.xFrq) || 0) > 0.0001)
+                || (Math.abs(Number(params.yAmp) || 0) > 0.0001 && Math.abs(Number(params.yFrq) || 0) > 0.0001);
+        }
+
+        modelMotionTransform(stateName = this.state || 'idle', timestamp = performance.now()) {
+            if (!this.remixModelMotionState) {
+                this.remixModelMotionState = { x: 0, y: 0, yVel: 0, lastTime: timestamp, lastState: '', oneBounceDone: false };
+            }
+            const state = this.remixModelMotionState;
+            const previousState = state.lastState;
+            if (previousState !== stateName) {
+                state.lastState = stateName;
+                state.oneBounceDone = false;
+            }
+            const dt = Math.max(0.001, Math.min(0.05, (timestamp - (state.lastTime || timestamp)) / 1000 || 1 / 60));
+            state.lastTime = timestamp;
+            const params = this.remixStateMotionParams(stateName);
+            const settings = this.currentRemixStateSettings();
+            const animation = String(stateName === 'talking' ? settings.current_mo_anim : (settings.current_mc_anim || '')).toLowerCase();
+            const gravity = Number(params.bounce_gravity) || 575;
+            const energy = Number(params.bounce_energy) || 250;
+            const targetX = this.motionValue(params.xAmp, params.xFrq, timestamp, 0);
+            const targetY = this.motionValue(params.yAmp, params.yFrq, timestamp, 0);
+
+            if (animation.includes('wobble')) {
+                state.x += (targetX - state.x) * 0.08;
+                state.y += (targetY - state.y) * 0.08;
+                state.yVel = 0;
+            } else if (animation.includes('float')) {
+                state.x += (0 - state.x) * 0.05;
+                state.y += (targetY - state.y) * 0.08;
+                state.yVel = 0;
+            } else if (animation.includes('bouncy')) {
+                if (state.y > -1) state.yVel = -energy;
+                state.yVel = Math.max(-90000000, Math.min(90000000, state.yVel + gravity * dt));
+                state.y = Math.min(0, state.y + state.yVel * dt);
+                state.x += (0 - state.x) * 0.05;
+            } else if (animation.includes('one bounce')) {
+                if (!state.oneBounceDone && state.y > -16) {
+                    state.yVel = -energy;
+                    state.oneBounceDone = true;
+                }
+                state.yVel = Math.max(-90000000, Math.min(90000000, state.yVel + gravity * dt));
+                state.y = Math.min(0, state.y + state.yVel * dt);
+                state.x += (0 - state.x) * 0.05;
+                if (state.y >= -0.01 && state.yVel > 0) {
+                    state.y = 0;
+                    state.yVel = 0;
+                }
+            } else if (animation.includes('squish')) {
+                state.x += (0 - state.x) * 0.05;
+                state.y += (targetY - state.y) * 0.08;
+                state.yVel = 0;
+            } else {
+                state.x += (0 - state.x) * 0.05;
+                state.y += (0 - state.y) * 0.05;
+                state.yVel = 0;
+            }
+            return {
+                x: state.x,
+                y: state.y
+            };
+        }
+
+        updateLayeredPointer(timestamp = performance.now(), delay = 0.1) {
+            const pointer = this.layeredPointer || { x: 0, y: 0, targetX: 0, targetY: 0, active: false, at: 0, lastTime: 0 };
+            if (!this.isMouseTrackingEnabled()) {
+                pointer.targetX = 0;
+                pointer.targetY = 0;
+                pointer.clientX = undefined;
+                pointer.clientY = undefined;
+                pointer.active = false;
+            }
+            const lastTime = Number(pointer.lastTime) || timestamp;
+            const dt = Math.max(0.001, Math.min(0.05, (timestamp - lastTime) / 1000 || 1 / 60));
+            pointer.lastTime = timestamp;
+            const speed = 1 / Math.max(0.025, Number(delay) || 0.1);
+            const follow = 1 - Math.exp(-dt * speed);
+            pointer.x += ((Number(pointer.targetX) || 0) - pointer.x) * follow;
+            pointer.y += ((Number(pointer.targetY) || 0) - pointer.y) * follow;
+            this.layeredPointer = pointer;
+            return pointer;
+        }
+
+        remixPointerMaxPositionRange(layerState) {
+            if (!layerState) return 0;
+            return Math.max(
+                Math.abs(this.remixNumber(layerState, 'pos_x_min', 0)),
+                Math.abs(this.remixNumber(layerState, 'pos_x_max', 0)),
+                Math.abs(this.remixNumber(layerState, 'pos_y_min', 0)),
+                Math.abs(this.remixNumber(layerState, 'pos_y_max', 0))
+            );
+        }
+
+        isRemixExplicitEyeLayer(layerState) {
+            return !!layerState && (Number(layerState.follow_eye || 0) !== 0
+                || Number(layerState.gaze_eye || 0) !== 0
+                || Number(layerState.style_eye || 0) !== 0);
+        }
+
+        isRemixSmallRangeEyeLayer(layerState) {
+            const maxPositionRange = this.remixPointerMaxPositionRange(layerState);
+            return this.remixPositionFollowsMouse(layerState)
+                && maxPositionRange > 0
+                && maxPositionRange <= 6;
+        }
+
+        isRemixBlinkLayer(layerState) {
+            return !!(layerState && (layerState.effective_should_blink ?? layerState.should_blink));
+        }
+
+        remixPointerFollowMultiplier(layerState) {
+            if (this.isRemixExplicitEyeLayer(layerState) || this.isRemixSmallRangeEyeLayer(layerState)) {
+                return REMIX_EYE_POINTER_FOLLOW_MULTIPLIER;
+            }
+            return this.isRemixBlinkLayer(layerState) ? REMIX_BLINK_POINTER_FOLLOW_MULTIPLIER : 1;
+        }
+
+        remixPointerDelay(layerState, delay) {
+            const baseDelay = Math.max(0.025, Number(delay) || 0.1);
+            if (this.isRemixExplicitEyeLayer(layerState) || this.isRemixSmallRangeEyeLayer(layerState)) {
+                return Math.max(0.025, baseDelay * REMIX_EYE_POINTER_DELAY_MULTIPLIER);
+            }
+            if (this.isRemixBlinkLayer(layerState)) {
+                return Math.max(0.025, baseDelay * REMIX_BLINK_POINTER_DELAY_MULTIPLIER);
+            }
+            return baseDelay;
+        }
+
+        remixTargetFollowMultiplier(layerState) {
+            if (this.isRemixExplicitEyeLayer(layerState) || this.isRemixSmallRangeEyeLayer(layerState)) {
+                return REMIX_EYE_TARGET_FOLLOW_MULTIPLIER;
+            }
+            return this.isRemixBlinkLayer(layerState) ? REMIX_BLINK_TARGET_FOLLOW_MULTIPLIER : 1;
+        }
+
+        layeredPointerForLayer(layer, layerState, frame, timestamp = performance.now(), delay = 0.1) {
+            const pointer = this.updateLayeredPointer(timestamp, delay);
+            const clientX = Number(pointer.clientX);
+            const clientY = Number(pointer.clientY);
+            if (!Number.isFinite(clientX) || !Number.isFinite(clientY) || !this.canvasElement) return pointer;
+            const rect = typeof this.canvasElement.getBoundingClientRect === 'function'
+                ? this.canvasElement.getBoundingClientRect()
+                : null;
+            if (!rect || !rect.width || !rect.height) return pointer;
+            const canvasWidth = Math.max(1, Number(this.canvasElement.width) || Number(this.layeredMetadata?.canvas?.width) || 1);
+            const canvasHeight = Math.max(1, Number(this.canvasElement.height) || Number(this.layeredMetadata?.canvas?.height) || 1);
+            const padding = Number(this.layeredCanvasPadding) || 0;
+            const frameWidth = Number(frame?.dw || layerState?.frame_width || layer?.width) || 1;
+            const frameHeight = Number(frame?.dh || layerState?.frame_height || layer?.height) || 1;
+            const baseX = (Number(layerState?.x ?? layer?.x) || 0) + (Number(frame?.legacyOffsetX) || 0) + padding;
+            const baseY = (Number(layerState?.y ?? layer?.y) || 0) + (Number(frame?.legacyOffsetY) || 0) + padding;
+            const layerCenterX = rect.left + ((baseX + frameWidth / 2) / canvasWidth) * rect.width;
+            const layerCenterY = rect.top + ((baseY + frameHeight / 2) / canvasHeight) * rect.height;
+            const followMultiplier = this.remixPointerFollowMultiplier(layerState);
+            const normalizeAxis = (clientValue, centerValue, lowerEdge, upperEdge) => {
+                const diff = clientValue - centerValue;
+                if (Math.abs(diff) < 0.001) return 0;
+                const space = diff >= 0
+                    ? Math.max(1, upperEdge - centerValue)
+                    : Math.max(1, centerValue - lowerEdge);
+                return Math.max(-1, Math.min(1, (diff / space) * followMultiplier));
+            };
+            const rawX = clientX - layerCenterX;
+            const rawY = clientY - layerCenterY;
+            return {
+                ...pointer,
+                rawX,
+                rawY,
+                x: normalizeAxis(clientX, layerCenterX, 0, window.innerWidth || rect.right),
+                y: normalizeAxis(clientY, layerCenterY, 0, window.innerHeight || rect.bottom)
+            };
+        }
+
+        layeredPointerNeedsFrame(timestamp = performance.now()) {
+            if (!this.isMouseTrackingEnabled()) return false;
+            if (!this.hasLayeredPointerTracking()) return false;
+            const pointer = this.layeredPointer || {};
+            const age = Math.max(0, (timestamp - (Number(pointer.at) || timestamp)) / 1000);
+            return !!pointer.active
+                && age < 8
+                && (Math.abs((Number(pointer.targetX) || 0) - (Number(pointer.x) || 0)) > 0.001
+                    || Math.abs((Number(pointer.targetY) || 0) - (Number(pointer.y) || 0)) > 0.001);
+        }
+
+        updateLayeredDragVelocity(dx, dy, timestamp = performance.now()) {
+            if (!this.isLayeredActive()) return;
+            const lastAt = Number(this.layeredDragVelocity?.at) || timestamp;
+            const dt = Math.max(0.008, Math.min(0.08, (timestamp - lastAt) / 1000 || 1 / 60));
+            const invScale = 1 / Math.max(0.1, Number(this.config.scale) || 1);
+            const nextX = Math.max(-1800, Math.min(1800, (Number(dx) || 0) * invScale / dt));
+            const nextY = Math.max(-1800, Math.min(1800, (Number(dy) || 0) * invScale / dt));
+            this.layeredDragVelocity = {
+                x: Number.isFinite(nextX) ? nextX : 0,
+                y: Number.isFinite(nextY) ? nextY : 0,
+                at: timestamp
+            };
+            this.startLayeredAnimationLoop({ preserveTimeline: true });
+        }
+
+        resetLayeredDragVelocity(timestamp = performance.now()) {
+            this.layeredDragVelocity = { x: 0, y: 0, at: timestamp };
+        }
+
+        currentLayeredDragVelocity(timestamp = performance.now()) {
+            const velocity = this.layeredDragVelocity || { x: 0, y: 0, at: 0 };
+            const age = Math.max(0, (timestamp - (Number(velocity.at) || timestamp)) / 1000);
+            const decay = Math.exp(-age * 4.8);
+            return {
+                x: (Number(velocity.x) || 0) * decay,
+                y: (Number(velocity.y) || 0) * decay
+            };
+        }
+
+        layeredPhysicsNeedsFrame(timestamp = performance.now()) {
+            if (this._dragState || this._touchZoomState) return true;
+            const drag = this.currentLayeredDragVelocity(timestamp);
+            if (Math.hypot(drag.x, drag.y) > 1) return true;
+            for (const state of this.layeredPhysicsByLayer.values()) {
+                if (Math.abs(Number(state.x) || 0) > 0.02
+                    || Math.abs(Number(state.y) || 0) > 0.02
+                    || Math.abs(Number(state.rotation) || 0) > 0.0005
+                    || Math.abs(Number(state.stretch) || 0) > 0.0005
+                    || Math.abs((Number(state.scaleX) || 1) - 1) > 0.0005
+                    || Math.abs((Number(state.scaleY) || 1) - 1) > 0.0005) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        layeredPhysicsKey(layer) {
+            return `${layer.sprite_id ?? layer.order ?? 'layer'}:${layer.order ?? 0}`;
+        }
+
+        layeredPhysicsDepth(layer, layerState) {
+            const chain = Array.isArray(layerState?.parent_chain)
+                ? layerState.parent_chain
+                : (Array.isArray(layer?.parent_chain) ? layer.parent_chain : []);
+            return Math.max(0, chain.length - 1);
+        }
+
+        layeredPhysicsRelativePoint(layer, layerState, frame) {
+            const canvas = this.layeredMetadata?.canvas || {};
+            const canvasWidth = Math.max(1, Number(canvas.width) || this.canvasElement?.width || 1);
+            const canvasHeight = Math.max(1, Number(canvas.height) || this.canvasElement?.height || 1);
+            const width = Number(frame?.dw || layerState?.frame_width || layer?.width) || 1;
+            const height = Number(frame?.dh || layerState?.frame_height || layer?.height) || 1;
+            const x = (Number(layerState?.x ?? layer?.x) || 0) + width / 2;
+            const y = (Number(layerState?.y ?? layer?.y) || 0) + height / 2;
+            return {
+                x: Math.max(-1, Math.min(1, (x - canvasWidth / 2) / (canvasWidth / 2))),
+                y: Math.max(-1, Math.min(1, (y - canvasHeight / 2) / (canvasHeight / 2)))
+            };
+        }
+
+        remixLayerOscillationRotation(layerState, timestamp = performance.now(), phase = 0) {
+            if (!this.stateHasRemixLayerOscillation(layerState)) return 0;
+            const rotFreq = this.remixNumber(layerState, 'rot_frq', 0);
+            const rotationDegrees = this.motionValue(this.remixNumber(layerState, 'rdragStr', 0), rotFreq, timestamp, phase);
+            const autoRotation = this.remixBool(layerState, 'should_rotate')
+                ? this.remixTick(timestamp) * this.remixNumber(layerState, 'should_rot_speed', 0) * 60
+                : 0;
+            return (rotationDegrees + autoRotation) * Math.PI / 180;
+        }
+
+        moveToward(current, target, delta) {
+            const step = Math.abs(Number(delta) || 0);
+            if (Math.abs(target - current) <= step) return target;
+            return current + Math.sign(target - current) * step;
+        }
+
+        updateAnimateToMouseFrame(layerState, frame, pointer, physicsState) {
+            if (!this.stateHasAnimateToMouseSheet(layerState) || !frame || !pointer) return null;
+            const hframes = Math.max(1, Math.floor(Number(frame.hframes) || Number(layerState.hframes) || 1));
+            const vframes = Math.max(1, Math.floor(Number(frame.vframes) || Number(layerState.vframes) || 1));
+            const rangeX = Math.abs(this.remixNumber(layerState, 'pos_x_max', 0));
+            const rangeY = Math.abs(this.remixNumber(layerState, 'pos_y_max', 0));
+            // One-dimensional sheets are valid: stateHasAnimateToMouseSheet()
+            // enables sheets with only hframes > 1 or only vframes > 1 (e.g. a
+            // horizontal look sheet with just pos_x_max). Bail only when neither
+            // axis has a follow range; an axis with no range stays on frame 0.
+            if (!rangeX && !rangeY) return null;
+            const rawX = Number(pointer.rawX) || 0;
+            const rawY = Number(pointer.rawY) || 0;
+            const dist = Math.hypot(rawX, rawY);
+            const dirX = dist > 0.0001 ? rawX / dist : 0;
+            const dirY = dist > 0.0001 ? rawY / dist : 0;
+            const normX = rangeX ? ((dirX * Math.min(dist, rangeX)) / (2 * rangeX)) + 0.5 : 0;
+            const normY = rangeY ? ((dirY * Math.min(dist, rangeY)) / (2 * rangeY)) + 0.5 : 0;
+            const targetFrameX = Math.max(0, Math.min(hframes - 1, Math.floor(normX * hframes)));
+            const targetFrameY = Math.max(0, Math.min(vframes - 1, Math.floor(normY * vframes)));
+            const speed = Math.max(0, this.remixNumber(layerState, 'animate_to_mouse_speed', 1));
+            physicsState.frameH = this.moveToward(Number(physicsState.frameH ?? targetFrameX), targetFrameX, speed);
+            physicsState.frameV = this.moveToward(Number(physicsState.frameV ?? targetFrameY), targetFrameY, speed);
+            return Math.max(0, Math.min(frame.frames - 1, Math.floor(physicsState.frameV) * hframes + Math.floor(physicsState.frameH)));
+        }
+
+        layeredPhysicsTransform(layer, layerState, timestamp = performance.now(), frame = null) {
+            const hasPhysics = this.stateHasRemixPhysics(layerState);
+            const hasMouseSheet = this.stateHasAnimateToMouseSheet(layerState);
+            if (!hasPhysics && !hasMouseSheet) {
+                return { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, meshX: 0, meshY: 0, frame: null };
+            }
+            const key = this.layeredPhysicsKey(layer);
+            let state = this.layeredPhysicsByLayer.get(key);
+            if (!state) {
+                state = {
+                    x: 0,
+                    y: 0,
+                    targetX: 0,
+                    targetY: 0,
+                    velocityDistX: 0,
+                    velocityDistY: 0,
+                    rotation: 0,
+                    stretch: 0,
+                    scaleX: 1,
+                    scaleY: 1,
+                    frameH: null,
+                    frameV: null,
+                    lastMouseX: null,
+                    lastMouseY: null,
+                    lastTime: timestamp
+                };
+                this.layeredPhysicsByLayer.set(key, state);
+            }
+
+            const dt = Math.max(0.001, Math.min(0.05, (timestamp - (state.lastTime || timestamp)) / 1000 || 1 / 60));
+            state.lastTime = timestamp;
+
+            const drag = this.currentLayeredDragVelocity(timestamp);
+            const dragSpeed = Math.max(0, this.remixNumber(layerState, 'dragSpeed', 0));
+            const rotationStrength = this.remixNumber(layerState, 'rdragStr', 0);
+            const stretchAmount = this.remixNumber(layerState, 'stretchAmount', 0);
+            const physEff = this.remixNumber(layerState, 'phys_eff', 25);
+            const mouseDelay = this.remixNumber(layerState, 'mouse_delay', 0.1);
+            const pointerDelay = this.remixPointerDelay(layerState, mouseDelay);
+            const targetFollowMultiplier = this.remixTargetFollowMultiplier(layerState);
+            const pointer = this.stateHasPointerTracking(layerState)
+                ? this.layeredPointerForLayer(layer, layerState, frame, timestamp, pointerDelay)
+                : { x: 0, y: 0 };
+            const followsMouseVelocity = this.remixBool(layerState, 'follow_mouse_velocity');
+            let velocity = { mouseDeltaX: 0, mouseDeltaY: 0, distanceX: 0, distanceY: 0, distanceLength: 0 };
+            const rawX = Number(pointer.rawX);
+            const rawY = Number(pointer.rawY);
+            if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
+                const lastMouseX = state.lastMouseX !== null && Number.isFinite(Number(state.lastMouseX)) ? Number(state.lastMouseX) : rawX;
+                const lastMouseY = state.lastMouseY !== null && Number.isFinite(Number(state.lastMouseY)) ? Number(state.lastMouseY) : rawY;
+                const mouseDeltaX = lastMouseX - rawX;
+                const mouseDeltaY = lastMouseY - rawY;
+                const distanceX = Math.tanh(mouseDeltaX);
+                const distanceY = Math.tanh(mouseDeltaY);
+                const distanceLength = Math.hypot(distanceX, distanceY);
+                const velocityTargetX = -Math.sign(mouseDeltaX) * distanceLength * this.remixNumber(layerState, 'pos_x_max', 0);
+                const velocityTargetY = -Math.sign(mouseDeltaY) * distanceLength * this.remixNumber(layerState, 'pos_y_max', 0);
+                state.velocityDistX += (velocityTargetX - state.velocityDistX) * 0.5;
+                state.velocityDistY += (velocityTargetY - state.velocityDistY) * 0.5;
+                state.lastMouseX = rawX;
+                state.lastMouseY = rawY;
+                velocity = { mouseDeltaX, mouseDeltaY, distanceX, distanceY, distanceLength };
+            }
+
+            let desiredX = 0;
+            let desiredY = 0;
+            let followRotation = 0;
+            let followScaleX = 1;
+            let followScaleY = 1;
+            const follow = dragSpeed > 0
+                ? Math.max(0, Math.min(1, 1 / dragSpeed))
+                : Math.max(0, Math.min(1, mouseDelay * targetFollowMultiplier * dt * 60));
+
+            if (this.remixPositionFollowsMouse(layerState)) {
+                if (followsMouseVelocity) {
+                    desiredX = state.velocityDistX;
+                    desiredY = state.velocityDistY;
+                    if (this.remixBool(layerState, 'snap_pos')) {
+                        if (Math.abs(velocity.distanceX) > 0.5) {
+                            state.targetX += (desiredX - state.targetX) * follow;
+                        }
+                        if (Math.abs(velocity.distanceY) > 0.5) {
+                            state.targetY += (desiredY - state.targetY) * follow;
+                        }
+                    } else {
+                        state.targetX += (desiredX - state.targetX) * follow;
+                        state.targetY += (desiredY - state.targetY) * follow;
+                    }
+                } else {
+                    const pointerX = this.remixBool(layerState, 'pos_invert_x') ? -pointer.x : pointer.x;
+                    const pointerY = this.remixBool(layerState, 'pos_invert_y') ? -pointer.y : pointer.y;
+                    const sourceX = this.remixBool(layerState, 'pos_swap_x') ? pointerY : pointerX;
+                    const sourceY = this.remixBool(layerState, 'pos_swap_y') ? pointerX : pointerY;
+                    desiredX = sourceX < 0
+                        ? Math.abs(sourceX) * this.remixNumber(layerState, 'pos_x_min', 0)
+                        : sourceX * this.remixNumber(layerState, 'pos_x_max', 0);
+                    desiredY = sourceY < 0
+                        ? Math.abs(sourceY) * this.remixNumber(layerState, 'pos_y_min', 0)
+                        : sourceY * this.remixNumber(layerState, 'pos_y_max', 0);
+                    state.targetX += (desiredX - state.targetX) * follow;
+                    state.targetY += (desiredY - state.targetY) * follow;
+                }
+            } else {
+                state.targetX += (0 - state.targetX) * follow;
+                state.targetY += (0 - state.targetY) * follow;
+            }
+
+            if (this.remixRotationFollowsMouse(layerState)) {
+                if (followsMouseVelocity) {
+                    const velocityDirection = -velocity.mouseDeltaX;
+                    if (Math.abs(velocityDirection) > 0.0001) {
+                        const minRot = this.remixNumber(layerState, 'rot_min', 0);
+                        const maxRot = this.remixNumber(layerState, 'rot_max', 0);
+                        const limitDeg = velocityDirection >= 0 ? maxRot : minRot;
+                        followRotation = Math.abs(limitDeg) * Math.sign(limitDeg) * Math.PI / 180;
+                    }
+                } else {
+                    const rotationPointer = this.remixBool(layerState, 'rot_invert_x') ? -pointer.x : pointer.x;
+                    const minRot = this.remixNumber(layerState, 'rot_min', 0);
+                    const maxRot = this.remixNumber(layerState, 'rot_max', 0);
+                    const limitDeg = rotationPointer >= 0 ? maxRot : minRot;
+                    const targetDeg = Math.abs(rotationPointer) * Math.abs(limitDeg) * Math.sign(limitDeg);
+                    followRotation = targetDeg * Math.PI / 180;
+                }
+            }
+
+            if (this.remixScaleFollowsMouse(layerState)) {
+                if (followsMouseVelocity && Math.abs(velocity.mouseDeltaX) + Math.abs(velocity.mouseDeltaY) > 0.0001) {
+                    const len = Math.max(0.0001, Math.hypot(velocity.mouseDeltaX, velocity.mouseDeltaY));
+                    const sourceX = (velocity.mouseDeltaX / len) / 2;
+                    const sourceY = (velocity.mouseDeltaY / len) / 2;
+                    const limitX = sourceX >= 0
+                        ? this.remixNumber(layerState, 'scale_x_max', 0)
+                        : this.remixNumber(layerState, 'scale_x_min', 0);
+                    const limitY = sourceY >= 0
+                        ? this.remixNumber(layerState, 'scale_y_max', 0)
+                        : this.remixNumber(layerState, 'scale_y_min', 0);
+                    followScaleX = 1 + Math.abs(sourceX) * limitX;
+                    followScaleY = 1 + Math.abs(sourceY) * limitY;
+                } else if (!followsMouseVelocity) {
+                    const scalePointerX = this.remixBool(layerState, 'scale_invert_x') ? -pointer.x : pointer.x;
+                    const scalePointerY = this.remixBool(layerState, 'scale_invert_y') ? -pointer.y : pointer.y;
+                    const sourceX = this.remixBool(layerState, 'scale_swap_x') ? scalePointerY : scalePointerX;
+                    const sourceY = this.remixBool(layerState, 'scale_swap_y') ? scalePointerX : scalePointerY;
+                    const limitX = sourceX >= 0
+                        ? this.remixNumber(layerState, 'scale_x_max', 0)
+                        : this.remixNumber(layerState, 'scale_x_min', 0);
+                    const limitY = sourceY >= 0
+                        ? this.remixNumber(layerState, 'scale_y_max', 0)
+                        : this.remixNumber(layerState, 'scale_y_min', 0);
+                    followScaleX = 1 + Math.abs(sourceX) * limitX;
+                    followScaleY = 1 + Math.abs(sourceY) * limitY;
+                }
+            }
+
+            let targetX = this.remixValue(layerState, 'animate_to_mouse_track_pos', true) === false ? 0 : state.targetX;
+            let targetY = this.remixValue(layerState, 'animate_to_mouse_track_pos', true) === false ? 0 : state.targetY;
+            targetX -= drag.x * dragSpeed * 0.011;
+            targetY -= drag.y * dragSpeed * 0.011;
+            if (this.layeredRuntimeFeatureEnabled('physics_v2') && this.remixBool(layerState, 'drag_snap')) {
+                const pointerActive = !!this.layeredPointer?.active;
+                if (!pointerActive && Math.hypot(drag.x, drag.y) < 1) {
+                    targetX = 0;
+                    targetY = 0;
+                }
+            }
+            const previousX = state.x;
+            const previousY = state.y;
+            state.x += (targetX - state.x) * follow;
+            state.y += (targetY - state.y) * follow;
+
+            const depth = this.layeredPhysicsDepth(layer, layerState);
+            const depthFactor = Math.min(2.4, 1 + depth * 0.18);
+            const dragLength = ((targetX - previousX) + (targetY - previousY)) * depthFactor;
+            const stretchVelocity = dragLength * stretchAmount * 0.01 * (physEff / 200);
+            const targetStretch = Math.max(-0.35, Math.min(0.35, stretchVelocity));
+            const physicsV2 = this.layeredRuntimeFeatureEnabled('physics_v2');
+            const minLimit = this.remixNumber(layerState, physicsV2 ? 'chain_rot_min' : 'rLimitMin', this.remixNumber(layerState, 'rLimitMin', -180)) * Math.PI / 180;
+            const maxLimit = this.remixNumber(layerState, physicsV2 ? 'chain_rot_max' : 'rLimitMax', this.remixNumber(layerState, 'rLimitMax', 180)) * Math.PI / 180;
+            const chainSoftness = physicsV2
+                ? Math.max(0.08, Math.min(1, this.remixNumber(layerState, 'chain_softness', 75) / 100))
+                : 1;
+            const dragRotationDegrees = dragLength * rotationStrength * (physEff / 200);
+            const clampedDragRotation = Math.max(Math.min(minLimit, maxLimit), Math.min(Math.max(minLimit, maxLimit), dragRotationDegrees * Math.PI / 180));
+            const targetRotation = followRotation + clampedDragRotation * chainSoftness;
+
+            state.rotation += (targetRotation - state.rotation) * 0.15;
+            state.stretch += (targetStretch - state.stretch) * 0.15;
+            state.scaleX += (followScaleX - state.scaleX) * Math.max(0, Math.min(1, mouseDelay * dt * 60));
+            state.scaleY += (followScaleY - state.scaleY) * Math.max(0, Math.min(1, mouseDelay * dt * 60));
+            const animatedFrame = this.updateAnimateToMouseFrame(layerState, frame, pointer, state);
+
+            return {
+                x: state.x,
+                y: state.y,
+                rotation: state.rotation,
+                scaleX: Math.max(0.1, state.scaleX * (1 - state.stretch)),
+                scaleY: Math.max(0.1, state.scaleY * (1 + state.stretch)),
+                meshX: state.x * (this.remixNumber(layerState, 'mesh_phys_x', 0) / 100),
+                meshY: state.y * (this.remixNumber(layerState, 'mesh_phys_y', 0) / 100),
+                frame: animatedFrame
+            };
+        }
+
+        plusLayerPhysicsTransform(layer, layerState, timestamp = performance.now()) {
+            if (!this.plusStateHasPhysics(layerState)) {
+                return { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1, meshX: 0, meshY: 0, frame: null };
+            }
+            const key = `plus:${this.layeredPhysicsKey(layer)}`;
+            let state = this.layeredPhysicsByLayer.get(key);
+            if (!state) {
+                state = {
+                    draggerX: 0,
+                    draggerY: 0,
+                    previousDraggerY: 0,
+                    rotation: 0,
+                    scaleX: 1,
+                    scaleY: 1,
+                    lastTime: timestamp
+                };
+                this.layeredPhysicsByLayer.set(key, state);
+            }
+
+            const tick = Math.max(0, (timestamp - (this.layeredAnimationStart || timestamp)) / 1000 * 60);
+            const wobbleX = Math.sin(tick * (Number(layerState.xFrq) || 0)) * (Number(layerState.xAmp) || 0);
+            const wobbleY = Math.sin(tick * (Number(layerState.yFrq) || 0)) * (Number(layerState.yAmp) || 0);
+            const dragSpeed = Math.max(0, Number(layerState.dragSpeed) || 0);
+            const follow = dragSpeed > 0 ? Math.max(0, Math.min(1, 1 / dragSpeed)) : 1;
+            state.previousDraggerY = state.draggerY;
+            state.draggerX += (wobbleX - state.draggerX) * follow;
+            state.draggerY += (wobbleY - state.draggerY) * follow;
+
+            const length = state.previousDraggerY - state.draggerY;
+            const minLimit = Number(layerState.rLimitMin);
+            const maxLimit = Number(layerState.rLimitMax);
+            const minDeg = Number.isFinite(minLimit) ? minLimit : -180;
+            const maxDeg = Number.isFinite(maxLimit) ? maxLimit : 180;
+            const rawRot = length * (Number(layerState.rdragStr) || 0);
+            const clampedRot = Math.max(Math.min(minDeg, maxDeg), Math.min(Math.max(minDeg, maxDeg), rawRot));
+            const targetRotation = clampedRot * Math.PI / 180;
+            let deltaRotation = targetRotation - state.rotation;
+            while (deltaRotation > Math.PI) deltaRotation -= Math.PI * 2;
+            while (deltaRotation < -Math.PI) deltaRotation += Math.PI * 2;
+            state.rotation += deltaRotation * 0.25;
+
+            const yvel = Math.max(-0.35, Math.min(0.35, length * (Number(layerState.stretchAmount) || 0) * 0.01));
+            state.scaleX += ((1 - yvel) - state.scaleX) * 0.5;
+            state.scaleY += ((1 + yvel) - state.scaleY) * 0.5;
+
+            return {
+                x: state.draggerX,
+                y: state.draggerY,
+                rotation: state.rotation,
+                scaleX: Math.max(0.1, state.scaleX),
+                scaleY: Math.max(0.1, state.scaleY),
+                meshX: 0,
+                meshY: 0,
+                frame: null
+            };
+        }
+
+        currentLayerMesh(layer, layerState) {
+            if (layerState && layerState.mesh && typeof layerState.mesh === 'object') return layerState.mesh;
+            if (layer && layer.mesh && typeof layer.mesh === 'object') return layer.mesh;
+            return null;
+        }
+
+        layerMeshRuntimeEnabled(layer, layerState) {
+            const mesh = this.currentLayerMesh(layer, layerState);
+            return this.layeredRuntimeFeatureEnabled('mesh_deformation')
+                && !!mesh
+                && mesh.valid === true
+                && Array.isArray(mesh.vertices)
+                && Array.isArray(mesh.uvs)
+                && Array.isArray(mesh.triangles)
+                && mesh.vertices.length >= 3
+                && mesh.uvs.length === mesh.vertices.length
+                && mesh.triangles.length > 0;
+        }
+
+        meshPointToFrame(point, frame) {
+            const x = Number(point?.[0]);
+            const y = Number(point?.[1]);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            const normalized = Math.abs(x) <= 1.5 && Math.abs(y) <= 1.5;
+            return {
+                x: (normalized ? x * frame.dw : x) - frame.dw / 2,
+                y: (normalized ? y * frame.dh : y) - frame.dh / 2
+            };
+        }
+
+        meshUvToSource(point, frame) {
+            const x = Number(point?.[0]);
+            const y = Number(point?.[1]);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+            const normalized = Math.abs(x) <= 1.5 && Math.abs(y) <= 1.5;
+            return {
+                x: frame.sx + (normalized ? x * frame.sw : x),
+                y: frame.sy + (normalized ? y * frame.sh : y)
+            };
+        }
+
+        meshTipPoint(layerState, frame) {
+            const rawTip = this.remixValue(layerState, 'tip_point', null);
+            const point = Array.isArray(rawTip) ? rawTip : [0.5, 0.5];
+            const converted = this.meshPointToFrame(point, frame);
+            return converted || { x: 0, y: -frame.dh / 2 };
+        }
+
+        deformedMeshDestinations(mesh, layerState, frame, physics) {
+            const tip = this.meshTipPoint(layerState, frame);
+            const maxDistance = Math.max(1, Math.hypot(frame.dw, frame.dh));
+            const meshX = Number(physics?.meshX) || 0;
+            const meshY = Number(physics?.meshY) || 0;
+            const rotation = (Number(physics?.rotation) || 0) * 0.35;
+            return mesh.vertices.map((point) => {
+                const base = this.meshPointToFrame(point, frame);
+                if (!base) return null;
+                const dx = base.x - tip.x;
+                const dy = base.y - tip.y;
+                const influence = Math.max(0, Math.min(1, Math.hypot(dx, dy) / maxDistance));
+                const angle = rotation * influence;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                return {
+                    x: tip.x + dx * cos - dy * sin + meshX * influence * REMIX_MESH_DEFORM_STRENGTH,
+                    y: tip.y + dx * sin + dy * cos + meshY * influence * REMIX_MESH_DEFORM_STRENGTH
+                };
+            });
+        }
+
+        drawAffineMeshTriangle(ctx, img, source, dest) {
+            const denom = source[0].x * (source[1].y - source[2].y)
+                + source[1].x * (source[2].y - source[0].y)
+                + source[2].x * (source[0].y - source[1].y);
+            if (Math.abs(denom) < 0.00001) return false;
+            const a = (dest[0].x * (source[1].y - source[2].y)
+                + dest[1].x * (source[2].y - source[0].y)
+                + dest[2].x * (source[0].y - source[1].y)) / denom;
+            const b = (dest[0].y * (source[1].y - source[2].y)
+                + dest[1].y * (source[2].y - source[0].y)
+                + dest[2].y * (source[0].y - source[1].y)) / denom;
+            const c = (dest[0].x * (source[2].x - source[1].x)
+                + dest[1].x * (source[0].x - source[2].x)
+                + dest[2].x * (source[1].x - source[0].x)) / denom;
+            const d = (dest[0].y * (source[2].x - source[1].x)
+                + dest[1].y * (source[0].x - source[2].x)
+                + dest[2].y * (source[1].x - source[0].x)) / denom;
+            const e = (dest[0].x * (source[1].x * source[2].y - source[2].x * source[1].y)
+                + dest[1].x * (source[2].x * source[0].y - source[0].x * source[2].y)
+                + dest[2].x * (source[0].x * source[1].y - source[1].x * source[0].y)) / denom;
+            const f = (dest[0].y * (source[1].x * source[2].y - source[2].x * source[1].y)
+                + dest[1].y * (source[2].x * source[0].y - source[0].x * source[2].y)
+                + dest[2].y * (source[0].x * source[1].y - source[1].x * source[0].y)) / denom;
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(dest[0].x, dest[0].y);
+            ctx.lineTo(dest[1].x, dest[1].y);
+            ctx.lineTo(dest[2].x, dest[2].y);
+            ctx.closePath();
+            ctx.clip();
+            ctx.transform(a, b, c, d, e, f);
+            ctx.drawImage(img, 0, 0);
+            ctx.restore();
+            return true;
+        }
+
+        drawLayerMesh(ctx, img, layer, layerState, frame, physics) {
+            const mesh = this.currentLayerMesh(layer, layerState);
+            if (!mesh || !this.layerMeshRuntimeEnabled(layer, layerState)) return false;
+            const destinations = this.deformedMeshDestinations(mesh, layerState, frame, physics);
+            let drawn = 0;
+            for (const triangle of mesh.triangles) {
+                if (!Array.isArray(triangle) || triangle.length < 3) continue;
+                const i0 = Number(triangle[0]);
+                const i1 = Number(triangle[1]);
+                const i2 = Number(triangle[2]);
+                const dest = [destinations[i0], destinations[i1], destinations[i2]];
+                const source = [
+                    this.meshUvToSource(mesh.uvs[i0], frame),
+                    this.meshUvToSource(mesh.uvs[i1], frame),
+                    this.meshUvToSource(mesh.uvs[i2], frame)
+                ];
+                if (dest.some((point) => !point) || source.some((point) => !point)) continue;
+                if (this.drawAffineMeshTriangle(ctx, img, source, dest)) drawn += 1;
+            }
+            return drawn > 0;
+        }
+
+        plusLayerSort(a, b) {
+            const aState = this.layerStateForCurrentIndex(a);
+            const bState = this.layerStateForCurrentIndex(b);
+            return (Number(aState.z_index ?? a.zindex ?? 0) - Number(bState.z_index ?? b.zindex ?? 0))
+                || (Number(a.order || 0) - Number(b.order || 0));
+        }
+
+        plusLayerParentId(layer) {
+            const parentId = layer?.parent_id ?? layer?.parentId;
+            return parentId === undefined || parentId === null || String(parentId).trim() === ''
+                ? ''
+                : String(parentId);
+        }
+
+        plusLayerTree(layers, stateName) {
+            const allIds = new Set();
+            layers.forEach((layer) => this.layerIdentityKeys(layer).forEach((id) => allIds.add(id)));
+            const childrenByParent = new Map();
+            const roots = [];
+            layers
+                .filter((layer) => this.shouldRenderLayer(layer, stateName))
+                .forEach((layer) => {
+                    const parentId = this.plusLayerParentId(layer);
+                    if (parentId && allIds.has(parentId)) {
+                        if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+                        childrenByParent.get(parentId).push(layer);
+                    } else {
+                        roots.push(layer);
+                    }
+                });
+            roots.sort((a, b) => this.plusLayerSort(a, b));
+            childrenByParent.forEach((items) => items.sort((a, b) => this.plusLayerSort(a, b)));
+            return { roots, childrenByParent };
+        }
+
+        plusVector(value, fallbackX = 0, fallbackY = 0) {
+            if (!Array.isArray(value) || value.length < 2) return [fallbackX, fallbackY];
+            const x = Number(value[0]);
+            const y = Number(value[1]);
+            return [Number.isFinite(x) ? x : fallbackX, Number.isFinite(y) ? y : fallbackY];
+        }
+
+        plusLayerTransform(layer, layerState, drawFrame, isRoot = false) {
+            const fallbackX = (Number(layerState.x ?? layer.x) || 0) + drawFrame.dw / 2;
+            const fallbackY = (Number(layerState.y ?? layer.y) || 0) + drawFrame.dh / 2;
+            const node = isRoot
+                ? this.plusVector(layerState.node_origin || layer.node_origin, fallbackX, fallbackY)
+                : this.plusVector(layerState.local_position || layer.local_position || layerState.position, 0, 0);
+            const drawOffset = this.plusVector(
+                layerState.draw_offset || layer.draw_offset,
+                -drawFrame.dw / 2,
+                -drawFrame.dh / 2
+            );
+            return {
+                nodeX: node[0],
+                nodeY: node[1],
+                drawX: drawOffset[0] + drawFrame.legacyOffsetX,
+                drawY: drawOffset[1] + drawFrame.legacyOffsetY
+            };
+        }
+
+        drawPlusLayerTree(ctx, layers, stateName, timestamp = performance.now()) {
+            const modelMotion = this.modelMotionTransform(stateName, timestamp);
+            const canvasPadding = Number(this.layeredCanvasPadding) || 0;
+            const tree = this.plusLayerTree(layers, stateName);
+            tree.roots.forEach((layer) => {
+                this.drawPlusLayerNode(ctx, layer, tree.childrenByParent, stateName, timestamp, modelMotion, canvasPadding, true, new Set());
+            });
+            return true;
+        }
+
+        drawPlusLayerNode(ctx, layer, childrenByParent, stateName, timestamp, modelMotion, canvasPadding, isRoot, visited) {
+            const layerId = this.primaryLayerId(layer);
+            if (!layerId || visited.has(layerId) || visited.size > 64) return;
+            visited.add(layerId);
+            const img = this.layeredImages.get(layer._imageIndex);
+            const children = childrenByParent.get(layerId) || [];
+            if (!img) {
+                children.forEach((child) => this.drawPlusLayerNode(ctx, child, childrenByParent, stateName, timestamp, modelMotion, canvasPadding, false, visited));
+                visited.delete(layerId);
+                return;
+            }
+            const layerState = this.layerStateForCurrentIndex(layer);
+            const frame = this.stateFrameInfo(layer, layerState, img, timestamp);
+            const physics = this.plusLayerPhysicsTransform(layer, layerState, timestamp);
+            const drawFrame = physics.frame === null || physics.frame === undefined
+                ? frame
+                : this.stateFrameInfo(layer, layerState, img, timestamp, physics.frame);
+            const transform = this.plusLayerTransform(layer, layerState, drawFrame, isRoot);
+            const layerModelMotion = isRoot && this.remixIgnoresModelBounce(layerState) ? { x: 0, y: 0 } : modelMotion;
+            const rootX = isRoot ? canvasPadding + layerModelMotion.x : 0;
+            const rootY = isRoot ? canvasPadding + layerModelMotion.y : 0;
+            const rawScale = Array.isArray(layerState.scale) ? layerState.scale : [1, 1];
+            const baseScale = Array.isArray(layer.base_scale) ? layer.base_scale : [1, 1];
+            const baseScaleX = Number(baseScale[0]) || 1;
+            const baseScaleY = Number(baseScale[1]) || 1;
+            const relativeFlipX = !!layerState.flip_sprite_h !== !!layer.base_flip_h;
+            const relativeFlipY = !!layerState.flip_sprite_v !== !!layer.base_flip_v;
+            const scaleX = ((Number(rawScale[0]) || 1) / baseScaleX) * (relativeFlipX ? -1 : 1) * physics.scaleX;
+            const scaleY = ((Number(rawScale[1]) || 1) / baseScaleY) * (relativeFlipY ? -1 : 1) * physics.scaleY;
+            const rotation = (Number(layerState.rotation) || 0) + physics.rotation;
+
+            ctx.save();
+            ctx.translate(rootX + transform.nodeX + physics.x, rootY + transform.nodeY + physics.y);
+            if (rotation) ctx.rotate(rotation);
+            ctx.scale(scaleX, scaleY);
+            ctx.drawImage(
+                img,
+                drawFrame.sx,
+                drawFrame.sy,
+                drawFrame.sw,
+                drawFrame.sh,
+                transform.drawX,
+                transform.drawY,
+                drawFrame.dw,
+                drawFrame.dh
+            );
+            if (this.layeredRuntimeFeatureEnabled('clip_children_rect') && !!layerState.clipped) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(transform.drawX, transform.drawY, drawFrame.dw, drawFrame.dh);
+                ctx.clip();
+                children.forEach((child) => this.drawPlusLayerNode(ctx, child, childrenByParent, stateName, timestamp, modelMotion, canvasPadding, false, visited));
+                ctx.restore();
+            } else {
+                children.forEach((child) => this.drawPlusLayerNode(ctx, child, childrenByParent, stateName, timestamp, modelMotion, canvasPadding, false, visited));
+            }
+            ctx.restore();
+            visited.delete(layerId);
         }
 
         layerDrawZIndex(layer, layerState = null) {
@@ -919,6 +2354,13 @@
                 || (Number(a.order || 0) - Number(b.order || 0));
         }
 
+        compareLayerRenderOrder(a, b, stateName) {
+            const aState = this.layerStateForRender(a, stateName);
+            const bState = this.layerStateForRender(b, stateName);
+            return (this.layerDrawZIndex(a, aState) - this.layerDrawZIndex(b, bState))
+                || (Number(a.order || 0) - Number(b.order || 0));
+        }
+
         drawLayeredState(stateName = this.state || 'idle', timestamp = performance.now()) {
             if (!this.isLayeredActive() || !this.canvasElement) return false;
             const canvas = this.canvasElement;
@@ -926,44 +2368,66 @@
             if (!ctx) return false;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
+            if (this.isLayeredPlusModel()) {
+                return this.drawPlusLayerTree(ctx, layers, stateName, timestamp);
+            }
+            const modelMotion = this.modelMotionTransform(stateName, timestamp);
             const layerMotionEnabled = this.layeredRuntimeFeatureEnabled('layer_motion');
+            const canvasPadding = Number(this.layeredCanvasPadding) || 0;
             layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => this.compareLayerDrawOrder(a, b))
+                .sort((a, b) => this.compareLayerRenderOrder(a, b, stateName))
                 .forEach((layer) => {
                     const img = this.layeredImages.get(layer._imageIndex);
                     if (!img) return;
-                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const layerState = this.layerStateForRender(layer, stateName);
                     const frame = this.stateFrameInfo(layer, layerState, img, timestamp);
-                    const baseX = (Number(layerState.x ?? layer.x) || 0) + frame.legacyOffsetX;
-                    const baseY = (Number(layerState.y ?? layer.y) || 0) + frame.legacyOffsetY;
-                    const x = baseX + (layerMotionEnabled ? this.motionValue(layerState.xAmp, layerState.xFrq, timestamp, Number(layer.order || 0) * 0.17) : 0);
-                    const y = baseY + (layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq, timestamp, Number(layer.order || 0) * 0.23) : 0);
-                    const wiggleDegrees = layerMotionEnabled ? this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq, timestamp, Number(layer.order || 0) * 0.11) : 0;
-                    const rotation = (Number(layerState.rotation) || 0) + wiggleDegrees * Math.PI / 180;
+                    const physics = this.layeredPhysicsTransform(layer, layerState, timestamp, frame);
+                    const drawFrame = physics.frame === null || physics.frame === undefined
+                        ? frame
+                        : this.stateFrameInfo(layer, layerState, img, timestamp, physics.frame);
+                    const baseX = (Number(layerState.x ?? layer.x) || 0) + drawFrame.legacyOffsetX + canvasPadding;
+                    const baseY = (Number(layerState.y ?? layer.y) || 0) + drawFrame.legacyOffsetY + canvasPadding;
+                    const layerModelMotion = this.remixIgnoresModelBounce(layerState) ? { x: 0, y: 0 } : modelMotion;
+                    const x = baseX
+                        + layerModelMotion.x
+                        + (layerMotionEnabled ? this.motionValue(layerState.xAmp, layerState.xFrq, timestamp, Number(layer.order || 0) * 0.17) : 0)
+                        + physics.x;
+                    const y = baseY
+                        + layerModelMotion.y
+                        + (layerMotionEnabled ? this.motionValue(layerState.yAmp, layerState.yFrq, timestamp, Number(layer.order || 0) * 0.23) : 0)
+                        + physics.y;
+                    const wiggleDegrees = layerMotionEnabled
+                        ? this.motionValue(layerState.wiggle_amp, layerState.wiggle_freq || layerState.rot_frq, timestamp, Number(layer.order || 0) * 0.11)
+                        : 0;
+                    const remixRotation = this.remixLayerOscillationRotation(layerState, timestamp, Number(layer.order || 0) * 0.13);
+                    const rotation = (Number(layerState.rotation) || 0) + wiggleDegrees * Math.PI / 180 + remixRotation + physics.rotation;
                     const rawScale = Array.isArray(layerState.scale) ? layerState.scale : [1, 1];
                     const baseScale = Array.isArray(layer.base_scale) ? layer.base_scale : [1, 1];
                     const baseScaleX = Number(baseScale[0]) || 1;
                     const baseScaleY = Number(baseScale[1]) || 1;
                     const relativeFlipX = !!layerState.flip_sprite_h !== !!layer.base_flip_h;
                     const relativeFlipY = !!layerState.flip_sprite_v !== !!layer.base_flip_v;
-                    const scaleX = ((Number(rawScale[0]) || 1) / baseScaleX) * (relativeFlipX ? -1 : 1);
-                    const scaleY = ((Number(rawScale[1]) || 1) / baseScaleY) * (relativeFlipY ? -1 : 1);
+                    const scaleX = ((Number(rawScale[0]) || 1) / baseScaleX) * (relativeFlipX ? -1 : 1) * physics.scaleX;
+                    const scaleY = ((Number(rawScale[1]) || 1) / baseScaleY) * (relativeFlipY ? -1 : 1) * physics.scaleY;
                     ctx.save();
-                    ctx.translate(x + frame.dw / 2, y + frame.dh / 2);
+                    ctx.translate(x + drawFrame.dw / 2, y + drawFrame.dh / 2);
                     if (rotation) ctx.rotate(rotation);
                     ctx.scale(scaleX, scaleY);
-                    ctx.drawImage(
-                        img,
-                        frame.sx,
-                        frame.sy,
-                        frame.sw,
-                        frame.sh,
-                        -frame.dw / 2,
-                        -frame.dh / 2,
-                        frame.dw,
-                        frame.dh
-                    );
+                    const drewMesh = this.drawLayerMesh(ctx, img, layer, layerState, drawFrame, physics);
+                    if (!drewMesh) {
+                        ctx.drawImage(
+                            img,
+                            drawFrame.sx,
+                            drawFrame.sy,
+                            drawFrame.sw,
+                            drawFrame.sh,
+                            -drawFrame.dw / 2,
+                            -drawFrame.dh / 2,
+                            drawFrame.dw,
+                            drawFrame.dh
+                        );
+                    }
                     ctx.restore();
                 });
             return true;
@@ -1015,7 +2479,8 @@
             if (this.container) {
                 this.container.style.pointerEvents = 'none';
             }
-            if (modelManagerPage) {
+            const centerAnchored = modelManagerPage || this.config.position_anchor === 'center';
+            if (centerAnchored) {
                 Object.assign(this.image.style, {
                     position: 'absolute',
                     left: '50%',
@@ -1026,10 +2491,21 @@
                     pointerEvents
                 });
             }
+            if (!centerAnchored) {
+                Object.assign(this.image.style, {
+                    position: 'absolute',
+                    left: 'calc(100% - 48px)',
+                    top: 'calc(100% - 18px)',
+                    right: 'auto',
+                    bottom: 'auto',
+                    transformOrigin: 'right bottom'
+                });
+                this.image.style.pointerEvents = pointerEvents;
+            }
             if (!modelManagerPage) {
                 this.image.style.pointerEvents = pointerEvents;
             }
-            const anchorTranslate = modelManagerPage
+            const anchorTranslate = centerAnchored
                 ? 'translate(-50%, -50%)'
                 : 'translate(-100%, -100%)';
             this.image.style.transform = `${anchorTranslate} translate(${renderPlacement.offsetX}px, ${renderPlacement.offsetY + bounce.y + breathing.y + talkingHop.y}px) scale(${finalScaleX}, ${finalScaleY})`;
@@ -1142,8 +2618,13 @@
                 startY: event.clientY,
                 startOffsetX: placement.offsetX,
                 startOffsetY: placement.offsetY,
+                lastX: event.clientX,
+                lastY: event.clientY,
+                lastAt: performance.now(),
                 moved: false
             };
+            this.resetLayeredDragVelocity();
+            if (this.layeredPointer) this.layeredPointer.active = false;
             if (this.image && typeof this.image.setPointerCapture === 'function') {
                 try { this.image.setPointerCapture(event.pointerId); } catch (_) {}
             }
@@ -1157,12 +2638,17 @@
             event.preventDefault();
             const dx = event.clientX - state.startX;
             const dy = event.clientY - state.startY;
+            const now = performance.now();
+            state.lastX = event.clientX;
+            state.lastY = event.clientY;
+            state.lastAt = now;
             if (Math.hypot(dx, dy) > 4 && !state.moved) {
                 state.moved = true;
                 this.showDragImage();
             }
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyTransform();
+            if (this.isLayeredActive()) this.drawLayeredState();
             this.syncGlobalConfig();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
@@ -1174,12 +2660,17 @@
             const state = this._dragState;
             if (!state || (state.pointerId !== undefined && event.pointerId !== state.pointerId)) return;
             this._dragState = null;
+            // 拖拽释放后的物理回摆窗口保持满帧：Plus 模型物理状态的内部字段
+            // （draggerX/Y）不走 remix 形状探测，用时间窗兜底两种物理形态
+            this._layeredFullRateHoldUntil = performance.now() + 2000;
+            this.resetLayeredDragVelocity();
             if (this.image && typeof this.image.releasePointerCapture === 'function') {
                 try { this.image.releasePointerCapture(event.pointerId); } catch (_) {}
             }
             document.body.classList.remove('neko-model-dragging');
             if (this.image) this.image.classList.remove('is-dragging');
             this.restoreStateImage();
+            this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
             }
@@ -1254,8 +2745,13 @@
                 startCenterY: center.y,
                 startOffsetX: placement.offsetX,
                 startOffsetY: placement.offsetY,
+                lastCenterX: center.x,
+                lastCenterY: center.y,
+                lastAt: performance.now(),
                 changed: false
             };
+            this.resetLayeredDragVelocity();
+            if (this.layeredPointer) this.layeredPointer.active = false;
             document.body.classList.add('neko-model-dragging');
             if (this.image) this.image.classList.add('is-dragging');
             this.showDragImage();
@@ -1271,18 +2767,25 @@
             const scaleChange = currentDistance / state.initialDistance;
             const dx = center.x - state.startCenterX;
             const dy = center.y - state.startCenterY;
+            const now = performance.now();
+            state.lastCenterX = center.x;
+            state.lastCenterY = center.y;
+            state.lastAt = now;
             state.changed = Math.abs(scaleChange - 1) > 0.01 || Math.hypot(dx, dy) > 4;
             this.setActiveOffsets(state.startOffsetX + dx, state.startOffsetY + dy);
             this.applyScale(state.initialScale * scaleChange);
+            if (this.isLayeredActive()) this.drawLayeredState();
         }
 
         async endTouchZoom() {
             const state = this._touchZoomState;
             if (!state) return;
             this._touchZoomState = null;
+            this.resetLayeredDragVelocity();
             document.body.classList.remove('neko-model-dragging');
             if (this.image) this.image.classList.remove('is-dragging');
             this.restoreStateImage();
+            this.restartLayeredAnimationLoop();
             if (typeof this.updateFloatingButtonsPosition === 'function') {
                 this.updateFloatingButtonsPosition();
             }
@@ -1459,6 +2962,7 @@
                 this.config.mobile_offset_x,
                 this.config.mobile_offset_y,
                 this.config.mobile_scale,
+                this.config.position_anchor,
                 this.config.mirror
             ].join(':');
             if (saveKey === this._lastSavedPositionKey) return true;
@@ -1499,6 +3003,7 @@
 
         async load(config) {
             this.detachDragListeners();
+            this.clearEmotion({ render: false });
             this.config = normalizeConfig(config || {});
             await this.setupLayeredAdapter();
             this.ensureContainer();
@@ -1516,9 +3021,101 @@
         }
 
         stateToSrc(state) {
-            if (state === 'talking') return this.config.talking_image || this.config.idle_image || DEFAULT_PLACEHOLDER;
+            if (state === 'talking') {
+                if (!this.hasIndependentTalkingImage() && this.emotionImage) return this.emotionImage;
+                return this.config.talking_image || this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;
+            }
+            if (state === 'idle') return this.emotionImage || this.config.idle_image || DEFAULT_PLACEHOLDER;
             const emotionKey = `${state}_image`;
             return this.config[emotionKey] || this.config.idle_image || DEFAULT_PLACEHOLDER;
+        }
+
+        normalizeEmotionName(emotion) {
+            return String(emotion || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+        }
+
+        emotionImageFor(emotion) {
+            const key = EMOTION_IMAGE_KEYS[this.normalizeEmotionName(emotion)];
+            return key ? this.config[key] || '' : '';
+        }
+
+        hasIndependentTalkingImage() {
+            const talking = this.config.talking_image || '';
+            return !!(talking && talking !== this.config.idle_image);
+        }
+
+        clearEmotion(options = {}) {
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            this.currentEmotion = null;
+            this.emotionImage = '';
+            if (options.render !== false && this.isLayeredActive()) {
+                this.setLayeredStateIndex(0, { source: 'emotion-clear' });
+            } else if (options.render !== false) {
+                const nextState = this.isSpeaking && this.speakingMouthOpen && this.hasIndependentTalkingImage()
+                    ? 'talking'
+                    : 'idle';
+                this.setState(nextState, { restartLayeredAnimation: false });
+            }
+            return true;
+        }
+
+        setLayeredEmotion(emotionName, options = {}) {
+            if (!this.isLayeredActive()) return false;
+            const stateIndex = this.layeredEmotionTarget(emotionName);
+            if (stateIndex === null) return false;
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            this.currentEmotion = emotionName;
+            this.emotionImage = '';
+            const durationMs = Number(options.durationMs);
+            const shouldAutoClear = options.durationMs === undefined
+                ? true
+                : Number.isFinite(durationMs) && durationMs > 0;
+            if (shouldAutoClear) {
+                this.emotionTimer = setTimeout(() => {
+                    this.emotionTimer = null;
+                    this.clearEmotion();
+                }, options.durationMs === undefined ? DEFAULT_EMOTION_DURATION_MS : durationMs);
+            }
+            return this.setLayeredStateIndex(stateIndex, { source: 'emotion' });
+        }
+
+        setEmotion(emotion, options = {}) {
+            options = options && typeof options === 'object' ? options : {};
+            const emotionName = this.normalizeEmotionName(emotion);
+            if (CLEAR_EMOTIONS.has(emotionName)) {
+                return this.clearEmotion();
+            }
+            if (this.isLayeredActive()) return this.setLayeredEmotion(emotionName, options);
+            const nextImage = this.emotionImageFor(emotionName);
+            if (!nextImage) return false;
+
+            if (this.emotionTimer) {
+                clearTimeout(this.emotionTimer);
+                this.emotionTimer = null;
+            }
+            this.currentEmotion = emotionName;
+            this.emotionImage = nextImage;
+            const durationMs = Number(options.durationMs);
+            const shouldAutoClear = options.durationMs === undefined
+                ? true
+                : Number.isFinite(durationMs) && durationMs > 0;
+            if (shouldAutoClear) {
+                this.emotionTimer = setTimeout(() => {
+                    this.emotionTimer = null;
+                    this.clearEmotion();
+                }, options.durationMs === undefined ? DEFAULT_EMOTION_DURATION_MS : durationMs);
+            }
+            const nextState = this.isSpeaking && this.speakingMouthOpen && this.hasIndependentTalkingImage()
+                ? 'talking'
+                : 'idle';
+            this.setState(nextState, { restartLayeredAnimation: false });
+            return true;
         }
 
         setState(state, options = {}) {
@@ -1550,6 +3147,7 @@
         }
 
         speakingBounceConfig() {
+            if (this.isLayeredRemixModel()) return null;
             if (this.isLayeredActive()) return null;
             const settings = this.layeredMetadata && this.layeredMetadata.settings;
             const stateSettings = this.currentRemixStateSettings();
@@ -1650,6 +3248,26 @@
             this.talkingHopPeriodMs = 260;
             const tick = (timestamp = performance.now()) => {
                 if (!this.isSpeaking || !this.container || this.container.style.display === 'none') {
+                    this.stopTalkingHopAnimation();
+                    return;
+                }
+                this.applyAnimationTransform(timestamp);
+                this.updateOverlayPositionsForAnimation(timestamp);
+                this.talkingHopFrame = requestAnimationFrame(tick);
+            };
+            this.talkingHopFrame = requestAnimationFrame(tick);
+        }
+
+        startCostumeChangeHopAnimation() {
+            if (this.talkingHopFrame || !this.isLayeredActive()) return;
+            // 弹跳期间保持动画循环满帧
+            this._layeredFullRateHoldUntil = performance.now() + PNGTUBER_FULL_RATE_HOLD_MS;
+            this.talkingHopStart = performance.now();
+            this.talkingHopAmplitude = 4.5;
+            this.talkingHopPeriodMs = 260;
+            const tick = (timestamp = performance.now()) => {
+                const elapsed = timestamp - this.talkingHopStart;
+                if (elapsed >= this.talkingHopPeriodMs || !this.container || this.container.style.display === 'none') {
                     this.stopTalkingHopAnimation();
                     return;
                 }
@@ -1809,11 +3427,14 @@
             const layers = Array.isArray(this.layeredMetadata.layers) ? this.layeredMetadata.layers : [];
             return layers
                 .filter((layer) => this.shouldRenderLayer(layer, stateName))
-                .sort((a, b) => this.compareLayerDrawOrder(a, b))
+                .sort((a, b) => this.compareLayerRenderOrder(a, b, stateName))
                 .map((layer) => {
-                    const layerState = this.layerStateForCurrentIndex(layer);
+                    const layerState = this.layerStateForRender(layer, stateName);
                     const img = this.layeredImages.get(layer._imageIndex);
                     const frame = img ? this.stateFrameInfo(layer, layerState, img) : null;
+                    const mesh = this.currentLayerMesh(layer, layerState);
+                    const meshRuntime = this.layerMeshRuntimeEnabled(layer, layerState);
+                    const physicsRuntime = this.stateHasRemixPhysics(layerState);
                     return {
                         name: layer.name || '',
                         order: Number(layer.order || 0),
@@ -1834,7 +3455,12 @@
                         should_talk: !!(layerState.effective_should_talk ?? layerState.should_talk),
                         open_mouth: !!(layerState.effective_open_mouth ?? layerState.open_mouth),
                         should_blink: !!(layerState.effective_should_blink ?? layerState.should_blink),
-                        open_eyes: (layerState.effective_open_eyes ?? layerState.open_eyes) !== false
+                        open_eyes: (layerState.effective_open_eyes ?? layerState.open_eyes) !== false,
+                        meshMetadata: !!mesh,
+                        meshRuntime,
+                        meshReason: meshRuntime ? '' : (mesh?.degrade_reason || (mesh ? 'mesh runtime feature disabled' : 'mesh metadata absent')),
+                        physicsRuntime,
+                        physicsVersion: this.layeredRuntimeFeatureEnabled('physics_v2') ? 2 : 1
                     };
                 });
         }
@@ -1850,6 +3476,20 @@
             const layers = this.layeredMetadata && Array.isArray(this.layeredMetadata.layers)
                 ? this.layeredMetadata.layers
                 : [];
+            const metadataCapabilities = Object.assign({}, this.layeredMetadata?.capabilities || {});
+            const runtimeFeatures = Object.assign({}, this.layeredMetadata?.runtime_features || {});
+            const unsupportedFeatures = Array.isArray(runtimeFeatures.unsupported_features)
+                ? runtimeFeatures.unsupported_features.slice()
+                : [];
+            const enabledRuntimeFeatures = Object.keys(runtimeFeatures)
+                .filter((key) => key !== 'unsupported_features' && runtimeFeatures[key] === true);
+            const meshLayers = layers.filter((layer) => {
+                const state = this.layerStateForRender(layer, this.state || 'idle');
+                return this.layerMeshRuntimeEnabled(layer, state);
+            }).length;
+            const emotionSupported = this.isLayeredActive()
+                ? this.layeredEmotionSupported()
+                : Object.keys(EMOTION_IMAGE_KEYS).some((emotion) => !!this.emotionImageFor(emotion));
             const imageRect = image && typeof image.getBoundingClientRect === 'function'
                 ? image.getBoundingClientRect()
                 : null;
@@ -1857,11 +3497,26 @@
                 active: !!(container && container.style.display !== 'none' && !container.classList.contains('hidden')),
                 modelType: (window.lanlan_config?.model_type || '').toLowerCase() || null,
                 state: this.state,
+                currentEmotion: this.currentEmotion,
+                emotionImage: this.emotionImage || null,
+                emotionSupported,
+                emotionTimer: !!this.emotionTimer,
                 isSpeaking: !!this.isSpeaking,
                 speakingMouthOpen: !!this.speakingMouthOpen,
                 layered: this.isLayeredActive(),
                 layeredConfigured: this.isLayeredConfigured(),
                 layeredStateIndex: this.layeredStateIndex,
+                layeredToggles: Object.fromEntries(this.layeredToggleVisibility || new Map()),
+                sourceFormat: this.layeredMetadata?.source_format || this.config.source_format || null,
+                adapterVersion: Number(this.layeredMetadata?.adapter_version || 1),
+                metadataCapabilities,
+                runtimeFeatures,
+                enabledRuntimeFeatures,
+                unsupportedFeatures,
+                meshMetadata: metadataCapabilities.mesh_metadata === true || metadataCapabilities.mesh === true,
+                meshRuntime: metadataCapabilities.mesh_runtime === true || runtimeFeatures.mesh_deformation === true,
+                meshLayers,
+                physicsVersion: runtimeFeatures.physics_v2 === true ? 2 : 1,
                 layerCount: layers.length,
                 renderedIdleLayerCount: this.renderedLayerCountForState('idle'),
                 renderedTalkingLayerCount: this.renderedLayerCountForState('talking'),
@@ -1875,10 +3530,12 @@
                     bounceFrame: !!this.speakingBounceFrame,
                     lipSyncFrame: !!this.lipSyncFrame,
                     talkingHopFrame: !!this.talkingHopFrame,
+                    emotionTimer: !!this.emotionTimer,
                     blinkTimer: !!this.layeredBlinkTimer,
                     blinkEndTimer: !!this.layeredBlinkEndTimer,
                     returnIdleTimer: !!this.returnIdleTimer,
-                    layeredAnimationFrame: !!this.layeredAnimationFrame
+                    layeredAnimationFrame: !!this.layeredAnimationFrame,
+                    layeredBreathingFrame: !!this.layeredBreathingFrame
                 },
                 container: {
                     id: this.containerId,
@@ -1939,12 +3596,16 @@
                 }
                 this.restartLayeredAnimationLoop();
                 this.attachLayeredHotkeys();
+                this.attachLayeredPlayEvent();
+                this.attachLayeredPointerTracking();
             }
         }
 
         hide() {
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
+            this.detachLayeredPlayEvent();
+            this.detachLayeredPointerTracking();
             if (this.returnIdleTimer) {
                 clearTimeout(this.returnIdleTimer);
                 this.returnIdleTimer = null;
@@ -1991,8 +3652,12 @@
             this._lockIconImages = null;
             this.clearLayeredTimers();
             this.detachLayeredHotkeys();
+            this.detachLayeredPlayEvent();
+            this.detachLayeredPointerTracking();
             this.layeredMetadata = null;
             this.layeredImages = new Map();
+            this.layeredToggleVisibility = new Map();
+            this.layeredLayerById = new Map();
             if (this.image) {
                 if (this.image.removeAttribute) this.image.removeAttribute('src');
             }
@@ -2013,10 +3678,16 @@
                     { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
                 ],
                 onMouseTrackingToggle: function(enabled) {
-                    window.mouseTrackingEnabled = enabled;
+                    if (typeof this.setMouseTrackingEnabled === 'function') {
+                        this.setMouseTrackingEnabled(enabled);
+                    } else {
+                        window.mouseTrackingEnabled = enabled;
+                    }
                 },
                 getMouseTrackingState: function() {
-                    return window.mouseTrackingEnabled !== false;
+                    return typeof this.isMouseTrackingEnabled === 'function'
+                        ? this.isMouseTrackingEnabled()
+                        : window.mouseTrackingEnabled !== false;
                 }
             });
         }

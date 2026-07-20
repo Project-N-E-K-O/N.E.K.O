@@ -107,9 +107,11 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         tool_definitions: Optional[List[ToolDefinition]] = None,
         max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
+        user_language_provider: Optional[Callable[[], Optional[str]]] = None,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
+        self._user_language_provider = user_language_provider
         self.api_key = api_key if api_key and api_key != '' else None
         self.model = model
         self.vision_model = vision_model  # Store vision model for temporary switching

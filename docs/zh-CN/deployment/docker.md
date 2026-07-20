@@ -1,115 +1,32 @@
 # Docker 部署
 
-## 快速开始
+维护中的 Compose 是 `docker/docker-compose.yml`。Nginx 前置，宿主 48911 为 HTTP、48912 为 HTTPS。
 
 ```bash
-# Clone the repository
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O/docker
-
-# Configure environment
 cp env.template .env
-# Edit .env with your API keys
-
-# Start
-docker-compose up -d
+# 审核 .env，只保留当前代码支持的值
+docker compose up -d
 ```
 
-在 `http://localhost:48911` 访问 Web UI。
+打开 `http://127.0.0.1:48911`。需要可复现时固定 `NEKO_IMAGE` 或 `NEKO_IMAGE_VERSION`。`latest` 为 standard 别名，`latest-full` 为 full。
 
-## docker-compose.yml
+入口脚本只在 `/app/config/core_config.json` 不存在或设置 `NEKO_FORCE_ENV_UPDATE` 时生成初始配置。API 环境变量不是实时通用覆盖，启动后请在 Web UI 确认。
 
-```yaml
-version: '3.8'
+| 宿主 | 容器 | 用途 |
+| --- | --- | --- |
+| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 配置、角色、记忆、功能数据 |
+| `./logs` | `/app/logs` | 日志 |
+| `./ssl` | `/home/neko/ssl` | TLS 证书/私钥 |
 
-services:
-  neko-main:
-    # Image version is selectable via env vars (latest = newest release)
-    image: ${NEKO_IMAGE:-docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:${NEKO_IMAGE_VERSION:-latest}}
-    container_name: neko
-    restart: unless-stopped
-    ports:
-      - "48911:80"    # HTTP
-      - "48912:443"   # HTTPS
-    volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
-      - ./logs:/app/logs
-      - ./ssl:/root/ssl
-    networks:
-      - neko-network
+升级前备份数据，严禁公开数据或私钥目录。
 
-networks:
-  neko-network:
-    driver: bridge
-```
-
-配置通过上面创建的 `.env` 文件提供（`cp env.template .env`）；`entrypoint.sh` 在启动时读取其中的 `NEKO_*` 变量。完整列表请参阅[环境变量](#环境变量)。
-
-## 环境变量
-
-从模板创建 `.env` 文件：
+当前 Compose 没有 `build:`，旧的 `docker compose build` 说法无效。本地构建应在仓库根目录执行：
 
 ```bash
-# Required
-NEKO_CORE_API_KEY=sk-your-key-here
-NEKO_CORE_API=qwen
-
-# Optional
-NEKO_ASSIST_API=qwen
-NEKO_ASSIST_API_KEY_QWEN=sk-your-assist-key
+docker build -f docker/Dockerfile -t neko-local:standard .
+docker build -f docker/Dockerfile.full -t neko-local:full .
 ```
 
-完整参考请参阅[环境变量](/config/environment-vars)。
-
-## Nginx 代理
-
-Docker 容器内置 Nginx 作为反向代理：
-
-- 代理到内部端口上的主服务器
-- 支持 WebSocket 以实现实时聊天
-- 静态文件缓存（30 天过期）
-- 健康检查端点 `/health`
-
-## 数据持久化
-
-| 挂载 | 容器路径 | 用途 |
-|------|----------|------|
-| `./N.E.K.O` | `/root/Documents/N.E.K.O` | 配置、角色、记忆 |
-| `./logs` | `/app/logs` | 应用日志 |
-| `./ssl` | `/root/ssl` | SSL 证书 |
-
-## 服务商快速配置
-
-**Qwen（推荐）：**
-```bash
-NEKO_CORE_API_KEY=sk-xxxxx
-NEKO_CORE_API=qwen
-```
-
-**免费（无需密钥）：**
-```bash
-NEKO_CORE_API_KEY=free-access
-NEKO_CORE_API=free
-```
-
-**OpenAI：**
-```bash
-NEKO_CORE_API_KEY=sk-xxxxx
-NEKO_CORE_API=openai
-```
-
-## 故障排查
-
-```bash
-# View logs
-docker logs neko
-
-# Enter container
-docker exec -it neko bash
-
-# Check config
-docker exec neko cat /root/Documents/N.E.K.O/core_config.json
-
-# Check environment
-docker exec neko env | grep NEKO_
-```
+随后设置 `NEKO_IMAGE`。入口脚本生成的是自签名证书，不等于公网可信 TLS。诊断用 `docker compose ps`、`docker logs neko` 和 `curl -f http://127.0.0.1:48911/health`。

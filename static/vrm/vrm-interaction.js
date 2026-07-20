@@ -338,6 +338,8 @@ class VRMInteraction {
                 }
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
+                if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 this._rememberPanDragPointer(e, { captureOffset: true });
                 this._rememberDragHintPanPointer(e, { start: true });
@@ -351,6 +353,7 @@ class VRMInteraction {
             } else if (e.button === 2) { // 右键 - 模型旋转
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                if (typeof this.manager._boostInteractiveFPS === 'function') this.manager._boostInteractiveFPS();
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
                 e.preventDefault();
@@ -575,6 +578,13 @@ class VRMInteraction {
                 return;
             }
 
+            // 真正命中模型的缩放才升频：同步 boost（不等 300ms governor 轮询）
+            // 消除从空闲地板起步的首段 30fps 顿挫；时间戳供 governor 续期
+            this.manager._lastInteractionBoostTs = performance.now();
+            if (typeof this.manager._boostInteractiveFPS === 'function') {
+                this.manager._boostInteractiveFPS();
+            }
+
             e.preventDefault();
             e.stopPropagation();
 
@@ -645,6 +655,9 @@ class VRMInteraction {
         // 2. 计算目标角度
         // VRM 默认朝向 +Z，atan2(x, z) 对应 Y 轴旋转
         let targetAngle = Math.atan2(dx, dz);
+        if (this.manager.__soccerFixedCameraNormalizeYaw) {
+            targetAngle += Math.PI;
+        }
 
         // 3. 平滑插值处理角度突变
         const currentAngle = model.rotation.y;

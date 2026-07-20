@@ -7,7 +7,7 @@ from plugin.sdk.plugin import (
     neko_plugin, plugin_entry, lifecycle, timer_interval, message,
     on_event, custom_event,
     hook, before_entry, after_entry, around_entry, replace_entry,
-    plugin,  # 命名空间风格的替代方式
+    plugin, quick_action,  # 命名空间风格和命令面板提示
 )
 ```
 
@@ -33,8 +33,8 @@ class MyPlugin(NekoPluginBase):
     input_schema={...},          # 用于验证的 JSON Schema
     params=MyParamsModel,        # 替代方式：用于输入的 Pydantic 模型（自动生成 schema）
     kind="action",               # "action" | "service" | "hook" | "custom"
-    auto_start=False,            # 加载时自动启动
-    persist=False,               # 跨重载持久化
+    auto_start=False,            # 元数据标志；普通入口不会在加载时自动执行
+    persist=False,               # 覆盖调用后的状态快照策略
     model_validate=True,         # 启用 Pydantic 验证
     timeout=30.0,                # 执行超时时间（秒）
     llm_result_fields=["text"],  # 为 LLM 消费提取的字段
@@ -55,8 +55,8 @@ def process(self, data: str, **_):
 | `input_schema` | `dict` | `None` | 用于输入验证的 JSON Schema |
 | `params` | `type` | `None` | Pydantic 模型（自动生成 `input_schema`） |
 | `kind` | `str` | `"action"` | 入口类型 |
-| `auto_start` | `bool` | `False` | 加载后自动启动 |
-| `persist` | `bool` | `None` | 跨重载持久化状态 |
+| `auto_start` | `bool` | `False` | 元数据标志；普通 `plugin_entry` 不会在加载时自动执行 |
+| `persist` | `bool` | `None` | 覆盖该入口执行后是否保存已配置的可冻结状态 |
 | `model_validate` | `bool` | `True` | 启用 Pydantic 验证 |
 | `timeout` | `float` | `None` | 执行超时时间（秒） |
 | `llm_result_fields` | `list[str]` | `None` | 用于 LLM 结果提取的字段 |
@@ -65,7 +65,7 @@ def process(self, data: str, **_):
 | `metadata` | `dict` | `None` | 附加元数据 |
 
 ::: tip
-始终在函数签名中包含 `**_`，以便优雅地捕获未使用的参数。
+只有在处理器有意接受宿主额外字段时才使用 `**_`。显式签名的处理器会由运行时过滤不支持的关键字参数，因此它不是硬性要求。
 :::
 
 ## @lifecycle
@@ -119,7 +119,6 @@ def cleanup(self, **_):
 @message(
     id="handle_chat",
     source="chat",           # 按消息来源过滤
-    auto_start=True
 )
 def handle_chat(self, text: str, sender: str, **_):
     return Ok({"handled": True})
@@ -153,6 +152,19 @@ def custom_handler(self, event_data: str, **_):
 def on_refresh(self, source: str, **_):
     return Ok({"refreshed": True})
 ```
+
+## @quick_action
+
+把插件入口标记为命令面板中的优先快捷操作。它必须写在 `@plugin_entry` 下方，让 Python 先应用它：
+
+```python
+@plugin_entry(id="get_weather", name="获取天气")
+@quick_action(icon="🌤️", priority=10)
+async def get_weather(self, city: str = ""):
+    return Ok({"city": city})
+```
+
+`priority` 越大，展示越靠前。这个装饰器只修改展示元数据，不会改变 Agent 路由，也不会自动执行入口。
 
 ---
 

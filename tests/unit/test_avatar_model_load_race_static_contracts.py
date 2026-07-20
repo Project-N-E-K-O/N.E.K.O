@@ -31,9 +31,12 @@ def test_vrm_load_model_uses_entry_token_without_blocking_queue():
     # 无限期阻塞 VRM→VRM 切换（Codex P2）。并发正确性由 vrm-core 的 token 守卫兜底。
     source = (PROJECT_ROOT / "static/vrm/vrm-manager.js").read_text(encoding="utf-8")
 
-    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列
+    # token 在入口同步分配（后到者胜），直接调用加载体，不经 promise 队列。
+    # round-2 起挂 .catch 收尾（非 await，遵守本契约）：失败路径复位 _loadState，
+    # 防止空闲 governor 把卡在 'preparing' 的状态当作永久活动（节流失效）。
     assert "const loadToken = ++this._activeLoadToken;" in source
-    assert "return this._loadModelInternal(modelUrl, options, loadToken);" in source
+    assert "return this._loadModelInternal(modelUrl, options, loadToken).catch((e) => {" in source
+    assert "if (this._isLoadTokenActive(loadToken)) this._loadState = 'idle';" in source
     assert "async _loadModelInternal(modelUrl, options, loadToken)" in source
 
     # 串行队列必须彻底移除：不得残留 _loadModelChain / previousLoad / 旧方法名

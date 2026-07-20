@@ -1,4 +1,4 @@
-"""安全门 / 限流时钟（D-B4 + neko_roast safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
+"""安全门 / 限流时钟（D-B4 + neko_live safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
 
 职责：持有"全局限流时钟 / 抢占冷却 / 手动急停 / 连续失败自动急停 / dry_run"等状态；
 仲裁(arbiter)调用它判定与记录。它不决定"说哪条"（那是 arbiter）。
@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts import WtConfig
+from .contracts import WtConfig, broadcast_frequency_multiplier
 
 
 @dataclass
@@ -53,7 +53,8 @@ class SafetyGuard:
         if self.config.global_rate_limit_seconds <= 0:
             return 0.0
         cur = time.time() if now is None else now
-        remaining = self.config.global_rate_limit_seconds - (cur - self._last_output_at)
+        limit = self.config.global_rate_limit_seconds * broadcast_frequency_multiplier(self.config.broadcast_frequency)
+        remaining = limit - (cur - self._last_output_at)
         return remaining if remaining > 0 else 0.0
 
     def critical_cooldown_remaining(self, now: float | None = None) -> float:

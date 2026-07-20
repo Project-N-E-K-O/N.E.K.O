@@ -382,6 +382,57 @@ function finalizePopupClosedState(popup) {
     popup._hideTimeoutId = null;
 }
 
+function showWidgetModeMutationFailure(error) {
+    console.warn('[WidgetMode] settings mutation failed:', error);
+    const message = window.t
+        ? window.t('settings.widgetMode.toggleFailed')
+        : '挂边模式 Beta 切换失败，请稍后重试。';
+    if (typeof window.showStatusToast === 'function') {
+        window.showStatusToast(message, 3000);
+    }
+}
+
+let widgetModeMutationQueue = Promise.resolve();
+
+function queueWidgetModeMutation(operation) {
+    const run = function () { return operation(); };
+    widgetModeMutationQueue = widgetModeMutationQueue.then(run, run);
+    return widgetModeMutationQueue;
+}
+
+function createAdvancedSettingsSidePanel(manager, prefix, popup) {
+    const panel = manager._createSidePanelContainer();
+    panel.setAttribute('data-neko-sidepanel-type', 'advanced-settings');
+    Object.assign(panel.style, {
+        width: '224px', minWidth: '224px', padding: '4px', display: 'flex',
+        flexDirection: 'column', alignItems: 'stretch', gap: '0'
+    });
+    const widgetModeItem = manager._createSettingsToggleItem({
+        id: 'widget-mode',
+        label: window.t ? window.t('settings.toggles.widgetMode') : '挂边模式 Beta',
+        labelKey: 'settings.toggles.widgetMode',
+        tooltipKey: 'settings.toggles.widgetModeTooltip',
+        alwaysTinted: true
+    });
+    widgetModeItem.style.display = 'flex';
+    widgetModeItem.style.alignItems = 'center';
+    widgetModeItem.style.minWidth = '0';
+    const widgetModeLabel = widgetModeItem.querySelector('label');
+    if (widgetModeLabel) {
+        widgetModeLabel.style.flex = '1 1 auto';
+        widgetModeLabel.style.minWidth = '0';
+        widgetModeLabel.style.height = 'auto';
+        widgetModeLabel.style.lineHeight = '1.25';
+        widgetModeLabel.style.whiteSpace = 'normal';
+    }
+
+    panel.appendChild(widgetModeItem);
+
+    panel._widgetModeToggleItem = widgetModeItem;
+    document.body.appendChild(panel);
+    return panel;
+}
+
 /**
  * 创建设置弹窗内容（通用）
  */
@@ -409,6 +460,22 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._anchorElement = animSettingsBtn;
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
+
+    const advancedSettingsBtn = manager._createSettingsMenuButton({
+        label: window.t ? window.t('settings.menu.advancedSettings') : '高级设置',
+        labelKey: 'settings.menu.advancedSettings'
+    });
+    advancedSettingsBtn.id = `${prefix}-advanced-settings-entry`;
+    popup.appendChild(advancedSettingsBtn);
+    const advancedSidePanel = createAdvancedSettingsSidePanel(manager, prefix, popup);
+    advancedSidePanel._anchorElement = advancedSettingsBtn;
+    advancedSidePanel._popupElement = popup;
+    manager._attachSidePanelHover(advancedSettingsBtn, advancedSidePanel);
+    advancedSettingsBtn.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof advancedSidePanel._expand === 'function') advancedSidePanel._expand();
+    });
 
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
@@ -635,8 +702,9 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
         { id: 'focus-cognition', label: window.t ? window.t('settings.toggles.focusCognition') : '凝神模式', labelKey: 'settings.toggles.focusCognition', tooltipKey: 'settings.toggles.focusCognitionTooltip', storageKey: 'focusCognitionEnabled', alwaysTinted: true },
+        { id: 'slop-filter', label: window.t ? window.t('settings.toggles.slopFilter') : '自然表达', labelKey: 'settings.toggles.slopFilter', tooltipKey: 'settings.toggles.slopFilterTooltip', storageKey: 'slopFilterEnabled', alwaysTinted: true },
         { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
-        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true, dependsOnToggleId: 'auto-cat' },
+        { id: 'cat-audio', label: window.t ? window.t('settings.toggles.catAudio') : '猫猫音效', labelKey: 'settings.toggles.catAudio', tooltipKey: 'settings.toggles.catAudioTooltip', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -1308,6 +1376,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     // 全屏/局部跟踪复选框（右半部分）
+    const supportsTrackingModeToggle = prefix === 'live2d' || prefix === 'vrm' || prefix === 'mmd';
     const modeCheckbox = document.createElement('input');
     modeCheckbox.type = 'checkbox';
     modeCheckbox.style.display = 'none';
@@ -1316,6 +1385,7 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     Object.assign(modeIndicator.style, { width: '20px', height: '20px', flexShrink: '0' });
 
     const updateTrackingModeToggleState = () => {
+        if (!modeClickArea || !supportsTrackingModeToggle) return;
         const isEnabled = checkbox.checked;
         modeClickArea.style.opacity = isEnabled ? '1' : '0.4';
         modeClickArea.style.pointerEvents = isEnabled ? 'auto' : 'none';
@@ -1400,7 +1470,9 @@ function createAnimationSettingsSidePanel(manager, prefix) {
     });
 
     trackingRow.appendChild(trackingClickArea);
-    trackingRow.appendChild(modeClickArea);
+    if (supportsTrackingModeToggle) {
+        trackingRow.appendChild(modeClickArea);
+    }
     container.appendChild(trackingRow);
 
     // ── 取消隐藏（锁定悬停淡化）开关 ──
@@ -1526,7 +1598,11 @@ function createSidePanelContainer(manager, prefix, options = {}) {
             return false;
         }
 
-        if (window.AvatarPopupUI && typeof window.AvatarPopupUI.positionSidePanel === 'function') {
+        if (
+            container.dataset.nekoNestedSidePanel !== 'true'
+            && window.AvatarPopupUI
+            && typeof window.AvatarPopupUI.positionSidePanel === 'function'
+        ) {
             window.AvatarPopupUI.positionSidePanel(container, anchor);
         }
         const hasPositionStyles = !!(container.style.left || container.style.right || container.style.top);
@@ -1563,7 +1639,9 @@ function createSidePanelContainer(manager, prefix, options = {}) {
         const gap = 12;
         const panelW = container.offsetWidth || rect.width || 180;
         const panelH = container.offsetHeight || rect.height || 40;
-        const placeLeft = anchorRect.left >= (window.innerWidth / 2);
+        const nestedPrefersRight = container.dataset.nekoNestedSidePanel === 'true'
+            && anchorRect.right + gap + panelW <= window.innerWidth - edgeMargin;
+        const placeLeft = !nestedPrefersRight && anchorRect.left >= (window.innerWidth / 2);
         let left = placeLeft
             ? anchorRect.left - gap - panelW
             : anchorRect.right + gap;
@@ -1687,6 +1765,7 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
+            'advanced-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2225,6 +2304,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.avatarReactionBubbleEnabled;
     } else if (toggle.id === 'focus-cognition' && typeof window.focusCognitionEnabled !== 'undefined') {
         checkbox.checked = window.focusCognitionEnabled;
+    } else if (toggle.id === 'slop-filter' && typeof window.slopFilterEnabled !== 'undefined') {
+        checkbox.checked = window.slopFilterEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
     } else if (toggle.id === 'proactive-vision' && typeof window.proactiveVisionEnabled !== 'undefined') {
@@ -2235,6 +2316,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     } else if (toggle.id === 'cat-audio' && window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.isEnabled === 'function') {
         checkbox.checked = window.nekoIdleCatAudio.isEnabled();
+    } else if (toggle.id === 'widget-mode' && window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
+        checkbox.checked = window.nekoWidgetMode.isEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2308,6 +2391,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     toggleItem._nekoUpdateSettingsToggleStyle = updateStyle;
+    if (toggle.id === 'widget-mode') {
+        toggleItem._nekoUpdateWidgetModeStatus = function () {
+            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.isEnabled === 'function') {
+                checkbox.checked = window.nekoWidgetMode.isEnabled();
+            }
+            updateStyle();
+        };
+    }
     updateStyle();
 
     toggleItem.appendChild(checkbox);
@@ -2351,6 +2442,14 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             // （core.py `_focus_inline_decision` 读 focusCognitionEnabled gate），
             // 思考气泡随之不再出现；master 情绪读不受影响。
             window.focusCognitionEnabled = isChecked;
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'slop-filter') {
+            // 自然表达（slop reduction）总开关。关掉后端 _params 不再改写历史
+            // （utils/slop_filter.py 读 slopFilterEnabled gate）。promptOnly，
+            // 不影响用户看到的原文。
+            window.slopFilterEnabled = isChecked;
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
             }
@@ -2413,6 +2512,24 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             if (window.nekoIdleCatAudio && typeof window.nekoIdleCatAudio.setEnabled === 'function') {
                 window.nekoIdleCatAudio.setEnabled(isChecked);
             }
+        } else if (toggle.id === 'widget-mode') {
+            if (window.nekoWidgetMode && typeof window.nekoWidgetMode.setEnabled === 'function') {
+                return queueWidgetModeMutation(function () {
+                    return Promise.resolve()
+                        .then(function () { return window.nekoWidgetMode.setEnabled(isChecked); })
+                        .then(function (ok) {
+                            if (!ok) checkbox.checked = !isChecked;
+                            updateStyle();
+                            return ok;
+                        })
+                        .catch(function (error) {
+                            checkbox.checked = !isChecked;
+                            updateStyle();
+                            showWidgetModeMutationFailure(error);
+                            return false;
+                        });
+                });
+            }
         }
     };
 
@@ -2434,7 +2551,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         if (checkbox._processing) {
             const elapsed = Date.now() - (checkbox._processingTime || 0);
-            if (elapsed < 500) {
+            if (toggle.id === 'widget-mode' || elapsed < 500) {
                 return;
             }
         }
@@ -2444,14 +2561,19 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
+        const mutation = handleToggleChange(newChecked);
         refreshDependentToggles();
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
 
-        setTimeout(() => {
+        const clearProcessing = () => {
             checkbox._processing = false;
             checkbox._processingTime = null;
-        }, 500);
+        };
+        if (toggle.id === 'widget-mode' && mutation && typeof mutation.finally === 'function') {
+            void mutation.finally(clearProcessing);
+        } else {
+            setTimeout(clearProcessing, 500);
+        }
     };
 
     toggleItem.addEventListener('keydown', (e) => {

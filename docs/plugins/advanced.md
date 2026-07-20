@@ -145,7 +145,7 @@ watcher.start()
 
 Callable `filter(predicate)`, `where(predicate)`, and `sort(key=callable)` are local-only transformations. They are useful for an already-materialized snapshot, but they cannot be replayed by `watch()`; watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)` operations as above.
 
-Use `await self.bus.memory.get(bucket_id="default", limit=...)` for recent memory records and `await self.ctx.query_memory("default", query)` for semantic lookup. The old high-level `self.memory` / `MemoryClient` API no longer exists.
+Use `await self.bus.memory.get(bucket_id="default", limit=...)` for the host's bounded window of recent user-utterance events. This bucket is an in-memory plugin context (one-hour TTL), not the character's persistent facts, reflections, or persona. The old high-level `self.memory` / `MemoryClient` API no longer exists. Although `self.ctx.query_memory(...)` remains for compatibility, it calls a deprecated placeholder endpoint and must not be treated as semantic recall.
 
 ---
 

@@ -1,64 +1,45 @@
-# Nuitka 打包注意事项
 
-N.E.K.O 用 Nuitka standalone 把 Python 后端编进单 exe，再被 Electron 打包分发。
-Nuitka 有几个**默认行为**容易踩坑，**新加目录或动态 import 之前必读**。
+# Nuitka 打包
 
-## 规则 1：含 `.py` 的目录名必须用下划线
+当前可追踪的打包契约是桌面 workflow 及其准备、校验脚本。仓库中没有受跟踪的 `build_nuitka.bat`，因此不要把它写成第二个权威入口。
 
-Python 包名禁止含连字符，所以 `--include-package=plugin.my-tool.public` 会被 Nuitka 拒绝。
-自然的退路 `--include-data-dir=plugin/my-tool` 也是陷阱：Nuitka 的 `--include-data-dir` **默认过滤
-`.py`、`.pyc`、`.pyd`、`.so`、`.dll`** 等代码后缀（见你本地 Nuitka 安装中
-`nuitka/freezer/IncludedDataFiles.py` 的 `default_ignored_suffixes` 元组——这是上游默认行为，不是项目配置）。
-打包后的 dist 里只剩 `.md`、`.json` 等非代码文件，运行时 import 直接 `ModuleNotFoundError`，
-而 build 看起来一切正常，直到用户打开受影响的功能。
+## Python 包命名
 
-**真实 bug**：`plugin/neko-plugin-cli/` 历史上含有 `public/` 这个 Python 包。server 调用方做
-`sys.path.insert(_CLI_ROOT)` 之后 `from public import ...`。源码模式跑得起来；Nuitka standalone
-里整个 `public/` 包被静默丢失，embedded user plugin server 起不来，plugin 管理 UI 整个无法访问。
+含可导入 `.py` 的目录使用下划线名称并包含 `__init__.py`。连字符包名不符合普通 Python 命名，也会干扰数据包含。`tests/unit/test_no_hyphen_python_packages.py` 会检查此规则。
 
-**正确写法**：任何含 `.py` 源文件的目录都用下划线 + 含 `__init__.py`。
-若需要带连字符的对外 CLI 工具产品名，用 `pyproject.toml [project.scripts]` 映射；
-底层 Python 包仍用下划线。
+不要用 `--include-data-dir` 分发可导入 Python。Nuitka 会从数据目录过滤类代码后缀。应正常编译 package；只有存在明确运行时契约的解释型/沙箱源码 payload 才作为原始数据包含。
 
-`tests/unit/test_no_hyphen_python_packages.py` 会在 PR 阶段自动拦截违规。
+## 内置插件 staging
 
-## 规则 2：`--include-data-dir=` 不带 `.py`
+当前桌面 workflow 依次执行：
 
-如果真的需要把 `.py` 源文件以非编译形式打包（极少见，比如运行时插件 sandbox），
-用 `--include-raw-dir=` 替代——它跳过默认后缀过滤。其他情况一律首选
-`--include-package=<dotted.name>`，让 Nuitka 把模块编进二进制。
+1. `scripts/prepare_nuitka_plugins.py prepare`
+2. 编译生成的 `build_nuitka_launcher.py`
+3. 用 `scripts/prepare_nuitka_plugins.py install` 安装到构建分发目录
+4. 执行 `scripts/check_nuitka_dist.py <dist> --plugin-stage build/nuitka-plugins`
 
-## 规则 3：新加目录必须同步 build script + CI
+Staging 脚本按各插件的 `[tool.neko.build]` 规则处理并生成选择性排除。不要恢复全量 `--include-data-dir=plugin/plugins=plugin/plugins` 或全量 `--nofollow-import-to=plugin.plugins`；两者都会以不同方式绕过 staging 契约。
 
-两套独立的构建配置：
+Workflow 对 `plugin.plugins.galgame_plugin.training` 有定向排除。它是经过审查的功能专用策略，不应扩展成通用做法。
 
-- `build_nuitka.bat` —— 本地维护脚本，**gitignored**（含签名路径、机器特定设置）。
-- `.github/workflows/build-desktop.yml` —— Linux/macOS/Windows release artifact 的 CI 构建。
+## 资源与动态导入
 
-新加需要进 bundle 的目录必须**两边同步更新**。Nuitka 构建后 CI 会跑
-`scripts/check_nuitka_dist.py` 验证关键资产存在；新增必需资产请同步登记到该脚本里。
+新增运行时资源或动态导入可能需要协调修改：
 
-## 规则 4：别随便拉起打包后的 exe 做诊断
+- 跨平台和 Linux-only workflow 的 Nuitka include 选项；
+- 插件 payload 的 `scripts/prepare_nuitka_plugins.py`；
+- `scripts/check_nuitka_dist.py` 的必要资源验证；
+- 定向 import/package 测试。
 
-launcher 会拉起多个子进程（`memory_server`、`agent_server`、`main_server`、plugin server 等）。
-只杀 launcher 子进程仍然存活，会锁住 `dist/Xiao8/` 文件。下一次构建的
-`rmdir /s /q dist\Xiao8` 部分失败、紧接着的 `move dist\launcher.dist dist\Xiao8`
-会把新 build 落进残留目录里——产出半截嵌套的烂 bundle，能启动但缺 config/static/templates。
+Embedding 与 tiktoken 资源由 workflow 分别准备和验证。
 
-诊断打包问题优先用：
+## 安全诊断
 
-- `scripts/check_nuitka_dist.py dist/Xiao8` 查资产清单
-- `grep -r <symbol> dist/Xiao8/` 看内容
-- 若必须跑 exe，事后**显式杀掉**所有 `projectneko_server`、`neko_main_server`、
-  `neko_memory_server`、`neko_agent_server` 进程
+打包后的 launcher 会启动多个服务。只终止父进程可能留下子进程占用 `dist/Xiao8`。启动前优先做静态检查：
 
-## 防御层
+```bash
+uv run python scripts/check_nuitka_dist.py dist/Xiao8 --plugin-stage build/nuitka-plugins
+uv run pytest tests/unit/test_no_hyphen_python_packages.py -q
+```
 
-历史 neko-plugin-cli bug（PR #1115，"rename neko-plugin-cli → neko_plugin_cli"）
-在生产里潜伏数周，因为没有任何机制告警。现在有三层防御：
-
-1. **构建期检查**——`scripts/check_nuitka_dist.py` 在 CI Nuitka 之后跑，遍历 dist 根目录
-   验证每个关键目录存在、每个内置插件都有 `plugin.toml`。
-2. **源码期 lint**——`tests/unit/test_no_hyphen_python_packages.py` 在 PR 阶段失败，
-   只要任何被跟踪的连字符目录里有 `.py` 文件。
-3. **本文档**——加 packaging 相关代码前先读。
+确需运行打包产物时，记录精确 artifact/revision，并在重建前关闭所有子服务。不要用未经审查的递归删除处理被旧进程锁定的分发目录。

@@ -1502,6 +1502,315 @@
         }
     }
 
+    function setExternalImportStatus(message, kind) {
+        const status = document.getElementById('external-memory-import-status');
+        if (!status) return;
+        status.textContent = message || '';
+        status.className = 'external-memory-import-status' + (kind ? ' is-' + kind : '');
+    }
+
+    function setExternalMemoryFormatOpen(open) {
+        const cascader = document.getElementById('external-memory-format-cascader');
+        if (!cascader) return;
+        const popup = cascader.querySelector('.external-memory-format-popup');
+        const trigger = cascader.querySelector('.external-memory-format-trigger');
+        if (popup) popup.hidden = !open;
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+            trigger.classList.toggle('is-open', !!open);
+        }
+    }
+
+    function syncExternalMemoryFormatDropdown() {
+        const select = document.getElementById('external-memory-format');
+        const cascader = document.getElementById('external-memory-format-cascader');
+        if (!select || !cascader) return;
+        const selectedValue = String(select.value || 'auto');
+        const valueEl = cascader.querySelector('.external-memory-format-value');
+        if (valueEl) {
+            valueEl.textContent = selectedValue === 'auto'
+                ? translate('memory.externalImportAuto', 'Auto detect')
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+        }
+        cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
+            const selected = option.dataset.externalMemoryFormat === selectedValue;
+            option.classList.toggle('is-selected', selected);
+            option.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+    }
+
+    function updateExternalImportButton() {
+        const input = document.getElementById('external-memory-files');
+        const button = document.getElementById('external-memory-import-btn');
+        if (button) {
+            // 导入进行中一律保持禁用——否则切角色 / 换文件会重新启用按钮，放行第二
+            // 次导入去撞后端正在跑的 fold/CAS（Codex P2）。
+            button.disabled = !!window._memoryImportInProgress
+                || !(currentCatName && input && input.files && input.files.length);
+        }
+        setElementText(
+            'external-memory-target',
+            currentCatName
+                ? translate('memory.externalImportTarget', 'Target character: {{name}}', { name: currentCatName })
+                : translate('memory.externalImportSelectCharacter', 'Select a target character first.')
+        );
+    }
+
+    function bytesToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        const chunkSize = 0x8000;
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+            binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+        }
+        return btoa(binary);
+    }
+
+    async function buildExternalImportPayload(targetCharacter) {
+        const input = document.getElementById('external-memory-files');
+        const format = document.getElementById('external-memory-format');
+        const selected = Array.from((input && input.files) || []);
+        if (!targetCharacter) {
+            throw new Error(translate('memory.externalImportSelectCharacter', 'Select a target character first.'));
+        }
+        if (!selected.length) {
+            throw new Error(translate('memory.externalImportNoSelection', 'No files selected.'));
+        }
+        const zipFiles = selected.filter(file => /\.zip$/i.test(file.name));
+        if (zipFiles.length) {
+            if (selected.length !== 1) {
+                throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
+            }
+            if (zipFiles[0].size > 8 * 1024 * 1024) {
+                throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
+            }
+            return {
+                character_name: targetCharacter,
+                source_format: format ? format.value : 'auto',
+                archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
+            };
+        }
+        const files = [];
+        let total = 0;
+        for (const file of selected) {
+            if (!/\.md$/i.test(file.name)) {
+                throw new Error(translate('memory.externalImportUnsupported', 'Only Markdown and ZIP files are supported.'));
+            }
+            total += file.size;
+            if (file.size > 2 * 1024 * 1024 || total > 8 * 1024 * 1024) {
+                throw new Error(translate('memory.externalImportTooLarge', 'The selected files are too large.'));
+            }
+            files.push({
+                path: file.webkitRelativePath || file.name,
+                content: await file.text()
+            });
+        }
+        return {
+            character_name: targetCharacter,
+            source_format: format ? format.value : 'auto',
+            files: files
+        };
+    }
+
+    function broadcastExternalMemoryEdited(characterName) {
+        if (typeof BroadcastChannel !== 'undefined') {
+            let channel = null;
+            try {
+                channel = new BroadcastChannel('neko_page_channel');
+                channel.postMessage({ action: 'memory_edited', catgirl_name: characterName });
+                return;
+            } catch (error) {
+                console.warn('[MemoryBrowser] External-memory refresh broadcast failed:', error);
+            } finally {
+                if (channel) channel.close();
+            }
+        }
+        if (window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'memory_edited', catgirl_name: characterName }, PARENT_ORIGIN);
+        }
+    }
+
+    async function fetchExternalMemoryWithTimeout(url, options, timeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } catch (error) {
+            if (error && error.name === 'AbortError') {
+                throw new Error(translate('memory.externalImportFailed', 'External-memory import failed.'));
+            }
+            throw error;
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    }
+
+    async function importExternalMemory() {
+        const button = document.getElementById('external-memory-import-btn');
+        if (button) button.disabled = true;
+        // 从预览阶段就置 in-flight 标志：updateExternalImportButton 与 beforeunload
+        // 都据此拦截，防用户在预览 / 确认期间切角色或换文件重新启用按钮、起第二次
+        // 导入（Codex P2）。finally 统一清除。
+        window._memoryImportInProgress = true;
+        // 冻结文件 / 格式选择：payload 在预览前已快照，期间若改选，commit 仍发旧
+        // payload，会导入与界面所示不同的 workspace（Codex P2）。finally 复原。
+        const fileInput = document.getElementById('external-memory-files');
+        const formatSelect = document.getElementById('external-memory-format');
+        if (fileInput) fileInput.disabled = true;
+        if (formatSelect) formatSelect.disabled = true;
+        // 融合期间每秒刷新「已用 Ns」的计时器；try/catch 任一出口都要清（finally 兜底）。
+        let etaTimer = null;
+        try {
+            const targetCharacter = currentCatName;
+            setExternalImportStatus(translate('memory.externalImportReading', 'Reading external memory...'), 'working');
+            const payload = await buildExternalImportPayload(targetCharacter);
+            const previewResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, 60000);
+            const preview = await previewResponse.json();
+            if (!previewResponse.ok || !preview.success) {
+                throw new Error(preview.error || translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            if (preview.character_name !== targetCharacter) {
+                throw new Error(translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            let confirmation = translate(
+                'memory.externalImportConfirm',
+                'Import {{persona}} persona entries and {{facts}} facts into {{character}}? Suspicious content warnings: {{warnings}}.',
+                {
+                    persona: preview.counts.persona,
+                    facts: preview.counts.facts,
+                    character: targetCharacter,
+                    warnings: preview.warning_count
+                }
+            );
+            if (preview.counts.daily) {
+                // daily 日记在 commit 阶段经 LLM 抽取，最终 fact 数会与 preview 不同。
+                confirmation += '\n\n' + translate(
+                    'memory.externalImportDailyNote',
+                    'Daily journals ({{daily}}) are extracted into facts by an LLM on import; the final fact count may differ from this preview.',
+                    { daily: preview.counts.daily }
+                );
+            }
+            if (Array.isArray(preview.warnings) && preview.warnings.length) {
+                const warningDetails = preview.warnings.slice(0, 5).map(item => {
+                    const patterns = Array.isArray(item.patterns) ? item.patterns.join(', ') : '';
+                    return `- ${item.source_file}: ${item.text}${patterns ? ` [${patterns}]` : ''}`;
+                }).join('\n');
+                confirmation += `\n\n${warningDetails}`;
+            }
+            if (!window.confirm(confirmation)) {
+                setExternalImportStatus(translate('memory.externalImportCancelled', 'Import cancelled.'), '');
+                return;
+            }
+            payload.acknowledge_warnings = true;
+            // 预估融合耗时：persona 融合按 entity(neko/master)分组每组一次 LLM 往返，
+            // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
+            // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
+            // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
+            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
+            const fusionCalls = Number(preview.persona_fusion_calls) || 0;
+            const personaTokens = Number(preview.persona_candidate_tokens) || 0;
+            const dailyCalls = Number(preview.daily_extraction_calls) || 0;
+            const dailyTokens = Number(preview.daily_candidate_tokens) || 0;
+            const llmCalls = fusionCalls + dailyCalls;
+            const llmTokens = personaTokens + dailyTokens;
+            const etaSeconds = llmCalls > 0
+                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
+                : 0;
+            const workingStartedAt = Date.now();
+            // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
+            // 文案，真正的中文提示只能落在这里（in-flight 标志已在预览前置好）。
+            const renderWorkingStatus = () => {
+                const base = translate('memory.externalImportWorking', 'Importing memory...');
+                const doNotClose = translate(
+                    'memory.externalImportDoNotClose',
+                    'Fusing memories — do not close this window or quit the app, or the import will fail.'
+                );
+                let etaText = '';
+                if (etaSeconds > 0) {
+                    const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
+                    etaText = ' ' + translate(
+                        'memory.externalImportEta',
+                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        { est: etaSeconds, elapsed }
+                    );
+                }
+                setExternalImportStatus(base + etaText + ' ' + doNotClose, 'working');
+            };
+            renderWorkingStatus();
+            if (etaSeconds > 0) {
+                etaTimer = window.setInterval(renderWorkingStatus, 1000);
+            }
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 覆盖 persona 融合的整段耗时。
+            const commitResponse = await fetchExternalMemoryWithTimeout('/api/memory/external_import/commit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            }, 270000);
+            // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
+            // commit fetch 抛错（超时/网络）根本没走到这行的情况。
+            if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
+            const result = await commitResponse.json();
+            if (!commitResponse.ok || !result.success) {
+                if (result.error_code === 'external_import_partial') {
+                    const partial = result.partial_import || {};
+                    // persona / facts 任一已落盘 → 即使整体 partial 也要广播
+                    // memory_edited，否则主聊天窗口继续用过期记忆上下文（daily
+                    // 失败但 MEMORY.md 已写入时尤甚）(Codex P2 / CodeRabbit)。
+                    if ((partial.added_persona > 0 || partial.added_facts > 0) && partial.character_name) {
+                        broadcastExternalMemoryEdited(partial.character_name);
+                    }
+                    throw new Error(translate(
+                        'memory.externalImportPartial',
+                        'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
+                        { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
+                    ));
+                }
+                if (result.error_code === 'external_import_too_large') {
+                    // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
+                    const big = result.partial_import || {};
+                    if ((big.added_persona > 0 || big.added_facts > 0) && big.character_name) {
+                        broadcastExternalMemoryEdited(big.character_name);
+                    }
+                    throw new Error(translate(
+                        'memory.externalImportTooLargeToFuse',
+                        'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
+                    ));
+                }
+                throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
+            }
+            setExternalImportStatus(
+                translate(
+                    'memory.externalImportSuccess',
+                    'Imported {{persona}} persona entries and {{facts}} facts; skipped {{duplicates}} duplicates.',
+                    {
+                        persona: result.added_persona,
+                        facts: result.added_facts,
+                        duplicates: result.skipped_duplicates
+                    }
+                ),
+                result.warning_count ? 'warning' : 'success'
+            );
+            broadcastExternalMemoryEdited(result.character_name);
+        } catch (error) {
+            setExternalImportStatus(
+                String(error && error.message ? error.message : translate('memory.externalImportFailed', 'Import failed.')),
+                'error'
+            );
+        } finally {
+            if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
+            window._memoryImportInProgress = false;
+            if (fileInput) fileInput.disabled = false;
+            if (formatSelect) formatSelect.disabled = false;
+            updateExternalImportButton();
+        }
+    }
+
     function renderChatEdit() {
         const div = document.getElementById('memory-chat-edit');
         // 清空并使用 DOM API 渲染每一条消息，避免将未转义的用户数据插入到 HTML 中
@@ -1712,9 +2021,13 @@
         chatData[idx].text = memoPrefix + value;
     }
     async function selectMemoryFile(filename, li, catName) {
+        // 导入进行中冻结角色 / 文件切换：commit 用的是已快照的 targetCharacter，
+        // 放行切换只会让侧栏与正在导入的选择不一致（Codex P2）。
+        if (window._memoryImportInProgress) return;
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+        updateExternalImportButton();
         Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
         if (li) li.classList.add('selected');
         const editDiv = document.getElementById('memory-chat-edit');
@@ -1902,7 +2215,18 @@
         teardownMemoryChatPanelHeightSync();
         teardownMemoryParticleCanvas();
     });
-    window.addEventListener('beforeunload', function () {
+    window.addEventListener('beforeunload', function (e) {
+        if (window._memoryImportInProgress) {
+            // 记忆融合进行中：拦住关闭，避免中断同步导入。真正的中文提示已在状态区
+            // 常驻（现代 Chromium 会忽略这里的自定义文案，只弹通用确认框）。
+            const message = translate(
+                'memory.externalImportDoNotClose',
+                'Fusing memories — do not close this window or quit the app, or the import will fail.'
+            );
+            e.preventDefault();
+            e.returnValue = message;
+            return message;
+        }
         teardownMemoryChatPanelHeightSync();
         teardownMemoryParticleCanvas();
     });
@@ -1914,7 +2238,16 @@
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
             setReviewControlsEnabled(true);
-            loadMemoryFileList();
+            await loadMemoryFileList();
+            if (!currentCatName) {
+                try {
+                    const response = await fetch('/api/characters/current_catgirl');
+                    const current = await response.json();
+                    currentCatName = current.current_catgirl || '';
+                } catch (error) {
+                    console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
+                }
+            }
             loadReviewConfig();
             loadPowerfulMemoryConfig();
         }
@@ -1951,12 +2284,72 @@
                 }
                 refreshTutorialCascaderDayLabels();
                 syncTutorialResetCascader();
+                syncExternalMemoryFormatDropdown();
             });
         }
         window.addEventListener('localechange', function () {
             refreshTutorialCascaderDayLabels();
             syncTutorialResetCascader();
+            syncExternalMemoryFormatDropdown();
         });
+
+        const externalFiles = document.getElementById('external-memory-files');
+        const externalPick = document.getElementById('external-memory-pick-btn');
+        const externalImport = document.getElementById('external-memory-import-btn');
+        const externalFormatSelect = document.getElementById('external-memory-format');
+        const externalFormatCascader = document.getElementById('external-memory-format-cascader');
+        if (externalFormatSelect && externalFormatCascader) {
+            const externalFormatTrigger = externalFormatCascader.querySelector('.external-memory-format-trigger');
+            const externalFormatPopup = externalFormatCascader.querySelector('.external-memory-format-popup');
+            syncExternalMemoryFormatDropdown();
+            if (externalFormatTrigger) {
+                externalFormatTrigger.addEventListener('click', function () {
+                    if (window._memoryImportInProgress) return;  // 导入期间冻结格式选择 (Codex P2)
+                    setExternalMemoryFormatOpen(!(externalFormatPopup && !externalFormatPopup.hidden));
+                });
+            }
+            if (externalFormatPopup) {
+                externalFormatPopup.addEventListener('click', function (event) {
+                    if (window._memoryImportInProgress) return;  // 导入期间冻结格式选择 (Codex P2)
+                    const option = event.target.closest('[data-external-memory-format]');
+                    if (!option) return;
+                    externalFormatSelect.value = option.dataset.externalMemoryFormat || 'auto';
+                    externalFormatSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    syncExternalMemoryFormatDropdown();
+                    setExternalMemoryFormatOpen(false);
+                    if (externalFormatTrigger) externalFormatTrigger.focus();
+                });
+            }
+            document.addEventListener('click', function (event) {
+                if (!externalFormatCascader.contains(event.target)) {
+                    setExternalMemoryFormatOpen(false);
+                }
+            });
+            externalFormatCascader.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape') {
+                    setExternalMemoryFormatOpen(false);
+                    if (externalFormatTrigger) externalFormatTrigger.focus();
+                }
+            });
+        }
+        if (externalPick && externalFiles) {
+            externalPick.addEventListener('click', function () { externalFiles.click(); });
+            externalFiles.addEventListener('change', function () {
+                const names = Array.from(externalFiles.files || []).map(file => file.name);
+                setElementText(
+                    'external-memory-selection',
+                    names.length
+                        ? names.join(', ')
+                        : translate('memory.externalImportNoSelection', 'No files selected')
+                );
+                setExternalImportStatus('', '');
+                updateExternalImportButton();
+            });
+        }
+        if (externalImport) {
+            externalImport.addEventListener('click', importExternalMemory);
+        }
+        updateExternalImportButton();
 
         const openStorageBtn = document.getElementById('storage-location-open-btn');
         if (openStorageBtn) {

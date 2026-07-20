@@ -1,47 +1,68 @@
 # TTS Client
 
-**モジュール:** `main_logic/tts_client/`（Python パッケージ。`__init__.py`、`_infra.py`、`_registry_meta.py`、`_telemetry.py`、およびプロバイダーごとの worker モジュールを含む `workers/` サブパッケージで合計約5900行）。ファクトリ関数 `get_tts_worker` は `main_logic/tts_client/__init__.py` に定義されています。
+**Package:** `main_logic/tts_client/`
 
-TTS クライアントは、統一されたキューベースのインターフェースで複数のプロバイダーにわたるテキスト音声合成を処理します。
+TTS package は現在の core・voice 設定から外部音声 provider を解決し、統一されたキュー契約を持つ worker 関数を提供します。`LLMSessionManager` がキューを所有し、daemon thread を起動して、生成 PCM をクライアントへ転送します。
 
-## ファクトリ関数
+ネイティブ音声 realtime model はこの外部 TTS 経路を使いません。
+
+## Factory 契約
 
 ```python
 from main_logic.tts_client import get_tts_worker
 
-worker = get_tts_worker(config)
+worker_fn, api_key_override, provider_key = get_tts_worker(
+    core_api_type="qwen",
+    has_custom_voice=False,
+    voice_id="",
+)
 ```
 
-アクティブなプロバイダーと音声設定に応じた TTS ワーカーを作成します。
+`get_tts_worker()` は worker object を作成・起動しません。次の三つを返します。
 
-## サポートされるプロバイダー
+1. session manager の thread で実行する worker 関数
+2. その route が必要とする任意の API key override
+3. key 解決と診断に使う canonical `provider_key`
 
-| プロバイダー | モジュール | 特徴 |
-|-------------|----------|------|
-| DashScope CosyVoice | クラウド | 高品質、音声クローニング、ストリーミング |
-| DashScope TTS V2 | クラウド | 低レイテンシバリアント |
-| GPT-SoVITS | ローカル | 完全オフライン、カスタマイズ可能 |
-| Custom | HTTP | OpenAI 互換の任意の TTS エンドポイント |
+非対応または利用不能な選択は dummy worker に解決され、合成成功を装わず、キューへ制御されたエラーを報告します。
 
-## キューアーキテクチャ
+## Provider 選択
 
-TTS クライアントはプロデューサー・コンシューマーパターンを使用します：
+登録済みの特殊 route は、native/core-provider fallback より先に priority 順で評価されます。
 
-1. **リクエストキュー**: セッションマネージャーによりテキスト文がエンキュー
-2. **ワーカースレッド**: テキストをデキューし、TTS API を呼び出し、オーディオチャンクを生成
-3. **レスポンスキュー**: リサンプリングと WebSocket 配信の準備が整ったオーディオチャンク
+1. GPT-SoVITS
+2. vLLM-Omni
+3. MiniMax clone voice
+4. ElevenLabs clone voice
+5. CosyVoice clone voice
+6. MiMo
+7. Doubao TTS
 
-## 音声クローニングフロー
+残りの選択は active core route に従い、Qwen/Qwen International、free route の Step または Gemini、Step、GLM/CogTTS、Gemini、OpenAI、Grok を含みます。有効な clone route は voice metadata と選択 provider で決まり、voice cloning は DashScope 専用ではありません。
 
-1. ユーザーが `/api/characters/voice_clone` 経由で音声サンプルをアップロード
-2. 音声が DashScope の音声登録 API に送信される
-3. `voice_id` が返され、キャラクター設定に保存される
-4. 以降の TTS 呼び出しに `voice_id` が含まれ、パーソナライズされた合成が行われる
+Provider 実装は `main_logic/tts_client/workers/` にあります。provider 固有の decode と、必要に応じた 48 kHz resampling を含め、出力をアプリケーションが期待する PCM format に正規化します。
 
-## 中断処理
+## キュープロトコル
 
-ユーザーが中断した場合：
+Manager は worker thread へ次の request item を送ります。
 
-1. 両方のキューがフラッシュされる
-2. 進行中の TTS API 呼び出しがキャンセルされる
-3. ワーカーは即座に新しい入力を受け付ける準備が整う
+| Request | 意味 |
+|---|---|
+| `(speech_id, text)` | 一つの text segment を合成 |
+| `(None, None)` | 現在の utterance を終了 |
+| `("__interrupt__", None)` | 現在の utterance を破棄/mute し、worker state を reset |
+| `("__shutdown__", None)` | worker を停止 |
+
+Worker は raw PCM chunk、またはタグ付き `("__audio__", speech_id, payload)` message と、ready/error などの control message を返します。`speech_id` により manager は interruption 済み、または置換済み response の遅延音声を拒否できます。
+
+## Thread と async の境界
+
+Model text は asyncio 側で生成されます。Session manager が text を分割して TTS request を enqueue し、選択された同期 worker が専用 thread で消費します。Manager の response task は event loop を block せず response queue を読み、受理した音声を WebSocket client へ転送します。
+
+したがって TTS package 自体は、session lifecycle、WebSocket delivery、worker thread を所有しません。
+
+## Interruption とエラー
+
+Interruption 時は manager が queued output を drain し、interrupt sentinel を送り、対応 provider では worker acknowledgement を待ち、遅延 chunk を排除して pending speech ID を消去します。Provider worker の能力は異なり、upstream request を cancel できるものもあれば、出力停止または結果の mute しかできないものもあります。すべての remote API call を物理的に cancel できる保証はありません。
+
+起動・合成失敗は control/error message で返されます。Manager が retry、status 表示、worker 再起動、speech path 無効化を判断します。Voice enrollment の HTTP route と cloned `voice_id` の永続化は、runtime TTS queue とは別の責務です。

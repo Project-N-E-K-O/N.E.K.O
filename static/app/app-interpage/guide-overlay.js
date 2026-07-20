@@ -21,6 +21,9 @@
     I.yuiGuideChatSpotlightTimer = 0;
     I.YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY = 'yuiGuidePcOverlaySequence';
+    var YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES = 3;
+    var YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES = 6;
+    var YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS = 48;
     I.yuiGuidePcOverlayActive = false;
     I.yuiGuidePcOverlayReady = false;
     I.yuiGuidePcOverlayRunIdOverride = '';
@@ -29,6 +32,7 @@
     I.yuiGuidePcOverlayLifecycleClosed = false;
     var yuiGuidePcOverlayLifecycleRunId = '';
     var yuiGuidePcOverlaySequence = 0;
+    var yuiGuidePcOverlayDeferredReconciliationTimer = 0;
     I.yuiGuidePcOverlaySpotlights = [];
     I.yuiGuidePcOverlayCursor = null;
     I.yuiGuideChatSpotlightLastPcKind = '';
@@ -221,6 +225,9 @@
 
     I.isYuiGuideLifecycleScopedAction = function isYuiGuideLifecycleScopedAction(action) {
         switch (action) {
+            // 教程准备会改写当前胶囊快照；必须和后续 fixed-layout 一样绑定当前 run，
+            // 否则快速重启时迟到的旧 prepare 会覆盖新教程的恢复身份。
+            case 'yui_guide_prepare_compact_chat':
             case 'yui_guide_set_chat_buttons_disabled':
             case 'yui_guide_set_chat_input_locked':
             case 'yui_guide_set_compact_chat_fixed_layout':
@@ -269,6 +276,7 @@
     }
 
     I.closeYuiGuidePcOverlayLifecycle = function closeYuiGuidePcOverlayLifecycle() {
+        clearYuiGuidePcOverlayDeferredReconciliation();
         yuiGuidePcOverlayLifecycleEpoch += 1;
         I.yuiGuidePcOverlayLifecycleClosed = true;
         yuiGuidePcOverlayLifecycleRunId = '';
@@ -302,12 +310,69 @@
         } catch (_) {}
     }
 
-    function handleYuiGuidePcOverlayStaleResult(result, patch, attemptedRunId, retried, attemptedLifecycleEpoch) {
+    function clearYuiGuidePcOverlayDeferredReconciliation() {
+        if (yuiGuidePcOverlayDeferredReconciliationTimer) {
+            window.clearTimeout(yuiGuidePcOverlayDeferredReconciliationTimer);
+            yuiGuidePcOverlayDeferredReconciliationTimer = 0;
+        }
+    }
+
+    function readStoredYuiGuidePcOverlaySequence() {
+        try {
+            return Math.max(
+                0,
+                Math.floor(Number(window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY)) || 0)
+            );
+        } catch (_) {
+            return 0;
+        }
+    }
+
+    function scheduleYuiGuidePcOverlayDeferredReconciliation(
+        attemptedRunId,
+        retryCount,
+        attemptedLifecycleEpoch,
+        attemptedSequence
+    ) {
+        clearYuiGuidePcOverlayDeferredReconciliation();
+        yuiGuidePcOverlayDeferredReconciliationTimer = window.setTimeout(function () {
+            yuiGuidePcOverlayDeferredReconciliationTimer = 0;
+            if (
+                I.yuiGuidePcOverlayLifecycleClosed
+                || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+                || readStoredYuiGuidePcOverlaySequence() > attemptedSequence
+            ) {
+                return;
+            }
+            I.sendYuiGuidePcOverlayPatch({}, retryCount + 1, {
+                tutorialRunId: attemptedRunId
+            });
+        }, YUI_GUIDE_PC_OVERLAY_DEFERRED_RECONCILIATION_DELAY_MS);
+    }
+
+    function handleYuiGuidePcOverlayStaleResult(
+        result,
+        patch,
+        attemptedRunId,
+        retried,
+        attemptedLifecycleEpoch,
+        attemptedSequence
+    ) {
         var isStaleResponse = !!(result && result.stale === true);
-        var alreadyRetried = retried === true;
+        var retryCount = Math.max(0, Math.floor(Number(retried) || 0));
         if (
             I.yuiGuidePcOverlayLifecycleClosed
             || attemptedLifecycleEpoch !== yuiGuidePcOverlayLifecycleEpoch
+            || attemptedSequence !== yuiGuidePcOverlaySequence
+        ) {
+            return;
+        }
+        var activeSequence = Math.max(0, Math.floor(Number(result && result.activeSequence) || 0));
+        if (
+            isStaleResponse
+            && result.reason === 'stale-sequence'
+            && result.activeTutorialRunId === attemptedRunId
+            && activeSequence > attemptedSequence
         ) {
             return;
         }
@@ -320,24 +385,74 @@
             && attemptedRunId === storedCanonicalRunId
             && !attemptedChatOwnedRun
         );
+        var isSameRunSequenceStale = !!(
+            isStaleResponse
+            && result.reason === 'stale-sequence'
+            && result.activeTutorialRunId === attemptedRunId
+            && activeSequence === attemptedSequence
+            && (
+                attemptedCanonicalRun
+                || (attemptedCurrentRun && attemptedChatOwnedRun)
+            )
+        );
 
-        if (!isStaleResponse || alreadyRetried || !attemptedRunId) {
+        if (isSameRunSequenceStale) {
+            if (retryCount < YUI_GUIDE_PC_OVERLAY_MAX_SAME_RUN_STALE_RETRIES) {
+                yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence(result.activeSequence);
+                I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1, {
+                    tutorialRunId: attemptedRunId
+                });
+            } else if (retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES) {
+                scheduleYuiGuidePcOverlayDeferredReconciliation(
+                    attemptedRunId,
+                    retryCount,
+                    attemptedLifecycleEpoch,
+                    attemptedSequence
+                );
+            }
+            return;
+        }
+
+        var attemptedOwnedRun = !!(
+            attemptedCanonicalRun
+            || (attemptedCurrentRun && attemptedChatOwnedRun)
+        );
+        var isDifferentRunStale = !!(
+            isStaleResponse
+            && result.activeTutorialRunId
+            && result.activeTutorialRunId !== attemptedRunId
+        );
+        if (isDifferentRunStale && retryCount > 0) {
+            if (attemptedOwnedRun && retryCount < YUI_GUIDE_PC_OVERLAY_MAX_TOTAL_STALE_RETRIES) {
+                I.yuiGuidePcOverlayActive = false;
+                I.yuiGuidePcOverlayReady = false;
+                scheduleYuiGuidePcOverlayDeferredReconciliation(
+                    attemptedRunId,
+                    retryCount,
+                    attemptedLifecycleEpoch,
+                    attemptedSequence
+                );
+            }
+            return;
+        }
+
+        if (!isStaleResponse || retryCount > 0 || !attemptedRunId) {
             return;
         }
         if (attemptedCanonicalRun) {
             if (syncYuiGuidePcOverlayRunIdFromStorage()) {
-                I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+                I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
                 return;
             }
         } else if (!attemptedCurrentRun || !attemptedChatOwnedRun) {
             return;
         }
         if (syncYuiGuidePcOverlayRunIdFromStorage()) {
-            I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+            I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
             return;
         }
         resetYuiGuidePcOverlayRunForRetry();
-        I.sendYuiGuidePcOverlayPatch(patch || {}, true);
+        I.sendYuiGuidePcOverlayPatch(patch || {}, retryCount + 1);
     }
 
     function resolveYuiGuidePcOverlayRunIdForSend(requestedRunId, allowCreateRun) {
@@ -359,21 +474,15 @@
             : getYuiGuidePcOverlayRunId();
     }
 
-    function nextYuiGuidePcOverlaySequence() {
+    function nextYuiGuidePcOverlaySequence(minimumSequence) {
         var wallSequence = Date.now() * 1000;
-        var storedSequence = 0;
-        try {
-            storedSequence = Math.max(
-                0,
-                Math.floor(Number(window.localStorage.getItem(YUI_GUIDE_PC_OVERLAY_SEQUENCE_KEY)) || 0)
-            );
-        } catch (_) {
-            storedSequence = 0;
-        }
+        var sequenceFloor = Math.max(0, Math.floor(Number(minimumSequence) || 0));
+        var storedSequence = readStoredYuiGuidePcOverlaySequence();
 
         yuiGuidePcOverlaySequence = Math.max(
             yuiGuidePcOverlaySequence + 1,
             storedSequence + 1,
+            sequenceFloor + 1,
             wallSequence
         );
         try {
@@ -682,6 +791,10 @@
         if (!host || I.yuiGuidePcOverlayLifecycleClosed) {
             return false;
         }
+        var retryCount = Math.max(0, Math.floor(Number(retried) || 0));
+        if (retryCount === 0) {
+            clearYuiGuidePcOverlayDeferredReconciliation();
+        }
         var sendLifecycleEpoch = yuiGuidePcOverlayLifecycleEpoch;
         var sendOptions = options || {};
         if (I.isYuiGuidePcOverlayRunEnded(sendOptions.tutorialRunId)) {
@@ -718,13 +831,7 @@
                         return;
                     }
                     if (result && result.stale === true) {
-                        handleYuiGuidePcOverlayStaleResult(
-                            result,
-                            patch,
-                            runId,
-                            retried === true,
-                            sendLifecycleEpoch
-                        );
+                        // The paired update carries the state and owns stale retries.
                         return;
                     }
                     if (result && result.ok === false) {
@@ -742,11 +849,12 @@
             } catch (_) {}
         }
         yuiGuidePcOverlaySequence = nextYuiGuidePcOverlaySequence();
+        var updateSequence = yuiGuidePcOverlaySequence;
         try {
             Promise.resolve(host.update({
                 tutorialRunId: runId,
                 sceneId: 'external-chat',
-                sequence: yuiGuidePcOverlaySequence,
+                sequence: updateSequence,
                 payload: payload
             })).then(function (result) {
                 if (
@@ -760,8 +868,9 @@
                         result,
                         patch,
                         runId,
-                        retried === true,
-                        sendLifecycleEpoch
+                        retryCount,
+                        sendLifecycleEpoch,
+                        updateSequence
                     );
                     return;
                 }

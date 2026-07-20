@@ -103,6 +103,11 @@ class VisionModelLoader:
             self._sessions.pop(model_name, None)
         return self.load(model_name)
 
+    def close(self) -> None:
+        """Release cached ONNX sessions owned by this loader."""
+        with self._lock:
+            self._sessions.clear()
+
     def _session_options(self) -> Any:
         if ort is None:
             return None

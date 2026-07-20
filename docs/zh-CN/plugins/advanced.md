@@ -145,7 +145,7 @@ watcher.start()
 
 可调用形式 `filter(predicate)`、`where(predicate)` 与 `sort(key=callable)` 只处理当前已经物化的本地快照，不能由 `watch()` 重放。需要监听的链必须像上例一样使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。
 
-最近记忆记录使用 `await self.bus.memory.get(bucket_id="default", limit=...)`，语义检索使用 `await self.ctx.query_memory("default", query)`。旧的高层 `self.memory` / `MemoryClient` 已不存在。
+使用 `await self.bus.memory.get(bucket_id="default", limit=...)` 读取宿主保留的近期用户话语事件。这个 bucket 有容量上限、只保存在内存中且 TTL 为一小时，并不是角色持久化的事实、反思或人格。旧的高层 `self.memory` / `MemoryClient` 已不存在。`self.ctx.query_memory(...)` 虽然为兼容仍被保留，但它调用的是已弃用的占位端点，不能当作语义召回。
 
 ---
 
