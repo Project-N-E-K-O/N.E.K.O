@@ -152,6 +152,22 @@ test('replacement buttons inherit loading and playing state across list refreshe
     assert.equal(replacementButton.dataset.previewState, undefined);
 });
 
+test('every voice-list preview button reconnects to an active session', () => {
+    const renderBlocks = source
+        .split("previewBtn.className = 'voice-preview-btn';")
+        .slice(1)
+        .map(block => block.slice(0, block.indexOf('previewBtn.onclick')));
+
+    assert.equal(renderBlocks.length, 4);
+    renderBlocks.forEach((block, index) => {
+        assert.match(
+            block,
+            /attachVoicePreviewButton\(voiceId, previewBtn\);/,
+            `preview-button render branch ${index + 1} does not reconnect to active playback`,
+        );
+    });
+});
+
 test('all supported locales define the previewing label', () => {
     const locales = ['en', 'ja', 'ko', 'zh-CN', 'zh-TW', 'ru', 'pt', 'es'];
     for (const locale of locales) {

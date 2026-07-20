@@ -2549,6 +2549,7 @@ async function loadVoices() {
             previewImg.alt = '';
             previewBtn.appendChild(previewImg);
             previewBtn.appendChild(document.createTextNode(previewText));
+            attachVoicePreviewButton(voiceId, previewBtn);
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
                 playPreview(voiceId, previewBtn, { source, provider });
