@@ -1664,6 +1664,7 @@
         },
         "registeredVoices": "已注冊音色",
         "preview": "預覽",
+        "previewing": "正在預覽",
         "previewFailed": "預覽失敗: {{error}}",
         "previewTimeout": "試聽生成逾時，請稍後重試",
         "playFailed": "播放失敗: {{error}}",

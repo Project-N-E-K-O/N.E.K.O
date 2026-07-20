@@ -2283,14 +2283,33 @@ async function playPreview(voiceId, btn, options = {}) {
 
         if (audioSrc) {
             const audio = new Audio(audioSrc);
-            audio.play().catch(e => {
+            let playbackFinished = false;
+            const restorePreviewButton = () => {
+                if (playbackFinished) return;
+                playbackFinished = true;
+                btn.innerHTML = originalContent;
+                btn.disabled = false;
+                delete btn.dataset.previewState;
+            };
+
+            audio.addEventListener('ended', restorePreviewButton, { once: true });
+            audio.addEventListener('error', restorePreviewButton, { once: true });
+
+            try {
+                await audio.play();
+            } catch (e) {
+                restorePreviewButton();
                 console.error('Audio play error:', e);
                 showVoicePreviewErrorNotice(
                     window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message
                 );
-            });
-            btn.innerHTML = originalContent;
-            btn.disabled = false;
+                return;
+            }
+
+            if (!playbackFinished) {
+                btn.textContent = window.t ? window.t('voice.previewing') : '正在预览';
+                btn.dataset.previewState = 'playing';
+            }
         }
     } catch (error) {
         console.error('Preview error:', error);

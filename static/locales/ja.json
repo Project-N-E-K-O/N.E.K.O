@@ -1664,6 +1664,7 @@
         },
         "registeredVoices": "登録済みボイス",
         "preview": "プレビュー",
+        "previewing": "プレビュー中",
         "previewFailed": "プレビューに失敗しました: {{error}}",
         "previewTimeout": "プレビュー生成がタイムアウトしました。しばらくしてから再試行してください。",
         "playFailed": "再生に失敗しました: {{error}}",

@@ -1664,6 +1664,7 @@
         },
         "registeredVoices": "Voces registradas",
         "preview": "Avance",
+        "previewing": "Reproduciendo vista previa",
         "previewFailed": "Error en la vista previa: {{error}}",
         "previewTimeout": "La generación de la vista previa agotó el tiempo de espera. Inténtalo de nuevo más tarde.",
         "playFailed": "Error en la reproducción: {{error}}",
