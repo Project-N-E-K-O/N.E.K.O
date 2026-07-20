@@ -45,13 +45,12 @@ def test_voice_recognition_uses_portal_popover_with_keyboard_and_touch_contracts
     assert "aria-expanded" in source
 
 
-def test_voice_recognition_ui_never_advertises_omni_native_fallback() -> None:
+def test_disabled_independent_asr_ui_describes_omni_native_route() -> None:
     source = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
 
-    assert "Using Omni native recognition" not in source
-    assert "Using Omni native speech recognition" not in source
+    assert "window.t('microphone.voiceRecognitionDisabled')" in source
     assert "voiceRecognitionDisabledHint" in source
-    assert "independentAsrNative" not in source
+    assert "Omni 原生语音识别" in source
 
 
 def test_voice_recognition_popover_keys_exist_in_all_locales() -> None:
@@ -61,6 +60,7 @@ def test_voice_recognition_popover_keys_exist_in_all_locales() -> None:
         "independentAsr",
         "independentAsrSummary",
         "independentAsrSummaryGeneric",
+        "independentAsrNative",
         "voiceRecognitionSettings",
         "voiceRecognitionDisabled",
         "voiceRecognitionDisabledHint",
@@ -72,12 +72,28 @@ def test_voice_recognition_popover_keys_exist_in_all_locales() -> None:
         "voiceResourceOptimizationHintOff",
     }
 
+    native_route_markers = {
+        "en": "Omni native speech recognition",
+        "es": "reconocimiento de voz nativo de Omni",
+        "ja": "Omni ネイティブ音声認識",
+        "ko": "Omni 네이티브 음성 인식",
+        "pt": "reconhecimento de voz nativo do Omni",
+        "ru": "встроенное распознавание речи Omni",
+        "zh-CN": "Omni 原生语音识别",
+        "zh-TW": "Omni 原生語音辨識",
+    }
+
     for locale_name in LOCALES:
         locale = json.loads(
             (LOCALE_DIR / f"{locale_name}.json").read_text(encoding="utf-8")
         )
-        assert required <= set(locale["microphone"]), locale_name
-        assert "RNNoise" not in locale["microphone"]["noiseReductionHint"]
-        assert "native speech recognition" not in locale["microphone"][
-            "independentAsrNative"
-        ].lower()
+        microphone = locale["microphone"]
+        assert required <= set(microphone), locale_name
+        assert "RNNoise" not in microphone["noiseReductionHint"]
+        marker = native_route_markers[locale_name]
+        for key in (
+            "independentAsrNative",
+            "voiceRecognitionDisabled",
+            "voiceRecognitionDisabledHint",
+        ):
+            assert marker in microphone[key], (locale_name, key)
