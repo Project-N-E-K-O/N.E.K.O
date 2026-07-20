@@ -79,14 +79,6 @@ _CALLBACK_PAGE = """<!doctype html>
 
 
 def _desktop_client_id() -> str:
-    try:
-        from plugin.settings import NEKO_SERVERS_DESKTOP_CLIENT_ID
-
-        value = (NEKO_SERVERS_DESKTOP_CLIENT_ID or "").strip()
-        if value and value != "neko-desktop":
-            return value
-    except Exception:  # noqa: BLE001
-        pass
     raw = (os.environ.get("NEKO_SERVERS_DESKTOP_CLIENT_ID") or "").strip()
     if raw and raw != "neko-desktop":
         return raw
@@ -94,15 +86,10 @@ def _desktop_client_id() -> str:
 
 
 def _auth_public_url() -> str:
-    try:
-        from plugin.settings import NEKO_AUTH_URL
-
-        value = (NEKO_AUTH_URL or "").strip().rstrip("/")
-        if value:
-            return value
-    except Exception:  # noqa: BLE001
-        pass
-    return (os.environ.get("NEKO_AUTH_URL") or _DEFAULT_AUTH_URL).strip().rstrip("/")
+    raw = (os.environ.get("NEKO_AUTH_URL") or "").strip().rstrip("/")
+    if raw:
+        return raw
+    return _DEFAULT_AUTH_URL
 
 
 def _main_server_port() -> int:

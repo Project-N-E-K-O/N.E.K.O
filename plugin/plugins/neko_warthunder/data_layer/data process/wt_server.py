@@ -706,7 +706,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _cors(self) -> None:
         origin = str(self.headers.get("Origin") or "").strip()
-        allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        server = getattr(self, "server", None)
+        allowed_origins = getattr(server, "cors_origins", frozenset()) if server else frozenset()
         # 兼容本地开发：未显式配置 cors_origins 时，回退到主服务端口的 loopback Origin 集合。
         if not allowed_origins:
             allowed_origins = _ALLOWED_CORS_ORIGINS
