@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -84,6 +85,9 @@ async def openai_asr_worker(
     response_queue: asyncio.Queue[_AsrWorkerEvent],
     api_key: str,
     config: AsrSessionConfig,
+    *,
+    diagnostic_sink: Callable[[dict[str, Any]], None] | None = None,
+    server_vad_silence_ms: int = _OPENAI_SILENCE_DURATION_MS,
 ) -> None:
     """Stream 16 kHz worker PCM into OpenAI's 24 kHz transcription session."""
 
@@ -106,6 +110,15 @@ async def openai_asr_worker(
         dtype="float32",
         quality="HQ",
     )
+
+    def _diagnose(event_type: str, **fields: Any) -> None:
+        if diagnostic_sink is None:
+            return
+        try:
+            diagnostic_sink({"type": event_type, **fields})
+        except Exception:
+            # Diagnostics are smoke-only and must never affect transcription.
+            return
 
     async def _emit_error(error_code: str, error_message: str) -> None:
         nonlocal failure_sent
@@ -220,8 +233,28 @@ async def openai_asr_worker(
                     continue
 
                 event_type = event.get("type")
+                if event_type in {
+                    "input_audio_buffer.speech_started",
+                    "input_audio_buffer.speech_stopped",
+                    "input_audio_buffer.committed",
+                    "conversation.item.input_audio_transcription.completed",
+                }:
+                    _diagnose(event_type, item_id=event.get("item_id"))
                 if event_type == "session.updated":
                     accepted_model, accepted_vad = _accepted_session_capabilities(event)
+                    session = event.get("session")
+                    audio = session.get("audio") if isinstance(session, dict) else None
+                    audio_input = audio.get("input") if isinstance(audio, dict) else None
+                    accepted_turn_detection = (
+                        audio_input.get("turn_detection")
+                        if isinstance(audio_input, dict)
+                        else None
+                    )
+                    _diagnose(
+                        "session.updated",
+                        accepted_model=accepted_model,
+                        accepted_turn_detection=accepted_turn_detection,
+                    )
                     if accepted_model != _OPENAI_MODEL or accepted_vad != "server_vad":
                         await _emit_error(
                             "ASR_OPENAI_PROTOCOL_ERROR",
@@ -266,12 +299,14 @@ async def openai_asr_worker(
             raise
         except websockets.exceptions.ConnectionClosed as exc:
             if _openai_is_auth_rejection(exc):
+                _diagnose("websocket.disconnected")
                 await _emit_error(
                     "ASR_CREDENTIALS_REJECTED",
                     "OpenAI credentials were rejected",
                 )
                 return
         except Exception:
+            _diagnose("websocket.disconnected")
             await _emit_error(
                 "ASR_OPENAI_WORKER_FAILED",
                 "OpenAI realtime transcription failed",
@@ -279,6 +314,7 @@ async def openai_asr_worker(
             return
 
         if not shutdown_requested.is_set() and not failure_sent:
+            _diagnose("websocket.disconnected")
             await _emit_error(
                 "ASR_OPENAI_DISCONNECTED",
                 "OpenAI realtime transcription disconnected unexpectedly",
@@ -351,6 +387,12 @@ async def openai_asr_worker(
             return
 
         language = _normalize_openai_language(config.language)
+        if server_vad_silence_ms not in {800, 1_000, 1_200}:
+            await _emit_error(
+                "ASR_INVALID_CONFIG",
+                "OpenAI Server VAD silence must be 800, 1000, or 1200 ms",
+            )
+            return
         transcription: dict[str, Any] = {"model": _OPENAI_MODEL}
         if language is not None:
             transcription["language"] = language
@@ -366,7 +408,7 @@ async def openai_asr_worker(
                             "type": "server_vad",
                             "threshold": _OPENAI_VAD_THRESHOLD,
                             "prefix_padding_ms": _OPENAI_PREFIX_PADDING_MS,
-                            "silence_duration_ms": _OPENAI_SILENCE_DURATION_MS,
+                            "silence_duration_ms": server_vad_silence_ms,
                         },
                     }
                 },
@@ -378,9 +420,17 @@ async def openai_asr_worker(
             additional_headers={"Authorization": f"Bearer {api_key}"},
             close_timeout=_CLOSE_TIMEOUT_SECONDS,
         )
+        _diagnose("websocket.connected")
         ready_event = asyncio.Event()
         receiver_task = asyncio.create_task(
             _receive_events(ready_event), name="openai-asr-receiver"
+        )
+        _diagnose(
+            "session.update",
+            requested_model=_OPENAI_MODEL,
+            requested_turn_detection=session_update["session"]["audio"]["input"][
+                "turn_detection"
+            ],
         )
         await websocket.send(json.dumps(session_update))
 

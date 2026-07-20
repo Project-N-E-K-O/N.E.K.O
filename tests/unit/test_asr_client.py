@@ -213,6 +213,7 @@ def test_phase2_registry_routes_and_capabilities():
     assert CORE_ASR_ROUTES["qwen_intl"].region == "intl"
     assert CORE_ASR_ROUTES["qwen_intl"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["openai"].credential_field == "ASSIST_API_KEY_OPENAI"
+    assert CORE_ASR_ROUTES["openai"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["step"].credential_field == "ASSIST_API_KEY_STEP"
     assert CORE_ASR_ROUTES["step"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["grok"].credential_field == "ASSIST_API_KEY_GROK"
@@ -223,14 +224,14 @@ def test_phase2_registry_routes_and_capabilities():
         "provider",
     }
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
-    assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
+    assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"provider"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
     for provider_key in ("step", "grok"):
         assert (
             ASR_PROVIDER_REGISTRY[provider_key].implementation_status
             == "blocked_credentials"
         )
-    assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "blocked_backend"
+    assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["qwen"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
     assert ASR_PROVIDER_REGISTRY["qwen"].requires_smart_turn is False
@@ -284,6 +285,31 @@ def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
 
     assert selection.provider_key == "qwen"
     assert selection.endpointing_mode == "provider"
+
+
+def test_openai_core_resolves_to_provider_endpointing_without_smart_turn(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("openai", user_region="cn")
+    session = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+
+    assert selection.provider_key == "openai"
+    assert selection.endpointing_mode == "provider"
+    assert session._voice_turn_factory is None
 
 
 def test_soniox_selection_captures_environment_credential_once(monkeypatch):
@@ -390,7 +416,7 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
         ("dummy", "manual", True),
         ("qwen", "manual", True),
         ("qwen", "provider", False),
-        ("openai", "manual", True),
+        ("openai", "provider", False),
         ("step", "manual", True),
         ("step", "provider", False),
         ("grok", "provider", False),
@@ -423,7 +449,7 @@ def test_builder_selects_endpoint_runtime_from_provider_mode(
     assert (session._voice_turn_factory is not None) is requires_smart_turn
 
 
-@pytest.mark.parametrize("provider_key", ["dummy", "qwen", "openai", "glm", "gemini"])
+@pytest.mark.parametrize("provider_key", ["dummy", "qwen", "glm", "gemini"])
 def test_builder_marks_policy_required_smart_turn_as_strict(provider_key):
     callback = AsyncMock()
     selection = asr_client._AsrSelection(
@@ -596,20 +622,14 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert cn_worker.keywords == {"region": "cn"}
     assert intl_worker.keywords == {"region": "intl"}
 
-    with pytest.raises(RuntimeError, match="ASR_BACKEND_BLOCKED: openai"):
-        asr_client._get_asr_worker("openai")
+    openai_worker, openai_key, openai_provider = asr_client._get_asr_worker(
+        "openai", "provider"
+    )
+    assert (openai_key, openai_provider) == ("openai-key", "openai")
+    assert openai_worker is asr_client._IMPLEMENTED_WORKERS["openai"]
 
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
-        asr_client._get_asr_worker("openai", "provider")
-
-    monkeypatch.setitem(
-        ASR_PROVIDER_REGISTRY,
-        "openai",
-        replace(
-            ASR_PROVIDER_REGISTRY["openai"],
-            implementation_status="implemented",
-        ),
-    )
+        asr_client._get_asr_worker("openai", "manual")
 
     class MissingOpenAIConfigManager:
         def get_core_config(self):
@@ -621,7 +641,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
         lambda: MissingOpenAIConfigManager(),
     )
     with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: openai"):
-        asr_client._get_asr_worker("openai")
+        asr_client._get_asr_worker("openai", "provider")
 
     class AudioOnlyConfigManager:
         def get_core_config(self):

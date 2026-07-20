@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -76,6 +77,7 @@ class SmokeResult:
     smart_turn_auto: bool = False
     normalized_audio_seconds: float = 0.0
     commit_count: int = 0
+    client_commit_count: int = 0
     ready_ms: float | None = None
     first_partial_ms: float | None = None
     commit_ms: list[float] = field(default_factory=list)
@@ -85,6 +87,16 @@ class SmokeResult:
     statuses: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     transcripts: list[str] | None = None
+    requested_model: str | None = None
+    accepted_model: str | None = None
+    requested_server_vad: dict[str, Any] | None = None
+    accepted_server_vad: dict[str, Any] | None = None
+    provider_timeline: list[dict[str, Any]] = field(default_factory=list)
+    item_final_counts: dict[str, int] = field(default_factory=dict)
+    stop_to_final_ms: list[float] = field(default_factory=list)
+    reconnect_count: int = 0
+    disconnect_count: int = 0
+    transcript_fingerprints: list[dict[str, int | str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -95,6 +107,7 @@ class _Observation:
     commit_at: list[float] = field(default_factory=list)
     final_at: list[float] = field(default_factory=list)
     activity_at: list[tuple[str, float]] = field(default_factory=list)
+    protocol_at: list[tuple[dict[str, Any], float]] = field(default_factory=list)
 
 
 class _RequestQueueObserver:
@@ -172,7 +185,12 @@ def _read_wav_pcm16(path: Path) -> _AudioTurn:
     )
 
 
-def _resolve_provider(provider: str) -> AsrWorkerFn:
+def _resolve_provider(
+    provider: str,
+    *,
+    diagnostic_sink: Callable[[dict[str, Any]], None] | None = None,
+    openai_server_vad_silence_ms: int = 1_000,
+) -> AsrWorkerFn:
     if provider in {"qwen", "qwen_intl"}:
         from main_logic.asr_client.workers.qwen import qwen_asr_worker
 
@@ -181,7 +199,11 @@ def _resolve_provider(provider: str) -> AsrWorkerFn:
     if provider == "openai":
         from main_logic.asr_client.workers.openai import openai_asr_worker
 
-        return openai_asr_worker
+        return partial(
+            openai_asr_worker,
+            diagnostic_sink=diagnostic_sink,
+            server_vad_silence_ms=openai_server_vad_silence_ms,
+        )
     if provider == "step":
         from main_logic.asr_client.workers.step import step_asr_worker
 
@@ -336,7 +358,19 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         else _resolve_api_key(args.provider, args.api_key_env)
     )
     observation = _Observation(started_at=time.perf_counter())
-    worker_fn = _observe_worker(_resolve_provider(args.provider), observation)
+    def record_protocol(event: dict[str, Any]) -> None:
+        observation.protocol_at.append((dict(event), time.perf_counter()))
+
+    worker_fn = _observe_worker(
+        _resolve_provider(
+            args.provider,
+            diagnostic_sink=record_protocol,
+            openai_server_vad_silence_ms=int(
+                getattr(args, "openai_server_vad_silence_ms", 1_000)
+            ),
+        ),
+        observation,
+    )
     final_event = asyncio.Event()
     credential_result_event = asyncio.Event()
     transcripts: list[str] = []
@@ -467,6 +501,7 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
     result.business_finals = len(transcripts)
     result.normalized_audio_seconds = observation.audio_bytes / (16_000 * 2)
     result.commit_count = len(observation.commit_at)
+    result.client_commit_count = result.commit_count
     if result.transcripts is not None:
         result.transcripts.extend(transcripts)
     if observation.first_partial_at is not None:
@@ -487,6 +522,59 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
             "ms": (timestamp - observation.started_at) * 1000,
         }
         for event, timestamp in observation.activity_at
+    ]
+    item_ordinals: dict[str, str] = {}
+    stopped_at: dict[str, float] = {}
+    connection_count = 0
+    for event, timestamp in observation.protocol_at:
+        event_type = str(event.get("type") or "unknown")
+        raw_item_id = event.get("item_id")
+        item_label: str | None = None
+        if isinstance(raw_item_id, str) and raw_item_id:
+            item_label = item_ordinals.setdefault(
+                raw_item_id,
+                f"item-{len(item_ordinals) + 1}",
+            )
+        timeline_event: dict[str, Any] = {
+            "event": event_type,
+            "ms": (timestamp - observation.started_at) * 1000,
+        }
+        if item_label is not None:
+            timeline_event["item"] = item_label
+        result.provider_timeline.append(timeline_event)
+        if event_type == "session.update":
+            result.requested_model = str(event.get("requested_model") or "") or None
+            requested_vad = event.get("requested_turn_detection")
+            if isinstance(requested_vad, dict):
+                result.requested_server_vad = dict(requested_vad)
+        elif event_type == "session.updated":
+            result.accepted_model = str(event.get("accepted_model") or "") or None
+            accepted_vad = event.get("accepted_turn_detection")
+            if isinstance(accepted_vad, dict):
+                result.accepted_server_vad = dict(accepted_vad)
+        elif event_type == "input_audio_buffer.speech_stopped" and item_label:
+            stopped_at[item_label] = timestamp
+        elif (
+            event_type == "conversation.item.input_audio_transcription.completed"
+            and item_label
+        ):
+            result.item_final_counts[item_label] = (
+                result.item_final_counts.get(item_label, 0) + 1
+            )
+            stopped = stopped_at.get(item_label)
+            if stopped is not None:
+                result.stop_to_final_ms.append((timestamp - stopped) * 1000)
+        elif event_type == "websocket.connected":
+            connection_count += 1
+        elif event_type == "websocket.disconnected":
+            result.disconnect_count += 1
+    result.reconnect_count = max(0, connection_count - 1)
+    result.transcript_fingerprints = [
+        {
+            "length": len(transcript),
+            "sha256_12": hashlib.sha256(transcript.encode("utf-8")).hexdigest()[:12],
+        }
+        for transcript in transcripts
     ]
     if args.invalid_credential:
         error_codes = {error.partition(":")[0] for error in result.errors}
@@ -529,6 +617,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1000,
         help="Silence appended to each provider-endpointed turn so it can finalize.",
+    )
+    parser.add_argument(
+        "--openai-server-vad-silence-ms",
+        type=int,
+        choices=(800, 1_000, 1_200),
+        default=1_000,
+        help="OpenAI-only calibration candidate; production defaults to 1000 ms.",
     )
     parser.add_argument("--timeout-s", type=float, default=30.0)
     parser.add_argument("--no-realtime", action="store_true")
