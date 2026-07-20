@@ -114,6 +114,7 @@ def test_latest_character_card_refresh_wins_when_an_older_request_finishes_last(
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=20,
         check=False,
     )
