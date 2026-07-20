@@ -122,10 +122,10 @@ async def test_logout_snapshots_latest_settings_after_acquiring_auth_lock():
     plugin._sync_buf = "sync-data"
     plugin._context_tokens = {}
     plugin._wechat_sessions = {}
-    plugin.wechat_client = type("Client", (), {
-        "base_url": "https://old.example",
-        "token": "secret-token",
-    })()
+    plugin.wechat_client = SimpleNamespace(
+        base_url="https://old.example",
+        token="secret-token",
+    )
     plugin.stop_auto_reply = AsyncMock()
 
     async def persist(settings):
@@ -158,10 +158,10 @@ async def test_save_settings_waits_for_auth_lock_and_persists_a_copy():
     original_settings = plugin._settings
     plugin._auth_state_lock = asyncio.Lock()
     await plugin._auth_state_lock.acquire()
-    plugin.wechat_client = type("Client", (), {
-        "base_url": "https://old.example",
-        "token": "secret-token",
-    })()
+    plugin.wechat_client = SimpleNamespace(
+        base_url="https://old.example",
+        token="secret-token",
+    )
 
     async def persist(settings):
         plugin._settings = settings
