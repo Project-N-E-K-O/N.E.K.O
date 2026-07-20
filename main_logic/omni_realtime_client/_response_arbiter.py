@@ -48,6 +48,10 @@ class _QueuedResponse:
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     interrupted: bool = field(default=False, compare=False)
+    interrupt_event: asyncio.Event = field(
+        default_factory=asyncio.Event,
+        compare=False,
+    )
 
 
 class RealtimeResponseArbiter:
@@ -71,6 +75,7 @@ class RealtimeResponseArbiter:
         self._sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
         self._current: _QueuedResponse | None = None
+        self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
         self._connection_available = True
         self._dispatch_allowed = asyncio.Event()
@@ -86,6 +91,7 @@ class RealtimeResponseArbiter:
     def is_busy(self) -> bool:
         return (
             self._current is not None
+            or self._response_owner is not None
             or self._server_response_active
             or not self._queue.empty()
         )
@@ -171,6 +177,7 @@ class RealtimeResponseArbiter:
             return
 
         current.interrupted = True
+        current.interrupt_event.set()
         if not current.ticket.sent.done():
             was_paused = not self._dispatch_allowed.is_set()
             self._wake_current_with_error(
@@ -216,63 +223,84 @@ class RealtimeResponseArbiter:
     def notify_response_created(self, _event: dict[str, Any]) -> None:
         self._server_response_active = True
         self._idle.clear()
-        current = self._current
-        if current is not None and not current.ticket.started.done():
-            current.ticket.started.set_result(None)
+        owner = self._response_owner
+        if owner is not None and not owner.ticket.started.done():
+            owner.ticket.started.set_result(None)
 
     def notify_response_terminal(self, _event: dict[str, Any] | None = None) -> None:
         self._server_response_active = False
-        current = self._current
-        if current is not None:
-            if not current.ticket.started.done():
-                current.ticket.started.set_exception(
+        owner = self._response_owner
+        if owner is not None:
+            if not owner.ticket.started.done():
+                owner.ticket.started.set_exception(
                     RuntimeError("response terminated before response.created")
                 )
-            if current.terminal is not None and not current.terminal.done():
-                current.terminal.set_result(None)
-        elif current is None:
-            self._idle.set()
+            if owner.terminal is not None and not owner.terminal.done():
+                owner.terminal.set_result(None)
+            self._response_owner = None
+        self._idle.set()
 
     def notify_error(self, event_id: str | None, message: str) -> None:
         current = self._current
-        if current is None:
-            return
-        if event_id and current.event_ids and event_id not in current.event_ids:
-            return
+        owner = self._response_owner
         lowered = message.lower()
-        if not event_id and not (
-            "response_already_active" in lowered
-            or ("response" in lowered and "active" in lowered)
+        target: _QueuedResponse | None = None
+        if event_id:
+            for candidate in (owner, current):
+                if candidate is not None and event_id in candidate.event_ids:
+                    target = candidate
+                    break
+        elif "response_already_active" in lowered or (
+            "response" in lowered and "active" in lowered
         ):
+            target = owner
+        if target is None:
             return
         exc = RuntimeError(message)
-        if current.item_ack is not None and not current.item_ack.done():
-            current.item_ack.set_exception(exc)
+        if target.item_ack is not None and not target.item_ack.done():
+            target.item_ack.set_exception(exc)
             return
-        if not current.ticket.started.done():
-            current.ticket.started.set_exception(exc)
+        if not target.ticket.started.done():
+            target.ticket.started.set_exception(exc)
             return
-        if current.terminal is not None and not current.terminal.done():
-            current.terminal.set_exception(exc)
+        if target.terminal is not None and not target.terminal.done():
+            target.terminal.set_exception(exc)
 
     def notify_connection_lost(self, reason: str = "realtime connection lost") -> None:
+        self._mark_connection_lost(reason, fail_current_tickets=True)
+
+    def _mark_connection_lost(
+        self,
+        reason: str,
+        *,
+        fail_current_tickets: bool,
+    ) -> None:
         self._connection_available = False
         # Wake a worker parked behind the dispatch barrier so it can observe
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
         self._server_response_active = False
         exc = ConnectionError(reason)
+        owner = self._response_owner
         current = self._current
-        if current is not None:
-            self._wake_current_with_error(current, exc)
-        else:
-            self._idle.set()
+        seen: set[int] = set()
+        for target in (owner, current):
+            if target is None or id(target) in seen:
+                continue
+            seen.add(id(target))
+            target.interrupted = True
+            target.interrupt_event.set()
+            self._wake_current_with_error(target, exc)
+            if fail_current_tickets:
+                self._fail_ticket(target.ticket, exc)
+        self._response_owner = None
+        self._idle.set()
         self._fail_queued(exc)
 
     def reset_connection_state(self) -> None:
         self._connection_available = True
         self._dispatch_allowed.set()
-        if self._current is None:
+        if self._current is None and self._response_owner is None:
             self._server_response_active = False
             self._idle.set()
         self._ensure_worker()
@@ -288,8 +316,10 @@ class RealtimeResponseArbiter:
     ) -> None:
         if current.item_ack is not None and not current.item_ack.done():
             current.item_ack.set_exception(exc)
+            return
         if not current.ticket.started.done():
             current.ticket.started.set_exception(exc)
+            return
         if current.terminal is not None and not current.terminal.done():
             current.terminal.set_exception(exc)
 
@@ -305,7 +335,7 @@ class RealtimeResponseArbiter:
             self._queue.task_done()
 
     async def _fail_closed(self, reason: str) -> None:
-        self.notify_connection_lost(reason)
+        self._mark_connection_lost(reason, fail_current_tickets=False)
         if self._abort_transport is None:
             return
         try:
@@ -354,6 +384,20 @@ class RealtimeResponseArbiter:
             finally:
                 self._queue.task_done()
 
+    async def _wait_for_idle_or_interrupt(self, queued: _QueuedResponse) -> None:
+        if self._idle.is_set() or queued.interrupt_event.is_set():
+            return
+        idle_waiter = asyncio.create_task(self._idle.wait())
+        interrupt_waiter = asyncio.create_task(queued.interrupt_event.wait())
+        waiters = (idle_waiter, interrupt_waiter)
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
     async def _process(self, queued: _QueuedResponse) -> None:
         self._current = queued
         loop = asyncio.get_running_loop()
@@ -362,16 +406,19 @@ class RealtimeResponseArbiter:
 
         try:
             await self._dispatch_allowed.wait()
+            if queued.interrupted:
+                raise RuntimeError("response dispatch interrupted")
             if not self._connection_available:
                 raise ConnectionError("realtime connection is unavailable")
             if self._yield_to_higher_priority(queued):
                 requeued = True
                 return
-            await self._idle.wait()
-            self._idle.clear()
-            queued.terminal = loop.create_future()
+            await self._wait_for_idle_or_interrupt(queued)
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
+            if not self._connection_available:
+                raise ConnectionError("realtime connection is unavailable")
+            self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
             for event in queued.events_before_response:
@@ -391,7 +438,20 @@ class RealtimeResponseArbiter:
 
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
-            await self._send_event(queued.response_event)
+            if not self._connection_available:
+                raise ConnectionError("realtime connection is unavailable")
+            if self._response_owner is not None:
+                raise RuntimeError("response owner is already assigned")
+            queued.terminal = loop.create_future()
+            self._response_owner = queued
+            try:
+                await self._send_event(queued.response_event)
+            except Exception:
+                if self._response_owner is queued:
+                    self._response_owner = None
+                if not queued.terminal.done():
+                    queued.terminal.cancel()
+                raise
             if not queued.ticket.sent.done():
                 queued.ticket.sent.set_result(None)
 
@@ -421,7 +481,10 @@ class RealtimeResponseArbiter:
         except Exception as exc:
             self._fail_ticket(queued.ticket, exc)
         finally:
-            self._current = None
+            if self._current is queued:
+                self._current = None
+            if self._response_owner is queued and not self._server_response_active:
+                self._response_owner = None
             if (
                 not requeued
                 and queued.completed is not None
@@ -455,8 +518,9 @@ class RealtimeResponseArbiter:
                 asyncio.shield(queued.terminal), queued.cancel_timeout
             )
         except Exception:
+            if queued.terminal is not None and not queued.terminal.done():
+                queued.terminal.cancel()
             await self._fail_closed(
                 "response lifecycle could not reach a terminal state"
             )
         raise original_timeout
-

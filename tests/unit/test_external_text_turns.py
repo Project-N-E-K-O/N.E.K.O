@@ -8,6 +8,17 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_realtime_client._response_arbiter import RealtimeResponseArbiter
 
 
+async def _wait_for_arbiter_source(
+    arbiter: RealtimeResponseArbiter,
+    source: str | None,
+) -> None:
+    for _ in range(100):
+        if arbiter.current_source == source:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"arbiter source did not become {source!r}")
+
+
 @pytest.mark.asyncio
 async def test_receive_loop_dispatches_non_created_events_after_stale_filter():
     response_done = AsyncMock()
@@ -62,6 +73,172 @@ async def test_response_arbiter_holds_lane_until_response_done():
 
 
 @pytest.mark.asyncio
+async def test_orphan_response_done_wakes_waiting_ticket_without_terminating_it():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+            arbiter.notify_response_terminal({"type": "response.done"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created", "response": "A"})
+    ticket = await arbiter.enqueue(source="B")
+    await _wait_for_arbiter_source(arbiter, "B")
+    assert ticket.sent.done() is False
+
+    arbiter.notify_response_terminal({"type": "response.done", "response": "A"})
+
+    result = await asyncio.wait_for(ticket.done, 0.2)
+    assert result.context_persistence_uncertain is False
+    assert ticket.started.exception() is None
+    assert [event["type"] for event in sent] == ["response.create"]
+
+
+@pytest.mark.asyncio
+async def test_waiting_ticket_holds_followup_until_its_own_response_done():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created", "response": "A"})
+    ticket_b = await arbiter.enqueue(
+        source="B",
+        response_event={"type": "response.create", "event_id": "B"},
+    )
+    await _wait_for_arbiter_source(arbiter, "B")
+
+    arbiter.notify_response_terminal({"type": "response.done", "response": "A"})
+    await asyncio.wait_for(ticket_b.sent, 0.2)
+    ticket_c = await arbiter.enqueue(
+        source="C",
+        response_event={"type": "response.create", "event_id": "C"},
+    )
+    await asyncio.sleep(0.01)
+    assert [event["event_id"] for event in sent] == ["B"]
+    assert ticket_c.sent.done() is False
+
+    arbiter.notify_response_terminal({"type": "response.done", "response": "B"})
+    await asyncio.wait_for(ticket_b.done, 0.2)
+    await asyncio.wait_for(ticket_c.sent, 0.2)
+    assert [event["event_id"] for event in sent] == ["B", "C"]
+
+    arbiter.notify_response_terminal({"type": "response.done", "response": "C"})
+    await asyncio.wait_for(ticket_c.done, 0.2)
+
+
+@pytest.mark.asyncio
+async def test_cancel_selected_ticket_waiting_behind_orphan_response():
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created", "response": "A"})
+    ticket = await arbiter.enqueue(source="B")
+    await _wait_for_arbiter_source(arbiter, "B")
+
+    await asyncio.wait_for(arbiter.cancel_current(timeout=0.2), 0.3)
+
+    for future in (ticket.sent, ticket.started, ticket.done):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await future
+    assert sent == []
+    arbiter.notify_response_terminal({"type": "response.done", "response": "A"})
+
+
+@pytest.mark.asyncio
+async def test_connection_loss_fails_selected_ticket_waiting_behind_orphan():
+    sent = []
+    arbiter = None
+    should_complete = False
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create" and should_complete:
+            arbiter.notify_response_created({"type": "response.created"})
+            arbiter.notify_response_terminal({"type": "response.done"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created", "response": "A"})
+    ticket = await arbiter.enqueue(source="B")
+    await _wait_for_arbiter_source(arbiter, "B")
+
+    arbiter.notify_connection_lost("socket lost while waiting")
+
+    for future in (ticket.sent, ticket.started, ticket.done):
+        with pytest.raises(ConnectionError, match="socket lost while waiting"):
+            await future
+    assert sent == []
+    await _wait_for_arbiter_source(arbiter, None)
+
+    should_complete = True
+    arbiter.reset_connection_state()
+    recovered = await arbiter.enqueue(source="D")
+    await asyncio.wait_for(recovered.done, 0.2)
+    assert [event["type"] for event in sent] == ["response.create"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_no_id_error_does_not_fail_selected_ticket():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+            arbiter.notify_response_terminal({"type": "response.done"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.notify_response_created({"type": "response.created", "response": "A"})
+    ticket = await arbiter.enqueue(source="B")
+    await _wait_for_arbiter_source(arbiter, "B")
+
+    arbiter.notify_error(
+        None,
+        "invalid_request_error: Conversation already has an active response",
+    )
+    assert ticket.started.done() is False
+    assert ticket.done.done() is False
+
+    arbiter.notify_response_terminal({"type": "response.done", "response": "A"})
+    await asyncio.wait_for(ticket.done, 0.2)
+    assert [event["type"] for event in sent] == ["response.create"]
+
+
+@pytest.mark.asyncio
+async def test_mismatched_old_error_does_not_fail_dispatched_owner():
+    arbiter = None
+
+    async def send(event):
+        if event["type"] == "response.create":
+            arbiter.notify_response_created({"type": "response.created"})
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="B",
+        response_event={"type": "response.create", "event_id": "event-B"},
+    )
+    await asyncio.wait_for(ticket.started, 0.2)
+
+    arbiter.notify_error("event-old", "old response failed")
+    await asyncio.sleep(0)
+    assert ticket.done.done() is False
+
+    arbiter.notify_response_terminal({"type": "response.done"})
+    await asyncio.wait_for(ticket.done, 0.2)
+
+
+@pytest.mark.asyncio
 async def test_item_ack_timeout_does_not_duplicate_persistent_item():
     sent = []
     arbiter = None
@@ -90,6 +267,38 @@ async def test_item_ack_timeout_does_not_duplicate_persistent_item():
     assert result.item_acknowledged is False
     assert result.context_persistence_uncertain is True
     assert [event["type"] for event in sent].count("conversation.item.create") == 1
+
+
+@pytest.mark.asyncio
+async def test_matching_item_event_error_fails_current_item_ack():
+    sent = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_error(event["event_id"], "item rejected")
+
+    arbiter = RealtimeResponseArbiter(send)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "event_id": "item-event",
+                "item": {"id": "item-target", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create", "event_id": "response-event"},
+        ack_expected=True,
+        expected_item_id="item-target",
+        expected_item_role="user",
+    )
+
+    for future in (ticket.sent, ticket.started, ticket.done):
+        with pytest.raises(RuntimeError, match="item rejected"):
+            await asyncio.wait_for(future, 0.2)
+    assert [event["type"] for event in sent] == ["conversation.item.create"]
 
 
 @pytest.mark.asyncio
@@ -151,12 +360,15 @@ async def test_connection_loss_fails_current_and_all_queued_tickets():
     arbiter = RealtimeResponseArbiter(send)
     first = await arbiter.enqueue(source="first")
     second = await arbiter.enqueue(source="second")
-    await first.sent
+    await asyncio.wait_for(first.sent, 0.2)
     arbiter.notify_connection_lost("socket lost")
-    with pytest.raises(ConnectionError, match="socket lost"):
-        await first.done
-    with pytest.raises(ConnectionError, match="socket lost"):
-        await second.done
+    for future in (first.started, first.done):
+        with pytest.raises(ConnectionError, match="socket lost"):
+            await asyncio.wait_for(future, 0.2)
+    for future in (second.sent, second.started, second.done):
+        with pytest.raises(ConnectionError, match="socket lost"):
+            await asyncio.wait_for(future, 0.2)
+    await _wait_for_arbiter_source(arbiter, None)
 
 
 @pytest.mark.asyncio
@@ -183,10 +395,13 @@ async def test_response_created_timeout_aborts_transport_and_fails_queue():
 
     with pytest.raises(asyncio.TimeoutError):
         await first.done
+    with pytest.raises(ConnectionError, match="terminal state"):
+        await first.started
     assert abort_started.is_set()
     assert abort_finished.is_set()
-    with pytest.raises(ConnectionError, match="terminal state"):
-        await second.done
+    for future in (second.sent, second.started, second.done):
+        with pytest.raises(ConnectionError, match="terminal state"):
+            await future
 
     rejected = await arbiter.enqueue(source="rejected")
     with pytest.raises(ConnectionError, match="unavailable"):
@@ -440,7 +655,7 @@ async def test_normal_close_fails_pending_response_ticket_immediately():
         {"type": "response.created", "response": {"id": "resp-close"}}
     )
 
-    await client.close()
+    await asyncio.wait_for(client.close(), timeout=0.2)
 
     with pytest.raises(ConnectionError, match="closed"):
         await asyncio.wait_for(ticket.done, timeout=0.05)
@@ -576,8 +791,9 @@ async def test_cancel_during_item_ack_does_not_send_response_create():
     arbiter.pause_dispatch()
     await arbiter.cancel_current(timeout=0.2)
 
-    with pytest.raises(RuntimeError, match="interrupted"):
-        await ticket.done
+    for future in (ticket.sent, ticket.started, ticket.done):
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await future
     assert response_create_sent is False
 
 
