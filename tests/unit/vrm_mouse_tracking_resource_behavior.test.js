@@ -55,3 +55,51 @@ test('VRM keeps mouse tracking disabled while the Yui face-forward lock is activ
 
     assert.deepEqual(calls, [false]);
 });
+
+function initializeMouseTracking(resourcePhase) {
+    const calls = [];
+    const context = {
+        console: { log() {}, warn() {}, error() {} },
+        window: {
+            THREE: {},
+            CursorFollowController: function CursorFollowController() {},
+            mouseTrackingEnabled: true,
+            nekoYuiGuideFaceForwardLock: false,
+        },
+    };
+    vm.createContext(context);
+    vm.runInContext(source, context, { filename: 'vrm-manager.js' });
+
+    const manager = Object.create(context.window.VRMManager.prototype);
+    manager.scene = {};
+    manager.camera = {};
+    manager._gameModeResourcePhase = resourcePhase;
+    manager._mouseTrackingEnabled = false;
+    manager._cursorFollow = {
+        _initialized: true,
+        isEnabled() {
+            return false;
+        },
+        setEnabled(enabled) {
+            calls.push(enabled);
+        },
+    };
+    manager._initMouseLookAtTracking();
+    return { calls, manager };
+}
+
+for (const resourcePhase of ['soft_protected', 'deep_sleep']) {
+    test(`VRM reload keeps cursor tracking disabled during ${resourcePhase}`, () => {
+        const { calls, manager } = initializeMouseTracking(resourcePhase);
+
+        assert.deepEqual(calls, []);
+        assert.equal(manager._mouseTrackingEnabled, true);
+    });
+}
+
+test('VRM reload enables cursor tracking while resource protection is idle', () => {
+    const { calls, manager } = initializeMouseTracking('idle');
+
+    assert.deepEqual(calls, [true]);
+    assert.equal(manager._mouseTrackingEnabled, true);
+});

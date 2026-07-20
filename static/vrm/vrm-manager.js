@@ -270,9 +270,10 @@ class VRMManager {
             }
             // 同步鼠标跟踪启用状态
             const storedMouseTrackingEnabled = window.mouseTrackingEnabled !== false;
-            const isEnabled = window.nekoYuiGuideFaceForwardLock === true
-                ? false
-                : storedMouseTrackingEnabled;
+            const resourceProtected = this._gameModeResourcePhase && this._gameModeResourcePhase !== 'idle';
+            const isEnabled = storedMouseTrackingEnabled
+                && !resourceProtected
+                && window.nekoYuiGuideFaceForwardLock !== true;
             console.log(`[VRM] 鼠标跟踪检查: window.mouseTrackingEnabled=${window.mouseTrackingEnabled}, isEnabled=${isEnabled}`);
             if (this._cursorFollow.isEnabled() !== isEnabled) {
                 this._cursorFollow.setEnabled(isEnabled);
