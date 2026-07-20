@@ -57,6 +57,7 @@ SILERO_MINIMUM_WINDOWS = max(
     1, math.ceil(SILERO_MINIMUM_SPEECH_MS / SILERO_WINDOW_MS)
 )
 DEFAULT_SEED = 2398
+DEFAULT_HOLDOUT_FRACTION = 0.25
 DEFAULT_SNR_DB = (20, 10, 5, 0, -5)
 RNNOISE_THRESHOLDS = (
     0.2,
@@ -94,6 +95,7 @@ class CorpusClip:
     snr_db: int | None = None
     noise_kind: str | None = None
     speech_start_ms: float | None = None
+    device_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +119,16 @@ class EvaluatedClip:
     silero_raw_trigger_ms: float | None
     silero_after_rnnoise_trigger_ms: float | None
     speech_start_ms: float | None
+    device_id: str | None
+
+
+def source_group_id(clip_id: str) -> str:
+    """Return the underlying source identity used to prevent split leakage."""
+
+    parts = str(clip_id).split("/")
+    if len(parts) >= 4 and parts[0] == "speech":
+        return "/".join(parts[:3])
+    return str(clip_id)
 
 
 def confusion_from_predictions(
@@ -164,6 +176,86 @@ def metrics_from_confusion(confusion: Confusion) -> dict[str, float | int]:
         "precision": precision,
         "f1": ratio(2 * precision * recall, precision + recall),
     }
+
+
+def split_calibration_holdout(
+    clips: Sequence[Any],
+    *,
+    seed: int,
+    holdout_fraction: float = 0.25,
+) -> tuple[list[Any], list[Any]]:
+    """Split by source group so augmented variants never cross partitions."""
+
+    if not 0.0 < holdout_fraction < 1.0:
+        raise ValueError("holdout_fraction must be within (0, 1)")
+    groups: dict[str, list[Any]] = defaultdict(list)
+    for clip in clips:
+        groups[source_group_id(clip.clip_id)].append(clip)
+    strata: dict[tuple[bool, str], list[str]] = defaultdict(list)
+    for group_id, group in groups.items():
+        labels = {bool(clip.label) for clip in group}
+        locales = {str(getattr(clip, "locale", None) or "") for clip in group}
+        if len(labels) != 1 or len(locales) != 1:
+            raise ValueError(f"source group is not label/locale homogeneous: {group_id}")
+        label = next(iter(labels))
+        locale = next(iter(locales)) if label else "negative"
+        strata[(label, locale)].append(group_id)
+
+    holdout_groups: set[str] = set()
+    for stratum, group_ids in strata.items():
+        ordered = sorted(
+            group_ids,
+            key=lambda group_id: hashlib.sha256(
+                f"{seed}:{stratum}:{group_id}".encode()
+            ).hexdigest(),
+        )
+        if len(ordered) < 2:
+            continue
+        count = max(1, round(len(ordered) * holdout_fraction))
+        holdout_groups.update(ordered[: min(count, len(ordered) - 1)])
+
+    calibration = [
+        clip for clip in clips if source_group_id(clip.clip_id) not in holdout_groups
+    ]
+    holdout = [
+        clip for clip in clips if source_group_id(clip.clip_id) in holdout_groups
+    ]
+    if not calibration or not holdout:
+        raise ValueError("calibration/holdout split requires at least two source groups")
+    return calibration, holdout
+
+
+def select_presence_threshold(
+    clips: Sequence[Any],
+    *,
+    score_name: str,
+    thresholds: Sequence[float],
+) -> dict[str, float | int]:
+    """Choose a threshold using calibration metrics only."""
+
+    if not clips or not thresholds:
+        raise ValueError("threshold selection requires clips and thresholds")
+    rows: list[dict[str, float | int]] = []
+    for threshold in thresholds:
+        predictions = [getattr(clip, score_name) >= threshold for clip in clips]
+        row = {
+            "threshold": float(threshold),
+            **metrics_from_confusion(
+                confusion_from_predictions(
+                    [bool(clip.label) for clip in clips], predictions
+                )
+            ),
+        }
+        rows.append(row)
+    return max(
+        rows,
+        key=lambda row: (
+            float(row["balanced_accuracy"]),
+            float(row["speech_recall"]),
+            float(row["negative_specificity"]),
+            -float(row["threshold"]),
+        ),
+    )
 
 
 def silero_presence_score(
@@ -441,6 +533,77 @@ def build_corpus(
     return clips, corpus_manifest
 
 
+def load_real_device_manifest(
+    manifest_path: Path,
+) -> tuple[list[CorpusClip], dict[str, Any]]:
+    """Load labeled real-device recordings without reporting local file paths."""
+
+    resolved_manifest = manifest_path.resolve()
+    payload = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    if payload.get("schema_version") != 1:
+        raise ValueError("real-device manifest schema_version must be 1")
+    entries = payload.get("clips")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("real-device manifest clips must be a non-empty list")
+    clips: list[CorpusClip] = []
+    seen_ids: set[str] = set()
+    device_ids: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("real-device manifest clip must be an object")
+        clip_id = str(entry.get("id") or "").strip()
+        device_id = str(entry.get("device_id") or "").strip()
+        if (
+            not clip_id
+            or not device_id
+            or "/" in clip_id
+            or "\\" in clip_id
+            or "/" in device_id
+            or "\\" in device_id
+        ):
+            raise ValueError("real-device id and device_id must be non-empty path atoms")
+        report_id = f"real/{device_id}/{clip_id}"
+        if report_id in seen_ids:
+            raise ValueError(f"duplicate real-device clip id: {report_id}")
+        seen_ids.add(report_id)
+        device_ids.add(device_id)
+        label = entry.get("label")
+        if not isinstance(label, bool):
+            raise ValueError(f"real-device label must be boolean: {report_id}")
+        relative_path = entry.get("path")
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            raise ValueError(f"real-device path is required: {report_id}")
+        audio_path = (resolved_manifest.parent / relative_path).resolve()
+        if not audio_path.is_file():
+            raise FileNotFoundError(audio_path)
+        scenario = str(
+            entry.get("scenario")
+            or ("real_device_speech" if label else "real_device_negative")
+        ).strip()
+        speech_start = entry.get("speech_start_ms")
+        if speech_start is not None:
+            speech_start = float(speech_start)
+            if speech_start < 0:
+                raise ValueError("speech_start_ms must not be negative")
+        locale = entry.get("locale")
+        clips.append(
+            CorpusClip(
+                clip_id=report_id,
+                label=label,
+                scenario=scenario,
+                samples_48k=_read_mono_48k(audio_path),
+                locale=str(locale).strip() if locale else None,
+                speech_start_ms=speech_start,
+                device_id=device_id,
+            )
+        )
+    return clips, {
+        "manifest_schema_version": 1,
+        "clip_count": len(clips),
+        "device_ids": sorted(device_ids),
+    }
+
+
 def _pcm16(samples: np.ndarray) -> bytes:
     return (
         np.clip(samples, -1.0, 1.0) * 32767
@@ -644,6 +807,7 @@ def evaluate_corpus(
                         denoised_probabilities, SILERO_CURRENT_THRESHOLD
                     ),
                     speech_start_ms=clip.speech_start_ms,
+                    device_id=clip.device_id,
                 )
             )
             if index % 25 == 0:
@@ -707,6 +871,43 @@ def _threshold_curve(
         predictions = [getattr(clip, score_name) >= threshold for clip in clips]
         rows.append({"threshold": threshold, **_metric_row(clips, predictions)})
     return rows
+
+
+def _metrics_at_threshold(
+    clips: Sequence[EvaluatedClip], score_name: str, threshold: float
+) -> dict[str, float | int]:
+    return _metric_row(
+        clips,
+        [getattr(clip, score_name) >= threshold for clip in clips],
+    )
+
+
+def _real_device_metrics(
+    clips: Sequence[EvaluatedClip],
+    *,
+    score_name: str,
+    threshold: float,
+) -> dict[str, Any]:
+    groups: dict[str, list[EvaluatedClip]] = defaultdict(list)
+    for clip in clips:
+        if clip.device_id:
+            groups[clip.device_id].append(clip)
+    if not groups:
+        return {
+            "available": False,
+            "reason": "no_real_device_manifest_supplied",
+            "devices": {},
+        }
+    return {
+        "available": True,
+        "devices": {
+            device_id: {
+                "clips": len(group),
+                **_metrics_at_threshold(group, score_name, threshold),
+            }
+            for device_id, group in sorted(groups.items())
+        },
+    }
 
 
 def _current_strategy_metrics(
@@ -900,8 +1101,29 @@ def build_report(
     asset_dir: Path,
 ) -> dict[str, Any]:
     silero_path = asset_dir / "silero_vad.onnx"
+    calibration, holdout = split_calibration_holdout(
+        clips,
+        seed=seed,
+        holdout_fraction=DEFAULT_HOLDOUT_FRACTION,
+    )
+    selected_rnnoise = select_presence_threshold(
+        calibration,
+        score_name="rnnoise_sustained_100ms_score",
+        thresholds=RNNOISE_THRESHOLDS,
+    )
+    selected_threshold = float(selected_rnnoise["threshold"])
+    limitations = [
+        "Repository TTS and synthetic noise are a pre-benchmark, not a room recording study.",
+        "RNNoise evidence is measured on the desktop 48 kHz pipeline only.",
+        "Silero is measured both on raw 16 kHz audio and after the production RNNoise/AGC/limiter pipeline.",
+        "Speech presence cannot replace the logical endpoint: streaming ASR uses provider-native endpointing; segmented ASR uses SmartTurn.",
+    ]
+    if not any(clip.device_id for clip in clips):
+        limitations.append(
+            "No labeled real-device manifest was supplied; room, echo, far-field, and overlapping-speaker claims remain blocked."
+        )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": "speech_presence_resource_evidence_only",
         "environment": {
             "platform": platform.platform(),
@@ -919,6 +1141,55 @@ def build_report(
             **corpus_manifest,
         },
         "current_strategy_metrics": _current_strategy_metrics(clips),
+        "calibration_holdout": {
+            "method": "deterministic_stratified_source_group_split",
+            "holdout_fraction": DEFAULT_HOLDOUT_FRACTION,
+            "source_group_overlap": False,
+            "calibration_clips": len(calibration),
+            "holdout_clips": len(holdout),
+            "calibration_source_groups": len(
+                {source_group_id(clip.clip_id) for clip in calibration}
+            ),
+            "holdout_source_groups": len(
+                {source_group_id(clip.clip_id) for clip in holdout}
+            ),
+            "rnnoise_sustained_100ms": {
+                "selection_rule": (
+                    "maximize balanced_accuracy, then recall, specificity, "
+                    "then prefer the lower threshold"
+                ),
+                "selected_on_calibration": selected_rnnoise,
+                "holdout_metrics": _metrics_at_threshold(
+                    holdout,
+                    "rnnoise_sustained_100ms_score",
+                    selected_threshold,
+                ),
+                "holdout_scenario_metrics": _group_metrics(
+                    holdout,
+                    "rnnoise_sustained_100ms_score",
+                    selected_threshold,
+                ),
+                "holdout_locale_recall": _locale_recall(
+                    holdout,
+                    "rnnoise_sustained_100ms_score",
+                    selected_threshold,
+                ),
+                "fixed_0.7_holdout_metrics": _metrics_at_threshold(
+                    holdout,
+                    "rnnoise_sustained_100ms_score",
+                    RNNOISE_EXPLORATORY_SUSTAINED_THRESHOLD,
+                ),
+                "fixed_0.7_holdout_trigger_timing": _trigger_summary(
+                    holdout,
+                    "rnnoise_sustained_100ms_trigger_ms",
+                ),
+            },
+        },
+        "real_device_metrics": _real_device_metrics(
+            clips,
+            score_name="rnnoise_sustained_100ms_score",
+            threshold=selected_threshold,
+        ),
         "threshold_curves": {
             "rnnoise_peak": _threshold_curve(
                 clips, "rnnoise_peak", RNNOISE_THRESHOLDS
@@ -1001,13 +1272,7 @@ def build_report(
             ),
         },
         "performance": performance,
-        "limitations": [
-            "Repository TTS and synthetic noise are a pre-benchmark, not a room recording study.",
-            "No television, acoustic echo, far-field microphone, or overlapping-speaker labels are present.",
-            "RNNoise evidence is measured on the desktop 48 kHz pipeline only.",
-            "Silero is measured both on raw 16 kHz audio and after the production RNNoise/AGC/limiter pipeline.",
-            "Speech presence cannot replace SmartTurn semantic completion.",
-        ],
+        "limitations": limitations,
     }
 
 
@@ -1020,6 +1285,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--speech-per-locale", type=int, default=8)
     parser.add_argument("--negative-per-kind", type=int, default=12)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--real-device-manifest",
+        type=Path,
+        help="JSON manifest of labeled real-device recordings",
+    )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -1032,6 +1302,12 @@ def main() -> int:
         negative_per_kind=args.negative_per_kind,
         seed=args.seed,
     )
+    if args.real_device_manifest is not None:
+        real_clips, real_summary = load_real_device_manifest(
+            args.real_device_manifest
+        )
+        clips.extend(real_clips)
+        corpus_manifest["real_device"] = real_summary
     print(
         f"built {len(clips)} clips; evaluating RNNoise and Silero",
         file=sys.stderr,

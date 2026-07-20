@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -96,3 +98,97 @@ def test_mix_at_snr_rejects_silent_inputs() -> None:
 
     with pytest.raises(ValueError, match="contain energy"):
         MODULE.mix_at_snr(silence, noise, 0)
+
+
+def test_calibration_holdout_split_keeps_source_variants_together() -> None:
+    clips = []
+    for locale in ("en", "zh"):
+        for source in range(4):
+            for variant in ("clean", "snr_+10"):
+                clips.append(
+                    SimpleNamespace(
+                        clip_id=f"speech/{locale}/{source:02d}/{variant}",
+                        label=True,
+                        locale=locale,
+                    )
+                )
+    clips.extend(
+        SimpleNamespace(
+            clip_id=f"negative/fan/{index:02d}",
+            label=False,
+            locale=None,
+        )
+        for index in range(8)
+    )
+
+    calibration, holdout = MODULE.split_calibration_holdout(
+        clips,
+        seed=2398,
+        holdout_fraction=0.25,
+    )
+
+    calibration_groups = {
+        MODULE.source_group_id(clip.clip_id) for clip in calibration
+    }
+    holdout_groups = {MODULE.source_group_id(clip.clip_id) for clip in holdout}
+    assert calibration_groups.isdisjoint(holdout_groups)
+    assert {clip.locale for clip in holdout if clip.label} == {"en", "zh"}
+    assert any(not clip.label for clip in calibration)
+    assert any(not clip.label for clip in holdout)
+
+
+def test_threshold_is_selected_from_calibration_metrics_only() -> None:
+    clips = [
+        SimpleNamespace(label=True, score=0.80),
+        SimpleNamespace(label=True, score=0.75),
+        SimpleNamespace(label=False, score=0.60),
+        SimpleNamespace(label=False, score=0.10),
+    ]
+
+    selected = MODULE.select_presence_threshold(
+        clips,
+        score_name="score",
+        thresholds=(0.6, 0.7, 0.8),
+    )
+
+    assert selected["threshold"] == pytest.approx(0.7)
+    assert selected["balanced_accuracy"] == pytest.approx(1.0)
+
+
+def test_real_device_manifest_loads_audio_without_exposing_paths(tmp_path: Path) -> None:
+    audio_path = tmp_path / "desk-mic.wav"
+    MODULE.sf.write(
+        audio_path,
+        np.zeros(MODULE.SAMPLE_RATE_48K, dtype=np.float32),
+        MODULE.SAMPLE_RATE_48K,
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "clips": [
+                    {
+                        "id": "idle-fan-01",
+                        "path": audio_path.name,
+                        "label": False,
+                        "device_id": "desktop-usb",
+                        "scenario": "real_idle_fan",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    clips, summary = MODULE.load_real_device_manifest(manifest_path)
+
+    assert len(clips) == 1
+    assert clips[0].clip_id == "real/desktop-usb/idle-fan-01"
+    assert clips[0].device_id == "desktop-usb"
+    assert summary == {
+        "manifest_schema_version": 1,
+        "clip_count": 1,
+        "device_ids": ["desktop-usb"],
+    }
+    assert str(audio_path) not in json.dumps(summary)
