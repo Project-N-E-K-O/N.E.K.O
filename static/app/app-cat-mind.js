@@ -18,6 +18,7 @@
         ACTION_REQUEST: 'neko:cat-mind:action-request',
         ACTION_RESULT: 'neko:cat-mind:action-result',
         RETURN_SUMMARY: 'neko:cat-mind:return-summary',
+        CAT_LOCAL_ACTIVE_CHANGE: 'neko:cat-local-active-change',
     });
 
     // Debug visibility is deliberately separate from Cat Mind operation:
@@ -336,10 +337,6 @@
             lastChatMinimizedRect: null,
             lastChatMinimizedState: null,
             lastChatIdleDocked: false,
-            // Delivery eligibility only. It is set after the adapter proves a
-            // Cat Mind runner actually entered started; it is not an episode
-            // fact and never replaces the strict done-only accumulator.
-            hasStartedAutonomousAction: false,
             returnSummaryDraft: null,
             returnEpisodeAccumulator: createReturnEpisodeAccumulator(),
             lastDecision: null,
@@ -795,7 +792,6 @@
             var scoreConfig = getActionScoreConfig(pending.actionId);
             clearActionRequestLeaseTimer();
             runtimeState.scheduler.pendingActionRequest = null;
-            runtimeState.hasStartedAutonomousAction = true;
             runtimeState.scheduler.activeAction = {
                 requestId: pending.requestId,
                 actionId: pending.actionId,
@@ -2189,11 +2185,6 @@
             entry: runtimeState.entry || 'manual',
             final_tier: runtimeState.tier,
         };
-        if (runtimeState.hasStartedAutonomousAction) {
-            // This is only a short-return delivery gate. The optional episode
-            // below remains strictly completed-action evidence.
-            summary.has_started_autonomous_action = true;
-        }
         var episode = buildReturnEpisode();
         if (episode) summary.episode = episode;
         return summary;
@@ -2242,7 +2233,8 @@
     function isCatGreetingReturnSource(source) {
         return source === 'live2d-return-click' ||
             source === 'vrm-return-click' ||
-            source === 'mmd-return-click';
+            source === 'mmd-return-click' ||
+            source === 'pngtuber-return-click';
     }
 
     function finishCatMindReturn(source) {
@@ -2263,9 +2255,6 @@
         clearAutonomousClock();
         clearActionRequestLeaseTimer();
         runtimeState = createInitialRuntimeState();
-        // PNGTuber has the same return observation but no current
-        // app-auto-goodbye greeting consumer. Do not let its draft survive as
-        // stale input for a later supported avatar return.
         if (isCatGreetingReturnSource(returnSource)) {
             runtimeState.returnSummaryDraft = summary;
         }
@@ -2277,6 +2266,34 @@
             timestamp: runtimeState.updatedAt,
             summary: clonePlain(summary),
         });
+    }
+
+    function syncCatAppearanceLifecycle(detail) {
+        var eventDetail = detail && typeof detail === 'object' ? detail : {};
+        if (eventDetail.active === true) {
+            beginCatMind(eventDetail);
+            var activeTier = normalizeTier(eventDetail.tier);
+            if (activeTier !== 'none' && activeTier !== runtimeState.tier) {
+                observeTierChange({
+                    type: 'visual-tier',
+                    tier: activeTier,
+                    source: eventDetail.source || 'cat-appearance',
+                    reason: eventDetail.reason || 'cat-appearance-active',
+                    timestamp: eventDetail.timestamp,
+                });
+            }
+            return getState();
+        }
+        if (eventDetail.active !== false) {
+            return getState();
+        }
+        if (eventDetail.returnCommitted === true) {
+            return finishCatMindReturn(eventDetail.returnSource || eventDetail.source || 'return-click');
+        }
+        if (runtimeState.active || (eventDetail.discardReturnSummary === true && runtimeState.returnSummaryDraft)) {
+            return resetRuntime(eventDetail.reason || 'cat-appearance-ended');
+        }
+        return getState();
     }
 
     function observeTierChange(detail) {
@@ -2597,12 +2614,15 @@
     }
 
     function installObservationListeners() {
-        window.addEventListener('live2d-goodbye-click', function (event) {
-            beginCatMind(event && event.detail);
+        window.addEventListener(EVENT_NAMES.CAT_LOCAL_ACTIVE_CHANGE, function (event) {
+            syncCatAppearanceLifecycle(event && event.detail);
         });
-        ['live2d-return-click', 'vrm-return-click', 'mmd-return-click', 'pngtuber-return-click'].forEach(function (eventName) {
-            window.addEventListener(eventName, function () {
-                finishCatMindReturn(eventName);
+        window.addEventListener('neko:goodbye-state-cleared', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            syncCatAppearanceLifecycle({
+                active: false,
+                reason: detail.reason || 'goodbye-state-cleared',
+                discardReturnSummary: true,
             });
         });
         window.addEventListener('neko:auto-goodbye:state-change', function (event) {

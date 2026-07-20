@@ -146,7 +146,7 @@ L = S(0.8d + 0.2 × min(d, t))
 
 `interrupted` 先按动作自身终态处理，例如 small move 仍可结算已经发生的真实路程；随后生成的 drag/return/tier interruption observation 只是生命周期元数据，五维全部为零。拖拽本身已经通过 3.1 和 3.2 结算，不能再由中断事件重复收费。
 
-journey 到达聊天球后的局部 `25%` 玩球不是 selector 动作。只有它真实 done 时才使用上表的 play 完成反馈并消费尚未满足的毛线意图；cancelled 不结算完成反馈。两者都不写 Cat Mind cooldown、严格 action result、`has_started_autonomous_action` 或 return episode，也不会单独制造下一轮 selector 机会。
+journey 到达聊天球后的局部 `25%` 玩球不是 selector 动作。只有它真实 done 时才使用上表的 play 完成反馈并消费尚未满足的毛线意图；cancelled 不结算完成反馈。两者都不写 Cat Mind cooldown、严格 action result 或 return episode，也不会单独制造下一轮 selector 机会。
 
 ## 四、动作分数
 
@@ -293,10 +293,10 @@ queued decision
 
 - provider `dryRun` 必须只读。provider 拒绝发生在 request 之前；adapter 也可对已发 request 回 `rejected`。两者都不写 cooldown、done/failed/result、五维完成反馈或 episode，也不消费意图。
 - request 没有 ack 时的租约为 `5s`；accepted 后没有 started 时的租约为 `12s`。deadline 到达时由独立 timer 异步释放 pending 并记录协议失败；pending 期间若合并了用户触发，只排入一次后续判断，无输入时不自动重发 request，也不伪造终态或在 timer 回调里同步启动 runner。
-- `accepted` 必须带唯一 `runId`，只绑定 request；`started` 必须匹配同一个 `actionId + requestId + runId`。只有 started 才建立本动作 cooldown、重置 cadence、设置短时投递资格并消费对应 Cat Mind 动作意图。
+- `accepted` 必须带唯一 `runId`，只绑定 request；`started` 必须匹配同一个 `actionId + requestId + runId`。只有 started 才建立本动作 cooldown、重置 cadence 并消费对应 Cat Mind 动作意图。
 - 音频 runner 必须等 `audio.play()` 成功才报告 started；创建 `Audio`、选择素材或显示准备态都不算 started。
 - 严格终态只接受 `source=cat_mind` 且完整匹配 active 三元组的 `done/failed/cancelled/interrupted`。不匹配的 legacy/presentation 结果只留作调试，不结算。
-- accepted 后若终态先于 started，释放 request 并记录 `result_before_started`，但不写 cooldown、五维完成反馈、episode 或 started 投递资格。
+- accepted 后若终态先于 started，释放 request 并记录 `result_before_started`，但不写 cooldown、五维完成反馈、episode 或 started 观察标记。
 - done 结算动作完成反馈，并把 CAT1 活动或 CAT2/CAT3 休息写入有界 episode accumulator；其他终态永远不是完成经历。interrupted 先执行动作自身取消语义，再追加零五维的 interruption 元数据。
 - pending/active 期间到达的用户触发按 observation type 合并保存。终态后的第一轮只完成 post-settle，随后用 `setTimeout(0)` 排入一次新判断；wakeup、observation 和 action result 都不能在旧同步栈里连播。
 - 有新鲜明确意图但 provider 暂不可用时保留 `providerRecheckNeeded`。既有 walk/stretch 的完成只可唤醒一次重新 dry-run，仍不是 selector 候选。
@@ -340,12 +340,12 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
 1. 从不交互时自然时间流能产生少量动作，不永久静止。
 2. provider reject 不产生 cooldown、done、failed、result 或 return episode，也不消费尚在衰减的短时意图。
 3. accepted 不等于 started；音频播放失败时无 cooldown，意图仍保留；只有真实 started 同时建立 cooldown、重置节奏并消费对应 Cat Mind 动作的意图。未确认 request 的 `5s` 租约、accepted 未 started 的 `12s` 租约到期后只释放调度，不伪造结果。
-4. done-before-started 记录协议失败并释放 request，但不产生 cooldown、五维完成反馈、episode 或短时 started 投递资格。
+4. done-before-started 记录协议失败并释放 request，但不产生 cooldown、五维完成反馈、episode 或 started 观察标记。
 5. drag end/cancel、walk done/cancel、compact top-edge done、small move done/cancel 的物理负荷只按非空终态 `activityId` 结算一次；取消只结算已发生的位移，不领取成功到达或动作完成反馈；drag/return/tier interruption 元数据不重复修改五维。
 6. 六个已接入动作都使用 `need + cadence + intent - cooldown` 的统一结构；没有证据的动作 intent 为 0，CAT2/CAT3 只开放对应动作。
 7. 毛线拖拽 active/settling 时保持 quiet；far-chat 的小移动和玩毛线保持 provider hard reject，强毛线意图也不能主动 walk-to-chat 或越过 provider。provider-ready 的 walk/stretch 只可唤醒被保留的意图，不得自己成为 selector 候选。
 8. active action 期间的大量用户触发必须去重合并，并在终态恢复后只排入一次异步 reevaluation；不得同步连播，也不得把这段交互全部丢失。
-9. journey 局部玩球 done 只结算 play 五维并消费毛线意图；不写 cooldown、严格 result、started 投递资格或 episode。cancelled 不领取完成反馈。
+9. journey 局部玩球 done 只结算 play 五维并消费毛线意图；不写 cooldown、严格 result、started 观察标记或 episode。cancelled 不领取完成反馈。
 10. 更换 runner、tick、五维反馈、意图或动作公式时必须用真实 runner 时长和终态重新模拟，不能只改文档、debug 展示或固定断言。
 
 ## 六、return summary 规则
@@ -357,7 +357,6 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
   "duration_seconds": 900,
   "entry": "manual",
   "final_tier": "cat1",
-  "has_started_autonomous_action": true,
   "episode": {
     "kind": "activity",
     "highlight": "played_yarn"
@@ -370,7 +369,6 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
 - `duration_seconds`：本次猫形态真实停留秒数；
 - `entry`：`manual` 或 `auto`；
 - `final_tier`：`cat1 / cat2 / cat3`；
-- `has_started_autonomous_action`：可选，只允许字面量 `true`，仅解除 `<180s` 的投递静默，不是可叙述事实；
 - `episode.kind`：`activity / rest_after_activity / rested`；
 - `episode.highlight`：仅 `played_yarn / ate_snack / small_move / social_ping`，`rested` 禁止 highlight。
 
@@ -396,14 +394,14 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
 | nap / CAT2 | 180 秒 | 1800 秒 |
 | sleep / CAT3 | 180 秒 | 1800 秒 |
 
-`<180s` 且无严格 started：静默。`<180s` 且有 started、无 episode：中性短 return。`<180s` 且有 started 和严格 done episode：无 elapsed 的短 episode wrapper。`>=180s` 时按最终 tier、时长档、entry 和 episode 选择提示词。
+所有 `<180s` 的猫形态 return 统一静默，无论是否有严格 started 或 done episode。只有 `>=180s` 时才按最终 tier、时长档、entry 和 episode 选择提示词。
 
 ### 6.4 一次性投递链
 
-1. return 时 Cat Mind 冻结本轮短摘要；只有 Live2D、VRM、MMD 的现行 return source 保留草稿，PNGTuber 只 reset，不能把草稿留给下一个 avatar。
+1. return 时 Cat Mind 冻结本轮短摘要；Live2D、VRM、MMD、PNGTuber 的真实猫 return 使用同一份一次性草稿规则。
 2. return 消费者读取后立即清空草稿，再派发专用 `cat_greeting_check`；无 WebSocket、发送失败或重复 return 都不能把旧摘要带到下一轮。
-3. WebSocket 只在停留 `>=180s`，或摘要明确带字面量 `has_started_autonomous_action=true` 时发送。这个布尔位只开短时投递 gate，不提供动作完成事实。
-4. 后端以消息顶层 `cat_duration_seconds / tier / was_auto` 为 canonical，只从摘要读取 allowlist episode 和 started 布尔位；摘要中的 duration、entry、final tier 不成为第二事实源。
+3. WebSocket 只在停留 `>=180s` 时发送；动作开始或完成都不能绕过这条统一等待线。
+4. 后端以消息顶层 `cat_duration_seconds / tier / was_auto` 为 canonical，只从摘要读取 allowlist episode；摘要中的 duration、entry、final tier 和其他字段不成为第二事实源。
 5. 服务端把合法 enum 映射为自己持有的 scene 文案，通过独立 `trigger_cat_greeting` 生成一次 ephemeral prompt；摘要不写数据库、长期 memory 或角色设定。
 6. 该路由继续受 goodbye silent、voice、takeover、session、主动消息状态机和写锁约束。`time_hint` 固定为空，不调用或拼接早餐、午饭、晚饭、深夜等普通 greeting。
 
@@ -502,23 +500,6 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
 用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。
 ```
 
-### 7.6 `<180s` 且有完成 episode 的 wrapper
-
-```text
-{reason_hint}你刚才变成了猫咪。刚才作为猫真实经历的是：{cat_form_scene}现在{master}把你叫回来了。
-{episode_return_tone}
-这段真实经历是本次猫形态经过的唯一事实，回归时必须自然带出它。可以自然提到回来，但不能把刚才说成全程只有等待、什么也没做，或擅自说成打盹、熟睡、刚醒。不要逐项报动作、次数或过程，也不要把它归因于对方。
-用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。
-```
-
-### 7.7 `<180s`、有 started 但无完成 episode 的 wrapper
-
-```text
-{reason_hint}你刚才变成了猫咪，现在{master}把你叫回来了。
-这次没有可叙述的已完成猫形态经历。只自然回应已经回来；不要猜测或声称刚才全程在等待、什么也没做、打盹、熟睡、刚醒，或任何动作已经完成。不要列举动作、次数或过程，也不要把它归因于对方。
-用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。
-```
-
 所有实际模板外层还有环境提示起止标记。有合法 episode 时，episode 是本次猫形态活动事实的唯一来源，tier 和时长只决定回归语气，不能覆盖 episode 或再声称另一段未经完成动作证明的经历。没有 episode 且停留达到 `180s` 时，保留原有按最终 visual tier 生成的清醒/打盹/熟睡基础提示；这是既有视觉层基线，不等同于严格 `sleep_feedback_done` 事实。scene 不能解释成“和用户一起完成”，不能推演用户意图、缺席原因或关系结论。
 
 ## 八、全链路验收
@@ -527,12 +508,12 @@ near-chat 用于验证 CAT1 四动作的完整竞争；far-chat 只有 social/ea
 
 1. 大量交互并完成多个动作：只输出最后一个可信自然段；混合动作不伪造单一 highlight。
 2. 正常或少量交互并完成单一动作：输出相应 activity/highlight。
-3. 只有交互、没有严格完成动作：无 episode；达到 180 秒时走基础 tier 提示，短时无 started 静默。
+3. 只有交互、没有严格完成动作：无 episode；达到 180 秒时走基础 tier 提示，短时统一静默。
 4. 从不交互、无动作完成：不凭时间流虚构经历。
 5. 活动后严格休息：输出 `rest_after_activity`，保持先后顺序。
 6. 单独严格休息：输出 `rested`，不声称睡眠深度和时长。
 7. failed/cancelled/interrupted/provider reject：不进入 episode。
-8. `<180s` started 后立即 return：允许一次中性回归；只有 done 才能说具体经历。
+8. `<180s` 时无论是否 started 或 done 都保持静默；动作不能绕过统一等待线。
 9. 摘要消费一次；无 socket、发送失败、重复 return 不泄漏到下一轮。
 10. 后端 instruction 不含 raw JSON、动作 ID、次数、坐标、分数、五维或未知文本。
 11. cat greeting 的 instruction 不调用普通时间提示，不混入午饭、晚饭、深夜等问候。

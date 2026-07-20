@@ -10,6 +10,8 @@ CAT_MIND_PATH = PROJECT_ROOT / "static" / "app" / "app-cat-mind.js"
 CAT_MIND_DEBUG_PATH = PROJECT_ROOT / "static" / "app" / "app-cat-mind-debug.js"
 APP_AUTO_GOODBYE_PATH = PROJECT_ROOT / "static" / "app" / "app-auto-goodbye.js"
 APP_WEBSOCKET_PATH = PROJECT_ROOT / "static" / "app" / "app-websocket.js"
+RETURN_SURFACE_PATH = PROJECT_ROOT / "static" / "app" / "app-ui" / "surface-floating-controls.js"
+RETURN_TRANSITIONS_PATH = PROJECT_ROOT / "static" / "app" / "app-ui" / "return-transitions.js"
 INDEX_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "index.html"
 CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 PAGES_ROUTER_PATH = PROJECT_ROOT / "main_routers" / "pages_router.py"
@@ -125,7 +127,8 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
     ):
         assert f"{api_name}: {api_name}" in source
 
-    assert "addEventListener('live2d-goodbye-click'" in source
+    assert "addEventListener(EVENT_NAMES.CAT_LOCAL_ACTIVE_CHANGE" in source
+    assert "addEventListener('live2d-goodbye-click'" not in source
     assert "addEventListener('neko:auto-goodbye:state-change'" in source
     assert "addEventListener('neko:return-ball-manual-move'" in source
     assert "addEventListener('neko:idle-return-ball-state'" in source
@@ -153,6 +156,44 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
     assert "selectAction" not in source
     assert "utilityScore" in source
     assert "scoreAction" not in source
+
+
+def test_cat_mind_return_lifecycle_uses_committed_and_completed_boundaries():
+    surface_source = _read(RETURN_SURFACE_PATH)
+    auto_goodbye_source = _read(APP_AUTO_GOODBYE_PATH)
+    handler_start = surface_source.index("const handleReturnClick = async (event) => {")
+    handler_end = surface_source.index(
+        "window.addEventListener('live2d-return-click', handleReturnClick)",
+        handler_start,
+    )
+    handler = surface_source[handler_start:handler_end]
+
+    viewport_guard = handler.index("if (!preReturnViewportReady.ready) {")
+    commit = handler.index("I.publishCatLocalActive(false")
+    show_model = handler.index("modelDisplayReady = await I.showCurrentModel()")
+    show_model_guard = handler.index("if (modelDisplayReady === false) {")
+    composer_restore = handler.index(
+        "postGoodbyeChatComposerHiddenState(false, 'return-complete')"
+    )
+    complete = handler.index("new CustomEvent('neko:cat-return-complete'")
+
+    assert viewport_guard < commit < show_model < show_model_guard < composer_restore < complete
+    assert "window.addEventListener('neko:cat-return-commit', handleReturnCommit)" in auto_goodbye_source
+    assert "window.addEventListener('neko:cat-return-complete', handleReturnComplete)" in auto_goodbye_source
+    assert "window.addEventListener('live2d-return-click', handleReturn)" not in auto_goodbye_source
+    assert "|| source === 'pngtuber-return-click';" in auto_goodbye_source
+
+
+def test_ball_appearance_stops_cat_cycle_without_requiring_a_visible_return_container():
+    source = _read(RETURN_TRANSITIONS_PATH)
+    handler_start = source.index("window.addEventListener('neko:goodbye-idle-appearance'")
+    handler_end = source.index("window.addEventListener('resize'", handler_start)
+    handler = source[handler_start:handler_end]
+
+    ball_stop = handler.index("I.nekoGoodbyeIdleAppearance === I.NEKO_GOODBYE_IDLE_APPEARANCE_BALL")
+    visible_container_lookup = handler.index("const visibleContainer = I.getVisibleIdleReturnBallContainer()")
+    assert ball_stop < visible_container_lookup
+    assert "I.publishCatLocalActive(false" in handler[ball_stop:visible_container_lookup]
 
 
 def test_cat_mind_phase0_declares_first_action_and_observation_ids():
@@ -491,8 +532,8 @@ def test_cat_mind_walk_journey_tail_observations_reduce_without_waking_selector(
         vm.createContext(context);
         vm.runInContext(source, context);
         win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         assert.equal(timers.length, 1);
         timers.shift()();
@@ -746,8 +787,8 @@ def test_cat_mind_phase2_action_result_event_becomes_observation():
         vm.createContext(context);
         vm.runInContext(source, context);
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ autoGoodbye: false, source: 'manual-goodbye', reason: 'manual-goodbye', timestamp: 1000 }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, autoGoodbye: false, source: 'manual-goodbye', reason: 'manual-goodbye', timestamp: 1000 }}
         }}));
         const appetiteBefore = win.nekoCatMind.getState().fields.appetite;
         const stimulationBefore = win.nekoCatMind.getState().fields.stimulation_need;
@@ -1013,8 +1054,8 @@ def test_cat_mind_phase2_social_ping_runner_ignores_stale_audio_callbacks():
         vm.runInContext(catMindSource, context);
         vm.runInContext(avatarSource, context);
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {
-          detail: { autoGoodbye: false, source: 'manual-goodbye', tier: 'cat1', timestamp: 1000 }
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+          detail: { active: true, autoGoodbye: false, source: 'manual-goodbye', tier: 'cat1', timestamp: 1000 }
         }));
 
         container.setAttribute('data-dragging', 'pending');
@@ -1151,8 +1192,8 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
 
         assert.equal(win.nekoCatMind.getState().active, false);
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ autoGoodbye: true, source: 'auto-goodbye', reason: 'idle-timeout' }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, autoGoodbye: true, source: 'auto-goodbye', reason: 'idle-timeout' }}
         }}));
         let state = win.nekoCatMind.getState();
         assert.equal(state.active, true);
@@ -1229,7 +1270,9 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         assert.ok(stateChanges.some((change) => change.reason === 'observation'));
         assert.ok(stateChanges.some((change) => change.reason === 'decision'));
 
-        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
+        }}));
         state = win.nekoCatMind.getState();
         assert.equal(state.active, false);
         assert.ok(state.returnSummaryDraft);
@@ -1247,8 +1290,8 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         assert.equal(win.nekoCatMind.getRecentEvents().length, 0);
 
         now = 3000;
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ startupDefaultForm: 'cat', source: 'startup-default-form', reason: 'startup-default-cat' }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, startupDefaultForm: 'cat', source: 'startup-default-form', reason: 'startup-default-cat' }}
         }}));
         state = win.nekoCatMind.getState();
         assert.equal(state.active, true);
@@ -1264,7 +1307,9 @@ def test_cat_mind_phase1_runtime_observes_without_dispatching_actions():
         assert.equal(startupEntry.detail.reason, 'startup-default-cat');
         assert.equal(startupEntry.detail.startupDefaultForm, 'cat');
         now += 1000;
-        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
+        }}));
         assert.equal(win.nekoCatMind.getReturnSummaryDraft().entry, 'auto');
         """
     )
@@ -1384,7 +1429,7 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
         assert.equal(enabled.document.body.children.length, 1);
         const panel = enabled.document.body.children[0];
         assert.equal(panel.id, 'neko-cat-mind-debug-panel');
-        enabled.win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{ detail: {{ source: 'manual-goodbye' }} }}));
+        enabled.win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true, source: 'manual-goodbye' }} }}));
         const panelBody = panel.children[2];
         assert.match(panelBody.textContent, /五维状态/);
         assert.match(panelBody.textContent, /状态：猫形态运行中/);
@@ -1441,7 +1486,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         let activeHardGate = '';
         win.addEventListener('neko:cat-mind:action-request', () => {{ actionRequests += 1; }});
         win.addEventListener('neko:cat-mind:action-result', () => {{ actionResults += 1; }});
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{ detail: {{ source: 'manual-goodbye' }} }}));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true, source: 'manual-goodbye' }} }}));
         assert.equal(providerCalls, 0);
         assert.equal(timers.length, 1);
         win.NekoCatMindActionProviders = {{
@@ -1542,7 +1587,7 @@ def test_cat_mind_phase1_deduplicates_same_timestamp_observations():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => 1000 }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true }} }}));
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'poll', minimized: true, timestamp: 1234, screenRect: {{ left: 1, top: 2, width: 3, height: 4 }} }}
         }}));
@@ -1581,7 +1626,7 @@ def test_cat_mind_phase1_treats_unchanged_desktop_polls_as_heartbeats():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => 1000 }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true }} }}));
         const minimized = (timestamp, left = 1) => win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'poll', minimized: true, timestamp, screenRect: {{ left, top: 2, width: 80, height: 80 }} }}
         }}));
@@ -1670,12 +1715,12 @@ def test_cat_mind_phase1_filters_noisy_or_unknown_observations():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => 1000 }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true }} }}));
         win.dispatchEvent(new CustomEventLike('neko:thought-bubble-pop', {{
           detail: {{ source: 'click', timestamp: 1100 }}
         }}));
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'duplicate', timestamp: 1200 }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'duplicate', timestamp: 1200 }}
         }}));
         win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
           detail: {{ type: 'made_up_event', source: 'unit-test', timestamp: 1300, detail: {{ reason: 'unknown' }} }}
@@ -1718,7 +1763,7 @@ def test_cat_mind_phase1_maps_desktop_observation_edges():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => 1000 }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true }} }}));
         win.dispatchEvent(new CustomEventLike('neko:idle-chat-minimized-state', {{
           detail: {{ source: 'chat-window', reason: 'poll', minimized: true, timestamp: 1100, screenRect: {{ left: 0, top: 0, width: 80, height: 80 }} }}
         }}));
@@ -1744,10 +1789,10 @@ def test_cat_mind_phase1_maps_desktop_observation_edges():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_cat_mind_phase1_pngtuber_return_click_is_observation_only():
+def test_cat_mind_phase1_pngtuber_return_preserves_its_summary_for_greeting():
     source = _read(CAT_MIND_PATH)
 
-    assert "'pngtuber-return-click'" in source
+    assert "source === 'pngtuber-return-click';" in source
 
     script = textwrap.dedent(
         f"""
@@ -1774,15 +1819,18 @@ def test_cat_mind_phase1_pngtuber_return_click_is_observation_only():
         vm.runInContext(source, context);
         const summaries = [];
         win.addEventListener('neko:cat-mind:return-summary', (event) => summaries.push(event.detail));
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ autoGoodbye: false, source: 'manual-goodbye', reason: 'manual-goodbye' }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, autoGoodbye: false, source: 'manual-goodbye', reason: 'manual-goodbye' }}
         }}));
         now = 2000;
-        win.dispatchEvent(new CustomEventLike('pngtuber-return-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: false, returnCommitted: true, returnSource: 'pngtuber-return-click' }}
+        }}));
         const state = win.nekoCatMind.getState();
         assert.equal(state.active, false);
-        assert.equal(state.returnSummaryDraft, null);
-        assert.equal(win.nekoCatMind.consumeReturnSummaryDraft(), null);
+        assert.ok(state.returnSummaryDraft);
+        assert.equal(win.nekoCatMind.consumeReturnSummaryDraft().entry, 'manual');
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
         assert.equal(win.nekoCatMind.getRecentEvents().length, 0);
         assert.equal(summaries.length, 1);
         assert.equal(summaries[0].source, 'pngtuber-return-click');
@@ -1837,8 +1885,8 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
         let actionResults = 0;
         win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
         win.addEventListener('neko:cat-mind:action-result', () => {{ actionResults += 1; }});
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         assert.equal(requests.length, 0);
         assert.equal(timers.length, 1);
@@ -2077,8 +2125,8 @@ def test_cat_mind_small_move_uses_started_lifecycle_and_completion_feedback():
         }};
         const requests = [];
         win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         assert.equal(intervals.length, 1);
         timers.shift()();
@@ -2137,8 +2185,8 @@ def test_cat_mind_small_move_uses_started_lifecycle_and_completion_feedback():
         win.nekoCatMind.reset('next-entry');
         timers.length = 0;
         now += 1000;
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'auto-goodbye', autoGoodbye: true, timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'auto-goodbye', autoGoodbye: true, timestamp: now }}
         }}));
         timers.shift()();
         now += 5.5 * 60 * 1000;
@@ -2203,8 +2251,8 @@ def test_cat_mind_autonomous_clock_uses_elapsed_time_thresholds_and_stops_on_ret
         const requests = [];
         win.addEventListener('neko:cat-mind:action-request', (event) => requests.push(event.detail));
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         assert.equal(intervals.size, 1);
         const clock = [...intervals.values()][0];
@@ -2242,7 +2290,9 @@ def test_cat_mind_autonomous_clock_uses_elapsed_time_thresholds_and_stops_on_ret
         assert.equal(social.allowed, true);
         assert.ok(social.score >= social.threshold);
 
-        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
+        }}));
         assert.equal(win.nekoCatMind.getState().active, false);
         assert.equal(clearedIntervals.length, 1);
         const timersBeforeStaleClock = timers.length;
@@ -2251,8 +2301,8 @@ def test_cat_mind_autonomous_clock_uses_elapsed_time_thresholds_and_stops_on_ret
 
         timers.length = 0;
         now = 500000;
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         const secondClock = [...intervals.values()][0];
         assert.equal(timers.length, 1);
@@ -2416,8 +2466,8 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             while (timers.length && remaining-- > 0) timers.shift()();
             assert.ok(remaining > 0, 'scheduler must not synchronously loop');
           }};
-          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-            detail: {{ source: 'manual-goodbye', timestamp: now }},
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: true, source: 'manual-goodbye', timestamp: now }},
           }}));
           flush();
           const clock = intervals[0];
@@ -2535,8 +2585,8 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           const scores = Object.fromEntries(win.nekoCatMind.getDebugSnapshot().actionScores.map(
             (item) => [item.actionId, item]
           ));
-          win.dispatchEvent(new CustomEventLike('live2d-return-click', {{
-            detail: {{ source: 'live2d-return-click', timestamp: now }},
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click', timestamp: now }},
           }}));
           const returnSummary = win.nekoCatMind.getReturnSummaryDraft();
           return {{
@@ -2696,7 +2746,6 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           assert.equal(result.returnSummary.duration_seconds, 60 * 60);
           assert.equal(result.returnSummary.entry, 'manual');
           assert.equal(result.returnSummary.final_tier, 'cat1');
-          assert.equal(result.returnSummary.has_started_autonomous_action, true);
           assert.deepEqual(JSON.parse(JSON.stringify(result.returnSummary.episode)), {{ kind: 'activity' }});
           assert.equal(Object.prototype.hasOwnProperty.call(result.returnSummary, 'events'), false);
           assert.equal(Object.prototype.hasOwnProperty.call(result.returnSummary, 'fields'), false);
@@ -2903,8 +2952,8 @@ def test_cat_mind_all_registered_actions_use_the_same_soft_cooldown_curve():
             while (timers.length && remaining-- > 0) timers.shift()();
             assert.ok(remaining > 0);
           }};
-          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-            detail: {{ source: 'manual-goodbye', timestamp: now }}
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
           }}));
           flush();
           if (tier !== 'cat1') {{
@@ -3043,8 +3092,8 @@ def test_cat_mind_need_and_cadence_use_the_shared_monotonic_response_curve():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         const scoreSnapshot = () => win.nekoCatMind.getDebugSnapshot().actionScores;
         const smoothstep = (value) => value * value * (3 - 2 * value);
@@ -3161,8 +3210,8 @@ def test_cat_mind_explicit_yarn_intent_respects_provider_and_started_lifecycle()
           movementThresholdPx: 24,
         }});
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }},
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }},
         }}));
         flush();
         yarnDragActive = true;
@@ -3288,8 +3337,8 @@ def test_cat_mind_yarn_intent_decays_and_repeated_near_offers_saturate():
           directApproachDistancePx: 10, pathDistancePx: 80, movementThresholdPx: 24,
         }});
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }},
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }},
         }}));
         flush();
         nearOffer();
@@ -3362,8 +3411,8 @@ def test_cat_mind_physical_activity_is_terminal_curve_and_deduplicated():
         const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9,
           actual + ' !== ' + expected);
 
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }},
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }},
         }}));
         const initial = physical();
         observe('drag_start');
@@ -3472,7 +3521,7 @@ def test_cat_mind_user_and_completed_action_feedback_updates_only_its_defined_fi
         vm.createContext(context);
         vm.runInContext(source, context);
         const equal = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, actual + ' !== ' + expected);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{ detail: {{ source: 'manual-goodbye', timestamp: now }} }}));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true, source: 'manual-goodbye', timestamp: now }} }}));
         const observe = (type, tier = 'cat1', detail = {{}}) => {{
           now += 1;
           win.dispatchEvent(new CustomEventLike('neko:cat-mind:observation', {{
@@ -3570,7 +3619,7 @@ def test_cat_mind_bubble_pop_satisfies_need_instead_of_feeding_an_action_loop():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{ detail: {{ source: 'manual-goodbye', timestamp: now }} }}));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{ detail: {{ active: true, source: 'manual-goodbye', timestamp: now }} }}));
         const scores = () => Object.fromEntries(win.nekoCatMind.getDebugSnapshot().actionScores.map((item) => [item.actionId, item.score]));
         for (const type of ['cat_hover_reaction', 'drag_end']) {{
           now += 1;
@@ -3659,8 +3708,8 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         function start() {{
           allowedAction = '';
           now += 10;
-          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-            detail: {{ source: 'manual-goodbye', timestamp: now }}
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
           }}));
           flushDecision();
         }}
@@ -3733,7 +3782,9 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         }}
         function returnSummary() {{
           now += 10;
-          win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
+          }}));
           const summary = win.nekoCatMind.getState().returnSummaryDraft;
           // The mocked timer is associated with the pre-return state and would
           // be a no-op in the browser after runtime reset. Do not let it bleed
@@ -3761,20 +3812,17 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         assert.equal(episodeDebug.preview, null);
         const legacySummary = returnSummary();
         assert.equal(Object.prototype.hasOwnProperty.call(legacySummary, 'episode'), false);
-        assert.equal(Object.prototype.hasOwnProperty.call(legacySummary, 'has_started_autonomous_action'), false);
 
-        // Adapter acceptance alone is not a real action entry and cannot
-        // open the short-return delivery gate.
+        // Adapter acceptance alone is not a real action entry. Even a real
+        // action entry is only return context and never changes dwell time.
         start();
         primeInteraction(16);
         acceptOnly('cat1_small_move');
         const acceptedOnlySummary = returnSummary();
         assert.equal(Object.prototype.hasOwnProperty.call(acceptedOnlySummary, 'episode'), false);
-        assert.equal(Object.prototype.hasOwnProperty.call(acceptedOnlySummary, 'has_started_autonomous_action'), false);
 
         // Matching terminal failures do settle their runner but never count as
-        // a completed activity. They do preserve the separate verified-start
-        // delivery gate. This covers all non-done terminal outcomes.
+        // a completed activity. This covers all non-done terminal outcomes.
         for (const result of ['failed', 'cancelled', 'interrupted']) {{
           restart();
           primeInteraction(16);
@@ -3785,7 +3833,6 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
           assert.equal(episodeDebug.preview, null);
           const interruptedSummary = returnSummary();
           assert.equal(Object.prototype.hasOwnProperty.call(interruptedSummary, 'episode'), false);
-          assert.equal(interruptedSummary.has_started_autonomous_action, true);
         }}
 
         // Repeated successful kinds stay bounded; mixed kinds deliberately
@@ -3807,7 +3854,6 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.preview)), {{ kind: 'activity' }});
         const mixedSummary = returnSummary();
         assert.deepEqual(JSON.parse(JSON.stringify(mixedSummary.episode)), {{ kind: 'activity' }});
-        assert.equal(mixedSummary.has_started_autonomous_action, true);
         assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'dominant_state'), false);
         assert.equal(Object.prototype.hasOwnProperty.call(mixedSummary, 'events'), false);
 
@@ -3916,8 +3962,7 @@ def test_cat_mind_phase4_return_episode_uses_only_strict_completed_chapters():
         assert.deepEqual(JSON.parse(JSON.stringify(episodeDebug.activeChapter)), {{ interactionSeen: false, activityKinds: [] }});
         assert.equal(episodeDebug.lastRest, null);
         assert.equal(episodeDebug.preview, null);
-        const cleanSummary = returnSummary();
-        assert.equal(Object.prototype.hasOwnProperty.call(cleanSummary, 'has_started_autonomous_action'), false);
+        returnSummary();
         """
     )
 
@@ -3951,14 +3996,15 @@ def test_cat_mind_phase4_return_summary_draft_is_consumed_once():
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
-        win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-          detail: {{ source: 'manual-goodbye', timestamp: now }}
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
         }}));
         now += 1000;
-        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: false, returnCommitted: true, returnSource: 'live2d-return-click' }}
+        }}));
         const beforeConsume = win.nekoCatMind.getReturnSummaryDraft();
         assert.ok(beforeConsume);
-        assert.equal(Object.prototype.hasOwnProperty.call(beforeConsume, 'has_started_autonomous_action'), false);
         const consumed = win.nekoCatMind.consumeReturnSummaryDraft();
         assert.deepEqual(JSON.parse(JSON.stringify(consumed)), JSON.parse(JSON.stringify(beforeConsume)));
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
@@ -4084,12 +4130,29 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
           }}), true);
         }});
 
-        function enterAndReturn(durationMs) {{
-          win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
-            detail: {{ source: 'manual-goodbye', timestamp: now }}
+        function beginActualCat() {{
+          const rawGoodbyeType = 'live2d-' + 'goodbye-click';
+          const entryDetail = {{ source: 'manual-goodbye', timestamp: now }};
+          win.dispatchEvent(new CustomEventLike(rawGoodbyeType, {{ detail: entryDetail }}));
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ ...entryDetail, active: true }}
           }}));
+        }}
+        function completeActualReturn(source = 'live2d-return-click') {{
+          win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+            detail: {{ active: false, returnCommitted: true, returnSource: source }}
+          }}));
+          win.dispatchEvent(new CustomEventLike('neko:cat-return-commit', {{
+            detail: {{ source, hadCatCycle: true, timestamp: now }}
+          }}));
+          win.dispatchEvent(new CustomEventLike('neko:cat-return-complete', {{
+            detail: {{ source, timestamp: now }}
+          }}));
+        }}
+        function enterAndReturn(durationMs) {{
+          beginActualCat();
           now += durationMs;
-          win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+          completeActualReturn();
         }}
         function catGreetingMessages() {{
           return sentMessages.filter((message) => message && message.action === 'cat_greeting_check');
@@ -4116,7 +4179,6 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         assert.equal(greetings.length, 1);
         assert.ok(greetings[0].cat_memory_summary);
         assert.equal(greetings[0].cat_memory_summary.entry, 'manual');
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[0].cat_memory_summary, 'has_started_autonomous_action'), false);
         assert.equal(greetingEvents.length, 1);
         assert.deepEqual(
           JSON.parse(JSON.stringify(greetingEvents[0].catMemorySummary)),
@@ -4132,19 +4194,50 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         assert.equal(catGreetingMessages().length, 1);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
 
-        // A strictly started action opens the short-return delivery gate, but
-        // without a terminal done result it contributes no narrative episode.
+        // The breathing-ball goodbye path shares return restoration but has
+        // no Cat Mind cycle and therefore must not emit a cat greeting.
         now += 10;
         win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {{
           detail: {{ source: 'manual-goodbye', timestamp: now }}
         }}));
-        startStrictCatMindAction();
-        now += 1000;
-        win.dispatchEvent(new CustomEventLike('live2d-return-click'));
+        now += 190 * 1000;
+        win.dispatchEvent(new CustomEventLike('neko:cat-return-commit', {{
+          detail: {{ source: 'live2d-return-click', hadCatCycle: false, timestamp: now }}
+        }}));
+        win.dispatchEvent(new CustomEventLike('neko:cat-return-complete', {{
+          detail: {{ source: 'live2d-return-click', timestamp: now }}
+        }}));
+        assert.equal(catGreetingMessages().length, 1);
+        assert.equal(greetingEvents.length, 2);
+        assert.equal(win.nekoCatMind.getState().active, false);
+
+        // PNGTuber uses the same completed cat-return greeting path.
+        now += 10;
+        beginActualCat();
+        now += 190 * 1000;
+        completeActualReturn('pngtuber-return-click');
         greetings = catGreetingMessages();
         assert.equal(greetings.length, 2);
-        assert.equal(greetings[1].cat_memory_summary.has_started_autonomous_action, true);
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[1].cat_memory_summary, 'episode'), false);
+        assert.ok(greetings[1].cat_memory_summary);
+        assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
+
+        // The obsolete started marker is ignored and cannot open the
+        // websocket gate before the unified minimum dwell time.
+        win.dispatchEvent(new CustomEventLike('neko:cat-greeting-check', {{
+          detail: {{ durationSeconds: 10, tier: 'cat1', wasAuto: false,
+            catMemorySummary: {{ has_started_autonomous_action: true }} }}
+        }}));
+        assert.equal(catGreetingMessages().length, 2);
+
+        // The real selector's first possible action is already past that
+        // minimum, so its return is delivered normally and consumes once.
+        now += 10;
+        beginActualCat();
+        startStrictCatMindAction();
+        now += 1000;
+        completeActualReturn();
+        greetings = catGreetingMessages();
+        assert.equal(greetings.length, 3);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
 
         // A closed socket and a send failure keep the old silent/failure path;
@@ -4152,14 +4245,14 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         now += 10;
         win.appState.socket.readyState = 0;
         enterAndReturn(190 * 1000);
-        assert.equal(catGreetingMessages().length, 2);
+        assert.equal(catGreetingMessages().length, 3);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
 
         now += 10;
         win.appState.socket.readyState = 1;
         sendThrows = true;
         enterAndReturn(190 * 1000);
-        assert.equal(catGreetingMessages().length, 2);
+        assert.equal(catGreetingMessages().length, 3);
         assert.equal(win.nekoCatMind.getReturnSummaryDraft(), null);
         sendThrows = false;
 
@@ -4169,8 +4262,8 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         win.nekoCatMind = null;
         enterAndReturn(190 * 1000);
         greetings = catGreetingMessages();
-        assert.equal(greetings.length, 3);
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[2], 'cat_memory_summary'), false);
+        assert.equal(greetings.length, 4);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[3], 'cat_memory_summary'), false);
 
         now += 10;
         win.nekoCatMind = {{
@@ -4178,8 +4271,8 @@ def test_cat_mind_phase4_return_attaches_once_then_preserves_existing_silent_fal
         }};
         enterAndReturn(190 * 1000);
         greetings = catGreetingMessages();
-        assert.equal(greetings.length, 4);
-        assert.equal(Object.prototype.hasOwnProperty.call(greetings[3], 'cat_memory_summary'), false);
+        assert.equal(greetings.length, 5);
+        assert.equal(Object.prototype.hasOwnProperty.call(greetings[4], 'cat_memory_summary'), false);
         """
     )
 

@@ -106,8 +106,8 @@ function createProbe() {
     )),
   });
 
-  win.dispatchEvent(new CustomEventLike('live2d-goodbye-click', {
-    detail: { source: 'manual-goodbye', timestamp: now },
+  win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {
+    detail: { active: true, source: 'manual-goodbye', timestamp: now },
   }));
   flush();
   const recentEvents = () => JSON.parse(JSON.stringify(win.nekoCatMind.getRecentEvents()));

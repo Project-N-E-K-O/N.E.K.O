@@ -32,7 +32,7 @@ def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
     goodbye_click_block = _between(
         source,
         "window.addEventListener('live2d-goodbye-click'",
-        "window.addEventListener('live2d-return-click'",
+        "window.addEventListener('neko:cat-return-complete'",
     )
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in goodbye_click_block
     assert "enterIdleDock" not in goodbye_click_block
