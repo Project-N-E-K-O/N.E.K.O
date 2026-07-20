@@ -118,7 +118,7 @@ test('preview button shows the playing state until audio ends', async () => {
 });
 
 test('preview button restores when audio playback cannot start', async () => {
-    const harness = createHarness({ playError: new Error('blocked') });
+    const harness = createHarness({ playError: 'blocked' });
     const button = createButton();
     const originalContent = button.innerHTML;
 

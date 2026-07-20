@@ -2354,8 +2354,9 @@ async function playPreview(voiceId, btn, options = {}) {
             } catch (e) {
                 restorePreviewButton();
                 console.error('Audio play error:', e);
+                const errorMsg = e?.message || e?.toString();
                 showVoicePreviewErrorNotice(
-                    window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message
+                    window.t ? window.t('voice.playFailed', { error: errorMsg }) : '播放失败: ' + errorMsg
                 );
                 return;
             }
