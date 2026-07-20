@@ -24,8 +24,8 @@ def test_latest_character_card_refresh_wins_when_an_older_request_finishes_last(
 
     script = textwrap.dedent(
         f"""
-        const fs = require('node:fs');
-        const vm = require('node:vm');
+        const fs = require('fs');
+        const vm = require('vm');
         const source = fs.readFileSync({json.dumps(str(CHARACTER_DATA_SCRIPT))}, 'utf8');
         const pendingCharacterLoads = [];
         const renderedSnapshots = [];
