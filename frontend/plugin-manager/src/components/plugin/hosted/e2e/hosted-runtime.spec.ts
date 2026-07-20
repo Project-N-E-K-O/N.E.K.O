@@ -211,3 +211,51 @@ test('real MCP panel fixture preserves add form and JSON textarea focus', async 
   await expect(jsonArea).toBeFocused()
   await expect(jsonArea).toHaveValue(/mcpServers/)
 })
+
+test('real NEKO Live panel places live control below theme and pacing buttons', async ({ page }) => {
+  const panelSource = readFileSync(resolve(repoRoot, 'plugin/plugins/neko_live/ui/panel_compat.tsx'), 'utf8')
+  const zhCN = JSON.parse(readFileSync(resolve(repoRoot, 'plugin/plugins/neko_live/i18n/zh-CN.json'), 'utf8'))
+  const context = {
+    plugin: { id: 'neko_live', name: 'NEKO Live' },
+    state: {
+      store_enabled: true,
+      config: {
+        live_platform: 'bilibili',
+        live_mode: 'co_stream',
+        live_enabled: false,
+        live_room_id: 0,
+        rate_limit_seconds: 20,
+      },
+      safety: { status: 'ready', queue_size: 0, queue_limit: 8 },
+      modules: [],
+      results: [],
+    },
+    config: {
+      schema: { type: 'object', properties: {} },
+      value: {},
+      readonly: false,
+    },
+    actions: [],
+    i18n: { locale: 'zh-CN', default_locale: 'en', messages: { 'zh-CN': zhCN } },
+  }
+  const frame = await loadHostedFrame(page, panelSource, context)
+  const control = frame.locator('.neko-live-inline-control')
+  const theme = frame.getByRole('button', { name: 'panel.streamTheme.title' })
+  const pacing = frame.getByRole('button', { name: 'panel.pacing.title' })
+
+  await expect(control).toBeVisible()
+  await expect(theme).toBeVisible()
+  await expect(pacing).toBeVisible()
+
+  const controlBox = await control.boundingBox()
+  const themeBox = await theme.boundingBox()
+  const pacingBox = await pacing.boundingBox()
+  expect(controlBox).not.toBeNull()
+  expect(themeBox).not.toBeNull()
+  expect(pacingBox).not.toBeNull()
+  expect(controlBox!.y).toBeGreaterThanOrEqual(themeBox!.y + themeBox!.height)
+  expect(controlBox!.y).toBeGreaterThanOrEqual(pacingBox!.y + pacingBox!.height)
+  expect(controlBox!.width).toBeGreaterThanOrEqual(themeBox!.width + pacingBox!.width)
+
+  await expect(frame.locator('.neko-live-control-tooltip')).toHaveCount(0)
+})

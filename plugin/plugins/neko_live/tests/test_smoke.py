@@ -257,7 +257,7 @@ def test_console_modal_close_callback_stays_stable_while_typing() -> None:
         assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
-def test_console_uses_viewport_fixed_live_control_with_priority_readiness_tooltip() -> None:
+def test_console_places_live_control_below_theme_and_pacing_without_tooltip() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -265,10 +265,7 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
-        dock_source = source.split('className="neko-live-live-fab"', 1)[1].split(">\n        {", 1)[0]
-        live_control_source = source.split('className="neko-live-live-fab"', 1)[1].split(
-            "const renderConfigField", 1
-        )[0]
+        live_control_source = runtime_source.split('className="neko-live-inline-control"', 1)[1]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
@@ -278,29 +275,22 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert "animation: none !important" in source
         assert "transform: none !important" in source
         assert 'gridTemplateRows: "auto"' in source
-        assert 'paddingBottom: "120px"' not in source
+        assert 'paddingBottom: "96px"' not in source
         assert 'scrollPaddingBottom: "120px"' not in source
         assert 'className="neko-live-console-scroll"' in source
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
+        assert 'className="neko-live-live-fab"' not in source
         assert 'className="neko-live-console-dock"' not in source
-        assert 'position: "fixed"' in dock_source
-        assert 'right: "24px"' in dock_source
-        assert 'bottom: "24px"' in dock_source
-        assert 'background: "rgba(103, 194, 58, 0.1)"' in live_control_source
-        assert 'borderColor: "rgba(103, 194, 58, 0.38)"' in live_control_source
-        assert 'color: "var(--success)"' in live_control_source
-        assert 'minWidth: "188px"' in live_control_source
-        assert 'minHeight: "56px"' in live_control_source
-        assert 'borderRadius: "16px"' in live_control_source
-        assert 'fontSize: "22px"' in live_control_source
-        assert "fontWeight: 700" in live_control_source
-        assert "opacity: 1" in live_control_source
-        assert "!simpleActionPending" in live_control_source
+        assert 'className="neko-live-inline-control"' in runtime_source
+        assert runtime_source.index('openConsoleDialog("theme")') < runtime_source.index('className="neko-live-inline-control"')
+        assert runtime_source.index('openConsoleDialog("pacing")') < runtime_source.index('className="neko-live-inline-control"')
+        assert 'width: "100%"' in live_control_source
+        assert 'minHeight: "48px"' in live_control_source
         assert 't("panel.actions.connect")' in live_control_source
-        assert "<Tooltip" in source
-        assert 'placement="top"' in source
-        assert 'content={readinessReason}' in source
+        assert "<Tooltip" not in live_control_source
+        assert 'className="neko-live-control-tooltip"' not in source
+        assert 'className="neko-live-runtime-card"' not in source
         assert "readinessTooltip" not in source
         readiness_source = source.split("const readinessReason =", 1)[1].split(
             "const primaryStatusLabel", 1
@@ -344,8 +334,8 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert 't("panel.pacing.standard")' in source
         assert 't("panel.pacing.slow")' in source
         assert "void connectRoom()" in source
-        assert 'callSimple("clear_queue")' not in dock_source
-        assert 'callSimple("pause_roast")' not in dock_source
+        assert 'callSimple("clear_queue")' not in live_control_source
+        assert 'callSimple("pause_roast")' not in live_control_source
         assert 'const canStart = roomConfigured' in source
         assert "primaryStatusLabel" in toolbar_source
         assert "primaryStatusTone" in toolbar_source
