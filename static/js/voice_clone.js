@@ -2186,13 +2186,69 @@ function showVoicePreviewErrorNotice(message) {
     window.setTimeout(() => okButton.focus(), 0);
 }
 
+const activeVoicePreviewSessions = new Map();
+const voicePreviewOriginalButtonContents = new WeakMap();
+
+function setVoicePreviewButtonState(btn, state) {
+    if (!btn) return;
+
+    if (state === 'idle') {
+        const originalContent = voicePreviewOriginalButtonContents.get(btn);
+        if (originalContent !== undefined) {
+            btn.innerHTML = originalContent;
+            voicePreviewOriginalButtonContents.delete(btn);
+        }
+        btn.disabled = false;
+        delete btn.dataset.previewState;
+        return;
+    }
+
+    if (!voicePreviewOriginalButtonContents.has(btn)) {
+        voicePreviewOriginalButtonContents.set(btn, btn.innerHTML);
+    }
+    btn.textContent = state === 'playing'
+        ? (window.t ? window.t('voice.previewing') : '正在预览')
+        : (window.t ? window.t('voice.loading') : '...');
+    btn.disabled = true;
+    btn.dataset.previewState = state;
+}
+
+function attachVoicePreviewButton(voiceId, btn) {
+    const session = activeVoicePreviewSessions.get(String(voiceId));
+    if (!session) return;
+    session.buttons.add(btn);
+    setVoicePreviewButtonState(btn, session.state);
+}
+
+function updateVoicePreviewSessionState(session, state) {
+    if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
+    session.state = state;
+    session.buttons.forEach(btn => setVoicePreviewButtonState(btn, state));
+}
+
+function finishVoicePreviewSession(session) {
+    if (activeVoicePreviewSessions.get(session.voiceId) !== session) return;
+    activeVoicePreviewSessions.delete(session.voiceId);
+    session.buttons.forEach(btn => setVoicePreviewButtonState(btn, 'idle'));
+    session.buttons.clear();
+}
+
 async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
-    const originalContent = btn.innerHTML;
-    const loadingText = window.t ? window.t('voice.loading') : '...';
-    btn.textContent = loadingText;
-    btn.disabled = true;
+    const voiceIdKey = String(voiceId);
+    const existingSession = activeVoicePreviewSessions.get(voiceIdKey);
+    if (existingSession) {
+        attachVoicePreviewButton(voiceIdKey, btn);
+        return;
+    }
+    const session = {
+        voiceId: voiceIdKey,
+        state: 'loading',
+        buttons: new Set(),
+    };
+    activeVoicePreviewSessions.set(voiceIdKey, session);
+    attachVoicePreviewButton(voiceIdKey, btn);
 
     try {
         const storageKey = `voice_preview_${voiceId}`;
@@ -2287,9 +2343,7 @@ async function playPreview(voiceId, btn, options = {}) {
             const restorePreviewButton = () => {
                 if (playbackFinished) return;
                 playbackFinished = true;
-                btn.innerHTML = originalContent;
-                btn.disabled = false;
-                delete btn.dataset.previewState;
+                finishVoicePreviewSession(session);
             };
 
             audio.addEventListener('ended', restorePreviewButton, { once: true });
@@ -2307,8 +2361,7 @@ async function playPreview(voiceId, btn, options = {}) {
             }
 
             if (!playbackFinished) {
-                btn.textContent = window.t ? window.t('voice.previewing') : '正在预览';
-                btn.dataset.previewState = 'playing';
+                updateVoicePreviewSessionState(session, 'playing');
             }
         }
     } catch (error) {
@@ -2317,8 +2370,7 @@ async function playPreview(voiceId, btn, options = {}) {
         showVoicePreviewErrorNotice(
             window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg
         );
-        btn.innerHTML = originalContent;
-        btn.disabled = false;
+        finishVoicePreviewSession(session);
     }
 }
 
@@ -2418,6 +2470,7 @@ async function loadVoices() {
                 previewImg.alt = '';
                 previewBtn.appendChild(previewImg);
                 previewBtn.appendChild(document.createTextNode(previewText));
+                attachVoicePreviewButton(voiceId, previewBtn);
                 previewBtn.onclick = (event) => {
                     event.stopPropagation();
                     playPreview(voiceId, previewBtn);
@@ -2601,6 +2654,7 @@ async function loadVoices() {
                 previewImg.alt = '';
                 previewBtn.appendChild(previewImg);
                 previewBtn.appendChild(document.createTextNode(previewText));
+                attachVoicePreviewButton(voiceId, previewBtn);
                 previewBtn.onclick = (event) => {
                     event.stopPropagation();
                     playPreview(voiceId, previewBtn);
@@ -2683,6 +2737,7 @@ async function loadVoices() {
                     previewImg.alt = '';
                     previewBtn.appendChild(previewImg);
                     previewBtn.appendChild(document.createTextNode(previewText));
+                    attachVoicePreviewButton(voiceId, previewBtn);
                     previewBtn.onclick = (event) => {
                         event.stopPropagation();
                         playPreview(voiceId, previewBtn);

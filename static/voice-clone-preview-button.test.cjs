@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'js/voice_clone.js'), 'utf8');
 const playPreviewSource = source.slice(
-    source.indexOf('async function playPreview'),
+    source.indexOf('const activeVoicePreviewSessions'),
     source.indexOf('// 加载音色列表'),
 );
 
@@ -36,8 +36,9 @@ function createButton() {
     });
 }
 
-function createHarness({ playError = null } = {}) {
+function createHarness({ playError = null, deferPlay = false } = {}) {
     let audio = null;
+    let resolvePlay = null;
     const notices = [];
     const cachedAudio = JSON.stringify({
         version: 2,
@@ -57,6 +58,11 @@ function createHarness({ playError = null } = {}) {
         }
 
         play() {
+            if (deferPlay) {
+                return new Promise(resolve => {
+                    resolvePlay = resolve;
+                });
+            }
             return playError ? Promise.reject(playError) : Promise.resolve();
         }
 
@@ -86,7 +92,9 @@ function createHarness({ playError = null } = {}) {
     vm.runInNewContext(playPreviewSource, context, { filename: 'voice_clone.js' });
     return {
         playPreview: context.playPreview,
+        attachVoicePreviewButton: context.attachVoicePreviewButton,
         notices,
+        resolvePlay() { resolvePlay?.(); },
         get audio() { return audio; },
     };
 }
@@ -119,6 +127,29 @@ test('preview button restores when audio playback cannot start', async () => {
     assert.equal(button.innerHTML, originalContent);
     assert.equal(button.disabled, false);
     assert.deepEqual(harness.notices, ['Play failed: blocked']);
+});
+
+test('replacement buttons inherit loading and playing state across list refreshes', async () => {
+    const harness = createHarness({ deferPlay: true });
+    const originalButton = createButton();
+    const previewPromise = harness.playPreview('test-voice', originalButton);
+    const replacementButton = createButton();
+    const replacementContent = replacementButton.innerHTML;
+
+    harness.attachVoicePreviewButton('test-voice', replacementButton);
+    assert.equal(replacementButton.textContent, 'Loading...');
+    assert.equal(replacementButton.disabled, true);
+    assert.equal(replacementButton.dataset.previewState, 'loading');
+
+    harness.resolvePlay();
+    await previewPromise;
+    assert.equal(replacementButton.textContent, 'Previewing');
+    assert.equal(replacementButton.dataset.previewState, 'playing');
+
+    harness.audio.emit('ended');
+    assert.equal(replacementButton.innerHTML, replacementContent);
+    assert.equal(replacementButton.disabled, false);
+    assert.equal(replacementButton.dataset.previewState, undefined);
 });
 
 test('all supported locales define the previewing label', () => {
