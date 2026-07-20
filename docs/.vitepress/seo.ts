@@ -15,6 +15,7 @@ const SOFTWARE_ID = `${SITE_ORIGIN}/#software`
 
 type PageData = TransformContext['pageData']
 type LocaleKey = 'en' | 'zh-CN' | 'ja'
+type PageSchemaType = 'WebPage' | 'CollectionPage' | 'TechArticle'
 
 interface LocaleDefinition {
   key: LocaleKey
@@ -380,14 +381,7 @@ function homeStructuredData(
         '@id': SOFTWARE_ID,
         name: 'Project N.E.K.O.',
         url: PROJECT_ORIGIN,
-        downloadUrl: STEAM_URL,
         applicationCategory: 'EntertainmentApplication',
-        operatingSystem: 'Windows, macOS, Linux',
-        offers: {
-          '@type': 'Offer',
-          price: '0',
-          priceCurrency: 'USD',
-        },
         author: { '@id': ORGANIZATION_ID },
         sameAs: [GITHUB_URL, STEAM_URL],
       },
@@ -395,12 +389,31 @@ function homeStructuredData(
   }
 }
 
-function articleStructuredData(
+function pageSchemaType(
+  context: TransformContext,
+  route: string,
+  locale: LocaleDefinition,
+): PageSchemaType {
+  const declaredType = context.pageData.frontmatter.seoSchemaType
+  if (
+    declaredType === 'WebPage' ||
+    declaredType === 'CollectionPage' ||
+    declaredType === 'TechArticle'
+  ) {
+    return declaredType
+  }
+
+  const routeWithoutLocale = routeWithinLocale(route, locale)
+  return routeWithoutLocale.endsWith('/') ? 'CollectionPage' : 'TechArticle'
+}
+
+function pageStructuredData(
   context: TransformContext,
   route: string,
   canonical: string,
   locale: LocaleDefinition,
   availableRoutes: ReadonlySet<string>,
+  schemaType: PageSchemaType,
 ): Record<string, unknown> {
   const dateModified = context.pageData.lastUpdated
     ? new Date(context.pageData.lastUpdated).toISOString()
@@ -413,32 +426,43 @@ function articleStructuredData(
     availableRoutes,
   )
 
-  const article: Record<string, unknown> = {
-    '@type': 'TechArticle',
-    '@id': `${canonical}#article`,
-    headline: context.pageData.title,
-    description: context.description,
-    url: canonical,
-    image: LOGO_URL,
-    inLanguage: locale.htmlLang,
-    mainEntityOfPage: {
-      '@type': 'WebPage',
-      '@id': `${canonical}#webpage`,
-    },
-    isPartOf: { '@id': WEBSITE_ID },
-    author: {
-      '@type': 'Organization',
-      '@id': ORGANIZATION_ID,
-      name: 'Project N.E.K.O.',
-      url: PROJECT_ORIGIN,
-    },
-    publisher: { '@id': ORGANIZATION_ID },
-  }
-  if (dateModified) article.dateModified = dateModified
+  const page: Record<string, unknown> = schemaType === 'TechArticle'
+    ? {
+        '@type': schemaType,
+        '@id': `${canonical}#article`,
+        headline: context.pageData.title,
+        description: context.description,
+        url: canonical,
+        inLanguage: locale.htmlLang,
+        mainEntityOfPage: {
+          '@type': 'WebPage',
+          '@id': `${canonical}#webpage`,
+        },
+        isPartOf: { '@id': WEBSITE_ID },
+        author: {
+          '@type': 'Organization',
+          '@id': ORGANIZATION_ID,
+          name: 'Project N.E.K.O.',
+          url: PROJECT_ORIGIN,
+        },
+        publisher: { '@id': ORGANIZATION_ID },
+      }
+    : {
+        '@type': schemaType,
+        '@id': `${canonical}#webpage`,
+        url: canonical,
+        name: context.pageData.title,
+        description: context.description,
+        inLanguage: locale.htmlLang,
+        isPartOf: { '@id': WEBSITE_ID },
+        about: { '@id': SOFTWARE_ID },
+        publisher: { '@id': ORGANIZATION_ID },
+      }
+  if (dateModified) page.dateModified = dateModified
 
   return {
     '@context': 'https://schema.org',
-    '@graph': breadcrumb ? [article, breadcrumb] : [article],
+    '@graph': breadcrumb ? [page, breadcrumb] : [page],
   }
 }
 
@@ -464,6 +488,10 @@ export function buildSeoHead(
     : []
   const localeHomeRoute = routeForLocale('/', locale)
   const isHome = route === localeHomeRoute
+  const schemaType = isHome
+    ? 'WebPage'
+    : pageSchemaType(context, route, locale)
+  const isArticle = schemaType === 'TechArticle'
 
   const head: HeadConfig[] = [
     ['link', { rel: 'canonical', href: canonical }],
@@ -477,7 +505,7 @@ export function buildSeoHead(
           : 'noindex,follow',
       },
     ],
-    ['meta', { property: 'og:type', content: isHome ? 'website' : 'article' }],
+    ['meta', { property: 'og:type', content: isArticle ? 'article' : 'website' }],
     ['meta', { property: 'og:site_name', content: 'N.E.K.O. Docs' }],
     ['meta', { property: 'og:title', content: context.title }],
     ['meta', { property: 'og:description', content: context.description }],
@@ -525,7 +553,7 @@ export function buildSeoHead(
     ])
   }
 
-  if (!isHome && context.pageData.lastUpdated) {
+  if (isArticle && context.pageData.lastUpdated) {
     head.push([
       'meta',
       {
@@ -540,12 +568,13 @@ export function buildSeoHead(
       jsonLdHead(
         isHome
           ? homeStructuredData(context, canonical, locale)
-          : articleStructuredData(
+          : pageStructuredData(
               context,
               route,
               canonical,
               locale,
               availableRoutes,
+              schemaType,
             ),
       ),
     )

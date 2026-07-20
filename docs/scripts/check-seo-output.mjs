@@ -60,6 +60,18 @@ function fail(file, message) {
   errors.push(`${file}: ${message}`)
 }
 
+function jsonLdNodes(data) {
+  if (!data || typeof data !== 'object') return []
+  return Array.isArray(data['@graph']) ? data['@graph'] : [data]
+}
+
+function nodeHasType(node, type) {
+  const nodeType = node?.['@type']
+  return Array.isArray(nodeType)
+    ? nodeType.includes(type)
+    : nodeType === type
+}
+
 if (!existsSync(DIST_DIR)) {
   throw new Error(`Build output does not exist: ${DIST_DIR}`)
 }
@@ -92,6 +104,12 @@ let indexableCount = 0
 for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   const file = relative(DIST_DIR, htmlPath).replaceAll('\\', '/')
   const html = readFileSync(htmlPath, 'utf8')
+  const googleSiteVerificationMatch = html
+    .trim()
+    .match(/^google-site-verification:\s*(google[\w-]+\.html)$/i)
+  if (googleSiteVerificationMatch && file === googleSiteVerificationMatch[1]) {
+    continue
+  }
   const isNotFound = file === '404.html'
   const metaTags = tags(html, 'meta')
   const linkTags = tags(html, 'link')
@@ -167,6 +185,7 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   }
 
   const requiredMeta = [
+    ['property', 'og:type'],
     ['property', 'og:title'],
     ['property', 'og:description'],
     ['property', 'og:url'],
@@ -191,11 +210,111 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   if (!noindex && jsonLdBlocks.length === 0) {
     fail(file, 'indexable page is missing JSON-LD')
   }
+  const parsedJsonLd = []
   for (const block of jsonLdBlocks) {
     try {
-      JSON.parse(block[1])
+      parsedJsonLd.push(JSON.parse(block[1]))
     } catch (error) {
       fail(file, `invalid JSON-LD: ${error.message}`)
+    }
+  }
+
+  if (!noindex) {
+    const nodes = parsedJsonLd.flatMap(jsonLdNodes)
+    const canonicalPath = new URL(canonical).pathname
+    const isLocaleHome = ['/', '/zh-CN/', '/ja/'].includes(canonicalPath)
+    const expectedPrimaryType = isLocaleHome
+      ? 'WebPage'
+      : canonicalPath.endsWith('/')
+        ? 'CollectionPage'
+        : null
+    const primaryNodes = nodes.filter((node) =>
+      ['WebPage', 'CollectionPage', 'TechArticle'].some((type) =>
+        nodeHasType(node, type),
+      ),
+    )
+
+    if (primaryNodes.length !== 1) {
+      fail(
+        file,
+        `expected one primary WebPage/CollectionPage/TechArticle node, found ${primaryNodes.length}`,
+      )
+    }
+    if (
+      expectedPrimaryType &&
+      !primaryNodes.some((node) => nodeHasType(node, expectedPrimaryType))
+    ) {
+      fail(file, `expected ${expectedPrimaryType} JSON-LD for ${canonicalPath}`)
+    }
+    if (
+      !expectedPrimaryType &&
+      !primaryNodes.some((node) =>
+        nodeHasType(node, 'TechArticle') || nodeHasType(node, 'WebPage'),
+      )
+    ) {
+      fail(file, 'detail page must use TechArticle or WebPage JSON-LD')
+    }
+    if (!primaryNodes.some((node) => node.url === canonical)) {
+      fail(file, 'primary JSON-LD node URL does not match canonical')
+    }
+
+    const hasArticle = primaryNodes.some((node) =>
+      nodeHasType(node, 'TechArticle'),
+    )
+    const openGraphType = metaContent(metaTags, 'property', 'og:type')
+    const expectedOpenGraphType = hasArticle ? 'article' : 'website'
+    if (openGraphType !== expectedOpenGraphType) {
+      fail(
+        file,
+        `og:type must be ${expectedOpenGraphType} for the selected page schema`,
+      )
+    }
+    const modifiedTime = metaContent(
+      metaTags,
+      'property',
+      'article:modified_time',
+    )
+    if (!hasArticle && modifiedTime) {
+      fail(file, 'non-article page must not emit article:modified_time')
+    }
+
+    if (isLocaleHome) {
+      for (const requiredType of [
+        'Organization',
+        'WebSite',
+        'SoftwareApplication',
+      ]) {
+        if (!nodes.some((node) => nodeHasType(node, requiredType))) {
+          fail(file, `home page JSON-LD is missing ${requiredType}`)
+        }
+      }
+
+      const software = nodes.find((node) =>
+        nodeHasType(node, 'SoftwareApplication'),
+      )
+      const downloadUrls = Array.isArray(software?.downloadUrl)
+        ? software.downloadUrl
+        : software?.downloadUrl
+          ? [software.downloadUrl]
+          : []
+      const operatingSystems = Array.isArray(software?.operatingSystem)
+        ? software.operatingSystem
+        : software?.operatingSystem
+          ? [software.operatingSystem]
+          : []
+      if (
+        downloadUrls.some((url) =>
+          String(url).includes('store.steampowered.com'),
+        ) &&
+        operatingSystems.some((system) =>
+          String(system).toLowerCase().includes('linux'),
+        )
+      ) {
+        fail(
+          file,
+          'Steam downloadUrl must not be presented as the Linux download channel',
+        )
+      }
     }
   }
 

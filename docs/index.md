@@ -7,7 +7,7 @@ description: Build, deploy, configure and extend Project N.E.K.O., an open-sourc
 hero:
   name: Project N.E.K.O.
   text: Developer Documentation
-  tagline: A proactive, omni-modal AI companion featuring 24/7 ambient awareness, agent capability and an embodied emotional engine.
+  tagline: A proactive, multimodal AI companion with optional screen-aware interaction, persistent memory, agent channels, and embodied avatars.
   image:
     src: /logo.jpg
     alt: N.E.K.O. Logo
@@ -28,7 +28,7 @@ hero:
 features:
   - icon: 🎮
     title: Steam Workshop & Community
-    details: Available on Steam with full Workshop UGC support — share and discover characters, models, voice packs, and plugins created by the community.
+    details: Available on Steam with Workshop support for sharing character cards, supported avatar assets, previews, and optional reference voice samples.
     link: https://store.steampowered.com/app/4099310/__NEKO/
     linkText: View on Steam
   - icon: 🎙️
@@ -38,32 +38,32 @@ features:
     linkText: Learn more
   - icon: 💬
     title: Proactive Chat
-    details: 24/7 ambient awareness — screen understanding, social media trends, personal feeds, music & memes. She initiates conversations with you.
+    details: Optional proactive interaction can use screen context, supported feeds, music, and memes when the corresponding features are enabled. Privacy mode can stop proactive screen viewing.
     link: /guide/
     linkText: Learn more
   - icon: 🧠
     title: Five-Dimensional Memory
-    details: Semantic recall via hybrid embedding-vector and BM25 indexing. Working, recent, facts, reflection, and persona layers with sliding-window compression and persistent user preferences.
+    details: Per-character working, recent, fact, reflection, and persona layers. BM25 recall works without embeddings; optional local embeddings can improve semantic retrieval.
     link: /architecture/memory-system
     linkText: How it works
   - icon: 🤖
     title: Agent Framework
-    details: Background task execution via MCP tools, Computer Use, Browser Use, and OpenFang A2A adapters. Automatic task planning, deduplication, and parallel execution.
+    details: Optional background tasks through enabled and ready Computer Use, Browser Use, user-plugin, OpenClaw, and OpenFang channels. Individual tasks and all active tasks can be cancelled.
     link: /architecture/agent-system
     linkText: Explore agents
   - icon: 🔌
     title: Plugin Ecosystem
-    details: Full plugin SDK & marketplace for custom extensions. Decorator-based API, async lifecycle hooks, and inter-plugin messaging. Built-in plugins for MCP, reminders, livestreaming, smart home, and more.
+    details: Plugin SDK and marketplace for custom extensions, with a decorator-based API, async lifecycle hooks, inter-plugin messaging, and Agent-facing entries when enabled.
     link: /plugins/
     linkText: Build a plugin
   - icon: 🎭
-    title: Live2D, VRM, MMD, PNGTuber & Cat Pet
-    details: Five embodied avatar forms with emotion-mapped expressions, lip sync, idle animations, motion capture, and full-screen tracking. Clone any voice from a 5-second sample via MiniMax or CosyVoice backends.
+    title: Live2D, VRM, MMD & PNGTuber
+    details: Four supported avatar formats can run in the main UI and desktop-pet host mode, with format-specific expressions, lip sync, animations, and interaction. Voice registration supports multiple cloud and local backends with provider-specific requirements.
     link: /frontend/
     linkText: Frontend guide
   - icon: 🌐
-    title: 14+ AI Providers & i18n
-    details: OpenAI, Anthropic, Google, Qwen, DeepSeek, Groq, Ollama, and more — with free models out of the box. Full UI and prompt localization across 8 languages (zh-CN, zh-TW, en, ja, ko, ru, es, pt).
+    title: Configurable AI Providers & i18n
+    details: Multiple core, assist, speech, and related provider profiles are configurable. Provider availability changes by version and region; the product UI and prompts support 8 languages.
     link: /config/api-providers
     linkText: Provider list
 ---
