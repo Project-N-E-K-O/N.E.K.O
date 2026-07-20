@@ -27,4 +27,5 @@ def test_vrm_and_mmd_restore_respects_mouse_tracking_changes_during_protection()
         assert "this._gameModeResourceMouseTrackingEnabled = window.mouseTrackingEnabled !== false;" in source
         assert "const currentMouseTrackingEnabled = window.mouseTrackingEnabled !== false;" in source
         assert "const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null" in source
+        assert "currentMouseTrackingEnabled && window.nekoYuiGuideFaceForwardLock !== true" in source
         assert "this.cursorFollow.setEnabled(restoreCursorFollow);" in source or "this._cursorFollow.setEnabled(restoreCursorFollow);" in source

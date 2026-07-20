@@ -505,7 +505,7 @@ class MMDManager {
                 const mouseTrackingChanged = this._gameModeResourceMouseTrackingEnabled !== null
                     && currentMouseTrackingEnabled !== this._gameModeResourceMouseTrackingEnabled;
                 const restoreCursorFollow = mouseTrackingChanged
-                    ? currentMouseTrackingEnabled
+                    ? currentMouseTrackingEnabled && window.nekoYuiGuideFaceForwardLock !== true
                     : this._gameModeResourceCursorFollowEnabled === true;
                 this.cursorFollow.setEnabled(restoreCursorFollow);
                 this._gameModeResourceCursorFollowEnabled = null;
