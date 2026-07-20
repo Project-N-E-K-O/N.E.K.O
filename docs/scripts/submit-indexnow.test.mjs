@@ -24,6 +24,13 @@ test('maps VitePress Markdown source paths to clean production URLs', () => {
   )
   assert.equal(documentationPathToUrl('docs/public/example.md'), null)
   assert.equal(documentationPathToUrl('docs/README_en.md'), null)
+  assert.equal(documentationPathToUrl('docs/design/index.md'), null)
+  assert.equal(documentationPathToUrl('docs/design/live2d.md'), null)
+  assert.equal(documentationPathToUrl('docs/live2d_motion_plan.md'), null)
+  assert.equal(
+    documentationPathToUrl('docs/pngtuber-remix-physics-plan.md'),
+    null,
+  )
   assert.equal(documentationPathToUrl('README.md'), null)
 })
 
@@ -90,6 +97,7 @@ test('submits the documented IndexNow payload', async () => {
 
   assert.deepEqual(result, { status: 202, attempts: 1, submitted: 1 })
   assert.equal(requests.length, 1)
+  assert.ok(requests[0].options.signal instanceof AbortSignal)
   const payload = JSON.parse(requests[0].options.body)
   assert.equal(payload.host, 'project-neko.online')
   assert.equal(
@@ -119,4 +127,28 @@ test('retries a rate-limited submission and then succeeds', async () => {
 
   assert.equal(attempts, 2)
   assert.deepEqual(result, { status: 200, attempts: 2, submitted: 1 })
+})
+
+test('aborts timed-out requests and retries them', async () => {
+  let attempts = 0
+
+  await assert.rejects(
+    submitIndexNow([`${SITE_ORIGIN}/`], {
+      key: INDEXNOW_KEY_FILENAME.replace(/\.txt$/, ''),
+      maxAttempts: 2,
+      requestTimeoutMilliseconds: 5,
+      sleepImpl: async () => {},
+      fetchImpl: async (_url, { signal }) => {
+        attempts += 1
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          })
+        })
+      },
+    }),
+    /timed out after 5 ms/,
+  )
+
+  assert.equal(attempts, 2)
 })

@@ -2,6 +2,7 @@ import { defineConfig } from 'vitepress'
 import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isNoindexRoute } from './indexing-policy.mjs'
 
 const SITE_ORIGIN = 'https://project-neko.online'
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -17,17 +18,11 @@ const SRC_EXCLUDE = new Set([
   'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
-const NOINDEX_ROUTE_PREFIXES = ['/design/'] as const
-const NOINDEX_ROUTES = new Set([
-  '/live2d_motion_plan',
-  '/pngtuber-remix-physics-plan',
-])
 
 function filterSitemapItems<T extends { url: string }>(items: T[]): T[] {
   return items.filter((item) => {
     const route = new URL(item.url, `${SITE_ORIGIN}/`).pathname
-    if (NOINDEX_ROUTES.has(route)) return false
-    return !NOINDEX_ROUTE_PREFIXES.some((prefix) => route.startsWith(prefix))
+    return !isNoindexRoute(route)
   })
 }
 

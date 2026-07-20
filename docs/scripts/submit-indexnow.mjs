@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { isNoindexRoute } from '../.vitepress/indexing-policy.mjs'
 
 export const SITE_ORIGIN = 'https://project-neko.online'
 export const INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow'
@@ -17,6 +18,7 @@ const KEY_FILE_PATH = resolve(
   INDEXNOW_KEY_FILENAME,
 )
 const MAX_URLS_PER_REQUEST = 10_000
+const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 15_000
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504])
 const EXCLUDED_SOURCE_PATHS = new Set([
   'README_en.md',
@@ -58,7 +60,9 @@ export function documentationPathToUrl(path) {
     route = route.slice(0, -'.md'.length)
   }
 
-  return new URL(route, `${SITE_ORIGIN}/`).href
+  const pageUrl = new URL(route, `${SITE_ORIGIN}/`)
+  if (isNoindexRoute(pageUrl.pathname)) return null
+  return pageUrl.href
 }
 
 export function parseGitNameStatus(output) {
@@ -184,6 +188,36 @@ function sleep(milliseconds) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
 }
 
+async function fetchIndexNowResponse(
+  fetchImpl,
+  endpoint,
+  payload,
+  timeoutMilliseconds,
+) {
+  const abortController = new AbortController()
+  const timeoutId = setTimeout(() => {
+    abortController.abort(
+      new Error(`IndexNow request timed out after ${timeoutMilliseconds} ms`),
+    )
+  }, timeoutMilliseconds)
+
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(payload),
+      signal: abortController.signal,
+    })
+    const responseBody =
+      response.status === 200 || response.status === 202
+        ? ''
+        : (await response.text()).trim().slice(0, 500)
+    return { response, responseBody }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 export async function submitIndexNow(
   urls,
   {
@@ -192,6 +226,7 @@ export async function submitIndexNow(
     fetchImpl = globalThis.fetch,
     sleepImpl = sleep,
     maxAttempts = 3,
+    requestTimeoutMilliseconds = DEFAULT_REQUEST_TIMEOUT_MILLISECONDS,
   } = {},
 ) {
   const normalizedUrls = [...new Set(urls.map(normalizeSiteUrl))]
@@ -207,6 +242,12 @@ export async function submitIndexNow(
   if (typeof fetchImpl !== 'function') {
     throw new Error('This Node.js runtime does not provide fetch')
   }
+  if (
+    !Number.isFinite(requestTimeoutMilliseconds) ||
+    requestTimeoutMilliseconds <= 0
+  ) {
+    throw new Error('IndexNow request timeout must be a positive number')
+  }
 
   const payload = {
     host: new URL(SITE_ORIGIN).host,
@@ -218,12 +259,16 @@ export async function submitIndexNow(
   let lastError
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let response
+    let responseBody
     try {
-      response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(payload),
-      })
+      const result = await fetchIndexNowResponse(
+        fetchImpl,
+        endpoint,
+        payload,
+        requestTimeoutMilliseconds,
+      )
+      response = result.response
+      responseBody = result.responseBody
     } catch (error) {
       lastError = error
       if (attempt === maxAttempts) break
@@ -239,7 +284,6 @@ export async function submitIndexNow(
       }
     }
 
-    const responseBody = (await response.text()).trim().slice(0, 500)
     lastError = new Error(
       `IndexNow returned HTTP ${response.status}${
         responseBody ? `: ${responseBody}` : ''
