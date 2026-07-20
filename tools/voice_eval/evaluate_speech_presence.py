@@ -195,11 +195,25 @@ def split_calibration_holdout(
     for group_id, group in groups.items():
         labels = {bool(clip.label) for clip in group}
         locales = {str(getattr(clip, "locale", None) or "") for clip in group}
-        if len(labels) != 1 or len(locales) != 1:
-            raise ValueError(f"source group is not label/locale homogeneous: {group_id}")
+        device_ids = {
+            str(getattr(clip, "device_id", None) or "") for clip in group
+        }
+        if len(labels) != 1 or len(locales) != 1 or len(device_ids) != 1:
+            raise ValueError(
+                f"source group is not label/locale/device homogeneous: {group_id}"
+            )
         label = next(iter(labels))
         locale = next(iter(locales)) if label else "negative"
-        strata[(label, locale)].append(group_id)
+        device_id = next(iter(device_ids))
+        if device_id:
+            scenario = str(getattr(group[0], "scenario", "") or "unspecified")
+            stratum = f"device:{device_id}:{scenario}:{locale}"
+        elif label:
+            stratum = f"locale:{locale}"
+        else:
+            scenario = str(getattr(group[0], "scenario", "") or "negative")
+            stratum = f"scenario:{scenario}"
+        strata[(label, stratum)].append(group_id)
 
     holdout_groups: set[str] = set()
     for stratum, group_ids in strata.items():

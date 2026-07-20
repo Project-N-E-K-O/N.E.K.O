@@ -112,29 +112,35 @@ def test_calibration_holdout_split_keeps_source_variants_together() -> None:
                         locale=locale,
                     )
                 )
-    clips.extend(
-        SimpleNamespace(
-            clip_id=f"negative/fan/{index:02d}",
-            label=False,
-            locale=None,
+    for scenario in ("negative_fan", "negative_game_sfx"):
+        clips.extend(
+            SimpleNamespace(
+                clip_id=f"negative/{scenario}/{index:02d}",
+                label=False,
+                locale=None,
+                scenario=scenario,
+                device_id=None,
+            )
+            for index in range(2)
         )
-        for index in range(8)
-    )
 
-    calibration, holdout = MODULE.split_calibration_holdout(
-        clips,
-        seed=2398,
-        holdout_fraction=0.25,
-    )
+    for seed in range(10):
+        calibration, holdout = MODULE.split_calibration_holdout(
+            clips,
+            seed=seed,
+            holdout_fraction=0.25,
+        )
 
-    calibration_groups = {
-        MODULE.source_group_id(clip.clip_id) for clip in calibration
-    }
-    holdout_groups = {MODULE.source_group_id(clip.clip_id) for clip in holdout}
-    assert calibration_groups.isdisjoint(holdout_groups)
-    assert {clip.locale for clip in holdout if clip.label} == {"en", "zh"}
-    assert any(not clip.label for clip in calibration)
-    assert any(not clip.label for clip in holdout)
+        calibration_groups = {
+            MODULE.source_group_id(clip.clip_id) for clip in calibration
+        }
+        holdout_groups = {MODULE.source_group_id(clip.clip_id) for clip in holdout}
+        assert calibration_groups.isdisjoint(holdout_groups)
+        assert {clip.locale for clip in holdout if clip.label} == {"en", "zh"}
+        assert {clip.scenario for clip in holdout if not clip.label} == {
+            "negative_fan",
+            "negative_game_sfx",
+        }
 
 
 def test_threshold_is_selected_from_calibration_metrics_only() -> None:
