@@ -434,13 +434,13 @@ class WechatIntegrationPlugin(NekoPluginBase):
         input_schema={"type": "object", "properties": {}},
     )
     async def logout(self, **_):
-        logged_out_settings = dict(self._settings)
-        for key in ("token", "account_id", "user_id", "sync_buf"):
-            logged_out_settings[key] = ""
-
         # Commit the disk state first. If this fails, runtime stays logged in and
         # remains consistent with what the next plugin start would restore.
         async with self._auth_state_lock:
+            logged_out_settings = dict(self._settings)
+            for key in ("token", "account_id", "user_id", "sync_buf"):
+                logged_out_settings[key] = ""
+
             if not await self._persist_config(logged_out_settings):
                 return Err(SdkError(
                     self.i18n.t("errors.logout_failed", default="退出登录失败：无法清除本地登录凭证")
@@ -502,15 +502,18 @@ class WechatIntegrationPlugin(NekoPluginBase):
         show_onboarding: Optional[bool] = None,
         **_,
     ):
-        if base_url is not None:
-            self._settings["base_url"] = str(base_url or "https://ilinkai.weixin.qq.com").strip()
-        if bot_type is not None:
-            self._settings["bot_type"] = str(bot_type or "3").strip()
-        if show_onboarding is not None:
-            self._settings["show_onboarding"] = bool(show_onboarding)
+        async with self._auth_state_lock:
+            updated_settings = dict(self._settings)
+            if base_url is not None:
+                updated_settings["base_url"] = str(base_url or "https://ilinkai.weixin.qq.com").strip()
+            if bot_type is not None:
+                updated_settings["bot_type"] = str(bot_type or "3").strip()
+            if show_onboarding is not None:
+                updated_settings["show_onboarding"] = bool(show_onboarding)
 
-        success = await self._persist_config()
-        self._sync_client_from_settings()
+            success = await self._persist_config(updated_settings)
+            if success:
+                self._sync_client_from_settings()
 
         payload = self._build_dashboard_state()
         payload["persisted"] = success

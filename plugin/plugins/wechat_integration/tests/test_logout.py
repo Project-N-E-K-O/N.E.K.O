@@ -103,6 +103,91 @@ async def test_logout_keeps_runtime_login_when_credential_write_fails():
     assert plugin.wechat_client.token == "secret-token"
 
 
+async def test_logout_snapshots_latest_settings_after_acquiring_auth_lock():
+    plugin = object.__new__(WechatIntegrationPlugin)
+    plugin._settings = {
+        "base_url": "https://old.example",
+        "token": "secret-token",
+        "account_id": "account-1",
+        "user_id": "user-1",
+        "sync_buf": "sync-data",
+    }
+    plugin._auth_state_lock = asyncio.Lock()
+    await plugin._auth_state_lock.acquire()
+    plugin._login_session = LoginSession("qr", "qr-content")
+    plugin._shutdown_event = asyncio.Event()
+    plugin._running = False
+    plugin._message_task = None
+    plugin._qr_expired_count = 0
+    plugin._sync_buf = "sync-data"
+    plugin._context_tokens = {}
+    plugin._wechat_sessions = {}
+    plugin.wechat_client = type("Client", (), {
+        "base_url": "https://old.example",
+        "token": "secret-token",
+    })()
+    plugin.stop_auto_reply = AsyncMock()
+
+    async def persist(settings):
+        plugin._settings = settings
+        return True
+
+    plugin._persist_config = AsyncMock(side_effect=persist)
+    plugin._build_dashboard_state = lambda: {"login": {"logged_in": False}}
+    plugin.logger = _logger()
+
+    logout_task = asyncio.create_task(plugin.logout())
+    await asyncio.sleep(0)
+    plugin._settings["base_url"] = "https://new.example"
+    plugin._auth_state_lock.release()
+    await logout_task
+
+    persisted_candidate = plugin._persist_config.await_args.args[0]
+    assert persisted_candidate["base_url"] == "https://new.example"
+    assert persisted_candidate["token"] == ""
+
+
+async def test_save_settings_waits_for_auth_lock_and_persists_a_copy():
+    plugin = object.__new__(WechatIntegrationPlugin)
+    plugin._settings = {
+        "base_url": "https://old.example",
+        "token": "secret-token",
+        "bot_type": "3",
+        "show_onboarding": True,
+    }
+    original_settings = plugin._settings
+    plugin._auth_state_lock = asyncio.Lock()
+    await plugin._auth_state_lock.acquire()
+    plugin.wechat_client = type("Client", (), {
+        "base_url": "https://old.example",
+        "token": "secret-token",
+    })()
+
+    async def persist(settings):
+        plugin._settings = settings
+        return True
+
+    plugin._persist_config = AsyncMock(side_effect=persist)
+    plugin._build_dashboard_state = lambda: {"settings": {}}
+
+    save_task = asyncio.create_task(plugin.save_settings(
+        base_url="https://new.example",
+        bot_type="4",
+        show_onboarding=False,
+    ))
+    await asyncio.sleep(0)
+    plugin._persist_config.assert_not_awaited()
+    plugin._auth_state_lock.release()
+    await save_task
+
+    persisted_candidate = plugin._persist_config.await_args.args[0]
+    assert persisted_candidate is not original_settings
+    assert persisted_candidate["base_url"] == "https://new.example"
+    assert persisted_candidate["bot_type"] == "4"
+    assert persisted_candidate["show_onboarding"] is False
+    assert persisted_candidate["token"] == "secret-token"
+
+
 async def test_poll_login_status_ignores_session_cleared_while_request_is_in_flight():
     plugin = object.__new__(WechatIntegrationPlugin)
     login_session = LoginSession("qr", "qr-content")
