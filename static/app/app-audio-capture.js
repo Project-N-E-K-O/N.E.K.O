@@ -2044,7 +2044,7 @@
                             ? 'microphone.independentAsrSummary'
                             : 'microphone.independentAsrSummaryGeneric', { provider: provider })
                         : ('独立 ASR' + (provider ? ' · ' + provider : '')))
-                    : (window.t ? window.t('microphone.voiceRecognitionDisabled') : '语音识别已关闭');
+                    : (window.t ? window.t('microphone.voiceRecognitionDisabled') : '当前使用 Omni 原生语音识别');
                 if (voiceSettingsPending) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
@@ -2052,7 +2052,7 @@
                 } else if (!enabled) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionDisabledHint')
-                        : '语音识别已关闭，不会切换到 Omni';
+                        : '独立 ASR 已关闭；语音输入使用 Omni 原生语音识别';
                 } else if (blocked) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionUnavailable')
