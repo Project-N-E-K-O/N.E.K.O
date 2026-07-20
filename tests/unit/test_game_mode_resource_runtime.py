@@ -149,6 +149,18 @@ def test_game_mode_resource_runtime_event_driven_contract():
         await new Promise(resolve => setImmediate(resolve));
         if (hostCalls.filter(x => x[0] === 'acquire').length !== 2) throw new Error('compact lease did not reacquire after host recovery');
 
+        const updatesBeforeWidgetPeek = hostCalls.filter(x => x[0] === 'update').length;
+        emit('neko:live2d-peek-changed', {{ active: true, edge: 'left' }});
+        await new Promise(resolve => setImmediate(resolve));
+        if (hostCalls.filter(x => x[0] === 'update').length !== updatesBeforeWidgetPeek + 1) {{
+          throw new Error('Widget Mode edge geometry did not update active compact lease');
+        }}
+        emit('neko:live2d-peek-changed', {{ active: false, reason: 'drag-start' }});
+        await new Promise(resolve => setImmediate(resolve));
+        if (hostCalls.filter(x => x[0] === 'update').length !== updatesBeforeWidgetPeek + 2) {{
+          throw new Error('Widget Mode restore geometry did not update active compact lease');
+        }}
+
         emit('pointerdown', {{ clientX: 20, clientY: 20 }});
         emit('pointerup', {{ clientX: 20, clientY: 20 }});
         await Promise.resolve();
@@ -193,6 +205,12 @@ def test_game_mode_resource_runtime_event_driven_contract():
         }}
         if (compactReleaseState.compactEnabled || compactReleaseState.compactAcquired) {{
           throw new Error('compact release kept lease state enabled');
+        }}
+        const updatesAfterCompactRelease = hostCalls.filter(x => x[0] === 'update').length;
+        emit('neko:live2d-peek-changed', {{ active: false, reason: 'widget-mode-disabled' }});
+        await new Promise(resolve => setImmediate(resolve));
+        if (hostCalls.filter(x => x[0] === 'update').length !== updatesAfterCompactRelease) {{
+          throw new Error('Widget Mode edge geometry updated a released compact lease');
         }}
         const compactReleaseAck = fetchCalls
           .filter(x => x.url === '/api/game-mode-beta/resource/ack')
@@ -271,3 +289,13 @@ def test_resource_runtime_is_loaded_only_on_pet_page_and_uses_no_polling_loop():
     asset = "/static/app/app-game-mode-resource-runtime.js?v={{ static_asset_version }}"
     assert asset in index
     assert asset not in chat
+
+
+def test_resource_runtime_consumes_only_the_canonical_widget_edge_event():
+    source = RUNTIME_PATH.read_text(encoding="utf-8")
+    assert "window.addEventListener('neko:live2d-peek-changed'" in source
+    assert "neko:live2d-game-mode-edge-" "peek-changed" not in source
+    assert "clearLive2DPeek" not in source
+    assert "restoreLive2DPeek" not in source
+    assert "_live2DPeekState" not in source
+    assert "nekoWidgetMode" not in source

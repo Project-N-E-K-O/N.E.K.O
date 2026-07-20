@@ -360,11 +360,6 @@ class Live2DManager {
                         typeof this.clearLive2DPeek === 'function') {
                         this.clearLive2DPeek(`viewport-changed:${reason}`);
                     }
-                    if (typeof this.isLive2DGameModeEdgePeekActive === 'function' &&
-                        this.isLive2DGameModeEdgePeekActive() &&
-                        typeof this.clearLive2DGameModeEdgePeek === 'function') {
-                        this.clearLive2DGameModeEdgePeek(`viewport-changed:${reason}`);
-                    }
 
                     if (resolutionChanged) {
                         renderer.resolution = nextResolution;
@@ -4763,46 +4758,6 @@ class Live2DManager {
             return null;
         }
 
-        const gameModeEdgePeekState = this._live2DGameModeEdgePeekState;
-        if (gameModeEdgePeekState && gameModeEdgePeekState.active) {
-            const gameModeModel = gameModeEdgePeekState.model || model;
-            if (gameModeModel && !gameModeModel.destroyed && typeof gameModeModel.getBounds === 'function') {
-                const bounds = gameModeModel.getBounds();
-                const left = Number(bounds.left ?? bounds.x);
-                const top = Number(bounds.top ?? bounds.y);
-                const right = Number(bounds.right ?? (left + Number(bounds.width)));
-                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
-                const renderer = this.pixi_app && this.pixi_app.renderer;
-                const screen = renderer && renderer.screen;
-                const rendererW = Number(screen && screen.width);
-                const rendererH = Number(screen && screen.height);
-                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                    ? rendererW
-                    : Number(window.innerWidth) || 0);
-                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                    ? rendererH
-                    : Number(window.innerHeight) || 0);
-                const visibleLeft = Math.max(left, 0);
-                const visibleRight = Math.min(right, viewportRight);
-                const visibleTop = Math.max(top, 0);
-                const visibleBottom = Math.min(bottom, viewportBottom);
-                const width = visibleRight - visibleLeft;
-                const height = visibleBottom - visibleTop;
-                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
-                    return {
-                        left: visibleLeft,
-                        right: visibleRight,
-                        top: visibleTop,
-                        bottom: visibleBottom,
-                        width: width,
-                        height: height,
-                        centerX: visibleLeft + width / 2,
-                        centerY: visibleTop + height / 2
-                    };
-                }
-            }
-        }
-
         if (typeof model.getBounds !== 'function') {
             return null;
         }
@@ -4853,9 +4808,6 @@ class Live2DManager {
     async resetModelPosition() {
         if (typeof this.clearLive2DPeek === 'function') {
             this.clearLive2DPeek('reset-model-position');
-        }
-        if (typeof this.clearLive2DGameModeEdgePeek === 'function') {
-            this.clearLive2DGameModeEdgePeek('reset-model-position');
         }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');

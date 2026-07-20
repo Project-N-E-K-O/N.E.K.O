@@ -398,7 +398,7 @@
     ].forEach(function (eventName) {
         window.addEventListener(eventName, reapplyAfterModelChange);
     });
-    window.addEventListener('neko:live2d-game-mode-edge-peek-changed', function () {
+    window.addEventListener('neko:live2d-peek-changed', function () {
         if (state.sessionId && state.compactAcquired) {
             void acquireCompactLease('updateCompactLease');
         }
