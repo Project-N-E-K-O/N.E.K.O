@@ -38,6 +38,7 @@ from .detector import (
 from .activity_evidence import RnnoiseEvidence
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
+from .speaker_shadow import SpeakerShadowRuntime
 from .throttle_policy import (
     ThrottleAction,
     ThrottleShadowMetrics,
@@ -974,6 +975,7 @@ class DetectorRuntime:
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
         throttle_policy: VoiceThrottlePolicy | None = None,
+        speaker_shadow: SpeakerShadowRuntime | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_endpointing_failure: Callable[[], Awaitable[None]] | None = None,
         on_event: Callable[[DetectorEvent], Awaitable[None]] | None = None,
@@ -1001,6 +1003,7 @@ class DetectorRuntime:
             resource_optimization_enabled=self._resource_optimization_enabled,
             bootstrap_onset=rnnoise_onset_probability,
         )
+        self._speaker_shadow = speaker_shadow
         self._speech_active = False
         self._events: list[SpeechActivityEvent] = []
         self._semantic_adapter: _VoiceTurnAdapter | None = None
@@ -1635,6 +1638,14 @@ class DetectorRuntime:
                 self._speech_active = True
             for event in events:
                 self._throttle_policy.observe_silero(event)
+            self._submit_speaker_shadow(
+                pcm16,
+                sample_rate_hz=16_000,
+                candidate=DetectorCandidateKey(
+                    self._detector_epoch,
+                    self._candidate_generation,
+                ),
+            )
         return DetectorFeedResult(
             events,
             True,
@@ -1844,6 +1855,11 @@ class DetectorRuntime:
             self._candidate_generation,
         )
         control_event_emitted = False
+        self._submit_speaker_shadow(
+            pcm16,
+            sample_rate_hz=sample_rate_hz,
+            candidate=candidate,
+        )
         if (
             self._on_event is not None
             and self._policy_event_candidate != candidate
@@ -1898,6 +1914,8 @@ class DetectorRuntime:
                     self._smart_turn_readiness = SmartTurnReadiness.FAILED
 
     async def reset(self) -> None:
+        if self._speaker_shadow is not None:
+            await self._speaker_shadow.reset()
         overflow_reset_task = self._overflow_reset_task
         if (
             overflow_reset_task is not None
@@ -1984,6 +2002,8 @@ class DetectorRuntime:
             await callback()
 
     async def close(self) -> None:
+        if self._speaker_shadow is not None:
+            await self._speaker_shadow.close()
         adapter: _VoiceTurnAdapter | None = None
         vad = None
         prepare_task: asyncio.Task[bool] | None = None
@@ -2032,6 +2052,34 @@ class DetectorRuntime:
             self._smart_turn_readiness = SmartTurnReadiness.UNLOADED
             return
         await asyncio.to_thread(vad.close)
+
+    @property
+    def speaker_shadow_metrics(self) -> dict[str, int]:
+        """Return observation-only metrics without exposing routing controls."""
+
+        if self._speaker_shadow is None:
+            return {}
+        return self._speaker_shadow.snapshot()
+
+    def _submit_speaker_shadow(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+        candidate: DetectorCandidateKey,
+    ) -> None:
+        shadow = self._speaker_shadow
+        if shadow is None:
+            return
+        try:
+            shadow.submit(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+                candidate=candidate,
+            )
+        except Exception:
+            # Speaker verification is a shadow observer and cannot fail ASR.
+            return
 
     async def _watch_semantic_failure(self, adapter: _VoiceTurnAdapter) -> None:
         try:
