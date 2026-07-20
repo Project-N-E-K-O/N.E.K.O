@@ -1359,9 +1359,9 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
-    // 角色卡管理页只保留导入过程提示；历史调用继续保留为无操作，避免各业务流程
-    // 因通知策略变化而需要掺入无关控制逻辑。
-    if (type !== 'importing') {
+    // 只显示导入过程及导入失败；模型预览关闭等历史路径可能把正常取消误报为
+    // error，因此不能在这里全局恢复所有旧错误 toast。
+    if (type !== 'importing' && type !== 'import-error') {
         return null;
     }
 
@@ -1396,12 +1396,15 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageArea.style.alignItems = 'center';
     messageArea.style.pointerEvents = 'none';
 
-    const cfg = { icon: 'ccm-toast-spinner', accent: '#40C5F1' };
+    const isError = type === 'import-error';
+    const cfg = isError
+        ? { icon: 'ccm-toast-error-icon', accent: '#ff5a5a' }
+        : { icon: 'ccm-toast-spinner', accent: '#40C5F1' };
 
     const card = document.createElement('div');
-    card.className = 'ccm-toast-card ccm-toast-importing';
-    card.setAttribute('role', 'status');
-    card.setAttribute('aria-live', 'polite');
+    card.className = 'ccm-toast-card ccm-toast-' + type;
+    card.setAttribute('role', isError ? 'alert' : 'status');
+    card.setAttribute('aria-live', isError ? 'assertive' : 'polite');
     card.style.cssText = [
         'background:#fff',
         'border-radius:14px',
@@ -1424,10 +1427,15 @@ function showMessage(message, type = 'info', duration = 3000) {
         'transition:opacity 0.22s ease, transform 0.22s ease',
     ].join(';');
 
-    const iconEl = document.createElement('i');
+    const iconEl = document.createElement('span');
     iconEl.className = cfg.icon;
     iconEl.setAttribute('aria-hidden', 'true');
-    iconEl.style.cssText = 'width:16px;height:16px;border:2px solid ' + cfg.accent + ';border-right-color:transparent;border-radius:50%;margin-top:2px;flex-shrink:0';
+    if (isError) {
+        iconEl.textContent = '!';
+        iconEl.style.cssText = 'width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;background:' + cfg.accent + ';color:#fff;border-radius:50%;font-weight:700;margin-top:2px;flex-shrink:0';
+    } else {
+        iconEl.style.cssText = 'width:16px;height:16px;border:2px solid ' + cfg.accent + ';border-right-color:transparent;border-radius:50%;margin-top:2px;flex-shrink:0';
+    }
     card.appendChild(iconEl);
 
     const body = document.createElement('div');
@@ -1437,7 +1445,7 @@ function showMessage(message, type = 'info', duration = 3000) {
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.innerHTML = '<i class="fa fa-times"></i>';
+    closeBtn.textContent = '×';
     closeBtn.style.cssText = 'background:transparent;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;flex-shrink:0';
     closeBtn.onmouseenter = () => { closeBtn.style.background = 'rgba(0,0,0,0.06)'; closeBtn.style.color = '#333'; };
     closeBtn.onmouseleave = () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#888'; };

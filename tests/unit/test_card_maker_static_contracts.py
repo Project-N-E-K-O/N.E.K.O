@@ -74,11 +74,13 @@ def test_character_card_import_keeps_non_blocking_progress_visible_until_complet
     assert template.count('id="message-area"') == 1
     assert template.index('id="message-area"') < template.index('id="uploadToWorkshopModal"')
     assert "messageArea.parentElement !== document.body" in core
-    assert "if (type !== 'importing')" in core
-    assert "const cfg = { icon: 'ccm-toast-spinner'" in core
+    assert "if (type !== 'importing' && type !== 'import-error')" in core
+    assert "icon: 'ccm-toast-spinner'" in core
+    assert "icon: 'ccm-toast-error-icon'" in core
     assert "@keyframes ccm-toast-spin" in styles
     assert "card.dismiss = dismiss;" in core
     assert "showMessage(loadingText, 'importing', 0)" in transfer
+    assert "showMessage(errorText, 'import-error')" in transfer
     assert "function showToast(" not in core
     assert "showAutoSaveToast" not in master_profile
     assert "auto-save-toast" not in template

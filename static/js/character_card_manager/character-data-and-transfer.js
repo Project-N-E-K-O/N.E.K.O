@@ -1042,7 +1042,7 @@ async function handleImportCharacterCard(event) {
         importNotice.dismiss();
         console.error('导入角色卡失败:', error);
         const errorText = window.t ? window.t('character.importCardFailed', { error: error.message }) : `导入角色卡失败: ${error.message}`;
-        showMessage(errorText, 'error');
+        showMessage(errorText, 'import-error');
     }
 }
 
