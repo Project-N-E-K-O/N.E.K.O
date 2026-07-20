@@ -8,6 +8,10 @@ let currentCharacterCardId = null;
 const CHARACTER_CARD_MODEL_SCAN_RENDER_BUDGET_MS = 2500;
 let characterCardLoadSequence = 0;
 
+function isCharacterCardLoadStale(loadSequence) {
+    return loadSequence !== undefined && loadSequence !== characterCardLoadSequence;
+}
+
 function getCharacterCardDescriptionFromData(data) {
     if (!data || typeof data !== 'object') {
         return window.t ? window.t('steam.noDescription') : '暂无描述';
@@ -166,7 +170,7 @@ async function collectCharacterSettingsCardsFromModels(idCounter, loadSequence) 
     for (const model of availableModels) {
         // 每个模型外层 fetch 前先校验序列号；旧轮被新一轮 loadCharacterCards 抢占后立刻早退，
         // 避免在大目录下继续打 model_files / *.chara.json 的废请求拖慢最新一轮 I/O
-        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+        if (isCharacterCardLoadStale(loadSequence)) {
             return { cards: newCards, nextId };
         }
         try {
@@ -183,7 +187,7 @@ async function collectCharacterSettingsCardsFromModels(idCounter, loadSequence) 
 
                     // 如果找到character_settings文件，解析并添加到角色卡列表
                     for (const file of characterSettingsFiles) {
-                        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) {
+                        if (isCharacterCardLoadStale(loadSequence)) {
                             return { cards: newCards, nextId };
                         }
                         try {
@@ -313,7 +317,7 @@ async function loadCharacterCards() {
     const characterData = await loadCharacterData();
     // 页面初始化、工坊同步和导入都可能并发触发刷新。旧请求晚返回时必须整轮退出，
     // 不能只淘汰它的模型扫描，否则它会用导入前的快照覆盖最新列表。
-    if (!characterData || loadSequence !== characterCardLoadSequence) return;
+    if (!characterData || isCharacterCardLoadStale(loadSequence)) return;
 
     // 模型扫描可能受 Linux 新存储根、创意工坊目录或 Steam 状态影响变慢。
     // 角色列表不应被模型扫描阻塞；扫描完成后再用于预览/上传等增强能力。
@@ -335,7 +339,7 @@ async function loadCharacterCards() {
         const response = await fetch('/api/characters/character-card/list', { cache: 'no-store' });
         if (response.ok) {
             const data = await response.json();
-            if (loadSequence !== characterCardLoadSequence) return;
+            if (isCharacterCardLoadStale(loadSequence)) return;
             if (data.success) {
                 for (const card of data.character_cards) {
                     nextCharacterCards.push({
@@ -351,7 +355,7 @@ async function loadCharacterCards() {
     } catch (error) {
         console.error('从character_cards文件夹加载角色卡失败:', error);
     }
-    if (loadSequence !== characterCardLoadSequence) return;
+    if (isCharacterCardLoadStale(loadSequence)) return;
 
     // 扫描模型文件夹中的 character_settings JSON 文件仅用于旧格式兼容，不能阻塞角色管理主列表。
     const characterSettingsStartId = idCounter;
@@ -363,14 +367,14 @@ async function loadCharacterCards() {
         const currentData = await currentResp.json();
         currentCatgirl = currentData.current_catgirl || '';
     } catch (e) {}
-    if (loadSequence !== characterCardLoadSequence) return;
+    if (isCharacterCardLoadStale(loadSequence)) return;
 
     // 预取已设置卡面的猫娘名单（避免逐个发起 404 请求）
     await loadCardFaceNames(loadSequence);
-    if (loadSequence !== characterCardLoadSequence) return;
+    if (isCharacterCardLoadStale(loadSequence)) return;
     // 预取卡面元数据（作者/创建时间/来源）
     await loadCardMetas(loadSequence);
-    if (loadSequence !== characterCardLoadSequence) return;
+    if (isCharacterCardLoadStale(loadSequence)) return;
 
     // 只有最新一轮加载可以提交共享状态和重绘列表。
     window.characterCards = nextCharacterCards;
@@ -430,7 +434,7 @@ async function loadCardFaceNames(loadSequence) {
         const resp = await fetch('/api/characters/card-faces', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
-        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) return;
+        if (isCharacterCardLoadStale(loadSequence)) return;
         if (data && data.success && Array.isArray(data.names)) {
             window._cardFaceNames = new Set(data.names);
         }
@@ -794,7 +798,7 @@ async function loadCardMetas(loadSequence) {
         const resp = await fetch('/api/characters/card-metas', { cache: 'no-store' });
         if (!resp.ok) return;
         const data = await resp.json();
-        if (loadSequence !== undefined && loadSequence !== characterCardLoadSequence) return;
+        if (isCharacterCardLoadStale(loadSequence)) return;
         if (data && data.success && data.metas && typeof data.metas === 'object') {
             window._cardMetas = data.metas;
         }
