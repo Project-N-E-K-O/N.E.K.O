@@ -84,6 +84,7 @@ CORE_ASR_ROUTES: dict[str, AsrCoreRoute] = {
     "openai": AsrCoreRoute(
         provider_key="openai",
         credential_field="ASSIST_API_KEY_OPENAI",
+        default_endpointing_mode="provider",
     ),
     "step": AsrCoreRoute(
         provider_key="step",
@@ -135,11 +136,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=24_000,
-        supported_endpointing_modes=frozenset({"manual"}),
-        # gpt-realtime-whisper currently requires manual commits and does not
-        # support provider turn detection. Keep the production route blocked
-        # instead of using SmartTurn as a streaming-provider endpoint.
-        implementation_status="blocked_backend",
+        supported_endpointing_modes=frozenset({"provider"}),
+        implementation_status="implemented",
     ),
     "step": AsrProviderMeta(
         provider_key="step",
