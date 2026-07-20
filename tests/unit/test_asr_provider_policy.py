@@ -40,6 +40,14 @@ def test_segmented_provider_always_requires_smart_turn(provider_key: str) -> Non
     assert policy.warm_transport_ms == 0
 
 
-def test_unsupported_provider_mode_is_rejected() -> None:
+def test_openai_provider_endpoint_does_not_require_smart_turn() -> None:
+    policy = resolve_provider_policy("openai", "provider")
+
+    assert policy.transport == "streaming"
+    assert policy.endpoint_authority == "provider"
+    assert policy.smart_turn_required is False
+
+
+def test_openai_manual_endpointing_is_rejected() -> None:
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
-        resolve_provider_policy("openai", "provider")
+        resolve_provider_policy("openai", "manual")

@@ -145,7 +145,9 @@ async def test_qwen_duplicate_item_created_preserves_next_manual_commit(
         assert isinstance(payload, str)
         message = json.loads(payload)
         if message["type"] == "session.update":
-            await ws.server_send({"type": "session.updated"})
+            await ws.server_send(
+                {"type": "session.updated", "session": message["session"]}
+            )
         elif message["type"] == "input_audio_buffer.commit":
             commit_count += 1
         elif message["type"] == "session.finish":
@@ -611,20 +613,15 @@ async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> No
 async def test_openai_transcription_resampling_and_out_of_order_finals(
     monkeypatch,
 ) -> None:
-    commit_count = 0
-
+    diagnostics: list[dict[str, Any]] = []
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
-        nonlocal commit_count
         assert isinstance(payload, str)
         message = json.loads(payload)
         if message["type"] == "session.update":
-            await ws.server_send({"type": "session.updated"})
-        elif message["type"] == "input_audio_buffer.commit":
-            commit_count += 1
             await ws.server_send(
                 {
-                    "type": "input_audio_buffer.committed",
-                    "item_id": f"openai-{commit_count}",
+                    "type": "session.updated",
+                    "session": message["session"],
                 }
             )
 
@@ -638,24 +635,45 @@ async def test_openai_transcription_resampling_and_out_of_order_finals(
             requests,
             responses,
             "openai-key",
-            AsrSessionConfig(language="en-US"),
+            AsrSessionConfig(language="en-US", endpointing_mode="provider"),
+            diagnostic_sink=diagnostics.append,
         )
     )
     await _next_event(responses, "ready")
     pcm = b"\x01\x00" * 1_600
-    for utterance_id in (1, 2):
-        await requests.put(
-            _AsrWorkerRequest(
-                kind="audio",
-                generation=0,
-                utterance_id=utterance_id,
-                audio=pcm,
-            )
+    await requests.put(
+        _AsrWorkerRequest(
+            kind="audio",
+            generation=7,
+            buffer_epoch=3,
+            audio=pcm,
         )
-        await requests.put(
-            _AsrWorkerRequest(kind="commit", generation=0, utterance_id=utterance_id)
+    )
+    await _wait_until(
+        lambda: any(
+            isinstance(payload, str)
+            and json.loads(payload).get("type") == "input_audio_buffer.append"
+            for payload in websocket.sent
         )
-    await _wait_until(lambda: commit_count == 2)
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-1"}
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "openai-1"}
+    )
+    # OpenAI may acknowledge a committed item before speech_started is observed.
+    await websocket.server_send(
+        {"type": "input_audio_buffer.committed", "item_id": "openai-2"}
+    )
+    started_one = await _next_event(responses, "utterance_started")
+    started_two = await _next_event(responses, "utterance_started")
+    assert (
+        started_one.generation,
+        started_one.buffer_epoch,
+        started_one.utterance_id,
+    ) == (7, 3, 1)
+    assert started_two.utterance_id == 2
     await websocket.server_send(
         {
             "type": "conversation.item.input_audio_transcription.completed",
@@ -674,6 +692,15 @@ async def test_openai_transcription_resampling_and_out_of_order_finals(
     first = await _next_event(responses, "final")
     assert (second.utterance_id, second.text) == (2, "second")
     assert (first.utterance_id, first.text) == (1, "first")
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "openai-2",
+            "transcript": "duplicate",
+        }
+    )
+    await asyncio.sleep(0)
+    assert responses.empty()
 
     url, kwargs = connector.calls[0]
     assert url == "wss://api.openai.com/v1/realtime?intent=transcription"
@@ -683,33 +710,72 @@ async def test_openai_transcription_resampling_and_out_of_order_finals(
     assert session["type"] == "transcription"
     audio_input = session["audio"]["input"]
     assert audio_input["format"] == {"type": "audio/pcm", "rate": 24_000}
-    assert audio_input["transcription"]["model"] == "gpt-realtime-whisper"
-    assert audio_input["turn_detection"] is None
-    assert "response.create" not in {message["type"] for message in messages}
+    assert (
+        audio_input["transcription"]["model"]
+        == "gpt-4o-mini-transcribe-2025-12-15"
+    )
+    assert audio_input["transcription"]["language"] == "en"
+    assert audio_input["turn_detection"] == {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 1_000,
+    }
+    sent_types = {message["type"] for message in messages}
+    assert "response.create" not in sent_types
+    assert "input_audio_buffer.commit" not in sent_types
+    assert diagnostics[0]["type"] == "websocket.connected"
+    requested = next(event for event in diagnostics if event["type"] == "session.update")
+    accepted = next(event for event in diagnostics if event["type"] == "session.updated")
+    assert requested["requested_model"] == "gpt-4o-mini-transcribe-2025-12-15"
+    assert requested["requested_turn_detection"]["silence_duration_ms"] == 1_000
+    assert accepted["accepted_model"] == requested["requested_model"]
+    assert accepted["accepted_turn_detection"]["type"] == "server_vad"
     wire_audio = b"".join(
         base64.b64decode(message["audio"])
         for message in messages
         if message["type"] == "input_audio_buffer.append"
     )
-    assert len(wire_audio) > len(pcm) * 2
-    assert len(wire_audio) < len(pcm) * 4
-    await _stop_worker(task, requests, responses, utterance_id=3)
+    assert len(wire_audio) > len(pcm) * 1.3
+    assert len(wire_audio) < len(pcm) * 1.7
+    await _stop_worker(
+        task,
+        requests,
+        responses,
+        generation=7,
+        buffer_epoch=3,
+        utterance_id=3,
+    )
 
 
 async def test_openai_native_clear_and_mode_rejection(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
-        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
-            await ws.server_send({"type": "session.updated"})
+        if isinstance(payload, str):
+            message = json.loads(payload)
+            if message["type"] == "session.update":
+                await ws.server_send(
+                    {"type": "session.updated", "session": message["session"]}
+                )
 
     websocket = _FakeWebSocket(on_send=on_send)
-    connector = _FakeConnector(websocket)
+    commit_websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket, commit_websocket)
     monkeypatch.setattr(openai.websockets, "connect", connector)
     requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
     task = asyncio.create_task(
-        openai.openai_asr_worker(requests, responses, "key", AsrSessionConfig())
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
     )
     await _next_event(responses, "ready")
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "old"}
+    )
+    await _next_event(responses, "utterance_started")
     await requests.put(
         _AsrWorkerRequest(kind="clear", generation=0, buffer_epoch=1, utterance_id=2)
     )
@@ -721,12 +787,57 @@ async def test_openai_native_clear_and_mode_rejection(monkeypatch) -> None:
         )
     )
     assert len(connector.calls) == 1
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "old",
+            "transcript": "late old final",
+        }
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "new"}
+    )
+    started = await _next_event(responses, "utterance_started")
+    assert (started.buffer_epoch, started.utterance_id) == (1, 2)
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "new",
+            "transcript": "new final",
+        }
+    )
+    final = await _next_event(responses, "final")
+    assert (final.buffer_epoch, final.utterance_id, final.text) == (1, 2, "new final")
     await _stop_worker(
         task,
         requests,
         responses,
         buffer_epoch=1,
         utterance_id=2,
+    )
+
+    commit_requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    commit_responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    commit_task = asyncio.create_task(
+        openai.openai_asr_worker(
+            commit_requests,
+            commit_responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(commit_responses, "ready")
+    await commit_requests.put(
+        _AsrWorkerRequest(kind="commit", generation=1, buffer_epoch=2, utterance_id=3)
+    )
+    error = await _next_event(commit_responses, "error")
+    assert error.error_code == "ASR_OPENAI_PROTOCOL_ERROR"
+    await _next_event(commit_responses, "closed")
+    await asyncio.wait_for(commit_task, 1)
+    assert all(
+        not isinstance(payload, str)
+        or json.loads(payload).get("type") != "input_audio_buffer.commit"
+        for payload in commit_websocket.sent
     )
 
     rejected_requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
@@ -736,27 +847,37 @@ async def test_openai_native_clear_and_mode_rejection(monkeypatch) -> None:
             rejected_requests,
             rejected_responses,
             "key",
-            AsrSessionConfig(endpointing_mode="provider"),
+            AsrSessionConfig(endpointing_mode="manual"),
         )
     )
     error = await _next_event(rejected_responses, "error")
     assert error.error_code == "ASR_ENDPOINTING_NOT_SUPPORTED"
     await _next_event(rejected_responses, "closed")
     await asyncio.wait_for(rejected, 1)
-    assert len(connector.calls) == 1
+    assert len(connector.calls) == 2
 
 
-async def test_openai_clear_keeps_old_commit_tombstone(monkeypatch) -> None:
-    commit_count = 0
-
+@pytest.mark.parametrize(
+    ("accepted_model", "accepted_vad"),
+    [
+        ("gpt-4o-transcribe", "server_vad"),
+        ("gpt-4o-mini-transcribe-2025-12-15", "semantic_vad"),
+    ],
+)
+async def test_openai_rejects_unaccepted_session_capabilities(
+    monkeypatch,
+    accepted_model: str,
+    accepted_vad: str,
+) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
-        nonlocal commit_count
         assert isinstance(payload, str)
         message = json.loads(payload)
-        if message["type"] == "session.update":
-            await ws.server_send({"type": "session.updated"})
-        elif message["type"] == "input_audio_buffer.commit":
-            commit_count += 1
+        if message["type"] != "session.update":
+            return
+        accepted = message["session"]
+        accepted["audio"]["input"]["transcription"]["model"] = accepted_model
+        accepted["audio"]["input"]["turn_detection"]["type"] = accepted_vad
+        await ws.server_send({"type": "session.updated", "session": accepted})
 
     websocket = _FakeWebSocket(on_send=on_send)
     connector = _FakeConnector(websocket)
@@ -764,70 +885,19 @@ async def test_openai_clear_keeps_old_commit_tombstone(monkeypatch) -> None:
     requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
     task = asyncio.create_task(
-        openai.openai_asr_worker(requests, responses, "key", AsrSessionConfig())
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
     )
-    await _next_event(responses, "ready")
 
-    await requests.put(
-        _AsrWorkerRequest(
-            kind="audio",
-            generation=0,
-            buffer_epoch=0,
-            utterance_id=1,
-            audio=b"\0\0" * 100,
-        )
-    )
-    await requests.put(
-        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=0, utterance_id=1)
-    )
-    await _wait_until(lambda: commit_count == 1)
-    await requests.put(
-        _AsrWorkerRequest(kind="clear", generation=0, buffer_epoch=1, utterance_id=2)
-    )
-    await requests.put(
-        _AsrWorkerRequest(
-            kind="audio",
-            generation=0,
-            buffer_epoch=1,
-            utterance_id=2,
-            audio=b"\1\1" * 100,
-        )
-    )
-    await requests.put(
-        _AsrWorkerRequest(kind="commit", generation=0, buffer_epoch=1, utterance_id=2)
-    )
-    await _wait_until(lambda: commit_count == 2)
-
-    for item_id, transcript in (("old", "old final"), ("new", "new final")):
-        await websocket.server_send(
-            {"type": "input_audio_buffer.committed", "item_id": item_id}
-        )
-        await websocket.server_send(
-            {
-                "type": "conversation.item.input_audio_transcription.completed",
-                "item_id": item_id,
-                "transcript": transcript,
-            }
-        )
-    old_final = await _next_event(responses, "final")
-    new_final = await _next_event(responses, "final")
-    assert (
-        old_final.buffer_epoch,
-        old_final.utterance_id,
-        old_final.text,
-    ) == (0, 1, "old final")
-    assert (
-        new_final.buffer_epoch,
-        new_final.utterance_id,
-        new_final.text,
-    ) == (1, 2, "new final")
-    await _stop_worker(
-        task,
-        requests,
-        responses,
-        buffer_epoch=1,
-        utterance_id=3,
-    )
+    error = await _next_event(responses)
+    assert error.kind == "error"
+    assert error.error_code == "ASR_OPENAI_PROTOCOL_ERROR"
+    await _next_event(responses, "closed")
+    await asyncio.wait_for(task, 1)
 
 
 async def test_grok_manual_binary_finalize_and_shutdown(monkeypatch) -> None:
@@ -1051,11 +1121,15 @@ async def test_workers_reject_unsupported_languages_without_connecting(
     monkeypatch.setattr(module.websockets, "connect", unexpected_connect)
     requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    config = AsrSessionConfig(
+        language="eo",
+        endpointing_mode="provider" if module is openai else "manual",
+    )
     await worker(
         requests,
         responses,
         "key",
-        AsrSessionConfig(language="eo"),
+        config,
     )
     error = await _next_event(responses, "error")
     assert error.error_code == "ASR_LANGUAGE_NOT_SUPPORTED"
@@ -1152,8 +1226,12 @@ async def test_provider_endpointing_rejects_manual_commit(
 
 async def test_workers_report_unexpected_disconnect(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
-        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
-            await ws.server_send({"type": "session.updated"})
+        if isinstance(payload, str):
+            message = json.loads(payload)
+            if message["type"] == "session.update":
+                await ws.server_send(
+                    {"type": "session.updated", "session": message["session"]}
+                )
 
     websocket = _FakeWebSocket(on_send=on_send)
     connector = _FakeConnector(websocket)
@@ -1161,7 +1239,12 @@ async def test_workers_report_unexpected_disconnect(monkeypatch) -> None:
     requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
     responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
     task = asyncio.create_task(
-        openai.openai_asr_worker(requests, responses, "key", AsrSessionConfig())
+        openai.openai_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
     )
     await _next_event(responses, "ready")
     await websocket.server_end()

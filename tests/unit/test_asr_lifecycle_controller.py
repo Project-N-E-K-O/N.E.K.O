@@ -87,7 +87,7 @@ def test_blocked_route_consumes_audio_without_buffer_or_forward() -> None:
 
 def test_turn_identity_is_allocated_when_speech_starts_not_when_final_arrives() -> None:
     controller = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("openai", "manual"),
+        provider_policy=resolve_provider_policy("openai", "provider"),
         shadow_mode=False,
     )
     controller.open(route_mode=VoiceRouteMode.INDEPENDENT)
@@ -135,7 +135,7 @@ def test_draining_audio_is_isolated_for_the_next_turn_until_old_final() -> None:
 
 def test_pending_turn_overflow_discards_entire_candidate() -> None:
     controller = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("openai", "manual"),
+        provider_policy=resolve_provider_policy("openai", "provider"),
         shadow_mode=False,
     )
     controller.open(route_mode=VoiceRouteMode.INDEPENDENT)

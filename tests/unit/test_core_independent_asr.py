@@ -104,8 +104,9 @@ def _install_ready_lifecycle(
         runtime._asr_session = type("Asr", (), {"is_ready": True})()
     runtime._asr_provider = provider
     runtime._asr_route_mode = "independent"
+    endpointing_mode = "provider" if provider == "openai" else "manual"
     runtime._asr_lifecycle = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy(provider, "manual"),
+        provider_policy=resolve_provider_policy(provider, endpointing_mode),
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
@@ -753,15 +754,18 @@ async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> N
     assert runtime._omni_mic_audio_bytes == 0
 
 
-async def test_optimization_disabled_provider_route_never_prepares_smart_turn() -> None:
+@pytest.mark.parametrize("provider", ["qwen", "openai"])
+async def test_optimization_disabled_provider_route_never_prepares_smart_turn(
+    provider: str,
+) -> None:
     runtime = _Runtime()
     runtime._voice_input_resource_optimization_enabled = False
     asr = type("Asr", (), {"is_ready": True, "stream_audio": AsyncMock()})()
     runtime._asr_session = asr
-    runtime._asr_provider = "qwen"
+    runtime._asr_provider = provider
     runtime._asr_route_mode = "independent"
     runtime._asr_lifecycle = VoiceInputLifecycleController(
-        provider_policy=resolve_provider_policy("qwen", "provider"),
+        provider_policy=resolve_provider_policy(provider, "provider"),
         shadow_mode=False,
         resource_optimization_enabled=False,
     )

@@ -224,7 +224,9 @@ async def test_clear_invalidates_late_voice_turn_commit():
     await session.close()
 
 
-async def test_segmented_routes_create_smart_turn_and_openai_stays_blocked(monkeypatch):
+async def test_segmented_routes_use_smart_turn_and_openai_uses_provider_vad(
+    monkeypatch,
+):
     import utils.config_manager as config_manager
 
     class _ConfigManager:
@@ -248,12 +250,13 @@ async def test_segmented_routes_create_smart_turn_and_openai_stays_blocked(monke
             on_connection_error=AsyncMock(),
         )
         assert session._voice_turn_factory is not None
-    with pytest.raises(RuntimeError, match="ASR_BACKEND_BLOCKED: openai"):
-        create_asr_session(
-            "openai",
-            on_input_transcript=AsyncMock(),
-            on_connection_error=AsyncMock(),
-        )
+    openai_session = create_asr_session(
+        "openai",
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    assert openai_session._config.endpointing_mode == "provider"
+    assert openai_session._voice_turn_factory is None
 
 
 async def test_voice_turn_start_failure_fails_session_and_releases_adapter():

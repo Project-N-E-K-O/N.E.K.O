@@ -58,6 +58,20 @@ def test_openai_environment_resolution_falls_back_to_keybook(monkeypatch) -> Non
         smoke._resolve_api_key("openai", "")
 
 
+def test_openai_smoke_defaults_to_provider_and_calibration_center(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["asr_realtime_smoke.py", "openai", "turn.wav"],
+    )
+
+    args = smoke.parse_args()
+
+    assert args.endpointing_mode == "provider"
+    assert args.openai_server_vad_silence_ms == 1_000
+    assert args.smart_turn_auto is False
+
+
 @pytest.mark.parametrize(
     ("provider", "credential_field", "worker_name"),
     [
@@ -358,3 +372,108 @@ async def test_smart_turn_auto_uses_adapter_and_expected_business_finals(
     assert callable(session_kwargs["voice_turn_factory"])
     assert result.ok is True
     assert result.business_finals == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_smoke_sanitizes_protocol_timeline_and_transcripts(
+    monkeypatch,
+) -> None:
+    audio_path = Path("openai-turn.wav")
+    turn = smoke._AudioTurn(audio_path, b"\0\0", 16_000, 1 / 16_000)
+    callbacks = {}
+    observation = smoke._Observation(started_at=100.0)
+    observation.protocol_at.extend(
+        [
+            ({"type": "websocket.connected"}, 100.1),
+            (
+                {
+                    "type": "session.update",
+                    "requested_model": "gpt-4o-mini-transcribe-2025-12-15",
+                    "requested_turn_detection": {
+                        "type": "server_vad",
+                        "silence_duration_ms": 1_000,
+                    },
+                },
+                100.2,
+            ),
+            (
+                {
+                    "type": "session.updated",
+                    "accepted_model": "gpt-4o-mini-transcribe-2025-12-15",
+                    "accepted_turn_detection": {
+                        "type": "server_vad",
+                        "silence_duration_ms": 1_000,
+                    },
+                },
+                100.3,
+            ),
+            (
+                {"type": "input_audio_buffer.speech_stopped", "item_id": "secret"},
+                101.0,
+            ),
+            (
+                {
+                    "type": "conversation.item.input_audio_transcription.completed",
+                    "item_id": "secret",
+                },
+                101.4,
+            ),
+        ]
+    )
+    observation.final_at.append(101.4)
+
+    class FakeSession:
+        is_ready = True
+
+        def __init__(self, **kwargs) -> None:
+            callbacks.update(kwargs)
+
+        async def connect(self) -> None:
+            return None
+
+        async def clear_audio_buffer(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    async def stream_turn(*_args, **_kwargs) -> None:
+        await callbacks["on_input_transcript"]("private transcript")
+
+    monkeypatch.setattr(smoke, "_read_wav_pcm16", lambda _path: turn)
+    monkeypatch.setattr(smoke, "_resolve_api_key", lambda *_args: "test-key")
+    monkeypatch.setattr(smoke, "_Observation", lambda **_kwargs: observation)
+    monkeypatch.setattr(smoke, "_RealtimeAsrSessionImpl", FakeSession)
+    monkeypatch.setattr(smoke, "_stream_turn", stream_turn)
+
+    result = await smoke._run_provider_smoke(
+        Namespace(
+            provider="openai",
+            audio=[audio_path],
+            endpointing_mode="provider",
+            invalid_credential=False,
+            api_key_env="",
+            language="zh",
+            show_transcripts=False,
+            skip_clear=False,
+            chunk_ms=10,
+            no_realtime=True,
+            vad_silence_ms=1_000,
+            timeout_s=0.1,
+            expected_finals=1,
+            openai_server_vad_silence_ms=1_000,
+        )
+    )
+
+    assert result.ok is True
+    assert result.client_commit_count == 0
+    assert result.requested_model == "gpt-4o-mini-transcribe-2025-12-15"
+    assert result.accepted_server_vad == {
+        "type": "server_vad",
+        "silence_duration_ms": 1_000,
+    }
+    assert result.item_final_counts == {"item-1": 1}
+    assert result.stop_to_final_ms == pytest.approx([400.0])
+    assert result.transcript_fingerprints[0]["length"] == len("private transcript")
+    assert all("secret" not in str(event) for event in result.provider_timeline)
+    assert result.transcripts is None
