@@ -39,6 +39,10 @@ class SpeakerShadowConfig:
     idle_unload_seconds: float = 60.0
     queue_capacity: int = 32
     finalized_candidate_capacity: int = 1_024
+    load_retry_initial_seconds: float = 5.0
+    load_retry_max_seconds: float = 60.0
+    shutdown_grace_seconds: float = 0.1
+    callback_timeout_seconds: float = 0.1
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.similarity_threshold <= 1.0:
@@ -55,6 +59,16 @@ class SpeakerShadowConfig:
             raise ValueError(
                 "finalized_candidate_capacity must be at least queue_capacity"
             )
+        if self.load_retry_initial_seconds <= 0:
+            raise ValueError("load_retry_initial_seconds must be positive")
+        if self.load_retry_max_seconds < self.load_retry_initial_seconds:
+            raise ValueError(
+                "load_retry_max_seconds must be at least load_retry_initial_seconds"
+            )
+        if self.shutdown_grace_seconds <= 0:
+            raise ValueError("shutdown_grace_seconds must be positive")
+        if self.callback_timeout_seconds <= 0:
+            raise ValueError("callback_timeout_seconds must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +100,8 @@ class SpeakerShadowMetrics:
     insufficient_candidate_count: int = 0
     dropped_candidate_count: int = 0
     dropped_audio_ms: int = 0
+    load_retry_suppressed_count: int = 0
+    shutdown_timeout_count: int = 0
 
     def snapshot(self) -> dict[str, int]:
         return asdict(self)
@@ -145,8 +161,10 @@ class SpeakerShadowRuntime:
             asyncio.Queue(maxsize=self._config.queue_capacity)
         )
         self._worker_task: asyncio.Task[None] | None = None
+        self._cleanup_task: asyncio.Task[None] | None = None
         self._backend: SpeakerShadowBackend | None = None
-        self._backend_load_failed = False
+        self._load_failure_streak = 0
+        self._next_load_attempt_at = 0.0
         self._buffers: OrderedDict[Hashable, _CandidateBuffer] = OrderedDict()
         self._finalized: OrderedDict[Hashable, _FinalizedCandidate] = OrderedDict()
         self._generation = 0
@@ -231,7 +249,8 @@ class SpeakerShadowRuntime:
         self._generation += 1
         self._buffers.clear()
         self._finalized.clear()
-        self._backend_load_failed = False
+        self._load_failure_streak = 0
+        self._next_load_attempt_at = 0.0
         while True:
             try:
                 self._queue.get_nowait()
@@ -255,11 +274,21 @@ class SpeakerShadowRuntime:
             else:
                 self._queue.task_done()
         worker, self._worker_task = self._worker_task, None
-        if worker is not None:
-            if not worker.done():
-                self._queue.put_nowait(_STOP)
-            await asyncio.gather(worker, return_exceptions=True)
-        await self._unload_backend()
+        if worker is not None and not worker.done():
+            self._queue.put_nowait(_STOP)
+        cleanup = asyncio.create_task(
+            self._cleanup_after_worker(worker),
+            name="speaker-shadow-cleanup",
+        )
+        self._cleanup_task = cleanup
+        cleanup.add_done_callback(self._consume_cleanup_result)
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(cleanup),
+                timeout=self._config.shutdown_grace_seconds,
+            )
+        except asyncio.TimeoutError:
+            self._metrics.shutdown_timeout_count += 1
 
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
@@ -270,8 +299,9 @@ class SpeakerShadowRuntime:
     async def _run(self) -> None:
         while True:
             try:
+                pending = self._queue  # asyncio.Queue, not stdlib queue.Queue.
                 frame = await asyncio.wait_for(
-                    self._queue.get(),  # noqa: ASYNC_BLOCK -- asyncio.Queue, not queue.Queue
+                    pending.get(),
                     timeout=self._config.idle_unload_seconds,
                 )
             except asyncio.TimeoutError:
@@ -359,13 +389,28 @@ class SpeakerShadowRuntime:
         if self._on_observation is None:
             return
         try:
-            callback_result = self._on_observation(observation)
-            if inspect.isawaitable(callback_result):
-                await callback_result
+            await asyncio.wait_for(
+                self._invoke_observation_callback(observation),
+                timeout=self._config.callback_timeout_seconds,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
             self._metrics.callback_failure_count += 1
+
+    async def _invoke_observation_callback(
+        self,
+        observation: SpeakerShadowObservation,
+    ) -> None:
+        callback = self._on_observation
+        if callback is None:
+            return
+        if inspect.iscoroutinefunction(callback):
+            await callback(observation)
+            return
+        callback_result = await asyncio.to_thread(callback, observation)
+        if inspect.isawaitable(callback_result):
+            await callback_result
 
     def _finish_candidate_now(
         self,
@@ -417,11 +462,11 @@ class SpeakerShadowRuntime:
     async def _ensure_backend(self) -> SpeakerShadowBackend | None:
         if self._backend is not None:
             return self._backend
-        if self._backend_load_failed:
+        if time.monotonic() < self._next_load_attempt_at:
+            self._metrics.load_retry_suppressed_count += 1
             return None
         if self._backend_factory is None:
-            self._backend_load_failed = True
-            self._metrics.load_failure_count += 1
+            self._record_load_failure()
             return None
 
         def build_and_load() -> tuple[SpeakerShadowBackend, bool]:
@@ -434,22 +479,32 @@ class SpeakerShadowRuntime:
             backend, available = await asyncio.to_thread(build_and_load)
             if not available:
                 await asyncio.to_thread(backend.close)
-                self._backend_load_failed = True
-                self._metrics.load_failure_count += 1
+                self._record_load_failure()
                 return None
         except asyncio.CancelledError:
             raise
         except Exception:
             if backend is not None:
                 await asyncio.to_thread(backend.close)
-            self._backend_load_failed = True
-            self._metrics.load_failure_count += 1
+            self._record_load_failure()
             return None
         finally:
             self._metrics.load_ms += int((time.perf_counter() - started) * 1_000)
         self._backend = backend
+        self._load_failure_streak = 0
+        self._next_load_attempt_at = 0.0
         self._metrics.load_count += 1
         return backend
+
+    def _record_load_failure(self) -> None:
+        self._load_failure_streak += 1
+        retry_seconds = min(
+            self._config.load_retry_max_seconds,
+            self._config.load_retry_initial_seconds
+            * (2 ** (self._load_failure_streak - 1)),
+        )
+        self._next_load_attempt_at = time.monotonic() + retry_seconds
+        self._metrics.load_failure_count += 1
 
     async def _unload_backend(self) -> None:
         backend, self._backend = self._backend, None
@@ -460,4 +515,20 @@ class SpeakerShadowRuntime:
         except Exception:
             pass
         self._metrics.unload_count += 1
-        self._backend_load_failed = False
+        self._load_failure_streak = 0
+        self._next_load_attempt_at = 0.0
+
+    async def _cleanup_after_worker(
+        self,
+        worker: asyncio.Task[None] | None,
+    ) -> None:
+        if worker is not None:
+            await asyncio.gather(worker, return_exceptions=True)
+        await self._unload_backend()
+
+    @staticmethod
+    def _consume_cleanup_result(task: asyncio.Task[None]) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            return

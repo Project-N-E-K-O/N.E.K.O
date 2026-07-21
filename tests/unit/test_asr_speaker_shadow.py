@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -48,11 +49,21 @@ class _BlockingBackend(_Backend):
         super().__init__(score=0.1)
         self.score_started = threading.Event()
         self.score_release = threading.Event()
+        self.score_finished = threading.Event()
+        self.close_during_score = False
 
     def score(self, pcm16: bytes, sample_rate_hz: int) -> float:
         self.score_started.set()
-        self.score_release.wait(timeout=2)
-        return super().score(pcm16, sample_rate_hz)
+        try:
+            self.score_release.wait(timeout=2)
+            return super().score(pcm16, sample_rate_hz)
+        finally:
+            self.score_finished.set()
+
+    def close(self) -> None:
+        if self.score_started.is_set() and not self.score_finished.is_set():
+            self.close_during_score = True
+        super().close()
 
 
 class _Vad:
@@ -179,23 +190,51 @@ async def test_reset_invalidates_an_in_flight_shadow_result() -> None:
     await runtime.close()
 
 
-async def test_close_waits_for_inference_before_releasing_backend() -> None:
+async def test_close_returns_within_grace_and_defers_backend_cleanup() -> None:
     backend = _BlockingBackend()
     runtime = SpeakerShadowRuntime(
         backend_factory=lambda: backend,
-        config=_config(minimum_audio_ms=10),
+        config=_config(minimum_audio_ms=10, shutdown_grace_seconds=0.05),
     )
     runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 1))
     assert await asyncio.to_thread(backend.score_started.wait, 1)
 
-    close_task = asyncio.create_task(runtime.close())
-    await asyncio.sleep(0.02)
-    assert close_task.done() is False
+    started = time.perf_counter()
+    await runtime.close()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
     assert backend.close_calls == 0
+    assert runtime.snapshot()["shutdown_timeout_count"] == 1
 
     backend.score_release.set()
-    await asyncio.wait_for(close_task, 1)
+    async with asyncio.timeout(1):
+        while backend.close_calls == 0:
+            await asyncio.sleep(0)
     assert backend.close_calls == 1
+    assert backend.close_during_score is False
+
+
+async def test_detector_close_is_not_blocked_by_shadow_inference() -> None:
+    backend = _BlockingBackend()
+    shadow = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(minimum_audio_ms=10, shutdown_grace_seconds=0.05),
+    )
+    detector = DetectorRuntime(vad=_Vad(), gate=_Gate(), speaker_shadow=shadow)
+
+    await detector.feed(_pcm(10), speech_probability=0.9, rnnoise_available=True)
+    assert await asyncio.to_thread(backend.score_started.wait, 1)
+    started = time.perf_counter()
+    await detector.close()
+
+    assert time.perf_counter() - started < 0.15
+    assert backend.close_calls == 0
+    backend.score_release.set()
+    async with asyncio.timeout(1):
+        while backend.close_calls == 0:
+            await asyncio.sleep(0)
+    assert backend.close_during_score is False
 
 
 async def test_load_and_callback_failures_stay_inside_shadow_metrics() -> None:
@@ -221,6 +260,100 @@ async def test_load_and_callback_failures_stay_inside_shadow_metrics() -> None:
     await callback_failed.wait_idle()
     assert callback_failed.snapshot()["callback_failure_count"] == 1
     await callback_failed.close()
+
+
+async def test_backend_load_retries_after_exponential_backoff(monkeypatch) -> None:
+    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+
+    now = [100.0]
+    monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: now[0])
+    unavailable = _Backend(load_ok=False)
+    available = _Backend()
+    backends = iter((unavailable, available))
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: next(backends),
+        config=_config(
+            minimum_audio_ms=10,
+            load_retry_initial_seconds=5.0,
+            load_retry_max_seconds=60.0,
+        ),
+    )
+
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 1))
+    await runtime.wait_idle()
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 2))
+    await runtime.wait_idle()
+    assert runtime.snapshot()["load_retry_suppressed_count"] == 1
+    assert available.load_calls == 0
+
+    now[0] += 5.0
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 3))
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert unavailable.load_calls == 1
+    assert available.load_calls == 1
+    assert metrics["load_failure_count"] == 1
+    assert metrics["load_count"] == 1
+    assert metrics["evaluated_candidate_count"] == 1
+    await runtime.close()
+
+
+async def test_reset_clears_load_backoff_without_unloading_warm_backend(
+    monkeypatch,
+) -> None:
+    from main_logic.asr_client import speaker_shadow as speaker_shadow_module
+
+    monkeypatch.setattr(speaker_shadow_module.time, "monotonic", lambda: 100.0)
+    unavailable = _Backend(load_ok=False)
+    available = _Backend()
+    backends = iter((unavailable, available))
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: next(backends),
+        config=_config(minimum_audio_ms=10),
+    )
+
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 1))
+    await runtime.wait_idle()
+    await runtime.reset()
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(2, 1))
+    await runtime.wait_idle()
+    await runtime.reset()
+
+    assert unavailable.load_calls == 1
+    assert available.load_calls == 1
+    assert available.close_calls == 0
+    await runtime.close()
+    assert available.close_calls == 1
+
+
+@pytest.mark.parametrize("callback_kind", ["sync", "async"])
+async def test_observation_callback_timeout_does_not_stall_worker(
+    callback_kind: str,
+) -> None:
+    release = threading.Event()
+    async_release = asyncio.Event()
+
+    def sync_callback(_observation: SpeakerShadowObservation) -> None:
+        release.wait(timeout=1)
+
+    async def async_callback(_observation: SpeakerShadowObservation) -> None:
+        await async_release.wait()
+
+    callback = sync_callback if callback_kind == "sync" else async_callback
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: _Backend(),
+        config=_config(minimum_audio_ms=10, callback_timeout_seconds=0.02),
+        on_observation=callback,
+    )
+
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 1))
+    await asyncio.wait_for(runtime.wait_idle(), 0.15)
+
+    assert runtime.snapshot()["callback_failure_count"] == 1
+    release.set()
+    async_release.set()
+    await runtime.close()
 
 
 async def test_queue_backpressure_is_observational_only() -> None:
@@ -388,3 +521,12 @@ def test_shadow_config_rejects_unsafe_bounds() -> None:
             queue_capacity=32,
             finalized_candidate_capacity=16,
         )
+    with pytest.raises(ValueError, match="load_retry_max_seconds"):
+        SpeakerShadowConfig(
+            load_retry_initial_seconds=10,
+            load_retry_max_seconds=5,
+        )
+    with pytest.raises(ValueError, match="shutdown_grace_seconds"):
+        SpeakerShadowConfig(shutdown_grace_seconds=0)
+    with pytest.raises(ValueError, match="callback_timeout_seconds"):
+        SpeakerShadowConfig(callback_timeout_seconds=0)
