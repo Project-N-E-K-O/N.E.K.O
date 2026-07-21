@@ -200,11 +200,16 @@ def test_detector_failure_fails_open_only_to_continuous_independent_asr() -> Non
     controller.enable_independent_asr_fail_open()
     first = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
     second = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
+    controller.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    controller.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    active = controller.accept_audio(_pcm(20), sample_rate_hz=16_000)
 
     assert buffered.disposition is AudioDisposition.BUFFER
-    assert first.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
-    assert first.pre_roll == _pcm(120)
-    assert second.disposition is AudioDisposition.FORWARD
+    assert first.disposition is AudioDisposition.BUFFER
+    assert second.disposition is AudioDisposition.BUFFER
+    assert active.disposition is AudioDisposition.FORWARD_WITH_PRE_ROLL
+    assert active.pre_roll == _pcm(160)
+    assert controller.independent_asr_fail_open is True
     assert controller.snapshot.route_mode is VoiceRouteMode.INDEPENDENT
 
 

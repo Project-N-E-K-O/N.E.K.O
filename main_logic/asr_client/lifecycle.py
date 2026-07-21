@@ -316,6 +316,12 @@ class VoiceInputLifecycleController:
     def has_pending_turn(self) -> bool:
         return self._pending_turn_speech and self.pending_turn_bytes > 0
 
+    @property
+    def independent_asr_fail_open(self) -> bool:
+        """Whether Core must keep waking independent ASR without throttle input."""
+
+        return self._independent_asr_fail_open
+
     def open(self, *, route_mode: VoiceRouteMode) -> None:
         if self._state is not VoiceLifecycleState.OFF:
             raise RuntimeError("VOICE_LIFECYCLE_ALREADY_OPEN")
@@ -560,8 +566,6 @@ class VoiceInputLifecycleController:
         return self._turn_sequence
 
     def _target_disposition(self) -> AudioDisposition:
-        if self._independent_asr_fail_open:
-            return AudioDisposition.FORWARD
         if self._state in {
             VoiceLifecycleState.LOCAL_LISTEN,
             VoiceLifecycleState.PREWARMING,

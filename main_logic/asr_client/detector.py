@@ -158,6 +158,7 @@ class DetectorSubmitResult:
     identity: DetectorIngressIdentity | None
     throttle_action: ThrottleAction | None = None
     candidate: DetectorCandidateKey | None = None
+    control_event_emitted: bool = False
 
 
 DetectorQueueItem: TypeAlias = DetectorAudioItem | DetectorEvaluationResultItem | object

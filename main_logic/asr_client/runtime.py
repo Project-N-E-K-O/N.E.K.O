@@ -1021,6 +1021,31 @@ class IndependentAsrRuntime:
                         return AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
                     if not submitted.throttle_available:
                         lifecycle.enable_independent_asr_fail_open()
+                        if (
+                            lifecycle.independent_asr_fail_open
+                            and not submitted.control_event_emitted
+                            and submitted.identity is not None
+                            and submitted.candidate is not None
+                        ):
+                            accepted = self._asr_detector_dispatcher.submit_nowait(
+                                CoreDetectorEventEnvelope(
+                                    event=DetectorPrewarmEvent(
+                                        ingress=submitted.identity,
+                                        candidate=submitted.candidate,
+                                        kind="continuous",
+                                    ),
+                                    detector_ref=detector,
+                                    lifecycle_ref=lifecycle,
+                                    session_epoch=self._asr_session_epoch,
+                                )
+                            )
+                            if not accepted:
+                                await self._handle_independent_asr_error(
+                                    self._asr_session_epoch,
+                                    self._asr_provider or "unknown",
+                                    status_code="ASR_ENDPOINTING_FAILED",
+                                )
+                                return True
                 else:
                     detector_result = await detector.feed(
                         pcm16,
