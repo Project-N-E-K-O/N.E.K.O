@@ -139,7 +139,11 @@ def test_strip_proactive_screen_tag_leak_ignores_unknown_bracket_tags():
 def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
     cases = [
         ("/chat\n你好", "你好", "CHAT"),
+        ("/CHAT\n你好", "你好", "CHAT"),
+        ("CHAT/你好", "你好", "CHAT"),
         ("/music\n听这个", "听这个", "MUSIC"),
+        ("/MUSIC\n听这个", "听这个", "MUSIC"),
+        ("MUSIC/听这个", "听这个", "MUSIC"),
         ("屏幕/\n这个窗口有点怪", "这个窗口有点怪", "CHAT"),
         ("/chat你好", "你好", "CHAT"),
         ("/music听这个", "听这个", "MUSIC"),
@@ -148,6 +152,7 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("chat/你好", "你好", "CHAT"),
         ("music/听这个", "听这个", "MUSIC"),
         ("聊天中/那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
+        ("聊天中\n那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "那咱们找小鱼干星的时候，能顺路去摸猫爪星云吗？", "CHAT"),
         ("屏幕/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
         ("屏幕 / 这个空文件是要写和项目相关的内容吗？", "这个空文件是要写和项目相关的内容吗？", "CHAT"),
         ("屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
@@ -160,7 +165,7 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
 
 
 def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
-    for raw in ("我刚才看了 /chat 路由", "music/chat 模块需要重构"):
+    for raw in ("我刚才看了 /chat 路由", "music/chat 模块需要重构", "/chatbot 路由"):
         cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
         assert cleaned == raw
         assert tag == ""

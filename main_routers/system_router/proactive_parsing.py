@@ -328,11 +328,11 @@ _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.I
 
 
 _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
-    (re.compile(r"^/chat(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^chat/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/(?i:chat)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^(?i:chat)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^chat[ \t]*(?:\r?\n|$)\s*", re.IGNORECASE), "CHAT"),
-    (re.compile(r"^/music(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
-    (re.compile(r"^music/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^/(?i:music)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^(?i:music)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
     (re.compile(r"^/聊天中(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^/?聊天中\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^聊天中(?=\s|$)\s*"), "CHAT"),
@@ -353,10 +353,21 @@ _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset({
 })
 
 
+_PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS = frozenset({
+    "聊天中",
+})
+
+
 def _get_proactive_context_leak_labels() -> frozenset[str]:
     from config.prompts.prompts_activity import get_proactive_intent_leak_labels
     return get_proactive_intent_leak_labels() | frozenset(
         label.casefold() for label in _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS
+    )
+
+
+def _get_proactive_context_slash_leak_labels() -> frozenset[str]:
+    return _get_proactive_context_leak_labels() | frozenset(
+        label.casefold() for label in _PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS
     )
 
 
@@ -505,6 +516,7 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     labels = _get_proactive_context_leak_labels()
     if not labels:
         return text
+    slash_labels = _get_proactive_context_slash_leak_labels()
 
     def _norm(segment: str) -> str:
         out = segment.strip().strip(_INTENT_LABEL_DECOR)
@@ -516,7 +528,7 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         body = text.lstrip()
         if not body:
             break
-        slash_cleaned = _strip_proactive_label_slash_prefix(body, labels)
+        slash_cleaned = _strip_proactive_label_slash_prefix(body, slash_labels)
         if slash_cleaned is not None:
             text = slash_cleaned
             continue
