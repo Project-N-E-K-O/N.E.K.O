@@ -187,6 +187,33 @@ async def test_reset_invalidates_an_in_flight_shadow_result() -> None:
 
     assert observations == []
     assert runtime.snapshot()["stale_result_count"] == 1
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(2, 1))
+    await runtime.wait_idle()
+    assert [observation.candidate for observation in observations] == [(2, 1)]
+    await runtime.close()
+
+
+async def test_duplicate_finish_and_late_pcm_do_not_duplicate_observation() -> None:
+    observations: list[SpeakerShadowObservation] = []
+    backend = _Backend()
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(minimum_audio_ms=10),
+        on_observation=observations.append,
+    )
+    candidate = SpeakerShadowCandidateKey(1, 1, "provider_pause")
+
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    runtime.finish_candidate(candidate)
+    runtime.finish_candidate(candidate)
+    runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert len(backend.score_calls) == 1
+    assert len(observations) == 1
+    assert metrics["evaluated_candidate_count"] == 1
+    assert metrics["finished_candidate_count"] == 1
     await runtime.close()
 
 
