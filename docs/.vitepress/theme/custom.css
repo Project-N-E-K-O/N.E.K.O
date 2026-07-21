@@ -64,3 +64,90 @@
 .VPBadge {
   font-weight: 600;
 }
+
+/*
+ * VitePress' stock locale menu assumes every page exists in every locale.
+ * Its links are configured to safe locale-home fallbacks and hidden here;
+ * LocaleSwitch.vue restores corresponding-page links only when they exist.
+ */
+.VPNavBarTranslations,
+.VPNavScreenTranslations,
+.VPNavBarExtra .group.translations {
+  display: none !important;
+}
+
+.NekoLocaleSwitch--desktop {
+  position: relative;
+  display: none;
+  margin-left: 8px;
+}
+
+@media (min-width: 768px) {
+  .NekoLocaleSwitch--desktop {
+    display: block;
+  }
+}
+
+.NekoLocaleSwitch--desktop summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--vp-c-text-1);
+  cursor: pointer;
+  list-style: none;
+}
+
+.NekoLocaleSwitch--desktop summary::-webkit-details-marker {
+  display: none;
+}
+
+.NekoLocaleSwitch-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  min-width: 176px;
+  padding: 8px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-elv);
+  box-shadow: var(--vp-shadow-3);
+}
+
+.NekoLocaleSwitch-menu p,
+.NekoLocaleSwitch--mobile p {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--vp-c-text-1);
+}
+
+.NekoLocaleSwitch-menu a,
+.NekoLocaleSwitch--mobile a {
+  display: block;
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: var(--vp-c-text-1);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.NekoLocaleSwitch-menu a:hover,
+.NekoLocaleSwitch--mobile a:hover {
+  background: var(--vp-c-default-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.NekoLocaleSwitch--mobile {
+  display: block;
+  margin-top: 24px;
+}
+
+@media (min-width: 768px) {
+  .NekoLocaleSwitch--mobile {
+    display: none;
+  }
+}

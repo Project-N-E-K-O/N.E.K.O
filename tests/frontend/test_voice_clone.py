@@ -15,7 +15,50 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
         "mimo": {"config_field": "assistApiKeyMimo", "restricted": False},
         "doubao_tts": {"config_field": "assistApiKeyDoubaoTts", "restricted": False},
     },
+    "tts_providers": [
+        {
+            "key": "cosyvoice",
+            "aliases": [],
+            "capabilities": ["clone", "design"],
+            "voice_design": {
+                "prompt_min": None,
+                "prompt_max": 500,
+                "prefix_max": 10,
+                "prefix_pattern": "^[A-Za-z0-9]+$",
+                "language_hints": ["ch", "en"],
+            },
+        },
+        {
+            "key": "minimax",
+            "aliases": ["minimax_intl"],
+            "capabilities": ["clone", "design"],
+            "voice_design": {},
+        },
+        {
+            "key": "elevenlabs",
+            "aliases": [],
+            "capabilities": ["clone", "design"],
+            "voice_design": {"prompt_min": 20, "prompt_max": 1000},
+        },
+        {
+            "key": "mimo",
+            "aliases": [],
+            "capabilities": ["clone", "design", "preset"],
+            "voice_design": {},
+        },
+        {"key": "vllm_omni", "aliases": [], "capabilities": ["clone", "preset"]},
+    ],
 }
+
+
+@pytest.mark.frontend
+def test_voice_clone_script_is_cache_versioned(mock_page: Page, running_server: str):
+    mock_page.goto(f"{running_server}/voice_clone")
+    script = mock_page.locator("script[src^='/static/js/voice_clone.js?v=']")
+
+    expect(script).to_have_count(1)
+    src = script.get_attribute("src")
+    assert src and src != "/static/js/voice_clone.js?v=0"
 
 
 def route_voice_clone_region_dependencies(page: Page, steam_language_payload: dict, steam_language_status: int = 200) -> None:
@@ -49,6 +92,150 @@ def route_voice_clone_region_dependencies(page: Page, steam_language_payload: di
             }),
         ),
     )
+
+
+@pytest.mark.frontend
+def test_saved_design_voice_preview_uses_runtime_endpoint(mock_page: Page, running_server: str):
+    preview_requests = []
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.add_init_script(
+            """window.__playedVoicePreviews = [];
+            window.Audio = class {
+                constructor(src) { this.src = src; }
+                play() {
+                    window.__playedVoicePreviews.push(this.src);
+                    return Promise.resolve();
+                }
+            };"""
+        )
+        mock_page.route(
+            "**/api/characters/voices",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voices": {
+                        "mimo-design-test01": {
+                            "prefix": "test01",
+                            "provider": "mimo",
+                            "source": "design",
+                            "created_at": "2026-07-10T00:00:00",
+                        },
+                    },
+                    "free_voices": {},
+                    "pinned_voices": [],
+                    "native_voices": {},
+                }),
+            ),
+        )
+
+        def handle_preview(route):
+            preview_requests.append(route.request.url)
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "audio": "UklGRg==",
+                    "mime_type": "audio/wav",
+                }),
+            )
+
+        mock_page.route("**/api/characters/voice_preview?*", handle_preview)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+
+        item = mock_page.locator('.voice-list-item[data-voice-id="mimo-design-test01"]')
+        expect(item).to_be_visible()
+        item.locator(".voice-preview-btn").click()
+        mock_page.wait_for_function("window.__playedVoicePreviews.length === 1")
+
+        assert len(preview_requests) == 1
+        assert "voice_id=mimo-design-test01" in preview_requests[0]
+        assert mock_page.evaluate("window.__playedVoicePreviews[0]") == "data:audio/wav;base64,UklGRg=="
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voices")
+        mock_page.unroute("**/api/characters/voice_preview?*")
+
+
+@pytest.mark.frontend
+def test_voice_preview_error_uses_styled_notice(mock_page: Page, running_server: str):
+    native_dialogs = []
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.on("dialog", lambda dialog: (native_dialogs.append(dialog.message), dialog.dismiss()))
+        mock_page.route(
+            "**/api/characters/voices",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voices": {},
+                    "free_voices": {
+                        "previewErrorTest": "preview-error-test",
+                    },
+                    "pinned_voices": [],
+                    "native_voices": {},
+                }),
+            ),
+        )
+        mock_page.route(
+            "**/api/characters/voice_preview?*",
+            lambda route: route.fulfill(
+                status=500,
+                content_type="application/json",
+                body=json.dumps({"error": "preview backend unavailable"}),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        item = mock_page.locator('.voice-list-item[data-voice-id="preview-error-test"]')
+        expect(item).to_be_visible()
+        preview_button = item.locator(".voice-preview-btn")
+        preview_button.click()
+
+        notice = mock_page.locator(".voice-preview-notice-backdrop")
+        expect(notice).to_be_visible(timeout=20000)
+        expect(mock_page.locator(".voice-preview-notice-title")).to_have_text("预览")
+        expect(mock_page.locator(".voice-preview-notice-message")).to_contain_text("preview backend unavailable")
+        ok_button = mock_page.locator(".voice-preview-notice-ok")
+        expect(ok_button).to_be_focused()
+        assert native_dialogs == []
+
+        mock_page.keyboard.press("Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Shift+Tab")
+        expect(ok_button).to_be_focused()
+        mock_page.keyboard.press("Escape")
+        expect(notice).to_have_count(0)
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voices")
+        mock_page.unroute("**/api/characters/voice_preview?*")
 
 
 @pytest.mark.frontend
@@ -104,6 +291,524 @@ def test_voice_clone_form_validation(mock_page: Page, running_server: str):
     # Don't upload a file — just verify the form state is correct
     # The actual registration requires a real API key and audio file,
     # so we only test UI interaction here
+
+
+@pytest.mark.frontend
+def test_voice_clone_file_submit_preserves_existing_payload(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_clone(route):
+            captured["body"] = (route.request.post_data_buffer or b"").decode("latin-1")
+            route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({"error": "test stop"}),
+            )
+
+        mock_page.route("**/api/characters/voice_clone", handle_voice_clone)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.fill("#prefix", "clone01")
+        mock_page.set_input_files(
+            "#audioFile",
+            {"name": "sample.wav", "mimeType": "audio/wav", "buffer": b"RIFFtest"},
+        )
+        mock_page.locator(".register-voice-btn").click()
+        expect(mock_page.locator("#result")).to_contain_text("test stop")
+
+        body = captured["body"]
+        assert 'name="prefix"\r\n\r\nclone01' in body
+        assert 'name="ref_language"\r\n\r\nch' in body
+        assert 'name="provider"\r\n\r\ncosyvoice' in body
+        assert 'name="file"; filename="sample.wav"' in body
+        assert "voice_prompt" not in body
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_clone")
+
+
+@pytest.mark.frontend
+def test_voice_clone_direct_submit_preserves_existing_payload(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_clone_direct(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({"error": "test stop"}),
+            )
+
+        mock_page.route("**/api/characters/voice_clone_direct", handle_voice_clone_direct)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.locator("#btnDirectLinkClone").click()
+        mock_page.fill("#prefix", "clone02")
+        mock_page.fill("#directLinkUrl", "https://example.com/sample.wav")
+        mock_page.locator(".register-voice-btn").click()
+        expect(mock_page.locator("#result")).to_contain_text("test stop")
+
+        assert captured["body"] == {
+            "direct_link": "https://example.com/sample.wav",
+            "ref_language": "ch",
+            "prefix": "clone02",
+            "provider": "cosyvoice",
+        }
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_clone_direct")
+
+
+@pytest.mark.frontend
+def test_voice_design_toggle_for_supported_providers_except_vllm_omni(mock_page: Page, running_server: str):
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+
+        expect(mock_page.locator("#voiceSourceRow")).to_be_visible()
+        expect(mock_page.locator("#btnVoiceSourceDesign")).to_be_visible()
+        expect(mock_page.locator("#btnVoiceSourceClone")).to_contain_text("声音克隆")
+        expect(mock_page.locator("#btnVoiceSourceDesign")).to_contain_text("声音设计")
+
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        expect(mock_page.locator("#voiceDesignSection")).to_be_visible()
+        expect(mock_page.locator("#voiceDesignHint")).to_contain_text("只描述音色")
+        expect(mock_page.locator("#voiceDesignHint")).to_contain_text("声音克隆")
+        expect(mock_page.locator("#voiceDesignHint")).not_to_contain_text("CosyVoice 会立即创建")
+        expect(mock_page.locator("#cloneMethodRow")).to_be_hidden()
+        expect(mock_page.locator("#refLanguageRow")).to_be_visible()
+        expect(mock_page.locator("#refLanguageLabel")).to_contain_text("音色语言倾向")
+        assert mock_page.locator("#refLanguage option[value='ch']").evaluate("(node) => !node.disabled && !node.hidden")
+        assert mock_page.locator("#refLanguage option[value='en']").evaluate("(node) => !node.disabled && !node.hidden")
+        assert mock_page.locator("#refLanguage option[value='ru']").evaluate("(node) => node.disabled && node.hidden")
+
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'cosyvoice_intl';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        expect(mock_page.locator("#voiceSourceRow")).to_be_hidden()
+        expect(mock_page.locator("#voiceDesignSection")).to_be_hidden()
+        expect(mock_page.locator("#cloneMethodRow")).to_be_visible()
+
+        for provider in ["minimax", "minimax_intl", "elevenlabs", "mimo"]:
+            mock_page.evaluate(
+                """(provider) => {
+                    const select = document.querySelector('#voiceProvider');
+                    select.value = provider;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }""",
+                provider,
+            )
+            expect(mock_page.locator("#voiceSourceRow")).to_be_visible()
+            expect(mock_page.locator("#btnVoiceSourceDesign")).to_be_visible()
+            mock_page.locator("#btnVoiceSourceDesign").click()
+            expect(mock_page.locator("#voiceDesignSection")).to_be_visible()
+            expect(mock_page.locator("#cloneMethodRow")).to_be_hidden()
+            expect(mock_page.locator("#refLanguageRow")).to_be_hidden()
+            if provider == "elevenlabs":
+                expect(mock_page.locator("#voiceDesignHint")).to_contain_text("20-1000")
+            else:
+                expect(mock_page.locator("#voiceDesignHint")).to_contain_text("声音克隆")
+
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'vllm_omni';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        expect(mock_page.locator("#voiceSourceRow")).to_be_hidden()
+        expect(mock_page.locator("#voiceDesignSection")).to_be_hidden()
+        expect(mock_page.locator("#cloneMethodRow")).to_be_visible()
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+
+
+@pytest.mark.frontend
+def test_elevenlabs_design_hint_falls_back_when_constraints_are_missing(mock_page: Page, running_server: str):
+    providers_response = json.loads(json.dumps(VOICE_CLONE_API_PROVIDERS_RESPONSE))
+    elevenlabs = next(meta for meta in providers_response["tts_providers"] if meta["key"] == "elevenlabs")
+    elevenlabs["voice_design"] = {}
+
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.route(
+            "**/api/config/api_providers",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(providers_response),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'elevenlabs';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        mock_page.locator("#btnVoiceSourceDesign").click()
+
+        expect(mock_page.locator("#voiceDesignHint")).to_contain_text("声音克隆")
+        expect(mock_page.locator("#voiceDesignHint")).not_to_contain_text("NaN")
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+
+
+@pytest.mark.frontend
+def test_voice_design_submit_creates_voice_without_preview_audio_ui(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.route(
+            "**/api/characters/voices",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"voices": {}, "free_voices": {}, "pinned_voices": [], "native_voices": {}}),
+            ),
+        )
+
+        def handle_voice_design(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voice_id": "cosy-design-1",
+                    "provider": "cosyvoice",
+                    "source": "design",
+                }),
+            )
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        expect(mock_page.locator("#voiceDesignPreviewText")).to_have_count(0)
+        mock_page.fill("#prefix", "aria")
+        mock_page.fill("#voiceDesignPrompt", "a warm clear voice")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("cosy-design-1")
+        expect(mock_page.locator("#result .voice-design-preview-play-btn")).to_have_count(0)
+        expect(mock_page.locator("#result audio.voice-design-preview-audio")).to_have_count(0)
+        assert captured["body"] == {
+            "provider": "cosyvoice",
+            "prefix": "aria",
+            "voice_prompt": "a warm clear voice",
+            "ref_language": "ch",
+            "i18n_language": "zh-CN",
+        }
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voices")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
+def test_voice_design_rejects_underscore_prefix_before_submit(mock_page: Page, running_server: str):
+    called = {"voice_design": False}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_design(route):
+            called["voice_design"] = True
+            route.fulfill(status=500, content_type="application/json", body=json.dumps({"error": "should not submit"}))
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "cosy_test6")
+        mock_page.fill("#voiceDesignPrompt", "a warm clear voice")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("1-10 个字符")
+        expect(mock_page.locator("#result")).to_contain_text("不能包含下划线或空格")
+        assert called["voice_design"] is False
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(("details", "expected_text", "unexpected_text"), [
+    ({"max": 7}, "1-7 个字符", "{{max}}"),
+    ({"max": None, "pattern": "^[A-Za-z0-9]+$"}, "前缀应为英文字母和数字", "1-10 个字符"),
+])
+def test_voice_design_server_prefix_error_renders_available_constraints(
+    mock_page: Page, running_server: str, details: dict, expected_text: str, unexpected_text: str,
+):
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+        mock_page.route(
+            "**/api/characters/voice_design",
+            lambda route: route.fulfill(
+                status=400,
+                content_type="application/json",
+                body=json.dumps({
+                    "error": "VOICE_DESIGN_PREFIX_INVALID",
+                    "code": "VOICE_DESIGN_PREFIX_INVALID",
+                    "details": details,
+                }),
+            ),
+        )
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "aria")
+        mock_page.fill("#voiceDesignPrompt", "a warm clear voice")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text(expected_text)
+        expect(mock_page.locator("#result")).not_to_contain_text(unexpected_text)
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
+def test_voice_design_non_cosy_provider_accepts_descriptive_prefix(mock_page: Page, running_server: str):
+    captured = {}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "US",
+                "is_mainland_china": False,
+            },
+        )
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.route(
+            "**/api/config/core_api",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "success": True,
+                    "enableCustomApi": False,
+                    "ttsModelUrl": "",
+                    "assistApiKeyQwen": "test-qwen-key",
+                    "assistApiKeyElevenlabs": "test-elevenlabs-key",
+                }),
+            ),
+        )
+
+        def handle_voice_design(route):
+            captured["body"] = route.request.post_data_json
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "voice_id": "eleven-designed-1",
+                    "provider": "elevenlabs",
+                    "source": "design",
+                }),
+            )
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'elevenlabs';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "warm_voice_name")
+        mock_page.fill("#voiceDesignPrompt", "A warm, clear and reassuring narrator voice.")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("eleven-designed-1")
+        assert captured["body"]["provider"] == "elevenlabs"
+        assert captured["body"]["prefix"] == "warm_voice_name"
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
+def test_voice_design_elevenlabs_requires_minimum_description_before_submit(mock_page: Page, running_server: str):
+    called = {"voice_design": False}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "english",
+                "i18n_language": "zh-CN",
+                "ip_country": "US",
+                "is_mainland_china": False,
+            },
+        )
+
+        def handle_voice_design(route):
+            called["voice_design"] = True
+            route.fulfill(status=500, content_type="application/json", body=json.dumps({"error": "should not submit"}))
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.evaluate(
+            """() => {
+                const select = document.querySelector('#voiceProvider');
+                select.value = 'elevenlabs';
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }"""
+        )
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        expect(mock_page.locator("#voiceDesignHint")).to_contain_text("20-1000")
+        mock_page.fill("#prefix", "aria")
+        mock_page.fill("#voiceDesignPrompt", "too short")
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("至少需要 20")
+        assert called["voice_design"] is False
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
+
+
+@pytest.mark.frontend
+def test_voice_design_cosyvoice_enforces_metadata_prompt_max_before_submit(mock_page: Page, running_server: str):
+    called = {"voice_design": False}
+    try:
+        route_voice_clone_region_dependencies(
+            mock_page,
+            {
+                "success": True,
+                "steam_language": "schinese",
+                "i18n_language": "zh-CN",
+                "ip_country": "CN",
+                "is_mainland_china": True,
+            },
+        )
+
+        def handle_voice_design(route):
+            called["voice_design"] = True
+            route.fulfill(status=500, content_type="application/json", body=json.dumps({"error": "should not submit"}))
+
+        mock_page.route("**/api/characters/voice_design", handle_voice_design)
+        mock_page.goto(f"{running_server}/voice_clone")
+        mock_page.wait_for_load_state("domcontentloaded")
+        mock_page.locator("#btnVoiceSourceDesign").click()
+        mock_page.fill("#prefix", "aria")
+        mock_page.fill("#voiceDesignPrompt", "c" * 501)
+        mock_page.locator(".register-voice-btn").click()
+
+        expect(mock_page.locator("#result")).to_contain_text("最多 500")
+        assert called["voice_design"] is False
+    finally:
+        mock_page.unroute("**/api/config/steam_language")
+        mock_page.unroute("**/api/config/api_providers")
+        mock_page.unroute("**/api/config/core_api")
+        mock_page.unroute("**/api/characters/voice_design")
 
 
 @pytest.mark.frontend
@@ -244,6 +949,20 @@ def test_voice_clone_localizes_free_api_native_voice_labels(mock_page: Page, run
         localStorage.setItem('neko_tutorial_voice_clone', 'true');
         localStorage.setItem('i18nextLng', 'en');
         """
+    )
+    mock_page.route(
+        "**/api/config/steam_language",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "success": True,
+                "steam_language": "english",
+                "i18n_language": "en",
+                "ip_country": "US",
+                "is_mainland_china": False,
+            }),
+        ),
     )
     mock_page.route(
         "**/api/config/page_config",

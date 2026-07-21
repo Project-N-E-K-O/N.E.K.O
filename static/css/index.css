@@ -102,9 +102,14 @@ body {
     opacity: 1;
     filter: brightness(0) invert(1);
     /* 将emoji变成纯白色，移除阴影 */
-    animation: pawBounce 1.5s ease-in-out infinite;
     z-index: 1;
     /* 确保猫爪在遮罩层之上 */
+}
+
+/* 弹跳动画只在 toast 可见时运行：默认态 toast 以 opacity:0 隐藏（非 display:none），
+   若动画挂在基础态上会在两个窗口里以显示器刷新率永久空转（合成器无法休眠）。 */
+#status-toast.show::before {
+    animation: pawBounce 1.5s ease-in-out infinite;
 }
 
 /* 小猫爪爪弹跳动画 */
@@ -507,6 +512,12 @@ button * {
     gap: 12px;
 }
 
+body.neko-live2d-peek #live2d-floating-buttons,
+body.neko-live2d-peek #live2d-lock-icon {
+    display: none !important;
+    pointer-events: none !important;
+}
+
 body.neko-game-active #live2d-container,
 body.neko-game-active #vrm-container,
 body.neko-game-active #mmd-container,
@@ -747,6 +758,38 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn.is-cat1-edge-peek-bottom-right > .neko-idle-return-art {
     --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor$="left"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+[data-neko-live2d-peek-anchor$="right"] .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+}
+
+[data-neko-live2d-peek-anchor="left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(60deg);
+}
+
+[data-neko-live2d-peek-anchor="right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-60deg);
+}
+
+[data-neko-live2d-peek-anchor="top-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="top-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-left"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(45deg);
+}
+
+[data-neko-live2d-peek-anchor="bottom-right"] .neko-idle-return-art {
+    --neko-idle-return-edge-transform: rotate(-45deg);
 }
 
 .neko-idle-thought-bubble {

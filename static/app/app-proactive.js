@@ -23,6 +23,7 @@
     const C = window.appConst;
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
+    const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
     // ======================== proactive leader election ========================
     //
@@ -933,12 +934,16 @@
 
             var result = await response.json();
             var availablePlatforms = [];
+            var personalFeedPlatforms = new Set(['bilibili', 'douyin', 'kuaishou', 'weibo', 'reddit', 'twitter']);
 
             if (result.success && result.data) {
                 for (var _ref of Object.entries(result.data)) {
                     var platform = _ref[0];
                     var info = _ref[1];
-                    if (platform !== 'platforms' && info.has_cookies) {
+                    // A credential can belong to a non-feed platform (for example
+                    // NetEase Music or Xiaoheihe).  Presence alone must not enable
+                    // the personal-dynamics source.
+                    if (personalFeedPlatforms.has(platform) && info.has_cookies && info.supports_personal_dynamic === true) {
                         availablePlatforms.push(platform);
                     }
                 }
@@ -1068,17 +1073,17 @@
                 availableModes.push('window');
             }
 
-            // 新闻搭话：使用微博热议话题
+            // 新闻搭话：使用微博热议与小黑盒首页内容
             if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('news');
             }
 
-            // 视频搭话：使用B站首页视频
+            // 视频搭话：中文地区使用 B站，非中文地区使用 YouTube 首页 Feed
             if (S.proactiveVideoChatEnabled && S.proactiveChatEnabled) {
                 availableModes.push('video');
             }
 
-            // 个人动态搭话：使用B站和微博个人动态
+            // 个人动态搭话：聚合已登录社交平台的账号信息流。
             if (S.proactivePersonalChatEnabled && S.proactiveChatEnabled) {
                 // 检查是否有可用的 Cookie 凭证
                 var platforms = await getAvailablePersonalPlatforms();
@@ -1090,7 +1095,6 @@
                     console.warn('[个人动态] 开关已开启但未检测到登录凭证，已忽略此模式');
                 }
             }
-
             // 音乐搭话（正在播放或冷却期内不发送 music 模式，避免后端搜歌浪费 + 污染模型上下文）
             console.log('[ProactiveChat] 检查音乐模式: proactiveMusicEnabled=' + S.proactiveMusicEnabled + ', proactiveChatEnabled=' + S.proactiveChatEnabled);
             if (S.proactiveMusicEnabled && S.proactiveChatEnabled) {
@@ -1384,20 +1388,22 @@
 
                     var dispatchedTrackUrl = null;
 
-                    // 如果模式包含音乐信号，尝试播放第一条音轨
+                    // 如果模式包含音乐信号，按顺序尝试音轨；只有媒体实际加载成功
+                    // 才停止回退，避免第一条坏链路让整次推荐静默失败。
                     if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
-                        // 优先寻找有 artist 字段或标记为音乐推荐的真实音轨
                         var normalizedLinks = result.source_links.filter(Boolean);
-                        var musicLink = normalizedLinks.find(function (link) { return link && (link.artist || link.source === '音乐推荐'); }) || normalizedLinks[0];
+                        var musicLinks = normalizedLinks.filter(function (link) {
+                            return link && link.url && (link.artist || link.source === '音乐推荐');
+                        });
+                        // 兼容未带 artist/source 标记的旧服务端响应。旧版本可能
+                        // 同时返回多个普通 { title, url, cover } 候选。
+                        if (musicLinks.length === 0) {
+                            musicLinks = normalizedLinks.filter(function (link) {
+                                return link && link.url;
+                            });
+                        }
 
-                        if (musicLink && musicLink.url) {
-                            console.log('[ProactiveChat] 收到音乐链接:', musicLink);
-                            var track = {
-                                name: musicLink.title || '未知曲目',
-                                artist: musicLink.artist || '未知艺术家',
-                                url: musicLink.url,
-                                cover: musicLink.cover
-                            };
+                        if (musicLinks.length > 0) {
                             await new Promise(function (resolve) {
                                 setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
                             });
@@ -1410,16 +1416,31 @@
                             if (musicBusyBeforeDispatch) {
                                 console.log('[ProactiveChat] 音乐 dispatch 前检测到播放器已占用，跳过本次音乐链接');
                             } else {
-                                console.log('[ProactiveChat] 发送音乐消息:', track);
-                                var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+                                var unknownTrack = window.t ? window.t('music.unknownTrack') : 'Unknown Track';
+                                var unknownArtist = window.t ? window.t('music.unknownArtist') : 'Unknown Artist';
+                                if (!unknownTrack || unknownTrack === 'music.unknownTrack') unknownTrack = 'Unknown Track';
+                                if (!unknownArtist || unknownArtist === 'music.unknownArtist') unknownArtist = 'Unknown Artist';
 
-                                // 仅在明确成功派发时标记；'queued' 仍是等待态，不应提前隐藏链接
-                                if (dispatchResult === true) {
-                                    dispatchedTrackUrl = musicLink.url;
+                                for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++) {
+                                    var musicLink = musicLinks[musicIndex];
+                                    var track = {
+                                        name: musicLink.title || unknownTrack,
+                                        artist: musicLink.artist || unknownArtist,
+                                        url: musicLink.url,
+                                        cover: musicLink.cover
+                                    };
+                                    console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
+                                    var dispatchResult = await window.dispatchMusicPlay(track, { source: 'proactive' });
+
+                                    // dispatchMusicPlay 会等待播放器接口就绪并返回最终布尔结果；
+                                    // 仅在媒体明确加载成功时标记，false 才继续下一候选。
+                                    if (dispatchResult === true) {
+                                        dispatchedTrackUrl = musicLink.url;
+                                        break;
+                                    }
+                                    console.warn('[ProactiveChat] 音乐候选加载失败，尝试下一条:', musicLink.url);
                                 }
                             }
-                        } else if (musicLink) {
-                            console.warn('[ProactiveChat] 音乐链接缺少URL:', musicLink);
                         }
                     }
 
@@ -1758,18 +1779,15 @@
                         img.src = proxyUrl + '&retry=' + retryCount + '&t=' + Date.now();
                     } else {
                         img.dataset.failed = "true";
-                        img.src = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMjQgMjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzg4OCIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxyZWN0IHg9IjMiIHk9IjMiIHdpZHRoPSIxOCIgaGVpZ2h0PSIxOCIgcng9IjIiIHJ5PSIyIjPjwvcmVjdD48Y2lyY2xlIGN4PSI4LjUiIGN5PSI4LjUiIHI9IjEuNSI+PC9jaXJjbGU+PHBvbHlsaW5lIHBvaW50cz0iMjEgMTUgMTYgMTAgNSAyMSI+PC9wb2x5bGluZT48bGluZSB4MT0iNCIgeTE9IjQiIHgyPSIyMCIgeTI9IjIwIiBzdHJva2U9IiNmNDQzMzYiIG9wYWNpdHk9IjAuOCI+PC9saW5lPjwvc3ZnPg==";
-                        img.style.objectFit = "none";
-                        img.style.backgroundColor = "rgba(128,128,128,0.05)";
-                        img.style.border = "1px dashed var(--border-color, rgba(128,128,128,0.3))";
-                        img.style.minWidth = "120px";
-                        img.style.minHeight = "120px";
-                        img.style.cursor = "default";
-                        
-                        var errSpan = document.createElement('div');
-                        errSpan.textContent = '[' + (window.t ? window.t('proactive.meme.loadError') : '表情包加载失败') + ']';
-                        errSpan.style.cssText = 'color: var(--text-secondary, rgba(200,200,200,0.6)); font-size: 12px; margin-top: 4px;';
-                        imgOuter.appendChild(errSpan);
+                        img.src = MEME_LOAD_FAILED_STICKER_URL;
+                        Object.assign(img.style, {
+                            objectFit: "contain",
+                            backgroundColor: "#fff",
+                            border: "none",
+                            minWidth: "160px",
+                            minHeight: "160px",
+                            cursor: "default"
+                        });
                     }
                 });
 

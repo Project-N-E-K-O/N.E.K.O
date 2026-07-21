@@ -251,6 +251,34 @@
 
         var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
+
+        // preload 已发布真实毛球矩形（GNOME Wayland 等平台）时，
+        // getElectronChatMinimizedScreenRect 会直接用它、无视 getBounds 结果——
+        // 此时每 500ms 的 getBounds IPC 纯属浪费，直接走同步路径。
+        if (collapsed && normalizeElectronWindowBoundsRect(window.__nekoMinimizedChatBallScreenRect)) {
+            var directRect = getElectronChatMinimizedScreenRect(null);
+            if (directRect) {
+                var directSig = getElectronChatMinimizedStateSignature(true, directRect);
+                if (directSig === I.electronChatMinimizedStateSignature &&
+                    reason === 'poll' &&
+                    now - I.electronChatMinimizedStatePublishedAt < I.ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                    return;
+                }
+                I.electronChatMinimizedStateSignature = directSig;
+                I.electronChatMinimizedStatePublishedAt = now;
+                window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                    detail: {
+                        action: 'idle_chat_minimized_state',
+                        source: 'chat-window',
+                        reason: reason || 'sync',
+                        minimized: true,
+                        screenRect: directRect,
+                        timestamp: now
+                    }
+                }));
+                return;
+            }
+        }
         if (!collapsed) {
             if (I.electronChatMinimizedStateSignature === '0' &&
                 reason === 'poll' &&
@@ -300,7 +328,15 @@
     }
 
     function scheduleElectronChatMinimizedState(reason) {
-        if (!I.isElectronChatWindow() || I.electronChatMinimizedStateFrame) return;
+        if (!I.isElectronChatWindow()) return;
+        // 非 poll 触发（pointer/resize/init/sync）说明状态可能真的在变：
+        // 接下来 ~3s 保持 500ms 满频轮询，覆盖拖拽后主进程 snap 动画收尾。
+        // 必须在 pending 帧早退之前设置——否则恰逢 poll 帧待发时，真实触发
+        // 会被整体吞掉、满频窗口也不会打开。
+        if (reason && reason !== 'poll') {
+            I.electronChatMinimizedStateFullRateUntil = Date.now() + 3000;
+        }
+        if (I.electronChatMinimizedStateFrame) return;
         I.electronChatMinimizedStateFrame = window.requestAnimationFrame(function () {
             I.electronChatMinimizedStateFrame = 0;
             dispatchElectronChatMinimizedState(reason || 'sync');
@@ -310,7 +346,16 @@
     I.ensureElectronChatMinimizedStateBridge = function ensureElectronChatMinimizedStateBridge() {
         if (!I.isElectronChatWindow() || I.electronChatMinimizedStateTimer) return;
         scheduleElectronChatMinimizedState('init');
+        I.electronChatMinimizedStatePollTick = 0;
         I.electronChatMinimizedStateTimer = window.setInterval(function () {
+            // 空闲退避：状态签名稳定且 3s 内无 pointer/resize 等真实触发时，
+            // 每 3 跳才做一次带 getBounds IPC 的轮询（500ms→1.5s）。
+            // 上限不能再放：宠物侧消费方 _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS=2500
+            // 会把超过 2.5s 未刷新的毛球矩形当过期，心跳间隔必须留出安全余量。
+            // 毛球位置的用户拖拽走 mousemove/mouseup 监听（非 poll 路径），不受影响。
+            I.electronChatMinimizedStatePollTick = (I.electronChatMinimizedStatePollTick || 0) + 1;
+            var fullRate = Date.now() < (I.electronChatMinimizedStateFullRateUntil || 0);
+            if (!fullRate && I.electronChatMinimizedStatePollTick % 3 !== 0) return;
             scheduleElectronChatMinimizedState('poll');
         }, 500);
         window.addEventListener('resize', function () {
@@ -1060,7 +1105,53 @@
         return prefix + '-' + Date.now() + '-' + I.tutorialChatRequestSeq;
     }
 
+    function isHomeTutorialCompactOverrideActive() {
+        return !!(I.state.homeTutorialInputLocked || I.state.homeTutorialInteractionLocked);
+    }
+
+    I.captureHomeTutorialCompactChatState = function captureHomeTutorialCompactChatState() {
+        if (I.homeTutorialCompactChatStateSnapshot === null) {
+            I.homeTutorialCompactChatStateSnapshot = I.getCurrentCompactChatState();
+        }
+    };
+
+    I.restoreHomeTutorialCompactChatState = function restoreHomeTutorialCompactChatState(releaseSnapshot) {
+        if (I.homeTutorialCompactChatStateSnapshot === null) {
+            return false;
+        }
+        I.state.compactChatState = I.normalizeCompactChatState(I.homeTutorialCompactChatStateSnapshot);
+        if (releaseSnapshot === true) {
+            I.homeTutorialCompactChatStateSnapshot = null;
+        }
+        return true;
+    };
+
+    function restoreHomeTutorialCompactStateAfterToolClose(closingTool) {
+        if (!isHomeTutorialCompactOverrideActive()) {
+            return false;
+        }
+        var props = I.ensureViewProps();
+        var avatarMenuOpen = closingTool !== 'avatar-menu'
+            && props.avatarToolMenuOpenRequest
+            && props.avatarToolMenuOpenRequest.open === true;
+        var compactFanOpen = closingTool !== 'compact-fan'
+            && props.compactToolFanOpenRequest
+            && props.compactToolFanOpenRequest.open === true;
+        if (avatarMenuOpen || compactFanOpen) {
+            return false;
+        }
+        return I.restoreHomeTutorialCompactChatState(false);
+    }
+
     I.setAvatarToolMenuOpen = function setAvatarToolMenuOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            if (isHomeTutorialCompactOverrideActive()) {
+                I.captureHomeTutorialCompactChatState();
+            }
+            I.state.compactChatState = 'input';
+        } else if (open !== true) {
+            restoreHomeTutorialCompactStateAfterToolClose('avatar-menu');
+        }
         I.setViewProps({
             avatarToolMenuOpenRequest: {
                 id: nextTutorialChatRequestId('avatar-tool-menu'),
@@ -1072,6 +1163,14 @@
     }
 
     I.setCompactToolFanOpen = function setCompactToolFanOpen(open, reason) {
+        if (open === true && I.getCurrentChatSurfaceMode() === 'compact') {
+            if (isHomeTutorialCompactOverrideActive()) {
+                I.captureHomeTutorialCompactChatState();
+            }
+            I.state.compactChatState = 'input';
+        } else if (open !== true) {
+            restoreHomeTutorialCompactStateAfterToolClose('compact-fan');
+        }
         I.setViewProps({
             compactToolFanOpenRequest: {
                 id: nextTutorialChatRequestId('compact-tool-fan'),

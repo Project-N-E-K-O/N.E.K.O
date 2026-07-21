@@ -48,6 +48,9 @@ from utils.language_utils import (
 )
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
+from utils.cloudsave_runtime import assert_cloudsave_writable
+from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
 from . import gates, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
@@ -66,6 +69,287 @@ def _activate_request_language(language: str | None) -> str:
         refresh_global_language(str(language))
         return normalize_language_code(language, format='full')
     return get_global_language_full()
+
+
+class ExternalMemoryImportRequest(BaseModel):
+    character_name: str
+    source_format: str
+    imported_files: list[str]
+    candidates: list[dict]
+    warning_count: int = 0
+
+
+@app.post("/internal/memory/import_external_markdown")
+async def import_external_markdown(request: ExternalMemoryImportRequest):
+    """Persist already-previewed OpenClaw/Hermes entries via live managers.
+
+    The persona and facts persistence paths are **asymmetric**, because their
+    downstream budgets differ:
+
+    - **facts** take the ``_apersist_new_facts(semantic_dedup=False)`` pure-append
+      path -- the facts pool has no hard token ceiling for system-prompt rendering;
+      entries are recalled on demand at retrieval time, so keeping each one is fine.
+    - **persona** must first go through one LLM fusion via ``afuse_external_facts``.
+      When persona is rendered into the system prompt, all non-protected entries
+      compete for a single **strict token ceiling**; ``USER.md`` / ``SOUL.md`` are
+      dozens of lines of free-form Markdown, and appending them verbatim would
+      quickly overflow that pool and crowd out the impressions the character has
+      naturally accumulated in conversation. Fusion summarises / merges / dedupes
+      the material and truncates it to the per-entity budget before persisting.
+      Candidates are grouped by entity (master / neko) and fused separately.
+
+    On fusion failure (``ExternalMemoryFusionError``) there is **no fallback** to
+    per-entry appends (that would bypass the budget and overflow the pool) -- the
+    user's material is kept and ``external_import_partial`` is returned so the
+    frontend can retry; retries are idempotent (same fingerprint -> skip the whole
+    batch / changed -> replace-then-fuse).
+    """
+    name = validate_lanlan_name(request.character_name)
+    if request.source_format not in {"openclaw", "hermes"}:
+        raise HTTPException(status_code=400, detail="Invalid source_format")
+    if not request.candidates or len(request.candidates) > MAX_ENTRIES:
+        raise HTTPException(status_code=400, detail="Invalid candidate count")
+    if runtime.fact_store is None or runtime.persona_manager is None:
+        raise HTTPException(status_code=503, detail="Memory components are not ready")
+    assert_cloudsave_writable(
+        runtime._config_manager,
+        operation="import",
+        target=f"memory/{name}/external-markdown",
+    )
+
+    imported_at = datetime.now().astimezone().isoformat()
+    # persona 候选按 entity(master / neko) 分组各自送 LLM 融合；facts 里 MEMORY.md
+    # 走纯追加，daily 日记(带 event_date)走 LLM 事实抽取。
+    persona_candidates_by_entity: dict[str, list[dict]] = {}
+    extracted_facts: list[dict] = []       # MEMORY.md → 确定性纯追加
+    daily_candidates: list[dict] = []      # daily 日记 → LLM 事实抽取
+    for candidate in request.candidates:
+        if not isinstance(candidate, dict):
+            raise HTTPException(status_code=400, detail="Invalid candidate")
+        text = str(candidate.get("text") or "").strip()
+        entity = str(candidate.get("entity") or "master")
+        target = candidate.get("target")
+        source_file = str(candidate.get("source_file") or "")
+        if (
+            not text or len(text) > MAX_ENTRY_CHARS
+            or entity not in {"master", "neko", "relationship"}
+            or target not in {"persona", "facts"}
+            or not source_file
+        ):
+            raise HTTPException(status_code=400, detail="Invalid candidate fields")
+        source_section = str(candidate.get("source_section") or "")
+        event_date = candidate.get("event_date")
+        if target == "persona":
+            # 带齐 provenance（source_file / source_section / event_date）传给融合层：
+            # source_section 用于融合 prompt 分节，source_file 进 Phase 3 落盘 metadata，
+            # 指纹由 afuse_external_facts 内部按候选文本自算（幂等重导）。
+            persona_candidates_by_entity.setdefault(entity, []).append({
+                "text": text,
+                "entity": entity,
+                "source_file": source_file,
+                "source_section": source_section,
+                "event_date": event_date,
+            })
+        elif event_date:
+            # daily 日记（memory/·memories/YYYY-MM-DD.md）：散文，不逐条追加，
+            # 交给 aimport_external_daily 按日跑 LLM 事实抽取（见其 docstring）。
+            daily_candidates.append({
+                "text": text,
+                "source_file": source_file,
+                "source_section": source_section,
+                "event_date": event_date,
+            })
+        else:
+            # MEMORY.md：已是 fact 清单，确定性纯追加。
+            extracted_facts.append({
+                "text": text,
+                "entity": entity,
+                "importance": 7,
+                "source": "user_observation",
+                "_external_import": {
+                    "format": request.source_format,
+                    "file": source_file,
+                    "section": source_section,
+                    "event_date": event_date,
+                    "imported_at": imported_at,
+                },
+            })
+
+    # ── persona 阶段：按 entity 并发 LLM 融合（不降级纯追加，见端点 docstring）──
+    # 并发安全：afuse_external_facts 的 Phase 1/3 持同一把角色锁串行读写、且各
+    # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
+    # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
+    persona_entities = list(persona_candidates_by_entity.items())
+    fusion_outcomes = await asyncio.gather(
+        *(
+            runtime.persona_manager.afuse_external_facts(
+                name, entity, entity_candidates, request.source_format,
+            )
+            for entity, entity_candidates in persona_entities
+        ),
+        return_exceptions=True,
+    )
+    added_persona = sum(r["added"] for r in fusion_outcomes if isinstance(r, dict))
+    skipped_persona = sum(r["skipped"] for r in fusion_outcomes if isinstance(r, dict))
+    fusion_errors = [r for r in fusion_outcomes if isinstance(r, BaseException)]
+    if fusion_errors:
+        for exc in (e for e in fusion_errors if not isinstance(e, ExternalMemoryImportTooLargeError)):
+            logger.error(
+                "External Markdown import: persona fusion failed: character=%s",
+                name, exc_info=exc,
+            )
+        if all(isinstance(e, ExternalMemoryImportTooLargeError) for e in fusion_errors):
+            # 全部失败都是确定性「太大」：候选超单次融合输入池，重试同一份必然再失败
+            # （没记指纹）→ 返回不可重试的 too_large，让前端提示「拆分 workspace」。
+            logger.warning(
+                "External Markdown import: persona too large for single fusion: character=%s added_persona=%s",
+                name,
+                added_persona,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": "External memory import is too large for a single fusion pass",
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": 0,
+                    },
+                },
+            )
+        # 含可重试失败（融合终态失败 ExternalMemoryFusionError / asave_persona 崩溃
+        # 等，或与 too_large 混合）→ 返回 partial 让前端幂等重试：已成功 entity 被
+        # 指纹 skip、瞬态失败的收敛，收敛后若只剩 too_large 自然浮出 413。绝不回退
+        # 成逐条 append 撑爆 persona 池。
+        logger.error(
+            "External Markdown import: persona stage failed: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+
+    try:
+        new_facts = await runtime.fact_store._apersist_new_facts(
+            name,
+            extracted_facts,
+            default_source="user_observation",
+            semantic_dedup=False,
+        )
+    except Exception:
+        logger.exception(
+            "External Markdown import stopped after persona persistence: character=%s added_persona=%s",
+            name,
+            added_persona,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "External memory import was only partially completed",
+                "error_code": "external_import_partial",
+                "partial_import": {
+                    "character_name": name,
+                    "added_persona": added_persona,
+                    "added_facts": 0,
+                },
+            },
+        )
+    memory_added = len(new_facts)
+
+    # daily 日记 → LLM 事实抽取（按日 best-effort，见 aimport_external_daily）。
+    # 已落盘的 persona / MEMORY.md facts 不因 daily 失败回滚；系统性异常返回 partial。
+    daily_added = 0
+    if daily_candidates:
+        try:
+            daily_result = await runtime.fact_store.aimport_external_daily(
+                name, daily_candidates, request.source_format, imported_at,
+            )
+        except ExternalMemoryImportTooLargeError as exc:
+            # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →
+            # too_large 引导拆分。已导入天会被逐日指纹 skip，分次导入零重复成本。
+            logger.warning(
+                "External Markdown import: daily too large: character=%s detail=%s",
+                name, exc,
+            )
+            return JSONResponse(
+                status_code=413,
+                content={
+                    "detail": str(exc),
+                    "error_code": "external_import_too_large",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added,
+                    },
+                },
+            )
+        except Exception:
+            logger.exception(
+                "External Markdown import: daily extraction failed after persona+memory: "
+                "character=%s added_persona=%s memory_facts=%s",
+                name, added_persona, memory_added,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": "External memory import was only partially completed",
+                    "error_code": "external_import_partial",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added,
+                    },
+                },
+            )
+        daily_added = daily_result["added"]
+        if daily_result["failed_days"]:
+            # 有日记天抽取失败：不能回 success（客户端会当导入完成、失败天永久
+            # 丢失且无重试信号，Greptile P1）→ 返回可重试 partial。重试收敛：
+            # persona 指纹幂等 skip、MEMORY.md 与已抽出 daily fact 被 SHA/FTS5
+            # 去重挡住，只有失败天真正重抽。
+            logger.warning(
+                "External Markdown import: %s daily journal(s) failed extraction: character=%s",
+                daily_result["failed_days"], name,
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "detail": (
+                        f"{daily_result['failed_days']} daily journal(s) failed "
+                        "extraction; retry to finish"
+                    ),
+                    "error_code": "external_import_partial",
+                    "partial_import": {
+                        "character_name": name,
+                        "added_persona": added_persona,
+                        "added_facts": memory_added + daily_added,
+                    },
+                },
+            )
+
+    added_facts = memory_added + daily_added
+    skipped_facts = len(extracted_facts) - memory_added
+    return {
+        "status": "success",
+        "character_name": name,
+        "source_format": request.source_format,
+        "imported_files": request.imported_files,
+        "added_persona": added_persona,
+        "added_facts": added_facts,
+        "skipped_duplicates": skipped_persona + skipped_facts,
+        "warning_count": max(0, request.warning_count),
+    }
 
 
 # /new_dialog QPS 观测：每角色累计调用次数，由 _periodic_new_dialog_qps_log_loop

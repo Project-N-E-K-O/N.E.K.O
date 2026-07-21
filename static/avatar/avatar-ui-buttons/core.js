@@ -113,6 +113,8 @@ function _cleanupFloatingButtonsEntrance(container) {
 function _removeFloatingButtonsElement(el) {
     if (!el) return;
     if (el.matches && el.matches('[id$="-return-button-container"]')) {
+        _stopNekoIdleSleepSound({ reason: 'container-removed' });
+        _stopNekoIdleCat1AmbientSound({ reason: 'container-removed' });
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
             _cancelNekoIdleCat1EatAction(returnButton, { restoreArt: false });
@@ -244,6 +246,31 @@ const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, #pngtuber-btn-return';
+const _NEKO_CAT_IDLE_OBSERVATION_SOURCE_EVENT = 'neko:cat-mind:observation';
+const _NEKO_CAT_MIND_ACTION_REQUEST_EVENT = 'neko:cat-mind:action-request';
+const _NEKO_CAT_MIND_ACTION_RESULT_EVENT = 'neko:cat-mind:action-result';
+const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
+    CAT1_SOCIAL_PING: 'cat1_social_ping',
+    CAT1_EAT_SNACK: 'cat1_eat_snack',
+    CAT1_SMALL_MOVE: 'cat1_small_move',
+    CAT1_PLAY_YARN: 'cat1_play_yarn',
+    CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
+    CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
+});
+const _NEKO_CAT_MIND_ACTION_RESULTS = Object.freeze({
+    DONE: 'done', FAILED: 'failed', CANCELLED: 'cancelled', INTERRUPTED: 'interrupted'
+});
+const _NEKO_CAT_IDLE_OBSERVATION_TYPES = Object.freeze({
+    RAPID_DRAG: 'rapid_drag',
+    CAT_HOVER_REACTION: 'cat_hover_reaction',
+    CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat',
+    CAT1_STRETCH_DONE_NEAR_CHAT: 'cat1_stretch_done_near_chat',
+    CAT1_LOCAL_PLAY_DONE: 'cat1_local_play_done',
+    CAT1_LOCAL_PLAY_CANCELLED: 'cat1_local_play_cancelled',
+    CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
+    CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
+    EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag'
+});
 const _NEKO_GOODBYE_IDLE_APPEARANCE_CAT = 'cat';
 const _NEKO_GOODBYE_IDLE_APPEARANCE_BALL = 'ball';
 const _NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
@@ -255,9 +282,9 @@ const _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map();
 const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
-const _NEKO_IDLE_CAT1_CHAT_GAP_PX = -5;
+const _NEKO_IDLE_CAT1_CHAT_GAP_PX = 24;
 const _NEKO_IDLE_CHAT_MINIMIZED_SIZE_PX = 51;
-const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 35;
+const _NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0;
 // GNOME Wayland 的自带毛球发布真实的 58px 可见区域。CAT1 与毛球素材仍使用
 // 各自的透明画布，因此这一条路径按素材坐标计算接触点，再应用实机截图校准。
 const _NEKO_IDLE_CAT1_NATIVE_YARN_ASSET_SIZE_PX = 116;
@@ -291,7 +318,7 @@ const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS = 360;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS = 900;
 const _NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS = 160;
 const _NEKO_IDLE_CAT1_COMPACT_MIRROR_SETTLE_HIDE_DELAY_MS = 180;
-const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
+const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 180;
 const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14;
 const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5;
@@ -320,8 +347,9 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_CAT1_DESKTOP_PAIR_MOVE_SYNC_MIN_MS = 50;
+// The settled-at-yarn branch predates Cat Mind: it is a local presentation
+// choice between the play GIF and stretch, never an autonomous candidate.
 const _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY = 0.25;
-const _NEKO_IDLE_CAT1_PAIR_MOVE_PLAY_PROBABILITY = 0.05;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_PENDING_CLASS = 'is-drag-action-pending';
@@ -485,6 +513,7 @@ const _nekoIdleCat1AmbientSoundState = {
     intervalStartedAt: 0,
     audio: null
 };
+let _nekoCatMindActionRunSequence = 0;
 const _nekoIdleCat1QuestionMarkKeyboardState = {
     button: null,
     progress: 0,

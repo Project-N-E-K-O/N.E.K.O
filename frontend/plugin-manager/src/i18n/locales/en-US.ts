@@ -384,6 +384,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: 'Importing the same plugin again checks its version and performs a rollback-safe replacement without creating suffixed copies.',
+      planFailed: 'Could not inspect the installation package.',
+      upgradeTitle: 'Upgrade {plugin}?',
+      upgradeBody: 'Version {current} will be replaced by {target}. A running plugin will restart briefly.',
+      upgradeConfirm: 'Upgrade plugin',
+      upgradeCancelled: 'Upgrade cancelled.',
+      upgradeSucceeded: '{plugin} was upgraded successfully.',
+      blockedBundleConflict: 'This bundle contains an installed plugin. Upgrade its plugins one at a time.',
+      blockedDirectoryConflict: 'The destination directory belongs to another plugin and was not changed.',
+      blockedLegacyPlugin: 'An earlier version of this plugin is still installed. Uninstall {plugin} before continuing.',
+      rollbackCompleted: 'The upgrade failed and the previous version was restored.',
+      rollbackIncomplete: 'The upgrade failed and rollback was incomplete. Check the plugin state before continuing.'
+    },
     dialog: {
       title: 'Package operation history',
       subtitle: 'Showing the latest {count} result(s)'

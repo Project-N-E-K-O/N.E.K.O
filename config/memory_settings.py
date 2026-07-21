@@ -400,6 +400,39 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 - 注意：这条不复用 PERSONA_RENDER_MAX_TOKENS（render 是给主对话看的，
   merge 是给 promotion LLM 看的，需要更大的池才能做合并判断）。"""
 
+# ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
+# 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
+# token 上限（PERSONA_RENDER_MAX_TOKENS，non-protected 条目共抢一个池），外部工作
+# 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
+# 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
+# USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），
+# 把内容压进下面的预算，再落盘为 non-protected persona 条目。
+# 两个 entity 各自的融合产出上限（token）。neko(SOUL.md 助手人格) 给得比
+# master(USER.md 用户) 多；两者合计 < PERSONA_RENDER_MAX_TOKENS，给对话中自然
+# 积累的 persona 条目留出竞争空间。
+EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS = 1000
+EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS = 600
+# 喂给融合 LLM 的输入池上限（原始候选拼起来的 token 上界，防超长 prompt）。
+EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS = 6000
+# 融合产出的单条 soft cap（token）：防 LLM 把多条揉成一条超长文本，在渲染层
+# whole-entry 贪心截断里挤掉大量其它条目。
+EXTERNAL_IMPORT_FUSION_ENTRY_MAX_TOKENS = 200
+# 融合输入里单条候选的面包屑（source_section）前缀 token 上界：面包屑只提供分节
+# 上下文，不钉死的话大量带长标题的候选会把输入池吃光、把后面候选的正文挤出 LLM
+# 输入（尾部截断），导致后段记忆永久漏掉。
+EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS = 24
+# daily 日记（memory/·memories/YYYY-MM-DD.md）走 LLM 事实抽取时，喂给抽取 LLM 的
+# 单日日记输入上限（token）：一天的日记片段拼起来的上界，防超长 prompt。
+EXTERNAL_IMPORT_DAILY_INPUT_MAX_TOKENS = 6000
+# daily 抽取的并发上限：每天一次 LLM 调用，串行跑 30 天日记 ≈ 300-900s，必撞
+# 上游 commit 转发的 240s 墙；有界并发把 wall-clock 压回 天数/并发 × 单次耗时。
+# 不设太高：抽取 LLM 共享 provider 配额，且写盘侧由 per-character 锁天然串行。
+EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY = 4
+# 单次导入允许的「真正要抽取」的日记天数上限（逐日指纹幂等 skip 的不计）：
+# 45 天 / 4 并发 ≈ 12 批 × 单次十几秒，稳落在 240s 窗口内；超限走 too_large
+# 引导拆分导入——已导入的天在下一次会被指纹白嫖 skip，多次导入无重复成本。
+EXTERNAL_IMPORT_DAILY_MAX_FILES = 45
+
 PERSONA_CORRECTION_BATCH_LIMIT = 10
 """单次 persona corrections resolve 处理的 batch 大小。
 - 用途：_resolve_corrections_locked 从 pending_corrections 队列取前 N

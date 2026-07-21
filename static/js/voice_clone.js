@@ -5,6 +5,7 @@ let workshopReferenceFile = null;
 let workshopReferenceAudioUrl = '';
 let providerTouchedByUser = false;
 let suppressProviderTouchedTracking = false;
+let activeVoicePreviewNotice = null;
 // 防止并发应用音色的可重入守卫
 let isApplyingVoice = false;
 const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
@@ -36,6 +37,7 @@ const voiceCloneProviderRestrictionState = {
     loadingPromise: null,
     isMainlandChinaUser: false,
     apiKeyRegistry: {},
+    ttsProviders: {},
 };
 const voiceCloneApiConfigState = {
     loaded: false,
@@ -440,6 +442,18 @@ function parseVoiceRegisterError(errorObj) {
     if (errorCode === 'PREFIX_INVALID') {
         displayError = window.t ? window.t('voice.prefixShouldBeEnglishLetterAndNumber') : '前缀应为英文字母和数字';
         shouldFlash = true;
+    } else if (errorCode === 'VOICE_DESIGN_PREFIX_INVALID') {
+        const prefixMax = Number(errorObj?.details?.max);
+        if (prefixMax > 0) {
+            displayError = window.t
+                ? window.t('voice.designPrefixInvalid', { max: prefixMax })
+                : `前缀必须是 1-${prefixMax} 个字符，只能包含英文字母和数字，不能包含下划线或空格`;
+        } else {
+            displayError = window.t
+                ? window.t('voice.prefixShouldBeEnglishLetterAndNumber')
+                : '前缀应为英文字母和数字';
+        }
+        shouldFlash = true;
     } else if (errorCode === 'INVALID_API_KEY') {
         displayError = window.t ? window.t('voice.invalidApiKeyProvided') : '提供的API密钥无效';
         shouldFlash = true;
@@ -594,11 +608,22 @@ async function loadVoiceCloneProviderRestrictionState() {
             fetchVoiceCloneLoaderJson('/api/config/api_providers').catch(() => null)
         ]);
         let apiKeyRegistry = {};
+        const ttsProviders = {};
         if (providersData && providersData.success) {
             apiKeyRegistry = providersData.api_key_registry || {};
+            if (Array.isArray(providersData.tts_providers)) {
+                providersData.tts_providers.forEach(meta => {
+                    if (!meta || !meta.key) return;
+                    ttsProviders[meta.key] = meta;
+                    (meta.aliases || []).forEach(alias => {
+                        ttsProviders[alias] = meta;
+                    });
+                });
+            }
         }
         voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        voiceCloneProviderRestrictionState.ttsProviders = ttsProviders;
         voiceCloneProviderRestrictionState.loaded = true;
         return voiceCloneProviderRestrictionState;
     })().finally(() => {
@@ -894,6 +919,9 @@ async function initVoiceCloneProviderRestrictions() {
         suppressProviderTouchedTracking = true;
         providerSelect.dispatchEvent(new Event('change'));
         suppressProviderTouchedTracking = false;
+    }
+    if (providerSelect && typeof updateVoiceSourceForProvider === 'function') {
+        updateVoiceSourceForProvider(providerSelect.value);
     }
     return voiceCloneProviderRestrictionState;
 }
@@ -1341,6 +1369,7 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
         normalizePrefixInputForProvider();
         updateCloneMethodForProvider(providerSelect.value);
         updateRefTextRowForProvider(providerSelect.value);
+        updateVoiceSourceForProvider(providerSelect.value);
     });
     if (prefixInput) {
         prefixInput.addEventListener('input', () => {
@@ -1351,10 +1380,112 @@ document.addEventListener('DOMContentLoaded', function initProviderSwitch() {
     normalizePrefixInputForProvider();
     updateCloneMethodForProvider(providerSelect.value);
     updateRefTextRowForProvider(providerSelect.value);
+    updateVoiceSourceForProvider(providerSelect.value);
 });
 
 // 当前克隆方式
 let currentCloneMethod = 'file';
+let currentVoiceSource = 'clone';
+
+function isVoiceDesignSupportedProvider(provider) {
+    const meta = voiceCloneProviderRestrictionState.ttsProviders[provider];
+    return !!(meta && Array.isArray(meta.capabilities) && meta.capabilities.includes('design'));
+}
+
+function getVoiceDesignMetadata(provider) {
+    const meta = voiceCloneProviderRestrictionState.ttsProviders[provider];
+    return meta && meta.voice_design ? meta.voice_design : {};
+}
+
+function isVoiceDesignLanguageSupportedProvider(provider) {
+    const languageHints = getVoiceDesignMetadata(provider).language_hints;
+    return Array.isArray(languageHints) && languageHints.length > 0;
+}
+
+function isElevenLabsProvider(provider) {
+    return provider === 'elevenlabs';
+}
+
+function setVoiceCloneI18nText(element, key, fallback, options = null) {
+    if (!element) return;
+    element.setAttribute('data-i18n', key);
+    if (options) {
+        element.setAttribute('data-i18n-options', JSON.stringify(options));
+    } else {
+        element.removeAttribute('data-i18n-options');
+    }
+    const text = window.t ? window.t(key, options || undefined) : fallback;
+    element.textContent = text && text !== key ? text : fallback;
+}
+
+function updateRefLanguageForVoiceSource(provider) {
+    const row = document.getElementById('refLanguageRow');
+    const label = document.getElementById('refLanguageLabel');
+    const hint = document.getElementById('refLanguageHint');
+    const select = document.getElementById('refLanguage');
+    if (!row || !select) return;
+
+    const designLanguageMode = currentVoiceSource === 'design' && isVoiceDesignLanguageSupportedProvider(provider);
+    if (currentVoiceSource === 'design' && !designLanguageMode) {
+        row.style.display = 'none';
+        return;
+    }
+
+    row.style.display = '';
+    if (designLanguageMode) {
+        const languageHints = getVoiceDesignMetadata(provider).language_hints;
+        setVoiceCloneI18nText(label, 'voice.designLanguage', 'Voice language hint');
+        setVoiceCloneI18nText(hint, 'voice.designLanguageNote', 'Only Chinese and English hints are supported for CosyVoice Voice Design.');
+        Array.from(select.options).forEach(option => {
+            const allowed = languageHints.includes(option.value);
+            option.hidden = !allowed;
+            option.disabled = !allowed;
+        });
+        if (!languageHints.includes(select.value)) {
+            select.value = languageHints[0];
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (typeof syncVoiceCloneSelectDropdowns === 'function') {
+            syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+        }
+    } else {
+        setVoiceCloneI18nText(label, 'voice.refLanguage', 'Reference audio language');
+        setVoiceCloneI18nText(hint, 'voice.refLanguageNote', 'Select the language spoken in the uploaded reference audio.');
+        Array.from(select.options).forEach(option => {
+            option.hidden = false;
+            option.disabled = false;
+        });
+        if (typeof syncVoiceCloneSelectDropdowns === 'function') {
+            syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+        }
+    }
+}
+
+function updateVoiceDesignHint(provider) {
+    const hint = document.getElementById('voiceDesignHint');
+    if (!hint) return;
+
+    if (isElevenLabsProvider(provider)) {
+        const constraints = getVoiceDesignMetadata(provider);
+        const promptMin = Number(constraints.prompt_min);
+        const promptMax = Number(constraints.prompt_max);
+        if (Number.isFinite(promptMin) && promptMin > 0 && Number.isFinite(promptMax) && promptMax >= promptMin) {
+            setVoiceCloneI18nText(
+                hint,
+                'voice.designHintElevenlabs',
+                `Describe only the voice, not the character personality. ElevenLabs requires ${promptMin}-${promptMax} characters.`,
+                { min: promptMin, max: promptMax }
+            );
+            return;
+        }
+    }
+
+    setVoiceCloneI18nText(
+        hint,
+        'voice.designHint',
+        'Describe only the voice, not the character personality. Previews use the same template as Voice Cloning.'
+    );
+}
 
 // MiMo 只支持本地文件克隆：它把参考样本存在本地、不走 /voice_clone_direct（后端
 // valid_providers 不含 mimo，直链会直接 TTS_PROVIDER_INVALID）。选中 MiMo 时禁用直链方式。
@@ -1381,6 +1512,75 @@ function updateCloneMethodForProvider(provider) {
 
 // vLLM-Omni 克隆需要参考音频原文（ref_text），其它 provider 不需要。
 // 选中 vllm_omni 时显示 ref_text 输入区，其它 provider 时隐藏。
+function updateRegisterButtonForVoiceSource() {
+    const registerText = document.querySelector('.register-text');
+    if (!registerText) return;
+    const i18nKey = currentVoiceSource === 'design' ? 'voice.generateVoice' : 'voice.register';
+    const fallback = currentVoiceSource === 'design' ? 'Generate Voice' : 'Register Voice';
+    const text = window.t ? window.t(i18nKey) : fallback;
+    registerText.setAttribute('data-i18n', i18nKey);
+    registerText.textContent = text && text !== i18nKey ? text : fallback;
+    registerText.setAttribute('data-text', registerText.textContent);
+}
+
+function switchVoiceSource(source) {
+    const provider = (document.getElementById('voiceProvider') || {}).value || 'cosyvoice';
+    if (source === 'design' && !isVoiceDesignSupportedProvider(provider)) {
+        source = 'clone';
+    }
+    currentVoiceSource = source === 'design' ? 'design' : 'clone';
+
+    const btnClone = document.getElementById('btnVoiceSourceClone');
+    const btnDesign = document.getElementById('btnVoiceSourceDesign');
+    const cloneMethodRow = document.getElementById('cloneMethodRow');
+    const fileCloneSection = document.getElementById('fileCloneSection');
+    const directLinkCloneSection = document.getElementById('directLinkCloneSection');
+    const voiceDesignSection = document.getElementById('voiceDesignSection');
+
+    if (btnClone) {
+        btnClone.classList.toggle('active', currentVoiceSource === 'clone');
+        btnClone.setAttribute('aria-selected', currentVoiceSource === 'clone' ? 'true' : 'false');
+        btnClone.setAttribute('tabindex', currentVoiceSource === 'clone' ? '0' : '-1');
+    }
+    if (btnDesign) {
+        btnDesign.classList.toggle('active', currentVoiceSource === 'design');
+        btnDesign.setAttribute('aria-selected', currentVoiceSource === 'design' ? 'true' : 'false');
+        btnDesign.setAttribute('tabindex', currentVoiceSource === 'design' ? '0' : '-1');
+    }
+
+    if (currentVoiceSource === 'design') {
+        if (cloneMethodRow) cloneMethodRow.style.display = 'none';
+        if (fileCloneSection) fileCloneSection.style.display = 'none';
+        if (directLinkCloneSection) directLinkCloneSection.style.display = 'none';
+        if (voiceDesignSection) voiceDesignSection.style.display = 'block';
+    } else {
+        if (cloneMethodRow) cloneMethodRow.style.display = '';
+        if (voiceDesignSection) voiceDesignSection.style.display = 'none';
+        switchCloneMethod(currentCloneMethod);
+    }
+    updateRegisterButtonForVoiceSource();
+    updateRefLanguageForVoiceSource(provider);
+    updateVoiceDesignHint(provider);
+}
+
+function updateVoiceSourceForProvider(provider) {
+    const sourceRow = document.getElementById('voiceSourceRow');
+    const btnDesign = document.getElementById('btnVoiceSourceDesign');
+    const supported = isVoiceDesignSupportedProvider(provider);
+    if (sourceRow) sourceRow.style.display = supported ? '' : 'none';
+    if (btnDesign) {
+        btnDesign.disabled = !supported;
+        btnDesign.hidden = !supported;
+        btnDesign.style.display = supported ? '' : 'none';
+        btnDesign.setAttribute('aria-disabled', supported ? 'false' : 'true');
+    }
+    if (!supported && currentVoiceSource === 'design') {
+        switchVoiceSource('clone');
+    } else {
+        switchVoiceSource(currentVoiceSource);
+    }
+}
+
 function updateRefTextRowForProvider(provider) {
     const refTextRow = document.getElementById('vllmRefTextRow');
     if (refTextRow) {
@@ -1405,6 +1605,12 @@ function switchCloneMethod(method) {
 
     if (!btnFileClone || !btnDirectLinkClone || !fileCloneSection || !directLinkCloneSection) {
         console.warn('克隆方式切换：部分DOM元素未找到');
+        return;
+    }
+
+    if (currentVoiceSource === 'design') {
+        fileCloneSection.style.display = 'none';
+        directLinkCloneSection.style.display = 'none';
         return;
     }
 
@@ -1513,11 +1719,13 @@ async function initWorkshopVoiceReference() {
 function setFormDisabled(disabled) {
     const audioFile = document.getElementById('audioFile');
     const directLinkUrl = document.getElementById('directLinkUrl');
+    const voiceDesignPrompt = document.getElementById('voiceDesignPrompt');
     const refLanguage = document.getElementById('refLanguage');
     const prefix = document.getElementById('prefix');
     const voiceProvider = document.getElementById('voiceProvider');
     if (audioFile) audioFile.disabled = disabled;
     if (directLinkUrl) directLinkUrl.disabled = disabled;
+    if (voiceDesignPrompt) voiceDesignPrompt.disabled = disabled;
     if (refLanguage) refLanguage.disabled = disabled;
     if (prefix) prefix.disabled = disabled;
     if (voiceProvider) voiceProvider.disabled = disabled;
@@ -1532,6 +1740,9 @@ function setFormDisabled(disabled) {
     // 状态冲掉，若不重新触发 provider change，MiMo 下直链按钮会变回可点（与策略不一致）。
     if (!disabled && typeof updateCloneMethodForProvider === 'function') {
         updateCloneMethodForProvider(voiceProvider ? voiceProvider.value : '');
+    }
+    if (!disabled && typeof updateVoiceSourceForProvider === 'function') {
+        updateVoiceSourceForProvider(voiceProvider ? voiceProvider.value : '');
     }
 }
 
@@ -1551,6 +1762,8 @@ async function registerVoice() {
     applyVoiceCloneProviderRestrictions(providerSelect);
     const provider = (providerSelect || {}).value || 'cosyvoice';
     const prefix = normalizePrefixInputForProvider();
+    const designPromptEl = document.getElementById('voiceDesignPrompt');
+    const designPrompt = designPromptEl ? designPromptEl.value.trim() : '';
     const validateDoubaoSpeakerId = () => {
         if (provider !== 'doubao_tts') {
             return false;
@@ -1564,7 +1777,63 @@ async function registerVoice() {
     };
 
     // 根据克隆方式验证输入
-    if (currentCloneMethod === 'file') {
+    if (currentVoiceSource === 'design') {
+        if (!isVoiceDesignSupportedProvider(provider)) {
+            resultDiv.textContent = window.t ? window.t('voice.designProviderUnsupported') : 'Voice Design is not available for the selected provider.';
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (!prefix) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterPrefix') : '请填写自定义前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+        const designConstraints = getVoiceDesignMetadata(provider);
+        const prefixMax = Number(designConstraints.prefix_max);
+        const prefixPattern = String(designConstraints.prefix_pattern || '');
+        let prefixMatches = true;
+        if (prefixPattern) {
+            try {
+                prefixMatches = new RegExp(prefixPattern).test(prefix);
+            } catch (error) {
+                console.warn('Invalid Voice Design prefix pattern in provider metadata:', error);
+            }
+        }
+        if ((prefixMax > 0 && prefix.length > prefixMax) || !prefixMatches) {
+            resultDiv.textContent = window.t
+                ? window.t('voice.designPrefixInvalid', { max: prefixMax })
+                : `The prefix must be 1-${prefixMax} characters using only English letters and numbers, with no underscores or spaces.`;
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (!designPrompt) {
+            resultDiv.textContent = window.t ? window.t('voice.pleaseEnterDesignPrompt') : 'Please describe the voice you want to design.';
+            resultDiv.className = 'result error';
+            return;
+        }
+        const promptMin = Number(designConstraints.prompt_min);
+        const promptMax = Number(designConstraints.prompt_max);
+        if (promptMin > 0 && designPrompt.length < promptMin) {
+            const key = isElevenLabsProvider(provider)
+                ? 'voice.designPromptTooShortElevenlabs'
+                : 'voice.designPromptTooShort';
+            resultDiv.textContent = window.t
+                ? window.t(key, { min: promptMin })
+                : `Voice description must be at least ${promptMin} characters.`;
+            resultDiv.className = 'result error';
+            return;
+        }
+        if (promptMax > 0 && designPrompt.length > promptMax) {
+            const key = isElevenLabsProvider(provider)
+                ? 'voice.designPromptTooLongElevenlabs'
+                : 'voice.designPromptTooLong';
+            resultDiv.textContent = window.t
+                ? window.t(key, { max: promptMax })
+                : `Voice description must be at most ${promptMax} characters.`;
+            resultDiv.className = 'result error';
+            return;
+        }
+    } else if (currentCloneMethod === 'file') {
         // 先检查文件
         if (!effectiveAudioFile) {
             resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请选择音频文件';
@@ -1622,12 +1891,28 @@ async function registerVoice() {
     }
 
     setFormDisabled(true);
-    resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
+    resultDiv.textContent = currentVoiceSource === 'design'
+        ? (window.t ? window.t('voice.generatingVoice') : 'Generating voice, please wait...')
+        : (window.t ? window.t('voice.registering') : '正在注册声音，请稍后！');
     resultDiv.className = 'result';
 
     // 根据克隆方式选择API端点和参数
     let requestOptions;
-    if (currentCloneMethod === 'file') {
+    let apiUrl = '';
+    if (currentVoiceSource === 'design') {
+        requestOptions = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: provider,
+                prefix: prefix,
+                voice_prompt: designPrompt,
+                ref_language: refLanguage,
+                i18n_language: getVoicePreviewLanguage()
+            })
+        };
+        apiUrl = '/api/characters/voice_design';
+    } else if (currentCloneMethod === 'file') {
         // 本地文件克隆
         const formData = new FormData();
         formData.append('file', effectiveAudioFile, effectiveAudioFile.name);
@@ -1642,6 +1927,7 @@ async function registerVoice() {
             method: 'POST',
             body: formData
         };
+        apiUrl = '/api/characters/voice_clone';
     } else {
         // 直链克隆
         requestOptions = {
@@ -1654,11 +1940,8 @@ async function registerVoice() {
                 provider: provider
             })
         };
+        apiUrl = '/api/characters/voice_clone_direct';
     }
-
-    const apiUrl = currentCloneMethod === 'file'
-        ? '/api/characters/voice_clone'
-        : '/api/characters/voice_clone_direct';
 
     fetch(apiUrl, requestOptions)
         .then(async res => {
@@ -1666,7 +1949,11 @@ async function registerVoice() {
             if (!res.ok) {
                 if (data) {
                     // 从响应体中提取详细错误信息（优先已翻译的 errors.<code>，缺失则回退到 message/detail/error）
-                    throw new Error(resolveBackendErrorMsg(data, res.status));
+                    const error = new Error(resolveBackendErrorMsg(data, res.status));
+                    // Voice Design needs code/details to render provider-specific constraints.
+                    // Keep the user-facing message too, so Voice Clone's existing errors stay unchanged.
+                    error.voiceRegisterError = data;
+                    throw error;
                 }
                 // 后端/网关返回了 HTML（如 404/502/504），构造可读错误而不是 "Unexpected token '<'"
                 throw new Error(buildNonJsonError(res, text));
@@ -1752,7 +2039,10 @@ async function registerVoice() {
                     });
                 }
             } else {
-                const errorObj = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                // Keep structured API fields such as code/details for Voice Design validation errors.
+                const errorObj = data && typeof data === 'object'
+                    ? data
+                    : (window.t ? window.t('common.unknownError') : '未知错误');
                 const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
                 resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: displayError }) : '注册失败：' + displayError;
                 resultDiv.className = 'result error';
@@ -1763,7 +2053,9 @@ async function registerVoice() {
             setFormDisabled(false);
         })
         .catch(err => {
-            const errorObj = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+            const errorObj = err?.voiceRegisterError
+                ? { ...err.voiceRegisterError, message: err.message }
+                : (err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误'));
             const { displayError, shouldFlash } = parseVoiceRegisterError(errorObj);
             resultDiv.textContent = window.t ? window.t('voice.requestError', { error: displayError }) : '请求出错：' + displayError;
             resultDiv.className = 'result error';
@@ -1791,7 +2083,110 @@ window.addEventListener('message', function (event) {
     }
 });
 
-async function playPreview(voiceId, btn) {
+function showVoicePreviewErrorNotice(message) {
+    if (activeVoicePreviewNotice) {
+        activeVoicePreviewNotice.dispose();
+    }
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'voice-preview-notice-backdrop';
+
+    const card = document.createElement('div');
+    card.className = 'voice-preview-notice-card';
+    card.setAttribute('role', 'alertdialog');
+    card.setAttribute('aria-modal', 'true');
+    card.setAttribute('aria-labelledby', 'voice-preview-notice-title');
+    card.setAttribute('aria-describedby', 'voice-preview-notice-message');
+
+    const header = document.createElement('div');
+    header.className = 'voice-preview-notice-header';
+
+    const mark = document.createElement('span');
+    mark.className = 'voice-preview-notice-mark';
+    mark.setAttribute('aria-hidden', 'true');
+
+    const title = document.createElement('h3');
+    title.className = 'voice-preview-notice-title';
+    title.id = 'voice-preview-notice-title';
+    title.textContent = window.t ? window.t('voice.preview') : 'Preview';
+
+    const body = document.createElement('div');
+    body.className = 'voice-preview-notice-body';
+
+    const messageEl = document.createElement('p');
+    messageEl.className = 'voice-preview-notice-message';
+    messageEl.id = 'voice-preview-notice-message';
+    messageEl.textContent = String(message || '');
+
+    const actions = document.createElement('div');
+    actions.className = 'voice-preview-notice-actions';
+
+    const okButton = document.createElement('button');
+    okButton.type = 'button';
+    okButton.className = 'voice-preview-notice-ok';
+    okButton.textContent = window.t ? window.t('common.ok') : 'OK';
+
+    header.appendChild(mark);
+    header.appendChild(title);
+    body.appendChild(messageEl);
+    actions.appendChild(okButton);
+    card.appendChild(header);
+    card.appendChild(body);
+    card.appendChild(actions);
+    backdrop.appendChild(card);
+
+    let closed = false;
+    let cleaned = false;
+
+    function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        document.removeEventListener('keydown', onKeydown, true);
+        if (backdrop.parentNode) {
+            backdrop.parentNode.removeChild(backdrop);
+        }
+        if (activeVoicePreviewNotice && activeVoicePreviewNotice.backdrop === backdrop) {
+            activeVoicePreviewNotice = null;
+        }
+    }
+
+    function close() {
+        if (closed) return;
+        closed = true;
+        backdrop.classList.add('is-closing');
+        window.setTimeout(cleanup, 160);
+    }
+
+    function dispose() {
+        closed = true;
+        cleanup();
+    }
+
+    function onKeydown(event) {
+        if (event.key === 'Tab') {
+            event.preventDefault();
+            event.stopPropagation();
+            okButton.focus();
+            return;
+        }
+        if (event.key === 'Escape' || event.key === 'Enter') {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        }
+    }
+
+    okButton.addEventListener('click', close);
+    backdrop.addEventListener('click', event => {
+        if (event.target === backdrop) close();
+    });
+    document.addEventListener('keydown', onKeydown, true);
+    document.body.appendChild(backdrop);
+    activeVoicePreviewNotice = { backdrop, dispose };
+    window.setTimeout(() => okButton.focus(), 0);
+}
+
+async function playPreview(voiceId, btn, options = {}) {
     if (btn.disabled) return;
 
     const originalContent = btn.innerHTML;
@@ -1823,14 +2218,15 @@ async function playPreview(voiceId, btn) {
 
         if (!audioSrc) {
             // 如果本地没有缓存，则从服务器获取
-            // TTS 合成耗时按音色类型分两档：克隆音色（voiceId 含 '-clone-'，如
-            // mimo-clone-* / vllm-omni-clone-* 等）需服务端实时合成参考音频，耗时
-            // 远超普通调用，用 30s 超时（对齐后端 asyncio.wait_for timeout=30）、共尝试 2 次；
-            // 预制音色合成快，沿用改造前的 5s 超时、共尝试 3 次——避免预制音色在服务端偶发
-            // 卡住时让用户干等过久才报错。
+            // 保留 Voice Clone 原有的 voice-id 判定；Voice Design 仅通过
+            // source/design id 追加到同一实时合成超时档位。
+            const voiceSource = String(options.source || '').trim().toLowerCase();
             const isCloneVoice = typeof voiceId === 'string' && voiceId.includes('-clone-');
-            const ttsTimeoutMs = isCloneVoice ? 30_000 : 5_000;
-            const ttsMaxAttempts = isCloneVoice ? 2 : 3;
+            const isDesignVoice = voiceSource === 'design'
+                || (typeof voiceId === 'string' && voiceId.includes('-design-'));
+            const isRealtimeRegisteredVoice = isCloneVoice || isDesignVoice;
+            const ttsTimeoutMs = isRealtimeRegisteredVoice ? 30_000 : 5_000;
+            const ttsMaxAttempts = isRealtimeRegisteredVoice ? 2 : 3;
             let lastTtsError = null;
             let response = null;
             for (let attempt = 1; attempt <= ttsMaxAttempts; attempt += 1) {
@@ -1845,7 +2241,9 @@ async function playPreview(voiceId, btn) {
                     if (response.ok || response.status < 500 || attempt >= ttsMaxAttempts) break;
                     lastTtsError = new Error(`API returned ${response.status}`);
                 } catch (error) {
-                    lastTtsError = error;
+                    lastTtsError = (voiceSource === 'design' && error && error.name === 'AbortError')
+                        ? new Error(window.t ? window.t('voice.previewTimeout') : '试听生成超时，请稍后重试')
+                        : error;
                     if (attempt >= ttsMaxAttempts) break;
                 } finally {
                     clearTimeout(tid);
@@ -1887,7 +2285,9 @@ async function playPreview(voiceId, btn) {
             const audio = new Audio(audioSrc);
             audio.play().catch(e => {
                 console.error('Audio play error:', e);
-                alert(window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message);
+                showVoicePreviewErrorNotice(
+                    window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message
+                );
             });
             btn.innerHTML = originalContent;
             btn.disabled = false;
@@ -1895,7 +2295,9 @@ async function playPreview(voiceId, btn) {
     } catch (error) {
         console.error('Preview error:', error);
         const errorMsg = error?.message || error?.toString();
-        alert(window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg);
+        showVoicePreviewErrorNotice(
+            window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg
+        );
         btn.innerHTML = originalContent;
         btn.disabled = false;
     }
@@ -2033,7 +2435,7 @@ async function loadVoices() {
         });
 
         // 创建音色列表项
-        voicesArray.forEach(({ voiceId, prefix, created_at }) => {
+        voicesArray.forEach(({ voiceId, prefix, created_at, source, provider }) => {
             const item = document.createElement('div');
             item.className = 'voice-list-item';
             item.dataset.voiceId = voiceId;
@@ -2076,7 +2478,7 @@ async function loadVoices() {
             previewBtn.appendChild(document.createTextNode(previewText));
             previewBtn.onclick = (event) => {
                 event.stopPropagation();
-                playPreview(voiceId, previewBtn);
+                playPreview(voiceId, previewBtn, { source, provider });
             };
 
             const deleteBtn = document.createElement('button');

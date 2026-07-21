@@ -1,25 +1,33 @@
+
 # AI 辅助开发
 
-N.E.K.O. 在仓库根目录提供了 `.agent/` 目录，遵循 [Google Antigravity](https://github.com/anthropics/anthropic-cookbook/tree/main/misc/antigravity) 开放规范。其中包含项目的开发规范和按任务划分的技能集。
+仓库把可供机器读取的项目规范放在 `.agent/` 下。
 
-只有 **Antigravity** 会自动读取 `.agent/`。所有其他 AI 编程助手——包括 Claude Code、Cursor、Windsurf、Copilot 等——都需要手动读取并内化这些规则。
-
-## `.agent/` 目录结构
-
-```
+```text
 .agent/
 ├── rules/
-│   └── neko-guide.md        # 核心开发规范（always_on）
-└── skills/                  # 约 20 个按任务划分的技能集
+│   └── neko-guide.md
+└── skills/
     ├── i18n/
-    ├── frontend-design/
-    ├── vrm-physics/
+    ├── neko-plugin/
+    ├── ui-system-refactor/
     └── ...
 ```
 
-- **规则**（`.agent/rules/neko-guide.md`）：项目核心约定 — i18n、`uv run`、代码对偶性、core 层纯净性、禁止数字后缀、Electron 与开发模式。
-- **技能集**（`.agent/skills/*/SKILL.md`）：按领域划分的触发条件、知识和工作流，按需加载。
+不要假设某个编辑器或编码 Agent 会自动加载这些文件。
 
-## 给 AI Agent 的 Prompt
+## Agent 必须完成的准备
 
-> **如果你是一个 AI 编程助手**（Claude Code、Cursor、Windsurf、Copilot、Cline 或其他任何工具），本项目使用 `.agent/` 目录（Google Antigravity 规范）存放开发规范和技能集。除非你是 Antigravity agent，否则不会自动加载这些内容。请执行以下操作：(1) 读取仓库根目录的 `.agent/rules/neko-guide.md` 和 `CLAUDE.md` — 这些包含项目的强制编码规则，将它们内化为你的项目级指令。(2) 在处理特定领域（i18n、VRM 物理、前端 UI 等）时，检查 `.agent/skills/` 是否有匹配的子目录，并读取其 `SKILL.md` 获取领域专属指引。(3) 如果你的工具有原生的项目规则机制（`.cursorrules`、`.windsurfrules`、`.github/copilot-instructions.md` 等），可考虑将 `neko-guide.md` 中的核心规则复制到该文件中，以便跨会话持久生效。
+1. 阅读当前 revision 的 `.agent/rules/neko-guide.md`。
+2. 在 `.agent/skills/` 中查找任务领域，完整阅读匹配的 `SKILL.md` 及其引用文件。
+3. 修改前检查当前实现归属、测试和 workflow。
+4. 保留用户已有改动，diff 不超出请求范围。
+5. 如实报告执行过的命令，以及未执行的验证。
+
+不要要求 Agent 阅读不存在的 `CLAUDE.md`、把规则复制到未跟踪的编辑器文件，或依赖某家工具声称的自动加载行为。
+
+## 提示词起点
+
+> 阅读 `.agent/rules/neko-guide.md`，然后在 `.agent/skills/` 中查找并遵循与任务匹配的 skill。修改前追踪当前实现和测试。所有 Python 命令使用 `uv run`；i18n 修改同步八个 locale；保留 system prompt 水印；只写入当前仓库能证明的结论。
+
+AI 生成的修改与人工修改接受相同审查。作者仍需对隐私、安全、许可证、正确性和测试证据负责。

@@ -100,6 +100,7 @@ _cleanup_lock = threading.Lock()
 _cleanup_done = False
 _expected_launcher_shutdown = False
 _existing_neko_services: set[str] = set()  # 已有 N.E.K.O 实例占用的端口键
+_partial_or_mixed_existing_backend = False
 DEFAULT_PORTS = {
     "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
     "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
@@ -127,6 +128,14 @@ SHUTDOWN_MODULE_ORDER = (
     "memory_server",
     "agent_server",
 )
+MERGED_SERVER_READY_TIMEOUT = 30.0
+MERGED_SERVER_READY_POLL_INTERVAL = 0.25
+MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
+MERGED_SERVER_SHUTDOWN_TIMEOUTS = {
+    "Main": 20.0,
+    "Memory": 12.0,
+    "Agent": 8.0,
+}
 
 
 def _sync_runtime_config_globals(
@@ -164,6 +173,11 @@ def _reload_runtime_config_from_env() -> None:
     """
     global INSTANCE_ID, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 
+    # ``config`` is a compatibility facade that re-exports values from the cached
+    # ``config.network`` submodule. Refresh the source module first so reloading
+    # the facade cannot restore pre-negotiation ports over launcher fallbacks.
+    network_config = importlib.import_module("config.network")
+    importlib.reload(network_config)
     reloaded = importlib.reload(config_module)
     INSTANCE_ID = str(reloaded.INSTANCE_ID)
     MAIN_SERVER_PORT = int(reloaded.MAIN_SERVER_PORT)
@@ -642,6 +656,133 @@ SERVERS = [
 # 省掉 2 份 CPython + uvicorn + 共享库的重复加载（约 150-200 MB）。
 # 每个服务仍然监听自己的端口，前端 / 服务间 HTTP 调用零改动。
 
+
+def _merged_health_issues(
+    apps: list[tuple[object, int, str]],
+    health_by_port: dict[int, dict | None],
+) -> list[str]:
+    """Return sanitized signed-health mismatches for merged startup."""
+    issues: list[str] = []
+    for _app, port, name in apps:
+        health = health_by_port.get(port)
+        expected_service = name.lower()
+        if not health:
+            issues.append(f"{name}:{port}:unreachable")
+            continue
+        if health.get("service") != expected_service:
+            issues.append(f"{name}:{port}:wrong_service")
+            continue
+        if INSTANCE_ID and health.get("instance_id") != INSTANCE_ID:
+            issues.append(f"{name}:{port}:wrong_instance")
+    return issues
+
+
+def _completed_merged_server(tasks: dict[str, object]) -> str | None:
+    """Describe the first uvicorn task that exited, without exposing internals."""
+    for name, task in tasks.items():
+        if not task.done():
+            continue
+        if task.cancelled():
+            return f"{name} server task was cancelled"
+        exc = task.exception()
+        if exc is not None:
+            return f"{name} server task failed: {type(exc).__name__}: {exc}"
+        return f"{name} server task exited"
+    return None
+
+
+async def _wait_for_merged_servers_ready(
+    apps: list[tuple[object, int, str]],
+    tasks: dict[str, object],
+    *,
+    timeout: float = MERGED_SERVER_READY_TIMEOUT,
+    poll_interval: float = MERGED_SERVER_READY_POLL_INTERVAL,
+) -> None:
+    """Wait for all three signed health endpoints from the current instance."""
+    import asyncio
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        if completed := _completed_merged_server(tasks):
+            raise RuntimeError(f"Merged startup failed: {completed}")
+
+        health_results = await asyncio.gather(
+            *(
+                asyncio.to_thread(probe_neko_health, port, timeout=0.25)
+                for _app, port, _name in apps
+            )
+        )
+        health_by_port = {
+            port: health
+            for (_app, port, _name), health in zip(apps, health_results)
+        }
+        last_issues = _merged_health_issues(apps, health_by_port)
+        if not last_issues:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError(
+                "Merged startup timed out before signed health was ready: "
+                + ", ".join(last_issues)
+            )
+        await asyncio.sleep(poll_interval)
+
+
+async def _shutdown_merged_servers_in_order(
+    servers: dict[str, object],
+    tasks: dict[str, object],
+    *,
+    timeouts: dict[str, float] | None = None,
+) -> list[str]:
+    """Preserve the multi-process main -> memory -> agent shutdown contract."""
+    import asyncio
+
+    failures: list[str] = []
+    timeout_by_name = timeouts or MERGED_SERVER_SHUTDOWN_TIMEOUTS
+    for name in MERGED_SERVER_SHUTDOWN_ORDER:
+        server = servers[name]
+        task = tasks[name]
+        if not task.done():
+            server.should_exit = True
+            done, _pending = await asyncio.wait(
+                {task},
+                timeout=timeout_by_name[name],
+            )
+            if not done:
+                failures.append(f"{name}:shutdown_timeout")
+                task.cancel()
+                # Do not let one stuck service prevent the remaining services
+                # from receiving their shutdown request.
+                await asyncio.sleep(0)
+                continue
+        result = (await asyncio.gather(task, return_exceptions=True))[0]
+        if isinstance(result, BaseException):
+            failures.append(f"{name}:{type(result).__name__}:{result}")
+    return failures
+
+
+def _disable_uvicorn_signal_handlers(server: object) -> None:
+    """Keep one launcher-owned signal handler across supported Uvicorn APIs."""
+    from contextlib import contextmanager
+
+    server.install_signal_handlers = lambda: None
+    if hasattr(server, "capture_signals"):
+        @contextmanager
+        def _capture_no_signals():
+            yield
+
+        server.capture_signals = _capture_no_signals
+
+
+async def _serve_merged_server(server: object, name: str) -> None:
+    """Convert Uvicorn's bind-time SystemExit into a launcher failure."""
+    try:
+        await server.serve()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+        raise RuntimeError(
+            f"{name} server exited during startup/runtime (code={code})"
+        ) from exc
+
 def run_merged_servers() -> int:
     """Single-process merged mode: 3 uvicorn.Server instances share one asyncio event loop."""
     import asyncio
@@ -703,13 +844,17 @@ def run_merged_servers() -> int:
             log_level="error", **_proxy_kw,
         )
         servers.append(uvicorn.Server(cfg))
+    servers_by_name = {
+        name: server
+        for (_app, _port, name), server in zip(_apps, servers)
+    }
 
     # ── 信号处理 ──
     # 3 个 uvicorn.Server 各自 install_signal_handlers() 会互相覆盖
     # （最后一个赢），导致 Ctrl+C 只通知 1 个退出，其余卡死。
     # 禁用各自的处理器，统一安装一个全局处理器。
     for s in servers:
-        s.install_signal_handlers = lambda: None
+        _disable_uvicorn_signal_handlers(s)
 
     _exiting = False
     _shutdown_watchdog_started = False
@@ -720,13 +865,21 @@ def run_merged_servers() -> int:
             return False
         _exiting = True
         _mark_expected_launcher_shutdown()
-        watchdog_timeout = 30 if reason == "storage_location_restart" else 10
+        # Ordered shutdown can legitimately consume the same 20 + 12 + 8 second
+        # budgets as multi-process cleanup. Keep the watchdog as a final escape,
+        # not as a shorter competing deadline.
+        watchdog_timeout = 60 if reason == "storage_location_restart" else 45
         print(
             f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)",
             flush=True,
         )
-        for s in servers:
-            s.should_exit = True
+        # Main must finish release/cloudsave work while Memory is still alive.
+        # The async coordinator advances Memory and Agent in order afterwards.
+        for name in MERGED_SERVER_SHUTDOWN_ORDER:
+            server = servers_by_name[name]
+            if not server.should_exit:
+                server.should_exit = True
+                break
         if not _shutdown_watchdog_started:
             threading.Thread(
                 target=lambda timeout=watchdog_timeout: (time.sleep(timeout), os._exit(1)),
@@ -750,8 +903,8 @@ def run_merged_servers() -> int:
                 "browser_mode_enabled": False,
                 "browser_page": "",
                 "shutdown_memory_server_on_exit": False,
-                "request_runtime_shutdown": lambda: _begin_merged_shutdown(
-                    reason="storage_location_restart"
+                "request_runtime_shutdown": lambda *, reason="application_request": _begin_merged_shutdown(
+                    reason=reason
                 ),
                 "server": None,
             }
@@ -761,38 +914,74 @@ def run_merged_servers() -> int:
 
     _prev_sigint = signal.getsignal(signal.SIGINT)
     _prev_sigterm = signal.getsignal(signal.SIGTERM)
+    _prev_sigbreak = (
+        signal.getsignal(signal.SIGBREAK)
+        if hasattr(signal, "SIGBREAK")
+        else None
+    )
     signal.signal(signal.SIGINT, _on_exit_signal)
     signal.signal(signal.SIGTERM, _on_exit_signal)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _on_exit_signal)
 
     async def _serve_all() -> None:
         # 并发启动所有 uvicorn.Server
-        tasks = [asyncio.create_task(s.serve()) for s in servers]
-
-        # 等所有端口可达后通知前端
-        for _ in range(120):
-            if all(check_port(p) for _, p, _ in _apps):
-                break
-            await asyncio.sleep(0.25)
-
-        print(f"[Merged] All servers ready "
-              f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
-              flush=True)
+        tasks = {
+            name: asyncio.create_task(
+                _serve_merged_server(server, name),
+                name=f"merged-{name.lower()}",
+            )
+            for name, server in servers_by_name.items()
+        }
+        startup_error: Exception | None = None
+        unexpected_exit: str | None = None
         try:
-            _config_manager = get_config_manager(APP_NAME)
-            _persist_post_startup_root_state(_config_manager)
-        except Exception as e:
-            print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
-        emit_frontend_event("startup_ready", {
-            "instance_id": INSTANCE_ID,
-            "selected": {
-                "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
-                "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
-                "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
-            },
-        })
+            try:
+                await _wait_for_merged_servers_ready(_apps, tasks)
+            except Exception as exc:
+                if not _exiting:
+                    startup_error = exc
+                    _begin_merged_shutdown(reason="startup_failure")
 
-        # 等所有 server 退出（收到 should_exit 后各自触发 FastAPI shutdown 事件）
-        await asyncio.gather(*tasks)
+            if startup_error is None and not _exiting:
+                print(f"[Merged] All servers ready "
+                      f"(ports {MEMORY_SERVER_PORT}/{TOOL_SERVER_PORT}/{MAIN_SERVER_PORT})",
+                      flush=True)
+                try:
+                    _config_manager = get_config_manager(APP_NAME)
+                    _persist_post_startup_root_state(_config_manager)
+                except Exception as e:
+                    print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
+                emit_frontend_event("startup_ready", {
+                    "instance_id": INSTANCE_ID,
+                    "selected": {
+                        "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+                        "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+                        "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+                    },
+                })
+
+                # A single service returning is either an intentional coordinated
+                # shutdown or a topology-wide failure. Never leave two ports alive.
+                await asyncio.wait(tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+                if not _exiting:
+                    unexpected_exit = _completed_merged_server(tasks) or "unknown server exit"
+                    _begin_merged_shutdown(reason="server_exit")
+
+            failures = await _shutdown_merged_servers_in_order(servers_by_name, tasks)
+            if startup_error is not None:
+                raise startup_error
+            if unexpected_exit is not None:
+                raise RuntimeError(f"Merged runtime stopped unexpectedly: {unexpected_exit}")
+            if failures:
+                raise RuntimeError("Merged shutdown failures: " + ", ".join(failures))
+        finally:
+            for server in servers:
+                server.should_exit = True
+            for task in tasks.values():
+                if not task.done():
+                    task.cancel()
+            await asyncio.wait(tasks.values(), timeout=1.0)
 
     try:
         asyncio.run(_serve_all())
@@ -804,6 +993,8 @@ def run_merged_servers() -> int:
     finally:
         signal.signal(signal.SIGINT, _prev_sigint)
         signal.signal(signal.SIGTERM, _prev_sigterm)
+        if hasattr(signal, "SIGBREAK") and _prev_sigbreak is not None:
+            signal.signal(signal.SIGBREAK, _prev_sigbreak)
 
     return 0
 
@@ -1191,6 +1382,27 @@ def _classify_port_conflict(
     return "unknown", []
 
 
+def _validated_existing_backend_instance(
+    health_by_key: dict[str, dict],
+) -> str | None:
+    """Accept attach only for one complete, correctly routed backend instance."""
+    expected_services = {
+        "MAIN_SERVER_PORT": "main",
+        "MEMORY_SERVER_PORT": "memory",
+        "TOOL_SERVER_PORT": "agent",
+    }
+    if set(health_by_key) != set(expected_services):
+        return None
+    instance_ids: set[str] = set()
+    for key, expected_service in expected_services.items():
+        health = health_by_key[key]
+        instance_id = str(health.get("instance_id") or "")
+        if health.get("service") != expected_service or not instance_id:
+            return None
+        instance_ids.add(instance_id)
+    return instance_ids.pop() if len(instance_ids) == 1 else None
+
+
 def apply_port_strategy() -> bool | str:
     """Prefer the default ports, automatically dodging conflicts when necessary.
 
@@ -1200,14 +1412,20 @@ def apply_port_strategy() -> bool | str:
         ``"attach"`` the default ports are fully owned by an existing N.E.K.O backend.
 
     Strategy:
-    1. If a default port is already a N.E.K.O service, treat it as reusable.
-    2. If reserved by Hyper-V/WSL or taken by another process, pick a fallback port.
+    1. Attach only when every default port belongs to the expected service in
+       one existing N.E.K.O instance.
+    2. Otherwise, move every conflict to fallback ports and start one complete,
+       isolated topology.
     """
     global MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+    global _existing_neko_services, _partial_or_mixed_existing_backend
+    _partial_or_mixed_existing_backend = False
     chosen: dict[str, int] = {}
     chosen_internal: dict[str, int] = {}
     fallback_details: list[dict] = []
     internal_fallback_details: list[dict] = []
+    existing_health_by_key: dict[str, dict] = {}
+    existing_owners_by_key: dict[str, list] = {}
     reserved: set[int] = set()
 
     # 预先查询 Hyper-V 保留端口范围，避免重复子进程调用
@@ -1226,19 +1444,12 @@ def apply_port_strategy() -> bool | str:
         reason, owners = _classify_port_conflict(preferred, excluded_ranges)
 
         if reason == "neko":
-            # 已有 N.E.K.O 实例占用该端口。
-            # 仍记录为 chosen，并打标记供前端决定“附加复用”而非“重复拉起”。
+            # Defer the decision until all three public ports are inspected.
+            # Only a complete, same-instance backend is safe to attach to.
             chosen[key] = preferred
             reserved.add(preferred)
-            fallback_details.append(
-                {
-                    "port_key": key,
-                    "preferred": preferred,
-                    "selected": preferred,
-                    "reason": "existing_neko",
-                    "owners": owners,
-                }
-            )
+            existing_health_by_key[key] = probe_neko_health(preferred) or {}
+            existing_owners_by_key[key] = owners
             continue
 
         # 需要选择回退端口
@@ -1259,6 +1470,79 @@ def apply_port_strategy() -> bool | str:
                 "selected": fallback,
                 "reason": reason,
                 "owners": owners,
+            }
+        )
+
+    existing_instance = _validated_existing_backend_instance(existing_health_by_key)
+    if existing_instance is not None:
+        _existing_neko_services = set(DEFAULT_PORTS)
+        for key, value in chosen.items():
+            os.environ[f"NEKO_{key}"] = str(value)
+        _sync_runtime_config_globals(chosen, {})
+        for server in SERVERS:
+            port_key = MODULE_TO_PORT_KEY.get(server["module"])
+            if port_key:
+                server["port"] = chosen[port_key]
+        emit_frontend_event(
+            "port_plan",
+            {
+                "instance_id": existing_instance,
+                "launcher_instance_id": INSTANCE_ID,
+                "defaults": DEFAULT_PORTS,
+                "selected": chosen,
+                "internal_defaults": INTERNAL_DEFAULT_PORTS,
+                "internal_selected": {},
+                "fallbacks": [],
+                "internal_fallbacks": [],
+                "fallback_applied": False,
+            },
+        )
+        emit_frontend_event(
+            "attach_existing",
+            {
+                "instance_id": existing_instance,
+                "launcher_instance_id": INSTANCE_ID,
+                "selected": chosen,
+                "existing_instance_id": existing_instance,
+                "message": "Validated complete N.E.K.O backend on default ports",
+            },
+        )
+        print(
+            "[Launcher] Validated one complete N.E.K.O backend on all default ports; attaching.",
+            flush=True,
+        )
+        return "attach"
+
+    # A partial or mismatched N.E.K.O footprint must not be spliced into a new
+    # runtime instance. Move the complete public port set off the defaults and
+    # start one topology with a fresh INSTANCE_ID and IPC port plan.
+    _partial_or_mixed_existing_backend = bool(existing_health_by_key)
+    _existing_neko_services = set()
+    for key in ("MEMORY_SERVER_PORT", "TOOL_SERVER_PORT", "MAIN_SERVER_PORT"):
+        preferred = int(DEFAULT_PORTS[key])
+        if not _partial_or_mixed_existing_backend or chosen[key] != preferred:
+            continue
+        fallback = _pick_fallback_port(preferred, reserved)
+        if fallback is None:
+            health = existing_health_by_key.get(key, {})
+            report_startup_failure(
+                f"Startup failed: no isolated fallback port available for {key} "
+                f"(preferred={preferred}, existing_service={health.get('service')})"
+            )
+            return False
+        chosen[key] = fallback
+        reserved.add(fallback)
+        fallback_details.append(
+            {
+                "port_key": key,
+                "preferred": preferred,
+                "selected": fallback,
+                "reason": (
+                    "existing_neko_conflict"
+                    if key in existing_health_by_key
+                    else "isolate_from_existing_neko_backend"
+                ),
+                "owners": existing_owners_by_key.get(key, []),
             }
         )
 
@@ -1320,40 +1604,9 @@ def apply_port_strategy() -> bool | str:
         },
     )
 
-    # 检查默认端口是否全部由既有 N.E.K.O 占用（existing_neko）。
-    # 若是，则 launcher 不应继续拉起新服务。
-    existing_neko_keys = {
-        d["port_key"]
-        for d in fallback_details
-        if d.get("reason") == "existing_neko"
-    }
-
-    # 记录已存在实例的服务端口键，供 start_server() 跳过重复启动。
-    global _existing_neko_services
-    _existing_neko_services = existing_neko_keys
-
-    if existing_neko_keys == set(DEFAULT_PORTS.keys()):
-        # 默认端口上的完整 N.E.K.O 后端已在运行。
-        emit_frontend_event(
-            "attach_existing",
-            {
-                "selected": chosen,
-                "message": "All default ports occupied by an existing N.E.K.O backend",
-            },
-        )
-        print("[Launcher] Existing N.E.K.O backend detected on all default ports; attaching.", flush=True)
-        return "attach"
-
-    # 区分“复用已有实例”与“真正端口回退”的日志
-    real_fallbacks = [d for d in fallback_details if d.get("reason") != "existing_neko"]
-    if real_fallbacks or internal_fallback_details:
+    if fallback_details or internal_fallback_details:
         print(
-            f"[Launcher] Port fallback applied: public={real_fallbacks}, internal={internal_fallback_details}",
-            flush=True,
-        )
-    elif existing_neko_keys:
-        print(
-            f"[Launcher] Ports reused from existing N.E.K.O instance: {sorted(existing_neko_keys)}",
+            f"[Launcher] Port fallback applied: public={fallback_details}, internal={internal_fallback_details}",
             flush=True,
         )
     else:
@@ -1375,16 +1628,6 @@ def start_server(server: Dict) -> bool:
     """Start a single server"""
     try:
         port = server.get('port')
-
-        port_key = MODULE_TO_PORT_KEY.get(server['module'])
-
-        # If this service's port already has a running N.E.K.O instance,
-        # skip launching (the existing process will serve requests).
-        if port_key and port_key in _existing_neko_services:
-            print(f"✓ {server['name']} already running on port {port} (existing N.E.K.O instance)", flush=True)
-            server['ready_event'] = Event()
-            server['ready_event'].set()  # Mark as ready immediately
-            return True
 
         if isinstance(port, int) and check_port(port):
             owner_pids = get_port_owners(port)
@@ -1631,8 +1874,19 @@ def register_shutdown_hooks():
     atexit.register(cleanup_servers)
     try:
         signal.signal(signal.SIGTERM, _handle_termination_signal)
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Failed to register SIGTERM shutdown hook: %s",
+            exc,
+        )
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, _handle_termination_signal)
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to register SIGBREAK shutdown hook: %s",
+                exc,
+            )
 
 def _ensure_playwright_browsers():
     """Auto-install Playwright Chromium if missing (needed by browser-use).
@@ -1703,6 +1957,15 @@ def _should_use_merged_mode() -> bool:
     if merged_env in ("0", "false", "no"):
         return False
     return IS_FROZEN
+
+
+def _select_launcher_mode() -> tuple[str, str]:
+    """Select topology while keeping partial existing-service reuse safe."""
+    if not _should_use_merged_mode():
+        return "multi", "configured_multi"
+    if _partial_or_mixed_existing_backend or _existing_neko_services:
+        return "multi", "partial_existing_services"
+    return "merged", "configured_merged"
 
 
 def _prepare_cloudsave_runtime_for_launch() -> dict:
@@ -1798,6 +2061,7 @@ def main():
 
     restart_scheduled = False
     allow_storage_restart = False
+    exit_code = 0
     try:
         port_result = apply_port_strategy()
         if port_result == "attach":
@@ -1845,12 +2109,27 @@ def main():
         # ── 合并 / 多进程模式选择 ──
         # 打包环境默认合并（省内存），开发环境默认分离（方便调试）。
         # 可通过环境变量 NEKO_MERGED=1/0 强制覆盖。
-        if _should_use_merged_mode():
+        selected_mode, mode_reason = _select_launcher_mode()
+        if mode_reason == "partial_existing_services":
+            print(
+                "[Launcher] Partial existing-service reuse requires multi-process mode; "
+                "merged mode was not started.",
+                flush=True,
+            )
+            emit_frontend_event(
+                "topology_fallback",
+                {
+                    "selected_mode": "multi",
+                    "reason": mode_reason,
+                    "reused_port_keys": sorted(_existing_neko_services),
+                },
+            )
+        if selected_mode == "merged":
             os.environ["NEKO_LAUNCH_MODE"] = "merged"
             allow_storage_restart = True
             print("\n[Launcher] 合并进程模式\n", flush=True)
-            run_merged_servers()
-            return 0
+            exit_code = int(run_merged_servers() or 0)
+            return exit_code
 
         os.environ["NEKO_LAUNCH_MODE"] = "multi"
 
@@ -1982,7 +2261,16 @@ def main():
             pass
         print("\n\n收到中断信号，准备优雅关闭子进程...", flush=True)
 
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        if exit_code != 0:
+            print(f"\nLauncher exited with status {exit_code}", flush=True)
+            report_startup_failure(
+                f"Launcher/SystemExit propagated with status {exit_code}"
+            )
+
     except Exception as e:
+        exit_code = 1
         print(f"\n发生错误: {e}", flush=True)
         report_startup_failure(f"Launcher unhandled exception: {e}")
     finally:
@@ -2071,8 +2359,8 @@ def main():
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
         if os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower() == "merged":
-            os._exit(0)
-    return 0
+            os._exit(exit_code)
+    return exit_code
 
 
 def start_launcher() -> int:

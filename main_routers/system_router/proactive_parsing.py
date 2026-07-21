@@ -25,6 +25,19 @@ from ._shared import logger
 import re
 
 
+def _interleave_link_groups(candidate_groups: list[list[dict]]) -> list[dict]:
+    """Interleave non-empty link groups row by row until all are exhausted."""
+    groups = [group for group in candidate_groups if group]
+    links: list[dict] = []
+    row = 0
+    while any(row < len(group) for group in groups):
+        for group in groups:
+            if row < len(group):
+                links.append(group[row])
+        row += 1
+    return links
+
+
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
@@ -38,12 +51,36 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     try:
         if mode == 'news':
             news = raw_data.get('news', {})
-            items = news.get('trending', [])
-            for item in items:
+            weibo_or_twitter: list[dict] = []
+            for item in (news.get('trending', []) or []):
                 title = item.get('word', '') or item.get('name', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
+                    weibo_or_twitter.append({
+                        'title': title,
+                        'url': url,
+                        'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter',
+                    })
+            xhh_links: list[dict] = []
+            for post in (raw_data.get('xhh', {}).get('posts', []) or []):
+                title = post.get('title', '')
+                url = post.get('url', '')
+                if title and url:
+                    xhh_links.append({'title': title, 'url': url, 'source': '小黑盒'})
+
+            tieba_links: list[dict] = []
+            tieba = raw_data.get('tieba', {}) or {}
+            posts = tieba.get('posts', []) or (tieba.get('tieba', {}) or {}).get('posts', [])
+            topics = tieba.get('topics', []) or (tieba.get('tieba', {}) or {}).get('topics', [])
+            for item in list(posts or []) + list(topics or []):
+                title = item.get('title', '') or item.get('topic_name', '') or item.get('word', '')
+                url = item.get('url', '')
+                if title and url:
+                    tieba_links.append({'title': title, 'url': url, 'source': '贴吧'})
+
+            # news 共用一个 Phase 1 候选额度；交错合并避免微博先占满 10 条后
+            # 小黑盒或贴吧只能拿到尾部少量名额。
+            links.extend(_interleave_link_groups([weibo_or_twitter, xhh_links, tieba_links]))
         
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -52,8 +89,9 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
-        
+                    default_source = 'B站' if raw_data.get('region', 'china') == 'china' else 'YouTube'
+                    links.append({'title': title, 'url': url, 'source': item.get('source') or default_source})
+
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})
             for v in (bilibili.get('videos', []) or []):
@@ -78,49 +116,33 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
 
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
-            if region == 'china':
+            # 每个平台先规范化为独立队列，再轮询交错。Phase 1 总候选只有
+            # 12 条，若按平台整段追加，排在后面的来源会长期进不了候选池。
+            platform_specs = (
+                [
+                    ('bilibili_dynamic', 'dynamics', ('content',), 'B站'),
+                    ('weibo_dynamic', 'statuses', ('content',), '微博'),
+                    ('douyin_dynamic', 'dynamics', ('content',), '抖音'),
+                    ('kuaishou_dynamic', 'dynamics', ('content',), '快手'),
+                ]
+                if region == 'china'
+                else [
+                    ('reddit_dynamic', 'posts', ('title', 'content'), 'Reddit'),
+                    ('twitter_dynamic', 'tweets', ('content',), 'Twitter'),
+                ]
+            )
+            platform_links: list[list[dict]] = []
+            for data_key, items_key, title_keys, source_name in platform_specs:
+                group: list[dict] = []
+                for item in (raw_data.get(data_key, {}).get(items_key, []) or []):
+                    title = next((item.get(key, '') for key in title_keys if item.get(key)), '')
+                    url = item.get('url', '')
+                    if title and url:
+                        group.append({'title': title, 'url': url, 'source': source_name})
+                if group:
+                    platform_links.append(group)
 
-                b_dyn = raw_data.get('bilibili_dynamic', {})
-                for d in (b_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'B站'})
-                
-                w_dyn = raw_data.get('weibo_dynamic', {})
-                for d in (w_dyn.get('statuses', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '微博'})
-                        
-                d_dyn = raw_data.get('douyin_dynamic', {})
-                for d in (d_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '抖音'})
-
-                k_dyn = raw_data.get('kuaishou_dynamic', {})
-                for d in (k_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '快手'})
-            else:
-                r_dyn = raw_data.get('reddit_dynamic', {})
-                for d in (r_dyn.get('posts', []) or []):
-                    title = d.get('title', '') or d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Reddit'})
-                
-                t_dyn = raw_data.get('twitter_dynamic', {})
-                for d in (t_dyn.get('tweets', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Twitter'})
+            links.extend(_interleave_link_groups(platform_links))
 
         elif mode == 'music':
             items = raw_data.get('data', [])
@@ -150,7 +172,7 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'^[ \t]*(?:话题|Topic|話題|주제)[ \t]*[：:][ \t]*(.+)',
+        'title': r'^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)',
         'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
         'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
     }

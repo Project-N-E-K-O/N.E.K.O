@@ -74,7 +74,7 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
-def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
+def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
     chat_settings_block = source.split("const chatToggles = [", 1)[1].split("];", 1)[0]
 
@@ -82,7 +82,8 @@ def test_chat_settings_cat_audio_toggle_is_under_auto_cat_and_dependent():
     assert "id: 'cat-audio'" in chat_settings_block
     assert chat_settings_block.index("id: 'auto-cat'") < chat_settings_block.index("id: 'cat-audio'")
     assert "labelKey: 'settings.toggles.catAudio'" in chat_settings_block
-    assert "dependsOnToggleId: 'auto-cat'" in chat_settings_block
+    cat_audio_config = chat_settings_block.split("{ id: 'cat-audio'", 1)[1].split("}", 1)[0]
+    assert "dependsOnToggleId" not in cat_audio_config
     assert "neko:auto-cat-setting-changed" not in source
 
     cat_audio_init_block = source.split("} else if (toggle.id === 'cat-audio'", 1)[1].split(
@@ -271,6 +272,10 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
         "function createResizeEdges",
         1,
     )[0]
+    effective_composer_hidden_block = source.split("function getEffectiveComposerHidden()", 1)[1].split(
+        "function getNekoGoodbyeModeActive",
+        1,
+    )[0]
 
     assert "goodbyeComposerHidden: false" in source
     assert "function getEffectiveComposerHidden()" in source
@@ -280,7 +285,8 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "&& window.isNekoGoodbyeModeActive()" in source
     assert "function getEffectiveComposerAttachmentsVisible()" in source
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
-    assert "return !!(state.composerHidden || state.goodbyeComposerHidden);" in source
+    assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
+    assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -579,6 +585,8 @@ def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
         1,
     )[0]
     assert "compactInputLocked: next" in input_lock_block
+    assert "var previousAttachmentsVisible = getEffectiveComposerAttachmentsVisible();" in input_lock_block
+    assert "syncComposerAttachmentsVisibility(previousAttachmentsVisible);" in input_lock_block
     assert "setHomeTutorialInteractionLocked(next" not in input_lock_block
     assert "disabled={compactCapsuleEntryLocked}" in capsule_block
     assert "if (compactCapsuleEntryLocked) return;" in capsule_block
@@ -1745,6 +1753,22 @@ def test_moved_drag_suppresses_trailing_release_click():
         1,
     )[1]
     assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
+
+
+def test_minimized_yarn_drag_reports_forced_release_as_cancel():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    stop_block = script.split("function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
+    assert "dispatchMinimizedYarnDragPhase(opts.suppressClick ? 'cancel' : 'end'" in stop_block
+
+    touch_cancel_block = script.split("document.addEventListener('touchcancel'", 1)[1].split(
+        ");",
+        1,
+    )[0]
+    assert "suppressClick: true" in touch_cancel_block
 
 
 def test_compact_minimize_targets_inline_yarn_ball_button_center():

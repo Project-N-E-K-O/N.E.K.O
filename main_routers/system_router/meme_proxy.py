@@ -37,6 +37,10 @@ MEME_PROXY_CACHE = TTLCache(
 
 @router.get('/meme/proxy-image')
 async def proxy_meme_image(url: str):
+    return await fetch_meme_image_response(url, write_cache=True)
+
+
+async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
     """
     Proxy a remote meme image, solving CORS issues, with SSRF protection.
     """
@@ -171,14 +175,16 @@ async def proxy_meme_image(url: str):
                             logger.warning(f"[Meme Proxy] 资源过大 (实际读取): {len(body)}")
                             return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
 
+                    body_bytes = bytes(body)
                     # 存入 TTLCache
-                    MEME_PROXY_CACHE[cache_key] = {
-                        'body': bytes(body),
-                        'content_type': content_type
-                    }
+                    if write_cache:
+                        MEME_PROXY_CACHE[cache_key] = {
+                            'body': body_bytes,
+                            'content_type': content_type
+                        }
                     
                     return Response(
-                        content=bytes(body),
+                        content=body_bytes,
                         media_type=content_type,
                         headers={
                             'Cache-Control': 'public, max-age=86400',
@@ -210,9 +216,11 @@ async def proxy_meme_image(url: str):
                             body.extend(chunk)
                             if len(body) > MAX_IMAGE_SIZE:
                                 return JSONResponse(content={"success": False, "error": "资源超过大小限制"}, status_code=413)
-                        MEME_PROXY_CACHE[cache_key] = {'body': bytes(body), 'content_type': ct}
+                        body_bytes = bytes(body)
+                        if write_cache:
+                            MEME_PROXY_CACHE[cache_key] = {'body': body_bytes, 'content_type': ct}
                         return Response(
-                            content=bytes(body), media_type=ct,
+                            content=body_bytes, media_type=ct,
                             headers={'Cache-Control': 'public, max-age=86400', 'X-Cache': 'MISS-SSL-FALLBACK', 'X-Content-Type-Options': 'nosniff'}
                         )
             except Exception as fallback_e:

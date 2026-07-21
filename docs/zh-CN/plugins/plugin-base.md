@@ -249,14 +249,13 @@ recent_events = recent_events.filter(type="note_created").sort(
 # 读取最近消息
 recent_messages = await self.bus.messages.get(max_count=20)
 
-# 读取某个 bucket 的记忆记录
+# 从内存 bucket 读取近期用户话语事件
 memory_records = await self.bus.memory.get(bucket_id="default", limit=20)
-
-# 语义检索是独立的 context 操作
-matches = await self.ctx.query_memory("default", "用户偏好")
 ```
 
 列表接口为 `filter` / `where`、`sort`、`limit`、`watch`。可调用形式 `filter(predicate)`、`where(predicate)` 与 `sort(key=...)` 仅处理本地快照，因此 watcher 链必须使用结构化 `filter(field=value, ...)` 与 `sort(by=...)`。只有 `messages`、`events`、`lifecycle` 支持 `watch()`；`conversations` 与 `memory` 是只读快照。watcher 只接受 `add`、`del`、`change`。
+
+`memory` bucket 有容量上限，在进程内保留一小时。它是插件上下文，不是角色持久化的事实、反思或人格。`ctx.query_memory(...)` 只为兼容而保留，它调用已弃用的占位端点，不执行语义召回。
 
 ---
 

@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .contracts import COMBAT_STRESS, CRITICAL_RISK, DEAD, BattleEvent, category_allowed
+from .contracts import (
+    COMBAT_STRESS,
+    CRITICAL_RISK,
+    DEAD,
+    BattleEvent,
+    broadcast_category_enabled,
+    broadcast_frequency_multiplier,
+    category_allowed,
+)
 from .safety_guard import SafetyGuard
 
 class Arbiter:
@@ -39,6 +47,9 @@ class Arbiter:
         kill_coalesce_window = self.safety.config.kill_coalesce_window_seconds
         survivors: list[BattleEvent] = []
         for c in candidates:
+            if not broadcast_category_enabled(self.safety.config, c.event_id, c.category, c.level):
+                chain.append(_rec(c, "dropped", "broadcast_category_disabled"))
+                continue
             allowed, gate_reason = _event_allowed(c, scenario)
             if not allowed:
                 if c.event_id == "you_killed" and scenario == DEAD and kill_coalesce_window > 0:
@@ -58,6 +69,8 @@ class Arbiter:
                 chain.append(_rec(c, "dropped", gate_reason))
                 continue
             cd = c.spec.cooldown_seconds
+            if cd > 0 and c.level != "critical":
+                cd *= broadcast_frequency_multiplier(self.safety.config.broadcast_frequency)
             last_at, last_level = self._last_fired.get(c.event_id, (-1e9, ""))
             critical_upgrade = c.level == "critical" and last_level != "critical"
             coalesced_kill = c.event_id == "you_killed" and kill_coalesce_window > 0
@@ -117,16 +130,27 @@ class Arbiter:
 
         rate_remaining = self.safety.rate_limit_remaining(now)
         effective_kill_window = _kill_coalesce_window_for(self._kill_window, kill_coalesce_window)
+        kill_max_hold_reached = (
+            self._kill_window is not None
+            and effective_kill_window > 0
+            and now - self._kill_window_first_at >= _kill_coalesce_max_hold_seconds(effective_kill_window)
+        )
         if (
             self._kill_window is not None
             and effective_kill_window > 0
             and (
                 now - self._kill_window_started_at >= effective_kill_window
-                or now - self._kill_window_first_at >= _kill_coalesce_max_hold_seconds(effective_kill_window)
+                or kill_max_hold_reached
             )
             and rate_remaining <= 0
         ):
             chosen = self._kill_window
+            if not broadcast_category_enabled(self.safety.config, chosen.event_id, chosen.category, chosen.level):
+                self._kill_window = None
+                self._kill_window_first_at = 0.0
+                self._kill_window_started_at = 0.0
+                chain.append(_rec(chosen, "dropped", "broadcast_category_disabled_on_flush"))
+                return None, chain
             allowed, gate_reason = _event_allowed(chosen, scenario)
             if not allowed:
                 if chosen.event_id == "you_killed" and scenario == DEAD:
@@ -140,7 +164,12 @@ class Arbiter:
                 self._kill_window_started_at = 0.0
                 chain.append(_rec(chosen, "dropped", gate_reason.replace("scenario_gated", "scenario_gated_on_flush", 1)))
                 return None, chain
-            if chosen.event_id == "you_killed" and scenario == COMBAT_STRESS and _kill_waits_for_combat_stress(chosen):
+            if (
+                chosen.event_id == "you_killed"
+                and scenario == COMBAT_STRESS
+                and _kill_waits_for_combat_stress(chosen)
+                and not kill_max_hold_reached
+            ):
                 chain.append(_rec(chosen, "buffered", "scenario_gated_deferred(COMBAT_STRESS)"))
                 return None, chain
             self._kill_window = None
@@ -153,6 +182,9 @@ class Arbiter:
         if self._window_best is not None and rate_remaining <= 0:
             chosen = self._window_best
             self._window_best = None
+            if not broadcast_category_enabled(self.safety.config, chosen.event_id, chosen.category, chosen.level):
+                chain.append(_rec(chosen, "dropped", "broadcast_category_disabled_on_flush"))
+                return None, chain
             # flush 时按【当前】scenario 重新门控：缓冲期内场景可能已切到 DEAD/BATTLE_ENDED/OUT_OF_BATTLE
             allowed, gate_reason = _event_allowed(chosen, scenario)
             if not allowed:

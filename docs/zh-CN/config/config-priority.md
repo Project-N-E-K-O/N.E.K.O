@@ -1,46 +1,24 @@
 # 配置优先级
 
-N.E.K.O. 通过分层优先级系统解析配置值。高优先级的来源会覆盖低优先级的来源。
+项目不存在统一的“环境变量 > 用户文件 > Provider 文件 > 代码”规则，必须按配置面判断。
 
-## 优先级顺序
+## 用户与模型
 
-```
-┌─────────────────────────────────┐  最高优先级
-│  1. 环境变量                     │  NEKO_* 前缀
-│     （在 shell 或 .env 中设置）  │
-├─────────────────────────────────┤
-│  2. 用户配置文件                 │  core_config.json
-│   （平台 app-data/N.E.K.O/）    │  user_preferences.json
-├─────────────────────────────────┤
-│  3. API 提供商配置               │  config/api_providers.json
-│     （项目目录）                 │
-├─────────────────────────────────┤
-│  4. 代码默认值                   │  config/__init__.py
-│     （硬编码的回退值）           │
-└─────────────────────────────────┘  最低优先级
-```
+`utils/config_manager/` 从代码默认值、选中的 Provider profile 和可写 `core_config.json` 组装运行时配置。Provider、密钥、已验证端点和支持的角色覆盖由该加载器处理。
 
-用户配置文件位于平台的 app-data 目录：Windows 上为 `%LOCALAPPDATA%/N.E.K.O/`，macOS 上为 `~/Library/Application Support/N.E.K.O/`，Linux 上为 `~/.local/share/N.E.K.O/`。`~/Documents/N.E.K.O/` 现在仅作为遗留回退路径。
+Provider profile 来自 `config/api_providers.json`。文件缺失或损坏时，core/assist 回退到代码默认值；assist JSON 覆盖同名代码默认值，并保留只存在于代码中的回退 profile。
 
-## 解析示例
+## 端口
 
-以摘要模型为例：
+`config/network.py` 依次读取：
 
-1. 检查 `core_config.json` 中是否有自定义摘要模型 URL/名称
-2. 检查 `api_providers.json` 中所选 Assist 提供商的 `summary_model`
-3. 回退到 `config/__init__.py` 中的 `DEFAULT_SUMMARY_MODEL = "qwen-plus"`
+1. `NEKO_<PORT_NAME>`
+2. 兼容用的裸 `<PORT_NAME>`
+3. Electron 的 `port_config.json`
+4. 代码默认端口
 
-## 何时使用各层级
+首选端口被占用时，launcher 可能选择回退端口并传给子服务。
 
-| 层级 | 最适用于 |
-|------|----------|
-| 环境变量 | Docker 部署、CI/CD、密钥管理 |
-| 用户配置文件 | Web UI 配置（自动管理） |
-| API 提供商配置 | 每个提供商的默认模型分配 |
-| 代码默认值 | 未配置任何内容时的回退值 |
+## Docker
 
-## Docker 特别说明
-
-在 Docker 部署中，环境变量是主要的配置机制。`entrypoint.sh` 脚本会在启动时自动从 `NEKO_*` 环境变量生成 `core_config.json`。
-
-详见 [Docker 部署](/deployment/docker)。
+`docker/entrypoint.sh` 只在 `/app/config/core_config.json` 不存在，或设置 `NEKO_FORCE_ENV_UPDATE` 时，用 API 相关 `NEKO_*` 生成它。这是初始化，不是通用实时覆盖。持久化用户数据可能已有更新配置，启动后应在 Web UI 确认实际值。

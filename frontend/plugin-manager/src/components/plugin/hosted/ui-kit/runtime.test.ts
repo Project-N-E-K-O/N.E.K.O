@@ -66,6 +66,42 @@ describe('hosted ui runtime', () => {
     expect(root.querySelector('#counter')?.textContent).toBe('1')
   })
 
+  it('applies a controlled Select value after mounting its options', () => {
+    ui.render(
+      ui.h(ui.Select, {
+        value: 'solo_stream',
+        options: [
+          { value: 'co_stream', label: 'Co-stream' },
+          { value: 'solo_stream', label: 'Solo stream' },
+        ],
+      }),
+      root,
+    )
+
+    expect(root.querySelector<HTMLSelectElement>('select')?.value).toBe('solo_stream')
+  })
+
+  it('forwards disabled state to hosted form controls', () => {
+    ui.render(
+      ui.h(
+        'section',
+        null,
+        ui.h(ui.Input, { disabled: true, value: 'locked' }),
+        ui.h(ui.Textarea, { disabled: true, value: 'locked' }),
+        ui.h(ui.Select, {
+          disabled: true,
+          value: 'locked',
+          options: [{ value: 'locked', label: 'Locked' }],
+        }),
+      ),
+      root,
+    )
+
+    expect(root.querySelector<HTMLInputElement>('input')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLTextAreaElement>('textarea')?.disabled).toBe(true)
+    expect(root.querySelector<HTMLSelectElement>('select')?.disabled).toBe(true)
+  })
+
   it('renders high-value layout primitives with stable CSS variables', () => {
     ui.render(
       ui.h(

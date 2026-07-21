@@ -53,9 +53,40 @@ def test_release_and_expiry() -> None:
     credit_id = ledger.list_credits(now)["credits"][0]["id"]
     operation_id = "33333333-3333-4333-8333-333333333333"
     ledger.reserve_credit(credit_id, operation_id, now=now)
-    ledger.release_credit(credit_id, operation_id)
+    ledger.release_credit(credit_id, operation_id, now=now)
     assert ledger.list_credits(now)["count"] == 1
     assert ledger.list_credits(now + timedelta(minutes=2))["count"] == 0
+
+
+@pytest.mark.parametrize("transition", ["commit", "release"])
+def test_expired_reservation_cannot_transition_back_to_active_or_consumed(
+    transition: str,
+) -> None:
+    now = datetime(2026, 7, 13, 23, 59, tzinfo=UTC)
+    ledger.grant_credit(
+        {"trigger_type": "idle", "idem_key": f"expired-{transition}-idem"},
+        now=now,
+        rarity="N",
+    )
+    credit_id = ledger.list_credits(now)["credits"][0]["id"]
+    operation_id = "33333333-3333-4333-8333-333333333334"
+    ledger.reserve_credit(credit_id, operation_id, now=now)
+    expired_at = now + timedelta(minutes=2)
+
+    with pytest.raises(RuntimeError, match="reservation_not_active"):
+        if transition == "commit":
+            ledger.commit_credit(
+                credit_id,
+                operation_id,
+                "44444444-4444-4444-8444-444444444444",
+                now=expired_at,
+            )
+        else:
+            ledger.release_credit(credit_id, operation_id, now=expired_at)
+
+    persisted = ledger._load()["credits"][0]
+    assert persisted["status"] == "expired"
+    assert persisted["expired_at"] == ledger._iso(expired_at)
 
 
 def test_daily_and_trigger_caps() -> None:
@@ -74,4 +105,25 @@ def test_daily_and_trigger_caps() -> None:
         "reason": "trigger_daily_cap",
         "available": 4,
         "active_count": 2,
+    }
+
+    for index in range(4):
+        assert ledger.grant_credit(
+            {
+                "trigger_type": "emotion_combo",
+                "idem_key": f"emotion-{index}-idem",
+            },
+            now=now,
+            rarity="N",
+        )["granted"]
+    daily_blocked = ledger.grant_credit(
+        {"trigger_type": "emotion_combo", "idem_key": "emotion-blocked-idem"},
+        now=now,
+        rarity="N",
+    )
+    assert daily_blocked == {
+        "granted": False,
+        "reason": "daily_cap",
+        "available": 0,
+        "active_count": 6,
     }

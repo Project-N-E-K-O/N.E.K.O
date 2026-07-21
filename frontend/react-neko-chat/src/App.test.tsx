@@ -17,6 +17,7 @@ import {
 import MessageList from './MessageList';
 import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { getChatCompanionEmptyStateFallback, getChatEmptyStateFallback } from './chat-copy';
+import { MEME_IMAGE_LOAD_FAILED_STICKER_URL } from './memeImageFallback';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 import compactChatStyles from './styles.css?raw';
 
@@ -843,6 +844,9 @@ describe('App', () => {
     const img = container.querySelector('.compact-meme-overlay img');
     expect(img).not.toBeNull();
     expect(img).toHaveAttribute('src', '/api/meme/proxy-image?url=x');
+    expect(img).toHaveAttribute('loading', 'eager');
+    expect(img).toHaveAttribute('fetchpriority', 'high');
+    expect(img).not.toHaveAttribute('data-neko-image-load-failed-sticker');
 
     const caption = parseChatMessage({
       id: 'assistant-newer',
@@ -1040,6 +1044,8 @@ describe('App', () => {
       expect(img).not.toBeNull();
       expect(container.querySelector('.compact-meme-overlay-close')).toBeNull();
       fireEvent.error(img as Element);
+      expect(img).toHaveAttribute('src', MEME_IMAGE_LOAD_FAILED_STICKER_URL);
+      expect(img).toHaveAttribute('data-neko-image-load-failed-sticker', 'true');
       expect(geometryRefreshes.length).toBe(0);
       await waitFor(() => expect(geometryRefreshes.length).toBeGreaterThan(0));
       expect(container.querySelector('.compact-meme-overlay-close')).not.toBeNull();
@@ -4929,7 +4935,7 @@ describe('App', () => {
       ['.compact-input-tool-item-jukebox', 'Jukebox test label'],
       ['.compact-input-tool-item-translate', 'Translate test label'],
       ['.compact-input-tool-item-galgame', 'Galgame test label'],
-      ['.compact-input-tool-item-export', 'Show history actions'],
+      ['.compact-input-tool-item-export', 'Export conversation history'],
       ['.compact-input-tool-item-avatar', 'Avatar tools'],
     ];
 
@@ -5252,7 +5258,10 @@ describe('App', () => {
       const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
       expect(editButton).not.toBeNull();
       expect(editButton.querySelectorAll('img')).toHaveLength(1);
-      expect(editButton.querySelector('img')).toHaveAttribute('src', '/static/icons/edit_tool_unified.png');
+      expect(editButton.querySelector('img')).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/ui/edit.png',
+      );
       Object.defineProperty(editButton, 'getBoundingClientRect', {
         configurable: true,
         value: () => ({
@@ -5418,13 +5427,22 @@ describe('App', () => {
     const editImage = editButton?.querySelector('img');
     const quickbarImage = container.querySelector('.avatar-tool-quickbar-image') as HTMLImageElement;
     expect(editButton).not.toBeNull();
-    expect(editImage).toHaveAttribute('src', '/static/icons/edit_tool_unified.png?v=asset%201');
-    expect(quickbarImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+    expect(editImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/ui/edit.png?v=asset%201',
+    );
+    expect(quickbarImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
+    );
 
     fireEvent.click(editButton);
     const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
     const managerImage = dialog.querySelector('.avatar-tool-manager-tool-image') as HTMLImageElement;
-    expect(managerImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+    expect(managerImage).toHaveAttribute(
+      'src',
+      '/static/assets/avatar-tools/lollipop/primary-icon.png?v=asset%201',
+    );
   });
 
   it('temporarily restores body pointer events while the avatar tool manager is open', async () => {
@@ -8771,7 +8789,7 @@ describe('App', () => {
       });
 
       const avatarImage = () => document.body.querySelector('.avatar-tool-visual-overlay-image-lollipop');
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
       expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
         active: true,
         toolId: 'lollipop',
@@ -8786,7 +8804,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(200);
@@ -8797,7 +8815,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(90);
       });
 
-      expect(avatarImage()).toHaveAttribute('src', '/static/icons/chat_sugar1.png');
+      expect(avatarImage()).toHaveAttribute('src', '/static/assets/avatar-tools/lollipop/primary-icon.png');
     } finally {
       vi.useRealTimers();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;
@@ -9044,7 +9062,7 @@ describe('App', () => {
       cursorScreenY: 420,
       tool: expect.objectContaining({
         id: 'hammer',
-        pointerImagePath: '/static/icons/chat_hammer1_cursor.png',
+        pointerImagePath: '/static/assets/avatar-tools/hammer/primary-pointer.png',
         pointerHotspotX: 50,
         pointerHotspotY: 54,
         pointerNaturalWidth: 100,
@@ -9097,13 +9115,19 @@ describe('App', () => {
       const overlay = queryAvatarToolVisualOverlay();
       expect(overlay).not.toBeNull();
       expect(overlay).toHaveClass('is-compact');
-      expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1_cursor.png');
+      expect(overlay?.querySelector('img')).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/fist/primary-pointer.png',
+      );
 
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
 
       await waitFor(() => {
         expect(overlay).not.toHaveClass('is-compact');
-        expect(overlay?.querySelector('img')).toHaveAttribute('src', '/static/icons/cat_claw1.png');
+        expect(overlay?.querySelector('img')).toHaveAttribute(
+          'src',
+          '/static/assets/avatar-tools/fist/primary-icon.png',
+        );
         expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
           active: true,
           toolId: 'fist',
@@ -9351,12 +9375,18 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(100);
       });
 
-      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute('src', '/static/icons/chat_hammer2_cursor.png');
+      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/hammer/secondary-pointer.png',
+      );
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(120);
       });
-      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute('src', '/static/icons/chat_hammer1_cursor.png');
+      expect(queryAvatarToolImpactPointerImage()).toHaveAttribute(
+        'src',
+        '/static/assets/avatar-tools/hammer/primary-pointer.png',
+      );
     } finally {
       vi.useRealTimers();
       restoreLive2dManager();
