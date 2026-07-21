@@ -2630,7 +2630,10 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "e.preventDefault();" in drop_block
     assert "e.stopPropagation();" in drop_block
     assert "showHomeTutorialLockedToast();" in drop_block
-    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "mod.importImageFilesToPendingList(imageFiles, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "window.NekoAvatarDropParser" in drop_block
+    assert "parser.parseFiles(otherFiles)" in drop_block
+    assert "mod.sendAvatarDropPayload" in drop_block
 
 
 def test_chat_composer_user_images_use_text_attachment_input_type():
