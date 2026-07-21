@@ -37,6 +37,26 @@ class DetectorCandidateKey:
 
 
 @dataclass(frozen=True, slots=True)
+class SmartTurnCompletionFence:
+    """Immutable detector boundary accepted with one SmartTurn completion."""
+
+    detector_epoch: int
+    candidate_generation: int
+    through_sequence_no: int
+    semantic_generation: int
+    semantic_turn_id: int
+    successor_candidate_generation: int
+    successor_present: bool
+
+    @property
+    def candidate(self) -> DetectorCandidateKey:
+        return DetectorCandidateKey(
+            self.detector_epoch,
+            self.candidate_generation,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BoundDetectorTurn:
     """One-time binding between a detector candidate and a logical ASR turn."""
 
