@@ -2,7 +2,9 @@ import { defineConfig } from 'vitepress'
 import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isNoindexRoute } from './indexing-policy.mjs'
 
+const SITE_ORIGIN = 'https://project-neko.online'
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC_EXCLUDE = new Set([
   'README_en.md',
@@ -16,6 +18,13 @@ const SRC_EXCLUDE = new Set([
   'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
+
+function filterSitemapItems<T extends { url: string }>(items: T[]): T[] {
+  return items.filter((item) => {
+    const route = new URL(item.url, `${SITE_ORIGIN}/`).pathname
+    return !isNoindexRoute(route)
+  })
+}
 
 function collectPageRoutes(directory = DOCS_ROOT): string[] {
   const routes: string[] = []
@@ -563,6 +572,10 @@ export default defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  sitemap: {
+    hostname: SITE_ORIGIN,
+    transformItems: filterSitemapItems,
+  },
 
   // Keep this list in sync with SRC_EXCLUDE in
   // scripts/check_docs_no_relative_paths.py.
