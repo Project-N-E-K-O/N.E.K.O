@@ -332,6 +332,8 @@ _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
     (re.compile(r"^chat/(?=\s|$)\s*"), "CHAT"),
     (re.compile(r"^/music(?=\s|$)\s*"), "MUSIC"),
     (re.compile(r"^music/(?=\s|$)\s*"), "MUSIC"),
+    (re.compile(r"^/屏幕观察(?=\s|$)\s*"), "CHAT"),
+    (re.compile(r"^屏幕观察/(?=\s|$)\s*"), "CHAT"),
     (re.compile(r"^/屏幕(?=\s|$)\s*"), "CHAT"),
     (re.compile(r"^屏幕/(?=\s|$)\s*"), "CHAT"),
 )
