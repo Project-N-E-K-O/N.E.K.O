@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="page.title">B站私信监听</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <main class="app-container">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">N.E.K.O · BILIBILI</p>
+                <h1 data-i18n="page.title">B站私信监听</h1>
+                <p class="subtitle">在本机保存登录 Cookie，控制私信监听与自动回复。</p>
+            </div>
+            <button id="btn-refresh" class="button secondary" type="button">刷新状态</button>
+        </header>
+
+        <section class="card status-card">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">RUNTIME</p>
+                    <h2 data-i18n="panel.status.title">插件状态</h2>
+                </div>
+                <span id="listener-status" class="pill idle">已停止</span>
+            </div>
+            <p id="credential-summary" class="hint">尚未完整配置 SESSDATA 和 bili_jct。</p>
+            <div class="actions">
+                <button id="btn-start" class="button primary" type="button">开始监听</button>
+                <button id="btn-stop" class="button danger" type="button" hidden>停止监听</button>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">CREDENTIALS</p>
+                    <h2 data-i18n="panel.config.title">登录凭据</h2>
+                </div>
+                <span id="credential-pill" class="pill idle">未配置</span>
+            </div>
+            <p class="hint">从已登录 bilibili.com 的浏览器 Cookie 中复制。留空的输入框不会覆盖已经保存的值。</p>
+            <div class="credential-grid">
+                <label class="field full">
+                    <span data-i18n="config.sesdata_label">SESSDATA</span>
+                    <input id="cfg-sesdata" type="password" autocomplete="off" spellcheck="false" placeholder="必填">
+                    <small id="state-sesdata">未保存</small>
+                </label>
+                <label class="field">
+                    <span data-i18n="config.bili_jct_label">bili_jct</span>
+                    <input id="cfg-bili-jct" type="password" autocomplete="off" spellcheck="false" placeholder="必填">
+                    <small id="state-bili-jct">未保存</small>
+                </label>
+                <label class="field">
+                    <span data-i18n="config.buvid3_label">buvid3</span>
+                    <input id="cfg-buvid3" type="password" autocomplete="off" spellcheck="false">
+                    <small id="state-buvid3">未保存</small>
+                </label>
+                <label class="field">
+                    <span data-i18n="config.dedeuserid_label">DedeUserID</span>
+                    <input id="cfg-dedeuserid" type="password" autocomplete="off" spellcheck="false">
+                    <small id="state-dedeuserid">未保存</small>
+                </label>
+                <label class="field">
+                    <span data-i18n="config.ac_time_value_label">ac_time_value</span>
+                    <input id="cfg-ac-time-value" type="password" autocomplete="off" spellcheck="false">
+                    <small id="state-ac-time-value">未保存</small>
+                </label>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="settings-grid">
+                <label class="field">
+                    <span data-i18n="ai.permission_mode_label">权限模式</span>
+                    <select id="cfg-permission-mode">
+                        <option value="allow_list">allow_list · 仅白名单</option>
+                        <option value="deny_list">deny_list · 排除普通用户</option>
+                        <option value="open">open · 所有人</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>最大并发消息</span>
+                    <input id="cfg-max-concurrent" type="number" min="1" max="20" value="3">
+                </label>
+                <label class="field">
+                    <span>AI 连接超时（秒）</span>
+                    <input id="cfg-connect-timeout" type="number" min="1" max="120" step="1" value="10">
+                </label>
+                <label class="field">
+                    <span>单轮回复超时（秒）</span>
+                    <input id="cfg-turn-timeout" type="number" min="5" max="600" step="1" value="60">
+                </label>
+            </div>
+
+            <div class="actions split">
+                <button id="btn-clear" class="button danger-ghost" type="button">清除本地凭据</button>
+                <button id="btn-save" class="button primary" type="button">保存配置</button>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="section-head">
+                <div>
+                    <p class="section-kicker">ACCESS</p>
+                    <h2 data-i18n="panel.users.title">信任用户管理</h2>
+                </div>
+                <span id="trusted-count" class="pill">0 人</span>
+            </div>
+            <p class="hint">默认 allow_list 模式下，只有这里配置的用户会获得自动回复。</p>
+            <div class="user-form">
+                <input id="user-uid" type="text" inputmode="numeric" placeholder="B站 UID">
+                <input id="user-nickname" type="text" placeholder="昵称（可选）">
+                <select id="user-level">
+                    <option value="trusted">信任用户</option>
+                    <option value="admin">管理员</option>
+                    <option value="normal">普通用户</option>
+                </select>
+                <button id="btn-add-user" class="button secondary" type="button">添加</button>
+            </div>
+            <div id="trusted-users" class="user-list"></div>
+        </section>
+    </main>
+
+    <div id="toast" class="toast" role="status"></div>
+    <script src="./i18n.js"></script>
+    <script src="./script.js?v=1.1.2"></script>
+</body>
+</html>

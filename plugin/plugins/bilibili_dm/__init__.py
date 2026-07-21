@@ -9,18 +9,27 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from plugin.sdk.plugin import (
     NekoPluginBase, lifecycle, neko_plugin, plugin_entry,
-    Ok, Err, SdkError, tr,
+    Ok, Err, SdkError, tr, ui,
 )
 
 from .bili_client import BiliDMClient
+from .config_store import BiliDMConfigStore
 from .permission import PermissionManager
+
+
+def build_open_ui_payload(*, plugin_id: str, available: bool) -> dict[str, Any]:
+    path = f"/plugin/{plugin_id}/ui/" if available else ""
+    default_message = "UI 已注册" if available else "UI 未注册"
+    return {
+        "available": available,
+        "path": path,
+        "message": default_message,
+    }
 
 
 @neko_plugin
@@ -38,6 +47,8 @@ class BiliDMPlugin(NekoPluginBase):
         super().__init__(ctx)
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
+        self.config_store = BiliDMConfigStore(self.data_path())
+        self._settings: dict[str, Any] = self.config_store.default_config()
 
         # B站客户端
         self.bili_client: Optional[BiliDMClient] = None
@@ -61,7 +72,7 @@ class BiliDMPlugin(NekoPluginBase):
         self._ai_turn_timeout_seconds = 60.0
         self._handler_shutdown_timeout_seconds = 10.0
 
-        # 权限模式（从 plugin.toml 加载）
+        # 权限模式（从插件数据目录的业务配置加载）
         self._permission_mode: str = "allow_list"
 
         # 管理员 UID
@@ -69,6 +80,90 @@ class BiliDMPlugin(NekoPluginBase):
 
         # 配置缓存
         self._cfg: dict = {}
+
+    @staticmethod
+    def _mask_value(value: str) -> str:
+        normalized = str(value or "")
+        if not normalized:
+            return ""
+        if len(normalized) <= 6:
+            return "*" * len(normalized)
+        return f"{normalized[:3]}***{normalized[-3:]}"
+
+    def _credentials_configured(self) -> bool:
+        return all(
+            str(self._settings.get(field) or "").strip()
+            for field in ("sesdata", "bili_jct")
+        )
+
+    def _apply_runtime_settings(self) -> None:
+        settings = self._settings
+        self._permission_mode = str(settings.get("permission_mode") or "allow_list")
+        self._max_concurrent_messages = max(1, int(settings.get("max_concurrent_messages") or 3))
+        self._message_concurrency = asyncio.Semaphore(self._max_concurrent_messages)
+        self._ai_connect_timeout_seconds = max(
+            1.0, float(settings.get("ai_connect_timeout_seconds") or 10.0)
+        )
+        self._ai_turn_timeout_seconds = max(
+            5.0, float(settings.get("ai_turn_timeout_seconds") or 60.0)
+        )
+        self._handler_shutdown_timeout_seconds = max(
+            1.0, float(settings.get("handler_shutdown_timeout_seconds") or 10.0)
+        )
+
+    def _create_bili_client(self) -> None:
+        self.bili_client = BiliDMClient(
+            sesdata=str(self._settings.get("sesdata") or ""),
+            bili_jct=str(self._settings.get("bili_jct") or ""),
+            buvid3=str(self._settings.get("buvid3") or ""),
+            dedeuserid=str(self._settings.get("dedeuserid") or ""),
+            ac_time_value=str(self._settings.get("ac_time_value") or ""),
+            logger=self.logger,
+        )
+
+    async def _load_business_config(self, legacy: dict[str, Any] | None = None) -> dict[str, Any]:
+        if await self.config_store.exists():
+            self._settings = await self.config_store.load()
+            return dict(self._settings)
+
+        initial = self.config_store.default_config()
+        migrated = False
+        legacy = legacy if isinstance(legacy, dict) else {}
+        for key in initial:
+            if key in legacy:
+                initial[key] = legacy[key]
+                migrated = True
+        self._settings = await self.config_store.create(initial)
+        if migrated:
+            self.logger.info("已将旧 plugin.toml 中的 B站私信配置迁移到插件数据目录")
+        return dict(self._settings)
+
+    def _build_dashboard_state(self) -> dict[str, Any]:
+        trusted_users = self.permission_mgr.list_users() if self.permission_mgr else []
+        return {
+            "status": {
+                "listening": self._running,
+                "credentials_configured": self._credentials_configured(),
+            },
+            "credentials": {
+                "sesdata_configured": bool(self._settings.get("sesdata")),
+                "bili_jct_configured": bool(self._settings.get("bili_jct")),
+                "buvid3_configured": bool(self._settings.get("buvid3")),
+                "dedeuserid_configured": bool(self._settings.get("dedeuserid")),
+                "dedeuserid_masked": self._mask_value(str(self._settings.get("dedeuserid") or "")),
+                "ac_time_value_configured": bool(self._settings.get("ac_time_value")),
+            },
+            "settings": {
+                "permission_mode": self._permission_mode,
+                "max_concurrent_messages": self._max_concurrent_messages,
+                "ai_connect_timeout_seconds": self._ai_connect_timeout_seconds,
+                "ai_turn_timeout_seconds": self._ai_turn_timeout_seconds,
+                "handler_shutdown_timeout_seconds": self._handler_shutdown_timeout_seconds,
+                "show_onboarding": bool(self._settings.get("show_onboarding", True)),
+            },
+            "trusted_users": trusted_users,
+            "ui": build_open_ui_payload(plugin_id=self.plugin_id, available=True),
+        }
 
     def _refresh_admin_uid(self) -> None:
         """刷新管理员 UID"""
@@ -135,6 +230,8 @@ class BiliDMPlugin(NekoPluginBase):
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg
         bili_cfg = cfg.get("bilibili_dm", {})
+        bili_cfg = bili_cfg if isinstance(bili_cfg, dict) else {}
+        await self._load_business_config(bili_cfg)
 
         # 初始化权限管理器（优先从 store 加载，回退到 TOML 配置）
         store_users_result = await self.store.get("trusted_users")
@@ -148,31 +245,24 @@ class BiliDMPlugin(NekoPluginBase):
         # 获取管理员 UID
         self._refresh_admin_uid()
 
-        # 读取配置
-        self._permission_mode = str(bili_cfg.get("permission_mode", "allow_list") or "allow_list")
+        self._apply_runtime_settings()
+        self._create_bili_client()
+        if not self._credentials_configured():
+            self.logger.warning("B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写")
 
-        self._max_concurrent_messages = max(1, int(bili_cfg.get("max_concurrent_messages", 3) or 3))
-        self._message_concurrency = asyncio.Semaphore(self._max_concurrent_messages)
-        self._ai_connect_timeout_seconds = max(1.0, float(bili_cfg.get("ai_connect_timeout_seconds", 10.0) or 10.0))
-        self._ai_turn_timeout_seconds = max(5.0, float(bili_cfg.get("ai_turn_timeout_seconds", 60.0) or 60.0))
-        self._handler_shutdown_timeout_seconds = max(1.0, float(bili_cfg.get("handler_shutdown_timeout_seconds", 10.0) or 10.0))
-
-        # 初始化 B站客户端
-        sesdata = bili_cfg.get("sesdata", "")
-        if not sesdata:
-            self.logger.warning("B站 Cookie (SESSDATA) 未配置，请在 plugin.toml 中填写")
-
-        self.bili_client = BiliDMClient(
-            sesdata=sesdata,
-            bili_jct=bili_cfg.get("bili_jct", ""),
-            buvid3=bili_cfg.get("buvid3", ""),
-            dedeuserid=bili_cfg.get("dedeuserid", ""),
-            ac_time_value=bili_cfg.get("ac_time_value", ""),
-            logger=self.logger,
-        )
+        self.register_static_ui("static")
+        self.set_list_actions([
+            {
+                "id": "open_ui",
+                "label": self.i18n.t("ui.actions.open", default="打开 UI"),
+                "kind": "ui",
+                "target": f"/plugin/{self.plugin_id}/ui/",
+                "open_in": "new_tab",
+            }
+        ])
         self.logger.info("B站私信客户端已初始化")
 
-        return Ok({"status": "initialized"})
+        return Ok(self._build_dashboard_state())
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
@@ -184,6 +274,117 @@ class BiliDMPlugin(NekoPluginBase):
 
     # ===== Plugin Entries =====
 
+    @ui.context(id="bilibili_dm")
+    async def get_dashboard_context(self):
+        return {
+            **self._build_dashboard_state(),
+            "actions": [
+                {"id": "get_dashboard_state", "entry_id": "get_dashboard_state"},
+                {"id": "save_settings", "entry_id": "save_settings"},
+                {"id": "clear_credentials", "entry_id": "clear_credentials"},
+                {"id": "start_listening", "entry_id": "start_listening"},
+                {"id": "stop_listening", "entry_id": "stop_listening"},
+                {"id": "add_trusted_user", "entry_id": "add_trusted_user"},
+                {"id": "remove_trusted_user", "entry_id": "remove_trusted_user"},
+            ],
+        }
+
+    async def open_ui(self, **_):
+        return Ok(build_open_ui_payload(plugin_id=self.plugin_id, available=True))
+
+    @plugin_entry(
+        id="get_dashboard_state",
+        name=tr("panel.status.title", default="获取 B站私信插件状态"),
+        description=tr("panel.status.title", default="获取凭证、监听和信任用户状态"),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def get_dashboard_state(self, **_):
+        return Ok(self._build_dashboard_state())
+
+    @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存设置"), refresh_context=True)
+    @plugin_entry(
+        id="save_settings",
+        name=tr("entries.save_settings.name", default="保存 B站私信设置"),
+        description=tr("entries.save_settings.description", default="保存 B站 Cookie 和监听参数到插件数据目录"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "sesdata": {"type": "string"},
+                "bili_jct": {"type": "string"},
+                "buvid3": {"type": "string"},
+                "dedeuserid": {"type": "string"},
+                "ac_time_value": {"type": "string"},
+                "permission_mode": {"type": "string", "enum": ["allow_list", "deny_list", "open"]},
+                "max_concurrent_messages": {"type": "integer"},
+                "ai_connect_timeout_seconds": {"type": "number"},
+                "ai_turn_timeout_seconds": {"type": "number"},
+                "handler_shutdown_timeout_seconds": {"type": "number"},
+                "show_onboarding": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+    )
+    async def save_settings(
+        self,
+        sesdata: Optional[str] = None,
+        bili_jct: Optional[str] = None,
+        buvid3: Optional[str] = None,
+        dedeuserid: Optional[str] = None,
+        ac_time_value: Optional[str] = None,
+        permission_mode: Optional[str] = None,
+        max_concurrent_messages: Optional[int] = None,
+        ai_connect_timeout_seconds: Optional[float] = None,
+        ai_turn_timeout_seconds: Optional[float] = None,
+        handler_shutdown_timeout_seconds: Optional[float] = None,
+        show_onboarding: Optional[bool] = None,
+        **_,
+    ):
+        if self._running:
+            return Err(SdkError("LISTENING_ACTIVE: 请先停止监听，再修改配置"))
+
+        updates = {
+            "sesdata": sesdata,
+            "bili_jct": bili_jct,
+            "buvid3": buvid3,
+            "dedeuserid": dedeuserid,
+            "ac_time_value": ac_time_value,
+            "permission_mode": permission_mode,
+            "max_concurrent_messages": max_concurrent_messages,
+            "ai_connect_timeout_seconds": ai_connect_timeout_seconds,
+            "ai_turn_timeout_seconds": ai_turn_timeout_seconds,
+            "handler_shutdown_timeout_seconds": handler_shutdown_timeout_seconds,
+            "show_onboarding": show_onboarding,
+        }
+        next_settings = dict(self._settings)
+        for key, value in updates.items():
+            if value is not None:
+                next_settings[key] = value
+        self._settings = await self.config_store.save(next_settings)
+        self._apply_runtime_settings()
+        self._create_bili_client()
+        self.logger.info("B站私信面板配置已保存")
+        payload = self._build_dashboard_state()
+        payload["persisted"] = True
+        return Ok(payload)
+
+    @ui.action(id="clear_credentials", label=tr("entries.clear_credential.name", default="清除凭据"), refresh_context=True)
+    @plugin_entry(
+        id="clear_credentials",
+        name=tr("entries.clear_credential.name", default="清除 B站凭据"),
+        description=tr("entries.clear_credential.description", default="停止监听并清除本地 B站 Cookie"),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
+    async def clear_credentials(self, **_):
+        await self._stop_runtime()
+        next_settings = dict(self._settings)
+        for field in self.config_store.CREDENTIAL_FIELDS:
+            next_settings[field] = ""
+        self._settings = await self.config_store.save(next_settings)
+        self._create_bili_client()
+        self.logger.info("本地 B站私信凭据已清除")
+        return Ok(self._build_dashboard_state())
+
+    @ui.action(id="start_listening", label=tr("actions.start_listening.label", default="开始监听"), refresh_context=True)
     @plugin_entry(
         id="start_listening",
         name=tr("entries.start_listening.name", default="开始监听"),
@@ -195,8 +396,11 @@ class BiliDMPlugin(NekoPluginBase):
         if self._running:
             return Ok({"status": "already_running"})
 
-        if not self.bili_client:
-            return Err(SdkError("NOT_INITIALIZED: B站客户端未初始化"))
+        self._settings = await self.config_store.load()
+        self._apply_runtime_settings()
+        self._create_bili_client()
+        if not self._credentials_configured():
+            return Err(SdkError("CREDENTIALS_MISSING: 请先在插件前端面板中配置 SESSDATA 和 bili_jct"))
 
         try:
             await self.bili_client.connect()
@@ -208,11 +412,14 @@ class BiliDMPlugin(NekoPluginBase):
                 self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
 
             self.logger.info("B站私信监听已启动")
-            return Ok({"status": "started"})
+            payload = self._build_dashboard_state()
+            payload["result_status"] = "started"
+            return Ok(payload)
         except Exception as e:
             self.logger.exception("启动 B站私信监听失败")
             return Err(SdkError(f"START_ERROR: 启动失败: {e}"))
 
+    @ui.action(id="stop_listening", label=tr("actions.stop_listening.label", default="停止监听"), refresh_context=True)
     @plugin_entry(
         id="stop_listening",
         name=tr("entries.stop_listening.name", default="停止监听"),
@@ -316,6 +523,7 @@ class BiliDMPlugin(NekoPluginBase):
             self.logger.error(f"发送私信失败: {e}")
             return Err(SdkError(f"SEND_FAILED: 发送私信失败: {e}"))
 
+    @ui.action(id="add_trusted_user", label=tr("actions.add_trusted_user.label", default="添加信任用户"), refresh_context=True)
     @plugin_entry(
         id="add_trusted_user",
         name=tr("entries.add_trusted_user.name", default="添加信任用户"),
@@ -377,6 +585,7 @@ class BiliDMPlugin(NekoPluginBase):
             result_data["warning"] = "已添加到内存，但持久化失败"
         return Ok(result_data)
 
+    @ui.action(id="remove_trusted_user", label=tr("actions.remove_trusted_user.label", default="移除信任用户"), refresh_context=True)
     @plugin_entry(
         id="remove_trusted_user",
         name=tr("entries.remove_trusted_user.name", default="移除信任用户"),

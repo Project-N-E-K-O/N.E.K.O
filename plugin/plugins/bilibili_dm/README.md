@@ -21,25 +21,35 @@
 - **权限管理**：支持 admin / trusted / normal 三级权限控制
 - **记忆同步**：管理员对话自动同步到 Memory Server
 
-## 配置项
+## 配置
 
-通过 WebUI 或 `plugin.toml` 配置以下字段：
+在插件管理器中打开「B站私信」面板完成配置。面板可以：
+
+- 保存或更新 B站 Cookie
+- 选择白名单、黑名单或开放回复模式
+- 管理信任用户和管理员
+- 开始或停止私信监听
+- 查看脱敏后的凭据状态
+
+配置保存在运行时插件数据目录的 `business_config.json`，不会写入仓库中的
+`plugin.toml`。Windows 默认路径为：
+
+```text
+%LOCALAPPDATA%\N.E.K.O\plugins\bilibili_dm\data\business_config.json
+```
+
+该文件与微信集成插件采用相同的放置方式，使用原子写入避免文件损坏。Cookie
+仍以明文保存在本机，请勿分享该文件，并确保系统账号和磁盘受到妥善保护。
 
 ### B站 Cookie
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sesdata` | string | B站 Cookie 中的 `SESSDATA`（必填） |
-| `bili_jct` | string | B站 Cookie 中的 `bili_jct`（CSRF Token） |
+| `sesdata` | string | B站 Cookie 中的 `SESSDATA`（必填，配置文件内部字段） |
+| `bili_jct` | string | B站 Cookie 中的 `bili_jct`（CSRF Token，必填） |
 | `buvid3` | string | B站 Cookie 中的 `buvid3` |
 | `dedeuserid` | string | B站 Cookie 中的 `DedeUserID` |
 | `ac_time_value` | string | B站 Cookie 中的 `ac_time_value` |
-
-### 权限配置
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `trusted_users` | list | 信任用户列表，格式: `[{uid = "12345", level = "admin"}]` |
 
 ### 权限等级
 
@@ -61,18 +71,22 @@
 | `set_user_nickname` | 设置用户昵称 | 为信任用户设置专属称呼 |
 | `list_trusted_users` | 列出信任用户 | 列出所有信任用户 |
 
-## 获取 Cookie
+## 首次使用
 
 1. 使用浏览器登录 [bilibili.com](https://www.bilibili.com)
 2. 打开浏览器开发者工具（F12）→ Application → Cookies
 3. 找到并复制以下字段的值：
    - `SESSDATA`（必填）
-   - `bili_jct`
+   - `bili_jct`（必填）
    - `buvid3`
    - `DedeUserID`
    - `ac_time_value`
+4. 打开 B站私信插件面板并保存这些字段
+5. 在面板中至少添加一个信任用户，或将权限模式改为 `open`
+6. 点击「开始监听」
 
-> ⚠️ **注意**：Cookie 有效期有限，过期后需重新获取并更新配置。
+> Cookie 有效期有限，过期后需重新获取并在面板中更新。已保存的字段不会回显；
+> 输入框留空表示保留原值。
 
 ## 依赖
 
@@ -83,12 +97,13 @@
 
 ```text
 bilibili_dm/
-├── __init__.py       # 插件主实现
-├── plugin.toml       # 插件配置
-├── bili_client.py    # B站私信客户端封装
-├── permission.py     # 权限管理模块
-├── README.md         # 本文件
-└── KiraAI_bili_dm_adapter/  # KiraAI 参考适配器
+├── __init__.py        # 插件主实现与面板入口
+├── config_store.py    # 运行时业务配置存储
+├── plugin.toml        # 插件清单（不保存凭据）
+├── bili_client.py     # B站私信客户端封装
+├── permission.py      # 权限管理模块
+├── static/            # 插件前端面板
+└── README.md          # 本文件
 ```
 
 ## 注意事项
