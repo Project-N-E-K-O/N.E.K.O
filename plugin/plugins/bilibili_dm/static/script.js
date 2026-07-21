@@ -220,7 +220,7 @@ async function addTrustedUser() {
 }
 
 async function removeTrustedUser(uid) {
-  if (!uid || !window.confirm(`确定移除 UID ${uid} 吗？`)) return;
+  if (!uid) return;
   setBusy(true);
   try {
     await callPlugin('remove_trusted_user', { uid });
