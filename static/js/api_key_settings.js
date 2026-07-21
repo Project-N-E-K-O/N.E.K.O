@@ -941,10 +941,11 @@ function expandAndScrollToKeyBook(options = {}) {
 
     const section = document.getElementById('key-book-section');
     const providerKey = typeof options.providerKey === 'string' ? options.providerKey : '';
-    const targetInput = providerKey
-        ? document.getElementById(`keyBookInput_${providerKey}`)
-        : null;
-    const scrollTarget = targetInput?.closest('.key-book-row') || section;
+    const targetInputId = providerKey === MIMO_TOKEN_PLAN_PROVIDER_KEY
+        ? 'mimoTokenPlanKeyInput'
+        : (providerKey ? `keyBookInput_${providerKey}` : '');
+    const targetInput = targetInputId ? document.getElementById(targetInputId) : null;
+    const scrollTarget = targetInput?.closest('.key-book-row, .field-row') || section;
 
     if (scrollTarget) {
         scrollTarget.scrollIntoView({
@@ -1381,7 +1382,11 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = getEffectiveAssistKey(sourceProviderKey);
-                setKeyReadonly(keyInput, bookKey, sourceProviderKey);
+                setKeyReadonly(
+                    keyInput,
+                    bookKey,
+                    getEffectiveAssistProviderKey(sourceProviderKey)
+                );
             }
         } else {
             // free or empty

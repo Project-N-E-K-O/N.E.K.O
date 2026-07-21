@@ -195,6 +195,79 @@ def test_key_book_shortcut_centers_and_selects_provider_input(
 
 
 @pytest.mark.frontend
+def test_key_book_shortcut_targets_active_mimo_token_plan_key(
+    mock_page: Page, running_server: str
+):
+    """Follow-assist shortcuts must target the Token Plan key while that mode is active."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached")
+    mock_page.wait_for_selector(
+        "#conversationModelProvider option[value='follow_assist']", state="attached"
+    )
+
+    mock_page.evaluate("""() => {
+        const assistProvider = document.getElementById('assistApiSelect');
+        assistProvider.value = 'mimo';
+        assistProvider.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const tokenPlanToggle = document.getElementById('useMimoTokenPlan');
+        tokenPlanToggle.checked = true;
+        tokenPlanToggle.dispatchEvent(new Event('change', { bubbles: true }));
+        setMaskedInput(
+            document.getElementById('mimoTokenPlanKeyInput'),
+            'tp-shortcut-test'
+        );
+
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+
+        const provider = document.getElementById('conversationModelProvider');
+        provider.value = 'follow_assist';
+        onCustomModelProviderChange('conversation');
+        toggleModelConfig('conversation');
+
+        window.__keyBookScrollTarget = '';
+        window.__keyBookScrollOptions = null;
+        Element.prototype.scrollIntoView = function (options) {
+            window.__keyBookScrollTarget = this.querySelector('input')?.id || this.id;
+            window.__keyBookScrollOptions = options;
+        };
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    shortcut = mock_page.locator("#conversation-model-content .key-book-shortcut")
+    expect(shortcut).to_have_count(1)
+    expect(shortcut).to_have_attribute("data-provider-key", "mimo_token_plan")
+    shortcut.click()
+
+    state = mock_page.evaluate("""() => {
+        const input = document.getElementById('mimoTokenPlanKeyInput');
+        return {
+            scrollTarget: window.__keyBookScrollTarget,
+            scrollBlock: window.__keyBookScrollOptions?.block,
+            activeId: document.activeElement?.id,
+            value: input.value,
+            selectionStart: input.selectionStart,
+            selectionEnd: input.selectionEnd,
+        };
+    }""")
+
+    assert state == {
+        "scrollTarget": "mimoTokenPlanKeyInput",
+        "scrollBlock": "center",
+        "activeId": "mimoTokenPlanKeyInput",
+        "value": "tp-shortcut-test",
+        "selectionStart": 0,
+        "selectionEnd": len("tp-shortcut-test"),
+    }
+
+
+@pytest.mark.frontend
 def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, running_server: str):
     """普通 HTTP TTS 配置在 GPT-SoVITS 关闭时不应被编码成占位串。"""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
