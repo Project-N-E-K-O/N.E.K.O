@@ -339,6 +339,7 @@ class AsrAudioDispatcher:
         self._on_failure = on_failure
         self._queue: asyncio.Queue[_Command] = asyncio.Queue(maxsize=max_commands)
         self._worker: asyncio.Task[None] | None = None
+        self._failure_tasks: set[asyncio.Task[None]] = set()
         self._generation = 0
         self._turn_token: VoiceTurnToken | None = None
         self._session_ref: Any = None
@@ -469,13 +470,15 @@ class AsrAudioDispatcher:
             self._queue.put_nowait(command)
         except asyncio.QueueFull:
             self.abort(command.turn_token)
-            asyncio.create_task(
+            failure_task = asyncio.create_task(
                 self._on_failure(
                     command.turn_token,
                     RuntimeError("ASR_AUDIO_COMMAND_BACKPRESSURE"),
                 ),
                 name="asr-audio-command-backpressure",
             )
+            self._failure_tasks.add(failure_task)
+            failure_task.add_done_callback(self._failure_tasks.discard)
             return False
         self._enqueued_at[id(command)] = time.monotonic()
         return True

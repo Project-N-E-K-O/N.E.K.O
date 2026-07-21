@@ -125,3 +125,46 @@ async def test_dispatcher_records_wire_sequence_and_abort_discards() -> None:
     assert dispatcher.asr_abort_discarded_command_count >= 1
     assert dispatcher.asr_audio_command_queue_ms >= 0
     await dispatcher.close()
+
+
+async def test_backpressure_failure_task_is_retained_until_completion() -> None:
+    failure_started = asyncio.Event()
+    release_failure = asyncio.Event()
+    session = type("Session", (), {})()
+
+    async def on_failure(
+        _turn_token: VoiceTurnToken, _error: BaseException
+    ) -> None:
+        failure_started.set()
+        await release_failure.wait()
+
+    session.stream_audio = AsyncMock()
+    session.signal_user_activity_end = AsyncMock()
+    dispatcher = AsrAudioDispatcher(
+        validator=lambda _token, ref: ref is session,
+        on_wire_audio=AsyncMock(),
+        on_failure=on_failure,
+        max_commands=1,
+    )
+    turn = _turn()
+
+    assert dispatcher.activate(turn, session, b"first!")
+    assert not dispatcher.enqueue_audio(
+        turn,
+        session,
+        b"overflow",
+        sample_rate_hz=16_000,
+        sequence_no=1,
+    )
+    await asyncio.wait_for(failure_started.wait(), 1)
+
+    assert len(dispatcher._failure_tasks) == 1
+    failure_task = next(iter(dispatcher._failure_tasks))
+    assert failure_task.get_name() == "asr-audio-command-backpressure"
+
+    release_failure.set()
+    await failure_task
+    await asyncio.sleep(0)
+
+    assert not dispatcher._failure_tasks
+    await dispatcher.close()
