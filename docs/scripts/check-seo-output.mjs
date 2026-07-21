@@ -104,12 +104,6 @@ let indexableCount = 0
 for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   const file = relative(DIST_DIR, htmlPath).replaceAll('\\', '/')
   const html = readFileSync(htmlPath, 'utf8')
-  const googleSiteVerificationMatch = html
-    .trim()
-    .match(/^google-site-verification:\s*(google[\w-]+\.html)$/i)
-  if (googleSiteVerificationMatch && file === googleSiteVerificationMatch[1]) {
-    continue
-  }
   const isNotFound = file === '404.html'
   const metaTags = tags(html, 'meta')
   const linkTags = tags(html, 'link')
