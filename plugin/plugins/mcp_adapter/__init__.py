@@ -465,9 +465,9 @@ class MCPClient:
             
             # MCP Streamable HTTP 需要 Accept 头
             headers = {
+                **self.config.headers,
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
-                **self.config.headers,
             }
             
             async with self._http_session.post(
@@ -570,9 +570,9 @@ class MCPClient:
                 **aiohttp_session_kwargs_for_url(url)
             )
             headers = {
+                **self.config.headers,
                 "Accept": "text/event-stream",
                 "Cache-Control": "no-cache",
-                **self.config.headers,
             }
 
             response = await self._http_session.get(
@@ -822,7 +822,7 @@ class MCPClient:
             async with session.post(
                 message_url,
                 json=payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **self.config.headers},
+                headers={**self.config.headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 if resp.status >= 400:
@@ -867,9 +867,9 @@ class MCPClient:
             raise Exception("URL not configured")
         
         headers = {
+            **self.config.headers,
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
-            **self.config.headers,
         }
         # 添加 session ID（如果有）
         if hasattr(self, '_http_session_id') and self._http_session_id:
@@ -950,7 +950,7 @@ class MCPClient:
             async with session.post(
                 message_url,
                 json=message,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **self.config.headers},
+                headers={**self.config.headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
                 timeout=aiohttp.ClientTimeout(total=30.0),
             ) as resp:
                 if resp.status >= 400:
