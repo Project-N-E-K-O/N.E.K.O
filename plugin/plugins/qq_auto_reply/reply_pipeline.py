@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest
+from .reply_buffer_service import QQReplyBufferService
 
 
 class QQReplyPipelineRunner:
@@ -42,7 +43,7 @@ class QQReplyPipelineRunner:
 
         context = await self._run_context(request, decision)
         model_result = await self._run_model(context)
-        outcome = self._run_postprocess(context, model_result)
+        outcome = await self._run_postprocess(context, model_result)
         outcome.traces.extend([
             decision_trace,
             *context.traces,
@@ -83,52 +84,9 @@ class QQReplyPipelineRunner:
             ),
         ])
 
-        # 处理 poke / img 特殊动作（不走文本 delivery）
-        if outcome.action == "poke" and outcome.parsed_poke_user and request.is_group:
-            ok = await self.plugin.qq_client.send_group_poke(
-                str(request.group_id or ""),
-                outcome.parsed_poke_user,
-            )
-            outcome.delivery_result = QQDeliveryResult(
-                delivered=ok,
-                target_type="group",
-                target_id=str(request.group_id or ""),
-                reply_text=None,
-            )
-            outcome.traces.append(
-                QQPipelineStageTrace(
-                    stage="delivery",
-                    status="delivered" if ok else "skipped",
-                    metadata={"action": "poke", "target_user": outcome.parsed_poke_user},
-                )
-            )
-            return outcome
-        if outcome.action == "ark" and outcome.parsed_ark and request.is_group:
-            ok = await self._send_ark(request, outcome)
-            outcome.delivery_result = QQDeliveryResult(delivered=ok, target_type="group", target_id=str(request.group_id or ""), reply_text=None)
-            outcome.traces.append(QQPipelineStageTrace(stage="delivery", status="delivered" if ok else "skipped", metadata={"action":"ark","title":outcome.parsed_ark.get("title","")[:50]}))
-            return outcome
+        # poke/sticker/record/ark 已统一为 <msg> 块，由 reply_delivery_node 处理
         outcome.delivery_plan = self._build_delivery_plan(request, outcome)
-        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan)
-
-        # 表情包作为文字后的跟发消息（每群每5条消息最多发一次）
-        if outcome.parsed_sticker_id and request.is_group:
-            gid = str(request.group_id or "")
-            since = self.plugin._sticker_since.get(gid) or 0
-            threshold = getattr(self.plugin, "_sticker_cooldown_messages", 5)
-            if threshold <= 0 or since >= threshold:
-                if threshold > 0:
-                    self.plugin._sticker_since[gid] = 0
-                await self._send_sticker(request, outcome)
-            else:
-                self.plugin._emit_log("INFO", f"[Sticker] 群 {gid} 距上次表情包仅 {since} 条消息，跳过（需≥{threshold}）")
-            outcome.traces.append(
-                QQPipelineStageTrace(
-                    stage="delivery",
-                    status="sticker_follow",
-                    metadata={"sticker_id": outcome.parsed_sticker_id},
-                )
-            )
+        outcome.delivery_result = await self._run_delivery(outcome.delivery_plan, request, outcome)
         outcome.traces.append(
             QQPipelineStageTrace(
                 stage="delivery",
@@ -200,8 +158,8 @@ class QQReplyPipelineRunner:
     async def _run_model(self, context: QQReplyContext) -> QQModelResult:
         return await self.plugin.reply_model_node.generate(context)
 
-    def _run_postprocess(self, context: QQReplyContext, model_result: QQModelResult) -> QQReplyOutcome:
-        return self.plugin.reply_postprocess_node.finalize(context, model_result)
+    async def _run_postprocess(self, context: QQReplyContext, model_result: QQModelResult) -> QQReplyOutcome:
+        return await self.plugin.reply_postprocess_node.finalize(context, model_result)
 
     def _build_delivery_plan(self, request: QQReplyRequest, outcome: QQReplyOutcome):
         return self.plugin.reply_postprocess_node.build_delivery_plan(request, outcome)
@@ -272,11 +230,42 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning(f"[Ark] 发送失败: {e}")
             return False
 
-    async def _run_delivery(self, delivery_plan) -> QQDeliveryResult | None:
+    async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None) -> QQDeliveryResult | None:
+        # 有缓冲服务时走延迟发送，否则直接发
+        if self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
+            # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
+            raw = (outcome.raw_reply_text if outcome else "") or ""
+            clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
+            # 私聊默认等更久（对方在讲故事/连续输出）
+            if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS and not request.is_group:
+                wait_sec = QQReplyBufferService.DEFAULT_WAIT_PRIVATE
+            first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
+            session_key = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=request.is_group,
+                group_id=request.group_id,
+            )
+            self.plugin._emit_log("DEBUG", f"[Buffer] 调度延迟回复: key={session_key} wait={wait_sec:.1f}s text={first_text[:30]}")
+            # 转发消息的子条数计入缓冲
+            fwd_count = int(getattr(request, 'forward_sub_count', 0) or 0)
+            await self.plugin.reply_buffer_service.schedule_reply(
+                session_key=session_key,
+                reply_text=first_text or clean or "",
+                raw_text=clean or first_text or "",
+                blocks=delivery_plan.blocks,
+                wait_seconds=wait_sec,
+                sender_id=request.sender_id,
+                is_group=request.is_group,
+                group_id=request.group_id or "",
+                extra_count=fwd_count,
+            )
+            from .pipeline_models import QQDeliveryResult
+            return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
+
         return await self.plugin.reply_delivery_node.deliver(delivery_plan)
 
-    async def _send_sticker(self, request: QQReplyRequest, outcome: QQReplyOutcome) -> bool:
-        """发送注册的表情包图片"""
+    def _resolve_sticker_path(self, sticker_id: str) -> str:
+        """解析表情包 ID 到文件路径。"""
         import json, os
         sticker_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "data", "sticker.json",
@@ -285,25 +274,17 @@ class QQReplyPipelineRunner:
             with open(sticker_path, "r", encoding="utf-8") as f:
                 sticker_data = json.loads(f.read())
         except Exception:
-            self.plugin.logger.warning("[Sticker] sticker.json 读取失败")
-            return False
-        info = sticker_data.get(outcome.parsed_sticker_id)
+            return ""
+        info = sticker_data.get(sticker_id)
         if not isinstance(info, dict):
-            self.plugin.logger.warning(f"[Sticker] 未知ID: {outcome.parsed_sticker_id}")
-            return False
+            return ""
         img_path = info.get("path", "")
         if not img_path:
-            return False
-        # 尝试作为本地文件路径发送
+            return ""
         full_path = os.path.join(os.path.dirname(sticker_path), "sticker", img_path)
-        if not os.path.exists(full_path):
-            # 可能直接存了绝对路径或URL
-            full_path = img_path
-        msg_id = await self.plugin.qq_client.send_group_image(
-            str(request.group_id or ""),
-            f"file://{full_path}" if os.path.exists(full_path) else full_path,
-        )
-        return bool(msg_id)
+        if os.path.exists(full_path):
+            return f"file://{full_path}"
+        return img_path
 
     async def _run_relay_delivery(self, relay_plan) -> QQRelayResult | None:
         return await self.plugin.reply_relay_node.execute(relay_plan)

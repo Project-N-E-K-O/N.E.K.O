@@ -254,14 +254,30 @@ class QQVoiceReplyService:
         await asyncio.to_thread(output_path.write_bytes, audio_bytes)
         return output_path.resolve().as_uri(), mime_type
 
-    async def deliver_private_reply(self, target_qq: str, text: str, *, fallback_to_text_on_voice_failure: bool) -> None:
+    async def deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
         normalized_text = self.plugin._validate_outbound_message(text)
         mode = self.plugin._get_reply_mode()
         if mode == "text":
             await self.plugin.qq_client.send_message(target_qq, normalized_text)
             return
+        # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
-            await self.plugin.qq_client.send_message(target_qq, normalized_text)
+            voice_content = (voice_text or "").strip()
+            if voice_content:
+                # LLM 指定了语音内容
+                if normalized_text:
+                    await self.plugin.qq_client.send_message(target_qq, normalized_text)
+                try:
+                    file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
+                    await self.plugin.qq_client.send_private_record(target_qq, file_uri)
+                    return
+                except Exception:
+                    self.plugin.logger.warning("QQ both-语音私聊发送失败，已保留文本", exc_info=True)
+                    return
+            else:
+                # 无 <record> 标签 → 纯文字
+                await self.plugin.qq_client.send_message(target_qq, normalized_text)
+                return
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
             if mode == "voice":
@@ -273,12 +289,12 @@ class QQVoiceReplyService:
                 self.plugin.logger.warning("QQ 纯语音私聊发送失败，回退文本", exc_info=True)
                 await self.plugin.qq_client.send_message(target_qq, normalized_text)
                 return
-            if mode == "both":
+            if mode == "both" and normalized_text:
                 self.plugin.logger.warning("QQ 复合私聊中的语音发送失败，已保留文本", exc_info=True)
                 return
             raise
 
-    async def deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+    async def deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
         normalized_text = self.plugin._validate_outbound_message(text)
         mode = self.plugin._get_reply_mode()
         text_segments: list[dict[str, Any]] = []
@@ -290,8 +306,22 @@ class QQVoiceReplyService:
         if mode == "text":
             await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
             return
+        # both 模式：LLM 自主决定 → 有 <record> 则语音，否则纯文字
         if mode == "both":
-            await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+            voice_content = (voice_text or "").strip()
+            if voice_content:
+                if normalized_text:
+                    await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+                try:
+                    file_uri, _ = await self.synthesize_reply_voice_file(voice_content)
+                    await self.plugin.qq_client.send_group_record(group_id, file_uri, reply_message_id=reply_message_id, at_user_id=at_user_id)
+                    return
+                except Exception:
+                    self.plugin.logger.warning("QQ both-语音群聊发送失败，已保留文本", exc_info=True)
+                    return
+            else:
+                await self.plugin.qq_client.send_group_message_segments(group_id, text_segments, keyboard=keyboard)
+                return
         try:
             file_uri, _ = await self.synthesize_reply_voice_file(normalized_text)
             if mode == "voice":

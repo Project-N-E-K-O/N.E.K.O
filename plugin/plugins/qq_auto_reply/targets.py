@@ -33,7 +33,7 @@ class QQAutoReplyTargetsMixin:
     def _ensure_qq_client_connected(self):
         if not self.qq_client:
             raise RuntimeError("QQ 客户端未初始化")
-        if not self.qq_client.ws:
+        if not self.qq_client.is_connected():
             raise RuntimeError("OneBot 未连接，请先启动自动回复")
 
     def _resolve_private_message_target(self, target: str) -> tuple[str, Optional[str]]:

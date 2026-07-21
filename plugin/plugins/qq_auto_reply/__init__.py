@@ -43,6 +43,7 @@ from .backlog_models import QQBacklogMessage
 from .backlog_service import QQBacklogService
 from .attention_service import QQAttentionService
 from .config_store import QQAutoReplyConfigStore
+from .fatigue_service import QQFatigueService
 from .group_permission import GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .message_dispatcher import QQMessageDispatcher
@@ -52,6 +53,7 @@ from .permission import PermissionManager
 from .prompt_builder import QQPromptBuilder
 from .prompting import QQAutoReplyPromptingMixin
 from .relay_service import QQRelayService
+from .reply_buffer_service import QQReplyBufferService
 from .reply_context_node import QQReplyContextNode
 from .reply_decision_node import QQReplyDecisionNode
 from .reply_generation_service import QQReplyGenerationService
@@ -113,6 +115,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.dashboard_service = QQDashboardService(self)
         self.napcat_service = QQNapcatService(self)
         self.backlog_service = QQBacklogService(self)
+        self.fatigue_service: Optional[QQFatigueService] = None
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
@@ -123,6 +126,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.reply_model_node = QQReplyModelNode(self)
         self.reply_postprocess_node = QQReplyPostprocessNode(self)
         self.reply_delivery_node = QQReplyDeliveryNode(self)
+        self.reply_buffer_service: Optional[QQReplyBufferService] = None
         self.reply_relay_node = QQReplyRelayNode(self)
         self.reply_pipeline = QQReplyPipelineRunner(self)
         self.voice_reply_service = QQVoiceReplyService(self)
@@ -187,9 +191,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 logger=self.logger,
             )
         return QQClient(
-            onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://127.0.0.1:3001"),
+            onebot_url=str((self._qq_settings or {}).get("onebot_url") or "ws://0.0.0.0:6199"),
             token=str((self._qq_settings or {}).get("token") or ""),
             logger=self.logger,
+            emit_log=self._emit_log,
         )
 
     def _refresh_admin_qq(self) -> None:
@@ -221,20 +226,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
         return await self.voice_reply_service.synthesize_reply_voice_file(text)
 
-    async def _deliver_private_reply(self, target_qq: str, text: str, *, fallback_to_text_on_voice_failure: bool) -> None:
+    async def _deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
         await self.voice_reply_service.deliver_private_reply(
             target_qq,
             text,
+            voice_text=voice_text,
             fallback_to_text_on_voice_failure=fallback_to_text_on_voice_failure,
         )
 
-    async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", fallback_to_text_on_voice_failure: bool) -> None:
+    async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
         await self.voice_reply_service.deliver_group_reply(
             group_id,
             text,
             reply_message_id=reply_message_id,
             at_user_id=at_user_id,
             keyboard=keyboard,
+            voice_text=voice_text,
             fallback_to_text_on_voice_failure=fallback_to_text_on_voice_failure,
         )
 
@@ -263,7 +270,11 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.settings_service.rebuild_permission_managers(settings)
         self.settings_service.apply_runtime_settings(settings)
         await self.attention_service.load_cached_state()
+        self.fatigue_service = QQFatigueService(self)
+        self.reply_buffer_service = QQReplyBufferService(self)
         self._ensure_qq_client_initialized()
+        if self.attention_gate_service:
+            await self.attention_gate_service.start_proactive_loop()
         self.register_static_ui("static")
         self.set_list_actions([
             {
@@ -276,7 +287,24 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         ])
         if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
             self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
+        # 定期清理已审核超过24h的旧消息
+        if getattr(self, "_purge_task", None) is None or self._purge_task.done():
+            self._purge_task = asyncio.create_task(self._purge_old_reviewed_loop())
         return Ok({"status": "ready"})
+
+    async def _purge_old_reviewed_loop(self):
+        """每小时清理一次已审核超过 24 小时的旧消息。"""
+        await asyncio.sleep(300)  # 启动后等 5 分钟再开始
+        while True:
+            try:
+                removed = await self.backlog_store.purge_old_reviewed(max_age_seconds=86400)
+                if removed > 0:
+                    self._emit_log("INFO", f"清理了 {removed} 条过期已审核消息")
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                self.logger.warning("清理过期消息失败", exc_info=True)
+            await asyncio.sleep(3600)
 
     async def _group_digest_loop(self, interval_minutes: int = 5):
         """定期将各群聊摘要推送到 Memory Server（跨群共享记忆）"""
@@ -331,6 +359,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        if self.attention_gate_service:
+            await self.attention_gate_service.stop_proactive_loop()
         await self._stop_auto_reply_runtime(stop_napcat=True)
         await self._flush_all_memory_sessions(reason="shutdown")
         if self.attention_gate_service:
@@ -365,6 +395,10 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
 
     async def _sync_napcat_qrcode_into_static(self) -> bool:
         return await self.napcat_service.sync_napcat_qrcode_into_static()
+
+    def _resolve_sticker_path(self, sticker_id: str) -> str:
+        """解析表情包 ID 到文件路径（供 delivery_node 使用）。"""
+        return self.reply_pipeline._resolve_sticker_path(sticker_id)
 
     def _find_napcat_launcher(self) -> Path | None:
         return self.napcat_service.find_napcat_launcher()
@@ -410,7 +444,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     @plugin_entry(
         id="configure_onebot_nl",
         name=tr("entries.configure_onebot_nl.name", default="用自然语言配置 OneBot 连接"),
-        description=tr("entries.configure_onebot_nl.description", default="通过自然语言描述来设置或修改 OneBot 的 WebSocket 地址和 Access Token。例如：设置地址为 ws://127.0.0.1:3001 token 为 abc123、把 OneBot 地址改成 ws://192.168.1.1:3001、清空 token"),
+        description=tr("entries.configure_onebot_nl.description", default="通过自然语言描述来设置或修改 OneBot 的 WebSocket 地址和 Access Token。例如：设置地址为 ws://0.0.0.0:6199 token 为 abc123、把 OneBot 地址改成 ws://192.168.1.1:3001、清空 token"),
         input_schema={"type": "object", "properties": {"message": {"type": "string", "description": "自然语言指令"}}, "required": ["message"], "additionalProperties": False},
     )
     async def configure_onebot_nl(self, message: str = "", **_):
@@ -418,7 +452,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         import re
         text = str(message or "").strip()
         if not text:
-            return Err(SdkError("INVALID_INPUT: 请提供自然语言指令，如：设置地址为 ws://127.0.0.1:3001 token 为 abc123"))
+            return Err(SdkError("INVALID_INPUT: 请提供自然语言指令，如：设置地址为 ws://0.0.0.0:6199 token 为 abc123"))
 
         url = ""
         token = ""
@@ -466,7 +500,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if not url and not token and not clear_token:
             return Ok({
                 "parsed": False,
-                "hint": "未能从指令中解析出 OneBot 地址或 Token。请尝试更明确的表达，如：设置地址为 ws://127.0.0.1:3001，token 为 my_token_123",
+                "hint": "未能从指令中解析出 OneBot 地址或 Token。请尝试更明确的表达，如：设置地址为 ws://0.0.0.0:6199，token 为 my_token_123",
                 "current": {
                     "onebot_url": str(self._qq_settings.get("onebot_url", "")),
                     "token_configured": bool(self._qq_settings.get("token")),
@@ -642,6 +676,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         description=tr("entries.get_attention_state.description", default="返回所有群聊的注意力分数和焦点状态。"),
         input_schema={"type": "object", "properties": {}, "additionalProperties": False},
     )
+    @plugin_entry(id="get_buffer_state")
+    async def get_buffer_state(self, **_):
+        if not self.reply_buffer_service:
+            return Ok({"pending": [], "count": 0})
+        return Ok(self.reply_buffer_service.get_state())
+
     async def get_attention_state(self, **_):
         if not self.attention_service:
             return Ok({"enabled": False, "groups": [], "focus_group_id": "", "global_sleep": False})
@@ -889,13 +929,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         description=tr("entries.get_prompt_editor_state.description", default="返回当前语言下的各层提示词元数据和配置，供提示词编辑器使用。"),
         input_schema={"type": "object", "properties": {"mode": {"type": "string"}}, "additionalProperties": False},
     )
-    async def get_prompt_editor_state(self, mode: str = "", **_):
-        # 优先用前端传入的 mode，其次读存储的配置
+    async def get_prompt_editor_state(self, mode: str = "", locale: str = "", **_):
         frontend_mode = str(mode or "").strip()
         stored_mode = str((self._qq_settings or {}).get("qq_connection_mode", "napcat") or "napcat").strip()
         mode = frontend_mode if frontend_mode in ("napcat", "open_platform") else stored_mode
         from utils.language_utils import get_global_language
-        locale = get_global_language()
+        frontend_locale = str(locale or "").strip()
+        locale = frontend_locale if frontend_locale else get_global_language()
         strategy_mode = getattr(self, "_strategy_mode", "neko_dynamic")
         is_napcat = mode == "napcat"
         overrides = (self._qq_settings or {}).get("prompt_overrides") or {}
@@ -963,7 +1003,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                     has_override = True
                     effective_text = str(overrides[locale][i18n_key] or "")
                 else:
-                    effective_text = self.i18n.t(i18n_key, default=default_text)
+                    effective_text = self.i18n.t(i18n_key, locale=locale, default=default_text)
+            if lid == "time" and self.fatigue_service:
+                effective_text = self.fatigue_service.get_dynamic_time_context()
             layers.append({
                 "id": lid,
                 "i18n_key": i18n_key,
@@ -1054,6 +1096,51 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 self.session_instruction_service._discard_all_sessions_for_prompt_change()
             return Ok({"persisted": success, "layer_id": layer_id, "locale": locale})
         return Ok({"persisted": True, "layer_id": layer_id, "locale": locale, "reason": "no_override_found"})
+
+    @plugin_entry(id="save_group_prompt")
+    async def save_group_prompt(self, group_id: str, text: str, **_):
+        """保存某个群的专属提示词。text 为空字符串则视为删除。"""
+        gid = str(group_id or "").strip()
+        if not gid:
+            return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
+        custom_text = str(text or "").strip()
+        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
+        if custom_text:
+            group_prompts[gid] = custom_text
+            self._emit_log("INFO", f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)")
+        else:
+            group_prompts.pop(gid, None)
+            self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
+        self._qq_settings["group_prompts"] = group_prompts
+        success = await self._persist_business_config()
+        # 清除该群的当前会话，下次回复时重新注入新提示词
+        if self.session_runtime_service:
+            await self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_changed")
+        return Ok({"persisted": success, "group_id": gid, "has_text": bool(custom_text)})
+
+    @plugin_entry(id="delete_group_prompt")
+    async def delete_group_prompt(self, group_id: str, **_):
+        """删除某个群的专属提示词。"""
+        gid = str(group_id or "").strip()
+        if not gid:
+            return Err(SdkError("INVALID_GROUP_ID: group_id 不能为空"))
+        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
+        existed = gid in group_prompts
+        group_prompts.pop(gid, None)
+        self._qq_settings["group_prompts"] = group_prompts
+        if existed:
+            success = await self._persist_business_config()
+            if self.session_runtime_service:
+                await self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted")
+            self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            return Ok({"persisted": success, "group_id": gid, "deleted": True})
+        return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
+
+    @plugin_entry(id="get_group_prompts")
+    async def get_group_prompts(self, **_):
+        """获取所有群的专属提示词映射。"""
+        group_prompts = dict(self._qq_settings.get("group_prompts") or {})
+        return Ok({"group_prompts": group_prompts})
 
     async def _maybe_notify_backlog_summary(self, *, group_id: str) -> None:
         await self.backlog_service.maybe_notify_summary(group_id=group_id)

@@ -28,6 +28,23 @@ class QQMessageDispatcher:
                 return nick
         return f"QQ用户{uid}"
 
+    def _has_waking_keyword(self, message_text: str) -> bool:
+        """检查消息是否包含唤醒关键词。"""
+        text = str(message_text or "").strip()
+        if not text:
+            return False
+        for label in (self.plugin._qq_settings or {}).get("backlog_labels") or []:
+            if not isinstance(label, dict):
+                continue
+            priority = int(label.get("priority") or 0)
+            if priority <= 0:
+                continue
+            for kw in label.get("keywords") or []:
+                word = str(kw).strip()
+                if word and word in text:
+                    return True
+        return False
+
     @staticmethod
     def _looks_like_human_followup(message_text: str) -> bool:
         normalized = str(message_text or "").strip()
@@ -128,7 +145,14 @@ class QQMessageDispatcher:
                         except Exception as e:
                             self.plugin._emit_log("INFO", f"回戳失败: {e}")
                     return  # 不回话
-                # 人数多 → 不回戳，注入 LLM 让猫娘在群里反应
+                # 人数多 → 不回戳，注入 LLM 让猫娘在群里反应（60秒冷却，避免反复刷屏）
+                last_storm_key = f"poke_storm_text_{group_id}"
+                now_ts = __import__("time").time()
+                if now_ts - getattr(self, "_last_poke_storm_text", {}).get(last_storm_key, 0) < 60:
+                    return
+                if not hasattr(self, "_last_poke_storm_text"):
+                    self._last_poke_storm_text = {}
+                self._last_poke_storm_text[last_storm_key] = now_ts
                 self.plugin._emit_log("INFO", f"戳一戳风暴: group={group_id} {storm_count}人戳猫娘 → 会话模式")
                 poke_text = f"[戳一戳] {storm_count}个人戳了戳你，包括 {poker_name}"
                 message["is_at_bot"] = True
@@ -147,6 +171,20 @@ class QQMessageDispatcher:
             message["raw_message"] = poke_text
             message["message_id"] = f"poke_{group_id}_{poker_id}_{int(now)}"
             # 不 return，继续走正常的注意力门控 + LLM 管道
+        # 新人入群通知 → 注入欢迎提示
+        if message.get("notice_type") == "group_increase":
+            group_id = str(message.get("group_id") or "").strip()
+            user_id = str(message.get("user_id") or "").strip()
+            if group_id and user_id:
+                self.plugin._emit_log("INFO", f"新人入群: group={group_id} user={user_id}")
+                message["message_type"] = "group"
+                message["group_id"] = group_id
+                message["user_id"] = user_id
+                message["is_at_bot"] = False
+                message["content"] = f"[系统] 新成员 {user_id} 加入了群聊，你可以欢迎一下。注意：要像真人一样自然地欢迎，不要用模板化的欢迎语。"
+                message["raw_message"] = message["content"]
+                message["message_id"] = f"welcome_{group_id}_{user_id}_{int(__import__('time').time())}"
+            # 不 return，走正常 pipeline
         # 黑名单优先：命中负优先级标签 → 不记录、不处理
         label_defs = list((self.plugin._qq_settings or {}).get("backlog_labels") or [])
         raw_content = str(message.get("content") or "").strip()
@@ -160,6 +198,9 @@ class QQMessageDispatcher:
                 if self.plugin._strategy_mode != "neko_dynamic":
                     await self.plugin.attention_service.update_on_message(message)
         self.plugin._emit_log("INFO", f"收到消息: type={message.get('message_type')} from={message.get('user_id')} text={str(message.get('content',''))[:40]}")
+        # ── 疲劳全局消息计数（睡眠判断已移入 attention_gate_service）──
+        if getattr(self.plugin, "fatigue_service", None):
+            self.plugin.fatigue_service.record_incoming_message()
         message_type = message.get("message_type")
         sender_id = str(message.get("user_id") or "").strip()
         message_text = self.plugin._sanitize_message_text(
@@ -172,7 +213,8 @@ class QQMessageDispatcher:
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
-            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname)
+            fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
+            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count)
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
@@ -189,6 +231,7 @@ class QQMessageDispatcher:
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=True, group_id=group_id)
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
+            fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
             await self.handle_group_message(
                 group_id,
                 sender_id,
@@ -202,10 +245,11 @@ class QQMessageDispatcher:
                 mentions_other_user=mentions_other_user,
                 mentions_all=mentions_all,
                 message_timestamp=message_timestamp,
+                forward_sub_count=fwd_count,
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None):
+    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
@@ -223,8 +267,13 @@ class QQMessageDispatcher:
             user_nickname=user_nickname,
             fallback_to_text_on_voice_failure=True,
             source_kind="incoming_private",
+            forward_sub_count=forward_sub_count,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
+        if outcome.action == "reply" and outcome.reply_text:
+            mid = request.current_message_id if hasattr(request, "current_message_id") else ""
+            if mid and hasattr(self.plugin, "backlog_service") and self.plugin.backlog_service:
+                await self.plugin.backlog_store.mark_message_reviewed(mid)
         self.plugin._emit_log("INFO", f"私聊 pipeline 结果: action={outcome.action} text={'有' if outcome.reply_text else '空'}")
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
@@ -242,6 +291,7 @@ class QQMessageDispatcher:
         mentions_other_user: bool = False,
         mentions_all: bool = False,
         message_timestamp: int = 0,
+        forward_sub_count: int = 0,
     ):
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         force_reply = False
@@ -285,6 +335,7 @@ class QQMessageDispatcher:
             user_nickname=user_nickname,
             is_at_bot=is_at_bot,
             source_kind="incoming_group",
+            forward_sub_count=forward_sub_count,
             group_scene_mode=group_scene_mode,
             current_message_id=current_message_id,
             quoted_message_id=quoted_message_id,
@@ -298,6 +349,10 @@ class QQMessageDispatcher:
             force_reply=force_reply,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
+        # 回复后即时标 reviewed，统一 backlog 管道
+        if outcome.action == "reply" and outcome.reply_text and current_message_id:
+            if hasattr(self.plugin, "backlog_service") and self.plugin.backlog_service:
+                await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
 
         # 焦点群/近焦点群：输出 LLM 自行判断的结果
         if strategy_mode == "neko_dynamic" and not is_at_bot:

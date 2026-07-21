@@ -45,7 +45,7 @@ class QQRuntimeOpsService:
             self.plugin._startup_error = startup_error
             self.plugin.logger.exception("Failed to start auto reply")
             return Err(SdkError(
-                f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_failed', default='无法连接到 OneBot 服务 {url}，请先启动外部 NapCat/OneBot: {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
+                f"START_ERROR: {self.plugin.i18n.t('errors.start_connect_failed', default='反向 WS 服务器已启动 ({url})，但没有 NapCat 客户端连接: {error}', url=self.plugin.qq_client.onebot_url, error=startup_error)}"
             ))
 
     async def stop_auto_reply(self):
@@ -58,6 +58,8 @@ class QQRuntimeOpsService:
         self.plugin._running = False
         if self.plugin.attention_service:
             await self.plugin.attention_service.stop_decay_loop()
+        if self.plugin.attention_gate_service:
+            await self.plugin.attention_gate_service.stop_proactive_loop()
         if self.plugin._message_task:
             self.plugin._message_task.cancel()
             try:
