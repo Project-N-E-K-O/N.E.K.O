@@ -1578,7 +1578,7 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
 
 
 async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1587,7 +1587,7 @@ async def test_missing_setting_defaults_to_independent_asr_enabled(monkeypatch) 
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={}),
     )
