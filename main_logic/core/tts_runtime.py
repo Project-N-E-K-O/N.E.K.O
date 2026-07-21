@@ -47,7 +47,7 @@ from threading import Thread
 from queue import Queue
 from ._shared import logger, NO_RETRY_TTS_CODES, IMMEDIATE_REPORT_TTS_CODES
 from .notices import enqueue_voice_migration_notice
-from .audio_duration_queue import QueuedMicFrame
+from main_logic.asr_client.audio import QueuedMicFrame
 
 # Late-binding read point for symbols that tests rebind on the facade via
 # ``monkeypatch.setattr("main_logic.core.<attr>", ...)``. Do NOT from-import

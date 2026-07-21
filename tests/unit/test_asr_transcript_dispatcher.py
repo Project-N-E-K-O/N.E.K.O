@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from main_logic.asr_client.lifecycle_contracts import (
+from main_logic.asr_client.lifecycle import (
     FinalKey,
     VoiceIngressToken,
     VoiceTurnToken,
 )
-from main_logic.core.asr_transcript_dispatcher import (
+from main_logic.asr_client.transcript import (
     CoreTranscriptDispatcher,
     TranscriptEnvelope,
 )

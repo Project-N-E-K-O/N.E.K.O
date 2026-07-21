@@ -28,8 +28,8 @@ from utils.screenshot_utils import overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.session_state import SessionEvent
-from main_logic.asr_client.hot_swap_audio_buffer import HotSwapAudioFrame
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
+from main_logic.asr_client.audio import HotSwapAudioFrame
+from main_logic.asr_client.lifecycle import VoiceIngressToken
 from utils.language_utils import get_global_language_full
 from uuid import uuid4
 from ._shared import (

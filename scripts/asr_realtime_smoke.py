@@ -31,7 +31,7 @@ from main_logic.asr_client._infra import (
     _RealtimeAsrSessionImpl,
 )
 from main_logic.asr_client._registry_meta import ASR_PROVIDER_REGISTRY
-from main_logic.asr_client._voice_turn import _create_voice_turn_adapter
+from main_logic.asr_client.detector_runtime import _create_voice_turn_adapter
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 

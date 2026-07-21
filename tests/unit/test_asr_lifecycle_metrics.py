@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from main_logic.asr_client.metrics import VoiceLifecycleMetrics
+from main_logic.asr_client.lifecycle import VoiceLifecycleMetrics
 
 
 def test_metrics_report_throttle_ratio_without_division_by_zero() -> None:

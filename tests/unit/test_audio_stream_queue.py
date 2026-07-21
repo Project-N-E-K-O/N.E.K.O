@@ -9,20 +9,20 @@ import pytest
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
 from main_logic.core import LLMSessionManager
-from main_logic.core.audio_duration_queue import AudioDurationQueue, QueuedMicFrame
+from main_logic.asr_client.audio import AudioDurationQueue, QueuedMicFrame
 from main_logic.omni_realtime_client import OmniRealtimeClient
-from main_logic.asr_client.audio_pipeline import ProcessedVoiceFrame
-from main_logic.asr_client.hot_swap_audio_buffer import (
+from main_logic.asr_client.audio import ProcessedVoiceFrame
+from main_logic.asr_client.audio import (
     HotSwapAudioBuffer,
     HotSwapAudioFrame,
 )
-from main_logic.asr_client.lifecycle_contracts import (
+from main_logic.asr_client.lifecycle import (
     VoiceIngressToken,
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
 )
-from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
+from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
 
 

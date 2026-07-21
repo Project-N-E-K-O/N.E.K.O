@@ -4,13 +4,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from main_logic.asr_client.detector_contracts import (
+from main_logic.asr_client.detector import (
     DetectorCandidateKey,
     DetectorIngressIdentity,
     DetectorRuntimeEvent,
 )
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
-from main_logic.core.asr_detector_dispatcher import (
+from main_logic.asr_client.lifecycle import VoiceIngressToken
+from main_logic.asr_client.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
 )

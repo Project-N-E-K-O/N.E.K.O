@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
-from main_logic.core.asr_audio_dispatcher import AsrAudioDispatcher
+from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
+from main_logic.asr_client.audio import AsrAudioDispatcher
 
 
 def _turn(turn_id: int = 1) -> VoiceTurnToken:

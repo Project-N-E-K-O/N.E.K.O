@@ -29,7 +29,7 @@ import numpy as np
 import soxr
 
 from .provider_policy import AsrProviderPolicy
-from .segment_aggregator import SegmentAggregator
+from .transcript import SegmentAggregator
 
 
 logger = logging.getLogger(__name__)

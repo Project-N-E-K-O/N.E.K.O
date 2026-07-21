@@ -96,13 +96,11 @@ from pathlib import Path
 FACADE_MODULE_ALIAS = "_core_facade"
 OWNER_SUBMODULES = {
     "_shared",
-    "asr_audio_dispatcher",
-    "asr_detector_dispatcher",
-    "asr_transcript_dispatcher",
-    "audio_duration_queue",
     "callback_render",
     "notices",
-    "voice_input_consumer",
+}
+EXTERNAL_MIXINS = {
+    "AsrRuntimeMixin": "main_logic.asr_client.runtime",
 }
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
 
@@ -561,6 +559,31 @@ def run(root: Path) -> list[Violation]:
                                         f"to OWNER_SUBMODULES in scripts/check_core_contracts.py if it is a "
                                         f"deliberate new owner module"))
 
+    # ASR owns its runtime outside core. Keep this an explicit exception, not
+    # a general allowance for arbitrary external manager bases.
+    for class_name, module_name in EXTERNAL_MIXINS.items():
+        path = root.joinpath(*module_name.split(".")).with_suffix(".py")
+        if not path.exists():
+            violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
+                                        f"registered external mixin module {module_name} is missing"))
+            continue
+        classes = [n for n in parse(path).body if isinstance(n, ast.ClassDef)]
+        klass = next((c for c in classes if c.name == class_name), None)
+        if klass is None or len(classes) != 1:
+            violations.append(Violation(path, 1, 0, "CORE_MIXIN_SHAPE",
+                                        f"external mixin module {module_name} must define exactly one class: "
+                                        f"{class_name}"))
+            continue
+        if klass.bases or klass.keywords:
+            base = (klass.bases or [kw.value for kw in klass.keywords])[0]
+            violations.append(Violation(path, base.lineno, base.col_offset, "CORE_MIXIN_SHAPE",
+                                        f"external mixin class {class_name} must have an empty base list"))
+        if klass.decorator_list:
+            decorator = klass.decorator_list[0]
+            violations.append(Violation(path, decorator.lineno, decorator.col_offset, "CORE_MIXIN_SHAPE",
+                                        f"external mixin class {class_name} must not be decorated"))
+        mixin_files[path] = klass
+
     # -- CORE_MIXIN_SHAPE: top level and class body
     for path, klass in mixin_files.items():
         tree = parse(path)
@@ -746,29 +769,39 @@ def run(root: Path) -> list[Violation]:
         # MRO while the real package mixin sits orphaned, yet the set check
         # would still pass. ``defining_stem`` comes from where the class was
         # discovered.
-        defining_stem = {mklass.name: mpath.stem for mpath, mklass in mixin_files.items()}
-        # bound name -> (level-1 module, ORIGINAL imported symbol name). The
-        # original name matters: ``from .focus import OmniOfflineClient as
-        # FocusMixin`` is same-module but binds the WRONG class.
-        relative_binds = {}
+        defining_imports = {
+            mklass.name: (
+                (0, EXTERNAL_MIXINS[mklass.name], mklass.name)
+                if mklass.name in EXTERNAL_MIXINS
+                else (1, mpath.stem, mklass.name)
+            )
+            for mpath, mklass in mixin_files.items()
+        }
+        # bound name -> (relative level, module, ORIGINAL imported symbol).
+        import_binds = {}
         for node in parse(manager_path).body:
-            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            if isinstance(node, ast.ImportFrom) and node.module:
                 for a in node.names:
-                    relative_binds[a.asname or a.name] = (node.module, a.name)
+                    import_binds[a.asname or a.name] = (
+                        node.level,
+                        node.module,
+                        a.name,
+                    )
         for name in sorted(base_names & mixin_names):
-            want = defining_stem.get(name)
-            if relative_binds.get(name) != (want, name):
-                got = relative_binds.get(name)
+            want = defining_imports[name]
+            if import_binds.get(name) != want:
+                got = import_binds.get(name)
                 if got is None:
-                    where = "not bound via a level-1 core-local import"
-                elif got[0] != want:
-                    where = f"bound from '.{got[0]}'"
+                    where = "not bound via an accepted import"
                 else:
-                    where = f"bound to the different symbol '{got[1]}'"
+                    prefix = "." * got[0]
+                    where = f"bound from '{prefix}{got[1]}' as symbol '{got[2]}'"
+                prefix = "." * want[0]
                 violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                             "CORE_MIXIN_BASES",
                                             f"base {name} must be imported as the class named {name} from its "
-                                            f"defining module (from .{want} import {name}) but is {where}; the "
+                                            f"defining module (from {prefix}{want[1]} import {name}) but is "
+                                            f"{where}; the "
                                             f"MRO may be using a different/outside class while the package mixin "
                                             f"is orphaned"))
 
@@ -810,7 +843,12 @@ def run(root: Path) -> list[Violation]:
 
     # -- patch-target checks
     targets = collect_patch_targets(tests_dir)
-    routing_files = sorted(set(mixin_files) | {manager_path})
+    # Facade patch routing applies only to core-owned modules. The explicitly
+    # registered ASR mixin must read its real owner modules and must not depend
+    # on the core facade.
+    routing_files = sorted(
+        {path for path in mixin_files if path.parent == core_dir} | {manager_path}
+    )
     module_info = {}
     for path in routing_files:
         tree = parse(path)

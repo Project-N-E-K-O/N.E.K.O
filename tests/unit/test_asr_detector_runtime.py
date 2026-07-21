@@ -13,12 +13,12 @@ from main_logic.asr_client.detector_runtime import (
     SmartTurnLease,
     SmartTurnReadiness,
 )
-from main_logic.asr_client.detector_contracts import (
+from main_logic.asr_client.detector import (
     DetectorActivityEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken, VoiceTurnToken
+from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
