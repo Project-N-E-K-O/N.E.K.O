@@ -136,6 +136,26 @@ def test_strip_proactive_screen_tag_leak_ignores_unknown_bracket_tags():
     assert tag == ""
 
 
+def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
+    cases = [
+        ("/chat\n你好", "你好", "CHAT"),
+        ("/music\n听这个", "听这个", "MUSIC"),
+        ("屏幕/\n这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+    ]
+
+    for raw, expected_text, expected_tag in cases:
+        cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
+        assert cleaned == expected_text
+        assert tag == expected_tag
+
+
+def test_strip_proactive_screen_tag_leak_preserves_inline_known_prefix_words():
+    for raw in ("我刚才看了 /chat 路由", "music/chat 模块需要重构"):
+        cleaned, tag = sr_parsing._strip_proactive_screen_tag_leak(raw)
+        assert cleaned == raw
+        assert tag == ""
+
+
 def test_recent_proactive_prompt_has_strong_paired_boundaries():
     lanlan = "测试娘"
     snapshot = sr._proactive_chat_history.get(lanlan)

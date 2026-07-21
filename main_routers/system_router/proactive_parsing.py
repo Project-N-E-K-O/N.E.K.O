@@ -327,6 +327,27 @@ _PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
 _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE)
 
 
+_PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
+    (re.compile(r"^/chat(?=\s|$)\s*"), "CHAT"),
+    (re.compile(r"^/music(?=\s|$)\s*"), "MUSIC"),
+    (re.compile(r"^屏幕/(?=\s|$)\s*"), "CHAT"),
+)
+
+
+def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
+    """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
+    if not text:
+        return "", ""
+    leading_len = len(text) - len(text.lstrip())
+    leading = text[:leading_len]
+    body = text[leading_len:]
+    for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
+        match = pattern.match(body)
+        if match:
+            return leading + body[match.end():].lstrip(), source_tag
+    return text, ""
+
+
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """Strip mistakenly emitted screen-source tags (e.g. ``[Screen]``) from Phase 2 text.
 
@@ -347,6 +368,9 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """
     if not text:
         return "", ""
+    text, prefix_tag = _strip_proactive_known_prefix_tag_leak(text)
+    if prefix_tag:
+        return text, prefix_tag
     leading_len = len(text) - len(text.lstrip())
     leading = text[:leading_len]
     body = text[leading_len:]
