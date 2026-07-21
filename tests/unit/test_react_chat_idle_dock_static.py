@@ -126,6 +126,17 @@ def test_electron_idle_dock_uses_desktop_return_ball_bridge():
     assert "preserveScreenRect" in source
     assert "idleDockCommitCollapsedBounds" in source
     assert "await bridge.idleDockCommitCollapsedBounds(nextBounds)" in source
+    apply_position_block = _between(
+        source,
+        "async function applyElectronIdleDockPosition() {",
+        "function clearElectronIdleDockRetry() {",
+    )
+    assert "committedBounds !== false && committedBounds !== null && committedBounds !== undefined" in apply_position_block
+    assert "rememberElectronIdleDockBounds(committedBounds);" in apply_position_block
+    assert "rememberElectronIdleDockBounds(committedBounds || nextBounds);" not in apply_position_block
+    assert apply_position_block.index("bridge.setBounds(nextBounds.x") > apply_position_block.index(
+        "committedBounds !== false"
+    )
     assert "clampElectronDockBounds(preserveBounds, workArea)" in source
     assert "HOME_IDLE_DOCK_GAP" in source
 

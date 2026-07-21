@@ -539,8 +539,10 @@
                 committedBounds = null;
             }
             if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
-            rememberElectronIdleDockBounds(committedBounds || nextBounds);
-            return;
+            if (committedBounds !== false && committedBounds !== null && committedBounds !== undefined) {
+                rememberElectronIdleDockBounds(committedBounds);
+                return;
+            }
         }
         bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
         rememberElectronIdleDockBounds(nextBounds);
