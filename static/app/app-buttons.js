@@ -3727,7 +3727,7 @@
             var files = getFilesFromDataTransfer(e.dataTransfer);
             var imageFiles = [];
             var otherFiles = [];
-            Array.from(files).forEach(function (f) {
+            files.forEach(function (f) {
                 if (f instanceof File && isLikelyImageFile(f)) {
                     imageFiles.push(f);
                 } else {
