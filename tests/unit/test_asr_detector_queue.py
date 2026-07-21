@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
-from main_logic.asr_client.detector_contracts import (
+from main_logic.asr_client.detector import (
     DetectorAudioItem,
     DetectorIngressIdentity,
 )
-from main_logic.asr_client.detector_queue import DetectorDurationQueue
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
+from main_logic.asr_client.detector import DetectorDurationQueue
+from main_logic.asr_client.lifecycle import VoiceIngressToken
 
 
 def _identity(sequence_no: int) -> DetectorIngressIdentity:

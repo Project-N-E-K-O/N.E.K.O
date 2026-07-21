@@ -4,10 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_logic import core as core_facade
-from main_logic.core.asr_runtime import AsrRuntimeMixin
+from utils import preferences
+
+from main_logic.asr_client.runtime import AsrRuntimeMixin
 from main_logic.asr_client.detector_runtime import DetectorFeedResult
-from main_logic.asr_client.lifecycle_contracts import VoiceLifecycleState
+from main_logic.asr_client.lifecycle import VoiceLifecycleState
 
 
 pytestmark = pytest.mark.asyncio
@@ -42,7 +43,7 @@ async def test_disabled_independent_asr_preserves_omni_native_audio(
     runtime.session = type("Omni", (), {})()
     runtime.session.stream_audio = AsyncMock()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -65,7 +66,7 @@ async def test_text_session_stays_fail_closed_for_accidental_microphone_frames(
 ) -> None:
     runtime = _Runtime()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -83,7 +84,7 @@ async def test_text_session_stays_fail_closed_for_accidental_microphone_frames(
 async def test_ready_independent_asr_owns_an_active_lifecycle_controller(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     asr = type("Asr", (), {})()
@@ -101,7 +102,7 @@ async def test_ready_independent_asr_owns_an_active_lifecycle_controller(
         {"provider_key": "gemini", "endpointing_mode": "manual"},
     )()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )

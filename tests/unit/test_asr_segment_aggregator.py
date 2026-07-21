@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from main_logic.asr_client.segment_aggregator import SegmentAggregator
+from main_logic.asr_client.transcript import SegmentAggregator
 
 
 def test_forced_physical_segments_are_not_published_early() -> None:

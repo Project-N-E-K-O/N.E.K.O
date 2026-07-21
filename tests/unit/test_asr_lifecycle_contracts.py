@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from main_logic.asr_client.lifecycle_contracts import (
+from main_logic.asr_client.lifecycle import (
     FinalKey,
     VoiceIngressToken,
     VoiceLifecycleConfig,

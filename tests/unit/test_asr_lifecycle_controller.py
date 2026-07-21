@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from main_logic.asr_client.lifecycle_contracts import (
+from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
 )
-from main_logic.asr_client.lifecycle_controller import (
+from main_logic.asr_client.lifecycle import (
     AudioDisposition,
     VoiceInputLifecycleController,
 )

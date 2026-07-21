@@ -255,9 +255,4 @@ from .notices import (  # noqa: F401
 # mixin modules, which bind this partially-initialized facade module as
 # ``_core_facade`` for late-binding reads of the test-patchable symbols
 # re-exported above.
-from .voice_input_consumer import (  # noqa: F401
-    VoiceInputConsumerBinding,
-    VoiceTranscriptCallback,
-    VoiceTranscriptEvent,
-)
 from .manager import LLMSessionManager  # noqa: F401

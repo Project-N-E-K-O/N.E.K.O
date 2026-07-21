@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from main_logic.asr_client.audio_ring_buffer import AudioRingBuffer
+from main_logic.asr_client.audio import AudioRingBuffer
 
 
 def _pcm(milliseconds: int, *, sample_rate_hz: int = 16_000, value: int = 1) -> bytes:

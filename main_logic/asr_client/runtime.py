@@ -1,4 +1,4 @@
-"""Production bridge between microphone audio, independent ASR, and Omni."""
+"""Production bridge between microphone audio, independent ASR, and Core."""
 
 from __future__ import annotations
 
@@ -8,52 +8,42 @@ import time
 from collections import OrderedDict
 from typing import Any, Literal
 
-from main_logic import core as _core_facade
 from main_logic.asr_client import (
     _attach_partial_callback,
     _create_asr_session_from_selection,
-    _resolve_core_follow_selection,
     _resolve_asr_selection,
+    _resolve_core_follow_selection,
 )
 from main_logic.asr_client._registry_meta import CORE_ASR_ROUTES
-from main_logic.asr_client.audio_pipeline import (
-    ProcessedVoiceFrame,
-    VoiceInputAudioPipeline,
-)
-from main_logic.asr_client.detector_contracts import (
+from main_logic.voice_turn.contracts import SpeechActivityEvent
+from utils import preferences as _preferences
+
+from ._infra import logger
+from .audio import AsrAudioDispatcher, ProcessedVoiceFrame, VoiceInputAudioPipeline
+from .detector import (
+    AsrDetectorDispatcher,
+    CoreDetectorEventEnvelope,
     DetectorActivityEvent,
     DetectorRuntimeEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
-from main_logic.asr_client.detector_runtime import DetectorRuntime, SmartTurnLease
-from main_logic.asr_client.lifecycle_contracts import (
+from .detector_runtime import DetectorRuntime, SmartTurnLease
+from .lifecycle import (
+    AudioDisposition,
     FinalKey,
     VoiceIngressToken,
+    VoiceInputLifecycleController,
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
     VoiceTransportToken,
     VoiceTurnToken,
 )
-from main_logic.asr_client.lifecycle_controller import (
-    AudioDisposition,
-    VoiceInputLifecycleController,
-)
-from main_logic.asr_client.provider_policy import resolve_provider_policy
-from main_logic.voice_turn.contracts import SpeechActivityEvent
-
-from ._shared import logger
-from .asr_audio_dispatcher import AsrAudioDispatcher
-from .asr_detector_dispatcher import (
-    AsrDetectorDispatcher,
-    CoreDetectorEventEnvelope,
-)
-from .asr_transcript_dispatcher import (
+from .provider_policy import resolve_provider_policy
+from .transcript import (
     CoreTranscriptDispatcher,
     TranscriptEnvelope,
-)
-from .voice_input_consumer import (
     VoiceInputConsumerBinding,
     VoiceTranscriptCallback,
     VoiceTranscriptEvent,
@@ -631,7 +621,7 @@ class AsrRuntimeMixin:
         self._asr_core_type = core_type
 
         try:
-            settings = await _core_facade.aload_global_conversation_settings()
+            settings = await _preferences.aload_global_conversation_settings()
             enabled = bool(settings.get("independentAsrEnabled", False))
             optimization_value = settings.get(
                 "voice_input_resource_optimization_enabled",

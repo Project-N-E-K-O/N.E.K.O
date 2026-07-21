@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client._voice_turn import _VoiceTurnAdapter
-from main_logic.asr_client.detector_contracts import DetectorIngressIdentity
-from main_logic.asr_client.lifecycle_contracts import VoiceIngressToken
+from main_logic.asr_client.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.detector import DetectorIngressIdentity
+from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
     SpeechActivityEvent,

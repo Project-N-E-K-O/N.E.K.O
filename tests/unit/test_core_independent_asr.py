@@ -8,21 +8,21 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from main_logic import core as core_facade
-from main_logic.core import LLMSessionManager, VoiceTranscriptEvent
-from main_logic.core.asr_runtime import AsrRuntimeMixin
+from main_logic.core import LLMSessionManager
+from main_logic.asr_client.runtime import AsrRuntimeMixin
 from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
-from main_logic.asr_client.lifecycle_contracts import (
+from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceRouteMode,
 )
-from main_logic.asr_client.lifecycle_controller import VoiceInputLifecycleController
+from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.transcript import VoiceTranscriptEvent
 from main_logic.voice_turn.contracts import SpeechActivityEvent
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
 from main_logic.voice_turn.coordinator import CoordinatorState
-from main_logic.core.asr_detector_dispatcher import CoreDetectorEventEnvelope
+from main_logic.asr_client.detector import CoreDetectorEventEnvelope
 from utils import preferences
 
 
@@ -1473,7 +1473,7 @@ async def test_independent_asr_setting_is_persisted_as_a_boolean() -> None:
 
 
 async def test_start_uses_current_core_route_only_after_provider_ready(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1482,7 +1482,7 @@ async def test_start_uses_current_core_route_only_after_provider_ready(monkeypat
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1511,7 +1511,7 @@ async def test_runtime_builds_primary_candidate_from_its_single_selection(
     monkeypatch,
 ) -> None:
     import main_logic.asr_client as asr_client
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1526,7 +1526,7 @@ async def test_runtime_builds_primary_candidate_from_its_single_selection(
     builder = MagicMock(return_value=asr)
 
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1567,7 +1567,7 @@ async def test_startup_close_window_is_blocked_before_settings_resolution(
     runtime._asr_session = _OldAsr()
     runtime._asr_route_mode = "independent"
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -1589,7 +1589,7 @@ async def test_startup_close_window_is_blocked_before_settings_resolution(
 
 
 async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1598,7 +1598,7 @@ async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> Non
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1623,7 +1623,7 @@ async def test_explicit_intl_soniox_is_selected_before_audio(monkeypatch) -> Non
 
 
 async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1639,7 +1639,7 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
     core_resolver = MagicMock(return_value=core_selection)
     built_selections = []
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1684,7 +1684,7 @@ async def test_soniox_connect_failure_falls_back_to_core_before_audio(monkeypatc
 async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1713,7 +1713,7 @@ async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
     soniox_session.connect = AsyncMock(side_effect=connect_soniox)
 
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1746,7 +1746,7 @@ async def test_soniox_startup_error_callback_does_not_invalidate_core_fallback(
 async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
@@ -1774,7 +1774,7 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
         return core_session
 
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1844,12 +1844,12 @@ async def test_replaced_soniox_candidate_cannot_deliver_late_callbacks(
 async def test_selection_failure_is_reported_without_escaping_session_start(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1872,14 +1872,14 @@ async def test_selection_failure_is_reported_without_escaping_session_start(
 async def test_selection_failure_during_core_change_stays_blocked(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.input_mode = "audio"
     runtime._asr_core_type = "openai"
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1903,7 +1903,7 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     monkeypatch,
     core_type: str,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = core_type
@@ -1912,7 +1912,7 @@ async def test_qwen_core_starts_independent_asr_with_external_turn_support(
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -1981,7 +1981,7 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
 
 
 async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "glm"
@@ -1989,7 +1989,7 @@ async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> N
     asr.connect = AsyncMock(side_effect=RuntimeError("secret provider response"))
     asr.close = AsyncMock()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -2014,13 +2014,13 @@ async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> N
 async def test_builder_failure_stays_blocked_and_never_sends_audio_to_omni(
     monkeypatch,
 ) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     runtime.session.stream_audio = AsyncMock()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -2152,13 +2152,13 @@ async def test_session_activation_resolves_asr_before_frontend_ack() -> None:
 
 
 async def test_disabled_or_text_session_never_creates_provider(monkeypatch) -> None:
-    import main_logic.core.asr_runtime as runtime_module
+    import main_logic.asr_client.runtime as runtime_module
 
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     factory = MagicMock()
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": False}),
     )
@@ -2180,7 +2180,7 @@ async def test_free_core_reports_unavailable_and_blocks_omni(monkeypatch) -> Non
     runtime = _Runtime()
     runtime.core_api_type = "free"
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(return_value={"independentAsrEnabled": True}),
     )
@@ -2234,7 +2234,7 @@ async def test_settings_read_failure_blocks_omni(monkeypatch) -> None:
     runtime = _Runtime()
     runtime.core_api_type = "gemini"
     monkeypatch.setattr(
-        core_facade,
+        preferences,
         "aload_global_conversation_settings",
         AsyncMock(side_effect=RuntimeError("settings unavailable")),
     )

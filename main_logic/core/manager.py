@@ -42,9 +42,9 @@ from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
-from .asr_runtime import AsrRuntimeMixin
-from .audio_duration_queue import AudioDurationQueue
-from main_logic.asr_client.hot_swap_audio_buffer import HotSwapAudioBuffer
+from main_logic.asr_client.runtime import AsrRuntimeMixin
+from main_logic.asr_client.audio import AudioDurationQueue
+from main_logic.asr_client.audio import HotSwapAudioBuffer
 
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
