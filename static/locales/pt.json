@@ -1672,6 +1672,7 @@
         },
         "registeredVoices": "Vozes registradas",
         "preview": "Visualização",
+        "previewing": "Reproduzindo prévia",
         "previewFailed": "Falha na visualização: {{error}}",
         "previewTimeout": "A geração da prévia expirou. Tente novamente mais tarde.",
         "playFailed": "Falha na reprodução: {{error}}",

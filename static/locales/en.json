@@ -1672,6 +1672,7 @@
         },
         "registeredVoices": "Registered Voices",
         "preview": "Preview",
+        "previewing": "Previewing",
         "previewFailed": "Preview failed: {{error}}",
         "previewTimeout": "Preview generation timed out. Please try again later.",
         "playFailed": "Play failed: {{error}}",

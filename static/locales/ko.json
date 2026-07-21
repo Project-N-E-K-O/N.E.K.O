@@ -1672,6 +1672,7 @@
         },
         "registeredVoices": "등록된 음성",
         "preview": "미리보기",
+        "previewing": "미리보기 중",
         "previewFailed": "미리보기에 실패했습니다: {{error}}",
         "previewTimeout": "미리보기 생성 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.",
         "playFailed": "재생에 실패했습니다: {{error}}",
