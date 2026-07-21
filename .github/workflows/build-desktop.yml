@@ -644,6 +644,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Playwright uses .links only for browser-cache install/GC bookkeeping.
+          # codesign --deep otherwise mistakes it for a nested bundle.
+          rm -rf -- dist/Xiao8/projectneko_server.app/Contents/MacOS/playwright_browsers/.links
           codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
           codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
 
