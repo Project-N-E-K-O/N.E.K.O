@@ -76,38 +76,42 @@
         }
     }
 
+    function getPinButtons() {
+        return Array.from(document.querySelectorAll(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`));
+    }
+
     function updatePinState(state) {
-        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
-        if (!pinButton) return;
         const allowed = !!(state && state.allowed);
         const pinned = allowed && !!state.pinned;
-        pinButton.hidden = !allowed;
-        pinButton.classList.toggle('is-pinned', pinned);
-        pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');
-        const icon = pinButton.querySelector(PIN_ICON_SELECTOR);
-        if (icon) icon.classList.toggle('pinned', pinned);
-        setButtonLabel(
-            pinButton,
-            pinned ? 'common.unpinWindow' : 'common.pinWindow',
-            pinned ? 'Unpin window' : 'Pin window'
-        );
-        if (pinButton.hasAttribute('data-tooltip')) {
-            pinButton.setAttribute('data-tooltip', pinButton.getAttribute('title') || '');
-        }
+        getPinButtons().forEach((pinButton) => {
+            pinButton.hidden = !allowed;
+            pinButton.classList.toggle('is-pinned', pinned);
+            pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+            const icon = pinButton.querySelector(PIN_ICON_SELECTOR);
+            if (icon) icon.classList.toggle('pinned', pinned);
+            setButtonLabel(
+                pinButton,
+                pinned ? 'common.unpinWindow' : 'common.pinWindow',
+                pinned ? 'Unpin window' : 'Pin window'
+            );
+            if (pinButton.hasAttribute('data-tooltip')) {
+                pinButton.setAttribute('data-tooltip', pinButton.getAttribute('title') || '');
+            }
+        });
     }
 
     async function refreshPinState() {
-        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
-        if (!pinButton) return;
+        const pinButtons = getPinButtons();
+        if (pinButtons.length === 0) return;
         const api = window.nekoWindowControl;
         if (!api || typeof api.getAlwaysOnTopState !== 'function') {
-            pinButton.hidden = true;
+            pinButtons.forEach((pinButton) => { pinButton.hidden = true; });
             return;
         }
         try {
             updatePinState(await api.getAlwaysOnTopState());
         } catch (error) {
-            pinButton.hidden = true;
+            pinButtons.forEach((pinButton) => { pinButton.hidden = true; });
         }
     }
 
@@ -147,21 +151,23 @@
     }
 
     function bindPinButton() {
-        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
-        if (!pinButton || pinButton.dataset.nekoWindowControlBound === '1') return;
-        pinButton.dataset.nekoWindowControlBound = '1';
-        pinButton.addEventListener('click', async () => {
-            if (pinButton.disabled) return;
-            const api = window.nekoWindowControl;
-            if (!api || typeof api.toggleAlwaysOnTop !== 'function') return;
-            pinButton.disabled = true;
-            try {
-                updatePinState(await api.toggleAlwaysOnTop());
-            } catch (error) {
-                await refreshPinState();
-            } finally {
-                pinButton.disabled = false;
-            }
+        getPinButtons().forEach((pinButton) => {
+            if (pinButton.dataset.nekoWindowControlBound === '1') return;
+            pinButton.dataset.nekoWindowControlBound = '1';
+            pinButton.addEventListener('click', async () => {
+                if (pinButton.disabled) return;
+                const api = window.nekoWindowControl;
+                if (!api || typeof api.toggleAlwaysOnTop !== 'function') return;
+                const pinButtons = getPinButtons();
+                pinButtons.forEach((button) => { button.disabled = true; });
+                try {
+                    updatePinState(await api.toggleAlwaysOnTop());
+                } catch (error) {
+                    await refreshPinState();
+                } finally {
+                    pinButtons.forEach((button) => { button.disabled = false; });
+                }
+            });
         });
     }
 

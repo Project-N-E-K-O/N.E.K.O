@@ -86,6 +86,9 @@ def test_common_window_control_script_uses_the_individual_topmost_bridge():
 
     assert "api.getAlwaysOnTopState" in script
     assert "api.toggleAlwaysOnTop" in script
+    assert "function getPinButtons()" in script
+    assert "document.querySelectorAll" in script
+    assert "getPinButtons().forEach((pinButton)" in script
     assert "pinButton.hidden = !allowed;" in script
     assert "pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');" in script
     assert "pinned ? 'common.unpinWindow' : 'common.pinWindow'" in script
