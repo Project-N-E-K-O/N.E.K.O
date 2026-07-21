@@ -345,7 +345,9 @@ _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
 
 _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset({
     "QQ",
+    "当前界面",
     "用户当前操作",
+    "上轮未收尾话题",
     "屏幕内容",
     "屏幕显示",
 })
