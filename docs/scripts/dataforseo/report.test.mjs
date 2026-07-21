@@ -80,6 +80,14 @@ test('request plan makes paid call volume visible before execution', () => {
   assert.equal(plan.asynchronousAiOverviewRequests, 2)
 })
 
+test('request plan labels an invalid CLI depth override as --depth', () => {
+  const config = validateConfig(rawConfig)
+  assert.throws(
+    () => buildPlan(config, { depth: 0 }),
+    /--depth must be an integer from 1 to 100/,
+  )
+})
+
 test('keyword metrics merge Google Ads volume with organic keyword difficulty', () => {
   const config = validateConfig(rawConfig)
   const volumePayload = {

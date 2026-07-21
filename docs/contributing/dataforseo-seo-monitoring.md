@@ -1,4 +1,4 @@
-# DataForSEO SEO monitoring
+# DataForSEO SEO Monitoring
 
 This maintainer-only tool turns the documentation site's tracked keyword list into a sanitized JSON report containing:
 

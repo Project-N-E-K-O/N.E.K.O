@@ -70,8 +70,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
-      DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
       REPORT_MODE: ${{ inputs.mode }}
       SERP_DEPTH: ${{ inputs.serp_depth }}
       INCLUDE_AI_OVERVIEW: ${{ inputs.include_ai_overview }}
@@ -93,22 +91,35 @@ jobs:
       - name: Require credentials for paid modes
         if: inputs.mode != 'dry-run'
         shell: bash
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
         run: |
           if [[ -z "$DATAFORSEO_LOGIN" || -z "$DATAFORSEO_PASSWORD" ]]; then
             echo "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD as repository or environment secrets." >&2
             exit 1
           fi
 
-      - name: Generate report
+      - name: Generate dry-run report
+        if: inputs.mode == 'dry-run'
         shell: bash
         working-directory: docs
         run: |
-          args=(--depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
-          if [[ "$REPORT_MODE" == "dry-run" ]]; then
-            args+=(--mode all --dry-run)
-          else
-            args+=(--mode "$REPORT_MODE")
+          args=(--mode all --dry-run --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then
+            args+=(--include-ai-overview)
           fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Generate paid report
+        if: inputs.mode != 'dry-run'
+        shell: bash
+        working-directory: docs
+        env:
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          args=(--mode "$REPORT_MODE" --depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
           if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then
             args+=(--include-ai-overview)
           fi

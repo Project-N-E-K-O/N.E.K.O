@@ -45,6 +45,73 @@ test('client sends Basic Auth and a JSON task array', async () => {
   )
   assert.equal(captured.options.headers['Content-Type'], 'application/json')
   assert.deepEqual(JSON.parse(captured.options.body), tasks)
+  assert.ok(captured.options.signal instanceof AbortSignal)
+})
+
+test('client supports disabling the default request timeout explicitly', async () => {
+  let capturedSignal = 'not-called'
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async (_url, options) => {
+      capturedSignal = options.signal
+      return jsonResponse({
+        status_code: 20000,
+        status_message: 'Ok.',
+        tasks_error: 0,
+        tasks: [{ status_code: 20000, result: [] }],
+      })
+    },
+  })
+
+  await client.post(DATAFORSEO_ENDPOINTS.searchVolume, [{}], { timeoutMs: null })
+  assert.equal(capturedSignal, undefined)
+})
+
+test('client wraps request timeout failures without exposing credentials', async () => {
+  const client = new DataForSeoClient({
+    login: 'private-login',
+    password: 'private-password',
+    fetchImpl: async (_url, options) => {
+      assert.ok(options.signal instanceof AbortSignal)
+      throw new DOMException('The operation timed out', 'TimeoutError')
+    },
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.searchVolume, [{}], { timeoutMs: 10 }),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.match(error.message, /network request failed.*timed out/i)
+      assert.doesNotMatch(error.message, /private-login|private-password/)
+      return true
+    },
+  )
+})
+
+test('client wraps response body read failures consistently', async () => {
+  const client = new DataForSeoClient({
+    login: 'login',
+    password: 'password',
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        throw new TypeError('connection reset')
+      },
+    }),
+  })
+
+  await assert.rejects(
+    client.post(DATAFORSEO_ENDPOINTS.organicSerp, [{}]),
+    error => {
+      assert.ok(error instanceof DataForSeoApiError)
+      assert.equal(error.endpoint, DATAFORSEO_ENDPOINTS.organicSerp)
+      assert.equal(error.statusCode, 200)
+      assert.match(error.message, /response body read failed.*connection reset/i)
+      return true
+    },
+  )
 })
 
 test('client rejects a top-level DataForSEO error without exposing credentials', async () => {

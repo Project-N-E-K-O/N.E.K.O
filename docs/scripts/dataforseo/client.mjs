@@ -1,4 +1,5 @@
 const DEFAULT_BASE_URL = 'https://api.dataforseo.com'
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 
 export const DATAFORSEO_ENDPOINTS = Object.freeze({
   searchVolume: '/v3/keywords_data/google_ads/search_volume/live',
@@ -20,6 +21,15 @@ function requireCredential(value, name) {
     throw new TypeError(`${name} must be a non-empty string`)
   }
   return value
+}
+
+function normalizeTimeout(value) {
+  if (value == null) return null
+  const timeoutMs = Number(value)
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new TypeError('timeoutMs must be a positive integer or null')
+  }
+  return timeoutMs
 }
 
 function apiMessage(payload) {
@@ -70,7 +80,7 @@ export class DataForSeoClient {
     this.baseUrl = String(baseUrl).replace(/\/$/, '')
   }
 
-  async post(endpoint, tasks) {
+  async post(endpoint, tasks, { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
     if (typeof endpoint !== 'string' || !endpoint.startsWith('/v3/')) {
       throw new TypeError('DataForSEO endpoint must start with /v3/')
     }
@@ -79,16 +89,22 @@ export class DataForSeoClient {
     }
 
     const authorization = Buffer.from(`${this.login}:${this.password}`, 'utf8').toString('base64')
+    const normalizedTimeoutMs = normalizeTimeout(timeoutMs)
+    const requestOptions = {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${authorization}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(tasks),
+    }
+    if (normalizedTimeoutMs != null) {
+      requestOptions.signal = AbortSignal.timeout(normalizedTimeoutMs)
+    }
+
     let response
     try {
-      response = await this.fetchImpl(`${this.baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${authorization}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(tasks),
-      })
+      response = await this.fetchImpl(`${this.baseUrl}${endpoint}`, requestOptions)
     } catch (error) {
       throw new DataForSeoApiError(
         `DataForSEO network request failed for ${endpoint}: ${error?.message ?? 'unknown error'}`,
@@ -96,7 +112,15 @@ export class DataForSeoClient {
       )
     }
 
-    const responseText = await response.text()
+    let responseText
+    try {
+      responseText = await response.text()
+    } catch (error) {
+      throw new DataForSeoApiError(
+        `DataForSEO response body read failed for ${endpoint}: ${error?.message ?? 'unknown error'}`,
+        { endpoint, statusCode: response.status },
+      )
+    }
     let payload
     try {
       payload = JSON.parse(responseText)

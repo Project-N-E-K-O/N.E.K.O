@@ -36,10 +36,10 @@ function normalizeLandingPage(value) {
   return parsed.pathname === '/' ? '/' : parsed.pathname.replace(/\/$/, '')
 }
 
-function normalizeDepth(value) {
+function normalizeDepth(value, fieldName = 'serpDepth') {
   const depth = Number(value)
   if (!Number.isInteger(depth) || depth < 1 || depth > 100) {
-    throw new TypeError('serpDepth must be an integer from 1 to 100')
+    throw new TypeError(`${fieldName} must be an integer from 1 to 100`)
   }
   return depth
 }
@@ -121,7 +121,10 @@ function normalizeMode(mode) {
 
 export function buildPlan(config, { mode = 'all', includeAiOverview = false, depth } = {}) {
   const normalizedMode = normalizeMode(mode)
-  const serpDepth = normalizeDepth(depth ?? config.serpDepth)
+  const serpDepth = normalizeDepth(
+    depth ?? config.serpDepth,
+    depth == null ? 'serpDepth' : '--depth',
+  )
   const includesKeywords = normalizedMode === 'all' || normalizedMode === 'keywords'
   const includesSerp = normalizedMode === 'all' || normalizedMode === 'serp'
   const serpRequests = includesSerp ? config.keywords.length : 0
