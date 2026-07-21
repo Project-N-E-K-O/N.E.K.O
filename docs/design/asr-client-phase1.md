@@ -63,7 +63,7 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 - 生产 ASR 跟随 `core_type` 路由；一个 Session 只使用一个 worker，不跨供应商 fallback。
 - 公共断句语义只有 `manual` 与 `provider`。`manual` 下 `signal_user_activity_end()` 发送 `commit`；`provider` 下不发送 `commit`，只刷新本地 48 kHz 流式重采样器尾部，最终断句由供应商决定。`server_vad`、`endpointing` 等厂商字段只存在于 worker 内部。
-- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`step`、`grok` 使用 `provider`；`glm`、`gemini` 使用 `manual` 并由 Smart Turn 切分。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。当前 OpenAI `gpt-realtime-whisper` 只支持手动 commit、没有 Provider turn detection，因此生产路由保持 blocked，不能用 Smart Turn 伪装成流式 Provider 断句。
+- 默认模式跟随 Core 路由：`qwen`、`qwen_intl`、`openai`、`step`、`grok` 使用 `provider`；`glm`、`gemini` 使用 `manual` 并由 Smart Turn 切分。Soniox 区域优选路由同样使用 `provider` 和自身 `<end>`。这些流式 Provider 以服务端 endpoint/final 为权威，完全不加载 Smart Turn。
 - `endpointing_mode` 在 Session 创建时冻结，不能通过 `update_session()` 动态切换。
 - 公共输入固定为单声道 PCM16LE，支持 16 kHz 和 48 kHz。公共层将 48 kHz 流式转换为 16 kHz；一个 Session 首包锁定输入采样率。
 - 空音频块是 no-op；非空音频必须为偶数字节，单块最多一秒。
@@ -75,7 +75,7 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 ## 阶段边界与当前集成
 
-以上接口与冻结行为描述 Phase 1/2 建立的公共契约。当前 Phase 3 在该契约上提供唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker、GLM/Gemini 分段 ASR worker 和 Soniox 流式 worker。Step 在完成凭据联调和 WSS smoke 前保持 `blocked_credentials`；Grok 已通过有效凭据下的单轮、多轮和重连 WSS 验收，registry 标记为 `implemented`；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，Soniox 则以供应商 `<end>` 为权威终点。
+以上接口与冻结行为描述 Phase 1/2 建立的公共契约。当前 Phase 3 在该契约上提供唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker、GLM/Gemini 分段 ASR worker 和 Soniox 流式 worker。Step 已按服务端真实事件拆分 audio item 与 transcription item，并通过有效凭据下的 Provider 单轮、同连接双轮和 clear/reconnect 验收；registry 仅发布 `provider` 模式并标记为 `implemented`。Grok 同样已通过有效凭据下的单轮、多轮和重连 WSS 验收；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，Soniox 则以供应商 `<end>` 为权威终点。
 
 Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 
