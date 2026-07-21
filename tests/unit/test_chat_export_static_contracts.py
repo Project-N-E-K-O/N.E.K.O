@@ -20,8 +20,8 @@ def test_export_preview_waits_for_shell_before_rewriting_document():
     assert "function buildExportPreviewWindowName(kind)" in script
     assert "function hasExportPreviewWindowControlApi(previewWindow)" in script
     assert "previewWindow.nekoWindowControl" in script
-    assert "typeof api.getAlwaysOnTopState === 'function'" in script
-    assert "typeof api.toggleAlwaysOnTop === 'function'" in script
+    assert "typeof api.minimize === 'function'" in script
+    assert "typeof api.maximize === 'function'" in script
     assert "window.open('', buildExportPreviewWindowName('main'), buildExportWindowFeatures())" in script
     assert "function openExportDocumentWindow()" in script
     assert "var ownerWindow = state.previewWindow && !state.previewWindow.closed" in script

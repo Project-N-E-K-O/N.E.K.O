@@ -208,9 +208,7 @@
             var api = previewWindow.nekoWindowControl;
             return !!(api
                 && typeof api.minimize === 'function'
-                && typeof api.maximize === 'function'
-                && typeof api.getAlwaysOnTopState === 'function'
-                && typeof api.toggleAlwaysOnTop === 'function');
+                && typeof api.maximize === 'function');
         } catch (_) {
             return false;
         }
