@@ -332,10 +332,12 @@ _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
     (re.compile(r"^chat/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^/music(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
     (re.compile(r"^music/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^/聊天中(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/?聊天中\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^/屏幕观察(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^屏幕观察/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
     (re.compile(r"^/屏幕(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
-    (re.compile(r"^屏幕/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^屏幕\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
 )
 
 
