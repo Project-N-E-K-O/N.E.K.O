@@ -92,8 +92,16 @@ def test_common_window_control_script_uses_the_individual_topmost_bridge():
     assert "pinButton.hidden = !allowed;" in script
     assert "pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');" in script
     assert "pinned ? 'common.unpinWindow' : 'common.pinWindow'" in script
+    assert "pinned ? '取消置顶' : '置顶窗口'" in script
     assert "typeof window.opener.t === 'function'" in script
     assert "translator.fn.call(translator.owner, key)" in script
+
+
+def test_hidden_pin_controls_override_display_styles():
+    styles = (PROJECT_ROOT / "static" / "css" / "window_controls.css").read_text(encoding="utf-8")
+
+    assert '[data-neko-window-control="pin"][hidden]' in styles
+    assert "display: none !important;" in styles
 
 
 def test_pin_labels_are_kept_in_all_eight_locale_variants():

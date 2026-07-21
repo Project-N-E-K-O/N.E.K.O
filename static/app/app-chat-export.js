@@ -3587,8 +3587,8 @@
             doc = sanitizeHtmlUrls(doc);
             // 注入窗口控制资源、自绘标题栏，并给正文留出顶部空间。
             doc = doc.replace(/<\/head>/i, buildWindowControlAssetsHtml() + '</head>');
-            doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
-            doc = doc.replace(/<\/body>/, '</div></body>');
+            doc = doc.replace(/(<body[^>]*>)/i, '$1' + chromeHtml + '<div style="padding-top:36px;">');
+            doc = doc.replace(/<\/body>/i, '</div></body>');
             var win = openExportDocumentWindow();
             if (!win) {
                 showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);

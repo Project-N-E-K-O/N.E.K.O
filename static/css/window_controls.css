@@ -58,6 +58,10 @@
     -webkit-app-region: no-drag;
 }
 
+[data-neko-window-control="pin"][hidden] {
+    display: none !important;
+}
+
 .neko-window-control-btn:hover {
     background: rgba(255, 255, 255, 0.2);
     transform: translateY(-1px);

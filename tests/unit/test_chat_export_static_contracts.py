@@ -97,3 +97,5 @@ def test_export_document_window_chrome_has_the_full_control_group():
     close_index = chrome.index('onclick="window.close()"')
     assert pin_index < minimize_index < maximize_index < close_index
     assert 'aria-pressed="false" hidden' in chrome
+    assert "doc.replace(/(<body[^>]*>)/i" in script
+    assert "doc.replace(/<\\/body>/i" in script

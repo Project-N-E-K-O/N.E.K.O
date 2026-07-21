@@ -92,7 +92,7 @@
             setButtonLabel(
                 pinButton,
                 pinned ? 'common.unpinWindow' : 'common.pinWindow',
-                pinned ? 'Unpin window' : 'Pin window'
+                pinned ? '取消置顶' : '置顶窗口'
             );
             if (pinButton.hasAttribute('data-tooltip')) {
                 pinButton.setAttribute('data-tooltip', pinButton.getAttribute('title') || '');
