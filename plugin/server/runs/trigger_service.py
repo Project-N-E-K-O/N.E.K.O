@@ -29,7 +29,7 @@ _SENSITIVE_ARG_NAMES = frozenset(
         "cookies",
         "credential",
         "credentials",
-        "sesdata",
+        "sessdata",
         "bili_jct",
         "buvid3",
         "dedeuserid",

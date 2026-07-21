@@ -114,7 +114,8 @@ def test_redact_trigger_args_honors_write_only_schema_and_sensitive_names(
         entry_id="save_settings",
         args={
             "custom_private_value": "private",
-            "sesdata": "cookie",
+            "sessdata": "cookie-lowercase",
+            "SESSDATA": "cookie-uppercase",
             "permission_mode": "open",
             "nested": {"access_token": "token", "visible": True},
         },
@@ -122,7 +123,8 @@ def test_redact_trigger_args_honors_write_only_schema_and_sensitive_names(
 
     assert redacted == {
         "custom_private_value": "<redacted>",
-        "sesdata": "<redacted>",
+        "sessdata": "<redacted>",
+        "SESSDATA": "<redacted>",
         "permission_mode": "open",
         "nested": {"access_token": "<redacted>", "visible": True},
     }
@@ -133,7 +135,7 @@ def test_redact_trigger_args_honors_write_only_schema_and_sensitive_names(
 async def test_trigger_plugin_records_redacted_args_but_executes_with_raw_args(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw_args = {"sesdata": "cookie-secret", "permission_mode": "open"}
+    raw_args = {"SESSDATA": "cookie-secret", "permission_mode": "open"}
     captured_event: dict[str, object] = {}
     executed_args: dict[str, object] = {}
 
@@ -159,7 +161,7 @@ async def test_trigger_plugin_records_redacted_args_but_executes_with_raw_args(
 
     assert executed_args == raw_args
     assert captured_event["args"] == {
-        "sesdata": "<redacted>",
+        "SESSDATA": "<redacted>",
         "permission_mode": "open",
     }
     assert result.args == captured_event["args"]
