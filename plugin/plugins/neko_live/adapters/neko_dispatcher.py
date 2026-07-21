@@ -18,7 +18,7 @@ from .output_contract_bridge import (
     response_module_hint,
 )
 
-_AVATAR_INLINE_BUDGET_BYTES = 120 * 1024
+_AVATAR_INLINE_BUDGET_BYTES = 64 * 1024
 _NEKO_ROAST_AUDIENCE_SOURCES = {"live_danmaku", "manual_live_simulation"}
 _NEKO_ROAST_HOSTING_SOURCES = {"warmup_hosting", "idle_hosting", "active_engagement"}
 _NEKO_ROAST_LIVE_SOURCES = _NEKO_ROAST_AUDIENCE_SOURCES | _NEKO_ROAST_HOSTING_SOURCES | {
@@ -45,11 +45,11 @@ def _normalize_avatar_for_neko_vision(data: bytes, mime: str) -> tuple[bytes, st
             elif image.mode != "RGB":
                 image = image.convert("RGB")
             best: bytes | None = None
-            for edge in (512, 384, 256, 192):
+            for edge in (384, 256, 192):
                 frame = image.copy()
                 if max(frame.size) > edge:
                     frame.thumbnail((edge, edge))
-                for quality in (82, 72, 62, 52):
+                for quality in (80, 68, 56):
                     buffer = io.BytesIO()
                     frame.save(buffer, format="JPEG", quality=quality, optimize=True)
                     candidate = buffer.getvalue()
