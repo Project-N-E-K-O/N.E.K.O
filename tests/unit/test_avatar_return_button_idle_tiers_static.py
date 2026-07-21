@@ -2954,6 +2954,19 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "returnBtn.addEventListener('mouseenter', (event) => {" in source
     assert "if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;" in source
     assert "_playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });" in source
+    hover_leave_block = _source_slice_between(
+        source,
+        "returnBtn.addEventListener('mouseleave', () => {",
+        "returnBtn.addEventListener('click', (e) => {",
+        "return button hover leave completion",
+    )
+    assert "_isNekoIdleThoughtBubbleEventHit" not in hover_leave_block
+    _assert_source_order(
+        hover_leave_block,
+        "return button only completes an active hover",
+        "if (!returnArt.__nekoIdleHoverSrc) return;",
+        "_finishNekoIdleHoverArtAfterPlayback(returnArt, tier);",
+    )
     native_drag_block = _source_slice_between(
         app_ui_source,
         "function isThoughtBubbleEventTarget(event) {",
