@@ -865,6 +865,7 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   compactInputLocked = false,
+  catLocalTextOnly = false,
   chatSurfaceMode = 'compact',
   compactMinimizeCancelSeq = 0,
   compactChatState,
@@ -921,6 +922,8 @@ function CompactChatApp({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
+  const [catDraft, setCatDraft] = useState('');
+  const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
@@ -974,7 +977,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
   const compactPreviewTextRef = useRef<HTMLSpanElement | null>(null);
@@ -1070,7 +1073,8 @@ function CompactChatApp({
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
-  const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
+  const compactInputHasPayload = visibleDraft.trim().length > 0
+    || (!catLocalTextOnly && composerAttachments.length > 0);
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const avatarToolRuntime = useAvatarToolRuntime({
     composerHidden,
@@ -1172,7 +1176,7 @@ function CompactChatApp({
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const compactChoiceInteractionsAllowed = !composerHidden;
+  const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const choicePromptHasOptions = compactChoiceInteractionsAllowed
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
@@ -1893,8 +1897,8 @@ function CompactChatApp({
   const clearAvatarToolAriaLabel = i18n('chat.clearAvatarToolAriaLabel', '取消道具');
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+    draftRef.current = visibleDraft;
+  }, [visibleDraft]);
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -3466,7 +3470,7 @@ function CompactChatApp({
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
-    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (catLocalTextOnly || (!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     if (compactInputToolFanOpenRef.current) {
       clearCompactInputToolFanCloseTimer();
       if (compactInputToolFanOpenIntentRef.current !== 'click') {
@@ -3498,6 +3502,7 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
+    catLocalTextOnly,
     compactInputHasPayload,
     composerDisabled,
     dispatchCompactToolFanOpenState,
@@ -4534,6 +4539,20 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
+    if (!catLocalTextOnly) return;
+    closeCompactInputToolFan();
+    setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setCompactExportControlsOpen(false);
+    setCompactExportPreviewOpen(false);
+    clearActiveAvatarToolSelection();
+  }, [catLocalTextOnly, clearActiveAvatarToolSelection, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!catLocalTextOnly) setCatDraft('');
+  }, [catLocalTextOnly]);
+
+  useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolWheelDragGuardTimer();
@@ -4787,14 +4806,18 @@ function CompactChatApp({
   function submitDraft() {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
-    const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    const text = visibleDraft.trim();
+    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
-      setDraft('');
+      if (catLocalTextOnly) {
+        setCatDraft('');
+      } else {
+        setDraft('');
+      }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
       shouldRefocusCompactInput = isCompactSurface
         && effectiveCompactChatState === 'input'
@@ -5004,8 +5027,10 @@ function CompactChatApp({
       ? 'true'
       : 'false'
   );
-  const compactToolToggleVisible = isCompactSurface && !composerHidden;
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
+  const compactToolToggleVisible = isCompactSurface
+    && !composerHidden
+    && (!catLocalTextOnly || compactToolToggleActsAsSubmit);
   const compactInputToolToggleButton = compactToolToggleVisible ? (
     <button
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
@@ -5098,7 +5123,7 @@ function CompactChatApp({
     </button>
   );
 
-  const compactInputToolFanNode = compactToolToggleVisible ? (
+  const compactInputToolFanNode = compactToolToggleVisible && !catLocalTextOnly ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -5450,7 +5475,7 @@ function CompactChatApp({
       ) : null}
     </div>
   ) : null;
-  const composerAttachmentPreviewNode = composerAttachments.length > 0 ? (
+  const composerAttachmentPreviewNode = !catLocalTextOnly && composerAttachments.length > 0 ? (
     <div
       className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
       aria-label={composerAttachmentsAriaLabel}
@@ -5643,7 +5668,7 @@ function CompactChatApp({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface
+  const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
   const compactExportHistoryMessages = compactExportHistoryOpen
@@ -5705,7 +5730,7 @@ function CompactChatApp({
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
   const compactMemeOverlayImageLoadingProps = { loading: 'eager' as const, fetchpriority: 'high' as const };
-  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
+  const compactMemeOverlayNode = !catLocalTextOnly && compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -5952,12 +5977,16 @@ function CompactChatApp({
                           placeholder={inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
-                          value={draft}
+                          value={visibleDraft}
                           readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
                             if (compactTextEntryLocked) return;
-                            setDraft(event.target.value);
+                            if (catLocalTextOnly) {
+                              setCatDraft(event.target.value);
+                            } else {
+                              setDraft(event.target.value);
+                            }
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
                             }

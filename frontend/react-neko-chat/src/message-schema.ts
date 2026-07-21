@@ -216,6 +216,7 @@ export const chatWindowPropsSchema = z.object({
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
   compactInputLocked: z.boolean().optional(),
+  catLocalTextOnly: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeSchema.optional(),
   // host 折叠取消序号：必须在 schema 里声明，否则 z.object().parse() 默认 strip 未知键、
   // App 永远只看到默认 0，重开立即复位的 useLayoutEffect 不会触发（Codex P2）。

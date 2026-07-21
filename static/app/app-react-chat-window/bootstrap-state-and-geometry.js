@@ -311,8 +311,11 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     // 高最小高度 / 窗口最小高度 CSS 不再撑住空白输入区。
     // body class 切换、change 事件 payload 都走这个 helper，避免逻辑分叉。
     I.getEffectiveComposerHidden = function getEffectiveComposerHidden() {
+        var catLocalTextOnly = typeof I.isCatLocalChatActive === 'function'
+            && I.isCatLocalChatActive();
         return !!(
             !I.state.homeTutorialInputLocked
+            && !catLocalTextOnly
             && (I.state.composerHidden || I.state.goodbyeComposerHidden)
         );
     }
@@ -352,7 +355,9 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
     }
 
     I.getEffectiveGalgameEnabled = function getEffectiveGalgameEnabled() {
-        return !!I.state.galgameModeEnabled && !I.getEffectiveComposerHidden();
+        return !!I.state.galgameModeEnabled
+            && !I.getEffectiveComposerHidden()
+            && !(typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive());
     }
 
     I.applyGalgameBodyClass = function applyGalgameBodyClass() {
@@ -374,6 +379,7 @@ I.BUNDLE_SRC = '/static/react/neko-chat/neko-chat-window.iife.js';
             I.state.composerAttachments
             && I.state.composerAttachments.length > 0
             && !I.getEffectiveComposerHidden()
+            && !(typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive())
         );
     }
 

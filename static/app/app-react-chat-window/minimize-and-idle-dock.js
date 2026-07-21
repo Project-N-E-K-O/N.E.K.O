@@ -595,6 +595,7 @@
     }
 
     async function enterElectronIdleDock(screenRect) {
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         // full 独立窗口（Electron part B）完全避开 idle-dock —— 与 web 路径 enterIdleDock 的
         // full 守卫对偶：CAT2/CAT3 idle tier 不应把展开的 full 窗口自动折叠/贴猫。full 用旧版
         // 独立窗口折叠机制（preload 物理缩窗），不参与 idle-dock。
@@ -810,6 +811,7 @@
     // Enter idle-dock: minimize if needed, then position next to return-ball.
     // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
     I.enterIdleDock = function enterIdleDock() {
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) return;
         if (I.isElectronChatWindow()) return;
         // full 完全避开 idle-dock：CAT2/CAT3 视觉层级不应把展开的 full 窗口自动
         // 最小化成球。这个检查必须在触发最小化之前，而不只在算 dock 位置时
@@ -1250,6 +1252,9 @@
         I.persistChatSurfaceModePreference(normalized);
         if (normalized === 'compact') {
             I.seedCompactSurfaceAnchorForRender();
+            if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+                I.setCompactChatState('input');
+            }
         }
         I.renderWindow();
 

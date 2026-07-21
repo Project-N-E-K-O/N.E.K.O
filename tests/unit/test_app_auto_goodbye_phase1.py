@@ -707,7 +707,7 @@ def test_goodbye_composer_hidden_syncs_to_chat_window():
         1,
     )[1].split("postAvatarRequest();", 1)[0]
 
-    assert "function applyGoodbyeChatComposerHidden(hidden, reason)" in interpage_source
+    assert "function applyGoodbyeChatComposerHidden(hidden, reason, payload)" in interpage_source
     assert "function getGoodbyeChatComposerHiddenElectronBridge()" in interpage_source
     assert "function postGoodbyeChatComposerHiddenElectron(payload)" in interpage_source
     assert "function handleGoodbyeChatComposerHiddenMessage(data, via)" in interpage_source
