@@ -23,6 +23,8 @@ Read [Testing](./testing), [Code Style](./code-style), [Documentation Maintenanc
 
 Maintainer-only content tools have their own safety contracts. The [natural-expression candidate miner](./natural-expression-candidate-miner) accepts only explicitly supplied local data and never promotes runtime rules automatically.
 
+The [DataForSEO SEO monitor](./dataforseo-seo-monitoring) is also maintainer-only. It validates request volume in a zero-cost dry run, keeps credentials outside the VitePress bundle, and requires an explicit manual action before any paid API call.
+
 ## Reports and community
 
 Use [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues) for reproducible bugs and scoped proposals. Include environment, exact revision/artifact, expected/actual behavior, sanitized logs, and minimal reproduction.

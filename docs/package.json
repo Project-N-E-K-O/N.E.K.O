@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
-    "preview": "vitepress preview"
+    "preview": "vitepress preview",
+    "seo:dataforseo": "node scripts/dataforseo/cli.mjs",
+    "test:dataforseo": "node --test scripts/dataforseo/*.test.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.6.3",

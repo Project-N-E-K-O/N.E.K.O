@@ -1,0 +1,124 @@
+name: DataForSEO SEO Report
+
+on:
+  pull_request:
+    paths:
+      - 'docs/scripts/dataforseo/**'
+      - 'docs/seo/dataforseo.config.json'
+      - 'docs/package.json'
+      - '.github/workflows/dataforseo.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run spends nothing; other modes call paid DataForSEO endpoints'
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - keywords
+          - serp
+          - all
+      serp_depth:
+        description: 'Organic results per keyword (1-100; each 10 results may add cost)'
+        required: true
+        type: string
+        default: '10'
+      include_ai_overview:
+        description: 'Load asynchronous AI Overview results (extra charge per SERP request)'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dataforseo-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install documentation dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Test DataForSEO tooling
+        run: npm run test:dataforseo
+        working-directory: docs
+
+      - name: Validate the committed request plan
+        run: npm run seo:dataforseo -- --dry-run --output .seo-reports/dry-run.json
+        working-directory: docs
+
+  report:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+      DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+      REPORT_MODE: ${{ inputs.mode }}
+      SERP_DEPTH: ${{ inputs.serp_depth }}
+      INCLUDE_AI_OVERVIEW: ${{ inputs.include_ai_overview }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install documentation dependencies
+        run: npm ci
+        working-directory: docs
+
+      - name: Require credentials for paid modes
+        if: inputs.mode != 'dry-run'
+        shell: bash
+        run: |
+          if [[ -z "$DATAFORSEO_LOGIN" || -z "$DATAFORSEO_PASSWORD" ]]; then
+            echo "Set DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD as repository or environment secrets." >&2
+            exit 1
+          fi
+
+      - name: Generate report
+        shell: bash
+        working-directory: docs
+        run: |
+          args=(--depth "$SERP_DEPTH" --output ".seo-reports/dataforseo-${GITHUB_RUN_ID}.json")
+          if [[ "$REPORT_MODE" == "dry-run" ]]; then
+            args+=(--mode all --dry-run)
+          else
+            args+=(--mode "$REPORT_MODE")
+          fi
+          if [[ "$INCLUDE_AI_OVERVIEW" == "true" ]]; then
+            args+=(--include-ai-overview)
+          fi
+          npm run seo:dataforseo -- "${args[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataforseo-report-${{ github.run_id }}
+          path: docs/.seo-reports/*.json
+          if-no-files-found: ignore
+          retention-days: 14
