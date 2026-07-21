@@ -28,6 +28,8 @@ import threading
 import asyncio
 import os
 import hashlib
+import platform
+import subprocess
 from collections import OrderedDict
 from typing import Optional, Tuple, List, Any, Dict
 from utils.llm_client import SystemMessage, HumanMessage, create_chat_llm_async
@@ -110,6 +112,10 @@ def _is_china_region() -> bool:
         True for the Chinese region, False otherwise
     """
     try:
+        macos_locale = _get_macos_locale()
+        if macos_locale and macos_locale.lower().replace('_', '-').startswith('zh'):
+            return True
+
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
@@ -126,6 +132,40 @@ def _is_china_region() -> bool:
     except Exception as e:
         logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
         return False
+
+
+def _get_macos_locale() -> Optional[str]:
+    """Read the user's real macOS locale even when the process inherits ``C.UTF-8``.
+
+    Electron/launcher child processes commonly receive a neutral POSIX locale,
+    so ``locale.getlocale()`` and ``LANG`` do not reflect System Settings.  The
+    ``defaults`` database is the authoritative per-user fallback on macOS.
+    """
+    if platform.system() != 'Darwin':
+        return None
+
+    for key in ('AppleLocale', 'AppleLanguages'):
+        try:
+            result = subprocess.run(
+                ['/usr/bin/defaults', 'read', '-g', key],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        raw = result.stdout.strip()
+        if not raw:
+            continue
+        if key == 'AppleLocale':
+            return raw.strip('"').split('@', 1)[0]
+        match = re.search(r'"([^"\n]+)"', raw)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _get_windows_locale() -> Optional[str]:
@@ -157,8 +197,10 @@ def _get_system_language() -> str:
         Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
     """
     def _parse_locale(s: str) -> Optional[str]:
-        s = s.lower()
+        s = s.lower().replace('_', '-')
         if s.startswith('zh') or 'chinese' in s:
+            if any(marker in s for marker in ('-tw', '-hk', 'hant', 'traditional')):
+                return 'zh-TW'
             return 'zh'
         if s.startswith('ja') or 'japanese' in s:
             return 'ja'
@@ -179,6 +221,15 @@ def _get_system_language() -> str:
         windows_locale = _get_windows_locale()
         if windows_locale:
             lang = _parse_locale(windows_locale)
+            if lang:
+                return lang
+
+        # macOS GUI apps often inherit LANG=C.UTF-8 even when System Settings
+        # is Chinese/Japanese/etc. Read Apple's locale database before the
+        # process locale so standalone memory_server chooses the real language.
+        macos_locale = _get_macos_locale()
+        if macos_locale:
+            lang = _parse_locale(macos_locale)
             if lang:
                 return lang
 

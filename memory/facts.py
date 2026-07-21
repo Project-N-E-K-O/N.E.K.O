@@ -48,7 +48,7 @@ from config.prompts.prompts_memory import (
 )
 from memory.evidence import evidence_score
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -479,7 +479,7 @@ class FactStore:
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
 
-        prompt = get_fact_extraction_prompt(get_global_language()) \
+        prompt = get_fact_extraction_prompt(get_global_language_full()) \
             .replace('{CONVERSATION}', conversation_text) \
             .replace('{LANLAN_NAME}', lanlan_name) \
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -1211,7 +1211,7 @@ class FactStore:
             known_lines.append(f"- {text} (importance: {imp})")
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
-        prompt = get_fact_extraction_ai_aware_prompt(get_global_language()) \
+        prompt = get_fact_extraction_ai_aware_prompt(get_global_language_full()) \
             .replace('{CONVERSATION}', conversation_text) \
             .replace('{KNOWN_POOL}', known_block) \
             .replace('{LANLAN_NAME}', lanlan_name) \
