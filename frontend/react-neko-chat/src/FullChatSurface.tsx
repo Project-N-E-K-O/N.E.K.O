@@ -3061,9 +3061,7 @@ export default function FullChatSurface({
                         onComposerRemoveAttachment?.(attachment.id);
                       }
                     }}
-                  >
-                    ×
-                  </button>
+                  />
                 </figure>
               ))}
             </div>

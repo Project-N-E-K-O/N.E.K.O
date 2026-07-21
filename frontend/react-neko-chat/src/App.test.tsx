@@ -8610,6 +8610,22 @@ describe('App', () => {
     expect(onComposerRemoveAttachment).toHaveBeenCalledWith('img-1');
   });
 
+  it('renders a single CSS-drawn remove icon for full chat attachments', () => {
+    const { container } = render(
+      <App
+        chatSurfaceMode="full"
+        composerAttachments={[
+          { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
+        ]}
+      />,
+    );
+
+    const removeButton = screen.getByRole('button', { name: 'Remove image: Screenshot 1' });
+    expect(removeButton.textContent).toBe('');
+    expect(removeButton.childElementCount).toBe(0);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).not.toBeNull();
+  });
+
   it('keeps pending composer attachments locked while the composer is disabled', () => {
     const onComposerRemoveAttachment = vi.fn();
 

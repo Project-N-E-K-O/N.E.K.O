@@ -5478,9 +5478,7 @@ function CompactChatApp({
                   onComposerRemoveAttachment?.(attachment.id);
                 }
               }}
-            >
-              <span className="composer-attachment-remove-icon" aria-hidden="true" />
-            </button>
+            />
           </figure>
         ))}
       </div>
