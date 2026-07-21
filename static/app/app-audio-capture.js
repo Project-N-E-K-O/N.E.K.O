@@ -1584,6 +1584,7 @@
     var micPermissionGranted = false;
     var cachedMicDevices = null;
     var disposeVoiceRecognitionPopover = null;
+    var voiceRecognitionPopoverRenderGeneration = 0;
 
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
@@ -1632,9 +1633,11 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
         if (disposeVoiceRecognitionPopover) {
-            disposeVoiceRecognitionPopover();
+            var previousDispose = disposeVoiceRecognitionPopover;
             disposeVoiceRecognitionPopover = null;
+            previousDispose();
         }
         var popupId = micPopup.id;
         var isPopupAvailable = function () {
@@ -1646,7 +1649,10 @@
 
         try {
             var audioInputs = await ensureMicrophonePermission();
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
             micPopup.innerHTML = '';
 
             var hasMicrophoneDevices = audioInputs.length > 0;
@@ -1931,12 +1937,17 @@
                 };
             }
 
-            var voiceSettingsPending = false;
+            var voiceSettingsPendingUntilEpoch = null;
+            function markVoiceSettingsPending() {
+                voiceSettingsPendingUntilEpoch = (
+                    Number(S.voiceSessionStartEpoch) || 0
+                ) + 1;
+            }
             var asrToggle = createVoiceSettingToggle(
                 S.independentAsrEnabled === true,
                 function (enabled) {
                     S.independentAsrEnabled = enabled;
-                    voiceSettingsPending = true;
+                    markVoiceSettingsPending();
                     updateVoiceRecognitionUi();
                     if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
                         window.appSettings.saveSettings();
@@ -2004,7 +2015,7 @@
                 S.voiceInputResourceOptimizationEnabled !== false,
                 function (enabled) {
                     S.voiceInputResourceOptimizationEnabled = enabled;
-                    voiceSettingsPending = true;
+                    markVoiceSettingsPending();
                     updateVoiceRecognitionUi();
                     if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
                         window.appSettings.saveSettings();
@@ -2045,7 +2056,7 @@
                             : 'microphone.independentAsrSummaryGeneric', { provider: provider })
                         : ('独立 ASR' + (provider ? ' · ' + provider : '')))
                     : (window.t ? window.t('microphone.voiceRecognitionDisabled') : '当前使用 Omni 原生语音识别');
-                if (voiceSettingsPending) {
+                if (voiceSettingsPendingUntilEpoch !== null) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
@@ -2184,16 +2195,29 @@
                 }
             }
             function onVoiceLifecycleChanged() { updateVoiceRecognitionUi(); }
+            function onVoiceSessionStarted() {
+                if (
+                    voiceSettingsPendingUntilEpoch === null
+                    || (Number(S.voiceSessionStartEpoch) || 0)
+                        < voiceSettingsPendingUntilEpoch
+                ) return;
+                voiceSettingsPendingUntilEpoch = null;
+                updateVoiceRecognitionUi();
+            }
             document.addEventListener('pointerdown', onVoiceDocumentPointerDown, true);
             document.addEventListener('keydown', onVoiceDocumentKeyDown, true);
             window.addEventListener('resize', positionVoicePanel);
             window.addEventListener('scroll', positionVoicePanel, true);
             window.addEventListener('voice-input-lifecycle-changed', onVoiceLifecycleChanged);
+            window.addEventListener('neko:voice-session-started', onVoiceSessionStarted);
             var voicePopupObserver = new MutationObserver(function () {
                 if (!isPopupAvailable()) closeVoicePanel(true);
             });
             voicePopupObserver.observe(micPopup, { attributes: true, attributeFilter: ['style', 'class'] });
-            disposeVoiceRecognitionPopover = function () {
+            var voicePopoverDisposed = false;
+            function disposeCurrentVoiceRecognitionPopover() {
+                if (voicePopoverDisposed) return;
+                voicePopoverDisposed = true;
                 clearVoiceTimers();
                 voicePopupObserver.disconnect();
                 document.removeEventListener('pointerdown', onVoiceDocumentPointerDown, true);
@@ -2201,9 +2225,15 @@
                 window.removeEventListener('resize', positionVoicePanel);
                 window.removeEventListener('scroll', positionVoicePanel, true);
                 window.removeEventListener('voice-input-lifecycle-changed', onVoiceLifecycleChanged);
+                window.removeEventListener('neko:voice-session-started', onVoiceSessionStarted);
                 voicePanel.remove();
                 voiceBridge.remove();
-            };
+                if (
+                    disposeVoiceRecognitionPopover
+                    === disposeCurrentVoiceRecognitionPopover
+                ) disposeVoiceRecognitionPopover = null;
+            }
+            disposeVoiceRecognitionPopover = disposeCurrentVoiceRecognitionPopover;
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
