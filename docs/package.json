@@ -10,7 +10,9 @@
     "build": "vitepress build",
     "preview": "vitepress preview",
     "indexnow": "node scripts/submit-indexnow.mjs",
-    "test:indexnow": "node --test scripts/submit-indexnow.test.mjs"
+    "test:indexnow": "node --test scripts/submit-indexnow.test.mjs",
+    "test:analytics": "node --test scripts/analytics-consent.test.mjs",
+    "test": "npm run test:indexnow && npm run test:analytics"
   },
   "devDependencies": {
     "vitepress": "^1.6.3",

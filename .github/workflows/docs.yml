@@ -41,6 +41,10 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Test documentation integrations
+        run: npm test
+        working-directory: docs
+
       - name: Build VitePress
         run: npm run build
         working-directory: docs
