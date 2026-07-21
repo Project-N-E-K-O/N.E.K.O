@@ -567,14 +567,16 @@ class QQClient(QQConnectionBase):
             response = await asyncio.wait_for(future, timeout=timeout)
             if self.logger:
                 self.logger.info(f"call_action response: {action} status={response.get('status')}")
+            if response.get("status") == "failed":
+                raise RuntimeError(response.get("wording") or f"OneBot action failed: {action}")
+            return response.get("data") or {}
         except asyncio.TimeoutError:
             self._emit_log("ERROR", f"call_action 超时: {action} (10秒未响应)")
             if self.logger:
                 self.logger.warning(f"call_action timeout: {action} echo={echo}")
             raise
-        if response.get("status") == "failed":
-            raise RuntimeError(response.get("wording") or f"OneBot action failed: {action}")
-        return response.get("data") or {}
+        finally:
+            self._pending_actions.pop(echo, None)
 
     async def _fetch_login_info_async(self) -> None:
         """后台任务：获取登录信息并缓存（不阻塞消息处理）。"""

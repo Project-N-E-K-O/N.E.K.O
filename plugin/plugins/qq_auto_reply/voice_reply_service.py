@@ -81,17 +81,18 @@ class QQVoiceReplyService:
                 await ws.send(_json.dumps({"event": "end"}))
 
                 chunks: list[bytes] = []
-                async for msg in ws:
-                    if isinstance(msg, bytes):
-                        chunks.append(msg)
-                    elif isinstance(msg, str):
-                        try:
-                            data = _json.loads(msg)
-                            if data.get("type") == "error":
-                                self.plugin.logger.warning(f"本地TTS错误: {data.get('message', '')}")
-                                return None
-                        except Exception:
-                            pass
+                async with asyncio.timeout(15.0):
+                    async for msg in ws:
+                        if isinstance(msg, bytes):
+                            chunks.append(msg)
+                        elif isinstance(msg, str):
+                            try:
+                                data = _json.loads(msg)
+                                if data.get("type") == "error":
+                                    self.plugin.logger.warning(f"本地TTS错误: {data.get('message', '')}")
+                                    return None
+                            except Exception:
+                                pass
 
                 if not chunks:
                     return None

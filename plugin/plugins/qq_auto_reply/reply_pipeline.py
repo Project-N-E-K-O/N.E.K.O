@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest
@@ -248,7 +249,9 @@ class QQReplyPipelineRunner:
                 b.text or b.record or b.sticker or b.poke or b.emoji
                 for b in (delivery_plan.blocks or [])
             )
-            if not has_content and not clean:
+            # clean 可能含 <msg></msg>，去标签后再判空
+            clean_stripped = re.sub(r"<[^>]+>", "", clean).strip() if clean else ""
+            if not has_content and not clean_stripped:
                 # LLM 决定不回复（<msg></msg>），跳过缓冲
                 from .pipeline_models import QQDeliveryResult
                 return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)

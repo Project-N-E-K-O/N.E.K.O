@@ -233,10 +233,6 @@ class QQMessageDispatcher:
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
-            # 群聊预缓冲（非 @ 消息）：LLM 生成前跳过 pipeline
-            if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
-                if self.plugin.reply_buffer_service.pre_buffer(session_key, message_text, sender_id, True, group_id):
-                    return
             await self.handle_group_message(
                 group_id,
                 sender_id,

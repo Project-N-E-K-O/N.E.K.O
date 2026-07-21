@@ -18,7 +18,7 @@ from typing import Any, Optional
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
     __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
-                 "sender_id", "is_group", "group_id", "_acked")
+                 "sender_id", "is_group", "group_id", "_acked", "first_blocks")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
@@ -147,6 +147,7 @@ class QQReplyBufferService:
             # 已有缓冲 → 追加消息，转发子条数计入
             existing.task.cancel()
             existing.buffered_texts.append(clean_text)
+            existing.first_blocks = blocks  # 保留原始 blocks（sticker/poke/record 等）
             existing.message_count += 1 + max(0, extra_count)
             # 动态等待：6~20s 正态分布，中间最长（峰值 ~16s），两头短
             n = existing.message_count
@@ -212,6 +213,7 @@ class QQReplyBufferService:
                 existing.sender_id = sender_id
                 existing.is_group = is_group
                 existing.group_id = group_id
+                existing.first_blocks = blocks
                 existing.topic_hint = self._topic_hint(raw_text or reply_text)
             else:
                 # 完全新缓冲
@@ -249,14 +251,18 @@ class QQReplyBufferService:
         # 汇总缓冲内容
         texts = pending.buffered_texts
         if pending.message_count == 1:
-            # 只有一条 → 直接发送（texts[0] 含 LLM 原始标签，需要清理）
             from .pipeline_models import QQMessageBlock, QQDeliveryPlan
-            import re
-            clean_text = re.sub(r"<[^>]+>", "", texts[0]).strip() or texts[0]
+            # 优先用原始 blocks（保留 sticker/poke/record），否则纯文本
+            if pending.first_blocks:
+                blocks = pending.first_blocks
+            else:
+                import re
+                clean_text = re.sub(r"<[^>]+>", "", texts[0]).strip() or texts[0]
+                blocks = [QQMessageBlock(text=clean_text)]
             plan = QQDeliveryPlan(
                 target_type="group" if pending.is_group else "private",
                 target_id=pending.group_id if pending.is_group else pending.sender_id,
-                blocks=[QQMessageBlock(text=clean_text)],
+                blocks=blocks,
                 fallback_to_text_on_voice_failure=True,
             )
             await self.plugin.reply_delivery_node.deliver(plan)
