@@ -34,7 +34,7 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ inputs.version || '0.8.4-nightly.1' }}
-      electron_repo: ${{ inputs.electron_repo || 'xxynet/N.E.K.O-PC' }}
+      electron_repo: ${{ inputs.electron_repo || 'xxynet/N.E.K.O.-PC' }}
       electron_ref: ${{ inputs.electron_ref || 'feat/auto-update' }}
       skip_signing: ${{ inputs.skip_signing || 'true' }}
       windows_only: true
