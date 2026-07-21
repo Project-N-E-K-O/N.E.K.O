@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 
 class SpeakerShadowBackend(Protocol):
@@ -21,6 +22,15 @@ class SpeakerShadowBackend(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class SpeakerShadowCandidateKey:
+    """Identity private to observation-only speaker verification."""
+
+    detector_epoch: int
+    shadow_generation: int
+    scope: Literal["provider_pause", "smart_turn_turn"]
+
+
+@dataclass(frozen=True, slots=True)
 class SpeakerShadowConfig:
     enabled: bool = False
     similarity_threshold: float = 0.44
@@ -28,6 +38,7 @@ class SpeakerShadowConfig:
     maximum_audio_ms: int = 4_000
     idle_unload_seconds: float = 60.0
     queue_capacity: int = 32
+    finalized_candidate_capacity: int = 1_024
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.similarity_threshold <= 1.0:
@@ -40,6 +51,10 @@ class SpeakerShadowConfig:
             raise ValueError("idle_unload_seconds must be positive")
         if self.queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
+        if self.finalized_candidate_capacity < self.queue_capacity:
+            raise ValueError(
+                "finalized_candidate_capacity must be at least queue_capacity"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +81,12 @@ class SpeakerShadowMetrics:
     load_ms: int = 0
     inference_ms: int = 0
 
+    started_candidate_count: int = 0
+    finished_candidate_count: int = 0
+    insufficient_candidate_count: int = 0
+    dropped_candidate_count: int = 0
+    dropped_audio_ms: int = 0
+
     def snapshot(self) -> dict[str, int]:
         return asdict(self)
 
@@ -79,11 +100,23 @@ class _AudioFrame:
     duration_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class _CandidateFinished:
+    generation: int
+    candidate: Hashable
+
+
 @dataclass(slots=True)
 class _CandidateBuffer:
     sample_rate_hz: int
     pcm16: bytearray
     audio_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _FinalizedCandidate:
+    finish_seen: bool
+    dropped: bool
 
 
 ObservationCallback = Callable[[SpeakerShadowObservation], Awaitable[None] | None]
@@ -108,14 +141,14 @@ class SpeakerShadowRuntime:
         self._backend_factory = backend_factory
         self._on_observation = on_observation
         self._metrics = SpeakerShadowMetrics()
-        self._queue: asyncio.Queue[_AudioFrame | object] = asyncio.Queue(
-            maxsize=self._config.queue_capacity
+        self._queue: asyncio.Queue[_AudioFrame | _CandidateFinished | object] = (
+            asyncio.Queue(maxsize=self._config.queue_capacity)
         )
         self._worker_task: asyncio.Task[None] | None = None
         self._backend: SpeakerShadowBackend | None = None
         self._backend_load_failed = False
-        self._buffers: dict[Hashable, _CandidateBuffer] = {}
-        self._evaluated: set[Hashable] = set()
+        self._buffers: OrderedDict[Hashable, _CandidateBuffer] = OrderedDict()
+        self._finalized: OrderedDict[Hashable, _FinalizedCandidate] = OrderedDict()
         self._generation = 0
         self._closed = False
 
@@ -124,7 +157,15 @@ class SpeakerShadowRuntime:
         return self._config.enabled
 
     def snapshot(self) -> dict[str, int]:
-        return self._metrics.snapshot()
+        snapshot = self._metrics.snapshot()
+        snapshot.update(
+            buffered_candidate_count=len(self._buffers),
+            buffered_audio_bytes=sum(
+                len(buffer.pcm16) for buffer in self._buffers.values()
+            ),
+            finalized_tombstone_count=len(self._finalized),
+        )
+        return snapshot
 
     def submit(
         self,
@@ -153,9 +194,27 @@ class SpeakerShadowRuntime:
             self._queue.put_nowait(frame)
         except asyncio.QueueFull:
             self._metrics.dropped_frame_count += 1
+            self._metrics.dropped_audio_ms += duration_ms
             return False
         self._metrics.submitted_frame_count += 1
         self._metrics.submitted_audio_ms += duration_ms
+        self._ensure_worker()
+        return True
+
+    def finish_candidate(self, candidate: Hashable) -> bool:
+        """Order a candidate boundary behind its queued PCM without blocking ASR."""
+
+        if not self._config.enabled or self._closed:
+            return False
+        marker = _CandidateFinished(self._generation, candidate)
+        try:
+            self._queue.put_nowait(marker)
+        except asyncio.QueueFull:
+            self._finish_candidate_now(
+                marker,
+                dropped=True,
+            )
+            return False
         self._ensure_worker()
         return True
 
@@ -171,7 +230,7 @@ class SpeakerShadowRuntime:
             return
         self._generation += 1
         self._buffers.clear()
-        self._evaluated.clear()
+        self._finalized.clear()
         self._backend_load_failed = False
         while True:
             try:
@@ -187,7 +246,7 @@ class SpeakerShadowRuntime:
         self._closed = True
         self._generation += 1
         self._buffers.clear()
-        self._evaluated.clear()
+        self._finalized.clear()
         while True:
             try:
                 self._queue.get_nowait()
@@ -223,8 +282,11 @@ class SpeakerShadowRuntime:
             try:
                 if frame is _STOP:
                     return
-                assert isinstance(frame, _AudioFrame)
-                await self._process(frame)
+                if isinstance(frame, _CandidateFinished):
+                    self._finish_candidate_now(frame)
+                else:
+                    assert isinstance(frame, _AudioFrame)
+                    await self._process(frame)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -234,15 +296,24 @@ class SpeakerShadowRuntime:
                 self._queue.task_done()
 
     async def _process(self, frame: _AudioFrame) -> None:
-        if frame.generation != self._generation or frame.candidate in self._evaluated:
-            return
-        backend = await self._ensure_backend()
-        if backend is None:
+        if frame.generation != self._generation or frame.candidate in self._finalized:
             return
         buffer = self._buffers.get(frame.candidate)
         if buffer is None or buffer.sample_rate_hz != frame.sample_rate_hz:
+            if buffer is None and len(self._buffers) >= self._config.queue_capacity:
+                dropped_candidate, dropped_buffer = self._buffers.popitem(last=False)
+                self._mark_finalized(
+                    dropped_candidate,
+                    finish_seen=False,
+                    dropped=True,
+                )
+                self._metrics.dropped_candidate_count += 1
+                self._metrics.dropped_audio_ms += dropped_buffer.audio_ms
             buffer = _CandidateBuffer(frame.sample_rate_hz, bytearray())
             self._buffers[frame.candidate] = buffer
+            self._metrics.started_candidate_count += 1
+        else:
+            self._buffers.move_to_end(frame.candidate)
         remaining_ms = self._config.maximum_audio_ms - buffer.audio_ms
         if remaining_ms <= 0:
             return
@@ -252,9 +323,13 @@ class SpeakerShadowRuntime:
         buffer.audio_ms += min(frame.duration_ms, remaining_ms)
         if buffer.audio_ms < self._config.minimum_audio_ms:
             return
-        self._evaluated.add(frame.candidate)
         pcm16 = bytes(buffer.pcm16)
         audio_ms = buffer.audio_ms
+        self._buffers.pop(frame.candidate, None)
+        self._mark_finalized(frame.candidate, finish_seen=False)
+        backend = await self._ensure_backend()
+        if backend is None:
+            return
         started = time.perf_counter()
         try:
             similarity = float(
@@ -291,6 +366,53 @@ class SpeakerShadowRuntime:
             raise
         except Exception:
             self._metrics.callback_failure_count += 1
+
+    def _finish_candidate_now(
+        self,
+        marker: _CandidateFinished,
+        *,
+        dropped: bool = False,
+    ) -> None:
+        if marker.generation != self._generation:
+            return
+        finalized = self._finalized.get(marker.candidate)
+        if finalized is not None and finalized.finish_seen:
+            return
+        was_dropped = finalized.dropped if finalized is not None else False
+        buffer = self._buffers.pop(marker.candidate, None)
+        self._mark_finalized(
+            marker.candidate,
+            finish_seen=True,
+            dropped=was_dropped or dropped,
+        )
+        self._metrics.finished_candidate_count += 1
+        if dropped:
+            if not was_dropped:
+                self._metrics.dropped_candidate_count += 1
+            if buffer is not None:
+                self._metrics.dropped_audio_ms += buffer.audio_ms
+            return
+        if not was_dropped and (
+            buffer is None or buffer.audio_ms < self._config.minimum_audio_ms
+        ):
+            self._metrics.insufficient_candidate_count += 1
+
+    def _mark_finalized(
+        self,
+        candidate: Hashable,
+        *,
+        finish_seen: bool,
+        dropped: bool = False,
+    ) -> None:
+        previous = self._finalized.pop(candidate, None)
+        self._finalized[candidate] = _FinalizedCandidate(
+            finish_seen=(
+                finish_seen or (previous.finish_seen if previous is not None else False)
+            ),
+            dropped=dropped or (previous.dropped if previous is not None else False),
+        )
+        while len(self._finalized) > self._config.finalized_candidate_capacity:
+            self._finalized.popitem(last=False)
 
     async def _ensure_backend(self) -> SpeakerShadowBackend | None:
         if self._backend is not None:
