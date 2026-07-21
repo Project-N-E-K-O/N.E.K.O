@@ -2,11 +2,14 @@ import { z } from 'zod';
 import {
   AVATAR_TOOL_DEFINITION_IDS,
   AVATAR_TOOL_REGISTRY,
+  AVATAR_TOOL_ROUND_RESULTS,
   AVATAR_TOOL_VARIANT_IDS,
+  resolveAvatarToolRoundResult,
   withAvatarToolAssetVersion,
   type AvatarToolDefinition,
   type AvatarToolId,
   type AvatarToolInteractionProfile,
+  type AvatarToolRoundResult,
   type AvatarToolVariantId,
 } from './catalog';
 import {
@@ -15,10 +18,25 @@ import {
 } from './desktopContract';
 import type { AvatarToolInteractionCommit } from './interaction';
 
+export {
+  AVATAR_TOOL_ROUND_RESULTS,
+  resolveAvatarToolRoundResult,
+  type AvatarToolRoundResult,
+} from './catalog';
+
 // Host interaction protocol -------------------------------------------------
 
 type RegistryRegistration = typeof AVATAR_TOOL_REGISTRY[number];
 type RegistryDefinition = RegistryRegistration['definition'];
+const ROUND_CHOICE_TOOL_IDS = new Set<AvatarToolId>(
+  AVATAR_TOOL_REGISTRY
+    .filter(({ definition }) => definition.interaction.kind === 'round-choice')
+    .map(({ definition }) => definition.id),
+);
+
+function isRoundChoiceToolId(toolId: AvatarToolId | null | undefined): boolean {
+  return !!toolId && ROUND_CHOICE_TOOL_IDS.has(toolId);
+}
 
 type ProgressiveStageFacts<
   Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>,
@@ -69,6 +87,15 @@ type ChanceFactFor<Profile extends AvatarToolInteractionProfile> =
     ? { [Key in Field]?: boolean }
     : Record<never, never>;
 
+
+type RoundChoiceFactsFor<
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'round-choice' }>,
+> = {
+  userGesture: Profile['choices'][number]['gesture'];
+  avatarGesture: Profile['choices'][number]['gesture'];
+  roundResult: AvatarToolRoundResult;
+};
+
 type LockedImpactFactsFor<
   Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact' }>,
 > = {
@@ -83,7 +110,9 @@ type LockedImpactFactsFor<
 );
 
 type InteractionFactsFor<Profile extends AvatarToolInteractionProfile> =
-  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>
+  Profile extends Extract<AvatarToolInteractionProfile, { kind: 'round-choice' }>
+    ? RoundChoiceFactsFor<Profile>
+    : Profile extends Extract<AvatarToolInteractionProfile, { kind: 'progressive-release' }>
     ? ProgressiveStageFacts<Profile>
     : Profile extends Extract<AvatarToolInteractionProfile, { kind: 'locked-impact' }>
       ? LockedImpactFactsFor<Profile>
@@ -174,6 +203,9 @@ function deriveAvatarInteractionContractFacts(
       chanceField: profile.chance.field,
     };
   }
+  if (profile.kind === 'round-choice') {
+    throw new Error('round-choice uses its dedicated host interaction facts');
+  }
   return {
     actions: [{
       actionId: profile.actionId,
@@ -196,6 +228,25 @@ function oneOfDeclaredValues(values: ReadonlyArray<string>, field: string) {
 }
 
 function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) {
+  if (definition.interaction.kind === 'round-choice') {
+    const gestures = definition.interaction.choices.map(choice => choice.gesture);
+    return z.object({
+      ...avatarInteractionPayloadBaseShape,
+      toolId: z.literal(definition.id),
+      userGesture: oneOfDeclaredValues(gestures, 'userGesture'),
+      avatarGesture: oneOfDeclaredValues(gestures, 'avatarGesture'),
+      roundResult: z.enum(AVATAR_TOOL_ROUND_RESULTS),
+    }).strict().superRefine((payload, context) => {
+      const expected = resolveAvatarToolRoundResult(payload.userGesture, payload.avatarGesture);
+      if (payload.roundResult !== expected) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['roundResult'],
+          message: 'roundResult must match the declared gestures',
+        });
+      }
+    });
+  }
   const facts = deriveAvatarInteractionContractFacts(definition.interaction);
   const intensitiesByActionId = new Map(
     facts.actions.map(action => [action.actionId, new Set(action.intensities)]),
@@ -240,12 +291,13 @@ function createAvatarInteractionPayloadSchema(definition: AvatarToolDefinition) 
 const avatarInteractionPayloadSchemaByToolId = new Map<
   string,
   ReturnType<typeof createAvatarInteractionPayloadSchema>
->(
-  AVATAR_TOOL_REGISTRY.map(({ definition }) => [
+>();
+AVATAR_TOOL_REGISTRY.forEach(({ definition }) => {
+  avatarInteractionPayloadSchemaByToolId.set(
     definition.id,
     createAvatarInteractionPayloadSchema(definition),
-  ]),
-);
+  );
+});
 
 const toolIdProbeSchema = z.object({ toolId: z.string() }).passthrough();
 function isAvatarInteractionPayload(value: unknown): value is AvatarInteractionPayload {
@@ -302,8 +354,20 @@ export const avatarToolStatePayloadSchema = z.object({
   cursorScreenY: z.number().finite().optional(),
   tool: avatarToolDescriptorSchema.nullable().optional(),
   textContext: z.string().optional(),
+  roundChoiceResultLabels: z.object({
+    user_win: z.string().trim().min(1),
+    avatar_win: z.string().trim().min(1).optional(),
+    draw: z.string().trim().min(1),
+  }).strict().optional(),
   timestamp: z.number().finite(),
 }).strict().superRefine((state, context) => {
+  if (state.roundChoiceResultLabels && !isRoundChoiceToolId(state.toolId)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['roundChoiceResultLabels'],
+      message: 'round choice result labels require a round-choice tool',
+    });
+  }
   const contract = state.desktopContract;
   if (!contract) return;
   if (state.tool !== null && state.tool !== undefined) {
@@ -422,10 +486,12 @@ export function buildAvatarToolSelectionStatePayload({
   activeTool,
   avatarRangeVariant,
   outsideRangeVariant,
+  roundChoiceResultLabels,
 }: {
   activeTool: AvatarToolDescriptorSource | null;
   avatarRangeVariant?: AvatarToolVariantId;
   outsideRangeVariant?: AvatarToolVariantId;
+  roundChoiceResultLabels?: AvatarToolStatePayload['roundChoiceResultLabels'];
 }): AvatarToolStatePayload {
   return {
     active: !!activeTool,
@@ -435,6 +501,7 @@ export function buildAvatarToolSelectionStatePayload({
       avatarRangeVariant: avatarRangeVariant ?? 'primary',
       outsideRangeVariant: outsideRangeVariant ?? 'primary',
     } : {}),
+    ...(isRoundChoiceToolId(activeTool?.id) && roundChoiceResultLabels ? { roundChoiceResultLabels } : {}),
     timestamp: Date.now(),
   };
 }
@@ -451,6 +518,7 @@ export function buildAvatarToolPointerStatePayload({
   pointer,
   textContext,
   label,
+  roundChoiceResultLabels,
 }: {
   activeTool: AvatarToolDescriptorSource | null;
   variant: AvatarToolVariantId;
@@ -463,6 +531,7 @@ export function buildAvatarToolPointerStatePayload({
   pointer: AvatarToolPointer;
   textContext?: string;
   label?: string;
+  roundChoiceResultLabels?: AvatarToolStatePayload['roundChoiceResultLabels'];
 }): AvatarToolStatePayload {
   const hasScreenPoint = Number.isFinite(pointer.screenX) && Number.isFinite(pointer.screenY);
   return {
@@ -479,6 +548,7 @@ export function buildAvatarToolPointerStatePayload({
     cursorClientY: pointer.y,
     ...(hasScreenPoint ? { cursorScreenX: pointer.screenX, cursorScreenY: pointer.screenY } : {}),
     tool: buildAvatarToolDescriptor(activeTool, label),
+    ...(isRoundChoiceToolId(activeTool?.id) && roundChoiceResultLabels ? { roundChoiceResultLabels } : {}),
     ...(textContext ? { textContext } : {}),
     timestamp: Date.now(),
   };

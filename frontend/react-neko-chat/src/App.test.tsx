@@ -5332,6 +5332,45 @@ describe('App', () => {
     }
   });
 
+  it('lets Compact equip and select rps while preserving the three-slot limit', async () => {
+    const onAvatarToolStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        onAvatarToolStateChange={onAvatarToolStateChange}
+      />,
+    );
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    fireEvent.click(container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement);
+
+    const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
+    expect(dialog.querySelector('[data-avatar-tool-library-id="rps"]')).not.toBeNull();
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-remove') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('[data-avatar-tool-library-id="rps"]') as HTMLButtonElement);
+    fireEvent.click(dialog.querySelector('.avatar-tool-manager-action.primary') as HTMLButtonElement);
+
+    const quickbarButtons = container.querySelectorAll('.avatar-tool-quickbar-button');
+    expect(quickbarButtons).toHaveLength(3);
+    const rpsButton = container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement;
+    expect(rpsButton).not.toBeNull();
+    fireEvent.click(container.querySelector('[data-avatar-tool-id="rps"]') as HTMLButtonElement);
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: true,
+      toolId: 'rps',
+    })));
+    expect(JSON.parse(window.localStorage.getItem(ACTIVE_AVATAR_TOOLS_STORAGE_KEY) || '[]')).toContain('rps');
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+    await waitFor(() => expect(onAvatarToolStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      active: false,
+      toolId: null,
+    })));
+  });
+
   it('sizes compact avatar tool manager against the desktop work area when the carrier is small', async () => {
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
