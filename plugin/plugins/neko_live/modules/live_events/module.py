@@ -35,6 +35,7 @@ from .provider_event import (
     event_avatar_url,
     event_guard_level,
     event_nickname,
+    event_provider_event_id,
     event_room_id,
     event_room_ref,
     event_score,
@@ -46,6 +47,7 @@ from .provider_event import (
     is_routable,
     is_signal_only,
 )
+from .recent_chat import RecentChatBuffer
 from .room_topic import RoomTopicContext
 
 
@@ -56,6 +58,9 @@ LIVE_REPLY_QUEUE_LIMIT_FLOOR = 1
 NEW_VIEWER_BURST_WINDOW_SECONDS = 45.0
 NEW_VIEWER_BURST_UNIQUE_THRESHOLD = 5
 NEW_VIEWER_BATCH_WELCOME_COOLDOWN_SECONDS = 90.0
+AMBIENT_CHAT_RETENTION_SECONDS = 120.0
+AMBIENT_CHAT_BURST_WINDOW_SECONDS = 10.0
+AMBIENT_CHAT_BURST_LIMIT = 4
 SINGLE_CHAR_REPLY_VIEWER_COUNT_LIMIT = 200
 _SINGLE_CHAR_REACTION_TOKENS = {
     "哈",
@@ -119,6 +124,7 @@ class LiveEventsModule(BaseModule):
         self._best: Any = None
         self._best_score: float = 0.0
         self._best_order: int = 0
+        self._best_recent_chat_seq: int = 0
         self._buffered_count: int = 0
         self._candidate_summaries: list[dict[str, Any]] = []
         self._flush_task: "asyncio.Task[Any] | None" = None
@@ -138,6 +144,17 @@ class LiveEventsModule(BaseModule):
         # EventBus 订阅句柄（fake ctx 无 event_bus 时保持空列表）。
         self._unsubscribes: list[Any] = []
         self._room_topic = RoomTopicContext(now=lambda: self._now())
+        self._recent_chat = RecentChatBuffer(now=lambda: self._now())
+        self._ambient_chat_suppressed_reason = ""
+        self._recent_chat_query_requests = 0
+        self._recent_chat_query_hits = 0
+        self._recent_chat_relevant_requests = 0
+        self._recent_chat_relevant_hits = 0
+        self._recent_chat_duplicate_delivery_count = 0
+        self._ambient_chat_candidate_reads = 0
+        self._ambient_chat_candidate_hits = 0
+        self._ambient_chat_used_count = 0
+        self._ambient_chat_suppressed_count = 0
 
     async def setup(self, ctx: Any) -> None:
         """注册到 ``EventBus`` 的高价值互动事件。中枢负责同一冷却窗口内的择优；其它
@@ -180,6 +197,7 @@ class LiveEventsModule(BaseModule):
         self._best = None
         self._best_score = 0.0
         self._best_order = 0
+        self._best_recent_chat_seq = 0
         self._buffered_count = 0
         self._candidate_summaries = []
 
@@ -210,6 +228,17 @@ class LiveEventsModule(BaseModule):
         self._recent_viewer_uids = {}
         self._last_new_viewer_batch_welcome_at = 0.0
         self._room_topic.reset()
+        self._recent_chat.reset()
+        self._ambient_chat_suppressed_reason = ""
+        self._recent_chat_query_requests = 0
+        self._recent_chat_query_hits = 0
+        self._recent_chat_relevant_requests = 0
+        self._recent_chat_relevant_hits = 0
+        self._recent_chat_duplicate_delivery_count = 0
+        self._ambient_chat_candidate_reads = 0
+        self._ambient_chat_candidate_hits = 0
+        self._ambient_chat_used_count = 0
+        self._ambient_chat_suppressed_count = 0
 
     def status(self) -> dict[str, Any]:
         status = {
@@ -226,7 +255,120 @@ class LiveEventsModule(BaseModule):
             "new_viewer_burst_count": self._recent_viewer_count(),
         }
         status.update(self._room_topic.status())
+        status.update(self._recent_chat.status())
+        status["ambient_chat_suppressed_reason"] = self._ambient_chat_suppressed_reason
+        status.update(
+            {
+                "recent_chat_query_requests": self._recent_chat_query_requests,
+                "recent_chat_query_hits": self._recent_chat_query_hits,
+                "recent_chat_relevant_requests": self._recent_chat_relevant_requests,
+                "recent_chat_relevant_hits": self._recent_chat_relevant_hits,
+                "recent_chat_duplicate_delivery_count": (
+                    self._recent_chat_duplicate_delivery_count
+                ),
+                "ambient_chat_candidate_reads": self._ambient_chat_candidate_reads,
+                "ambient_chat_candidate_hits": self._ambient_chat_candidate_hits,
+                "ambient_chat_used_count": self._ambient_chat_used_count,
+                "ambient_chat_suppressed_count": self._ambient_chat_suppressed_count,
+            }
+        )
         return status
+
+    def recent_chat_snapshot(self, *, limit: int = 1) -> list[dict[str, object]]:
+        """Return the bounded session tail for exact positional chat questions."""
+
+        self._recent_chat_query_requests += 1
+        rows = self._recent_chat.session_tail_snapshot(limit=limit)
+        if rows:
+            self._recent_chat_query_hits += 1
+        return rows
+
+    def relevant_chat_snapshot(
+        self,
+        *,
+        query: object,
+        limit: int = 1,
+    ) -> list[dict[str, object]]:
+        """Return one locally matched unselected remark for an ordinary chat turn."""
+
+        self._recent_chat_relevant_requests += 1
+        reason = self._ambient_chat_suppression_reason()
+        if reason:
+            self._record_ambient_suppression(reason)
+            return []
+        rows = self._recent_chat.relevant_snapshot(
+            query=query,
+            limit=1,
+            max_age_seconds=AMBIENT_CHAT_RETENTION_SECONDS,
+        )
+        if not rows:
+            self._ambient_chat_suppressed_reason = "no_relevant_match"
+            return []
+        self._recent_chat_relevant_hits += 1
+        self._ambient_chat_suppressed_reason = ""
+        seq = rows[0].get("seq")
+        try:
+            clean_seq = int(seq) if not isinstance(seq, bool) else 0
+        except (TypeError, ValueError, OverflowError):
+            clean_seq = 0
+        if self._recent_chat.mark_ambient_used(clean_seq):
+            self._ambient_chat_used_count += 1
+        return rows
+
+    def ambient_chat_snapshot(self, *, limit: int = 3) -> list[dict[str, object]]:
+        """Return low-pressure, unselected danmaku for existing hosting turns."""
+
+        self._ambient_chat_candidate_reads += 1
+        reason = self._ambient_chat_suppression_reason()
+        if reason:
+            self._record_ambient_suppression(reason)
+            return []
+        rows = self._recent_chat.ambient_snapshot(
+            limit=limit,
+            max_age_seconds=AMBIENT_CHAT_RETENTION_SECONDS,
+        )
+        self._ambient_chat_suppressed_reason = "" if rows else "empty"
+        if rows:
+            self._ambient_chat_candidate_hits += 1
+        return rows
+
+    def mark_ambient_chat_used(self, seq: int) -> bool:
+        used = self._recent_chat.mark_ambient_used(seq)
+        if used:
+            self._ambient_chat_used_count += 1
+        return used
+
+    def _record_ambient_suppression(self, reason: str) -> None:
+        self._ambient_chat_suppressed_reason = reason
+        self._ambient_chat_suppressed_count += 1
+
+    def _ambient_chat_suppression_reason(self) -> str:
+        if not self.enabled or self.ctx is None:
+            return "inactive"
+        if str(getattr(self.ctx.config, "live_mode", "solo_stream")) != "solo_stream":
+            return "not_solo_stream"
+        guard = getattr(self.ctx, "safety_guard", None)
+        status = getattr(guard, "status", None)
+        if callable(status):
+            try:
+                safety_status = str(status() or "")
+            except Exception:
+                safety_status = ""
+            if safety_status and safety_status != "running":
+                return f"safety_{safety_status}"
+        if self._safety_queue_near_limit():
+            return "safety_queue_pressure"
+        if self._reply_queue_full():
+            return "reply_pressure"
+        if self._new_viewer_burst_active():
+            return "new_viewer_burst"
+        burst_count = self._recent_chat.count(
+            max_age_seconds=AMBIENT_CHAT_BURST_WINDOW_SECONDS,
+            selected=False,
+        )
+        if burst_count > AMBIENT_CHAT_BURST_LIMIT:
+            return "danmaku_burst"
+        return ""
 
     def submit(self, event: Any) -> None:
         """富模型直播事件入口（由 live provider 事件或 EventBus 回调驱动）。"""
@@ -235,9 +377,9 @@ class LiveEventsModule(BaseModule):
         if not is_routable(event):
             return  # 进场等事件留给各自 P3 handler；无 handler 类型保持静默。
         uid = event_uid(event)
-        if not uid or uid == "0":
-            return  # 无 uid，无从记录 / 锐评
         if is_signal_only(event):
+            if not uid or uid == "0":
+                return  # 无 uid，无从记录 / 锐评
             score = self._safe_score(event)
             self._mark_dispatch()
             self._spawn(
@@ -252,9 +394,37 @@ class LiveEventsModule(BaseModule):
         text = event_text(event)
         if not text:
             return  # 无文本，无从锐评
+        nickname = event_nickname(event)
+        observed_at = self._now()
+        if not self._recent_chat_event_is_current(event):
+            return
+        provider_event_id = event_provider_event_id(event)
+        recent_chat_seq = self._remember_recent_chat(
+            uid=uid,
+            nickname=nickname,
+            text=text,
+            observed_at=observed_at,
+            provider_event_id=provider_event_id,
+        )
+        if provider_event_id and recent_chat_seq <= 0:
+            self._recent_chat_duplicate_delivery_count += 1
+            return
+        if not uid or uid == "0":
+            return  # 事实缓存允许匿名消息；既有锐评链路仍要求稳定 uid。
         self._remember_recent_viewer(uid)
         score = self._safe_score(event)
-        self._room_topic.remember_live_event(event, score=score)
+        provider_ts = getattr(event, "ts", 0.0)
+        try:
+            topic_ts = float(provider_ts or observed_at)
+        except (TypeError, ValueError):
+            topic_ts = observed_at
+        self._room_topic.remember_danmaku(
+            uid=uid,
+            nickname=nickname,
+            text=text,
+            score=score,
+            ts=topic_ts,
+        )
         skip_reason = self._reply_skip_reason(event, text=text, score=score)
         if skip_reason:
             self._record_reply_skip(
@@ -267,7 +437,15 @@ class LiveEventsModule(BaseModule):
         if remaining <= 0 and self._flush_task is None:
             # 空闲态：首条即时锐评，保留已验证 DoD。
             self._mark_dispatch()
-            self._spawn(self._roast(event, count=1, candidates=[self._candidate_summary(event, score, 1)], winner_order=1))
+            self._spawn(
+                self._roast(
+                    event,
+                    count=1,
+                    candidates=[self._candidate_summary(event, score, 1)],
+                    winner_order=1,
+                    recent_chat_seq=recent_chat_seq,
+                )
+            )
             return
         # 冷却期：缓冲择优，只保留当前分最高者（O(1) 内存，无需保留整批）。
         order = self._buffered_count + 1
@@ -276,6 +454,7 @@ class LiveEventsModule(BaseModule):
             self._best = event
             self._best_score = score
             self._best_order = order
+            self._best_recent_chat_seq = recent_chat_seq
         self._buffered_count += 1
         if self._flush_task is None:
             self._track_flush_task(self._spawn(self._flush_after(remaining)))
@@ -506,6 +685,32 @@ class LiveEventsModule(BaseModule):
             "text_length": len(event_text(event)),
         }
 
+    def _remember_recent_chat(
+        self,
+        *,
+        uid: str,
+        nickname: str,
+        text: str,
+        observed_at: float,
+        provider_event_id: str,
+    ) -> int:
+        return self._recent_chat.remember(
+            uid=uid,
+            nickname=nickname,
+            text=text,
+            observed_at=observed_at,
+            provider_event_id=provider_event_id,
+        )
+
+    def _recent_chat_event_is_current(self, event: Any) -> bool:
+        generation = event_session_generation(event)
+        if generation <= 0 or self.ctx is None:
+            return True
+        if not hasattr(self.ctx, "_live_session_generation"):
+            return True
+        current = int(getattr(self.ctx, "_live_session_generation", 0) or 0)
+        return bool(getattr(self.ctx, "_accepting_live_events", False)) and generation == current
+
     def _payload_for_event(self, event: Any, event_type: str) -> dict[str, Any]:
         payload = {
             "uid": event_uid(event),
@@ -553,11 +758,18 @@ class LiveEventsModule(BaseModule):
             count = self._buffered_count
             candidates = list(self._candidate_summaries)
             winner_order = self._best_order
+            recent_chat_seq = self._best_recent_chat_seq
             # 取出胜者并复位窗口；同步段无 await，不会与 submit 交错（asyncio 单线程）。
             self._clear_window()
             if event is not None and self.ctx is not None and self.enabled:
                 self._mark_dispatch()
-                await self._roast(event, count=count, candidates=candidates, winner_order=winner_order)
+                await self._roast(
+                    event,
+                    count=count,
+                    candidates=candidates,
+                    winner_order=winner_order,
+                    recent_chat_seq=recent_chat_seq,
+                )
         except asyncio.CancelledError:
             if self._flush_task is asyncio.current_task():
                 self._clear_window()
@@ -567,13 +779,21 @@ class LiveEventsModule(BaseModule):
             if self.ctx is not None:
                 self.ctx.audit.record("live_event_flush_failed", type(exc).__name__, level="warning")
 
-    async def _roast(self, event: Any, count: int, candidates: list[dict[str, Any]] | None = None, winner_order: int = 0) -> None:
+    async def _roast(
+        self,
+        event: Any,
+        count: int,
+        candidates: list[dict[str, Any]] | None = None,
+        winner_order: int = 0,
+        recent_chat_seq: int = 0,
+    ) -> None:
         if self.ctx is None:
             return
         uid = event_uid(event)
         score = self._safe_score(event)
         # 弹幕不含头像 URL，礼物/SC 可能带 face_url；下游仍会按既有身份解析兜底。
         selected_event_type = event_type(event)
+        self._recent_chat.mark_selected(recent_chat_seq)
         payload = self._payload_for_event(event, selected_event_type)
         record_payload_timeline(
             self.ctx,

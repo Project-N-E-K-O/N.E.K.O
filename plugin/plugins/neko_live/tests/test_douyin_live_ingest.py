@@ -2071,6 +2071,26 @@ def test_douyin_live_bridge_adapter_maps_batch_chat_and_gift_payloads():
     assert "must-not-leak" not in json.dumps(payloads, ensure_ascii=False)
 
 
+def test_douyin_live_bridge_adapter_preserves_safe_common_message_id():
+    adapter = DouyinLiveBridgeAdapter()
+
+    payload = adapter.map_message(
+        {
+            "method": "WebcastChatMessage",
+            "common": {"msgId": "chat-42"},
+            "user": {"uid": "123", "nickname": "viewer"},
+            "content": "hello bridge",
+        },
+        room_ref="room-42",
+    )[0]
+
+    assert payload["provider_event_id"] == "chat-42"
+    provider_event = to_provider_event(payload)
+    assert provider_event.provider_event_id == "chat-42"
+    assert to_live_event(provider_event).raw["provider_event_id"] == "chat-42"
+    assert safe_payload({"provider_event_id": "token=must-not-leak"}) == {}
+
+
 def test_douyin_live_bridge_adapter_maps_nested_gift_payload_variants():
     adapter = DouyinLiveBridgeAdapter()
 

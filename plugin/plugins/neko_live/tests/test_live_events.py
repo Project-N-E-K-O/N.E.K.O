@@ -43,6 +43,11 @@ from plugin.plugins.neko_live.modules.live_events.provider_event import (
     public_text,
     safe_public_url,
 )
+from plugin.plugins.neko_live.modules.live_events.recent_chat import RecentChatBuffer
+from plugin.plugins.neko_live.modules.live_events.recent_chat_relevance import (
+    clean_relevance_query,
+    relevance_score,
+)
 
 
 def _danmaku(uid: str, text: str = "hi", guard: int = 0, user_level: int = 0, room_id: int = 1) -> LiveDanmaku:
@@ -151,6 +156,17 @@ async def test_idle_first_danmaku_roasts_immediately():
     assert len(ctx.payloads) == 1
     assert ctx.payloads[0]["uid"] == "42"
     assert ctx.payloads[0]["danmaku_text"] == "初见"
+    assert hub.recent_chat_snapshot(limit=1) == [
+        {
+            "seq": 1,
+            "uid": "42",
+            "nickname": "u42",
+            "text": "初见",
+            "seconds_ago": 0.0,
+            "selected": True,
+            "within_fresh_window": True,
+        }
+    ]
 
 
 @pytest.mark.parametrize("raw_kind", ["dict", "provider"])
@@ -199,6 +215,298 @@ async def test_low_value_danmaku_skips_reply_but_updates_room_context():
     assert hub.status()["reply_selection_policy"] == "selected"
     assert hub.status()["last_skip_reason"] == "selection.low_value_danmaku"
     assert "text" not in record["detail"]
+    assert hub.recent_chat_snapshot(limit=1)[0]["selected"] is False
+
+
+async def test_recent_chat_keeps_anonymous_received_danmaku_without_dispatching():
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+
+    hub.submit(
+        {
+            "event_type": "danmaku",
+            "uid": "",
+            "nickname": "路过观众",
+            "text": "猫猫刚刚好可爱",
+        }
+    )
+    await _drain(hub)
+
+    assert ctx.payloads == []
+    assert hub.recent_chat_snapshot(limit=1)[0] == {
+        "seq": 1,
+        "uid": "",
+        "nickname": "路过观众",
+        "text": "猫猫刚刚好可爱",
+        "seconds_ago": 0.0,
+        "selected": False,
+        "within_fresh_window": True,
+    }
+
+
+def test_recent_chat_buffer_is_bounded_expires_and_marks_duplicate_exactly():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0], max_entries=2, window_seconds=30.0)
+
+    first = buffer.remember(uid="1", nickname="同名", text="喵喵喵")
+    second = buffer.remember(uid="1", nickname="同名", text="喵喵喵")
+    buffer.remember(uid="2", nickname="后来者", text="最新一条")
+
+    assert buffer.mark_selected(first) is False  # 已被容量上限淘汰。
+    assert buffer.mark_selected(second) is True
+    rows = buffer.snapshot(limit=5)
+    assert [row["text"] for row in rows] == ["最新一条", "喵喵喵"]
+    assert [row["selected"] for row in rows] == [False, True]
+
+    clock[0] = 131.0
+    assert buffer.snapshot(limit=5) == []
+    tail = buffer.session_tail_snapshot(limit=5)
+    assert [row["text"] for row in tail] == ["最新一条", "喵喵喵"]
+    assert [row["within_fresh_window"] for row in tail] == [False, False]
+
+
+def test_recent_chat_deduplicates_only_stable_delivery_ids():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0])
+
+    first = buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="same words",
+        provider_event_id="event-1",
+    )
+    duplicate = buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="same words",
+        provider_event_id="event-1",
+    )
+    repeated_by_viewer = buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="same words",
+        provider_event_id="event-2",
+    )
+
+    assert first == 1
+    assert duplicate == 0
+    assert repeated_by_viewer == 2
+    assert [row["text"] for row in buffer.session_tail_snapshot(limit=3)] == [
+        "same words",
+        "same words",
+    ]
+    assert buffer.status()["recent_chat_delivery_id_count"] == 2
+
+    buffer.reset()
+    assert buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="new session",
+        provider_event_id="event-1",
+    ) == 1
+    assert buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="unsafe ids do not dedupe",
+        provider_event_id="token.secret",
+    ) == 2
+    assert buffer.remember(
+        uid="1",
+        nickname="viewer",
+        text="unsafe ids do not dedupe",
+        provider_event_id="token.secret",
+    ) == 3
+
+
+@pytest.mark.asyncio
+async def test_recent_chat_suppresses_duplicate_provider_delivery_before_reply():
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+    first = _danmaku("42", text="one delivery")
+    first.provider_event_id = "event-42"
+    duplicate = _danmaku("42", text="one delivery")
+    duplicate.provider_event_id = "event-42"
+
+    hub.submit(first)
+    await _drain(hub)
+    hub.submit(duplicate)
+    await _drain(hub)
+
+    assert len(ctx.payloads) == 1
+    assert len(hub.recent_chat_snapshot(limit=3)) == 1
+    assert hub.status()["recent_chat_duplicate_delivery_count"] == 1
+
+
+def test_recent_chat_keeps_a_smaller_ambient_view_without_extending_latest_query():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0])
+    buffer.remember(uid="1", nickname="viewer", text="a useful room joke")
+
+    clock[0] = 131.0
+
+    assert buffer.snapshot(limit=5) == []
+    assert buffer.snapshot(
+        limit=5,
+        max_age_seconds=120.0,
+        selected=False,
+    )[0]["text"] == "a useful room joke"
+    status = buffer.status()
+    assert status["recent_chat_capacity"] == 12
+    assert status["recent_chat_count"] == 0
+    assert status["recent_chat_retained_count"] == 1
+    assert status["recent_chat_unselected_count"] == 1
+    assert status["recent_chat_session_tail_count"] == 1
+    assert status["recent_chat_session_tail_capacity"] == 3
+
+
+def test_recent_chat_session_tail_keeps_only_three_until_session_reset():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0])
+    for index in range(5):
+        buffer.remember(
+            uid=str(index),
+            nickname=f"viewer-{index}",
+            text=f"message-{index}",
+        )
+
+    clock[0] = 1000.0
+    rows = buffer.session_tail_snapshot(limit=99)
+
+    assert [row["text"] for row in rows] == [
+        "message-4",
+        "message-3",
+        "message-2",
+    ]
+    assert all(row["within_fresh_window"] is False for row in rows)
+    assert buffer.ambient_snapshot(limit=5, max_age_seconds=120.0) == []
+
+    buffer.reset()
+    assert buffer.session_tail_snapshot(limit=3) == []
+
+
+def test_recent_chat_hardens_text_time_and_clock_rollback_inputs():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0])
+
+    assert buffer.remember(uid="1", nickname="viewer", text={"unsafe": True}) == 0
+    seq = buffer.remember(
+        uid={"unsafe": True},
+        nickname=["unsafe"],
+        text="  safe\nroom remark  ",
+        observed_at=float("nan"),
+    )
+    clock[0] = 90.0
+
+    assert buffer.snapshot(limit="invalid") == [
+        {
+            "seq": seq,
+            "uid": "",
+            "nickname": "",
+            "text": "safe room remark",
+            "seconds_ago": 0.0,
+            "selected": False,
+        }
+    ]
+
+
+def test_ambient_chat_collapses_duplicate_records_and_consumes_the_whole_repeat():
+    clock = [100.0]
+    buffer = RecentChatBuffer(now=lambda: clock[0])
+    first = buffer.remember(uid="1", nickname="viewer", text="same room joke")
+    second = buffer.remember(uid="1", nickname="viewer", text="same room joke")
+    buffer.remember(uid="2", nickname="other", text="different room joke")
+
+    assert [row["seq"] for row in buffer.ambient_snapshot(limit=5)] == [3, second]
+    assert buffer.mark_ambient_used(second) is True
+    assert [row["seq"] for row in buffer.ambient_snapshot(limit=5)] == [3]
+    assert buffer.mark_ambient_used(first) is False
+
+
+def test_recent_chat_relevance_ignores_query_filler_and_matches_local_topic():
+    assert clean_relevance_query("刚才最新弹幕说了什么") == ""
+    assert clean_relevance_query("token=must-not-leak") == ""
+    assert relevance_score("零食", "今晚的小零食我选薯片") > 0
+    assert relevance_score("键盘", "今晚的小零食我选薯片") == 0
+
+
+async def test_ambient_chat_only_exposes_unselected_danmaku_at_low_pressure():
+    ctx = _FakeCtx(remaining=0.0)
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+
+    hub.submit(_danmaku("1", text="please answer this selected message"))
+    await _drain(hub)
+    hub.submit(_danmaku("2", text="666"))
+    await _drain(hub)
+
+    rows = hub.ambient_chat_snapshot(limit=3)
+
+    assert [row["uid"] for row in rows] == ["2"]
+    assert rows[0]["selected"] is False
+
+
+async def test_ambient_chat_is_hidden_when_the_output_queue_is_under_pressure():
+    ctx = _FakeCtx(remaining=0.0, queue_limit=5)
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+    hub.submit(_danmaku("2", text="666"))
+    await _drain(hub)
+    ctx.safety_guard.queue_size = 4
+
+    assert hub.ambient_chat_snapshot(limit=3) == []
+    assert hub.status()["ambient_chat_suppressed_reason"] == "safety_queue_pressure"
+
+
+async def test_ambient_chat_is_hidden_during_a_same_viewer_danmaku_burst():
+    ctx = _FakeCtx(remaining=0.0)
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+    for _ in range(5):
+        hub.submit(_danmaku("2", text="666"))
+    await _drain(hub)
+
+    assert hub.ambient_chat_snapshot(limit=3) == []
+    assert hub.status()["ambient_chat_suppressed_reason"] == "danmaku_burst"
+
+
+async def test_relevant_chat_returns_one_local_match_and_reserves_it_once():
+    ctx = _FakeCtx(remaining=0.0)
+    ctx.config.live_mode = "solo_stream"
+    hub = await _make_hub(ctx)
+    hub._recent_chat.remember(
+        uid="1",
+        nickname="viewer",
+        text="今晚的小零食我选薯片",
+    )
+    hub._recent_chat.remember(
+        uid="2",
+        nickname="other",
+        text="键盘声音像小雨",
+    )
+
+    rows = hub.relevant_chat_snapshot(query="零食", limit=5)
+
+    assert len(rows) == 1
+    assert rows[0]["uid"] == "1"
+    assert hub.relevant_chat_snapshot(query="零食") == []
+    status = hub.status()
+    assert status["recent_chat_relevant_requests"] == 2
+    assert status["recent_chat_relevant_hits"] == 1
+    assert status["ambient_chat_used_count"] == 1
+    assert status["ambient_chat_suppressed_reason"] == "no_relevant_match"
+
+
+async def test_recent_chat_reset_discards_previous_live_session():
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+    hub.submit(_danmaku("42", text="上一场弹幕"))
+    await _drain(hub)
+
+    hub.reset()
+
+    assert hub.recent_chat_snapshot(limit=5) == []
+    assert hub.status()["recent_chat_count"] == 0
+    assert hub.status()["recent_chat_query_requests"] == 1
 
 
 async def test_meaningful_single_cjk_danmaku_follows_low_pressure_reply_gate():

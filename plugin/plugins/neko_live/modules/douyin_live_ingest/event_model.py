@@ -32,6 +32,7 @@ _EVENT_TYPE_ALIASES = {
 _TEXT_FIELD_LIMIT = 2048
 _INT_FIELDS = {"gift_count", "gift_value"}
 _UID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_EVENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _SENSITIVE_UID_MARKERS = {
     "authorization",
     "cookie",
@@ -47,11 +48,22 @@ _SENSITIVE_UID_MARKERS = {
     "webcast_sign",
     "x-tt-token",
 }
+_SENSITIVE_EVENT_ID_MARKERS = (
+    "authorization",
+    "cookie",
+    "odin_tt",
+    "sessionid",
+    "signature",
+    "token",
+    "ttwid",
+    "webcast_sign",
+)
 
 
 @dataclass(slots=True)
 class DouyinLiveProviderEvent:
     event_type: str = "danmaku"
+    provider_event_id: str = ""
     uid: str = ""
     nickname: str = ""
     text: str = ""
@@ -79,6 +91,7 @@ def to_provider_event(payload: Any, *, room_ref: str = "") -> DouyinLiveProvider
     event_type = normalize_event_type(safe.get("event_type") or safe.get("type") or default_event_type)
     return DouyinLiveProviderEvent(
         event_type=event_type,
+        provider_event_id=safe_provider_event_id(safe.get("provider_event_id")),
         uid=platform_uid(safe.get("uid") or safe.get("user_id") or safe.get("open_id")),
         nickname=str(safe.get("nickname") or safe.get("user_name") or "").strip(),
         text=str(safe.get("text") or safe.get("content") or safe.get("danmaku_text") or "").strip(),
@@ -94,6 +107,9 @@ def to_provider_event(payload: Any, *, room_ref: str = "") -> DouyinLiveProvider
 
 def to_live_event(event: DouyinLiveProviderEvent, *, ts: float | None = None) -> LiveEvent:
     event = _safe_provider_event(event)
+    raw = asdict(event)
+    if not event.provider_event_id:
+        raw.pop("provider_event_id", None)
     payload = {
         "platform": "douyin",
         "uid": event.uid,
@@ -126,7 +142,7 @@ def to_live_event(event: DouyinLiveProviderEvent, *, ts: float | None = None) ->
         payload=payload,
         source="live",
         ts=ts if ts is not None else time.time(),
-        raw=asdict(event),
+        raw=raw,
     )
 
 
@@ -134,6 +150,9 @@ def _safe_provider_event(event: DouyinLiveProviderEvent) -> DouyinLiveProviderEv
     event_type = normalize_event_type(getattr(event, "event_type", "unknown"))
     return DouyinLiveProviderEvent(
         event_type=event_type,
+        provider_event_id=safe_provider_event_id(
+            getattr(event, "provider_event_id", "")
+        ),
         uid=platform_uid(getattr(event, "uid", "")),
         nickname=safe_text(getattr(event, "nickname", "")),
         text=safe_text(getattr(event, "text", "")),
@@ -182,6 +201,23 @@ def safe_uid(value: Any) -> str:
     return uid.removeprefix("douyin:") if uid else ""
 
 
+def safe_provider_event_id(value: Any) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        raw = str(value) if value > 0 else ""
+    elif isinstance(value, str):
+        raw = value.strip()
+    else:
+        return ""
+    if not raw or not _EVENT_ID_RE.fullmatch(raw):
+        return ""
+    lowered = raw.casefold()
+    if any(marker in lowered for marker in _SENSITIVE_EVENT_ID_MARKERS):
+        return ""
+    return raw
+
+
 def event_score(event_type: str) -> float:
     if event_type == "gift":
         return 100.0
@@ -207,6 +243,10 @@ def safe_payload(payload: Any) -> dict[str, Any]:
         "gift_name",
     }
     safe = {key: safe_text(value) for key, value in raw.items() if key in allowed_text}
+    if "provider_event_id" in raw:
+        provider_event_id = safe_provider_event_id(raw.get("provider_event_id"))
+        if provider_event_id:
+            safe["provider_event_id"] = provider_event_id
     for key in ("event_type", "type"):
         if key in raw:
             safe[key] = safe_event_type(raw.get(key))

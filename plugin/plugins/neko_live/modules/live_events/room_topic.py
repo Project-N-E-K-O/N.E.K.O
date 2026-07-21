@@ -141,6 +141,32 @@ class RoomTopicContext:
         candidate = self._candidate_from_live_event(event, score=score)
         if candidate is None:
             return
+        self._remember_candidate(candidate)
+
+    def remember_danmaku(
+        self,
+        *,
+        uid: str,
+        nickname: str,
+        text: str,
+        score: float,
+        ts: float,
+    ) -> None:
+        """Remember fields already sanitized by ``live_events.submit``."""
+
+        if not text:
+            return
+        self._remember_candidate(
+            DanmakuCandidate(
+                uid=uid,
+                nickname=nickname,
+                text=text[:120],
+                score=score,
+                ts=ts,
+            )
+        )
+
+    def _remember_candidate(self, candidate: DanmakuCandidate) -> None:
         self._recent.append(candidate)
         if not self._is_low_quality(candidate.text):
             self._remember_viewer(candidate)

@@ -59,6 +59,7 @@ class Plugin:
         self._data_path = tmp_path
         self.pushed_messages: list[dict] = []
         self.output_channel_ready = True
+        self.recent_chat_tool_states: list[bool] = []
 
     def data_path(self) -> Path:
         return self._data_path
@@ -66,6 +67,10 @@ class Plugin:
     def push_message(self, **kwargs):
         self.pushed_messages.append(kwargs)
         return None
+
+    def _set_recent_chat_tool_enabled(self, enabled: bool) -> bool:
+        self.recent_chat_tool_states.append(bool(enabled))
+        return True
 
 
 class FakeIngest:
@@ -468,6 +473,7 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
         "live_status": "live",
         "title": "fallback room title",
     }
+    runtime.plugin.list_llm_tools = lambda: [{"name": "get_recent_live_chat"}]
     await runtime.bili_live_ingest.start_listening(123)
     runtime.safety_guard.set_connected(True)
 
@@ -485,6 +491,11 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
     assert "solo_stream" in text
     assert "late night tiny desk chat" in text
     assert "not a private chat with {MASTER_NAME}" in text
+    assert "without query" in text
+    assert "position=2 for the one before it" in text
+    assert "within_fresh_window=false" in text
+    assert "current turn has one concrete topic" in text
+    assert "do not call the tool on every turn" in text
 
 
 @pytest.mark.asyncio
@@ -1245,6 +1256,7 @@ async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntim
     assert runtime.live_room_context == {"live_status": "unknown"}
     assert runtime.live_audience_session.snapshot()["active"] is False
     assert runtime.live_audience_session.snapshot()["has_session"] is True
+    assert runtime.plugin.recent_chat_tool_states[-1] is False
 
 
 @pytest.mark.asyncio
@@ -1256,6 +1268,7 @@ async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: R
     assert state["live_session"]["active"] is True
     assert state["live_session"]["has_session"] is True
     assert state["live_session"]["interaction_viewer_count"] == 0
+    assert runtime.plugin.recent_chat_tool_states[-1] is True
 
 
 async def test_dashboard_state_uses_public_config_projection(runtime: RoastRuntime) -> None:

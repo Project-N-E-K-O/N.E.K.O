@@ -436,6 +436,45 @@ def test_anonymous_recent_danmaku_flood_is_rejected() -> None:
     assert selector._active_engagement_recent_topic_skip_reason == "single_viewer_flood"
 
 
+def test_unselected_ambient_danmaku_becomes_a_recent_topic_candidate() -> None:
+    live_events = SimpleNamespace(
+        ambient_chat_snapshot=lambda **_kwargs: [
+            {
+                "seq": 7,
+                "uid": "42",
+                "text": "cats would win this challenge",
+                "selected": False,
+            }
+        ]
+    )
+    runtime = SimpleNamespace(
+        live_events=live_events,
+        recent_results=[],
+        _compact_context_text=lambda text, limit: text[:limit],
+    )
+    selector = SimpleNamespace(
+        _runtime=runtime,
+        _ACTIVE_ENGAGEMENT_RECENT_DANMAKU_TOPIC_MAX_AGE_SECONDS=300,
+        _active_engagement_recent_topic_sources=deque(),
+        _active_engagement_recent_topic_skip_reason="",
+        recent_results=[],
+        has_streak=lambda *_args: False,
+        is_viewer_to_viewer_mention_text=lambda _text: False,
+        is_meaningful_topic_text=lambda _text: True,
+        topic_filter_reason=lambda _text: "",
+        material_profile=lambda _text: {},
+    )
+
+    candidates = active_topic_recent_source.recent_danmaku_topic_candidates(selector)
+
+    assert candidates[0]["key"] == "ambient_danmaku:7"
+    assert candidates[0]["source"] == "recent_danmaku"
+    assert candidates[0]["title"] == "cats would win this challenge"
+    assert candidates[0]["fun_axis"] == "viewer_callback"
+    assert candidates[0]["preferred_shape"] == "light_stance"
+    assert "peripherally" in candidates[0]["hint"]
+
+
 @pytest.mark.parametrize(
     "text",
     (

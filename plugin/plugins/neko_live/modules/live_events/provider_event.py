@@ -115,6 +115,17 @@ def event_room_ref(event: Any) -> str:
     return text if _is_safe_public_token(text, pattern=_SAFE_ROOM_REF_RE) else ""
 
 
+def event_provider_event_id(event: Any) -> str:
+    """Return a stable, public delivery id without deriving a content fingerprint."""
+
+    value = _field(event, "provider_event_id")
+    if value is None:
+        raw = _field(event, "raw")
+        value = raw.get("provider_event_id") if isinstance(raw, dict) else None
+    text = _public_token_text(value, allow_positive_int=True)
+    return text if _is_safe_public_token(text) else ""
+
+
 def event_guard_level(event: Any) -> int:
     return _optional_non_negative_int(_field(event, "guard_level")) or 0
 

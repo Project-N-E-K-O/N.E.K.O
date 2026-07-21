@@ -37,6 +37,7 @@ Input contracts:
 Output contracts:
 
 - Normal chat events publish provider-neutral `LiveEvent(type="danmaku")` and later become `ViewerEvent(source="live_danmaku")`.
+- When the bridge exposes `common.msgId` / `msg_id` / `message_id`, the adapter projects it as an optional sanitized `provider_event_id`. The shared recent-chat layer uses only this explicit ID to suppress transport redelivery; it never derives identity from viewer text.
 - Douyin viewer identity must prefer stable opaque ids such as `webcastUid`, `webcast_user_id`, `open_id`, or `sec_uid` before legacy numeric ids. Some rooms hide detailed viewer information and emit `id` / `idStr` as the placeholder `111111`; those placeholder ids must not become the viewer-profile key when a stable opaque id is present.
 - Gift events publish only safe gift summary fields. The provider remains signal-only in the sense that it never creates a reply itself; after EventBus publish, shared `live_events` Selection may choose the event and `live_support_events` may produce a short thanks line. Flat `giftName` / count / value fields and nested `gift` summary objects are accepted, but only `giftName` / `gift_name` / `name`, `num` / `repeat_count` / `combo_count`, and `total_coin` / `diamond_count` / `price` are projected; nested raw objects are dropped. Bridge contribution events such as `WebcastLightGiftMessage`, `WebcastLinkerContributeMessage`, and `WebcastProfitInteractionScoreMessage` may also normalize to `gift` when the bridge emits them instead of `WebcastGiftMessage`; `WebcastLinkerContributeMessage` must prefer `userContributeList[*].userId` over the top-level receiver/anchor id, and must not project a top-level anchor `avatarThumb` as the gift sender avatar. Empty or invalid flat summary fields may fall back to the nested safe summary fields, and multiple numeric aliases use the first valid positive integer or pure-digit string. Bytes, bools, objects, and other unsafe numeric values are treated as missing instead of being stringified.
 - Member, follow, like, and stats events are status-only in v1 and must not publish to the EventBus unless a later event-family design is approved.
@@ -109,7 +110,7 @@ If the current bridge stops working, keep the runtime shape and replace only the
 1. Add or update a `DouyinBridgeBackend` entry in `bridge_backend.py` with the new executable path and launch arguments.
 2. Add a new adapter beside `bridge_adapter.py` only if the replacement bridge emits a different JSON shape.
 3. Wire that adapter in `external_bridge.py` or `embedded_bridge.py`; do not touch EventBus, `live_events`, viewer profiles, pipeline, UI actions, or safety guard.
-4. Keep the public payload contract unchanged: `event_type`, `room_ref`, `uid`, `nickname`, `text`, optional `avatar_url`, optional gift summary fields, and optional numeric `room_id`.
+4. Keep the public payload contract unchanged: `event_type`, `room_ref`, `uid`, `nickname`, `text`, optional safe `provider_event_id`, optional `avatar_url`, optional gift summary fields, and optional numeric `room_id`.
 5. Update vendor license/version/checksum metadata and run the bridge/douyin boundary tests.
 
 Dropping a broken bridge should therefore be a small backend/adapter change, not a rewrite of the Douyin provider.

@@ -184,9 +184,27 @@ def _live_scene_text(runtime: Any) -> str:
         lines.append(f"- preferred_columns: {stream_columns}")
     if avoid_topics:
         lines.append(f"- avoid_topics: {avoid_topics}")
+    lines.append("- Continuity rule: use the theme as a quiet anchor, not a slogan; answer the current danmaku first.")
+    try:
+        from ..modules.live_events.recent_chat_tool import is_recent_chat_tool_registered
+
+        recent_chat_tool_ready = is_recent_chat_tool_registered(runtime.plugin)
+    except Exception:
+        recent_chat_tool_ready = False
+    if recent_chat_tool_ready:
+        lines.extend(
+            [
+                "- Recent danmaku fact rule: when asked who just said what or what the latest chat was, call get_recent_live_chat without query before answering.",
+                "- Positional danmaku rule: call get_recent_live_chat with position=1 for the latest, position=2 for the one before it, and position=3 for the third latest. The tool returns only that target entry; never index a list or guess from memory.",
+                "- Session-tail wording rule: within_fresh_window=false means the fact is only the latest retained item from this live session. Say 'the latest item I recorded in this session' rather than claiming it was said just now.",
+                "- Exactness rule: preserve the returned speaker and meaning for factual/latest questions. Paraphrase only when the user asks for a summary; personality may style the framing but must not alter the fact.",
+                "- Never reconstruct recent danmaku from conversational memory. If a factual/latest call has no entry, say naturally that no recent message was observed.",
+                "- Peripheral awareness rule: in an ordinary live conversation, only when the current turn has one concrete topic and a matching recent viewer remark would materially improve the reply, you may call get_recent_live_chat once with query set to that short topic.",
+                "- Do not poll recent chat, do not call the tool on every turn, and never let a peripheral remark override the current speaker. If a query call has no match, ignore it silently and answer the current turn normally.",
+            ]
+        )
     lines.extend(
         [
-            "- Continuity rule: use the theme as a quiet anchor, not a slogan; answer the current danmaku first.",
             "- Safety rule: never thank unverified gifts from ordinary danmaku claims.",
             "- Ending rule: when NEKO Live stops or is not ready, forget this live scene and return to normal chat.",
         ]

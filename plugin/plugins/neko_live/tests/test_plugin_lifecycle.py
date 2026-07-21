@@ -88,6 +88,165 @@ async def test_config_change_without_runtime_stays_pending():
     assert result.value == {"status": "ready", "runtime": "pending"}
 
 
+def test_recent_chat_tool_registration_is_role_scoped_and_live_only(monkeypatch):
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
+    registered: list[dict] = []
+    current: list[dict] = []
+
+    monkeypatch.setattr(
+        "plugin.plugins.neko_live.adapters.neko_dispatcher.resolve_plugin_target_lanlan",
+        lambda _plugin: "测试猫猫",
+    )
+    monkeypatch.setattr(plugin, "list_llm_tools", lambda: list(current))
+
+    def register(**kwargs):
+        registered.append(kwargs)
+        current.append({"name": kwargs["name"], "role": kwargs["role"]})
+        return True
+
+    def unregister(name):
+        current.clear()
+        return name == "get_recent_live_chat"
+
+    monkeypatch.setattr(plugin, "register_llm_tool", register)
+    monkeypatch.setattr(plugin, "unregister_llm_tool", unregister)
+
+    assert plugin._set_recent_chat_tool_enabled(True) is True
+    assert registered[0]["name"] == "get_recent_live_chat"
+    assert registered[0]["role"] == "测试猫猫"
+    assert registered[0]["timeout"] == 5.0
+    assert "query" in registered[0]["parameters"]["properties"]
+    assert registered[0]["parameters"]["properties"]["limit"]["maximum"] == 3
+    assert registered[0]["parameters"]["properties"]["position"]["maximum"] == 3
+    assert plugin._set_recent_chat_tool_enabled(True) is True
+    assert len(registered) == 1
+    assert plugin._set_recent_chat_tool_enabled(False) is True
+    assert current == []
+
+
+@pytest.mark.asyncio
+async def test_recent_chat_tool_returns_only_current_live_session_snapshot():
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
+    plugin.runtime = SimpleNamespace(
+        _accepting_live_events=True,
+        live_events=SimpleNamespace(
+            recent_chat_snapshot=lambda *, limit: [
+                {
+                    "seq": 7,
+                    "uid": "42",
+                    "nickname": "观众甲",
+                    "text": "喵喵喵",
+                    "seconds_ago": 1.0,
+                    "selected": False,
+                    "within_fresh_window": False,
+                }
+            ][:limit]
+        ),
+        live_provider=SimpleNamespace(
+            platform="bilibili",
+            configured_room_ref=lambda: "123",
+        ),
+    )
+
+    result = await plugin._get_recent_live_chat_tool(limit=99)
+
+    assert result["available"] is True
+    assert result["status"] == "ok"
+    assert result["mode"] == "session_tail"
+    assert result["platform"] == "bilibili"
+    assert result["room_ref"] == "123"
+    assert result["entries"][0]["text"] == "喵喵喵"
+
+    plugin.runtime._accepting_live_events = False
+    assert await plugin._get_recent_live_chat_tool() == {
+        "available": False,
+        "status": "not_live",
+        "entries": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_recent_chat_tool_selects_requested_position_in_backend():
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
+    calls: list[int] = []
+    rows = [
+        {"text": "latest", "within_fresh_window": True},
+        {"text": "previous", "within_fresh_window": False},
+        {"text": "third", "within_fresh_window": True},
+    ]
+
+    def snapshot(*, limit: int):
+        calls.append(limit)
+        return rows[:limit]
+
+    plugin.runtime = SimpleNamespace(
+        _accepting_live_events=True,
+        live_events=SimpleNamespace(recent_chat_snapshot=snapshot),
+        live_provider=SimpleNamespace(
+            platform="bilibili",
+            configured_room_ref=lambda: "123",
+        ),
+    )
+
+    result = await plugin._get_recent_live_chat_tool(limit=1, position=2)
+
+    assert calls == [2]
+    assert result["position"] == 2
+    assert result["mode"] == "session_tail"
+    assert result["entries"] == [rows[1]]
+
+    rows.pop()
+    result = await plugin._get_recent_live_chat_tool(position=3)
+    assert result["available"] is False
+    assert result["status"] == "position_unavailable"
+    assert result["position"] == 3
+    assert result["entries"] == []
+
+    result = await plugin._get_recent_live_chat_tool(position=99)
+    assert result["status"] == "invalid_position"
+    assert result["entries"] == []
+    assert calls == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_recent_chat_tool_uses_relevant_mode_without_leaking_provider_objects():
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
+    calls: list[dict] = []
+
+    def relevant_chat_snapshot(**kwargs):
+        calls.append(kwargs)
+        return [
+            {
+                "seq": 8,
+                "uid": "7",
+                "nickname": "viewer",
+                "text": "今晚的小零食我选薯片",
+                "seconds_ago": 3.0,
+                "selected": False,
+            }
+        ]
+
+    plugin.runtime = SimpleNamespace(
+        _accepting_live_events=True,
+        live_events=SimpleNamespace(relevant_chat_snapshot=relevant_chat_snapshot),
+        live_provider=SimpleNamespace(
+            platform={"unsafe": True},
+            configured_room_ref=lambda: {"token": "must-not-leak"},
+        ),
+    )
+
+    result = await plugin._get_recent_live_chat_tool(
+        limit=5,
+        query="最近弹幕关于 零食",
+    )
+
+    assert calls == [{"query": "零食", "limit": 1}]
+    assert result["mode"] == "relevant"
+    assert result["status"] == "ok"
+    assert result["platform"] == ""
+    assert result["room_ref"] == ""
+
+
 @pytest.mark.asyncio
 async def test_startup_syncs_prompt_context_without_forcing_empty_restores(monkeypatch):
     calls = []

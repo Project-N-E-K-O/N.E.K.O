@@ -9,6 +9,20 @@ from .runtime_live_input import remember_live_room_context
 from .runtime_live_session import begin_live_session, invalidate_live_session
 
 
+def _sync_recent_chat_tool(runtime: Any, enabled: bool) -> None:
+    sync = getattr(getattr(runtime, "plugin", None), "_set_recent_chat_tool_enabled", None)
+    if not callable(sync):
+        return
+    try:
+        sync(bool(enabled))
+    except Exception as exc:
+        runtime.audit.record(
+            "recent_chat_tool_sync_failed",
+            f"recent chat tool sync failed: {type(exc).__name__}",
+            level="warning",
+        )
+
+
 async def reconcile_live_listener_after_config(
     runtime: Any,
     clean: dict[str, Any],
@@ -35,6 +49,7 @@ async def reconcile_live_listener_after_config(
     if not room_changed and not disabled:
         return
     runtime._accepting_live_events = False
+    _sync_recent_chat_tool(runtime, False)
     invalidate_live_session(runtime)
     try:
         await _stop_captured_provider(old_provider or runtime.live_provider)
@@ -130,11 +145,13 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime.config.live_enabled = bool(started)
     runtime.safety_guard.set_connected(started)
     runtime._accepting_live_events = bool(started)
+    _sync_recent_chat_tool(runtime, started)
     return started
 
 
 async def stop_live_listener(runtime: Any, *, mark_disabled: bool = True) -> None:
     runtime._accepting_live_events = False
+    _sync_recent_chat_tool(runtime, False)
     invalidate_live_session(runtime)
     try:
         await runtime.live_provider.stop_listening()
