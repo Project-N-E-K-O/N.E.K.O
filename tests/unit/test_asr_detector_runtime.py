@@ -1051,8 +1051,8 @@ async def test_provider_shadow_finishes_at_pause_and_ignores_following_silence()
     gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
     await detector.feed(b"\x02\x00" * 160, speech_probability=0.1)
     gate.events = ()
-    await detector.feed(b"\x03\x00" * 160, speech_probability=0.0)
-    await detector.feed(b"\x04\x00" * 160, speech_probability=0.0)
+    for _ in range(200):
+        await detector.feed(b"\x03\x00" * 160, speech_probability=0.0)
 
     first_candidate = SpeakerShadowCandidateKey(0, 0, "provider_pause")
     assert [frame[0] for frame in shadow.frames] == [
