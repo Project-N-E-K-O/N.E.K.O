@@ -38,7 +38,7 @@ from .detector import (
 from .activity_evidence import RnnoiseEvidence
 from .lifecycle import VoiceIngressToken, VoiceTurnToken
 from .provider_policy import AsrProviderPolicy
-from .speaker_shadow import SpeakerShadowRuntime
+from .speaker_shadow import SpeakerShadowCandidateKey, SpeakerShadowRuntime
 from .throttle_policy import (
     ThrottleAction,
     ThrottleShadowMetrics,
@@ -949,6 +949,12 @@ class SmartTurnReadiness(Enum):
     UNLOADING = "unloading"
 
 
+class _SpeakerShadowState(Enum):
+    IDLE = "idle"
+    PREWARM = "prewarm"
+    CONFIRMED = "confirmed"
+
+
 @dataclass(slots=True)
 class SmartTurnLease:
     token: VoiceTurnToken
@@ -1004,6 +1010,9 @@ class DetectorRuntime:
             bootstrap_onset=rnnoise_onset_probability,
         )
         self._speaker_shadow = speaker_shadow
+        self._speaker_shadow_generation = 0
+        self._speaker_shadow_candidate: SpeakerShadowCandidateKey | None = None
+        self._speaker_shadow_state = _SpeakerShadowState.IDLE
         self._speech_active = False
         self._events: list[SpeechActivityEvent] = []
         self._semantic_adapter: _VoiceTurnAdapter | None = None
@@ -1039,7 +1048,10 @@ class DetectorRuntime:
         ] = {}
         self._provider_candidate_fence: ProviderCandidateFence | None = None
         self._provider_discarded_through_sequence_no: int | None = None
-        if provider_policy is not None and provider_policy.endpoint_authority == "smart_turn":
+        if (
+            provider_policy is not None
+            and provider_policy.endpoint_authority == "smart_turn"
+        ):
             if on_turn_complete is None and on_event is None:
                 raise ValueError(
                     "SmartTurn DetectorRuntime requires a completion consumer"
@@ -1060,6 +1072,9 @@ class DetectorRuntime:
                 turn_id: int,
                 identity: DetectorIngressIdentity,
             ) -> tuple[int, int, int]:
+                self._finish_speaker_shadow_candidate(
+                    expected=self._speaker_shadow_candidate,
+                )
                 successor_present = self._sequence_no > identity.sequence_no
                 fence = SmartTurnCompletionFence(
                     detector_epoch=identity.detector_epoch,
@@ -1122,7 +1137,10 @@ class DetectorRuntime:
                 identity: DetectorIngressIdentity,
             ) -> None:
                 self._throttle_policy.observe_silero(event)
-                if self._on_event is None or identity.detector_epoch != self._detector_epoch:
+                if (
+                    self._on_event is None
+                    or identity.detector_epoch != self._detector_epoch
+                ):
                     return
                 await self._on_event(
                     DetectorActivityEvent(
@@ -1141,11 +1159,12 @@ class DetectorRuntime:
                 turn_id: int,
                 identity: DetectorIngressIdentity,
             ) -> None:
-                if self._on_event is None or identity.detector_epoch != self._detector_epoch:
+                if (
+                    self._on_event is None
+                    or identity.detector_epoch != self._detector_epoch
+                ):
                     return
-                fence = self._completion_fences.get(
-                    (generation, buffer_epoch, turn_id)
-                )
+                fence = self._completion_fences.get((generation, buffer_epoch, turn_id))
                 candidate = (
                     fence.candidate
                     if fence is not None
@@ -1204,9 +1223,7 @@ class DetectorRuntime:
     def smart_turn_coalesced_evaluation_count(self) -> int:
         adapter = self._semantic_adapter
         return (
-            adapter.smart_turn_coalesced_evaluation_count
-            if adapter is not None
-            else 0
+            adapter.smart_turn_coalesced_evaluation_count if adapter is not None else 0
         )
 
     async def bind_candidate(
@@ -1571,6 +1588,7 @@ class DetectorRuntime:
                 allow_baseline_update=not self._speech_active,
             )
             if throttle.action is ThrottleAction.SKIP_IDLE_PCM:
+                self._finish_unconfirmed_speaker_shadow_candidate()
                 return DetectorFeedResult(
                     (),
                     True,
@@ -1638,13 +1656,12 @@ class DetectorRuntime:
                 self._speech_active = True
             for event in events:
                 self._throttle_policy.observe_silero(event)
-            self._submit_speaker_shadow(
+            self._observe_provider_speaker_shadow(
                 pcm16,
                 sample_rate_hz=16_000,
-                candidate=DetectorCandidateKey(
-                    self._detector_epoch,
-                    self._candidate_generation,
-                ),
+                rnnoise_evidence=evidence,
+                onset_threshold=throttle.onset_threshold,
+                events=events,
             )
         return DetectorFeedResult(
             events,
@@ -1855,10 +1872,9 @@ class DetectorRuntime:
             self._candidate_generation,
         )
         control_event_emitted = False
-        self._submit_speaker_shadow(
+        self._submit_segmented_speaker_shadow(
             pcm16,
             sample_rate_hz=sample_rate_hz,
-            candidate=candidate,
         )
         if (
             self._on_event is not None
@@ -1916,6 +1932,7 @@ class DetectorRuntime:
     async def reset(self) -> None:
         if self._speaker_shadow is not None:
             await self._speaker_shadow.reset()
+        self._reset_speaker_shadow_identity()
         overflow_reset_task = self._overflow_reset_task
         if (
             overflow_reset_task is not None
@@ -2066,7 +2083,7 @@ class DetectorRuntime:
         pcm16: bytes,
         *,
         sample_rate_hz: int,
-        candidate: DetectorCandidateKey,
+        candidate: SpeakerShadowCandidateKey,
     ) -> None:
         shadow = self._speaker_shadow
         if shadow is None:
@@ -2080,6 +2097,127 @@ class DetectorRuntime:
         except Exception:
             # Speaker verification is a shadow observer and cannot fail ASR.
             return
+
+    def _open_speaker_shadow_candidate(
+        self,
+        scope: Literal["provider_pause", "smart_turn_turn"],
+        state: _SpeakerShadowState,
+    ) -> SpeakerShadowCandidateKey | None:
+        shadow = self._speaker_shadow
+        if shadow is None:
+            return None
+        candidate = SpeakerShadowCandidateKey(
+            detector_epoch=self._detector_epoch,
+            shadow_generation=self._speaker_shadow_generation,
+            scope=scope,
+        )
+        self._speaker_shadow_candidate = candidate
+        self._speaker_shadow_state = state
+        return candidate
+
+    def _submit_segmented_speaker_shadow(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+    ) -> None:
+        candidate = self._speaker_shadow_candidate
+        if candidate is None or candidate.scope != "smart_turn_turn":
+            candidate = self._open_speaker_shadow_candidate(
+                "smart_turn_turn",
+                _SpeakerShadowState.CONFIRMED,
+            )
+        if candidate is not None:
+            self._submit_speaker_shadow(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+                candidate=candidate,
+            )
+
+    def _observe_provider_speaker_shadow(
+        self,
+        pcm16: bytes,
+        *,
+        sample_rate_hz: int,
+        rnnoise_evidence: RnnoiseEvidence,
+        onset_threshold: float,
+        events: tuple[SpeechActivityEvent, ...],
+    ) -> None:
+        if self._speaker_shadow is None:
+            return
+        started = any(
+            event
+            in {
+                SpeechActivityEvent.SPEECH_STARTED,
+                SpeechActivityEvent.SPEECH_RESUMED,
+            }
+            for event in events
+        )
+        rnnoise_onset = bool(
+            rnnoise_evidence.available
+            and rnnoise_evidence.frame_count > 0
+            and rnnoise_evidence.peak is not None
+            and rnnoise_evidence.peak >= onset_threshold
+        )
+        if (
+            self._speaker_shadow_state is _SpeakerShadowState.PREWARM
+            and not rnnoise_onset
+            and not started
+        ):
+            self._finish_speaker_shadow_candidate()
+            return
+        candidate = self._speaker_shadow_candidate
+        if self._speaker_shadow_state is _SpeakerShadowState.IDLE:
+            if started:
+                candidate = self._open_speaker_shadow_candidate(
+                    "provider_pause",
+                    _SpeakerShadowState.CONFIRMED,
+                )
+            elif rnnoise_onset:
+                candidate = self._open_speaker_shadow_candidate(
+                    "provider_pause",
+                    _SpeakerShadowState.PREWARM,
+                )
+            else:
+                return
+        elif self._speaker_shadow_state is _SpeakerShadowState.PREWARM and started:
+            self._speaker_shadow_state = _SpeakerShadowState.CONFIRMED
+        if candidate is not None:
+            self._submit_speaker_shadow(
+                pcm16,
+                sample_rate_hz=sample_rate_hz,
+                candidate=candidate,
+            )
+        if SpeechActivityEvent.CANDIDATE_PAUSE in events:
+            self._finish_speaker_shadow_candidate(expected=candidate)
+
+    def _finish_unconfirmed_speaker_shadow_candidate(self) -> None:
+        if self._speaker_shadow_state is _SpeakerShadowState.PREWARM:
+            self._finish_speaker_shadow_candidate()
+
+    def _finish_speaker_shadow_candidate(
+        self,
+        *,
+        expected: SpeakerShadowCandidateKey | None = None,
+    ) -> None:
+        candidate = self._speaker_shadow_candidate
+        if candidate is None or (expected is not None and candidate != expected):
+            return
+        shadow = self._speaker_shadow
+        self._speaker_shadow_candidate = None
+        self._speaker_shadow_state = _SpeakerShadowState.IDLE
+        self._speaker_shadow_generation += 1
+        if shadow is None:
+            return
+        try:
+            shadow.finish_candidate(candidate)
+        except Exception:
+            return
+
+    def _reset_speaker_shadow_identity(self) -> None:
+        self._speaker_shadow_generation += 1
+        self._speaker_shadow_candidate = None
+        self._speaker_shadow_state = _SpeakerShadowState.IDLE
 
     async def _watch_semantic_failure(self, adapter: _VoiceTurnAdapter) -> None:
         try:

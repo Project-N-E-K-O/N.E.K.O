@@ -26,6 +26,7 @@ from main_logic.asr_client.detector import (
 )
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.asr_client.speaker_shadow import SpeakerShadowCandidateKey
 from main_logic.asr_client.throttle_policy import ThrottleAction, VoiceThrottlePolicy
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -175,6 +176,7 @@ class _SpeakerShadowSpy:
         self.frames: list[tuple[bytes, int, object]] = []
         self.reset_calls = 0
         self.close_calls = 0
+        self.finished: list[object] = []
 
     def submit(self, pcm16: bytes, *, sample_rate_hz: int, candidate) -> bool:
         self.frames.append((pcm16, sample_rate_hz, candidate))
@@ -182,6 +184,10 @@ class _SpeakerShadowSpy:
 
     async def reset(self) -> None:
         self.reset_calls += 1
+
+    def finish_candidate(self, candidate) -> bool:
+        self.finished.append(candidate)
+        return True
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -635,7 +641,9 @@ async def test_rnnoise_unavailable_does_not_look_like_zero_probability() -> None
     assert result.events == (SpeechActivityEvent.SPEECH_STARTED,)
 
 
-async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> None:
+async def test_active_speech_still_feeds_silero_when_rnnoise_probability_drops() -> (
+    None
+):
     gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
     detector = DetectorRuntime(vad=_Vad(), gate=gate)
 
@@ -814,7 +822,9 @@ async def test_completed_turn_does_not_clear_successor_candidate_activity() -> N
         rnnoise_available=True,
     )
 
-    completed_turns = [event for event in events if isinstance(event, DetectorTurnEvent)]
+    completed_turns = [
+        event for event in events if isinstance(event, DetectorTurnEvent)
+    ]
     assert first.candidate is not None
     assert successor_onset.candidate is not None
     assert successor_onset.candidate.candidate_generation == (
@@ -1014,7 +1024,14 @@ async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() 
     )
 
     assert result.status is DetectorSubmitStatus.ACCEPTED
-    assert shadow.frames == [(pcm16, 16_000, result.candidate)]
+    assert len(shadow.frames) == 1
+    shadow_candidate = shadow.frames[0][2]
+    assert shadow.frames[0][:2] == (pcm16, 16_000)
+    assert shadow_candidate == SpeakerShadowCandidateKey(
+        detector_epoch=0,
+        shadow_generation=0,
+        scope="smart_turn_turn",
+    )
     assert detector.speaker_shadow_metrics == {"submitted_frame_count": 1}
     await detector.reset()
     await detector.close()
@@ -1022,7 +1039,118 @@ async def test_segmented_submit_mirrors_only_accepted_audio_to_speaker_shadow() 
     assert shadow.close_calls == 1
 
 
-async def test_session_smart_turn_pin_survives_turn_lease_then_reset_releases_it() -> None:
+async def test_provider_shadow_finishes_at_pause_and_ignores_following_silence() -> (
+    None
+):
+    shadow = _SpeakerShadowSpy()
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(vad=_Vad(), gate=gate, speaker_shadow=shadow)
+    asr_generation = detector._candidate_generation
+
+    await detector.feed(b"\x01\x00" * 160, speech_probability=0.9)
+    gate.events = (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    await detector.feed(b"\x02\x00" * 160, speech_probability=0.1)
+    gate.events = ()
+    await detector.feed(b"\x03\x00" * 160, speech_probability=0.0)
+    await detector.feed(b"\x04\x00" * 160, speech_probability=0.0)
+
+    first_candidate = SpeakerShadowCandidateKey(0, 0, "provider_pause")
+    assert [frame[0] for frame in shadow.frames] == [
+        b"\x01\x00" * 160,
+        b"\x02\x00" * 160,
+    ]
+    assert [frame[2] for frame in shadow.frames] == [first_candidate] * 2
+    assert shadow.finished == [first_candidate]
+    assert detector._candidate_generation == asr_generation
+
+    gate.events = (SpeechActivityEvent.SPEECH_RESUMED,)
+    await detector.feed(b"\x05\x00" * 160, speech_probability=0.0)
+    assert shadow.frames[-1][2] == SpeakerShadowCandidateKey(0, 1, "provider_pause")
+    await detector.close()
+
+
+async def test_provider_shadow_discards_unconfirmed_prewarm_on_idle() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(vad=_Vad(), gate=_Gate(), speaker_shadow=shadow)
+
+    await detector.feed(b"\x01\x00" * 160, speech_probability=0.9)
+    await detector.feed(b"\x02\x00" * 160, speech_probability=0.0)
+
+    candidate = SpeakerShadowCandidateKey(0, 0, "provider_pause")
+    assert [frame[2] for frame in shadow.frames] == [candidate]
+    assert shadow.finished == [candidate]
+    await detector.close()
+
+
+async def test_disabled_throttling_does_not_make_shadow_collect_idle_pcm() -> None:
+    shadow = _SpeakerShadowSpy()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        speaker_shadow=shadow,
+        resource_optimization_enabled=False,
+    )
+
+    result = await detector.feed(b"\x01\x00" * 160, speech_probability=0.0)
+
+    assert result.throttle_available is True
+    assert shadow.frames == []
+    await detector.close()
+
+
+async def test_segmented_completion_fence_finishes_only_old_shadow_candidate() -> None:
+    shadow = _SpeakerShadowSpy()
+    coordinator = _BlockingSemanticCoordinator()
+    completion_started = asyncio.Event()
+    completion_release = asyncio.Event()
+
+    async def on_complete() -> None:
+        completion_started.set()
+        await completion_release.wait()
+
+    gate = _Gate((SpeechActivityEvent.CANDIDATE_PAUSE,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        speaker_shadow=shadow,
+        on_turn_complete=on_complete,
+    )
+
+    await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    coordinator.evaluate_release.set()
+    await asyncio.wait_for(completion_started.wait(), 1)
+
+    gate.events = ()
+    await detector.submit_audio(
+        b"\x02\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+
+    first = SpeakerShadowCandidateKey(0, 0, "smart_turn_turn")
+    successor = SpeakerShadowCandidateKey(0, 1, "smart_turn_turn")
+    assert [frame[2] for frame in shadow.frames] == [first, successor]
+    assert shadow.finished == [first]
+    completion_release.set()
+    await asyncio.sleep(0)
+    assert shadow.finished == [first]
+    await detector.close()
+
+
+async def test_session_smart_turn_pin_survives_turn_lease_then_reset_releases_it() -> (
+    None
+):
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),

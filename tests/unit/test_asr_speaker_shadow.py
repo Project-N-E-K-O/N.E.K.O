@@ -7,6 +7,7 @@ import pytest
 
 from main_logic.asr_client.detector_runtime import DetectorRuntime
 from main_logic.asr_client.speaker_shadow import (
+    SpeakerShadowCandidateKey,
     SpeakerShadowConfig,
     SpeakerShadowObservation,
     SpeakerShadowRuntime,
@@ -237,6 +238,118 @@ async def test_queue_backpressure_is_observational_only() -> None:
     await runtime.close()
 
 
+async def test_finished_short_candidate_releases_pcm_without_scoring() -> None:
+    backend = _Backend()
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(minimum_audio_ms=20),
+    )
+    candidate = SpeakerShadowCandidateKey(1, 1, "provider_pause")
+
+    assert runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    assert runtime.finish_candidate(candidate)
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert backend.score_calls == []
+    assert metrics["finished_candidate_count"] == 1
+    assert metrics["insufficient_candidate_count"] == 1
+    assert metrics["buffered_candidate_count"] == 0
+    assert metrics["buffered_audio_bytes"] == 0
+    await runtime.close()
+
+
+async def test_scored_candidate_releases_pcm_and_rejects_late_frames() -> None:
+    backend = _Backend(score_error=RuntimeError("score failed"))
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(minimum_audio_ms=10),
+    )
+    candidate = SpeakerShadowCandidateKey(1, 1, "provider_pause")
+
+    assert runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    await runtime.wait_idle()
+    assert runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    assert runtime.finish_candidate(candidate)
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert len(backend.score_calls) == 1
+    assert metrics["inference_failure_count"] == 1
+    assert metrics["buffered_candidate_count"] == 0
+    assert metrics["buffered_audio_bytes"] == 0
+    await runtime.close()
+
+
+async def test_candidate_storage_stays_bounded_across_ten_thousand_finishes() -> None:
+    backend = _Backend()
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(
+            minimum_audio_ms=1,
+            queue_capacity=32,
+            finalized_candidate_capacity=1_024,
+        ),
+    )
+
+    for start in range(0, 10_000, 8):
+        for generation in range(start, start + 8):
+            candidate = SpeakerShadowCandidateKey(1, generation, "provider_pause")
+            assert runtime.submit(_pcm(1), sample_rate_hz=16_000, candidate=candidate)
+            assert runtime.finish_candidate(candidate)
+        await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert len(backend.score_calls) == 10_000
+    assert metrics["buffered_candidate_count"] == 0
+    assert metrics["buffered_audio_bytes"] == 0
+    assert metrics["finalized_tombstone_count"] <= 1_024
+    assert metrics["finished_candidate_count"] == 10_000
+    await runtime.close()
+
+
+async def test_unfinished_candidate_buffers_never_exceed_queue_capacity() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: _Backend(),
+        config=_config(
+            minimum_audio_ms=20,
+            queue_capacity=2,
+            finalized_candidate_capacity=8,
+        ),
+    )
+
+    for generation in range(10):
+        candidate = SpeakerShadowCandidateKey(1, generation, "provider_pause")
+        assert runtime.submit(_pcm(1), sample_rate_hz=16_000, candidate=candidate)
+        await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert metrics["buffered_candidate_count"] <= 2
+    assert metrics["dropped_candidate_count"] == 8
+    assert metrics["dropped_audio_ms"] == 8
+    await runtime.close()
+
+
+async def test_full_queue_finish_marker_invalidates_candidate_without_leaking() -> None:
+    backend = _Backend()
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: backend,
+        config=_config(queue_capacity=1, minimum_audio_ms=20),
+    )
+    candidate = SpeakerShadowCandidateKey(1, 1, "provider_pause")
+
+    assert runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=candidate)
+    assert runtime.finish_candidate(candidate) is False
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert backend.score_calls == []
+    assert metrics["dropped_candidate_count"] == 1
+    assert metrics["buffered_candidate_count"] == 0
+    assert metrics["finalized_tombstone_count"] == 1
+    await runtime.close()
+
+
 async def test_idle_unload_releases_and_later_reloads_backend() -> None:
     backends: list[_Backend] = []
 
@@ -268,4 +381,10 @@ def test_shadow_config_rejects_unsafe_bounds() -> None:
     with pytest.raises(ValueError, match="maximum_audio_ms"):
         SpeakerShadowConfig(
             enabled=True, minimum_audio_ms=2_000, maximum_audio_ms=1_000
+        )
+    with pytest.raises(ValueError, match="finalized_candidate_capacity"):
+        SpeakerShadowConfig(
+            enabled=True,
+            queue_capacity=32,
+            finalized_candidate_capacity=16,
         )
