@@ -78,7 +78,7 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
 
 @pytest.mark.asyncio
 async def test_post_turn_outbox_replay_restores_recorded_language():
-    """重启补跑必须恢复入队时语言，不能重新按 memory_server 的 C locale 推断。"""
+    """Replay the language recorded at enqueue time instead of the server locale."""
     from app import memory_server
     from utils.llm_client import messages_to_dict
 

@@ -1184,7 +1184,8 @@ def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | Non
     # Fact extraction predates a full Traditional-Chinese template. Reuse the
     # Chinese instructions while the stronger output rule preserves zh-TW.
     template_key = "zh" if lang_key == "zh-TW" else lang_key
-    return f"{_FACT_OUTPUT_LANGUAGE_RULE[lang_key]}\n\n{_loc(templates, template_key)}"
+    rule = _FACT_OUTPUT_LANGUAGE_RULE.get(lang_key, _FACT_OUTPUT_LANGUAGE_RULE["en"])
+    return f"{rule}\n\n{_loc(templates, template_key)}"
 
 
 def render_profile_rename_event_context(

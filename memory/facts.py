@@ -506,10 +506,12 @@ class FactStore:
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
 
-        prompt = get_fact_extraction_prompt(get_global_language_full()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -1786,11 +1788,13 @@ class FactStore:
             known_lines.append(f"- {text} (importance: {imp})")
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
-        prompt = get_fact_extraction_ai_aware_prompt(get_global_language_full()) \
-            .replace('{CONVERSATION}', conversation_text) \
-            .replace('{KNOWN_POOL}', known_block) \
-            .replace('{LANLAN_NAME}', lanlan_name) \
+        prompt = (
+            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            .replace('{CONVERSATION}', conversation_text)
+            .replace('{KNOWN_POOL}', known_block)
+            .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
+        )
 
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
