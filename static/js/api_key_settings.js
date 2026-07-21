@@ -47,6 +47,18 @@ const MODEL_DEFAULT_PROVIDER = {
     gameMain: 'follow_conversation',
     gameSummary: 'follow_summary',
 };
+const MODEL_CONFIG_EXPANSION_PATHS = {
+    conversation: ['conversation'],
+    summary: ['summary'],
+    gameMain: ['game', 'game-main'],
+    gameSummary: ['game', 'game-summary'],
+    correction: ['correction'],
+    emotion: ['emotion'],
+    vision: ['vision'],
+    agent: ['agent'],
+    omni: ['omni'],
+    tts: ['tts'],
+};
 const MODEL_PROVIDER_FIELD_BY_TYPE = {
     conversation: 'conversation_model',
     summary: 'summary_model',
@@ -928,11 +940,22 @@ function expandAndScrollToKeyBook(options = {}) {
     }
 
     const section = document.getElementById('key-book-section');
-    if (section) {
-        section.scrollIntoView({
+    const providerKey = typeof options.providerKey === 'string' ? options.providerKey : '';
+    const targetInput = providerKey
+        ? document.getElementById(`keyBookInput_${providerKey}`)
+        : null;
+    const scrollTarget = targetInput?.closest('.key-book-row') || section;
+
+    if (scrollTarget) {
+        scrollTarget.scrollIntoView({
             behavior: options.instant ? 'auto' : 'smooth',
             block: 'center'
         });
+    }
+
+    if (targetInput) {
+        targetInput.focus({ preventScroll: true });
+        targetInput.select();
     }
 }
 
@@ -1278,12 +1301,12 @@ function onCustomModelProviderChange(modelType) {
     /**
      * 将 key 输入框设为 readonly 并显示管理簿提示 + 快捷跳转按钮
      */
-    const setKeyReadonly = (input, value) => {
+    const setKeyReadonly = (input, value, providerKey = '') => {
         if (!input) return;
         setMaskedInput(input, value || '');
         input.setAttribute('readonly', 'readonly');
         input.placeholder = window.t ? window.t('api.keyAutoFilledFromKeyBook') : 'Key从API管理簿自动填充';
-        ensureKeyBookLink(input);
+        ensureKeyBookLink(input, providerKey);
     };
 
     /**
@@ -1350,7 +1373,7 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
-                setKeyReadonly(keyInput, coreBookKey);
+                setKeyReadonly(keyInput, coreBookKey, coreProviderKey);
             } else {
                 const pInfo = getProviderInfo(sourceProviderKey);
                 if (urlInput) {
@@ -1358,7 +1381,7 @@ function onCustomModelProviderChange(modelType) {
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = getEffectiveAssistKey(sourceProviderKey);
-                setKeyReadonly(keyInput, bookKey);
+                setKeyReadonly(keyInput, bookKey, sourceProviderKey);
             }
         } else {
             // free or empty
@@ -1423,7 +1446,7 @@ function onCustomModelProviderChange(modelType) {
             }
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
-        setKeyReadonly(keyInput, bookKey);
+        setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
@@ -1465,23 +1488,33 @@ window.addEventListener('localechange', updateGptSovitsTutorialLink);
 /**
  * 在 key 输入框旁添加"前往管理簿"快捷按钮（如果还没有）
  */
-function ensureKeyBookLink(input) {
+function ensureKeyBookLink(input, providerKey = '') {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    if (parent.querySelector('.key-book-shortcut')) return;
+    const shortcutScope = input.closest('.field-row') || parent;
+    const existingLinks = Array.from(shortcutScope.querySelectorAll('.key-book-shortcut'));
 
-    const link = document.createElement('a');
-    link.href = 'javascript:void(0)';
-    link.className = 'key-book-shortcut';
-    link.setAttribute('data-i18n', 'api.goToKeyBook');
-    link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
-    link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
-    link.addEventListener('click', (e) => {
-        e.preventDefault();
-        expandAndScrollToKeyBook();
-    });
-    parent.appendChild(link);
+    let link = existingLinks.shift() || null;
+    existingLinks.forEach(extraLink => extraLink.remove());
+    if (!link) {
+        link = document.createElement('a');
+        link.href = 'javascript:void(0)';
+        link.className = 'key-book-shortcut';
+        link.setAttribute('data-i18n', 'api.goToKeyBook');
+        link.textContent = window.t ? window.t('api.goToKeyBook') : '前往管理簿';
+        link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            expandAndScrollToKeyBook({ providerKey: link.dataset.providerKey || '' });
+        });
+    }
+
+    link.dataset.providerKey = providerKey || '';
+    link.dataset.sourceInputId = input.id || '';
+    if (link.parentElement !== parent) {
+        parent.appendChild(link);
+    }
 }
 
 /**
@@ -1491,8 +1524,8 @@ function removeKeyBookLink(input) {
     if (!input) return;
     const parent = input.parentElement;
     if (!parent) return;
-    const link = parent.querySelector('.key-book-shortcut');
-    if (link) link.remove();
+    const shortcutScope = input.closest('.field-row') || parent;
+    shortcutScope.querySelectorAll('.key-book-shortcut').forEach(link => link.remove());
 }
 
 // ==================== 加载API服务商选项 ====================
@@ -3143,6 +3176,50 @@ function toggleModelConfig(modelType) {
     }
 }
 
+function navigateToCustomModelConfig(modelType) {
+    const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[modelType];
+    if (!expansionPath) return false;
+
+    const customApiOptions = document.getElementById('custom-api-options');
+    const customApiToggleBtn = document.getElementById('custom-api-toggle-btn');
+    if (customApiOptions && getComputedStyle(customApiOptions).display === 'none') {
+        customApiOptions.style.display = 'block';
+        if (customApiToggleBtn) customApiToggleBtn.classList.add('rotated');
+    }
+
+    const customApiContainer = document.getElementById('custom-api-container');
+    if (customApiContainer && getComputedStyle(customApiContainer).display === 'none') {
+        customApiContainer.style.display = 'block';
+    }
+
+    let expandedConfig = false;
+    expansionPath.forEach(configType => {
+        const content = document.getElementById(`${configType}-model-content`);
+        if (content && !content.classList.contains('expanded')) {
+            toggleModelConfig(configType);
+            expandedConfig = true;
+        }
+    });
+
+    const targetType = expansionPath[expansionPath.length - 1];
+    const targetContent = document.getElementById(`${targetType}-model-content`);
+    const targetHeader = targetContent?.previousElementSibling;
+    if (!targetHeader) return false;
+    const targetPanel = targetHeader.closest(
+        '.nested-model-config-container, .model-config-container'
+    ) || targetHeader;
+
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    window.setTimeout(() => {
+        targetPanel.scrollIntoView({
+            behavior: prefersReducedMotion ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }, expandedConfig ? 320 : 0);
+
+    return true;
+}
+
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
@@ -3322,6 +3399,9 @@ function updateLightStatus(lightElement, status) {
     const fallback = fallbackMap[status] || status;
     const statusLabel = window.t ? window.t(tooltipKey, fallback) : fallback;
     lightElement.title = buildConnectivityLightTitle(lightElement, statusLabel);
+    if (lightElement.classList.contains('connectivity-summary-light')) {
+        lightElement.setAttribute('aria-label', lightElement.title);
+    }
 }
 
 // ==================== 连通性测试：错误信息展示 UI 组件 ====================
@@ -4370,12 +4450,19 @@ function initConnectivityLights() {
         summaryRow.id = 'customApiSummaryLights';
 
         CONNECTIVITY_TESTABLE_TYPES.forEach(mt => {
-            const summaryLight = document.createElement('span');
+            const summaryLight = document.createElement('button');
+            summaryLight.type = 'button';
             summaryLight.className = 'connectivity-summary-light';
             summaryLight.dataset.status = LightStatus.NOT_CONFIGURED;
             summaryLight.dataset.modelType = mt;
             summaryLight.dataset.tooltipLabel = getCustomModelDisplayLabel(mt);
+            const expansionPath = MODEL_CONFIG_EXPANSION_PATHS[mt];
+            const targetType = expansionPath?.[expansionPath.length - 1];
+            if (targetType) {
+                summaryLight.dataset.targetContentId = `${targetType}-model-content`;
+            }
             updateLightStatus(summaryLight, LightStatus.NOT_CONFIGURED);
+            summaryLight.addEventListener('click', () => navigateToCustomModelConfig(mt));
             summaryRow.appendChild(summaryLight);
         });
 

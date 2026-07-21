@@ -315,6 +315,100 @@ def test_custom_api_test_button(mock_page: Page, running_server: str):
 
 
 @pytest.mark.frontend
+def test_custom_api_summary_lights_navigate_to_model_config(mock_page: Page, running_server: str):
+    """Summary lights should expand and scroll to their corresponding model config."""
+    _install_connectivity_route(mock_page, success=True)
+    _goto_and_wait(mock_page, running_server)
+    _wait_for_lights_settled(mock_page, timeout=15000)
+
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const customApiOptions = document.getElementById('custom-api-options');
+        customApiOptions.style.display = 'block';
+        document.getElementById('custom-api-toggle-btn').classList.add('rotated');
+
+        window.__customConfigScrollTarget = '';
+        window.__customConfigScrollOptions = null;
+        Element.prototype.scrollIntoView = function (options) {
+            const content = this.querySelector(':scope > .model-content');
+            window.__customConfigScrollTarget = content?.id || '';
+            window.__customConfigScrollOptions = options;
+        };
+    }""")
+
+    target_ids = mock_page.evaluate("""() => Object.fromEntries(
+        Array.from(document.querySelectorAll('.connectivity-summary-light')).map(light => [
+            light.dataset.modelType,
+            light.dataset.targetContentId,
+        ])
+    )""")
+    assert target_ids == {
+        "conversation": "conversation-model-content",
+        "summary": "summary-model-content",
+        "gameMain": "game-main-model-content",
+        "gameSummary": "game-summary-model-content",
+        "correction": "correction-model-content",
+        "emotion": "emotion-model-content",
+        "vision": "vision-model-content",
+        "agent": "agent-model-content",
+        "omni": "omni-model-content",
+        "tts": "tts-model-content",
+    }
+
+    conversation_light = mock_page.locator(
+        '.connectivity-summary-light[data-model-type="conversation"]'
+    )
+    expect(conversation_light).to_have_attribute(
+        "data-target-content-id", "conversation-model-content"
+    )
+    assert conversation_light.get_attribute("aria-label")
+    conversation_light.hover()
+    assert conversation_light.evaluate("light => getComputedStyle(light).transform") == "none"
+    conversation_light.click()
+    mock_page.wait_for_timeout(400)
+
+    conversation_state = mock_page.evaluate("""() => ({
+        expanded: document.getElementById('conversation-model-content').classList.contains('expanded'),
+        ariaHidden: document.getElementById('conversation-model-content').getAttribute('aria-hidden'),
+        scrollTarget: window.__customConfigScrollTarget,
+        scrollBlock: window.__customConfigScrollOptions?.block,
+    })""")
+    assert conversation_state == {
+        "expanded": True,
+        "ariaHidden": "false",
+        "scrollTarget": "conversation-model-content",
+        "scrollBlock": "center",
+    }
+
+    game_summary_light = mock_page.locator(
+        '.connectivity-summary-light[data-model-type="gameSummary"]'
+    )
+    expect(game_summary_light).to_have_attribute(
+        "data-target-content-id", "game-summary-model-content"
+    )
+    game_summary_light.click()
+    mock_page.wait_for_timeout(400)
+
+    game_state = mock_page.evaluate("""() => ({
+        gameExpanded: document.getElementById('game-model-content').classList.contains('expanded'),
+        summaryExpanded: document.getElementById('game-summary-model-content').classList.contains('expanded'),
+        mainExpanded: document.getElementById('game-main-model-content').classList.contains('expanded'),
+        scrollTarget: window.__customConfigScrollTarget,
+        scrollBlock: window.__customConfigScrollOptions?.block,
+    })""")
+    assert game_state == {
+        "gameExpanded": True,
+        "summaryExpanded": True,
+        "mainExpanded": False,
+        "scrollTarget": "game-summary-model-content",
+        "scrollBlock": "center",
+    }
+
+
+@pytest.mark.frontend
 def test_custom_api_deduplicates_same_custom_endpoint_and_model(mock_page: Page, running_server: str):
     """Custom API slots with the same effective URL/key/model should share one backend probe."""
     matching_requests = []
