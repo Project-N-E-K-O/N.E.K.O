@@ -329,7 +329,10 @@ _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.I
 
 _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
     (re.compile(r"^/chat(?=\s|$)\s*"), "CHAT"),
+    (re.compile(r"^chat/(?=\s|$)\s*"), "CHAT"),
     (re.compile(r"^/music(?=\s|$)\s*"), "MUSIC"),
+    (re.compile(r"^music/(?=\s|$)\s*"), "MUSIC"),
+    (re.compile(r"^/屏幕(?=\s|$)\s*"), "CHAT"),
     (re.compile(r"^屏幕/(?=\s|$)\s*"), "CHAT"),
 )
 
