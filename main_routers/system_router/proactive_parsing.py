@@ -395,6 +395,19 @@ def _strip_proactive_label_slash_prefix(body: str, labels: frozenset[str]) -> st
     return None
 
 
+def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
+    """Strip a lone leading slash separator left after a leaked label."""
+    if not body:
+        return None
+    match = re.match(r"^/(?:[ \t]+|\r?\n[ \t]*|$)", body)
+    if not match:
+        return None
+    rest = body[match.end():].lstrip()
+    if rest or match.end() == len(body):
+        return rest
+    return None
+
+
 def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
     if not text:
@@ -405,10 +418,17 @@ def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
     cleaned = _strip_proactive_label_slash_prefix(body, _get_proactive_context_leak_labels())
     if cleaned is not None:
         return leading + cleaned, "CHAT"
+    cleaned = _strip_proactive_orphan_slash_prefix(body)
+    if cleaned is not None:
+        return leading + cleaned, "CHAT"
     for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
         match = pattern.match(body)
         if match:
-            return leading + body[match.end():].lstrip(), source_tag
+            rest = body[match.end():].lstrip()
+            cleaned_rest = _strip_proactive_orphan_slash_prefix(rest)
+            if cleaned_rest is not None:
+                rest = cleaned_rest
+            return leading + rest, source_tag
     return text, ""
 
 
