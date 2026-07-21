@@ -19,6 +19,12 @@ AvatarButtonMixin.apply(Live2DManager.prototype, 'live2d', {
 });
 
 const LIVE2D_X11_UI_TICK_MS = 80;
+const LIVE2D_FLOATING_BUTTON_SIZE = 48;
+const LIVE2D_FLOATING_BUTTON_GAP = 12;
+const LIVE2D_FLOATING_BUTTON_COUNT = 5;
+const LIVE2D_BASE_TOOLBAR_HEIGHT =
+    LIVE2D_FLOATING_BUTTON_SIZE * LIVE2D_FLOATING_BUTTON_COUNT +
+    LIVE2D_FLOATING_BUTTON_GAP * (LIVE2D_FLOATING_BUTTON_COUNT - 1);
 
 function getLive2DFloatingControlScale(modelHeight, baseToolbarHeight) {
     const minScale = 0.5;
@@ -229,14 +235,10 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
 
-            const baseButtonSize = 48;
-            const baseGap = 12;
-            const buttonCount = 5;
-            const baseToolbarHeight = baseButtonSize * buttonCount + baseGap * (buttonCount - 1);
             const modelHeight = bounds.bottom - bounds.top;
             const scale = isMobileWidth()
                 ? 1
-                : getLive2DFloatingControlScale(modelHeight, baseToolbarHeight);
+                : getLive2DFloatingControlScale(modelHeight, LIVE2D_BASE_TOOLBAR_HEIGHT);
             const nextTransform = `scale(${scale})`;
             if (nextTransform !== this._lockIconLastTransform) {
                 this._lockIconLastTransform = nextTransform;
@@ -680,11 +682,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
 
-    const baseButtonSize = 48;
-    const baseGap = 12;
-    const buttonCount = 5;
-    const baseToolbarHeight = baseButtonSize * buttonCount + baseGap * (buttonCount - 1);
-
     const tick = () => {
         try {
             if (shouldSkipLive2DUiTick(this, '_x11FloatingButtonsLastTickAt', LIVE2D_X11_UI_TICK_MS)) {
@@ -712,7 +709,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
             const modelHeight = bounds.bottom - bounds.top;
             // scale 量化到千分位，避免呼吸抖动击穿 transform 脏检查
-            const scale = getLive2DFloatingControlScale(modelHeight, baseToolbarHeight);
+            const scale = getLive2DFloatingControlScale(modelHeight, LIVE2D_BASE_TOOLBAR_HEIGHT);
             const rotation = Number(this._floatingButtonsRotationRadians) || 0;
             const rotateTransform = rotation ? ` rotate(${rotation}rad)` : '';
 
@@ -720,7 +717,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
             const targetX = bounds.right * 0.8 + bounds.left * 0.2;
 
-            const actualToolbarHeight = baseToolbarHeight * scale;
+            const actualToolbarHeight = LIVE2D_BASE_TOOLBAR_HEIGHT * scale;
             const actualToolbarWidth = 80 * scale;
 
             const targetY = modelCenterY - actualToolbarHeight / 2;

@@ -40,8 +40,10 @@ def test_avatar_floating_button_rows_keep_fixed_height_when_aux_controls_toggle(
     # Live2D positions the toolbar from five 48px rows plus four 12px gaps.
     # The row wrapper must keep that height even when the mic mute button or
     # popup trigger is shown, otherwise the vertical toolbar visibly contracts.
-    assert "const baseButtonSize = 48;" in live2d_source
-    assert "const baseGap = 12;" in live2d_source
+    assert "const LIVE2D_FLOATING_BUTTON_SIZE = 48;" in live2d_source
+    assert "const LIVE2D_FLOATING_BUTTON_GAP = 12;" in live2d_source
+    assert "const LIVE2D_FLOATING_BUTTON_COUNT = 5;" in live2d_source
+    assert "const LIVE2D_BASE_TOOLBAR_HEIGHT =" in live2d_source
     assert "height: '48px'" in wrapper_block
     assert "minHeight: '48px'" in wrapper_block
     assert "flex: '0 0 48px'" in wrapper_block
@@ -70,7 +72,7 @@ def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
         "Live2DManager.prototype.setupFloatingButtons = function(model) {"
     ):]
 
-    scale_call = "getLive2DFloatingControlScale(modelHeight, baseToolbarHeight)"
+    scale_call = "getLive2DFloatingControlScale(modelHeight, LIVE2D_BASE_TOOLBAR_HEIGHT)"
     assert scale_call in lock_icon_block
     assert scale_call in floating_buttons_block
     assert "lockIcon.style.transform = nextTransform;" in lock_icon_block
