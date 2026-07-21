@@ -226,11 +226,8 @@ def test_phase2_registry_routes_and_capabilities():
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"provider"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
-    for provider_key in ("step", "grok"):
-        assert (
-            ASR_PROVIDER_REGISTRY[provider_key].implementation_status
-            == "blocked_credentials"
-        )
+    assert ASR_PROVIDER_REGISTRY["step"].implementation_status == "blocked_credentials"
+    assert ASR_PROVIDER_REGISTRY["grok"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["qwen"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
@@ -560,9 +557,10 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
 
     def fake_get_asr_worker(core_type, endpointing_mode="manual", **kwargs):
         observed_modes.append((core_type, endpointing_mode))
-        provider_key = kwargs.get("provider_key_override") or CORE_ASR_ROUTES[
-            core_type
-        ].provider_key
+        provider_key = (
+            kwargs.get("provider_key_override")
+            or CORE_ASR_ROUTES[core_type].provider_key
+        )
         return dummy_asr_worker, "test-key", provider_key
 
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
@@ -597,6 +595,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
                 "ASSIST_API_KEY_QWEN": "qwen-cn-key",
                 "ASSIST_API_KEY_QWEN_INTL": "qwen-intl-key",
                 "ASSIST_API_KEY_OPENAI": "openai-key",
+                "ASSIST_API_KEY_GROK": "grok-key",
                 "AUDIO_API_KEY": "must-not-be-used",
             }
 
@@ -628,6 +627,12 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert (openai_key, openai_provider) == ("openai-key", "openai")
     assert openai_worker is asr_client._IMPLEMENTED_WORKERS["openai"]
 
+    grok_worker, grok_key, grok_provider = asr_client._get_asr_worker(
+        "grok", "provider"
+    )
+    assert (grok_key, grok_provider) == ("grok-key", "grok")
+    assert grok_worker is asr_client._IMPLEMENTED_WORKERS["grok"]
+
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
         asr_client._get_asr_worker("openai", "manual")
 
@@ -642,6 +647,8 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: openai"):
         asr_client._get_asr_worker("openai", "provider")
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: grok"):
+        asr_client._get_asr_worker("grok", "provider")
 
     class AudioOnlyConfigManager:
         def get_core_config(self):
