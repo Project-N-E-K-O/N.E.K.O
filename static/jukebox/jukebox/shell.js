@@ -420,6 +420,9 @@ Object.assign(window.Jukebox, {
             <span class="jukebox-settings-icon" aria-hidden="true">⚙</span>
             <span class="jukebox-settings-label">${window.t('Jukebox.settingsShort', '管理/导入')}</span>
           </button>
+          <button class="jukebox-pin" type="button" data-neko-window-control="pin" data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" data-tooltip="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}" title="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}" aria-label="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}" aria-pressed="false" hidden>
+            <span class="neko-window-pin-icon" aria-hidden="true"></span>
+          </button>
           <button class="jukebox-minimize" onclick="Jukebox_hide()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}">−</button>
           <button class="jukebox-close" onclick="Jukebox_close()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
@@ -1356,11 +1359,11 @@ Object.assign(window.Jukebox, {
         line-height: 1;
       }
 
+      .jukebox-pin,
       .jukebox-minimize {
         background: rgba(255,255,255,0.46);
         border: 1px solid rgba(99,199,232,0.16);
         color: rgba(45, 78, 104, 0.8);
-        font-size: 24px;
         cursor: pointer;
         padding: 0;
         width: 34px;
@@ -1373,10 +1376,21 @@ Object.assign(window.Jukebox, {
         transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
       }
 
+      .jukebox-minimize {
+        font-size: 24px;
+      }
+
+      .jukebox-pin:hover,
       .jukebox-minimize:hover {
         background: ${Jukebox.Config.header.btnHoverBg};
         color: rgba(28, 48, 68, 0.94);
         transform: translateY(-1px);
+      }
+
+      .jukebox-pin.is-pinned {
+        color: #fff;
+        background: ${Jukebox.Config.header.btnHoverBg};
+        border-color: rgba(255,255,255,0.34);
       }
 
       .jukebox-close {
@@ -2046,6 +2060,8 @@ Object.assign(window.Jukebox, {
       }
 
       [data-theme="dark"] .jukebox-settings:hover,
+      [data-theme="dark"] .jukebox-pin:hover,
+      [data-theme="dark"] .jukebox-pin.is-pinned,
       [data-theme="dark"] .jukebox-minimize:hover,
       [data-theme="dark"] .jukebox-sort-lock-btn:hover,
       [data-theme="dark"] .jukebox-sort-lock-btn.unlocked,

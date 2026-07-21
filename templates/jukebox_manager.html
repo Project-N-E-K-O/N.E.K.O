@@ -10,7 +10,9 @@
     <script src="/static/i18n-i18next.js"></script>
     <!-- 暗色模式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css">
+    <link rel="stylesheet" href="/static/css/window_controls.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js" defer></script>
 
     <style>
         html, body {
@@ -70,6 +72,7 @@
         .jukebox-sam-panel label,
         .jukebox-sam-panel [contenteditable="true"],
         .jukebox-sam-panel .sam-tab,
+        .jukebox-sam-panel .sam-pin-btn,
         .jukebox-sam-panel .sam-close-btn,
         .jukebox-sam-panel .sam-content,
         .jukebox-sam-panel .sam-item,
@@ -508,6 +511,7 @@
                 '  text-overflow: ellipsis !important;',
                 '  white-space: nowrap !important;',
                 '}',
+                'body .jukebox-sam-panel .sam-pin-btn,',
                 'body .jukebox-sam-panel .sam-close-btn {',
                 '  width: 36px !important;',
                 '  height: 36px !important;',
@@ -534,6 +538,7 @@
                 'body .jukebox-sam-panel label,',
                 'body .jukebox-sam-panel [contenteditable="true"],',
                 'body .jukebox-sam-panel .sam-tab,',
+                'body .jukebox-sam-panel .sam-pin-btn,',
                 'body .jukebox-sam-panel .sam-close-btn,',
                 'body .jukebox-sam-panel .sam-content,',
                 'body .jukebox-sam-panel .sam-item,',

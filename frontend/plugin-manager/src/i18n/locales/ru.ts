@@ -20,6 +20,8 @@ export default {
     minimize: 'Свернуть',
     maximize: 'Развернуть',
     restore: 'Восстановить',
+    pinWindow: 'Закрепить окно',
+    unpinWindow: 'Открепить окно',
     toggleSelection: 'Переключить выбор',
     success: 'Успешно',
     error: 'Ошибка',

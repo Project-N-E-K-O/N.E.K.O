@@ -428,10 +428,20 @@ Object.assign(window.Jukebox, {
             <button class="sam-tab" data-tab="bindings">${window.t('Jukebox.bindings', '歌曲绑定')}</button>
           </div>
           <span class="sam-drag-fill sam-drag-fill-right" aria-hidden="true"></span>
-          <button class="sam-close-btn"
-                  onclick="Jukebox.SongActionManager.hide()"
-                  data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}"
-                  aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
+          <div class="sam-window-controls">
+            <button class="sam-pin-btn" type="button"
+                    data-neko-window-control="pin"
+                    data-i18n-title="common.pinWindow"
+                    data-i18n-aria="common.pinWindow"
+                    data-tooltip="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}"
+                    title="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}"
+                    aria-label="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}"
+                    aria-pressed="false" hidden><span class="neko-window-pin-icon" aria-hidden="true"></span></button>
+            <button class="sam-close-btn"
+                    onclick="Jukebox.SongActionManager.hide()"
+                    data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}"
+                    aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
+          </div>
         </div>
         <div class="sam-content">
           <div class="sam-panel songs-panel active"></div>
@@ -489,6 +499,9 @@ Object.assign(window.Jukebox, {
       if (!panel) return;
       panel.querySelectorAll('.sam-close-btn').forEach((button) => {
         Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('Jukebox.close', '关闭'));
+      });
+      panel.querySelectorAll('.sam-pin-btn').forEach((button) => {
+        Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || window.t('common.pinWindow', '置顶窗口'));
       });
       panel.querySelectorAll('.sam-visibility-btn').forEach((button) => {
         Jukebox.setupTooltipOnce(button, () => button.dataset.tooltip || button.getAttribute('aria-label') || '');
@@ -3073,12 +3086,20 @@ Object.assign(window.Jukebox, {
           white-space: nowrap;
         }
 
+        .sam-window-controls {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-shrink: 0;
+          -webkit-app-region: no-drag;
+        }
+
+        .sam-pin-btn,
         .sam-close-btn {
           background: rgba(255,255,255,0.46);
           border: 1px solid rgba(99,199,232,0.16);
           color: rgba(38,118,148,0.86);
           font-weight: 500;
-          font-size: 28px;
           cursor: pointer;
           padding: 0;
           width: 36px;
@@ -3095,10 +3116,21 @@ Object.assign(window.Jukebox, {
           box-sizing: border-box;
         }
 
+        .sam-close-btn {
+          font-size: 28px;
+        }
+
+        .sam-pin-btn:hover,
         .sam-close-btn:hover {
           color: ${C.text.primary};
           background: ${C.tabs.tabHoverBg};
           transform: scale(1.04);
+        }
+
+        .sam-pin-btn.is-pinned {
+          color: #fff;
+          background: ${C.tabs.tabActiveBg};
+          border-color: rgba(255,255,255,0.36);
         }
 
         .sam-tabs {

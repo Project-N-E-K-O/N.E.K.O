@@ -4,6 +4,8 @@
         "minimize": "Minimizar",
         "maximize": "Maximizar",
         "restore": "Restaurar",
+        "pinWindow": "Fixar janela",
+        "unpinWindow": "Desafixar janela",
         "expand": "Expandir",
         "close": "Fechar",
         "save": "Salvar",

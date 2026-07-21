@@ -4,6 +4,8 @@
         "minimize": "Minimize",
         "maximize": "Maximize",
         "restore": "Restore",
+        "pinWindow": "Pin window",
+        "unpinWindow": "Unpin window",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",

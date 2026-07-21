@@ -7,6 +7,18 @@
       </div>
       <div class="titlebar-controls">
         <button
+          v-if="canPinWindow"
+          class="titlebar-control"
+          :class="{ 'is-pinned': isPinned }"
+          type="button"
+          :title="pinLabel"
+          :aria-label="pinLabel"
+          :aria-pressed="isPinned"
+          @click="toggleAlwaysOnTop"
+        >
+          <span class="titlebar-pin-icon" :class="{ 'is-pinned': isPinned }" aria-hidden="true"></span>
+        </button>
+        <button
           class="titlebar-control"
           type="button"
           :title="t('common.minimize')"
@@ -76,7 +88,10 @@ import { useConnectionStore } from '@/stores/connection'
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
 const isMaximized = ref(false)
+const canPinWindow = ref(false)
+const isPinned = ref(false)
 const maximizeLabel = computed(() => isMaximized.value ? t('common.restore') : t('common.maximize'))
+const pinLabel = computed(() => isPinned.value ? t('common.unpinWindow') : t('common.pinWindow'))
 
 function getWindowControlApi() {
   return window.nekoWindowControl
@@ -89,6 +104,31 @@ async function refreshMaximizeState() {
     isMaximized.value = !!(await api.isMaximized())
   } catch {
     // 非桌面窗口环境下忽略状态查询失败
+  }
+}
+
+async function refreshAlwaysOnTopState() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.getAlwaysOnTopState !== 'function') return
+  try {
+    const state = await api.getAlwaysOnTopState()
+    canPinWindow.value = !!(state && state.allowed)
+    isPinned.value = canPinWindow.value && !!state.pinned
+  } catch {
+    canPinWindow.value = false
+    isPinned.value = false
+  }
+}
+
+async function toggleAlwaysOnTop() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.toggleAlwaysOnTop !== 'function') return
+  try {
+    const state = await api.toggleAlwaysOnTop()
+    canPinWindow.value = !!(state && state.allowed)
+    isPinned.value = canPinWindow.value && !!state.pinned
+  } catch {
+    await refreshAlwaysOnTopState()
   }
 }
 
@@ -121,17 +161,25 @@ function handleWindowResize() {
   void refreshMaximizeState()
 }
 
+function handleWindowFocus() {
+  void refreshMaximizeState()
+  void refreshAlwaysOnTopState()
+}
+
 function closeWindow() {
   window.close()
 }
 
 onMounted(() => {
   void refreshMaximizeState()
+  void refreshAlwaysOnTopState()
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('focus', handleWindowFocus)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('focus', handleWindowFocus)
 })
 </script>
 
@@ -220,6 +268,47 @@ onBeforeUnmount(() => {
 
 .titlebar-control:active {
   background: rgba(0, 0, 0, 0.08);
+}
+
+.titlebar-control.is-pinned {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.titlebar-pin-icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  transform: rotate(-42deg);
+  transform-origin: 50% 55%;
+  transition: transform 0.18s ease;
+}
+
+.titlebar-pin-icon::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0;
+  width: 10px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 5px 5px 2px 2px;
+  box-sizing: border-box;
+}
+
+.titlebar-pin-icon::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 7px;
+  width: 1.5px;
+  height: 7px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.titlebar-pin-icon.is-pinned {
+  transform: rotate(0deg);
 }
 
 .titlebar-control--close:hover {

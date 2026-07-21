@@ -13,8 +13,10 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/character_card_manager.css?v={{ static_asset_version | default('0') }}">
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
     <style>
         /* 标题栏按钮容器 */
         .title-bar-buttons {
@@ -464,6 +466,9 @@
     <div class="page-title-bar">
         <h2 data-i18n="steam.workshopManager" data-text="Character Card Manager - Project N.E.K.O.">Character Card Manager - Project N.E.K.O.</h2>
         <div class="title-bar-buttons">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false" hidden>
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
             <button class="minimize-btn" id="minimizeBtn" onclick="minimizeWindow()" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                 <span class="minimize-icon"></span>
             </button>

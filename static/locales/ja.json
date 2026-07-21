@@ -4,6 +4,8 @@
         "minimize": "最小化",
         "maximize": "最大化",
         "restore": "元に戻す",
+        "pinWindow": "ウィンドウを固定",
+        "unpinWindow": "固定を解除",
         "expand": "展開",
         "close": "閉じる",
         "save": "保存",

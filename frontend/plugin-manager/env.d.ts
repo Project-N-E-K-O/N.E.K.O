@@ -12,6 +12,10 @@ declare module 'element-plus/dist/locale/pt.mjs'
 interface NekoWindowControlResult {
   ok?: boolean
   isMaximized?: boolean
+  allowed?: boolean
+  pinned?: boolean
+  inherited?: boolean
+  effective?: boolean
 }
 
 interface NekoWindowControlApi {
@@ -19,6 +23,8 @@ interface NekoWindowControlApi {
   restore?: () => Promise<unknown> | unknown
   maximize?: () => Promise<NekoWindowControlResult> | NekoWindowControlResult
   isMaximized?: () => Promise<boolean> | boolean
+  getAlwaysOnTopState?: () => Promise<NekoWindowControlResult> | NekoWindowControlResult
+  toggleAlwaysOnTop?: () => Promise<NekoWindowControlResult> | NekoWindowControlResult
 }
 
 interface Window {

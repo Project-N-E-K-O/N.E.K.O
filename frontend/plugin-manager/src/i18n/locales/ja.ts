@@ -20,6 +20,8 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '復元',
+    pinWindow: 'ウィンドウを固定',
+    unpinWindow: '固定を解除',
     toggleSelection: '選択を切り替え',
     success: '成功',
     error: 'エラー',

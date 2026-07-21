@@ -3,18 +3,34 @@
 
     const CONTROL_SELECTOR = '[data-neko-window-control]';
     const MAXIMIZE_ICON_SELECTOR = '.neko-window-maximize-icon';
+    const PIN_ICON_SELECTOR = '.neko-window-pin-icon';
     const NATIVE_DRAG_SOURCE_SELECTOR = 'a[href], img, svg, video, audio';
 
     function translate(key, fallback) {
+        const translators = [];
         try {
-            if (window.t) {
-                const value = window.t(key);
+            if (typeof window.t === 'function') {
+                translators.push({ fn: window.t, owner: window });
+            }
+        } catch (error) {
+            // 当前窗口未加载 i18n 时继续尝试同源 opener
+        }
+        try {
+            if (window.opener && window.opener !== window && typeof window.opener.t === 'function') {
+                translators.push({ fn: window.opener.t, owner: window.opener });
+            }
+        } catch (error) {
+            // 跨域 opener 不可访问时使用兜底文案
+        }
+        for (const translator of translators) {
+            try {
+                const value = translator.fn.call(translator.owner, key);
                 if (typeof value === 'string' && value && value !== key) {
                     return value;
                 }
+            } catch (error) {
+                // 某个翻译源未就绪时继续尝试下一个
             }
-        } catch (error) {
-            // i18n 未就绪时使用兜底文案
         }
         return fallback;
     }
@@ -60,6 +76,41 @@
         }
     }
 
+    function updatePinState(state) {
+        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        if (!pinButton) return;
+        const allowed = !!(state && state.allowed);
+        const pinned = allowed && !!state.pinned;
+        pinButton.hidden = !allowed;
+        pinButton.classList.toggle('is-pinned', pinned);
+        pinButton.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        const icon = pinButton.querySelector(PIN_ICON_SELECTOR);
+        if (icon) icon.classList.toggle('pinned', pinned);
+        setButtonLabel(
+            pinButton,
+            pinned ? 'common.unpinWindow' : 'common.pinWindow',
+            pinned ? 'Unpin window' : 'Pin window'
+        );
+        if (pinButton.hasAttribute('data-tooltip')) {
+            pinButton.setAttribute('data-tooltip', pinButton.getAttribute('title') || '');
+        }
+    }
+
+    async function refreshPinState() {
+        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        if (!pinButton) return;
+        const api = window.nekoWindowControl;
+        if (!api || typeof api.getAlwaysOnTopState !== 'function') {
+            pinButton.hidden = true;
+            return;
+        }
+        try {
+            updatePinState(await api.getAlwaysOnTopState());
+        } catch (error) {
+            pinButton.hidden = true;
+        }
+    }
+
     function bindMinimizeButton() {
         const minimizeButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="minimize"]`);
         if (!minimizeButton || minimizeButton.dataset.nekoWindowControlBound === '1') return;
@@ -91,6 +142,25 @@
                 }
             } catch (error) {
                 // 非 Electron 环境下忽略
+            }
+        });
+    }
+
+    function bindPinButton() {
+        const pinButton = document.querySelector(`${CONTROL_SELECTOR}[data-neko-window-control="pin"]`);
+        if (!pinButton || pinButton.dataset.nekoWindowControlBound === '1') return;
+        pinButton.dataset.nekoWindowControlBound = '1';
+        pinButton.addEventListener('click', async () => {
+            if (pinButton.disabled) return;
+            const api = window.nekoWindowControl;
+            if (!api || typeof api.toggleAlwaysOnTop !== 'function') return;
+            pinButton.disabled = true;
+            try {
+                updatePinState(await api.toggleAlwaysOnTop());
+            } catch (error) {
+                await refreshPinState();
+            } finally {
+                pinButton.disabled = false;
             }
         });
     }
@@ -137,13 +207,34 @@
     }
 
     function initWindowControls() {
+        bindPinButton();
         bindMinimizeButton();
         bindMaximizeButton();
         bindCloseButton();
         refreshMaximizeState();
+        refreshPinState();
         if (!window.__nekoWindowControlsResizeBound) {
             window.__nekoWindowControlsResizeBound = true;
             window.addEventListener('resize', refreshMaximizeState);
+        }
+        if (!window.__nekoWindowControlsFocusBound) {
+            window.__nekoWindowControlsFocusBound = true;
+            window.addEventListener('focus', () => {
+                refreshMaximizeState();
+                refreshPinState();
+            });
+        }
+        if (!window.__nekoWindowControlsMutationObserver && document.documentElement) {
+            const observer = new MutationObserver((mutations) => {
+                const hasNewControls = mutations.some((mutation) => Array.from(mutation.addedNodes || []).some((node) => {
+                    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+                    if (node.matches && node.matches(CONTROL_SELECTOR)) return true;
+                    return !!(node.querySelector && node.querySelector(CONTROL_SELECTOR));
+                }));
+                if (hasNewControls) initWindowControls();
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            window.__nekoWindowControlsMutationObserver = observer;
         }
     }
 
@@ -186,7 +277,10 @@
 
     window.nekoWindowControls = Object.assign({}, window.nekoWindowControls || {}, {
         init: initWindowControls,
-        refresh: refreshMaximizeState
+        refresh: () => {
+            refreshMaximizeState();
+            refreshPinState();
+        }
     });
 
     if (document.readyState === 'loading') {
