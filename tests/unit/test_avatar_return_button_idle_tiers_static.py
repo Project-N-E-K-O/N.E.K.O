@@ -1900,11 +1900,136 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in vrm_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source
 
+    vrm_handle_end_marker = "const handleEnd = (cancelled = false) => {"
+    vrm_handle_start = _source_slice_between(
+        vrm_source,
+        "const handleStart = (clientX, clientY) => {",
+        vrm_handle_end_marker,
+        "VRM return-button drag start handler",
+    )
     vrm_handle_end = vrm_source[
-        vrm_source.index("const handleEnd = () => {"):
-        vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index("const handleEnd = () => {"))
+        vrm_source.index(vrm_handle_end_marker):
+        vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index(vrm_handle_end_marker))
     ]
     assert vrm_handle_end.index("commitDragPosition();") < vrm_handle_end.index("const moved =")
+    assert "if (isDragging) return;" in vrm_handle_start
+    assert "document.addEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
+    assert "document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);" in vrm_source
+
+
+def test_return_button_drag_reports_one_terminal_physical_activity_summary():
+    avatar_source = _read_avatar_ui_buttons_source()
+    app_ui_source = read_js_parts(APP_UI_PATH)
+
+    for source, start_name, record_name, finish_name in (
+        (
+            avatar_source,
+            "const startDragActivity = (safetyToken, left, top) => {",
+            "const recordDragActivityPoint = (left, top) => {",
+            "const finishDragActivity = (safetyToken) => {",
+        ),
+        (
+            app_ui_source,
+            "function startReturnBallDragActivity(dragToken, screenX, screenY)",
+            "function recordReturnBallDragActivityPoint(dragToken, screenX, screenY)",
+            "function finishReturnBallDragActivity(dragToken, screenX, screenY)",
+        ),
+    ):
+        assert start_name in source
+        assert record_name in source
+        assert finish_name in source
+        assert "pathDistancePx += Math.hypot" in source
+        assert "terminalReported = true" in source
+        assert "activityId:" in source
+        assert "pathDistancePx:" in source
+        assert "displacementPx:" in source
+        assert "durationMs:" in source
+
+    manual_finish = _source_slice_between(
+        avatar_source,
+        "const finishDragState = (moved, safetyToken) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "manual drag terminal summary",
+    )
+    assert manual_finish.count("...dragActivityFacts") == 2
+    assert "'return-ball-drag-end'" in manual_finish
+    assert "'return-ball-drag-cancel'" in manual_finish
+    manual_motion = _source_slice_between(
+        avatar_source,
+        "const handleMove = (clientX, clientY, sourceEvent = null, movePoint = null) => {",
+        "const scheduleDragCursorPollFrame = () => {",
+        "manual drag motion",
+    )
+    assert "...dragActivityFacts" not in manual_motion
+
+    native_finish = _source_slice_between(
+        app_ui_source,
+        "async function finishDrag(screenX, screenY)",
+        "function isThoughtBubbleEventTarget(event) {",
+        "native drag terminal summary",
+    )
+    assert native_finish.count("...dragActivityFacts") == 3
+    assert "movedDistancePx: movedDistancePx" in native_finish
+    assert "movedDistancePx: 0" in native_finish
+    native_motion = _source_slice_between(
+        app_ui_source,
+        "function updateDrag(screenX, screenY, sourcePoint = null)",
+        "async function finishDrag(screenX, screenY)",
+        "native drag motion",
+    )
+    assert "...dragActivityFacts" not in native_motion
+
+
+def test_cat1_small_move_done_reports_plan_distance_duration_and_run_activity_id():
+    source = _read_avatar_ui_buttons_source()
+    finish_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleCat1PairMove(button)",
+        "function _stepNekoIdleCat1PairMove(button, startedAt, timestamp)",
+        "cat1 small move completion",
+    )
+    _assert_source_order(
+        finish_block,
+        "cat1 small move snapshots its plan before clearing it",
+        "const completedPlan = state.pairMovePlan;",
+        "_applyNekoIdleCat1PairMovePlan(completedPlan, 1);",
+        "state.pairMovePlan = null;",
+        "activityId: completedPlan.activityId || state.catMindRunId || '',",
+        "distancePx: Math.hypot(completedPlan.dx, completedPlan.dy),",
+        "pathDistancePx: Math.hypot(completedPlan.dx, completedPlan.dy),",
+        "plannedDurationMs: completedPlan.durationMs",
+    )
+
+    start_block = _source_slice_between(
+        source,
+        "function _startNekoIdleCat1PairMove(button)",
+        "function _refreshNekoIdleCat1Observer(button)",
+        "cat1 small move start",
+    )
+    assert "plan.activityId = run && run.runId ? run.runId" in start_block
+
+
+def test_cat1_walk_done_near_chat_reports_actual_terminal_path_facts():
+    source = _read_avatar_ui_buttons_source()
+
+    assert "function _beginNekoIdleCat1WalkActivity(state, rect)" in source
+    assert "function _appendNekoIdleCat1WalkActivityPoint(state, left, top)" in source
+    assert "function _completeNekoIdleCat1WalkActivity(state)" in source
+    assert "_appendNekoIdleCat1WalkActivityPoint(state, nextLeft, nextTop);" in source
+
+    finish_block = _source_slice_between(
+        source,
+        "function _finishNekoIdleCat1Walk(button)",
+        "function _finishNekoIdleCat1CompactTopEdgeWalk(button)",
+        "cat1 walk completion",
+    )
+    _assert_source_order(
+        finish_block,
+        "cat1 walk publishes facts only with its existing terminal observation",
+        "const walkActivityFacts = typeof _completeNekoIdleCat1WalkActivity === 'function'",
+        "_NEKO_CAT_IDLE_OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT",
+        "}, walkActivityFacts || {}));",
+    )
 
 
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
@@ -2828,6 +2953,7 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     )
     assert "returnBtn.addEventListener('mouseenter', (event) => {" in source
     assert "if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;" in source
+    assert "_playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });" in source
     native_drag_block = _source_slice_between(
         app_ui_source,
         "function isThoughtBubbleEventTarget(event) {",
@@ -2997,10 +3123,11 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_playNekoIdleCat1SoundReaction()" in source
     assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
     assert "_playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);" in source
+    assert "if (options.userInitiated !== true) return;" in source
     assert "const reactionSrc = art.__nekoIdleHoverSrc;" in source
     assert "const reactionStartedAt = Math.max(0, Number(art.__nekoIdleHoverStartedAt) || Date.now());" in source
     assert "_finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);" in source
-    assert "_playNekoIdleCat1DragSound(tier)" in source
+    assert "_playNekoIdleCat1DragSound(tier, { reason: 'return-ball-drag-active' })" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1RapidDragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
@@ -3022,7 +3149,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     ambient_sync_block = _source_slice_between(
         source,
         "function _syncNekoIdleCat1AmbientSoundForTier(tier)",
-        "function _playNekoIdleCat1DragSound(tier)",
+        "function _playNekoIdleCat1DragSound(tier, options = {})",
         "cat1 ambient sync block",
     )
     assert "if (!isNekoIdleCatAudioEnabled()) {" in ambient_sync_block
@@ -3030,7 +3157,7 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
     rapid_drag_sound_block = _source_slice_between(
         source,
-        "function _playNekoIdleCat1RapidDragSound(tier)",
+        "function _playNekoIdleCat1RapidDragSound(tier, options = {})",
         "function _fadeOutNekoIdleCat1DragSound()",
         "cat1 rapid drag sound",
     )
@@ -3045,8 +3172,8 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
 
     normal_drag_sound_block = _source_slice_between(
         source,
-        "function _playNekoIdleCat1DragSound(tier)",
-        "function _playNekoIdleCat1RapidDragSound(tier)",
+        "function _playNekoIdleCat1DragSound(tier, options = {})",
+        "function _playNekoIdleCat1RapidDragSound(tier, options = {})",
         "cat1 normal drag sound",
     )
     _assert_source_order(
@@ -3382,6 +3509,13 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         handle_start,
         "container.setAttribute('data-dragging', 'pending')",
         "return button drag start handler",
+    )
+    _assert_source_order(
+        handle_start,
+        "return button drag start re-entry guard",
+        "if (isDragging) return;",
+        "clearDragSafetyTimer();",
+        "startDragActivity(safetyToken, rect.left, rect.top);",
     )
     _assert_source_contains(handle_start, "const safetyToken = dragSafetyToken + 1", "return button drag start handler")
     _assert_source_contains(handle_start, "dragSafetyTimer = setTimeout(() => {", "return button drag start handler")

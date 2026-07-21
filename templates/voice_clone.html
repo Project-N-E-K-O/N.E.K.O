@@ -62,8 +62,21 @@
                     <audio id="workshopVoicePreview" class="workshop-source-audio" controls style="display: none;"></audio>
                     <div id="workshopVoiceSourceStatus" class="workshop-source-status"></div>
                 </div>
+                <div class="field-row" id="voiceSourceRow">
+                    <label data-i18n="voice.voiceSource">Voice Source</label>
+                    <div class="clone-method-toggle voice-source-toggle" role="tablist" aria-label="声音来源选择">
+                        <button type="button" class="clone-method-btn active" id="btnVoiceSourceClone" onclick="switchVoiceSource('clone')"
+                            role="tab" aria-selected="true" aria-controls="cloneInputContainer" tabindex="0">
+                            <span data-i18n="voice.sourceClone">声音克隆</span>
+                        </button>
+                        <button type="button" class="clone-method-btn" id="btnVoiceSourceDesign" onclick="switchVoiceSource('design')"
+                            role="tab" aria-selected="false" aria-controls="voiceDesignSection" tabindex="-1">
+                            <span data-i18n="voice.sourceDesign">声音设计</span>
+                        </button>
+                    </div>
+                </div>
                 <!-- 克隆方式切换 -->
-                <div class="field-row">
+                <div class="field-row" id="cloneMethodRow">
                     <label data-i18n="voice.cloneMethod">克隆方式</label>
                     <div class="clone-method-toggle" role="tablist" aria-label="克隆方式选择">
                         <button type="button" class="clone-method-btn active" id="btnFileClone" onclick="switchCloneMethod('file')"
@@ -78,7 +91,7 @@
                 </div>
 
                 <!-- 克隆输入区域容器（固定高度防止切换时页面跳动） -->
-                <div class="clone-input-container">
+                <div class="clone-input-container" id="cloneInputContainer">
                     <!-- 本地文件克隆区域 -->
                     <div id="fileCloneSection" class="clone-section">
                         <label class="section-label">
@@ -107,11 +120,22 @@
                         </div>
                         <label class="hint" data-i18n="voice.directLinkHint">输入可公网访问的音频文件直链，系统将跳过上传步骤直接使用该链接注册音色</label>
                     </div>
+                    <div id="voiceDesignSection" class="clone-section voice-design-section" style="display: none;">
+                        <label class="section-label">
+                            <img src="/static/icons/exclamation.png" alt="" class="section-icon">
+                            <span data-i18n="voice.designPromptLabel">Describe the voice you want to design</span>
+                        </label>
+                        <div class="field-row">
+                            <textarea id="voiceDesignPrompt" rows="4" data-i18n-placeholder="voice.designPromptPlaceholder"
+                                placeholder="A calm young woman with a warm, clear voice and gentle speaking style"></textarea>
+                        </div>
+                        <label id="voiceDesignHint" class="hint" data-i18n="voice.designHint">只描述音色，不要描述角色设定。试听使用与声音克隆相同的模板。</label>
+                    </div>
                 </div>
 
-                <div class="field-row">
-                    <label for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
-                    <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
+                <div class="field-row" id="refLanguageRow">
+                    <label id="refLanguageLabel" for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
+                    <label id="refLanguageHint" class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
                     <select id="refLanguage" class="api-provider-select">
                         <option value="ch" data-i18n="voice.lang.ch">中文</option>
                         <option value="en" data-i18n="voice.lang.en">英语</option>
@@ -131,7 +155,7 @@
 
                 <div class="field-row">
                     <label data-i18n="voice.customPrefix">自定义前缀（必填，用于区分音色）</label>
-                    <input type="text" id="prefix" data-i18n-placeholder="voice.voiceIdPlaceholder"
+                    <input type="text" id="prefix" data-i18n-placeholder="voice.prefixPlaceholder"
                         placeholder="Maximum 10 characters, numbers and English letters only" required>
                 </div>
 
@@ -165,7 +189,7 @@
         </div>
     </div>
     <script src="/static/js/voice_display_utils.js"></script>
-    <script src="/static/js/voice_clone.js"></script>
+    <script src="/static/js/voice_clone.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/js/voice_silence_remover.js"></script>
 
     <!-- API未设置提示弹窗 -->

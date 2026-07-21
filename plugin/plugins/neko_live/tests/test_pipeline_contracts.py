@@ -5,14 +5,14 @@ import pytest
 
 from plugin.plugins.neko_live.core.contracts import (
     InteractionRequest,
-    RoastConfig,
+    LiveConfig,
     SafetyDecision,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
-from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_session import PipelineSessionTracker
 
 
@@ -54,7 +54,7 @@ def test_live_status_offline_gate_only_allows_verified_support_signals():
             "live_status": "offline",
         },
     )
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     normal = ViewerEvent(
         uid="1",
@@ -123,8 +123,8 @@ async def test_pipeline_records_dry_run_as_dispatcher_outcome_not_pushed():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -134,7 +134,7 @@ async def test_pipeline_records_dry_run_as_dispatcher_outcome_not_pushed():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="42", nickname="dry", danmaku_text="hi", source="live_danmaku")
     )
 
@@ -164,7 +164,7 @@ async def test_pipeline_skips_first_danmaku_when_roast_and_followup_modules_are_
         async def has_roasted(self, _uid):
             return False
 
-    config = RoastConfig(
+    config = LiveConfig(
         live_enabled=True,
         avatar_roast_enabled=False,
         danmaku_response_enabled=False,
@@ -185,7 +185,7 @@ async def test_pipeline_skips_first_danmaku_when_roast_and_followup_modules_are_
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(
             uid="42",
             nickname="disabled",
@@ -245,8 +245,8 @@ async def test_pipeline_public_result_profile_reflects_successful_first_roast():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -256,7 +256,7 @@ async def test_pipeline_public_result_profile_reflects_successful_first_roast():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="42", nickname="first", danmaku_text="hi", source="live_danmaku")
     )
 
@@ -319,8 +319,8 @@ async def test_pipeline_records_dispatcher_skip_as_skipped_not_pushed():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=False),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=False),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -330,7 +330,7 @@ async def test_pipeline_records_dispatcher_skip_as_skipped_not_pushed():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="42", nickname="skip", danmaku_text="hi", source="live_danmaku")
     )
 
@@ -397,8 +397,8 @@ async def test_pipeline_routes_repeat_live_danmaku_to_danmaku_response():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -409,7 +409,7 @@ async def test_pipeline_routes_repeat_live_danmaku_to_danmaku_response():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="42", nickname="same", danmaku_text="还在吗", source="live_danmaku", live_mode="solo_stream")
     )
 
@@ -493,8 +493,8 @@ async def test_pipeline_paces_consecutive_solo_first_roasts_to_danmaku_response(
     viewer_profile = ViewerProfileModule()
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=viewer_profile,
@@ -504,7 +504,7 @@ async def test_pipeline_paces_consecutive_solo_first_roasts_to_danmaku_response(
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
     now = [100.0]
     pipeline._now = lambda: now[0]
 
@@ -595,8 +595,8 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
     viewer_profile = ViewerProfileModule()
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=viewer_profile,
@@ -606,7 +606,7 @@ async def test_pipeline_once_per_uid_gate_is_atomic_for_concurrent_events():
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
     event = ViewerEvent(uid="42", nickname="same", danmaku_text="hi", source="live_danmaku")
 
     first, second = await asyncio.gather(pipeline.handle_event(event), pipeline.handle_event(event))
@@ -685,8 +685,8 @@ async def test_pipeline_dry_run_repeat_live_danmaku_uses_session_first_roast_mar
     viewer_profile = ViewerProfileModule()
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=viewer_profile,
@@ -696,7 +696,7 @@ async def test_pipeline_dry_run_repeat_live_danmaku_uses_session_first_roast_mar
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
@@ -768,8 +768,8 @@ async def test_pipeline_dry_run_session_marker_can_be_cleared_for_fresh_validati
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True, dry_run=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -779,7 +779,7 @@ async def test_pipeline_dry_run_session_marker_can_be_cleared_for_fresh_validati
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     pipeline.clear_dry_run_session_state()
@@ -791,7 +791,7 @@ async def test_pipeline_dry_run_session_marker_can_be_cleared_for_fresh_validati
     assert not any(step.id == "danmaku_response" for step in second.steps)
 
 def test_pipeline_session_state_clear_resets_entrance_pacing_marker():
-    pipeline = RoastPipeline(SimpleNamespace())
+    pipeline = LivePipeline(SimpleNamespace())
     now = [100.0]
     pipeline._now = lambda: now[0]
 
@@ -806,14 +806,14 @@ def test_pipeline_session_state_clear_resets_entrance_pacing_marker():
 def test_pipeline_entrance_pacing_interval_follows_activity_level():
     now = [100.0]
 
-    quiet_pipeline = RoastPipeline(SimpleNamespace(config=RoastConfig(activity_level="quiet")))
+    quiet_pipeline = LivePipeline(SimpleNamespace(config=LiveConfig(activity_level="quiet")))
     quiet_pipeline._now = lambda: now[0]
     quiet_pipeline._record_avatar_roast_sent()
     now[0] += 50.0
     assert quiet_pipeline._entrance_pacing_active() is True
 
     now[0] = 100.0
-    active_pipeline = RoastPipeline(SimpleNamespace(config=RoastConfig(activity_level="active")))
+    active_pipeline = LivePipeline(SimpleNamespace(config=LiveConfig(activity_level="active")))
     active_pipeline._now = lambda: now[0]
     active_pipeline._record_avatar_roast_sent()
     now[0] += 35.0
@@ -881,8 +881,8 @@ async def test_pipeline_session_marker_prevents_repeat_avatar_roast_when_persist
     viewer_profile = ViewerProfileModule()
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=viewer_profile,
@@ -892,7 +892,7 @@ async def test_pipeline_session_marker_prevents_repeat_avatar_roast_when_persist
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
@@ -963,8 +963,8 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=False),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=False)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=False),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=False)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -974,7 +974,7 @@ async def test_pipeline_routes_same_session_followup_to_danmaku_response_even_wh
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
@@ -1055,8 +1055,8 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_d
     dispatcher = Dispatcher()
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=viewer_profile,
@@ -1066,7 +1066,7 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_d
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
@@ -1143,8 +1143,8 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_o
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -1154,7 +1154,7 @@ async def test_pipeline_avatar_roast_attempt_prevents_repeat_avatar_roast_when_o
         results=[],
     )
     ctx.record_result = ctx.results.append
-    pipeline = RoastPipeline(ctx)
+    pipeline = LivePipeline(ctx)
 
     first = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="first", source="live_danmaku"))
     second = await pipeline.handle_event(ViewerEvent(uid="42", nickname="same", danmaku_text="second", source="live_danmaku"))
@@ -1214,8 +1214,8 @@ async def test_pipeline_records_idle_hosting_as_own_route():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -1225,7 +1225,7 @@ async def test_pipeline_records_idle_hosting_as_own_route():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting", live_mode="solo_stream")
     )
 
@@ -1282,8 +1282,8 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result():
 
     ctx = SimpleNamespace(
         audit=Audit(),
-        config=RoastConfig(live_enabled=True, roast_once_per_uid=True),
-        permission_gate=PermissionGate(RoastConfig(live_enabled=True, roast_once_per_uid=True)),
+        config=LiveConfig(live_enabled=True, roast_once_per_uid=True),
+        permission_gate=PermissionGate(LiveConfig(live_enabled=True, roast_once_per_uid=True)),
         safety_guard=Safety(),
         bili_identity=SimpleNamespace(resolve=lambda event: asyncio.sleep(0, result=ViewerIdentity(uid=event.uid, nickname=event.nickname))),
         viewer_profile=ViewerProfileModule(),
@@ -1293,7 +1293,7 @@ async def test_pipeline_mark_roasted_failure_keeps_success_result():
     )
     ctx.record_result = ctx.results.append
 
-    result = await RoastPipeline(ctx).handle_event(
+    result = await LivePipeline(ctx).handle_event(
         ViewerEvent(uid="42", nickname="same", danmaku_text="hi", source="live_danmaku")
     )
 

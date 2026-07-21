@@ -908,8 +908,6 @@ function _setNekoIdleReturnDragActionArt(button, tier) {
 function _prepareNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
-    _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
-    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
     const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
     if (currentState &&
         currentState.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
@@ -920,17 +918,19 @@ function _prepareNekoIdleReturnDragActionForContainer(container) {
         tier: button.getAttribute('data-neko-idle-tier')
     });
     _setNekoIdleReturnDragPendingClasses(button, true);
-    _cancelNekoIdleCat1Journey(button, {
-        resetArt: false,
-        preserveObservers: true
-    });
 }
 
 function _startNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
-    _cancelNekoIdleCat1EatAction(button, { restoreArt: false });
-    _cancelNekoIdleCat1PlayAction(button, { restoreArt: false });
+    _cancelNekoIdleCat1EatAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
+    _cancelNekoIdleCat1PlayAction(button, {
+        restoreArt: false,
+        reason: 'return-ball-drag-active'
+    });
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier === _NEKO_IDLE_TIER_NONE) return;
     const state = _getNekoIdleReturnDragActionState(button);
@@ -942,12 +942,13 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     button.__nekoIdleReturnDragAssetUrl = _pickNekoIdleReturnDragAssetUrl(tier);
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
-        preserveObservers: true
+        preserveObservers: true,
+        reason: 'return-ball-drag-active'
     });
     _setNekoIdleReturnDragPendingClasses(button, false);
     _setNekoIdleReturnDragActionClasses(button, true);
     _setNekoIdleReturnDragActionArt(button, tier);
-    _playNekoIdleCat1DragSound(tier);
+    _playNekoIdleCat1DragSound(tier, { reason: 'return-ball-drag-active' });
     _logNekoIdleReturnDragDebug('active', {
         containerId: container && container.id,
         tier: tier,
@@ -1433,14 +1434,60 @@ function _cancelNekoIdleReturnPendingWalk(state) {
     state.pendingWalkReady = false;
 }
 
+function _settleNekoIdleCat1CancelledWalkActivity(state, reason) {
+    if (!state || typeof _completeNekoIdleCat1WalkActivity !== 'function') return null;
+    const targetKind = state.targetKind || (state.target && state.target.kind) || '';
+    const activityFacts = _completeNekoIdleCat1WalkActivity(state);
+    if (!activityFacts) return null;
+    // CAT1_WALK_DONE_NEAR_CHAT is the existing physical-walk observation. A
+    // cancellation marker keeps the presentation terminal distinct while the
+    // already travelled path is still settled exactly once by Cat Mind.
+    if (Math.max(0, Number(activityFacts.pathDistancePx) || 0) > 0) {
+        _dispatchNekoCatIdleObservationSource(
+            _NEKO_CAT_IDLE_OBSERVATION_TYPES.CAT1_WALK_DONE_NEAR_CHAT,
+            Object.assign({
+                source: 'cat1-journey',
+                tier: state.profile && state.profile.tier,
+                timestamp: Date.now(),
+                reason: reason || 'cat1-walk-cancelled',
+                targetKind: targetKind,
+                completed: false,
+                cancelled: true
+            }, activityFacts)
+        );
+    }
+    return activityFacts;
+}
+
 function _queueNekoCatMindSmallMoveCancelledResult(state, plan, reason) {
     if (!state || state.catMindActionId !== _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) return;
+    const actionId = state.catMindActionId;
+    const runId = state.catMindRunId;
+    const requestId = state.catMindRequestId;
+    const startedAt = state.catMindStartedAt;
+    const source = state.catMindSource;
+    const tier = state.catMindTier || (state.profile && state.profile.tier);
+    const activityFacts = typeof _getNekoIdleCat1PairMoveActivityFacts === 'function'
+        ? _getNekoIdleCat1PairMoveActivityFacts(plan, Date.now())
+        : {
+            activityId: plan && plan.activityId ? plan.activityId : runId,
+            distancePx: 0,
+            pathDistancePx: 0,
+            plannedDurationMs: Math.max(0, Number(plan && plan.durationMs) || 0)
+        };
     const complete = () => {
-        if (state.catMindActionId !== _NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) return;
+        if (state.catMindActionId !== actionId || state.catMindRunId !== runId) return;
         _reportNekoCatMindStateActionResult(state, _getNekoCatMindCancelResult(reason, 'cat1-small-move-finished'), {
             reason,
-            tier: state.profile && state.profile.tier,
-            detail: { chatMode: plan && plan.chatMode ? plan.chatMode : '', restored: true }
+            source,
+            tier,
+            runId,
+            requestId,
+            startedAt,
+            detail: Object.assign({
+                chatMode: plan && plan.chatMode ? plan.chatMode : '',
+                restored: true
+            }, activityFacts)
         });
     };
     // The journey caller synchronously restores its art/classes after cancelling
@@ -1588,6 +1635,7 @@ function _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(container) {
 function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _clearNekoIdleCat1CompactTopEdgeDropTimers(state);
     _cancelNekoIdleCat1Frame(state);
+    _settleNekoIdleCat1CancelledWalkActivity(state, options.reason);
     _cancelNekoIdleCat1SyncFrame(state);
     _cancelNekoIdleReturnSubactionSettleTimer(state);
     _cancelNekoIdleReturnPendingWalk(state);
@@ -1603,7 +1651,8 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     if (!state) return;
     _cancelNekoIdleReturnSubactionState(state, {
-        preserveObservers: options.preserveObservers === true
+        preserveObservers: options.preserveObservers === true,
+        reason: options.reason
     });
     _clearNekoIdleCat1WalkApproachSide(_getNekoIdleReturnContainerFromButton(button));
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -1634,7 +1683,8 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
 function _cancelNekoIdleCat1JourneyForContainer(container, options = {}) {
     _cancelNekoIdleCat1Journey(_getNekoIdleReturnButtonFromContainer(container), {
         resetArt: options.resetArt !== false,
-        preserveObservers: options.preserveObservers === true
+        preserveObservers: options.preserveObservers === true,
+        reason: options.reason
     });
 }
 

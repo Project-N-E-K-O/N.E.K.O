@@ -738,7 +738,7 @@ def test_runtime_config_persistence_stays_persistence_only():
 
     forbidden = (
         "activate_config",
-        "RoastConfig",
+        "LiveConfig",
         "parse_room_id",
         "start_listening",
         "stop_listening",
@@ -757,7 +757,7 @@ def test_runtime_live_listener_stays_listener_reconcile_only():
         "update_own_config",
         "profile_ensure_active",
         "persist_config",
-        "RoastConfig",
+        "LiveConfig",
         "parse_room_id",
         "recent_results",
         "recent_sandbox_results",
@@ -1149,24 +1149,24 @@ def test_contract_submodules_stay_in_their_lane():
             "LiveRoomStatus",
         ),
         "core/contracts_events.py": (
-            "RoastConfig",
+            "LiveConfig",
             "ViewerIdentity",
             "InteractionResult",
             "SafetyDecision",
         ),
         "core/contracts_viewer.py": (
-            "RoastConfig",
+            "LiveConfig",
             "ViewerEvent",
             "InteractionResult",
             "SafetyDecision",
         ),
         "core/contracts_interaction.py": (
-            "RoastConfig",
+            "LiveConfig",
             "SafetyDecision",
             "LiveRoomStatus",
         ),
         "core/contracts_safety.py": (
-            "RoastConfig",
+            "LiveConfig",
             "ViewerEvent",
             "InteractionResult",
         ),

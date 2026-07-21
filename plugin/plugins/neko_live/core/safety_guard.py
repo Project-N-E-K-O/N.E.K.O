@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import safety_guard_cooldown, safety_guard_failures
-from .contracts import RoastConfig, SafetyDecision, SafetyStatus, ViewerEvent
+from .contracts import LiveConfig, SafetyDecision, SafetyStatus, ViewerEvent
 from .safety_guard_types import FailureKind
 
 
@@ -29,7 +29,7 @@ def _requires_live_connection(event: ViewerEvent | None) -> bool:
 class SafetyGuard:
     """Public safety gate facade for stream input, output, and circuit breaks."""
 
-    config: RoastConfig
+    config: LiveConfig
     audit: Any
     manual_paused: bool = False
     auto_paused: bool = False
@@ -42,7 +42,7 @@ class SafetyGuard:
     _last_output_at: float = 0.0
     _last_support_output_at: float = 0.0
 
-    def update(self, config: RoastConfig) -> None:
+    def update(self, config: LiveConfig) -> None:
         self.config = config
 
     def pause(self, reason: str = "manual pause") -> None:

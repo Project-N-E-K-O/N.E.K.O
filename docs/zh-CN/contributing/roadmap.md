@@ -21,7 +21,7 @@
 
 按以下顺序查找：
 
-1. 已接受的 GitHub issue 与关联设计记录；
+1. 已接受的 GitHub issue 与关联[项目记录](/zh-CN/records/)；
 2. 当前 milestone 或 project board（如果有维护）；
 3. 已合并 PR 和 release note，用于确认已完成工作；
 4. 代码和测试，用于确认实际当前行为。

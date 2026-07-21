@@ -7,7 +7,7 @@ from plugin.plugins.neko_live.core.co_stream_capabilities import (
     registered_co_stream_capabilities,
     requested_activation,
 )
-from plugin.plugins.neko_live.core.contracts import RoastConfig
+from plugin.plugins.neko_live.core.contracts import LiveConfig
 
 
 def test_capability_catalog_is_stable_unique_and_default_off() -> None:
@@ -32,19 +32,19 @@ def test_activation_normalization_accepts_only_supported_modes() -> None:
 def test_capability_reads_normalized_config_activation() -> None:
     capability = registered_co_stream_capabilities()[0]
 
-    assert configured_activation(RoastConfig(), capability) == "off"
+    assert configured_activation(LiveConfig(), capability) == "off"
     assert configured_activation(
-        RoastConfig(co_stream_host_pause_fill_activation="manual"),  # type: ignore[arg-type]
+        LiveConfig(co_stream_host_pause_fill_activation="manual"),  # type: ignore[arg-type]
         capability,
     ) == "off"
 
 
 def test_conditional_auto_requires_matching_explicit_consent_version() -> None:
     capability = registered_co_stream_capabilities()[0]
-    preview_only = RoastConfig(
+    preview_only = LiveConfig(
         co_stream_host_pause_fill_activation="conditional_auto",
     )
-    confirmed = RoastConfig(
+    confirmed = LiveConfig(
         co_stream_host_pause_fill_activation="conditional_auto",
         co_stream_host_pause_fill_auto_consent_version=1,
     )
@@ -55,7 +55,7 @@ def test_conditional_auto_requires_matching_explicit_consent_version() -> None:
     assert configured_activation(confirmed, capability) == "conditional_auto"
     assert auto_enforcement_confirmed(confirmed, capability) is True
 
-    wrong_version = RoastConfig(
+    wrong_version = LiveConfig(
         co_stream_host_pause_fill_activation="conditional_auto",
         co_stream_host_pause_fill_auto_consent_version=99,
     )

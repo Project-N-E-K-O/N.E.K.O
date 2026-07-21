@@ -51,7 +51,7 @@ LIVE_STATUS_BLOCK_REASONS = {
 }
 
 
-class RoastPipeline:
+class LivePipeline:
     def __init__(self, ctx: Any) -> None:
         self.ctx = ctx
         self.session = PipelineSessionTracker()

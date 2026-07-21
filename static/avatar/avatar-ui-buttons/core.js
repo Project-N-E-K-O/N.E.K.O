@@ -265,6 +265,8 @@ const _NEKO_CAT_IDLE_OBSERVATION_TYPES = Object.freeze({
     CAT_HOVER_REACTION: 'cat_hover_reaction',
     CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat',
     CAT1_STRETCH_DONE_NEAR_CHAT: 'cat1_stretch_done_near_chat',
+    CAT1_LOCAL_PLAY_DONE: 'cat1_local_play_done',
+    CAT1_LOCAL_PLAY_CANCELLED: 'cat1_local_play_cancelled',
     CAT1_COMPACT_TOP_EDGE_DONE: 'cat1_compact_top_edge_done',
     CAT1_COMPACT_TOP_EDGE_DROP: 'cat1_compact_top_edge_drop',
     EDGE_PEEK_AFTER_DRAG: 'edge_peek_after_drag'

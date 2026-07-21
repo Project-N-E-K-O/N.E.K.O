@@ -6,20 +6,20 @@ import asyncio
 from typing import Any
 
 from . import runtime_config
-from .contracts import RoastConfig
+from .contracts import LiveConfig
 
 
 class RuntimeConfigApiMixin:
-    async def reload_config(self) -> RoastConfig:
+    async def reload_config(self) -> LiveConfig:
         return await runtime_config.reload_config(self)
 
-    def _activate_config(self, config: RoastConfig) -> RoastConfig:
+    def _activate_config(self, config: LiveConfig) -> LiveConfig:
         return runtime_config.activate_config(self, config)
 
     def _get_config_lock(self) -> asyncio.Lock:
         return runtime_config.get_config_lock(self)
 
-    async def update_config(self, updates: dict[str, Any]) -> RoastConfig:
+    async def update_config(self, updates: dict[str, Any]) -> LiveConfig:
         return await runtime_config.update_config(self, updates)
 
     async def _reconcile_live_listener_after_config(

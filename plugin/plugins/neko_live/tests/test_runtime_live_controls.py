@@ -14,13 +14,13 @@ from plugin.plugins.neko_live.core.contracts import (
     InteractionResult,
     LiveRoomStatus,
     PipelineStep,
-    RoastConfig,
+    LiveConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
 )
 from plugin.plugins.neko_live.core.runtime_config_activation import activate_config
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core.runtime_live_listener import stop_live_listener
 from plugin.plugins.neko_live.core.runtime_live_input import (
     _public_lookup_room_ref,
@@ -178,8 +178,8 @@ class FakeBiliAuth:
         }
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RoastRuntime:
-    rt = RoastRuntime(Plugin(tmp_path))
+def runtime(tmp_path: Path) -> LiveRuntime:
+    rt = LiveRuntime(Plugin(tmp_path))
     rt.bili_live_ingest = FakeIngest()
     rt.bili_auth = FakeBiliAuth()
     rt.avatar_roast.ctx = rt
@@ -191,7 +191,7 @@ def runtime(tmp_path: Path) -> RoastRuntime:
     return rt
 
 
-def test_dashboard_actions_include_manual_hosting_actions(runtime: RoastRuntime) -> None:
+def test_dashboard_actions_include_manual_hosting_actions(runtime: LiveRuntime) -> None:
     action_ids = {action["id"] for action in runtime.dashboard_actions()}
 
     assert "trigger_idle_hosting" in action_ids
@@ -199,7 +199,7 @@ def test_dashboard_actions_include_manual_hosting_actions(runtime: RoastRuntime)
     assert "trigger_active_engagement" in action_ids
 
 
-def test_dashboard_actions_do_not_include_destructive_viewer_profile_controls(runtime: RoastRuntime) -> None:
+def test_dashboard_actions_do_not_include_destructive_viewer_profile_controls(runtime: LiveRuntime) -> None:
     action_ids = {action["id"] for action in runtime.dashboard_actions()}
 
     assert "clear_viewer_profiles" not in action_ids
@@ -208,7 +208,7 @@ def test_dashboard_actions_do_not_include_destructive_viewer_profile_controls(ru
 
 
 @pytest.mark.asyncio
-async def test_lookup_live_room_caches_public_room_title(runtime: RoastRuntime) -> None:
+async def test_lookup_live_room_caches_public_room_title(runtime: LiveRuntime) -> None:
     result = await runtime.lookup_live_room("123")
 
     assert result["title"] == "战雷陆战练车：今晚只打轻松局"
@@ -223,7 +223,7 @@ async def test_lookup_live_room_caches_public_room_title(runtime: RoastRuntime) 
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_refreshes_room_title_context(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_refreshes_room_title_context(runtime: LiveRuntime) -> None:
     await runtime.set_live_room("123")
     runtime.config.live_mode = "solo_stream"
 
@@ -249,7 +249,7 @@ async def test_connect_live_room_refreshes_room_title_context(runtime: RoastRunt
 
 @pytest.mark.asyncio
 async def test_connect_live_room_requires_login_without_explicit_fallback(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.bili_auth = FakeBiliAuth(logged_in=False)
@@ -267,7 +267,7 @@ async def test_connect_live_room_requires_login_without_explicit_fallback(
 
 @pytest.mark.asyncio
 async def test_connect_live_room_accepts_explicit_session_only_accountless_fallback(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.bili_auth = FakeBiliAuth(logged_in=False)
@@ -284,7 +284,7 @@ async def test_connect_live_room_accepts_explicit_session_only_accountless_fallb
 
 @pytest.mark.asyncio
 async def test_direct_connect_preserves_accountless_mode_after_configuring_room(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.bili_auth = FakeBiliAuth(logged_in=False)
 
@@ -296,7 +296,7 @@ async def test_direct_connect_preserves_accountless_mode_after_configuring_room(
 
 @pytest.mark.asyncio
 async def test_connect_live_room_prefers_valid_login_over_requested_fallback(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
 
@@ -307,7 +307,7 @@ async def test_connect_live_room_prefers_valid_login_over_requested_fallback(
 
 @pytest.mark.asyncio
 async def test_connect_live_room_fails_closed_when_login_status_cannot_be_verified(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.bili_auth = FakeBiliAuth(error=RuntimeError("credential store unavailable"))
@@ -320,7 +320,7 @@ async def test_connect_live_room_fails_closed_when_login_status_cannot_be_verifi
 
 @pytest.mark.asyncio
 async def test_connect_live_room_does_not_trust_truthy_login_status_values(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.bili_auth = FakeBiliAuth(logged_in="true")
@@ -333,7 +333,7 @@ async def test_connect_live_room_does_not_trust_truthy_login_status_values(
 
 @pytest.mark.asyncio
 async def test_room_switch_checks_login_before_restarting_listener(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
@@ -351,7 +351,7 @@ async def test_room_switch_checks_login_before_restarting_listener(
 
 @pytest.mark.asyncio
 async def test_connect_live_room_rejects_non_boolean_fallback_intent(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
 
@@ -361,7 +361,7 @@ async def test_connect_live_room_rejects_non_boolean_fallback_intent(
 
 @pytest.mark.asyncio
 async def test_connect_live_room_rejects_accountless_flag_for_douyin(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "room-42"
@@ -372,7 +372,7 @@ async def test_connect_live_room_rejects_accountless_flag_for_douyin(
 
 
 @pytest.mark.asyncio
-async def test_offline_live_room_blocks_solo_auto_warmup(runtime: RoastRuntime) -> None:
+async def test_offline_live_room_blocks_solo_auto_warmup(runtime: LiveRuntime) -> None:
     runtime.bili_live_ingest.lookup_status = LiveRoomStatus(
         room_id=123,
         ok=True,
@@ -400,7 +400,7 @@ async def test_offline_live_room_blocks_solo_auto_warmup(runtime: RoastRuntime) 
 
 
 @pytest.mark.asyncio
-async def test_sync_live_instructions_does_not_push_when_live_disabled(runtime: RoastRuntime) -> None:
+async def test_sync_live_instructions_does_not_push_when_live_disabled(runtime: LiveRuntime) -> None:
     runtime.config.live_enabled = False
 
     result = await runtime.sync_live_instructions()
@@ -412,7 +412,7 @@ async def test_sync_live_instructions_does_not_push_when_live_disabled(runtime: 
 
 @pytest.mark.asyncio
 async def test_sync_live_instructions_can_force_restore_stale_live_context(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_enabled = False
 
@@ -423,13 +423,13 @@ async def test_sync_live_instructions_can_force_restore_stale_live_context(
     assert len(runtime.plugin.pushed_messages) == 1
     assert (
         runtime.plugin.pushed_messages[0]["metadata"]["description"]
-        == "Neko Roast behavior restore"
+        == "NEKO Live behavior restore"
     )
 
 
 @pytest.mark.asyncio
 async def test_sync_live_instructions_force_cleans_legacy_context_while_live_enabled(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_enabled = True
 
@@ -440,12 +440,12 @@ async def test_sync_live_instructions_force_cleans_legacy_context_while_live_ena
     assert len(runtime.plugin.pushed_messages) == 1
     assert (
         runtime.plugin.pushed_messages[0]["metadata"]["description"]
-        == "Neko Roast behavior restore"
+        == "NEKO Live behavior restore"
     )
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_injects_live_context_when_dry_run_defaults_off(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_injects_live_context_when_dry_run_defaults_off(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
 
     snapshot = await runtime.connect_live_room()
@@ -455,12 +455,12 @@ async def test_connect_live_room_injects_live_context_when_dry_run_defaults_off(
     assert snapshot["room_ref"] == "123"
     assert runtime.instructions_injected is True
     assert len(runtime.plugin.pushed_messages) == 1
-    assert runtime.plugin.pushed_messages[0]["metadata"]["description"] == "Neko Roast behavior instructions"
+    assert runtime.plugin.pushed_messages[0]["metadata"]["description"] == "NEKO Live behavior instructions"
 
 
 @pytest.mark.asyncio
 async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -485,7 +485,7 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
     assert len(runtime.plugin.pushed_messages) == 1
     message = runtime.plugin.pushed_messages[0]
     assert message["ai_behavior"] == "read"
-    assert message["metadata"]["description"] == "Neko Roast behavior instructions"
+    assert message["metadata"]["description"] == "NEKO Live behavior instructions"
     text = message["parts"][0]["text"]
     assert "NEKO Live scene is active" in text
     assert "solo_stream" in text
@@ -500,7 +500,7 @@ async def test_sync_live_instructions_injects_light_live_scene_for_real_output(
 
 @pytest.mark.asyncio
 async def test_sync_live_instructions_reinjects_when_stream_theme_changes(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -519,14 +519,14 @@ async def test_sync_live_instructions_reinjects_when_stream_theme_changes(
     assert "instructions_restored" in second
     assert "instructions_queued(target=" in second
     assert len(runtime.plugin.pushed_messages) == 3
-    assert runtime.plugin.pushed_messages[1]["metadata"]["description"] == "Neko Roast behavior restore"
-    assert runtime.plugin.pushed_messages[2]["metadata"]["description"] == "Neko Roast behavior instructions"
+    assert runtime.plugin.pushed_messages[1]["metadata"]["description"] == "NEKO Live behavior restore"
+    assert runtime.plugin.pushed_messages[2]["metadata"]["description"] == "NEKO Live behavior instructions"
     assert "second theme" in runtime.plugin.pushed_messages[2]["parts"][0]["text"]
 
 
 @pytest.mark.asyncio
 async def test_sync_live_instructions_does_not_inject_for_offline_room(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -544,7 +544,7 @@ async def test_sync_live_instructions_does_not_inject_for_offline_room(
     assert runtime.plugin.pushed_messages == []
 
 
-def test_live_connection_snapshot_does_not_stringify_listener_state_objects(runtime: RoastRuntime) -> None:
+def test_live_connection_snapshot_does_not_stringify_listener_state_objects(runtime: LiveRuntime) -> None:
     class _LooksLikePublicValue:
         def __str__(self) -> str:
             return "connected-secret"
@@ -590,7 +590,7 @@ def test_live_connection_snapshot_does_not_stringify_listener_state_objects(runt
     assert "connected-secret" not in str(snapshot)
 
 
-def test_live_connection_snapshot_accepts_only_public_listener_state_scalars(runtime: RoastRuntime) -> None:
+def test_live_connection_snapshot_accepts_only_public_listener_state_scalars(runtime: LiveRuntime) -> None:
     class _LiveProvider:
         platform = "bilibili"
 
@@ -623,7 +623,7 @@ def test_live_connection_snapshot_accepts_only_public_listener_state_scalars(run
     assert snapshot["reconnect"] == {"retry_count": 1}
 
 
-def test_live_connection_snapshot_preserves_authenticating_state(runtime: RoastRuntime) -> None:
+def test_live_connection_snapshot_preserves_authenticating_state(runtime: LiveRuntime) -> None:
     class _LiveProvider:
         platform = "bilibili"
 
@@ -647,7 +647,7 @@ def test_live_connection_snapshot_preserves_authenticating_state(runtime: RoastR
 
 
 @pytest.mark.asyncio
-async def test_set_live_room_syncs_room_ref_for_provider_router(runtime: RoastRuntime) -> None:
+async def test_set_live_room_syncs_room_ref_for_provider_router(runtime: LiveRuntime) -> None:
     config = await runtime.set_live_room("https://live.bilibili.com/456")
 
     assert config.live_room_id == 456
@@ -656,7 +656,7 @@ async def test_set_live_room_syncs_room_ref_for_provider_router(runtime: RoastRu
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_resets_idle_hosting_failure_counter(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_resets_idle_hosting_failure_counter(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime._idle_hosting_consecutive_failures = runtime._IDLE_HOSTING_FAILURE_LIMIT
 
@@ -667,7 +667,7 @@ async def test_connect_live_room_resets_idle_hosting_failure_counter(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: RoastRuntime) -> None:
+async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = True
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
     await runtime.viewer_store.mark_roasted("1001", "first roast")
@@ -690,7 +690,7 @@ async def test_clear_viewer_profiles_resets_profiles_without_clearing_results(ru
 
 
 @pytest.mark.asyncio
-async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: RoastRuntime) -> None:
+async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = True
     calls = 0
 
@@ -706,7 +706,7 @@ async def test_clear_viewer_profiles_resets_pipeline_session_state(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_clear_viewer_profiles_is_available_without_developer_mode(runtime: RoastRuntime) -> None:
+async def test_clear_viewer_profiles_is_available_without_developer_mode(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = False
     await runtime.viewer_store.upsert_identity(ViewerIdentity(uid="1001", nickname="viewer"))
 
@@ -717,7 +717,7 @@ async def test_clear_viewer_profiles_is_available_without_developer_mode(runtime
 
 
 @pytest.mark.asyncio
-async def test_failed_clear_does_not_reset_pipeline_session_state(runtime: RoastRuntime) -> None:
+async def test_failed_clear_does_not_reset_pipeline_session_state(runtime: LiveRuntime) -> None:
     calls = 0
 
     async def fail_clear() -> dict[str, object]:
@@ -737,7 +737,7 @@ async def test_failed_clear_does_not_reset_pipeline_session_state(runtime: Roast
 
 
 @pytest.mark.asyncio
-async def test_profile_reset_and_delete_are_available_without_developer_mode(runtime: RoastRuntime) -> None:
+async def test_profile_reset_and_delete_are_available_without_developer_mode(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = False
     identity = ViewerIdentity(uid="1001", nickname="viewer")
     await runtime.viewer_store.record_live_danmaku(identity, "AI plugin config?")
@@ -755,7 +755,45 @@ async def test_profile_reset_and_delete_are_available_without_developer_mode(run
 
 
 @pytest.mark.asyncio
-async def test_handle_manual_event_requires_developer_mode(runtime: RoastRuntime) -> None:
+async def test_failed_clear_does_not_reset_pipeline_session_state(runtime: LiveRuntime) -> None:
+    calls = 0
+
+    async def fail_clear() -> dict[str, object]:
+        return {"cleared": 0, "applied": False, "path": "blocked"}
+
+    def clear_marker() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.viewer_store.clear_profiles = fail_clear
+    runtime.pipeline.clear_dry_run_session_state = clear_marker
+
+    with pytest.raises(OSError, match="could not be cleared"):
+        await runtime.clear_viewer_profiles()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_profile_reset_and_delete_are_available_without_developer_mode(runtime: LiveRuntime) -> None:
+    runtime.config.developer_tools_enabled = False
+    identity = ViewerIdentity(uid="1001", nickname="viewer")
+    await runtime.viewer_store.record_live_danmaku(identity, "AI plugin config?")
+    await runtime.viewer_store.mark_roasted("1001", "first roast")
+
+    reset = await runtime.reset_viewer_impression("1001")
+
+    assert reset["reset"] is True
+    assert await runtime.viewer_store.has_roasted("1001") is True
+
+    deleted = await runtime.delete_viewer_profile("1001")
+
+    assert deleted["deleted"] is True
+    assert await runtime.viewer_store.recent_profiles() == []
+
+
+@pytest.mark.asyncio
+async def test_handle_manual_event_requires_developer_mode(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = False
     runtime.config.live_enabled = True
 
@@ -764,7 +802,7 @@ async def test_handle_manual_event_requires_developer_mode(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
-async def test_handle_manual_event_uses_selected_live_provider_identity(runtime: RoastRuntime) -> None:
+async def test_handle_manual_event_uses_selected_live_provider_identity(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = True
     runtime.config.live_enabled = True
     runtime.config.live_platform = "douyin"
@@ -788,7 +826,7 @@ async def test_handle_manual_event_uses_selected_live_provider_identity(runtime:
 
 
 @pytest.mark.asyncio
-async def test_lookup_other_room_does_not_replace_configured_room_context(runtime: RoastRuntime) -> None:
+async def test_lookup_other_room_does_not_replace_configured_room_context(runtime: LiveRuntime) -> None:
     await runtime.set_live_room(123)
     configured_context = dict(runtime.live_room_context)
     runtime.bili_live_ingest.lookup_status.title = "preview room"
@@ -802,7 +840,7 @@ async def test_lookup_other_room_does_not_replace_configured_room_context(runtim
 
 @pytest.mark.asyncio
 async def test_update_config_restarts_listener_when_room_changes(
-    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
@@ -824,7 +862,7 @@ async def test_update_config_restarts_listener_when_room_changes(
 
 @pytest.mark.asyncio
 async def test_update_config_does_not_bypass_bilibili_auth_for_reconnect(
-    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
@@ -844,7 +882,7 @@ async def test_update_config_does_not_bypass_bilibili_auth_for_reconnect(
 
 @pytest.mark.asyncio
 async def test_listener_start_failure_converges_to_disconnected_state(
-    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def broken_start(_room_ref):
         raise RuntimeError("boom")
@@ -863,7 +901,7 @@ async def test_listener_start_failure_converges_to_disconnected_state(
 
 @pytest.mark.asyncio
 async def test_listener_stop_failure_still_converges_to_disconnected_state(
-    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def broken_stop():
         raise RuntimeError("boom")
@@ -882,7 +920,7 @@ async def test_listener_stop_failure_still_converges_to_disconnected_state(
 
 @pytest.mark.asyncio
 async def test_update_config_stops_captured_old_provider_before_platform_switch(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     douyin = FakeLiveProvider("room-42")
     runtime.douyin_live_ingest = douyin
@@ -909,7 +947,7 @@ async def test_update_config_stops_captured_old_provider_before_platform_switch(
 
 @pytest.mark.asyncio
 async def test_concurrent_developer_mode_updates_serialize_transition_side_effects(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entered = asyncio.Event()
@@ -936,7 +974,7 @@ async def test_concurrent_developer_mode_updates_serialize_transition_side_effec
 
 @pytest.mark.asyncio
 async def test_update_config_force_syncs_developer_mode_only_on_transition(
-    runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch
+    runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sync_calls: list[tuple[bool, bool]] = []
 
@@ -955,7 +993,7 @@ async def test_update_config_force_syncs_developer_mode_only_on_transition(
 
 
 @pytest.mark.asyncio
-async def test_update_config_normalizes_platform_alias_before_reconnect_check(runtime: RoastRuntime) -> None:
+async def test_update_config_normalizes_platform_alias_before_reconnect_check(runtime: LiveRuntime) -> None:
     provider = FakeLiveProvider("room-42")
     runtime.live_provider = provider
     runtime.config.live_platform = "dy"
@@ -971,7 +1009,7 @@ async def test_update_config_normalizes_platform_alias_before_reconnect_check(ru
 
 
 @pytest.mark.asyncio
-async def test_update_config_uses_provider_room_id_in_non_bilibili_reconnect_audit(runtime: RoastRuntime) -> None:
+async def test_update_config_uses_provider_room_id_in_non_bilibili_reconnect_audit(runtime: LiveRuntime) -> None:
     provider = FakeLiveProvider("room-43")
     runtime.live_provider = provider
     runtime.config.live_platform = "dy"
@@ -990,7 +1028,7 @@ async def test_update_config_uses_provider_room_id_in_non_bilibili_reconnect_aud
 
 
 @pytest.mark.asyncio
-async def test_update_config_normalizes_douyin_room_ref_before_persist(runtime: RoastRuntime) -> None:
+async def test_update_config_normalizes_douyin_room_ref_before_persist(runtime: LiveRuntime) -> None:
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = ""
     runtime.config.live_room_id = 12345
@@ -1010,7 +1048,7 @@ async def test_update_config_normalizes_douyin_room_ref_before_persist(runtime: 
 
 @pytest.mark.asyncio
 async def test_update_config_preserves_douyin_target_on_partial_rate_limit_update(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "room-42"
@@ -1029,7 +1067,7 @@ async def test_update_config_preserves_douyin_target_on_partial_rate_limit_updat
 
 
 @pytest.mark.asyncio
-async def test_update_config_clears_room_target_when_switching_to_douyin(runtime: RoastRuntime) -> None:
+async def test_update_config_clears_room_target_when_switching_to_douyin(runtime: LiveRuntime) -> None:
     runtime.config.live_platform = "bilibili"
     runtime.config.live_room_ref = "12345"
     runtime.config.live_room_id = 12345
@@ -1047,7 +1085,7 @@ async def test_update_config_clears_room_target_when_switching_to_douyin(runtime
 
 @pytest.mark.asyncio
 async def test_update_config_does_not_derive_non_bilibili_previous_room_ref_from_legacy_room_id(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     provider = FakeLiveProvider("room-43")
     runtime.live_provider = provider
@@ -1064,13 +1102,13 @@ async def test_update_config_does_not_derive_non_bilibili_previous_room_ref_from
     assert record["detail"]["previous_room_id"] == 0
 
 
-def test_activate_config_ignores_legacy_room_id_for_non_bilibili_target(runtime: RoastRuntime) -> None:
+def test_activate_config_ignores_legacy_room_id_for_non_bilibili_target(runtime: LiveRuntime) -> None:
     runtime.live_connection_state = "connected"
     runtime.safety_guard.set_connected(True)
 
     activate_config(
         runtime,
-        RoastConfig(
+        LiveConfig(
             live_platform="douyin",
             live_room_ref="",
             live_room_id=12345,
@@ -1083,7 +1121,7 @@ def test_activate_config_ignores_legacy_room_id_for_non_bilibili_target(runtime:
 
 
 @pytest.mark.asyncio
-async def test_update_config_stops_listener_when_live_is_disabled(runtime: RoastRuntime) -> None:
+async def test_update_config_stops_listener_when_live_is_disabled(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
@@ -1100,7 +1138,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: Roast
 
 
 @pytest.mark.asyncio
-async def test_set_live_room_stops_listener_when_room_switch_fails(runtime: RoastRuntime) -> None:
+async def test_set_live_room_stops_listener_when_room_switch_fails(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
@@ -1116,7 +1154,7 @@ async def test_set_live_room_stops_listener_when_room_switch_fails(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_rolls_back_live_enabled_when_start_fails(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_rolls_back_live_enabled_when_start_fails(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.bili_live_ingest.start_result = False
 
@@ -1130,7 +1168,7 @@ async def test_connect_live_room_rolls_back_live_enabled_when_start_fails(runtim
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_switches_active_room_without_double_start(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_switches_active_room_without_double_start(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
@@ -1149,7 +1187,7 @@ async def test_connect_live_room_switches_active_room_without_double_start(runti
 
 @pytest.mark.asyncio
 async def test_connect_live_room_accepts_douyin_url_from_hosted_ui_without_leaking_query(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     provider = FakeLiveProvider("")
     runtime.live_provider = provider
@@ -1181,7 +1219,7 @@ async def test_connect_live_room_accepts_douyin_url_from_hosted_ui_without_leaki
 
 
 @pytest.mark.asyncio
-async def test_connect_live_room_resets_dry_run_session_marker(runtime: RoastRuntime) -> None:
+async def test_connect_live_room_resets_dry_run_session_marker(runtime: LiveRuntime) -> None:
     calls = 0
 
     def clear_marker() -> None:
@@ -1198,7 +1236,7 @@ async def test_connect_live_room_resets_dry_run_session_marker(runtime: RoastRun
 
 
 @pytest.mark.asyncio
-async def test_disconnect_during_room_update_is_not_undone_by_stale_listener_snapshot(runtime: RoastRuntime) -> None:
+async def test_disconnect_during_room_update_is_not_undone_by_stale_listener_snapshot(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 100
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
@@ -1219,7 +1257,7 @@ async def test_disconnect_during_room_update_is_not_undone_by_stale_listener_sna
 
 
 @pytest.mark.asyncio
-async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: RoastRuntime) -> None:
+async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: LiveRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
     runtime.config.live_enabled = True
 
@@ -1230,7 +1268,7 @@ async def test_config_fallback_does_not_persist_ephemeral_live_enabled(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_douyin_config_update_keeps_live_room_ref(runtime: RoastRuntime) -> None:
+async def test_douyin_config_update_keeps_live_room_ref(runtime: LiveRuntime) -> None:
     runtime.config.live_platform = "douyin"
     runtime.config.live_room_ref = "room-42"
     runtime.config.live_enabled = True
@@ -1243,7 +1281,7 @@ async def test_douyin_config_update_keeps_live_room_ref(runtime: RoastRuntime) -
 
 
 @pytest.mark.asyncio
-async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntime) -> None:
+async def test_stop_live_listener_defaults_to_mark_disabled(runtime: LiveRuntime) -> None:
     runtime.config.live_enabled = True
     runtime.live_room_context = {"live_status": "live", "title": "room"}
     await runtime.bili_live_ingest.start_listening(100)
@@ -1260,7 +1298,7 @@ async def test_stop_live_listener_defaults_to_mark_disabled(runtime: RoastRuntim
 
 
 @pytest.mark.asyncio
-async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: RoastRuntime) -> None:
+async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: LiveRuntime) -> None:
     await runtime._start_live_listener(123)
 
     state = await runtime.dashboard_state()
@@ -1271,7 +1309,7 @@ async def test_live_listener_starts_session_and_dashboard_projects_it(runtime: R
     assert runtime.plugin.recent_chat_tool_states[-1] is True
 
 
-async def test_dashboard_state_uses_public_config_projection(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_uses_public_config_projection(runtime: LiveRuntime) -> None:
     class _SecretLike:
         def __str__(self) -> str:
             return "token=must-not-leak"
@@ -1296,7 +1334,7 @@ async def test_dashboard_state_uses_public_config_projection(runtime: RoastRunti
     assert "room-secret" not in rendered
 
 
-def test_runtime_health_rows_do_not_stringify_public_projection_objects(runtime: RoastRuntime) -> None:
+def test_runtime_health_rows_do_not_stringify_public_projection_objects(runtime: LiveRuntime) -> None:
     class _LooksLikePublicValue:
         def __str__(self) -> str:
             return "health-object-secret"
@@ -1360,7 +1398,7 @@ def test_runtime_health_rows_do_not_stringify_public_projection_objects(runtime:
     assert "health-object-secret" not in str(rows)
 
 
-def test_runtime_health_rows_redact_free_text_secrets(runtime: RoastRuntime) -> None:
+def test_runtime_health_rows_redact_free_text_secrets(runtime: LiveRuntime) -> None:
     runtime._config_last_error = "failed with password=hunter2"
     runtime.dispatcher.output_channel_status = lambda: {
         "ready": False,
@@ -1382,7 +1420,7 @@ def _created_at_age(seconds: int) -> str:
 
 
 def _record_result_at(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     *,
     age_seconds: int,
     status: str = "pushed",
@@ -1401,7 +1439,7 @@ def _record_result_at(
     )
 
 
-def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: LiveRuntime) -> None:
     first_event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="第一次来", source="live_danmaku")
     second_event = ViewerEvent(uid="__neko_idle__", nickname="NEKO", source="idle_hosting")
     runtime.record_result(
@@ -1429,7 +1467,7 @@ def test_recent_interaction_context_summarizes_routes_and_viewer_text(runtime: R
         "avatar_roast / live_danmaku from viewer: 第一次来",
     ]
 
-def test_viewer_session_context_keeps_same_uid_recent_danmaku(runtime: RoastRuntime) -> None:
+def test_viewer_session_context_keeps_same_uid_recent_danmaku(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1466,7 +1504,7 @@ def test_viewer_session_context_keeps_same_uid_recent_danmaku(runtime: RoastRunt
     ]
 
 
-def test_live_state_viewer_activity_ignores_non_danmaku_health_rows(runtime: RoastRuntime) -> None:
+def test_live_state_viewer_activity_ignores_non_danmaku_health_rows(runtime: LiveRuntime) -> None:
     rows = [
         {"id": "live_ingest", "age_sec": 1.0, "last_outcome": "entry"},
         {"id": "event_bus", "age_sec": 2.0, "last_outcome": "gift"},
@@ -1476,7 +1514,7 @@ def test_live_state_viewer_activity_ignores_non_danmaku_health_rows(runtime: Roa
     assert runtime._last_viewer_activity_age_sec(rows) is None
 
 
-def test_live_state_viewer_activity_keeps_danmaku_health_rows(runtime: RoastRuntime) -> None:
+def test_live_state_viewer_activity_keeps_danmaku_health_rows(runtime: LiveRuntime) -> None:
     rows = [
         {"id": "live_ingest", "age_sec": 1.0, "last_outcome": "entry"},
         {"id": "event_bus", "age_sec": 8.0, "last_outcome": "danmaku"},
@@ -1488,7 +1526,7 @@ def test_live_state_viewer_activity_keeps_danmaku_health_rows(runtime: RoastRunt
 
 
 def test_live_danmaku_signal_refreshes_viewer_activity_even_before_reply(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime._hosting_without_viewer_count = 2
     remember_live_danmaku_seen(
@@ -1511,7 +1549,7 @@ def test_live_danmaku_signal_refreshes_viewer_activity_even_before_reply(
     assert runtime._last_viewer_activity_age_sec(rows) <= 1.0
 
 
-def test_recent_interaction_context_includes_spent_neko_output(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_includes_spent_neko_output(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1534,7 +1572,7 @@ def test_recent_interaction_context_includes_spent_neko_output(runtime: RoastRun
     ]
 
 
-def test_recent_interaction_context_ignores_dispatcher_placeholder_output(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_ignores_dispatcher_placeholder_output(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1556,7 +1594,7 @@ def test_recent_interaction_context_ignores_dispatcher_placeholder_output(runtim
     assert "NEKO already said" not in context[0]
 
 
-def test_viewer_session_context_includes_spent_neko_output(runtime: RoastRuntime) -> None:
+def test_viewer_session_context_includes_spent_neko_output(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1577,7 +1615,7 @@ def test_viewer_session_context_includes_spent_neko_output(runtime: RoastRuntime
     assert context == ["danmaku_response: same viewer line / NEKO already said: old avatar joke"]
 
 
-def test_recent_interaction_context_marks_spent_output_families(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_marks_spent_output_families(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1599,12 +1637,12 @@ def test_recent_interaction_context_marks_spent_output_families(runtime: RoastRu
     assert "NEKO already said" in context[0]
 
 
-def test_spent_output_family_does_not_treat_common_or_as_choice_vote(runtime: RoastRuntime) -> None:
+def test_spent_output_family_does_not_treat_common_or_as_choice_vote(runtime: LiveRuntime) -> None:
     assert "choice_vote" not in runtime._spent_output_families("short reaction for viewer")
     assert "choice_vote" in runtime._spent_output_families("either_or room choice")
 
 
-def test_spent_output_family_matches_english_tokens_as_words(runtime: RoastRuntime) -> None:
+def test_spent_output_family_matches_english_tokens_as_words(runtime: LiveRuntime) -> None:
     families = runtime._spent_output_families("I can explain this catch without a presentation.")
 
     assert "program_plan" not in families
@@ -1615,7 +1653,7 @@ def test_spent_output_family_matches_english_tokens_as_words(runtime: RoastRunti
     assert "reward" in runtime._spent_output_families("gift for the first answer")
 
 
-def test_spent_output_family_marks_live_audience_prompt_variants(runtime: RoastRuntime) -> None:
+def test_spent_output_family_marks_live_audience_prompt_variants(runtime: LiveRuntime) -> None:
     for output in (
         "大家想听猫猫聊点什么",
         "你们想看猫猫做什么，发弹幕说一句",
@@ -1631,11 +1669,11 @@ def test_spent_output_family_marks_live_audience_prompt_variants(runtime: RoastR
         assert "audience_prompt" in runtime._spent_output_families(output)
 
 
-def test_spent_output_family_does_not_mark_example_phrase_as_audience_prompt(runtime: RoastRuntime) -> None:
+def test_spent_output_family_does_not_mark_example_phrase_as_audience_prompt(runtime: LiveRuntime) -> None:
     assert "audience_prompt" not in runtime._spent_output_families("猫猫打个比方，这局像开盲盒")
 
 
-def test_recent_spent_output_family_keeps_longer_live_window(runtime: RoastRuntime) -> None:
+def test_recent_spent_output_family_keeps_longer_live_window(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -1659,7 +1697,7 @@ def test_recent_spent_output_family_keeps_longer_live_window(runtime: RoastRunti
     assert "reward" in runtime._recent_spent_output_families()
 
 
-def test_viewer_session_context_ignores_dry_run_placeholder_output(runtime: RoastRuntime) -> None:
+def test_viewer_session_context_ignores_dry_run_placeholder_output(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=False,
@@ -1682,7 +1720,7 @@ def test_viewer_session_context_ignores_dry_run_placeholder_output(runtime: Roas
     assert "NEKO already said" not in context[0]
 
 
-def test_record_result_does_not_stringify_object_request_metadata_for_monitoring(runtime: RoastRuntime) -> None:
+def test_record_result_does_not_stringify_object_request_metadata_for_monitoring(runtime: LiveRuntime) -> None:
     class _LooksLikeProfile:
         def __str__(self) -> str:
             return "emoji_or_reaction"
@@ -1768,7 +1806,7 @@ def test_danmaku_mention_parser_distinguishes_neko_cjk_address_from_viewer_nickn
 
 
 @pytest.mark.asyncio
-async def test_handle_live_payload_routes_gift_to_support_events_without_avatar_roast(runtime: RoastRuntime) -> None:
+async def test_handle_live_payload_routes_gift_to_support_events_without_avatar_roast(runtime: LiveRuntime) -> None:
     runtime.config.dry_run = True
     runtime.config.live_mode = "solo_stream"
     runtime.config.live_enabled = True
@@ -1804,7 +1842,7 @@ async def test_handle_live_payload_routes_gift_to_support_events_without_avatar_
 
 
 @pytest.mark.asyncio
-async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime) -> None:
+async def test_live_state_marks_recent_activity_as_engaged(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -1821,7 +1859,7 @@ async def test_live_state_marks_recent_activity_as_engaged(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
-async def test_live_state_marks_activity_gap_as_quiet(runtime: RoastRuntime) -> None:
+async def test_live_state_marks_activity_gap_as_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -1838,7 +1876,7 @@ async def test_live_state_marks_activity_gap_as_quiet(runtime: RoastRuntime) -> 
 
 
 @pytest.mark.asyncio
-async def test_live_state_uses_viewer_activity_not_neko_output_for_idle(runtime: RoastRuntime) -> None:
+async def test_live_state_uses_viewer_activity_not_neko_output_for_idle(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -1866,7 +1904,7 @@ async def test_live_state_uses_viewer_activity_not_neko_output_for_idle(runtime:
 
 
 @pytest.mark.asyncio
-async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: RoastRuntime) -> None:
+async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -1884,7 +1922,7 @@ async def test_live_state_marks_solo_stream_without_activity_as_warmup(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_live_state_times_out_warmup_to_idle_when_no_one_speaks(runtime: RoastRuntime) -> None:
+async def test_live_state_times_out_warmup_to_idle_when_no_one_speaks(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -1903,7 +1941,7 @@ async def test_live_state_times_out_warmup_to_idle_when_no_one_speaks(runtime: R
 
 
 @pytest.mark.asyncio
-async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runtime: RoastRuntime) -> None:
+async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -1931,7 +1969,7 @@ async def test_live_state_moves_from_warmup_to_idle_when_no_viewer_activity(runt
 
 
 @pytest.mark.asyncio
-async def test_live_state_moves_from_warmup_after_any_hosting_output(runtime: RoastRuntime) -> None:
+async def test_live_state_moves_from_warmup_after_any_hosting_output(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -1957,7 +1995,7 @@ async def test_live_state_moves_from_warmup_after_any_hosting_output(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(runtime: RoastRuntime) -> None:
+async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -1977,7 +2015,7 @@ async def test_live_state_allows_idle_hosting_candidate_only_for_solo_stream(run
 
 
 @pytest.mark.asyncio
-async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRuntime) -> None:
+async def test_idle_hosting_status_explains_minimum_interval(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -1998,7 +2036,7 @@ async def test_idle_hosting_status_explains_minimum_interval(runtime: RoastRunti
 
 
 @pytest.mark.asyncio
-async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: RoastRuntime) -> None:
+async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2020,7 +2058,7 @@ async def test_activity_level_controls_idle_hosting_minimum_interval(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_activity_level_controls_live_state_thresholds(runtime: RoastRuntime) -> None:
+async def test_activity_level_controls_live_state_thresholds(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -2052,7 +2090,7 @@ async def test_activity_level_controls_live_state_thresholds(runtime: RoastRunti
 
 
 @pytest.mark.asyncio
-async def test_live_state_allows_idle_hosting_candidate_in_dry_run(runtime: RoastRuntime) -> None:
+async def test_live_state_allows_idle_hosting_candidate_in_dry_run(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2069,7 +2107,7 @@ async def test_live_state_allows_idle_hosting_candidate_in_dry_run(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_live_state_keeps_co_stream_idle_from_becoming_candidate(runtime: RoastRuntime) -> None:
+async def test_live_state_keeps_co_stream_idle_from_becoming_candidate(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -2086,7 +2124,7 @@ async def test_live_state_keeps_co_stream_idle_from_becoming_candidate(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_live_state_paused_and_blocked_take_priority(runtime: RoastRuntime) -> None:
+async def test_live_state_paused_and_blocked_take_priority(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -2107,7 +2145,7 @@ async def test_live_state_paused_and_blocked_take_priority(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
-async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: RoastRuntime) -> None:
+async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2141,7 +2179,7 @@ async def test_trigger_idle_hosting_dry_run_records_pipeline_result(runtime: Roa
 
 @pytest.mark.asyncio
 async def test_idle_and_warmup_hosting_controls_block_manual_and_automatic_triggers(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.idle_hosting_enabled = False
     runtime.config.warmup_hosting_enabled = False
@@ -2159,7 +2197,7 @@ async def test_idle_and_warmup_hosting_controls_block_manual_and_automatic_trigg
 
 @pytest.mark.asyncio
 async def test_auto_idle_hosting_skips_when_previous_idle_has_no_viewer_reply(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -2194,7 +2232,7 @@ async def test_auto_idle_hosting_skips_when_previous_idle_has_no_viewer_reply(
 
 @pytest.mark.asyncio
 async def test_auto_idle_hosting_runs_after_viewer_replies_to_previous_idle(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -2228,7 +2266,7 @@ async def test_auto_idle_hosting_runs_after_viewer_replies_to_previous_idle(
 
 @pytest.mark.asyncio
 async def test_auto_idle_hosting_skips_after_two_hosting_outputs_without_viewer_reply(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -2259,7 +2297,7 @@ async def test_auto_idle_hosting_skips_after_two_hosting_outputs_without_viewer_
     assert result.reason == "idle_hosting.no_viewer_response"
 
 
-def test_idle_hosting_event_rotates_host_beats(runtime: RoastRuntime) -> None:
+def test_idle_hosting_event_rotates_host_beats(runtime: LiveRuntime) -> None:
     events = [runtime._idle_hosting_event({"state": "idle"}) for _ in range(4)]
     beats = [event.raw["host_beat"] for event in events]
 
@@ -2272,7 +2310,7 @@ def test_idle_hosting_event_rotates_host_beats(runtime: RoastRuntime) -> None:
     assert all(beat["reply_affordance"] for beat in beats)
 
 
-def test_idle_hosting_skips_similar_recent_beat_titles(runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_idle_hosting_skips_similar_recent_beat_titles(runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
     candidates = [
         {
             "key": "idle:cat-radio-a",
@@ -2309,7 +2347,7 @@ def test_idle_hosting_skips_similar_recent_beat_titles(runtime: RoastRuntime, mo
 
 
 def test_idle_hosting_prefers_fresh_reply_affordance(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidates = [
@@ -2348,7 +2386,7 @@ def test_idle_hosting_prefers_fresh_reply_affordance(
 
 
 def test_idle_hosting_falls_back_when_all_beat_titles_are_similar(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidates = [
@@ -2378,7 +2416,7 @@ def test_idle_hosting_falls_back_when_all_beat_titles_are_similar(
     assert second["key"] == "idle:cat-radio-b"
 
 
-def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime) -> None:
+def test_idle_hosting_result_exposes_host_beat_for_review(runtime: LiveRuntime) -> None:
     event = runtime._idle_hosting_event({"state": "idle"})
 
     public = event.to_dict()
@@ -2392,7 +2430,7 @@ def test_idle_hosting_result_exposes_host_beat_for_review(runtime: RoastRuntime)
     assert public["host_beat_reply_affordance"]
 
 
-def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: LiveRuntime) -> None:
     event = runtime._idle_hosting_event({"state": "idle"})
     runtime.record_result(
         InteractionResult(
@@ -2415,7 +2453,7 @@ def test_recent_interaction_context_summarizes_idle_hosting_host_beat(runtime: R
     assert event.raw["host_beat"]["reply_affordance"] in context[0]
 
 
-def test_idle_hosting_progresses_stage_after_repeated_idle_beats(runtime: RoastRuntime) -> None:
+def test_idle_hosting_progresses_stage_after_repeated_idle_beats(runtime: LiveRuntime) -> None:
     first = runtime._idle_hosting_event({"state": "idle"})
     runtime.record_result(
         InteractionResult(
@@ -2442,7 +2480,7 @@ def test_idle_hosting_progresses_stage_after_repeated_idle_beats(runtime: RoastR
 
 
 @pytest.mark.asyncio
-async def test_trigger_idle_hosting_skips_co_stream(runtime: RoastRuntime) -> None:
+async def test_trigger_idle_hosting_skips_co_stream(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2458,7 +2496,7 @@ async def test_trigger_idle_hosting_skips_co_stream(runtime: RoastRuntime) -> No
 
 
 @pytest.mark.asyncio
-async def test_trigger_idle_hosting_skips_when_live_state_is_not_idle(runtime: RoastRuntime) -> None:
+async def test_trigger_idle_hosting_skips_when_live_state_is_not_idle(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2475,7 +2513,7 @@ async def test_trigger_idle_hosting_skips_when_live_state_is_not_idle(runtime: R
 
 
 @pytest.mark.asyncio
-async def test_auto_idle_hosting_triggers_when_solo_stream_is_idle(runtime: RoastRuntime) -> None:
+async def test_auto_idle_hosting_triggers_when_solo_stream_is_idle(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2493,7 +2531,7 @@ async def test_auto_idle_hosting_triggers_when_solo_stream_is_idle(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_auto_idle_hosting_does_not_record_skip_when_not_candidate(runtime: RoastRuntime) -> None:
+async def test_auto_idle_hosting_does_not_record_skip_when_not_candidate(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2508,7 +2546,7 @@ async def test_auto_idle_hosting_does_not_record_skip_when_not_candidate(runtime
 
 
 @pytest.mark.asyncio
-async def test_auto_idle_hosting_respects_minimum_interval(runtime: RoastRuntime) -> None:
+async def test_auto_idle_hosting_respects_minimum_interval(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2524,7 +2562,7 @@ async def test_auto_idle_hosting_respects_minimum_interval(runtime: RoastRuntime
     assert list(runtime.recent_results) == []
 
 
-def test_idle_hosting_avoids_recent_spent_output_family(runtime: RoastRuntime) -> None:
+def test_idle_hosting_avoids_recent_spent_output_family(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -2547,7 +2585,7 @@ def test_idle_hosting_avoids_recent_spent_output_family(runtime: RoastRuntime) -
     assert beat["idle_stage"] == "settle"
 
 
-def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: RoastRuntime) -> None:
+def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: LiveRuntime) -> None:
     beats = runtime._idle_hosting_beat_candidates()
     shapes = {beat["shape"] for beat in beats}
     axes = {beat["fun_axis"] for beat in beats}
@@ -2575,7 +2613,7 @@ def test_idle_hosting_beats_have_enough_live_feel_variety(runtime: RoastRuntime)
 
 
 @pytest.mark.asyncio
-async def test_auto_warmup_hosting_triggers_once_for_new_solo_stream(runtime: RoastRuntime) -> None:
+async def test_auto_warmup_hosting_triggers_once_for_new_solo_stream(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2593,7 +2631,7 @@ async def test_auto_warmup_hosting_triggers_once_for_new_solo_stream(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: RoastRuntime) -> None:
+async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2608,7 +2646,7 @@ async def test_auto_warmup_hosting_does_not_repeat_after_recent_result(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_live_disabled_blocks_solo_auto_hosting_even_with_stale_connection(runtime: RoastRuntime) -> None:
+async def test_live_disabled_blocks_solo_auto_hosting_even_with_stale_connection(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = False
     runtime.config.dry_run = True
@@ -2644,7 +2682,7 @@ async def test_live_disabled_blocks_solo_auto_hosting_even_with_stale_connection
 
 
 @pytest.mark.asyncio
-async def test_live_director_status_picks_idle_hosting_for_solo_idle(runtime: RoastRuntime) -> None:
+async def test_live_director_status_picks_idle_hosting_for_solo_idle(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2662,7 +2700,7 @@ async def test_live_director_status_picks_idle_hosting_for_solo_idle(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_live_director_status_does_not_auto_host_for_co_stream_quiet(runtime: RoastRuntime) -> None:
+async def test_live_director_status_does_not_auto_host_for_co_stream_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2680,7 +2718,7 @@ async def test_live_director_status_does_not_auto_host_for_co_stream_quiet(runti
 
 
 @pytest.mark.asyncio
-async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: RoastRuntime) -> None:
+async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2709,7 +2747,7 @@ async def test_solo_test_readiness_lists_independent_mode_capabilities(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_solo_test_readiness_warns_when_viewer_profiles_are_present(runtime: RoastRuntime) -> None:
+async def test_solo_test_readiness_warns_when_viewer_profiles_are_present(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -2728,7 +2766,7 @@ async def test_solo_test_readiness_warns_when_viewer_profiles_are_present(runtim
 
 
 @pytest.mark.asyncio
-async def test_solo_test_readiness_marks_test_isolation_ready_after_profile_clear(runtime: RoastRuntime) -> None:
+async def test_solo_test_readiness_marks_test_isolation_ready_after_profile_clear(runtime: LiveRuntime) -> None:
     runtime.config.developer_tools_enabled = True
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
@@ -2748,7 +2786,7 @@ async def test_solo_test_readiness_marks_test_isolation_ready_after_profile_clea
 
 
 @pytest.mark.asyncio
-async def test_solo_test_readiness_marks_warmup_hosting_observed_after_result(runtime: RoastRuntime) -> None:
+async def test_solo_test_readiness_marks_warmup_hosting_observed_after_result(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2772,7 +2810,7 @@ async def test_solo_test_readiness_marks_warmup_hosting_observed_after_result(ru
 
 
 @pytest.mark.asyncio
-async def test_solo_test_readiness_blocks_companion_mode(runtime: RoastRuntime) -> None:
+async def test_solo_test_readiness_blocks_companion_mode(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -2789,7 +2827,7 @@ async def test_solo_test_readiness_blocks_companion_mode(runtime: RoastRuntime) 
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_idle_hosting_loop(runtime: RoastRuntime) -> None:
+async def test_stop_cancels_idle_hosting_loop(runtime: LiveRuntime) -> None:
     runtime._start_idle_hosting_loop()
     task = runtime._idle_hosting_task
     assert task is not None
@@ -2800,7 +2838,7 @@ async def test_stop_cancels_idle_hosting_loop(runtime: RoastRuntime) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancelled_stop_can_be_retried(runtime: RoastRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cancelled_stop_can_be_retried(runtime: LiveRuntime, monkeypatch: pytest.MonkeyPatch) -> None:
     async def cancel_stop() -> None:
         raise asyncio.CancelledError
 
@@ -2820,7 +2858,7 @@ async def test_cancelled_stop_can_be_retried(runtime: RoastRuntime, monkeypatch:
 
 
 @pytest.mark.asyncio
-async def test_config_store_health_row_tracks_successful_persist(runtime: RoastRuntime) -> None:
+async def test_config_store_health_row_tracks_successful_persist(runtime: LiveRuntime) -> None:
     runtime.plugin.ctx = SimpleNamespace(update_own_config=None)
 
     await runtime.update_config({"dry_run": True})
@@ -2833,7 +2871,7 @@ async def test_config_store_health_row_tracks_successful_persist(runtime: RoastR
 
 
 @pytest.mark.asyncio
-async def test_disconnect_live_room_clears_stale_connected_room_status(runtime: RoastRuntime) -> None:
+async def test_disconnect_live_room_clears_stale_connected_room_status(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
 
     connected = await runtime.connect_live_room()
@@ -2849,17 +2887,17 @@ async def test_disconnect_live_room_clears_stale_connected_room_status(runtime: 
 
 
 @pytest.mark.asyncio
-async def test_disconnect_live_room_exits_cached_live_prompt_context(runtime: RoastRuntime) -> None:
+async def test_disconnect_live_room_exits_cached_live_prompt_context(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
 
     await runtime.connect_live_room()
     await runtime.disconnect_live_room()
 
     assert runtime.instructions_injected is False
-    assert runtime.plugin.pushed_messages[0]["metadata"]["description"] == "Neko Roast behavior instructions"
+    assert runtime.plugin.pushed_messages[0]["metadata"]["description"] == "NEKO Live behavior instructions"
     assert (
         runtime.plugin.pushed_messages[-1]["metadata"]["description"]
-        == "Neko Roast behavior restore"
+        == "NEKO Live behavior restore"
     )
 
     request = runtime.danmaku_response.build_request(
@@ -2881,7 +2919,7 @@ async def test_disconnect_live_room_exits_cached_live_prompt_context(runtime: Ro
 
 
 def test_safety_guard_blocks_live_like_output_when_disconnected(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.safety_guard.set_connected(False)
 

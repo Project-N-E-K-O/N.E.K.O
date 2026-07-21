@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.neko_live.core.contracts import HostTurnSignal
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
 @pytest.mark.asyncio
 async def test_dashboard_projects_default_off_policy_without_output(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     state = await runtime.dashboard_state()
 
@@ -45,7 +45,7 @@ async def test_dashboard_projects_default_off_policy_without_output(
 
 @pytest.mark.asyncio
 async def test_dashboard_projection_is_read_only_for_host_runtime_signal(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.co_stream_host_pause_fill_activation = "conditional_auto"
     runtime.config.co_stream_host_pause_fill_auto_consent_version = 1
@@ -71,7 +71,7 @@ async def test_dashboard_projection_is_read_only_for_host_runtime_signal(
 
 @pytest.mark.asyncio
 async def test_unconfirmed_conditional_auto_remains_non_executable(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.co_stream_host_pause_fill_activation = "conditional_auto"
 
@@ -86,7 +86,7 @@ async def test_unconfirmed_conditional_auto_remains_non_executable(
 
 @pytest.mark.asyncio
 async def test_dashboard_projects_only_normalized_host_runtime_turn_facts(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.host_turn_signal_provider = SimpleNamespace(
         current=lambda: HostTurnSignal(
@@ -111,7 +111,7 @@ async def test_dashboard_projects_only_normalized_host_runtime_turn_facts(
 
 @pytest.mark.asyncio
 async def test_runtime_config_rejects_removed_manual_mode(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     config = await runtime.update_config(
         {"co_stream_host_pause_fill_activation": " MANUAL "}
@@ -125,7 +125,7 @@ async def test_runtime_config_rejects_removed_manual_mode(
 
 @pytest.mark.asyncio
 async def test_generic_config_update_cannot_grant_auto_speech_consent(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     config = await runtime.update_config(
         {
@@ -143,7 +143,7 @@ async def test_generic_config_update_cannot_grant_auto_speech_consent(
 
 @pytest.mark.asyncio
 async def test_solo_stream_projection_is_passthrough_and_has_no_runtime_effect(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.live_mode = "solo_stream"
     before_config = runtime.config.to_dict()

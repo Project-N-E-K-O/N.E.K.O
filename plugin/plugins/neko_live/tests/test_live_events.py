@@ -16,7 +16,7 @@ import pytest
 
 from plugin.plugins.neko_live.core.contracts import (
     LiveEvent,
-    RoastConfig,
+    LiveConfig,
     ViewerEvent,
     ViewerIdentity,
     ViewerProfile,
@@ -98,7 +98,7 @@ class _FakeCtx:
         self.audit = _FakeAudit()
         self.event_bus = EventBus(self.audit)
         self.live_provider = SimpleNamespace(listener_state=lambda: {"viewer_count": viewer_count})
-        self.config = RoastConfig(
+        self.config = LiveConfig(
             rate_limit_seconds=rate_limit,
             activity_level=activity_level,  # type: ignore[arg-type]
             queue_limit=queue_limit,
@@ -167,6 +167,35 @@ async def test_idle_first_danmaku_roasts_immediately():
             "within_fresh_window": True,
         }
     ]
+
+
+@pytest.mark.parametrize("raw_kind", ["dict", "provider"])
+async def test_event_bus_preserves_envelope_session_generation(raw_kind: str):
+    ctx = _FakeCtx(remaining=0.0)
+    hub = await _make_hub(ctx)
+    raw_event = (
+        {
+            "uid": "42",
+            "nickname": "viewer",
+            "text": "please explain this live topic",
+            "event_type": "danmaku",
+        }
+        if raw_kind == "dict"
+        else _danmaku("42", text="please explain this live topic")
+    )
+
+    ctx.event_bus.publish(
+        "danmaku",
+        LiveEvent(
+            type="danmaku",
+            uid="42",
+            raw=raw_event,
+            session_generation=23,
+        ),
+    )
+    await _drain(hub)
+
+    assert ctx.payloads[0]["_live_session_generation"] == 23
 
 
 @pytest.mark.parametrize("raw_kind", ["dict", "provider"])
@@ -1157,7 +1186,7 @@ async def test_support_event_without_text_still_enters_support_lane():
 
 def test_support_event_uses_priority_cooldown_lane():
     audit = _FakeAudit()
-    guard = SafetyGuard(RoastConfig(rate_limit_seconds=30), audit)
+    guard = SafetyGuard(LiveConfig(rate_limit_seconds=30), audit)
 
     normal = ViewerEvent(uid="1", nickname="u1", danmaku_text="hi", source="live_danmaku")
     gift = ViewerEvent(
@@ -1176,7 +1205,7 @@ def test_support_event_uses_priority_cooldown_lane():
 
 def test_super_chat_and_guard_do_not_share_gift_cooldown():
     audit = _FakeAudit()
-    guard = SafetyGuard(RoastConfig(rate_limit_seconds=30), audit)
+    guard = SafetyGuard(LiveConfig(rate_limit_seconds=30), audit)
     super_chat = ViewerEvent(
         uid="2",
         nickname="u2",

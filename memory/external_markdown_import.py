@@ -212,6 +212,48 @@ def _split_long_fragment(text: str) -> list[str]:
     return [item for item in out if item]
 
 
+def batch_daily_fragments(texts: list[str], max_tokens: int) -> list[str]:
+    """Greedily pack one day's journal fragments into extraction batches, each
+    within ``max_tokens``. Oversized single fragments are token-sliced instead
+    of truncated so no journal tail is silently dropped (Greptile P1); a slice
+    that cannot shrink further may exceed the budget by a fraction of a token
+    — acceptable for an extraction-input soft cap. Used by both the commit-side
+    extractor (memory/facts.py) and the preview ETA estimator so the per-day
+    LLM call count never drifts between them.
+
+    Deliberately imports the tokenizer lazily: this module stays stdlib-only
+    for parsing; only batch estimation needs token counting.
+    """
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    pieces: list[str] = []
+    for text in texts:
+        fragment = (text or "").strip()
+        while fragment and count_tokens(fragment) > max_tokens:
+            head = truncate_to_tokens(fragment, max_tokens)
+            # decode 可能比原切点略短；只要有推进就切下去，推不动则整段成一批。
+            if not head or len(head) >= len(fragment):
+                break
+            pieces.append(head)
+            fragment = fragment[len(head):].strip()
+        if fragment:
+            pieces.append(fragment)
+
+    batches: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for piece in pieces:
+        piece_tokens = count_tokens(piece)
+        if current and current_tokens + piece_tokens > max_tokens:
+            batches.append("\n".join(current))
+            current, current_tokens = [], 0
+        current.append(piece)
+        current_tokens += piece_tokens
+    if current:
+        batches.append("\n".join(current))
+    return batches
+
+
 def _is_fence_line(line: str) -> bool:
     stripped = line.lstrip()
     return stripped.startswith("```") or stripped.startswith("~~~")

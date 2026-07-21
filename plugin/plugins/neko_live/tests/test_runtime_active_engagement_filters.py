@@ -9,14 +9,14 @@ from plugin.plugins.neko_live.core.contracts import (
     PipelineStep,
     ViewerEvent,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
 def _created_at_age(seconds: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_single_viewer_danmaku_flood_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_single_viewer_danmaku_flood_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -48,7 +48,7 @@ async def test_active_engagement_ignores_single_viewer_danmaku_flood_as_topic_ma
     assert topic["recent_topic_skip_reason"] == "single_viewer_flood"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_stale_recent_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_stale_recent_danmaku_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -80,7 +80,7 @@ async def test_active_engagement_ignores_stale_recent_danmaku_as_topic_material(
     assert topic["recent_topic_skip_reason"] == "stale_recent_danmaku"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_avatar_roast_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_avatar_roast_danmaku_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -111,7 +111,7 @@ async def test_active_engagement_ignores_avatar_roast_danmaku_as_topic_material(
     assert topic["recent_topic_skip_reason"] == "avatar_roast_context"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_non_output_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_non_output_danmaku_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -143,7 +143,7 @@ async def test_active_engagement_ignores_non_output_danmaku_as_topic_material(ru
     assert topic["recent_topic_skip_reason"] == "non_output_danmaku"
 
 @pytest.mark.asyncio
-async def test_active_engagement_labels_filtered_recent_danmaku_skip_reason(runtime: RoastRuntime) -> None:
+async def test_active_engagement_labels_filtered_recent_danmaku_skip_reason(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -174,7 +174,7 @@ async def test_active_engagement_labels_filtered_recent_danmaku_skip_reason(runt
     assert topic["recent_topic_skip_reason"] == "filtered_direct_request"
 
 @pytest.mark.asyncio
-async def test_active_engagement_labels_reaction_topic_skip_reason(runtime: RoastRuntime) -> None:
+async def test_active_engagement_labels_reaction_topic_skip_reason(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -205,7 +205,7 @@ async def test_active_engagement_labels_reaction_topic_skip_reason(runtime: Roas
     assert topic["recent_topic_skip_reason"] == "filtered_reaction"
 
 @pytest.mark.asyncio
-async def test_active_engagement_labels_runtime_feedback_topic_skip_reason(runtime: RoastRuntime) -> None:
+async def test_active_engagement_labels_runtime_feedback_topic_skip_reason(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -236,7 +236,7 @@ async def test_active_engagement_labels_runtime_feedback_topic_skip_reason(runti
     assert topic["recent_topic_skip_reason"] == "filtered_runtime_feedback"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -262,7 +262,7 @@ async def test_active_engagement_ignores_tiny_recent_danmaku_as_topic_material(r
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_questions_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -294,7 +294,7 @@ async def test_active_engagement_ignores_direct_questions_to_neko_as_topic_mater
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_opinion_questions_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -326,7 +326,7 @@ async def test_active_engagement_ignores_direct_opinion_questions_to_neko_as_top
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -358,7 +358,7 @@ async def test_active_engagement_ignores_direct_requests_to_neko_as_topic_materi
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_review_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -390,7 +390,7 @@ async def test_active_engagement_ignores_direct_review_requests_to_neko_as_topic
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_help_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -422,7 +422,7 @@ async def test_active_engagement_ignores_direct_help_requests_to_neko_as_topic_m
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_direct_assignment_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -454,7 +454,7 @@ async def test_active_engagement_ignores_direct_assignment_requests_to_neko_as_t
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_direct_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -486,7 +486,7 @@ async def test_active_engagement_ignores_english_direct_requests_to_neko_as_topi
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_tell_me_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -518,7 +518,7 @@ async def test_active_engagement_ignores_english_tell_me_requests_to_neko_as_top
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_can_you_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -550,7 +550,7 @@ async def test_active_engagement_ignores_english_can_you_requests_to_neko_as_top
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_could_you_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -582,7 +582,7 @@ async def test_active_engagement_ignores_english_could_you_requests_to_neko_as_t
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_please_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -614,7 +614,7 @@ async def test_active_engagement_ignores_english_please_requests_to_neko_as_topi
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_pls_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -646,7 +646,7 @@ async def test_active_engagement_ignores_english_pls_requests_to_neko_as_topic_m
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_thanks_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -678,7 +678,7 @@ async def test_active_engagement_ignores_english_thanks_to_neko_as_topic_materia
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_chinese_thanks_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -710,7 +710,7 @@ async def test_active_engagement_ignores_chinese_thanks_to_neko_as_topic_materia
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_chinese_can_you_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -742,7 +742,7 @@ async def test_active_engagement_ignores_chinese_can_you_requests_to_neko_as_top
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_chinese_should_you_requests_to_neko_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -774,7 +774,7 @@ async def test_active_engagement_ignores_chinese_should_you_requests_to_neko_as_
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_untargeted_direct_requests_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -806,7 +806,7 @@ async def test_active_engagement_ignores_untargeted_direct_requests_as_topic_mat
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_reaction_only_danmaku_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -838,7 +838,7 @@ async def test_active_engagement_ignores_reaction_only_danmaku_as_topic_material
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_untargeted_requests_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -870,7 +870,7 @@ async def test_active_engagement_ignores_english_untargeted_requests_as_topic_ma
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_english_reaction_only_danmaku_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -902,7 +902,7 @@ async def test_active_engagement_ignores_english_reaction_only_danmaku_as_topic_
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_status_control_danmaku_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -934,7 +934,7 @@ async def test_active_engagement_ignores_status_control_danmaku_as_topic_materia
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_latency_and_length_feedback_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -966,7 +966,7 @@ async def test_active_engagement_ignores_latency_and_length_feedback_as_topic_ma
 
 @pytest.mark.asyncio
 async def test_active_engagement_ignores_viewer_to_viewer_mentions_as_topic_material(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -998,42 +998,42 @@ async def test_active_engagement_ignores_viewer_to_viewer_mentions_as_topic_mate
     assert topic["recent_topic_skip_reason"] == "viewer_to_viewer_mention"
 
 def test_active_engagement_mention_parser_keeps_neko_directed_mentions() -> None:
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@路过的舰长 你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("＠路过的舰长 你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长 你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff1a你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff0c你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫 今天像小电台") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫今天像小电台") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20猫猫\uff1a今天像小电台") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@猫猫虫 你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@小天使 晚上好") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@NEKO pick one") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko\u505a\u8fd9\u4e2a") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko\u5199\u9996\u8bd7") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko\u9009\u4e00\u4e0b") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u559c\u6b22\u5976\u8336\u5417") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u63a8\u8350\u4e00\u4e2a") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u8bf4\u53e5\u8bdd") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u6559\u6211\u4e00\u4e0b") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u4f60\u4e00\u62db") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u5b66\u8fd9\u4e2a") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u5531\u6b4c") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6c42\u63a8\u8350") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u7ed9\u6211\u4e00\u4e2a\u63a8\u8350") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u770b\u770b\u8fd9\u4e2a") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u770b\u4e00\u4e0b") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u597d\u53ef\u7231 \u4f60\u770b\u8fd9\u4e2a") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u6559\u5e08 \u4f60\u770b\u8fd9\u4e2a") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u7ec3 \u4f60\u770b\u8fd9\u4e2a") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u5531\u7247 \u4f60\u770b\u8fd9\u4e2a") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("＠neko今天播什么") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("\uff20neko今天播什么") is False
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("@neko123 你看这个") is True
-    assert RoastRuntime._is_viewer_to_viewer_mention_text("没有提到谁") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@路过的舰长 你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("＠路过的舰长 你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长 你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff1a你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("\uff20路过的舰长\uff0c你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@猫猫 今天像小电台") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@猫猫今天像小电台") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("\uff20猫猫\uff1a今天像小电台") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@猫猫虫 你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@小天使 晚上好") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@NEKO pick one") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@neko\u505a\u8fd9\u4e2a") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@neko\u5199\u9996\u8bd7") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@neko\u9009\u4e00\u4e0b") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u559c\u6b22\u5976\u8336\u5417") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u63a8\u8350\u4e00\u4e2a") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u8bf4\u53e5\u8bdd") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u6559\u6211\u4e00\u4e0b") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u4f60\u4e00\u62db") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u5b66\u8fd9\u4e2a") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u5531\u6b4c") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6c42\u63a8\u8350") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u7ed9\u6211\u4e00\u4e2a\u63a8\u8350") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u770b\u770b\u8fd9\u4e2a") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u770b\u4e00\u4e0b") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u597d\u53ef\u7231 \u4f60\u770b\u8fd9\u4e2a") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u5a18\u6559\u5e08 \u4f60\u770b\u8fd9\u4e2a") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u732b\u732b\u6559\u7ec3 \u4f60\u770b\u8fd9\u4e2a") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@\u5c0f\u5929\u5531\u7247 \u4f60\u770b\u8fd9\u4e2a") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("＠neko今天播什么") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("\uff20neko今天播什么") is False
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("@neko123 你看这个") is True
+    assert LiveRuntime._is_viewer_to_viewer_mention_text("没有提到谁") is False
 
 @pytest.mark.asyncio
-async def test_active_engagement_limits_recent_danmaku_source_streak(runtime: RoastRuntime) -> None:
+async def test_active_engagement_limits_recent_danmaku_source_streak(runtime: LiveRuntime) -> None:
     runtime._active_engagement_recent_topic_sources.extend(["recent_danmaku", "recent_danmaku"])
 
     async def fetch_topics(limit: int = 6) -> dict:
@@ -1066,7 +1066,7 @@ async def test_active_engagement_limits_recent_danmaku_source_streak(runtime: Ro
     assert topic["recent_topic_skip_reason"] == "recent_danmaku_source_streak"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_room_silence_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_room_silence_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1098,7 +1098,7 @@ async def test_active_engagement_ignores_room_silence_as_topic_material(runtime:
     assert topic["title"] == "\u6df1\u591c\u684c\u9762\u5c0f\u7269\u4e8c\u9009\u4e00"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_short_chinese_quiet_room_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_short_chinese_quiet_room_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1130,7 +1130,7 @@ async def test_active_engagement_ignores_short_chinese_quiet_room_material(runti
     assert topic["title"] == "深夜饮料二选一"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_english_room_silence_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_english_room_silence_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1162,7 +1162,7 @@ async def test_active_engagement_ignores_english_room_silence_as_topic_material(
     assert topic["title"] == "late night drink choice"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1181,7 +1181,7 @@ async def test_active_engagement_ignores_tiny_trending_titles_as_topic_material(
     assert topic["title"] == "useful desk snack choice"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_generic_host_prompt_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1213,7 +1213,7 @@ async def test_active_engagement_ignores_generic_host_prompt_topics(runtime: Roa
     assert topic["title"] == "tiny desk setup choices for late night"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_english_chat_bait_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_english_chat_bait_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1245,7 +1245,7 @@ async def test_active_engagement_ignores_english_chat_bait_topic_material(runtim
     assert topic["title"] == "tiny keyboard sound choice"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_recommendation_request_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_recommendation_request_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1277,7 +1277,7 @@ async def test_active_engagement_ignores_recommendation_request_topics(runtime: 
     assert topic["title"] == "夜里桌面小物二选一"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_promo_or_giveaway_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_promo_or_giveaway_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1296,7 +1296,7 @@ async def test_active_engagement_ignores_promo_or_giveaway_topic_material(runtim
     assert topic["key"] == "bili:BV_USEFUL_PROMO_FILTER"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_heavy_or_controversial_topic_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_heavy_or_controversial_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1315,7 +1315,7 @@ async def test_active_engagement_ignores_heavy_or_controversial_topic_material(r
     assert topic["key"] == "bili:BV_USEFUL_HEAVY_FILTER"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_open_ended_topic_survey_material(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_open_ended_topic_survey_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1347,7 +1347,7 @@ async def test_active_engagement_ignores_open_ended_topic_survey_material(runtim
     assert topic["title"] == "late night drink choices"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_punctuated_english_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_punctuated_english_generic_host_prompt_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1379,7 +1379,7 @@ async def test_active_engagement_ignores_punctuated_english_generic_host_prompt_
     assert topic["title"] == "late night tiny desk choices"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_chinese_generic_host_prompt_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1411,7 +1411,7 @@ async def test_active_engagement_ignores_chinese_generic_host_prompt_topics(runt
     assert topic["title"] == "夜里桌面小物二选一"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_presence_check_host_bait_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_presence_check_host_bait_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1443,7 +1443,7 @@ async def test_active_engagement_ignores_presence_check_host_bait_topics(runtime
     assert topic["title"] == "猫猫深夜桌面物件投票"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_spaced_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_spaced_chinese_generic_host_prompt_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1475,7 +1475,7 @@ async def test_active_engagement_ignores_spaced_chinese_generic_host_prompt_topi
     assert topic["title"] == "猫猫深夜桌面物件投票"
 
 @pytest.mark.asyncio
-async def test_active_engagement_ignores_punctuated_chinese_generic_host_prompt_topics(runtime: RoastRuntime) -> None:
+async def test_active_engagement_ignores_punctuated_chinese_generic_host_prompt_topics(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -1506,7 +1506,7 @@ async def test_active_engagement_ignores_punctuated_chinese_generic_host_prompt_
     assert topic["key"] == "bili:BV_USEFUL_PUNCT_CN"
     assert topic["title"] == "猫猫深夜饮料二选一"
 
-def test_proactive_material_avoids_generic_host_bait(runtime: RoastRuntime) -> None:
+def test_proactive_material_avoids_generic_host_bait(runtime: LiveRuntime) -> None:
     blocked_fragments = (
         "everyone interact",
         "say something",

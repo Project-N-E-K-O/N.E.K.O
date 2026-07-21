@@ -31,7 +31,7 @@
 | 1 | `get_bg_llm_config` | 明确废弃 | NEKO Live 只能走统一 Pipeline / Safety / `NekoDispatcher`；不再维护第二套模型配置。 |
 | 2 | `test_bg_llm` | 明确废弃 | 不允许直播插件绕过宿主 provider 配置直接探测任意 LLM URL/API key。 |
 | 3 | `get_guidance_config` | 明确废弃 | 旧 aggregator/orchestrator/agent 配置已由模块化直播策略、Dashboard 状态和开发者工具替代。 |
-| 4 | `update_guidance_config` | 明确废弃 | 不迁移旧 JSON 指导编排器；主播设置只使用 `RoastConfig` 中有真实消费者的字段。 |
+| 4 | `update_guidance_config` | 明确废弃 | 不迁移旧 JSON 指导编排器；主播设置只使用 `LiveConfig` 中有真实消费者的字段。 |
 | 5 | `test_guidance` | 明确废弃 | 调试输入统一走 `developer_sandbox`，仍须经过现有 pipeline 与 dispatcher。 |
 
 ### B. 直播控制、状态与输出目标

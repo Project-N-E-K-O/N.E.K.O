@@ -41,6 +41,9 @@ class MMDManager {
         this._isModelReadyForInteraction = false;
         this._isInReturnState = false;
         this._activeLoadToken = 0;
+        this._pendingModelLoadCount = 0;
+        this._isLoadingModel = false;
+        this._modelLoadState = 'idle';
         this._headScreenAnchorProjection = null;
 
         // 事件处理器
@@ -111,11 +114,23 @@ class MMDManager {
     // ═══════════════════ 模型加载 ═══════════════════
 
     async loadModel(modelPath, options = {}) {
+        this._pendingModelLoadCount += 1;
+        this._isLoadingModel = true;
+        try {
+            return await this._loadModelImplementation(modelPath, options);
+        } finally {
+            this._pendingModelLoadCount = Math.max(0, this._pendingModelLoadCount - 1);
+            this._isLoadingModel = this._pendingModelLoadCount > 0;
+        }
+    }
+
+    async _loadModelImplementation(modelPath, options = {}) {
         if (!this.core) throw new Error('MMDCore 未初始化');
 
         this._isModelReadyForInteraction = false;
         this._activeLoadToken++;
         const loadToken = this._activeLoadToken;
+        this._modelLoadState = 'loading';
 
         try {
             const modelInfo = await this.core.loadModel(modelPath, options, loadToken);
@@ -168,6 +183,7 @@ class MMDManager {
 
             return modelInfo;
         } catch (error) {
+            if (this._activeLoadToken !== loadToken) return null;
             console.error('[MMD Manager] 模型加载失败:', error);
 
             // 已被新的加载请求取代或已 dispose：不再回退，避免迟到的回退加载
@@ -229,6 +245,10 @@ class MMDManager {
             } else {
                 throw error;
             }
+        } finally {
+            if (this._activeLoadToken === loadToken && this._modelLoadState === 'loading') {
+                this._modelLoadState = this._isModelReadyForInteraction ? 'ready' : 'idle';
+            }
         }
     }
 
@@ -254,11 +274,17 @@ class MMDManager {
      * @param {'idle'|'dance'} mode - 动画模式，影响视线跟踪权重
      */
     playAnimation(mode = 'idle') {
+        // 供空闲低频 governor 判定：idle 循环动画按 Live2D 先例以地板帧率渲染，
+        // 只有非 idle 播放（dance 等）才算需要满帧的活动
+        this._currentAnimationMode = mode;
         if (this.cursorFollow) {
             this.cursorFollow.setAnimationMode(mode);
         }
         if (this.animationModule) {
             this.animationModule.play();
+        }
+        if (mode !== 'idle' && this.core && typeof this.core._boostInteractiveFPS === 'function') {
+            this.core._boostInteractiveFPS();
         }
     }
 
@@ -269,6 +295,7 @@ class MMDManager {
     }
 
     stopAnimation() {
+        this._currentAnimationMode = null;
         if (this.animationModule) {
             this.animationModule.stop();
         }
@@ -440,6 +467,11 @@ class MMDManager {
 
     pauseRendering() {
         this._shouldRender = false;
+        // 空闲低频模式下 _animationFrameId 为 null（interval 驱动），
+        // 必须显式退出该模式（不复跑），否则暂停对 interval 无效
+        if (this.core && typeof this.core._exitIdleTickMode === 'function') {
+            this.core._exitIdleTickMode(false);
+        }
         if (this._animationFrameId) {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;

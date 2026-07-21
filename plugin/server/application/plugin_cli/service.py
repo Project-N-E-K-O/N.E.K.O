@@ -469,6 +469,7 @@ class PluginCliService:
                     target_dir=target_dir,
                     saved_filename=str(saved["name"]),
                     actual_sha256=actual_sha256,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
                 return self._compose_install_result(
                     saved=saved,
@@ -547,6 +548,7 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
@@ -554,6 +556,7 @@ class PluginCliService:
                     directory_name=directory_name,
                     plugin_id=package_plugin_id,
                     market_detail=market_detail,
+                    package_id=str(unpack_result.get("package_id") or ""),
                 )
             warnings.extend(ism_warnings)
 
@@ -711,6 +714,7 @@ class PluginCliService:
         target_dir: Path,
         saved_filename: str,
         actual_sha256: str,
+        package_id: str,
     ) -> dict[str, Any]:
         """Fall back to recording the install as ``channel="imported"``.
 
@@ -726,6 +730,7 @@ class PluginCliService:
                 directory_path=target_dir,
                 package_filename=saved_filename,
                 package_sha256=actual_sha256,
+                package_id=package_id,
             )
 
         await asyncio.to_thread(_record)
@@ -1485,6 +1490,7 @@ def _record_install_source_for_install_result(
     from plugin.server.application.install_source import InstallSourceError
 
     installed_plugins = install_result.get("installed_plugins", [])
+    package_id = str(install_result.get("package_id") or "")
     for installed in installed_plugins:
         target_dir = Path(installed["target_dir"])
         if override is None:
@@ -1492,6 +1498,7 @@ def _record_install_source_for_install_result(
                 directory_path=target_dir,
                 package_filename=package_filename,
                 package_sha256=package_sha256,
+                package_id=package_id,
             )
         elif override.get("channel") == "market":
             detail = override.get("market_detail", {})
@@ -1500,6 +1507,7 @@ def _record_install_source_for_install_result(
                 plugin_market_id=detail.get("plugin_market_id", ""),
                 version=detail.get("version", ""),
                 package_url=detail.get("package_url", ""),
+                package_id=package_id,
             )
         else:
             raise InstallSourceError(

@@ -72,10 +72,13 @@ from .trending_content import (
     fetch_twitter_trending,
     fetch_video_content,
     fetch_weibo_trending,
+    fetch_xhh_feed_content,
     format_news_content,
     format_tieba_content,
     format_trending_content,
     format_video_content,
+    format_xhh_feed,
+    normalize_xhh_feed,
 )
 from .youtube_feed import fetch_youtube_home_feed
 from .window_context import (

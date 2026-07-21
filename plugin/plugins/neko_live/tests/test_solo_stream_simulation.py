@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from plugin.plugins.neko_live.core.contracts import LiveEvent, ViewerEvent, ViewerIdentity
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
 class ConfigApi:
@@ -188,8 +188,8 @@ def _sim_age(clock: dict[str, float], value: Any) -> float | None:
     return max(0.0, clock["t"] - float(text.split(":", 1)[1]))
 
 
-async def _build_sim_runtime(tmp_path: Path) -> RoastRuntime:
-    runtime = RoastRuntime(Plugin(tmp_path))
+async def _build_sim_runtime(tmp_path: Path) -> LiveRuntime:
+    runtime = LiveRuntime(Plugin(tmp_path))
     runtime.bili_live_ingest = FakeIngest()
     runtime.dispatcher = FakeDispatcher()
 
@@ -252,7 +252,7 @@ async def _build_sim_runtime(tmp_path: Path) -> RoastRuntime:
     return runtime
 
 
-async def _run_solo_stream_simulation(runtime: RoastRuntime) -> None:
+async def _run_solo_stream_simulation(runtime: LiveRuntime) -> None:
     clock = {"t": 0.0}
     runtime._live_state_now = lambda: clock["t"]
     runtime._idle_hosting_now = lambda: clock["t"]

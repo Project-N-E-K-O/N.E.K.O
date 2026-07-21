@@ -12,12 +12,12 @@ from plugin.plugins.neko_live.core.contracts import (
     ViewerIdentity,
     ViewerProfile,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.core.runtime_timeline import record_timeline, timeline_for_trace
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_exposes_runtime_health_rows(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_exposes_runtime_health_rows(runtime: LiveRuntime) -> None:
     event = ViewerEvent(uid="42", nickname="dry", danmaku_text="hi", source="live_danmaku")
     runtime.record_result(
         InteractionResult(
@@ -48,7 +48,7 @@ async def test_dashboard_state_exposes_runtime_health_rows(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_exposes_latest_response_latency(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_exposes_latest_response_latency(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="42",
         nickname="latency",
@@ -75,7 +75,7 @@ async def test_dashboard_state_exposes_latest_response_latency(runtime: RoastRun
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_exposes_privacy_safe_live_explanation(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_exposes_privacy_safe_live_explanation(runtime: LiveRuntime) -> None:
     identity = ViewerIdentity(uid="1001", nickname="tech")
     raw_danmaku = "这个 AI 插件怎么配置？token=must-not-leak"
     await runtime.viewer_store.record_live_danmaku(identity, raw_danmaku)
@@ -117,7 +117,7 @@ async def test_dashboard_state_exposes_privacy_safe_live_explanation(runtime: Ro
 
 
 @pytest.mark.asyncio
-async def test_dashboard_live_explain_exposes_reply_review_fields(runtime: RoastRuntime) -> None:
+async def test_dashboard_live_explain_exposes_reply_review_fields(runtime: LiveRuntime) -> None:
     event = ViewerEvent(uid="42", nickname="viewer", danmaku_text="hello", source="live_danmaku")
     identity = ViewerIdentity(uid="42", nickname="viewer")
     profile = ViewerProfile(uid="42", nickname="viewer", roast_count=1)
@@ -160,7 +160,7 @@ async def test_dashboard_live_explain_exposes_reply_review_fields(runtime: Roast
     assert latest["room_theme"] == "small talk"
 
 
-def test_runtime_timeline_redacts_sensitive_summary_fields(runtime: RoastRuntime) -> None:
+def test_runtime_timeline_redacts_sensitive_summary_fields(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="1001",
         nickname="tech",
@@ -200,7 +200,7 @@ def test_runtime_timeline_redacts_sensitive_summary_fields(runtime: RoastRuntime
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -215,7 +215,7 @@ async def test_dashboard_state_says_ready_when_connected_and_output_enabled(runt
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_blocks_output_when_output_channel_unavailable(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_blocks_output_when_output_channel_unavailable(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -238,7 +238,7 @@ async def test_dashboard_state_blocks_output_when_output_channel_unavailable(run
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_says_test_only_when_dry_run_is_enabled(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_says_test_only_when_dry_run_is_enabled(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -253,7 +253,7 @@ async def test_dashboard_state_says_test_only_when_dry_run_is_enabled(runtime: R
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_explains_manual_pause_as_temporarily_not_speaking(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_explains_manual_pause_as_temporarily_not_speaking(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False
@@ -269,7 +269,7 @@ async def test_dashboard_state_explains_manual_pause_as_temporarily_not_speaking
 
 
 @pytest.mark.asyncio
-async def test_dashboard_state_says_cannot_stream_without_room(runtime: RoastRuntime) -> None:
+async def test_dashboard_state_says_cannot_stream_without_room(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 0
 
     state = await runtime.dashboard_state()
@@ -282,7 +282,7 @@ async def test_dashboard_state_says_cannot_stream_without_room(runtime: RoastRun
 
 
 @pytest.mark.asyncio
-async def test_speech_explanation_keeps_dry_run_result_visible(runtime: RoastRuntime) -> None:
+async def test_speech_explanation_keeps_dry_run_result_visible(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -301,7 +301,7 @@ async def test_speech_explanation_keeps_dry_run_result_visible(runtime: RoastRun
 
 
 @pytest.mark.asyncio
-async def test_speech_explanation_marks_solo_idle_as_waiting_for_idle_hosting(runtime: RoastRuntime) -> None:
+async def test_speech_explanation_marks_solo_idle_as_waiting_for_idle_hosting(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = False

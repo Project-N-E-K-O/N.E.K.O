@@ -30,6 +30,7 @@ class RuntimeReferences:
     resolve_user_plugin_base: Callable[[], str] | None = None
     get_start_config: Callable[[], dict] | None = None
     shutdown_server_async: Callable[[], Any] | None = None
+    request_application_shutdown_async: Callable[..., Any] | None = None
 
 
 runtime = RuntimeReferences()

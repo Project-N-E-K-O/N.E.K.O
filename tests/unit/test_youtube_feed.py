@@ -15,6 +15,16 @@ from utils.web_scraper import trending_content
 from utils.web_scraper import youtube_feed
 
 
+def _enable_web_scraper_caplog(monkeypatch, caplog, level):
+    """Let caplog observe app-namespaced logs regardless of suite order."""
+    current_logger = youtube_feed.logger
+    root_logger = logging.getLogger()
+    while current_logger is not None and current_logger is not root_logger:
+        monkeypatch.setattr(current_logger, "propagate", True)
+        current_logger = current_logger.parent
+    caplog.set_level(level, logger=youtube_feed.logger.name)
+
+
 def test_extract_ytcfg_merges_bootstrap_objects():
     html = """
     <script>ytcfg.set({"INNERTUBE_API_KEY":"key-1"});</script>
@@ -199,7 +209,7 @@ async def test_fetch_youtube_home_feed_falls_back_when_home_is_empty(monkeypatch
 
 @pytest.mark.asyncio
 async def test_authenticated_feed_uses_and_closes_isolated_client(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeResponse:
         def __init__(self, *, text="", payload=None):
@@ -265,7 +275,7 @@ async def test_authenticated_feed_uses_and_closes_isolated_client(monkeypatch, c
 
 @pytest.mark.asyncio
 async def test_logged_out_response_is_not_reported_as_authenticated(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeResponse:
         def __init__(self, *, text="", payload=None):
@@ -389,7 +399,7 @@ async def test_expired_credentials_retry_anonymous_home(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_authenticated_empty_home_uses_anonymous_public_discovery(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    _enable_web_scraper_caplog(monkeypatch, caplog, logging.INFO)
 
     class FakeCookieJar:
         def __init__(self):

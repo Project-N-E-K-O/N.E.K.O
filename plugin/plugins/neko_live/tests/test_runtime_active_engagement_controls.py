@@ -9,7 +9,7 @@ from plugin.plugins.neko_live.core.contracts import (
     PipelineStep,
     ViewerEvent,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 
 
 def _created_at_age(seconds: int) -> str:
@@ -17,7 +17,7 @@ def _created_at_age(seconds: int) -> str:
 
 
 def _record_result_at(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     *,
     age_seconds: int,
     source: str = "live_danmaku",
@@ -34,7 +34,7 @@ def _record_result_at(
         )
     )
 
-def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="__neko_active__",
         nickname="NEKO",
@@ -61,7 +61,7 @@ def test_recent_interaction_context_summarizes_active_engagement_topic(runtime: 
 
     assert context == ["active_engagement / active_engagement: bili_trending either_or - 猫猫今天怎么这么安静"]
 
-def test_recent_interaction_context_includes_active_engagement_family_and_axis(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_includes_active_engagement_family_and_axis(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="__neko_active__",
         nickname="NEKO",
@@ -92,7 +92,7 @@ def test_recent_interaction_context_includes_active_engagement_family_and_axis(r
         "active_engagement / active_engagement: fallback either_or choice_vote choice - Pick one desk charm"
     ]
 
-def test_recent_interaction_context_includes_active_engagement_reply_intent(runtime: RoastRuntime) -> None:
+def test_recent_interaction_context_includes_active_engagement_reply_intent(runtime: LiveRuntime) -> None:
     event = ViewerEvent(
         uid="__neko_active__",
         nickname="NEKO",
@@ -126,7 +126,7 @@ def test_recent_interaction_context_includes_active_engagement_reply_intent(runt
     ]
 
 @pytest.mark.asyncio
-async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runtime: RoastRuntime) -> None:
+async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -143,7 +143,7 @@ async def test_live_state_marks_active_engagement_candidate_for_solo_quiet(runti
     assert state["active_engagement_status"]["reason"] == "eligible"
 
 @pytest.mark.asyncio
-async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtime: RoastRuntime) -> None:
+async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -170,7 +170,7 @@ async def test_active_engagement_waits_longer_after_recent_danmaku_output(runtim
     assert state["live_director_status"]["reason"] == "recent_danmaku_output"
 
 @pytest.mark.asyncio
-async def test_active_engagement_active_pacing_allows_shorter_post_danmaku_wait(runtime: RoastRuntime) -> None:
+async def test_active_engagement_active_pacing_allows_shorter_post_danmaku_wait(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -193,7 +193,7 @@ async def test_active_engagement_active_pacing_allows_shorter_post_danmaku_wait(
     assert state["active_engagement_status"]["recent_danmaku_cooldown_remaining"] == 0.0
 
 @pytest.mark.asyncio
-async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: RoastRuntime) -> None:
+async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -215,7 +215,7 @@ async def test_active_engagement_yields_when_idle_hosting_is_imminent(runtime: R
 
 
 @pytest.mark.asyncio
-async def test_active_engagement_waits_after_recent_hosting_output(runtime: RoastRuntime) -> None:
+async def test_active_engagement_waits_after_recent_hosting_output(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -249,7 +249,7 @@ async def test_active_engagement_waits_after_recent_hosting_output(runtime: Roas
 
 
 @pytest.mark.asyncio
-async def test_idle_hosting_waits_after_recent_hosting_output(runtime: RoastRuntime) -> None:
+async def test_idle_hosting_waits_after_recent_hosting_output(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -282,7 +282,7 @@ async def test_idle_hosting_waits_after_recent_hosting_output(runtime: RoastRunt
     assert state["idle_hosting_status"]["reason"] == "recent_host_output"
 
 @pytest.mark.asyncio
-async def test_active_engagement_yields_early_enough_to_observe_idle_hosting(runtime: RoastRuntime) -> None:
+async def test_active_engagement_yields_early_enough_to_observe_idle_hosting(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -299,7 +299,7 @@ async def test_active_engagement_yields_early_enough_to_observe_idle_hosting(run
     assert state["live_director_status"]["next_auto_action"] == "idle_hosting"
 
 @pytest.mark.asyncio
-async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: RoastRuntime) -> None:
+async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -318,7 +318,7 @@ async def test_trigger_active_engagement_runs_pipeline_for_solo_quiet(runtime: R
 
 @pytest.mark.asyncio
 async def test_active_engagement_control_blocks_manual_and_automatic_triggers(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     runtime.config.active_engagement_enabled = False
 
@@ -330,7 +330,7 @@ async def test_active_engagement_control_blocks_manual_and_automatic_triggers(
 
 @pytest.mark.asyncio
 async def test_active_engagement_valid_recent_danmaku_clears_prior_skip_reason(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -377,7 +377,7 @@ async def test_active_engagement_valid_recent_danmaku_clears_prior_skip_reason(
 
 @pytest.mark.asyncio
 async def test_active_engagement_does_not_label_non_danmaku_skips_as_danmaku_topic_skip(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
@@ -405,7 +405,7 @@ async def test_active_engagement_does_not_label_non_danmaku_skips_as_danmaku_top
     assert "recent_topic_skip_reason" not in topic
 
 @pytest.mark.asyncio
-async def test_active_engagement_avoids_repeating_recent_intent_shape(runtime: RoastRuntime) -> None:
+async def test_active_engagement_avoids_repeating_recent_intent_shape(runtime: LiveRuntime) -> None:
     runtime._active_engagement_recent_shapes.extend(["either_or", "either_or"])
     runtime._active_engagement_recent_intents.extend(["quick_vote", "quick_vote"])
 
@@ -423,7 +423,7 @@ async def test_active_engagement_avoids_repeating_recent_intent_shape(runtime: R
     assert "choice" not in topic["hint"].lower()
 
 @pytest.mark.asyncio
-async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: RoastRuntime) -> None:
+async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -438,7 +438,7 @@ async def test_trigger_active_engagement_skips_outside_solo_quiet(runtime: Roast
     assert result.reason == "active_engagement.not_solo_stream"
 
 @pytest.mark.asyncio
-async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime: RoastRuntime) -> None:
+async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -455,7 +455,7 @@ async def test_auto_active_engagement_triggers_when_solo_stream_is_quiet(runtime
     assert runtime.recent_results[-1]["event"]["source"] == "active_engagement"
 
 @pytest.mark.asyncio
-async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRuntime) -> None:
+async def test_auto_active_engagement_respects_minimum_interval(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -476,7 +476,7 @@ async def test_auto_active_engagement_respects_minimum_interval(runtime: RoastRu
     assert runtime.recent_results[-1]["event"]["source"] != "active_engagement"
 
 @pytest.mark.asyncio
-async def test_activity_level_controls_active_engagement_minimum_interval(runtime: RoastRuntime) -> None:
+async def test_activity_level_controls_active_engagement_minimum_interval(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -504,7 +504,7 @@ async def test_activity_level_controls_active_engagement_minimum_interval(runtim
     assert active_state["active_engagement_status"]["minimum_interval_remaining"] == 0.0
 
 @pytest.mark.asyncio
-async def test_auto_active_engagement_does_not_record_skip_when_not_candidate(runtime: RoastRuntime) -> None:
+async def test_auto_active_engagement_does_not_record_skip_when_not_candidate(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -518,7 +518,7 @@ async def test_auto_active_engagement_does_not_record_skip_when_not_candidate(ru
     assert result is None
 
 @pytest.mark.asyncio
-async def test_auto_active_engagement_takes_over_after_repeated_idle_hosting_without_viewer_response(runtime: RoastRuntime) -> None:
+async def test_auto_active_engagement_takes_over_after_repeated_idle_hosting_without_viewer_response(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -548,7 +548,7 @@ async def test_auto_active_engagement_takes_over_after_repeated_idle_hosting_wit
     assert result.event.source == "active_engagement"
 
 @pytest.mark.asyncio
-async def test_auto_active_engagement_ignores_dry_run_idle_beats(runtime: RoastRuntime) -> None:
+async def test_auto_active_engagement_ignores_dry_run_idle_beats(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True
@@ -574,7 +574,7 @@ async def test_auto_active_engagement_ignores_dry_run_idle_beats(runtime: RoastR
     assert state["live_director_status"]["reason"] == "solo_idle"
 
 @pytest.mark.asyncio
-async def test_live_director_status_picks_active_engagement_for_solo_quiet(runtime: RoastRuntime) -> None:
+async def test_live_director_status_picks_active_engagement_for_solo_quiet(runtime: LiveRuntime) -> None:
     runtime.config.live_room_id = 123
     runtime.config.live_enabled = True
     runtime.config.dry_run = True

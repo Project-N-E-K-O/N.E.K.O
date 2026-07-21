@@ -1,12 +1,12 @@
 # Pipeline Split
 
-The completed pipeline split keeps `RoastPipeline` as the public entrypoint and moves route,
+The completed pipeline split keeps `LivePipeline` as the public entrypoint and moves route,
 request, viewer, session, dispatch, and result helpers into focused
 `pipeline_*` modules.
 
 ## Contracts
 
-- Feature code should continue importing `RoastPipeline` from
+- Feature code should continue importing `LivePipeline` from
   `core.pipeline`.
 - Pipeline helpers use the shared contracts from `core.contracts`.
 - The split preserves the existing skipped/failed/pushed result statuses.

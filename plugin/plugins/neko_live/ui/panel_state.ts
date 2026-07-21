@@ -1,4 +1,4 @@
-export type RoastConfig = {
+export type LiveConfig = {
   live_platform?: string
   live_room_ref?: string
   live_room_id?: number
@@ -28,7 +28,7 @@ export type RoastConfig = {
 }
 
 export type DashboardState = {
-  config?: RoastConfig
+  config?: LiveConfig
   live_connection?: Record<string, any>
   store_enabled?: boolean
   viewer_store?: Record<string, any>

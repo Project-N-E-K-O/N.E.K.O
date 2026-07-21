@@ -9,7 +9,7 @@ from plugin.plugins.neko_live.core.contracts import (
     PipelineStep,
     ViewerEvent,
 )
-from plugin.plugins.neko_live.core.runtime import RoastRuntime
+from plugin.plugins.neko_live.core.runtime import LiveRuntime
 from plugin.plugins.neko_live.modules.active_engagement import ActiveEngagementModule
 
 
@@ -18,7 +18,7 @@ def _created_at_age(seconds: int) -> str:
 
 
 def _record_result_at(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     *,
     age_seconds: int,
     source: str = "live_danmaku",
@@ -37,7 +37,7 @@ def _record_result_at(
 
 
 @pytest.mark.asyncio
-async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastRuntime) -> None:
+async def test_trigger_active_engagement_attaches_topic_material(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -71,7 +71,7 @@ async def test_trigger_active_engagement_attaches_topic_material(runtime: RoastR
     assert runtime.recent_results[-1]["event"]["topic_pattern"] == topic["pattern"]
 
 @pytest.mark.asyncio
-async def test_bili_trending_topic_material_gets_replyable_shape_profile(runtime: RoastRuntime) -> None:
+async def test_bili_trending_topic_material_gets_replyable_shape_profile(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -93,7 +93,7 @@ async def test_bili_trending_topic_material_gets_replyable_shape_profile(runtime
     assert topic["reply_affordance"] == "viewer can answer in danmaku with one concrete side"
     assert "A/B word choice" in topic["hint"]
 
-def test_recent_danmaku_topic_material_gets_replyable_shape_profile(runtime: RoastRuntime) -> None:
+def test_recent_danmaku_topic_material_gets_replyable_shape_profile(runtime: LiveRuntime) -> None:
     runtime.record_result(
         InteractionResult(
             accepted=True,
@@ -120,7 +120,7 @@ def test_recent_danmaku_topic_material_gets_replyable_shape_profile(runtime: Roa
 
 @pytest.mark.asyncio
 async def test_active_engagement_prefers_recent_live_thread_over_single_topic(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     for uid, text in (
         ("42", "这杯奶茶不好喝"),
@@ -224,7 +224,7 @@ def test_active_engagement_prompt_sanitizes_and_bounds_all_topic_fields() -> Non
 
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -244,7 +244,7 @@ async def test_active_engagement_topic_material_rotates_shapes_and_titles(runtim
     assert first["shape"] != second["shape"]
 
 @pytest.mark.asyncio
-async def test_active_engagement_prefers_meaningful_recent_danmaku_over_trending(runtime: RoastRuntime) -> None:
+async def test_active_engagement_prefers_meaningful_recent_danmaku_over_trending(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -270,7 +270,7 @@ async def test_active_engagement_prefers_meaningful_recent_danmaku_over_trending
     assert topic["key"] == "danmaku:keyboard sounds sleepy tonight"
 
 @pytest.mark.asyncio
-async def test_active_engagement_compacts_long_trending_titles(runtime: RoastRuntime) -> None:
+async def test_active_engagement_compacts_long_trending_titles(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -292,7 +292,7 @@ async def test_active_engagement_compacts_long_trending_titles(runtime: RoastRun
     assert topic["title"].endswith("...")
 
 @pytest.mark.asyncio
-async def test_active_engagement_uses_fallback_instead_of_repeating_recent_single_topic(runtime: RoastRuntime) -> None:
+async def test_active_engagement_uses_fallback_instead_of_repeating_recent_single_topic(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -311,7 +311,7 @@ async def test_active_engagement_uses_fallback_instead_of_repeating_recent_singl
     assert second["key"] != first["key"]
 
 @pytest.mark.asyncio
-async def test_active_engagement_skips_similar_topic_titles_even_with_different_keys(runtime: RoastRuntime) -> None:
+async def test_active_engagement_skips_similar_topic_titles_even_with_different_keys(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -333,7 +333,7 @@ async def test_active_engagement_skips_similar_topic_titles_even_with_different_
     assert second["recent_topic_skip_reason"] == "similar_topic_title"
 
 @pytest.mark.asyncio
-async def test_active_engagement_falls_back_when_all_external_titles_are_similar(runtime: RoastRuntime) -> None:
+async def test_active_engagement_falls_back_when_all_external_titles_are_similar(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {
             "success": True,
@@ -355,7 +355,7 @@ async def test_active_engagement_falls_back_when_all_external_titles_are_similar
 
 @pytest.mark.asyncio
 async def test_active_engagement_refreshes_trending_when_cached_topics_are_exhausted(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
 ) -> None:
     calls = 0
 
@@ -388,7 +388,7 @@ async def test_active_engagement_refreshes_trending_when_cached_topics_are_exhau
     assert calls == 2
 
 @pytest.mark.asyncio
-async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stream(runtime: RoastRuntime) -> None:
+async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stream(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -402,7 +402,7 @@ async def test_active_engagement_has_enough_fallback_topics_for_low_danmaku_stre
     assert all(topic["key"] not in {"fallback:small-choice", "fallback:viewer-mini-vote"} for topic in topics)
     assert all(len(topic["title"]) >= 8 for topic in topics)
 
-def test_active_engagement_relaxed_similarity_still_prefers_unused_key(runtime: RoastRuntime) -> None:
+def test_active_engagement_relaxed_similarity_still_prefers_unused_key(runtime: LiveRuntime) -> None:
     runtime._active_engagement_recent_topic_keys.append("fallback:used")
     runtime._active_engagement_recent_topic_titles.append("same tiny room choice")
 
@@ -420,7 +420,7 @@ def test_active_engagement_relaxed_similarity_still_prefers_unused_key(runtime: 
     assert candidate["key"] == "fallback:unused"
 
 @pytest.mark.asyncio
-async def test_active_engagement_avoids_recent_idle_hosting_material_family(runtime: RoastRuntime) -> None:
+async def test_active_engagement_avoids_recent_idle_hosting_material_family(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -433,7 +433,7 @@ async def test_active_engagement_avoids_recent_idle_hosting_material_family(runt
     assert topic["family"] != "choice_vote"
     assert topic["recent_topic_skip_reason"] == "recent_host_family"
 
-def test_idle_hosting_avoids_recent_active_engagement_material_family(runtime: RoastRuntime) -> None:
+def test_idle_hosting_avoids_recent_active_engagement_material_family(runtime: LiveRuntime) -> None:
     runtime._recent_host_material_families.append("room_mood")
 
     beat = runtime._next_idle_hosting_beat()
@@ -443,7 +443,7 @@ def test_idle_hosting_avoids_recent_active_engagement_material_family(runtime: R
 
 @pytest.mark.asyncio
 async def test_active_engagement_avoids_recent_spent_output_family(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidates = [
@@ -497,7 +497,7 @@ async def test_active_engagement_avoids_recent_spent_output_family(
     assert topic["family"] == "room_mood"
     assert topic["recent_topic_skip_reason"] == "recent_spent_output_family"
 
-def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(runtime: RoastRuntime) -> None:
+def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(runtime: LiveRuntime) -> None:
     blocked_fragments = ("\u5f39\u5e55\u5c11", "\u6ca1\u5f39\u5e55", "\u6ca1\u4eba\u8bf4\u8bdd", "\u51b7\u573a", "\u5b89\u9759")
 
     titles = [topic["title"] for topic in runtime._active_engagement_fallback_topic_candidates()]
@@ -505,7 +505,7 @@ def test_active_engagement_fallback_topics_do_not_use_room_silence_as_material(r
     assert titles
     assert not any(fragment in title for title in titles for fragment in blocked_fragments)
 
-def test_active_engagement_fallback_topics_explain_fun_axis_and_reply_path(runtime: RoastRuntime) -> None:
+def test_active_engagement_fallback_topics_explain_fun_axis_and_reply_path(runtime: LiveRuntime) -> None:
     topics = runtime._active_engagement_fallback_topic_candidates()
     axes = {topic.get("fun_axis") for topic in topics}
 
@@ -520,7 +520,7 @@ def test_active_engagement_fallback_topics_explain_fun_axis_and_reply_path(runti
     assert "fallback:lightstick-reflection" in keys
 
 @pytest.mark.asyncio
-async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtime: RoastRuntime) -> None:
+async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -540,7 +540,7 @@ async def test_active_engagement_fallback_topics_use_their_natural_shapes(runtim
     assert second["topic_pack"] == "micro_poll"
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -553,7 +553,7 @@ async def test_active_engagement_topic_exposes_viewer_reply_affordance(runtime: 
     assert topic["reply_affordance"] == "viewer can tease the keyboard or NEKO back"
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_preserves_fallback_fun_axis(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_preserves_fallback_fun_axis(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -565,7 +565,7 @@ async def test_active_engagement_topic_preserves_fallback_fun_axis(runtime: Roas
     assert topic["reply_affordance"] == "viewer can tease the keyboard or NEKO back"
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_selection_prefers_fresh_fun_axis(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_selection_prefers_fresh_fun_axis(runtime: LiveRuntime) -> None:
     async def fetch_topics(limit: int = 6) -> dict:
         return {"success": True, "videos": []}
 
@@ -579,7 +579,7 @@ async def test_active_engagement_topic_selection_prefers_fresh_fun_axis(runtime:
 
 @pytest.mark.asyncio
 async def test_active_engagement_topic_selection_prefers_fresh_reply_affordance(
-    runtime: RoastRuntime,
+    runtime: LiveRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidates = [
@@ -625,7 +625,7 @@ async def test_active_engagement_topic_selection_prefers_fresh_reply_affordance(
     assert second["key"] == "topic:tease-new-reply"
 
 @pytest.mark.asyncio
-async def test_active_engagement_topic_shapes_follow_material_profile(runtime: RoastRuntime) -> None:
+async def test_active_engagement_topic_shapes_follow_material_profile(runtime: LiveRuntime) -> None:
     titles = [
         "桌面零食二选一",
         "键盘像在打盹",

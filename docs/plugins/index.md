@@ -90,6 +90,7 @@ plugin/plugins/
 ## Quick Links
 
 - [Quick Start](./quick-start) — Create your first plugin in 5 minutes
+- [Rollback-safe Local Upgrades](./safe-local-upgrades) — Install plans, explicit confirmation, profile preservation, and recovery behavior
 - [v0.9 Migration](./migration-v0.9) — Removed surfaces and exact replacements
 - [SDK Reference](./sdk-reference) — Base classes, context API, Result types
 - [Decorators](./decorators) — All available decorators

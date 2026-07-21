@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from plugin.plugins.neko_live.core.active_hook_answers import is_active_hook_answer_event
-from plugin.plugins.neko_live.core.contracts import RoastConfig, ViewerEvent
-from plugin.plugins.neko_live.core.pipeline import RoastPipeline
+from plugin.plugins.neko_live.core.contracts import LiveConfig, ViewerEvent
+from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_routing import route_for_event
 from types import SimpleNamespace
 
@@ -66,7 +66,7 @@ def test_short_option_answer_without_recent_hook_is_not_special():
 
 def test_pipeline_marks_short_option_answer_with_active_hook_hint():
     runtime = SimpleNamespace(
-        config=RoastConfig(live_mode="solo_stream"),
+        config=LiveConfig(live_mode="solo_stream"),
         recent_results=[
             {
                 "status": "pushed",
@@ -78,7 +78,7 @@ def test_pipeline_marks_short_option_answer_with_active_hook_hint():
             }
         ],
     )
-    pipeline = RoastPipeline(runtime)
+    pipeline = LivePipeline(runtime)
     event = ViewerEvent(
         uid="42",
         nickname="viewer",

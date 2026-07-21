@@ -1,4 +1,4 @@
-"""Recent audit ring for Neko Roast."""
+"""Recent audit ring for NEKO Live."""
 
 from __future__ import annotations
 

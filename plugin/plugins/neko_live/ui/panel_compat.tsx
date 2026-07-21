@@ -47,7 +47,7 @@ type PanelTranslator = (key: string, params?: Record<string, any>) => string
 type DynamicLabel = (group: string, keyPrefix: string, value: string) => string
 
 /* bundled source: ui/panel_state.ts */
-type RoastConfig = {
+type LiveConfig = {
   live_platform?: string
   live_room_ref?: string
   live_room_id?: number
@@ -77,7 +77,7 @@ type RoastConfig = {
 }
 
 type DashboardState = {
-  config?: RoastConfig
+  config?: LiveConfig
   live_connection?: Record<string, any>
   store_enabled?: boolean
   viewer_store?: Record<string, any>

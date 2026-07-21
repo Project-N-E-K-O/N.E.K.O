@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.neko_live.adapters.neko_dispatcher import NekoDispatcher
-from plugin.plugins.neko_live.core.contracts import RoastConfig, ViewerEvent, ViewerIdentity, ViewerProfile
+from plugin.plugins.neko_live.core.contracts import LiveConfig, ViewerEvent, ViewerIdentity, ViewerProfile
 from plugin.plugins.neko_live.core.meme_knowledge import (
     DEFAULT_MEME_KNOWLEDGE_PATH,
     load_meme_knowledge,
@@ -98,7 +98,7 @@ def test_meme_knowledge_block_is_optional_advisory() -> None:
 
 def test_danmaku_response_prompt_includes_meme_knowledge_hint() -> None:
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=True))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=True))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",
@@ -129,7 +129,7 @@ async def test_dispatcher_carries_meme_hint_metadata() -> None:
             self.metadata = kwargs["metadata"]
 
     module = DanmakuResponseModule()
-    module.ctx = SimpleNamespace(config=RoastConfig(roast_strength="normal", dry_run=False))
+    module.ctx = SimpleNamespace(config=LiveConfig(roast_strength="normal", dry_run=False))
     event = ViewerEvent(
         uid="42",
         nickname="viewer",

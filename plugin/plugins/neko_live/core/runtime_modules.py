@@ -9,7 +9,7 @@ from typing import Any
 from ..modules._base import ReservedModule
 from .module_registry import ModuleRegistry
 from .live_provider_router import LiveProviderRouter
-from .pipeline import RoastPipeline
+from .pipeline import LivePipeline
 
 
 def assemble_runtime_modules(runtime: Any) -> None:
@@ -33,7 +33,7 @@ def assemble_runtime_modules(runtime: Any) -> None:
     runtime.warmup_hosting = _create_module("warmup_hosting", "WarmupHostingModule", "Warmup hosting")
     runtime.developer_sandbox = _create_module("developer_sandbox", "DeveloperSandboxModule", "Developer sandbox")
     runtime.live_events = _create_module("live_events", "LiveEventsModule", "Live events")
-    runtime.pipeline = RoastPipeline(runtime)
+    runtime.pipeline = LivePipeline(runtime)
     runtime.plugin_dir = Path(__file__).resolve().parents[1]
 
     for module in registered_modules(runtime):

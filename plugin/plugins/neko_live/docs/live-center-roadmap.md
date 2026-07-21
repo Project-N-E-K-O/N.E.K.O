@@ -77,7 +77,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
 | 阶段 | 内容 | 验证 |
 |---|---|---|
 | **传输修复** | `message_plane/pub_server.py`：wire 的遗留 `binary_data` 是原始 bytes，`json.dumps` 撞 bytes 抛错被静默吞 → **所有带图 push_message 都到不了 main_server**。改 `json.dumps(default=...)` 转 base64 + 失败记 debug。 | PR [#1843](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1843)，CI 全绿；已写进 main 工作区 |
-| **P0 底层硬化** | ① `RoastConfig.dry_run` 安全测试态（pipeline 照跑、`push_roast` 短路不投猫猫）；② `ViewerStore` 加锁防并发丢更新；③ 连接层冒烟 | 单测 + 真机 |
+| **P0 底层硬化** | ① `LiveConfig.dry_run` 安全测试态（pipeline 照跑、`push_roast` 短路不投猫猫）；② `ViewerStore` 加锁防并发丢更新；③ 连接层冒烟 | 单测 + 真机 |
 | **P1 吞并连接层** | `danmaku_core.py`(DanmakuListener) + `livedanmaku.py` 吞并进 `modules/bili_live_ingest/`；`BiliLiveIngestModule` 持有监听器（`on_danmaku` fire-and-forget 喂 pipeline）；`connect/disconnect_live_room` 启停真实监听 | 真机：连 81004 → 6 真实观众走完整 pipeline（按 UID 抓真实头像） |
 | **DoD** | **真实直播间新观众首条弹幕 → 猫猫全自动开口锐评其昵称+头像** | 真机：dry_run 关 → main 日志见 vision 模型 + send_lanlan_response |
 | **P2-T2.1 限流** | `safety_guard.before_output(event)` 按 `rate_limit_seconds` 控最小锐评间隔（直播态生效、沙盒豁免） | 单测 + 真机 |

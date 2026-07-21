@@ -49,6 +49,15 @@ def _log_news_content(lanlan_name: str, news_content: dict):
             print(f"[{lanlan_name}] 成功获取{source}:")
             for word in words:
                 print(f"  - {word}")
+    xhh_data = news_content.get('xhh') or {}
+    if xhh_data.get('success'):
+        posts = xhh_data.get('posts') or []
+        titles = [post.get('title', '') for post in posts[:5]]
+        if titles:
+            print(f"[{lanlan_name}] 成功获取小黑盒首页内容:")
+            for title in titles:
+                print(f"  - {title}")
+
     tieba_data = news_content.get('tieba', {}) or {}
     if tieba_data.get('success'):
         posts = tieba_data.get('posts', []) or (tieba_data.get('tieba', {}) or {}).get('posts', [])

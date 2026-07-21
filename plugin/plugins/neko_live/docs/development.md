@@ -35,26 +35,26 @@
 |---|---|---|
 | `core/runtime.py` | 生命周期、action 兼容入口、hosted-ui context、直播连接对外 API | 不写直播台词策略、不直接选择主动营业话题、不承载状态机细则、不拼装 dashboard 字段、不实现配置持久化细节、不内联模块注册清单 |
 | `core/contracts_public.py` | contract 层公开投影 helper，统一 JSON-safe、脱敏、有限数值和对象拒绝规则 | 不读取 runtime，不处理业务路由，不保存数据；不得把 object / bytes 通过 `str()` 变成 dashboard / recent result 字段 |
-| `core/contracts_config.py` | `RoastConfig` 字段、配置加载清洗、平台/房号 parser | 不读写配置文件，不启动 listener，不修改 runtime；配置加载只接受标量字符串/数字/bool，不能通过对象的 `__str__` / `__bool__` / `__int__` / `__float__` 推导开关或预算；`to_dict()` 只服务内部配置合并/持久化基线，dashboard 必须使用 `to_public_dict()` |
+| `core/contracts_config.py` | `LiveConfig` 字段、配置加载清洗、平台/房号 parser | 不读写配置文件，不启动 listener，不修改 runtime；配置加载只接受标量字符串/数字/bool，不能通过对象的 `__str__` / `__bool__` / `__int__` / `__float__` 推导开关或预算；`to_dict()` 只服务内部配置合并/持久化基线，dashboard 必须使用 `to_public_dict()` |
 | `core/runtime_state.py` | runtime-local mutable state、recent 队列、idle/active 节流与轮转缓存初始化 | 不导入模块实现，不触发 pipeline，不读取配置文件 |
 | `core/runtime_modules.py` | runtime 真实模块实例化与注册顺序、导入失败时的 ReservedModule 安全降级、pipeline 装配 | 不处理生命周期启停，不读取直播 payload，不修改配置；不得为未来能力预建空模块 |
 | `core/live_provider_router.py` | 平台 provider / identity provider 选择，B 站旧房号和抖音 `room_ref` 归一化 | 不实现真实监听，不解析协议包，不保存凭据；status 的 `platform`、`room_ref`、`room_id` 必须由 router 二次清洗，`is_listening` / `start_listening` / status `listening` 只接受 provider 返回的 exact bool，不能把 truthy 对象当成连接成功 |
 | `core/module_registry.py` | 模块注册表 facade、模块协议、对外兼容入口 | 不内联 lifecycle hook 隔离，不内联 snapshot 投影，不触发 pipeline |
 | `core/module_registry_lifecycle.py` | 模块 setup/teardown/on_enable/on_disable 的单点失败隔离与 audit 记录 | 不读取 status/config_schema，不构造 dashboard，不触发 pipeline |
 | `core/module_registry_snapshot.py` | 模块 status/domain/config_schema 的安全投影和 degraded record 组装 | 不调用 lifecycle hook，不写 audit，不修改模块 enabled 状态；公开投影必须递归清洗为 JSON-safe 值，object/bytes 不得字符串化，cookie/token/signature 形态文本必须脱敏 |
-| `core/runtime_auth_api.py` | `RoastRuntime` 上 B 站登录 / 凭据 action 的兼容 mixin | 不保存明文凭据，不实现扫码服务，不触发 pipeline |
-| `core/runtime_instruction_api.py` | `RoastRuntime` 上直播语境 / 开发者语境 action 的兼容 mixin | 不直接 push message，不修改 pipeline，不清理状态 |
-| `core/runtime_config_api.py` | `RoastRuntime` 上配置加载 / 更新 / listener reconcile 旧 helper 的兼容 mixin | 不实现配置持久化细节，不生成输出，不读写观众档案 |
-| `core/runtime_live_input_api.py` | `RoastRuntime` 上直播 payload / lookup / result 记录旧入口的兼容 mixin | 不选择输出模块，不暴露 raw payload，不生成台词 |
-| `core/runtime_developer_api.py` | `RoastRuntime` 上开发者沙盒 / lookup / 手动事件旧入口的兼容 mixin | 不绕过 `developer_tools_enabled`，不写观众档案 |
-| `core/runtime_control_api.py` | `RoastRuntime` 上暂停/恢复/清队列/直播间连接旧 action 的兼容 mixin | 不生成输出，不选择话题，不读取 raw payload |
-| `core/runtime_status_api.py` | `RoastRuntime` 只读投影兼容 facade，组合 dashboard / recent-context / live-status mixin | 不直接实现投影细节，不修改运行态，不触发 pipeline |
-| `core/runtime_dashboard_api.py` | `RoastRuntime` 上 dashboard state、Runtime Health Rows、dashboard actions 的兼容 mixin | 不计算直播状态规则，不读取 recent context，不修改配置 |
-| `core/runtime_recent_context_api.py` | `RoastRuntime` 上 recent interaction / viewer session / route / spent-output helper 的兼容 mixin | 不计算 live status，不拼装 dashboard，不触发输出 |
-| `core/runtime_live_status_api.py` | `RoastRuntime` 上 live status、live state、director、readiness、speech explanation 的兼容 mixin | 不构造 prompt context，不拼装 dashboard UI 字段，不触发 hosting / active action，不承载 timing/age 旧 helper |
-| `core/runtime_live_status_helpers.py` | `RoastRuntime` 上 live-status timing / age 私有 helper 的兼容 mixin | 不拼装 dashboard，不触发 hosting / active action，不记录 result |
+| `core/runtime_auth_api.py` | `LiveRuntime` 上 B 站登录 / 凭据 action 的兼容 mixin | 不保存明文凭据，不实现扫码服务，不触发 pipeline |
+| `core/runtime_instruction_api.py` | `LiveRuntime` 上直播语境 / 开发者语境 action 的兼容 mixin | 不直接 push message，不修改 pipeline，不清理状态 |
+| `core/runtime_config_api.py` | `LiveRuntime` 上配置加载 / 更新 / listener reconcile 旧 helper 的兼容 mixin | 不实现配置持久化细节，不生成输出，不读写观众档案 |
+| `core/runtime_live_input_api.py` | `LiveRuntime` 上直播 payload / lookup / result 记录旧入口的兼容 mixin | 不选择输出模块，不暴露 raw payload，不生成台词 |
+| `core/runtime_developer_api.py` | `LiveRuntime` 上开发者沙盒 / lookup / 手动事件旧入口的兼容 mixin | 不绕过 `developer_tools_enabled`，不写观众档案 |
+| `core/runtime_control_api.py` | `LiveRuntime` 上暂停/恢复/清队列/直播间连接旧 action 的兼容 mixin | 不生成输出，不选择话题，不读取 raw payload |
+| `core/runtime_status_api.py` | `LiveRuntime` 只读投影兼容 facade，组合 dashboard / recent-context / live-status mixin | 不直接实现投影细节，不修改运行态，不触发 pipeline |
+| `core/runtime_dashboard_api.py` | `LiveRuntime` 上 dashboard state、Runtime Health Rows、dashboard actions 的兼容 mixin | 不计算直播状态规则，不读取 recent context，不修改配置 |
+| `core/runtime_recent_context_api.py` | `LiveRuntime` 上 recent interaction / viewer session / route / spent-output helper 的兼容 mixin | 不计算 live status，不拼装 dashboard，不触发输出 |
+| `core/runtime_live_status_api.py` | `LiveRuntime` 上 live status、live state、director、readiness、speech explanation 的兼容 mixin | 不构造 prompt context，不拼装 dashboard UI 字段，不触发 hosting / active action，不承载 timing/age 旧 helper |
+| `core/runtime_live_status_helpers.py` | `LiveRuntime` 上 live-status timing / age 私有 helper 的兼容 mixin | 不拼装 dashboard，不触发 hosting / active action，不记录 result |
 | `core/runtime_config.py` | 配置加载/更新的协调门面、旧 helper 兼容入口 | 不内联配置激活细节，不内联持久化预算，不内联直播监听启停 |
-| `core/runtime_config_activation.py` | 配置字段清洗、`RoastConfig` 激活、运行态窗口和 gate / safety guard 同步 | 不持久化配置，不启动/停止直播监听，不触发输出 |
+| `core/runtime_config_activation.py` | 配置字段清洗、`LiveConfig` 激活、运行态窗口和 gate / safety guard 同步 | 不持久化配置，不启动/停止直播监听，不触发输出 |
 | `core/runtime_config_persistence.py` | 配置持久化 best-effort 预算、host config API 兼容、失败/超时 audit | 不激活运行态配置，不改连接态，不启动/停止直播监听 |
 | `core/runtime_live_listener.py` | 配置变化后的直播监听 reconcile、监听启停、连接态和 safety guard 同步 | 不持久化配置，不解析配置字段，不构造输出 |
 | `core/runtime_live_controls.py` | 控制面板动作、暂停/恢复/清队列、清观众档案、单 UID 档案删除 / 印象重置、直播间设置/连接/断开、连接快照 | 不生成输出，不选择话题，不读取 raw payload；`live_connection_snapshot()` 只投影已知连接状态、非负 viewer_count、字符串 last_error 和 dict 型 connection_plan/reconnect，不能字符串化 listener_state 对象 |
@@ -66,7 +66,7 @@
 | `core/runtime_bili_auth.py` | B 站登录 action、凭据重载、logout 清理与扫码服务装配 | 不明文记录凭据，不写 config，不触发直播 pipeline |
 | `core/runtime_live_input.py` | 直播 payload 归一化入口、Gift/SC/Guard support metadata 暴露、result 投影、弹幕回复 metadata 暴露 | 不选择输出模块，不生成台词，不暴露 raw payload，不绕过 pipeline / safety guard |
 | `core/runtime_live_input.py` | 直播 payload 归一化入口、Gift/SC/Guard support metadata 暴露、result 投影、弹幕回复 metadata 暴露 | 不选择输出模块，不生成台词，不暴露 raw payload，不绕过 pipeline / safety guard；support-event 分类只接受字符串 `event.raw["event_type"]`，对象/bytes 不得被字符串化成礼物或 SC 类型；lookup result / audit 的 `room_ref` 只接受字符串或正整数归一结果，不能字符串化对象 |
-| `core/pipeline.py` | Public `RoastPipeline` facade, session compatibility helpers, permission gate, safety before-event, and preflight handoff | no viewer/profile resolution, UID lock flow, request building, dispatch call, output text generation, or live connection config writes |
+| `core/pipeline.py` | Public `LivePipeline` facade, session compatibility helpers, permission gate, safety before-event, and preflight handoff | no viewer/profile resolution, UID lock flow, request building, dispatch call, output text generation, or live connection config writes |
 | `core/pipeline_flow.py` | Post-safety event flow: viewer/profile resolution, UID lock/session gate, route handoff, request build, dispatch stage, after-event cleanup | no permission gate, no safety before-event, no dispatcher implementation, no viewer store internals |
 | `core/safety_guard.py` | Public safety gate facade: connected / pause / queue / output cooldown / failure auto-stop entrypoints | no direct clock reads, no inline output cooldown math, no inline failure-window trimming |
 | `core/safety_guard_cooldown.py` | Output cooldown timing and developer-sandbox cooldown bypass | no queue mutation, no failure-window state, no audit writes |
@@ -98,8 +98,8 @@
 | `core/live_status_active.py` | active engagement eligibility、recent danmaku cooldown、idle hosting takeover / defer reason | 不读取 runtime 对象，不决定最终 next action，不触发 active action |
 | `core/live_status_director.py` | Live Director 下一动作决策，聚合 idle / active eligibility 结果 | 不读取 runtime 对象，不生成 dashboard 字段，不触发 hosting / active action |
 | `core/live_status_readiness.py` | Solo Test Readiness、“为什么没说话” speech explanation 投影 | 不决定真实连接状态，不触发 pipeline，不修改 readiness 输入 |
-| `core/runtime_hosting_api.py` | `RoastRuntime` 上 idle/warmup hosting action、旧 helper、loop 控制的兼容 mixin | 不选择素材实现细节，不持有状态，不绕过 `live_hosting_director` |
-| `core/runtime_active_engagement_api.py` | `RoastRuntime` 上主动营业旧 helper / action API 的兼容 mixin | 不持有状态，不选择 topic 实现细节，不绕过 `runtime_active_engagement` / `active_topic_selector` |
+| `core/runtime_hosting_api.py` | `LiveRuntime` 上 idle/warmup hosting action、旧 helper、loop 控制的兼容 mixin | 不选择素材实现细节，不持有状态，不绕过 `live_hosting_director` |
+| `core/runtime_active_engagement_api.py` | `LiveRuntime` 上主动营业旧 helper / action API 的兼容 mixin | 不持有状态，不选择 topic 实现细节，不绕过 `runtime_active_engagement` / `active_topic_selector` |
 | `core/runtime_active_engagement.py` | 主动营业手动/自动触发、quiet/idle gate、skip result 记录、active event 构造 | 不选择 topic 素材，不绕过 pipeline / safety guard / dispatcher |
 | `core/active_topic_selector.py` | 主动营业 topic 选择编排、runtime 状态代理 | 不直接调用 dispatcher，不绕过 safety guard，不承载候选筛选细节或旧 helper facade |
 | `core/active_topic_compat.py` | 主动营业旧 helper / runtime API 兼容 facade，委托 rules / sources / shapes / selection / pack | 不选择最终 topic，不触发输出，不构造事件/result |
@@ -150,7 +150,7 @@ Active topic material split note: `active_topic_materials.py` is a compatibility
 
 Safety guard split note: `safety_guard.py` remains the only public safety gate object used by pipeline/runtime. `safety_guard_cooldown.py` owns output timing and sandbox cooldown bypass, while `safety_guard_failures.py` owns failure windows, audit records, and auto-stop trips. New code should not call these helpers directly unless it is extending the guard facade.
 
-Pipeline flow split note: `pipeline.py` owns the public `RoastPipeline` facade and preflight gates before `safety_guard.before_event`. `pipeline_flow.py` owns the post-safety event flow, including viewer resolution, UID lock/session gate, route handoff, request build, dispatch stage, and `safety_guard.after_event` cleanup.
+Pipeline flow split note: `pipeline.py` owns the public `LivePipeline` facade and preflight gates before `safety_guard.before_event`. `pipeline_flow.py` owns the post-safety event flow, including viewer resolution, UID lock/session gate, route handoff, request build, dispatch stage, and `safety_guard.after_event` cleanup.
 
 Pipeline result split note: `pipeline_results.py` is a compatibility facade. `pipeline_skip_results.py` owns gate skip/reject result shapes, `pipeline_dispatch_results.py` owns dispatcher dry-run/skipped/pushed outcomes, and `pipeline_failure_results.py` owns dispatcher/pipeline exception result shapes plus safety failure accounting.
 
@@ -562,7 +562,7 @@ ViewerEvent
 
 ## 安全测试态（dry-run）
 
-`dry_run`（`RoastConfig` 字段，可经 `update_config` 动作切换）是接真实直播间前的安全测试开关，**产品默认关闭**：普通用户不需要理解该术语，连接后即按其它安全门正常工作。开发者、试播人员和压力工具需要无声验链时必须主动开启；压力工具自身仍默认 dry-run，且不得自动修改产品默认值。开启时整条 pipeline 照常跑——安全门、当前 `live_provider` 身份解析、头像/清洗字段处理、`avatar_roast` 锐评 prompt 构造都会执行——但 `neko_dispatcher.push_roast()` 在真正 `push_message` 之前短路，返回 `dry_run(target=..., image_part_bytes=..., text_len=...)` 摘要，**绝不投递给猫猫**。`build_request()` 把 `ctx.config.dry_run` 写进 `InteractionRequest.dry_run`，dispatcher 据此判断。
+`dry_run`（`LiveConfig` 字段，可经 `update_config` 动作切换）是接真实直播间前的安全测试开关，**产品默认关闭**：普通用户不需要理解该术语，连接后即按其它安全门正常工作。开发者、试播人员和压力工具需要无声验链时必须主动开启；压力工具自身仍默认 dry-run，且不得自动修改产品默认值。开启时整条 pipeline 照常跑——安全门、当前 `live_provider` 身份解析、头像/清洗字段处理、`avatar_roast` 锐评 prompt 构造都会执行——但 `neko_dispatcher.push_roast()` 在真正 `push_message` 之前短路，返回 `dry_run(target=..., image_part_bytes=..., text_len=...)` 摘要，**绝不投递给猫猫**。`build_request()` 把 `ctx.config.dry_run` 写进 `InteractionRequest.dry_run`，dispatcher 据此判断。
 
 ## 配置持久化与写竞争
 
@@ -572,7 +572,7 @@ host 的 `update_own_config`（把配置写回 `plugin.toml`）在「只重后�
 
 现在反过来：
 
-1. **先内存生效**：`_activate_config(RoastConfig.from_mapping(...))` 一步把新配置装进 `self.config`（gate / safety_guard 共享同一对象，即时权威）；若改了 `developer_tools_enabled` 顺带 `sync_developer_mode`。
+1. **先内存生效**：`_activate_config(LiveConfig.from_mapping(...))` 一步把新配置装进 `self.config`（gate / safety_guard 共享同一对象，即时权威）；若改了 `developer_tools_enabled` 顺带 `sync_developer_mode`。
 2. **再带预算尽力持久化**：`_persist_config_best_effort` 用 `asyncio.wait_for(self._persist_config_update(clean), timeout=_CONFIG_PERSIST_BUDGET_SECONDS)`（默认 4.0s，远低于 host 的 10s entry 限），超时记 `config_persist_timeout`、失败记 `config_persist_failed`，**都不回滚已生效的内存配置、不阻塞**。
 3. **串行化**：`asyncio.Lock`（`_get_config_lock`，懒初始化）覆盖旧配置快照、内存 apply、提示词副作用、持久化和 listener reconcile，避免并发 `update_config` 读取过期状态。平台或房间变化时必须先捕获并停止旧平台的具体 provider 实例，再启动新平台；不能在激活新配置后通过动态 router 反查并误停新 provider。
 
@@ -591,7 +591,7 @@ host 的 `update_own_config`（把配置写回 `plugin.toml`）在「只重后�
 房号入口统一过 `contracts.parse_room_id(value) -> int`：接受 int、纯数字串、含 `live.bilibili.com/<id>` 的链接（含 `/h5/`、`/blanc/`、query），解析不出返回 0；object / bytes / container 不得被字符串化成房号。让用户直接粘直播间链接，不必手动找房号。
 
 落点（每个 room_id 入口都经它，保证落盘永远是 int）：
-- `RoastConfig.from_mapping` 的 `live_room_id`（配置加载，容错）。
+- `LiveConfig.from_mapping` 的 `live_room_id`（配置加载，容错）。
 - `runtime.update_config`：持久化前把 `clean["live_room_id"]` 归一成 int（saveConfig 路径）。
 - `runtime.connect_live_room` / `set_live_room` / `lookup_live_room`：各自 `room_id` 参数（action 路径）。
 
@@ -637,7 +637,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 
 **UI / action**：控制台的“管理账号与平台”弹窗承载 B 站扫码登录、检查状态、退出登录和显式无账号兜底；4 个 `@ui.action`（group `auth`）：`bili_login` / `bili_login_check` / `bili_login_status` / `bili_logout`。
 
-**经过 safety_guard 吗 / 失败降级**：登录流程**不经 pipeline**（账号管理、不产出锐评）。凭据缺失、失效或无法校验时，正常产品路径 fail closed；只有 provider 明确支持且调用方为本次 `connect_live_room` 传入严格布尔值 `allow_accountless=true`，才进入受限匿名连接。该意图已贯穿 React 面板、兼容面板、action schema、runtime API 和压力工具；连接快照以 `auth_mode=authenticated|limited_accountless|provider_managed|unknown` 投影当前状态，停止监听即清空，且不写入 `RoastConfig`。抖音拒绝 `allow_accountless=true`。保存失败必须报错，不得静默。
+**经过 safety_guard 吗 / 失败降级**：登录流程**不经 pipeline**（账号管理、不产出锐评）。凭据缺失、失效或无法校验时，正常产品路径 fail closed；只有 provider 明确支持且调用方为本次 `connect_live_room` 传入严格布尔值 `allow_accountless=true`，才进入受限匿名连接。该意图已贯穿 React 面板、兼容面板、action schema、runtime API 和压力工具；连接快照以 `auth_mode=authenticated|limited_accountless|provider_managed|unknown` 投影当前状态，停止监听即清空，且不写入 `LiveConfig`。抖音拒绝 `allow_accountless=true`。保存失败必须报错，不得静默。
 
 **读写了哪些用户数据**：只读写本机加密凭据文件；**不进** viewer_store / audit（明文）。
 
@@ -654,7 +654,7 @@ UI 侧：3 个 room action 的 `room_id` input_schema 收 `string`、handler 传
 未来实现必须满足：
 
 - 只允许用户在已验证的 B 站扫码登录后，显式确认“当前登录账号是主播账号”；运行时从加密凭据派生 UID，不按昵称、显示名或自由文本猜测。
-- 确认状态只绑定当前凭据；退出登录、凭据失效或登录 UID 变化后自动失效。主播 UID / 昵称不得写入公开 `RoastConfig`、audit、普通日志、Dashboard 或 prompt。
+- 确认状态只绑定当前凭据；退出登录、凭据失效或登录 UID 变化后自动失效。主播 UID / 昵称不得写入公开 `LiveConfig`、audit、普通日志、Dashboard 或 prompt。
 - 命中主播 UID 的普通弹幕、进场等观众事件不得触发 `avatar_roast`、普通 `danmaku_response`、观众画像学习、观众人数/刷屏统计或首次出场记录；开发者诊断只允许显示稳定机器码，例如 `viewer.host_account_filtered`。
 - 默认不把主播消息转换成隐藏上下文，也不让猫猫知道 owner/master/backstage 关系。若以后需要“主播提示猫猫”，必须另建显式 `host_cue` 产品能力，经独立开关、可见状态和安全评审，不得借身份过滤暗中实现。
 - 普通观众以及 provider 证明为真的 Gift / SC / Guard 继续走现有链路；不得因为昵称相似、UID 缺失或登录态不可校验而误过滤。无法确认身份时默认按普通事件处理，不做猜测。
@@ -876,7 +876,7 @@ danmaku_core on_event(cmd, 富模型)
 ### 本阶段决策点
 
 - 成本与预算：采用零后台任务、零网络、零新依赖、零额外模型调用的只读接线；每次 dashboard 读取只评估当前静态能力目录。
-- 模块与接口：只扩展 `RoastConfig`、静态能力目录、runtime 组装和 dashboard 公开投影；不修改 Hosted UI、Selection、Pipeline、Safety Guard、Dispatcher 或现有事件 handler。
+- 模块与接口：只扩展 `LiveConfig`、静态能力目录、runtime 组装和 dashboard 公开投影；不修改 Hosted UI、Selection、Pipeline、Safety Guard、Dispatcher 或现有事件 handler。
 - 方案取舍：当前选择“一能力一标量配置 + 静态注册表”，避免嵌套任意字典带来的迁移和未知 key 风险；能力数量明显增长后再评估版本化映射契约。
 - 发布与降级：`host_pause_fill` 默认 `off`，投影固定 `enforced=false`，当前不存在任何可触发输出的 action 或模块。删除新增配置键和投影即可完整回滚，不需要迁移数据。
 - 验证与可观测：必须覆盖配置归一化/持久化、能力目录唯一性、主程序话轮信号只读不消费、未知话轮保守降级、公开投影隐私边界、`solo_stream` passthrough，以及手动 action / 输出模块 / UI 入口不存在，并运行插件全量测试与 CLI check。
@@ -908,7 +908,7 @@ danmaku_core on_event(cmd, 富模型)
 
 独播首评有独立节流：`solo_stream` 中真正的 `avatar_roast` 之间按活跃度间隔，`quiet=75s`、`standard=45s`、`active=30s`。若短时间内又有新 UID 发送弹幕，pipeline 不再连续做头像 / ID 出场锐评，而是把这条弹幕交给 `danmaku_response` 正常接话；但这只是临时降级，不能把该 UID 标记为已完成头像锐评。只有真实进入 `avatar_roast` 路由且成功 pushed / dry-run 到 dispatcher 的出场首评才允许写首评标记，避免新人被节流吞掉后再也补不上头像锐评。
 
-在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `RoastPipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
+在 `dry_run` 链路验证中，pipeline 可以在同一运行会话内把一次成功到达 dispatcher 的首评 dry-run 视为临时出场标记，使同 UID 下一条弹幕走 `danmaku_response`；该标记只存在于当前 `LivePipeline` 实例内，不写 `viewer_store`，不增加 `roast_count`，也不调用 `viewer_profile.mark_roasted()`。重新开始监听直播间会清空该临时标记，保证下一轮链路验证从干净窗口开始。
 
 直播修正：本轮会话中只有某个 UID 的 `avatar_roast` 真正成功 pushed 后，pipeline 才写入 session claim；dry-run 只写当前 pipeline 的临时验证标记。若首评在 `before_output` 被跳过、dispatcher 失败或被上游标记为 skipped，则不能 claim，该 UID 后续仍可在合适弹幕中自然补一次头像 / ID 锐评。补评 prompt 必须把当前弹幕当入口，表现成自然诙谐的直播接话，不能说“补评”“重试”“刚才漏了”或暴露 pipeline 状态。
 

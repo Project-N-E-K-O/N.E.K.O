@@ -104,6 +104,31 @@ async def test_stage1_prompt_has_no_existing_observation_section(tmp_path):
     assert "existing observation" not in text.lower()
 
 
+# ── Stage-1 non-array payload: strict vs lenient ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stage1_non_array_payload_strict_vs_lenient(tmp_path):
+    """treat_malformed_as_failure branches of the REAL method body."""
+    # daily 导入的 harness 复刻了这段分支逻辑，只能钉住调用点传 flag 那一半；
+    # 这里必须打在真实方法体上——若分支被重构回退成无条件 []，畸形
+    # {"facts": [...]} 会被当确认空抽取 checkpoint 进 sidecar、该天永久 skip
+    # LLM 静默丢 facts（本测试即防此假绿）。
+    fs, _cm = _install_factstore(str(tmp_path))
+
+    with patch.object(fs, '_allm_call_with_retries',
+                      new=AsyncMock(return_value={"facts": ["流水账"]})):
+        strict = await fs._allm_extract_facts(
+            "小天", [_FakeMessage("今天没啥事")],
+            treat_malformed_as_failure=True,
+        )
+        lenient = await fs._allm_extract_facts("小天", [_FakeMessage("今天没啥事")])
+    # strict（daily 导入）：畸形 = 失败天，可重试、不 checkpoint。
+    assert strict is None
+    # 非 strict（对话路径）：容忍为 []，行为与 pre-#2394 逐字节一致。
+    assert lenient == []
+
+
 # ── S7: Stage-2 target_id validation rejects hallucinations ─────────
 
 

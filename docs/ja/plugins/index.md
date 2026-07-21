@@ -86,6 +86,7 @@ plugin/plugins/
 ## クイックリンク
 
 - [クイックスタート](./quick-start) — 5 分で最初のプラグインを作成
+- [ロールバック可能なローカル更新](./safe-local-upgrades) — install plan、明示確認、profile 保持、失敗時の復元
 - [v0.9 移行](./migration-v0.9) — 削除済み API と正確な移行先
 - [SDK リファレンス](./sdk-reference) — ベースクラス、コンテキスト API、Result 型
 - [デコレーター](./decorators) — 利用可能なすべてのデコレーター

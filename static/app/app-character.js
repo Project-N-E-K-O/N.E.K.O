@@ -566,8 +566,11 @@
                 window.live2dManager.pixi_app.ticker.stop();
             }
 
-            // 停止 VRM 渲染循环
-            if (window.vrmManager && window.vrmManager._animationFrameId) {
+            // 停止 VRM 渲染循环（走 pauseRendering：空闲低频模式下 rAF id 为
+            // null，裸字段取消管不到 interval，会让旧模型在后台永久渲染）
+            if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                window.vrmManager.pauseRendering();
+            } else if (window.vrmManager && window.vrmManager._animationFrameId) {
                 cancelAnimationFrame(window.vrmManager._animationFrameId);
                 window.vrmManager._animationFrameId = null;
             }
@@ -667,8 +670,10 @@
                 }
 
                 if (window.vrmManager) {
-                    // 1. 停止动画循环
-                    if (window.vrmManager._animationFrameId) {
+                    // 1. 停止动画循环（走 pauseRendering，理由同上：兼容空闲低频模式）
+                    if (typeof window.vrmManager.pauseRendering === 'function') {
+                        window.vrmManager.pauseRendering();
+                    } else if (window.vrmManager._animationFrameId) {
                         cancelAnimationFrame(window.vrmManager._animationFrameId);
                         window.vrmManager._animationFrameId = null;
                     }
@@ -1215,10 +1220,15 @@
                 console.log('[猫娘切换] VRM模型加载完成');
                 resetAvatarLockForCharacterSwitch('vrm');
 
-                // 【关键修复】确保VRM渲染循环已启动（loadModel内部会调用startAnimation，但为了保险再次确认）
+                // 【关键修复】确保VRM渲染循环已启动。历史上这里调用的
+                // startAnimation() 在 VRMManager 上并不存在（typeof 守卫下静默
+                // no-op）；真正的恢复 API 是 resumeRendering()——空闲低频模式引入
+                // pauseRendering 停链后，这条兜底必须真的能把循环拉起来。
                 if (!window.vrmManager._animationFrameId) {
                     console.log('[猫娘切换] VRM渲染循环未启动，手动启动');
-                    if (typeof window.vrmManager.startAnimation === 'function') {
+                    if (typeof window.vrmManager.resumeRendering === 'function') {
+                        window.vrmManager.resumeRendering();
+                    } else if (typeof window.vrmManager.startAnimation === 'function') {
                         window.vrmManager.startAnimation();
                     }
                 } else {
@@ -1966,10 +1976,15 @@
                     if (ticker && !ticker.started) ticker.start();
                 } catch (_e) { /* ignore */ }
                 try {
-                    if (window.vrmManager
-                        && !window.vrmManager._animationFrameId
-                        && typeof window.vrmManager.startAnimation === 'function') {
-                        window.vrmManager.startAnimation();
+                    // rollback 恢复：startAnimation 在 VRMManager 上不存在（历史
+                    // 遗留 no-op），切换失败后旧 VRM 会被 pauseRendering 冻住——
+                    // 改用真实的 resumeRendering() 恢复渲染循环
+                    if (window.vrmManager && !window.vrmManager._animationFrameId) {
+                        if (typeof window.vrmManager.resumeRendering === 'function') {
+                            window.vrmManager.resumeRendering();
+                        } else if (typeof window.vrmManager.startAnimation === 'function') {
+                            window.vrmManager.startAnimation();
+                        }
                     }
                 } catch (_e) { /* ignore */ }
                 // MMD rollback 恢复：清理阶段为防 MMD→非 MMD 切换中途失败让模型区空白，

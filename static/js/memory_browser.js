@@ -1686,6 +1686,14 @@
                     warnings: preview.warning_count
                 }
             );
+            if (preview.counts.daily) {
+                // daily 日记在 commit 阶段经 LLM 抽取，最终 fact 数会与 preview 不同。
+                confirmation += '\n\n' + translate(
+                    'memory.externalImportDailyNote',
+                    'Daily journals ({{daily}}) are extracted into facts by an LLM on import; the final fact count may differ from this preview.',
+                    { daily: preview.counts.daily }
+                );
+            }
             if (Array.isArray(preview.warnings) && preview.warnings.length) {
                 const warningDetails = preview.warnings.slice(0, 5).map(item => {
                     const patterns = Array.isArray(item.patterns) ? item.patterns.join(', ') : '';
@@ -1698,13 +1706,20 @@
                 return;
             }
             payload.acknowledge_warnings = true;
-            // 预估融合耗时：persona 融合按 entity(neko/master)分组，每组一次 LLM
-            // 往返，facts 不调 LLM。据「调用次数 × 常数 + 候选 token」保守估时（宁可
-            // 高估），并固定标注 240s 后端上限。纯 facts 导入(0 次调用)不显示预估。
+            // 预估融合耗时：persona 融合按 entity(neko/master)分组每组一次 LLM 往返，
+            // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
+            // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
+            // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
+            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
-            const etaSeconds = fusionCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(fusionCalls * 10 + personaTokens / 300)))
+            const dailyCalls = Number(preview.daily_extraction_calls) || 0;
+            const dailyTokens = Number(preview.daily_candidate_tokens) || 0;
+            const llmCalls = fusionCalls + dailyCalls;
+            const llmTokens = personaTokens + dailyTokens;
+            const etaSeconds = llmCalls > 0
+                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
@@ -1744,22 +1759,22 @@
             if (!commitResponse.ok || !result.success) {
                 if (result.error_code === 'external_import_partial') {
                     const partial = result.partial_import || {};
-                    // persona.json 已写了 added_persona 个 entity → 即使整体 partial，
-                    // 也要广播 memory_edited，否则主聊天窗口继续用过期 persona 上下文
-                    // （重试延迟 / 持续失败时尤甚）(Codex P2)。
-                    if (partial.added_persona > 0 && partial.character_name) {
+                    // persona / facts 任一已落盘 → 即使整体 partial 也要广播
+                    // memory_edited，否则主聊天窗口继续用过期记忆上下文（daily
+                    // 失败但 MEMORY.md 已写入时尤甚）(Codex P2 / CodeRabbit)。
+                    if ((partial.added_persona > 0 || partial.added_facts > 0) && partial.character_name) {
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
                     throw new Error(translate(
                         'memory.externalImportPartial',
-                        'The import stopped after {{persona}} persona entries were saved. Retry to finish; duplicates will be skipped.',
-                        { persona: partial.added_persona || 0 }
+                        'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
+                        { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
                     ));
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
                     const big = result.partial_import || {};
-                    if (big.added_persona > 0 && big.character_name) {
+                    if ((big.added_persona > 0 || big.added_facts > 0) && big.character_name) {
                         broadcastExternalMemoryEdited(big.character_name);
                     }
                     throw new Error(translate(

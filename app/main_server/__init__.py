@@ -511,6 +511,7 @@ _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
+    "/api/runtime/shutdown",
     "/api/config/steam_language",
     "/api/system/status",
 }
@@ -989,7 +990,7 @@ async def on_startup():
             init_one_catgirl=init_one_catgirl,
             remove_one_catgirl=remove_one_catgirl,
             request_app_shutdown=lambda: asyncio.create_task(
-                request_application_shutdown_async()
+                request_application_shutdown_async(reason="storage_location_restart")
             ),
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
@@ -1281,14 +1282,14 @@ importlib.import_module(
 ).runtime.get_start_config = get_start_config
 
 
-async def request_application_shutdown_async():
+async def request_application_shutdown_async(*, reason: str = "application_request"):
     """Request an application-level shutdown compatible with both launcher modes."""
     current_config = get_start_config()
     request_runtime_shutdown = current_config.get("request_runtime_shutdown")
     if callable(request_runtime_shutdown):
         try:
             await asyncio.sleep(0.5)
-            result = request_runtime_shutdown()
+            result = request_runtime_shutdown(reason=reason)
             if inspect.isawaitable(result):
                 await result
             return
@@ -1348,6 +1349,9 @@ async def shutdown_server_async():
 importlib.import_module(
     f"{__package__}._shared"
 ).runtime.shutdown_server_async = shutdown_server_async
+importlib.import_module(
+    f"{__package__}._shared"
+).runtime.request_application_shutdown_async = request_application_shutdown_async
 
 
 # Steam 创意工坊管理相关API路由
