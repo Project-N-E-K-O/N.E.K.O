@@ -75,7 +75,7 @@ dummy 不进入持久化 Core 配置和设置 UI，也不会成为未实现 Core
 
 ## 阶段边界与当前集成
 
-以上接口与冻结行为描述 Phase 1/2 建立的公共契约。当前 Phase 3 在该契约上提供唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker、GLM/Gemini 分段 ASR worker 和 Soniox 流式 worker。Step/Grok 在完成凭据联调和 WSS smoke 前保持 `blocked_credentials`；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，Soniox 则以供应商 `<end>` 为权威终点。
+以上接口与冻结行为描述 Phase 1/2 建立的公共契约。当前 Phase 3 在该契约上提供唯一路由表、dummy worker、Qwen/OpenAI/Step/Grok WSS worker、GLM/Gemini 分段 ASR worker 和 Soniox 流式 worker。Step 在完成凭据联调和 WSS smoke 前保持 `blocked_credentials`；Grok 已通过有效凭据下的单轮、多轮和重连 WSS 验收，registry 标记为 `implemented`；GLM/Gemini 由会话级 Voice Turn Adapter 为需要 Smart Turn 的路由提供断句，Soniox 则以供应商 `<end>` 为权威终点。
 
 Phase 1/2 原本不修改小游戏、`game_router`、`websocket_router.py`、现有 `streaming.py`、`OmniRealtimeClient`、普通语音链路或生产开关；这是历史阶段边界，不是当前集成状态。Phase 3 已接入独立 ASR 会话生命周期和 Realtime Arbiter，并将有效 final 通过既有 Omni 文本入口注入一次、请求一次响应；小游戏与 `game_router` 仍不在本阶段范围内。
 

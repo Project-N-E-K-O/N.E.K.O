@@ -146,8 +146,10 @@ Adapter and releases the corresponding runtime resources.
 
 ## Outstanding real-service acceptance
 
-- Grok has a worker implementation but remains `blocked_credentials` until a
-  real credential run is accepted.
+- Grok's provider-endpoint worker is `implemented` after valid-credential
+  single-turn, reconnecting multi-turn, and continuous multi-turn WSS acceptance.
+  Provider-native Smart Turn remains an optional later quality evaluation and
+  does not load N.E.K.O SmartTurn.
 - Qwen Intl uses its own credential slot, but permission/scope validation with
   a real international credential is still pending.
 - Soniox still needs the overseas real-speech language/noise matrix and the
