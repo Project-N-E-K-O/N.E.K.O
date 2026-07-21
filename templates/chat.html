@@ -709,6 +709,9 @@
 
         // BALL: 折叠态毛线球窗口总尺寸（CSS .minimized 51px 内容 + 32px Electron 窗口边框/透明余量）
         var BALL = 83;
+        // NEKO-PC full 折叠由主进程落成 88×88；保留 2px DWM/缩放取整容差。
+        // 不能复用 BALL + 4（87），否则页面重载时会把真实 88px 球误判为展开窗口并撑高。
+        var ELECTRON_COLLAPSED_MAX_SIZE = 90;
         var MIN_W = 300;
         var MIN_H_BASE = 200;
         // GalGame 模式开启时输入框需要额外 ~110px 容纳 A/B/C 选项 + 间距，
@@ -759,7 +762,7 @@
                 W.getBounds().then(function(b) {
                     if (!b) return;
                     if (isReactElectronCollapsed()) return;
-                    if (b.width <= BALL + 4 && b.height <= BALL + 4) return;
+                    if (b.width <= ELECTRON_COLLAPSED_MAX_SIZE && b.height <= ELECTRON_COLLAPSED_MAX_SIZE) return;
                     if (b.height >= minH) return;
                     W.setBounds(b.x, b.y, b.width, minH);
                 });
