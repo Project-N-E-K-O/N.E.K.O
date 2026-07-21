@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url'
 import { isNoindexRoute } from './indexing-policy.mjs'
 
 const SITE_ORIGIN = 'https://project-neko.online'
+const GA4_MEASUREMENT_ID = 'G-N4QZK4PHE3'
+const GA4_BOOTSTRAP = `
+window.dataLayer = window.dataLayer || [];
+function gtag(){window.dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', '${GA4_MEASUREMENT_ID}');
+`.trim()
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC_EXCLUDE = new Set([
   'README_en.md',
@@ -558,6 +565,14 @@ export default defineConfig({
 
   head: [
     ['link', { rel: 'icon', href: '/favicon.ico' }],
+    [
+      'script',
+      {
+        async: '',
+        src: `https://www.googletagmanager.com/gtag/js?id=${GA4_MEASUREMENT_ID}`,
+      },
+    ],
+    ['script', {}, GA4_BOOTSTRAP],
   ],
 
   // Custom domain: project-neko.online → base must be '/'
