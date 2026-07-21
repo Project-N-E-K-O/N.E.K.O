@@ -74,6 +74,7 @@ class MCPServerConfig:
     url: Optional[str] = None
     env: Dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -466,6 +467,7 @@ class MCPClient:
             headers = {
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
+                **self.config.headers,
             }
             
             async with self._http_session.post(
@@ -570,6 +572,7 @@ class MCPClient:
             headers = {
                 "Accept": "text/event-stream",
                 "Cache-Control": "no-cache",
+                **self.config.headers,
             }
 
             response = await self._http_session.get(
@@ -819,7 +822,7 @@ class MCPClient:
             async with session.post(
                 message_url,
                 json=payload,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **self.config.headers},
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 if resp.status >= 400:
@@ -866,6 +869,7 @@ class MCPClient:
         headers = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
+            **self.config.headers,
         }
         # 添加 session ID（如果有）
         if hasattr(self, '_http_session_id') and self._http_session_id:
@@ -946,7 +950,7 @@ class MCPClient:
             async with session.post(
                 message_url,
                 json=message,
-                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
+                headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream", **self.config.headers},
                 timeout=aiohttp.ClientTimeout(total=30.0),
             ) as resp:
                 if resp.status >= 400:
@@ -1428,6 +1432,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         args: Optional[List[str]] = None,
         url: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
+        headers: Optional[Dict[str, str]] = None,
         enabled: bool = True,
     ) -> Dict[str, object]:
         server_cfg: Dict[str, object] = {
@@ -1442,17 +1447,21 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             server_cfg["url"] = url
         if env:
             server_cfg["env"] = dict(env)
+        if headers:
+            server_cfg["headers"] = dict(headers)
         return server_cfg
 
     def _is_same_server_config(self, current: object, incoming: Dict[str, object]) -> bool:
         if not isinstance(current, dict):
             return False
+        current_headers = current.get("headers")
         normalized_current = self._normalize_server_config_payload(
             transport=str(current.get("transport", "")),
             command=str(current["command"]) if isinstance(current.get("command"), str) else None,
             args=list(current["args"]) if isinstance(current.get("args"), list) else None,
             url=str(current["url"]) if isinstance(current.get("url"), str) else None,
             env=dict(current["env"]) if isinstance(current.get("env"), dict) else None,
+            headers=dict(current_headers) if isinstance(current_headers, dict) else None,
             enabled=self._coerce_bool(current.get("enabled", True), True),
         )
         return normalized_current == incoming
@@ -1769,6 +1778,9 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             env_raw = server_cfg.get("env", {})
             env = dict(env_raw) if isinstance(env_raw, dict) else {}
             
+            headers_raw = server_cfg.get("headers", {})
+            headers = dict(headers_raw) if isinstance(headers_raw, dict) else {}
+            
             enabled = self._coerce_bool(server_cfg.get("enabled", True), True)
             
             config = MCPServerConfig(
@@ -1778,6 +1790,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                 args=[str(a) for a in args],
                 url=url,
                 env={str(k): str(v) for k, v in env.items()},
+                headers={str(k): str(v) for k, v in headers.items()},
                 enabled=enabled,
             )
             
@@ -2011,6 +2024,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
                     "type": "object",
                     "description": tr("entries.addServer.fields.env.description", default="Environment variables")
                 },
+                "headers": {
+                    "type": "object",
+                    "description": tr("entries.addServer.fields.headers.description", default="Custom HTTP headers for SSE/HTTP transport")
+                },
                 "enabled": {
                     "type": "boolean",
                     "description": tr("entries.addServer.fields.enabled.description", default="Whether to enable this server")
@@ -2031,6 +2048,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         args: Optional[List[str]] = None,
         url: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
+        headers: Optional[Dict[str, str]] = None,
         enabled: bool = True,
         auto_connect: bool = True,
         **_
@@ -2053,6 +2071,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             args=args,
             url=url,
             env=env,
+            headers=headers,
             enabled=enabled,
         )
 
