@@ -367,6 +367,8 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             await self.attention_gate_service.shutdown()
         if self._group_digest_task and not self._group_digest_task.done():
             self._group_digest_task.cancel()
+        if getattr(self, "_purge_task", None) and not self._purge_task.done():
+            self._purge_task.cancel()
         if self._session_housekeeping_task:
             self._session_housekeeping_task.cancel()
             try:
@@ -670,18 +672,18 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         webui_lines = await self.napcat_service._read_napcat_webui_lines()
         return Ok({"url": url, "lines": webui_lines})
 
-    @plugin_entry(
-        id="get_attention_state",
-        name=tr("entries.get_attention_state.name", default="获取注意力状态"),
-        description=tr("entries.get_attention_state.description", default="返回所有群聊的注意力分数和焦点状态。"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-    )
     @plugin_entry(id="get_buffer_state")
     async def get_buffer_state(self, **_):
         if not self.reply_buffer_service:
             return Ok({"pending": [], "count": 0})
         return Ok(self.reply_buffer_service.get_state())
 
+    @plugin_entry(
+        id="get_attention_state",
+        name=tr("entries.get_attention_state.name", default="获取注意力状态"),
+        description=tr("entries.get_attention_state.description", default="返回所有群聊的注意力分数和焦点状态。"),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+    )
     async def get_attention_state(self, **_):
         if not self.attention_service:
             return Ok({"enabled": False, "groups": [], "focus_group_id": "", "global_sleep": False})

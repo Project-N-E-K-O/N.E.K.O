@@ -450,7 +450,7 @@ class QQClient(QQConnectionBase):
             user_nickname = sender_info.get("nickname") or sender_info.get("card") or None
 
             # 语音消息标注
-            content = raw_msg.get("raw_message", "")
+            content = str(raw_msg.get("raw_message") or "")
             has_record = any(
                 isinstance(s, dict) and s.get("type") == "record"
                 for s in (raw_msg.get("message") or [])

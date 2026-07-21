@@ -21,21 +21,28 @@ from typing import Any, Optional
 class QQFatigueService:
     """疲劳计算 + 苏醒/睡眠状态机"""
 
+    # ── 配置读取辅助 ──
+    def _cfg(self, key: str, default):
+        return (self.plugin._qq_settings or {}).get(key, default)
+
     # ── 昼夜节律参数 ──
-    CIRCADIAN_PEAK_HOUR = 15       # 精力峰值时间（下午3点）
-    CIRCADIAN_LOW_HOUR = 3         # 精力低谷时间（凌晨3点）
-    CIRCADIAN_PEAK_FATIGUE = 0     # 峰值时的疲劳值
-    CIRCADIAN_LOW_FATIGUE = 40     # 低谷时的疲劳值
+    @property
+    def CIRCADIAN_PEAK_HOUR(self): return self._cfg("fatigue_circadian_peak_hour", 15)
+    @property
+    def CIRCADIAN_LOW_HOUR(self): return self._cfg("fatigue_circadian_low_hour", 3)
+    CIRCADIAN_PEAK_FATIGUE = 0
+    CIRCADIAN_LOW_FATIGUE = 40
 
     # ── 会话疲劳参数 ──
-    SESSION_FATIGUE_PER_REPLY = 5.0    # 每条回复增加的疲劳
-    SESSION_RECOVERY_PER_SECOND = 3.0 / 60  # 每秒恢复量（3/分钟）
-    SESSION_FATIGUE_CAP = 50          # 会话疲劳上限
+    @property
+    def SESSION_FATIGUE_PER_REPLY(self): return self._cfg("fatigue_session_per_reply", 5.0)
+    SESSION_RECOVERY_PER_SECOND = 3.0 / 60
+    SESSION_FATIGUE_CAP = 50
 
     # ── 全局负载参数 ──
-    GLOBAL_FATIGUE_WINDOW = 600       # 统计窗口（秒）
-    GLOBAL_FATIGUE_PER_MSG = 0.8      # 每条消息的疲劳增量
-    GLOBAL_FATIGUE_CAP = 40           # 全局疲劳上限
+    GLOBAL_FATIGUE_WINDOW = 600
+    GLOBAL_FATIGUE_PER_MSG = 0.8
+    GLOBAL_FATIGUE_CAP = 40
 
     # ── 动态睡眠参数 ──
     _bedtime_hour: float = 23.0       # 动态就寝时间（会根据疲劳调整）
@@ -48,7 +55,7 @@ class QQFatigueService:
     _bedtime_grumpiness_seconds: float = 600.0  # 起床气持续 10 分钟
 
     # ── 苏醒/睡眠参数 ──
-    AWAKE_IDLE_TIMEOUT = 10.0         # 苏醒状态下空闲多久后进入睡眠（秒）
+    AWAKE_IDLE_TIMEOUT = 120.0        # 苏醒状态下空闲多久后进入睡眠（秒）
 
     # ── 疲劳 → 提示词注入映射 ──
     _FATIGUE_TIERS = [

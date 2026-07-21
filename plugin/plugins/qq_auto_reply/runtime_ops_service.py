@@ -33,6 +33,8 @@ class QQRuntimeOpsService:
             if self.plugin.attention_service and self.plugin.qq_client.needs_attention:
                 await self.plugin.attention_service.start_decay_loop()
             self.plugin._emit_log("INFO", "已连接，启动消息处理循环")
+            if self.plugin.attention_gate_service:
+                await self.plugin.attention_gate_service.start_proactive_loop()
             self.plugin._startup_error = None
             self.plugin._running = True
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())

@@ -67,7 +67,14 @@ class QQReplyDeliveryNode:
     async def _send_text(self, plan: QQDeliveryPlan, block: QQMessageBlock, text: str) -> None:
         if not text:
             return
-        if plan.target_type == "group":
+        mode = self.plugin._get_reply_mode()
+        if mode == "voice":
+            # voice-only 模式：走 TTS 发送语音
+            if plan.target_type == "group":
+                await self.plugin._deliver_group_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
+            else:
+                await self.plugin._deliver_private_reply(plan.target_id, text, fallback_to_text_on_voice_failure=plan.fallback_to_text_on_voice_failure)
+        elif plan.target_type == "group":
             await self.plugin.qq_client.send_group_message(plan.target_id, text)
         else:
             await self.plugin.qq_client.send_message(plan.target_id, text)
@@ -105,3 +112,9 @@ class QQReplyDeliveryNode:
                 await self.plugin.qq_client.send_private_record(plan.target_id, file_uri)
         except Exception:
             self.plugin.logger.warning("语音发送失败", exc_info=True)
+            if plan.fallback_to_text_on_voice_failure and block.record:
+                text = block.record
+                if plan.target_type == "group":
+                    await self.plugin.qq_client.send_group_message(plan.target_id, text)
+                else:
+                    await self.plugin.qq_client.send_message(plan.target_id, text)

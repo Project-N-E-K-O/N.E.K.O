@@ -231,15 +231,27 @@ class QQReplyPipelineRunner:
             return False
 
     async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None) -> QQDeliveryResult | None:
-        # 有缓冲服务时走延迟发送，否则直接发
-        if self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
+        # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
+        skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
+        if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
             raw = (outcome.raw_reply_text if outcome else "") or ""
             clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
+            # 默认等待加随机抖动（±40%），避免每次都一样
+            if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:
+                import random
+                wait_sec = max(1.5, wait_sec * random.uniform(0.6, 1.4))
             # 私聊默认等更久（对方在讲故事/连续输出）
-            if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS and not request.is_group:
-                wait_sec = QQReplyBufferService.DEFAULT_WAIT_PRIVATE
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
+            # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）
+            has_content = any(
+                b.text or b.record or b.sticker or b.poke or b.emoji
+                for b in (delivery_plan.blocks or [])
+            )
+            if not has_content and not clean:
+                # LLM 决定不回复（<msg></msg>），跳过缓冲
+                from .pipeline_models import QQDeliveryResult
+                return QQDeliveryResult(delivered=False, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=None)
             session_key = self.plugin._build_session_key(
                 sender_id=request.sender_id,
                 is_group=request.is_group,

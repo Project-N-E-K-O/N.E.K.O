@@ -53,90 +53,6 @@ class QQAttentionGateService:
         if fatigue:
             fatigue.mark_active(f"group:{group_id}")
 
-    # ── 连珠炮缓冲：高速聊天时不逐条回复，等讲完再总结 ──
-
-    _RAPID_FIRE_WINDOW = 5.0          # 5 秒窗口
-    _RAPID_FIRE_THRESHOLD = 3         # 窗口内 ≥3 条消息 → 进入缓冲模式
-    _RAPID_FIRE_FLUSH_IDLE = 3.0      # 暂停 3 秒后冲刷缓冲区
-
-    def _in_rapid_fire(self, target_id: str, *, is_private: bool = False) -> bool:
-        """检测是否处于连珠炮模式（短时间内多条消息）。
-
-        私聊阈值更宽松：窗口更长，需要更多条才触发。
-        """
-        now = __import__("time").time()
-        if not hasattr(self, "_rapid_timestamps"):
-            self._rapid_timestamps: dict[str, list[float]] = {}
-        ts_list = self._rapid_timestamps.setdefault(str(target_id), [])
-        window = 8.0 if is_private else self._RAPID_FIRE_WINDOW      # 私聊 8s / 群聊 5s
-        threshold = 4 if is_private else self._RAPID_FIRE_THRESHOLD  # 私聊 4条 / 群聊 3条
-        ts_list[:] = [t for t in ts_list if now - t < window]
-        ts_list.append(now)
-        return len(ts_list) >= threshold
-
-    def _is_rapid_fire_paused(self, group_id: str) -> bool:
-        """检测连珠炮是否已暂停（可以冲刷缓冲区了）。"""
-        if not hasattr(self, "_rapid_timestamps"):
-            return False
-        ts_list = self._rapid_timestamps.get(str(group_id), [])
-        if not ts_list:
-            return False
-        return __import__("time").time() - max(ts_list) >= self._RAPID_FIRE_FLUSH_IDLE
-
-    def _clear_rapid_fire(self, group_id: str) -> None:
-        if hasattr(self, "_rapid_timestamps"):
-            self._rapid_timestamps.pop(str(group_id), None)
-
-    async def _check_rapid_fire_flush(self) -> None:
-        """检查是否有群聊/私聊的连珠炮已暂停，需要冲刷缓冲区做总结回复。"""
-        attention = self.plugin.attention_service
-        if not hasattr(self, "_rapid_timestamps"):
-            return
-
-        for target_id in list(self._rapid_timestamps.keys()):
-            if not self._is_rapid_fire_paused(target_id):
-                continue
-
-            # 判断是群聊还是私聊
-            is_group = target_id.isdigit() or (attention and attention._enabled())
-            # 群聊：只处理焦点群；私聊：直接处理
-            if is_group and attention and attention._enabled():
-                focus = attention.get_focus_group()
-                if focus != target_id:
-                    self._clear_rapid_fire(target_id)
-                    continue
-
-            self._logger.info(f"[RapidFire] {'群' if is_group else '私聊'} {target_id} 连珠炮暂停，冲刷缓冲区")
-            self._clear_rapid_fire(target_id)
-
-            from .pipeline_models import QQReplyRequest
-            if is_group:
-                request = QQReplyRequest(
-                    message_text="[系统] 刚才群里聊得很热闹，大家说了很多东西。请你用一两句话总结一下刚才的话题，自然回复，不要逐条@人。",
-                    sender_id=self.plugin._admin_qq or "0",
-                    is_group=True, group_id=target_id,
-                    is_at_bot=True, source_kind="rapid_fire_flush",
-                    group_scene_mode="group_collective",
-                    fallback_to_text_on_voice_failure=True, ephemeral_session=False,
-                )
-            else:
-                request = QQReplyRequest(
-                    message_text="[系统] 刚才对方连续发了好几条消息，请你总结一下对方在说什么，给一个自然的回复。",
-                    sender_id=target_id,
-                    is_group=False,
-                    source_kind="rapid_fire_flush",
-                    fallback_to_text_on_voice_failure=True, ephemeral_session=False,
-                )
-            try:
-                outcome = await self.plugin.reply_pipeline.run(request)
-                if outcome.action == "reply" and outcome.reply_text:
-                    self._logger.info(f"[RapidFire] 总结回复: {outcome.reply_text[:50]}...")
-                    self.plugin.runtime_service.record_pipeline_outcome(
-                        source="rapid_fire_flush", request=request, outcome=outcome,
-                    )
-            except Exception:
-                self._logger.warning("[RapidFire] 总结回复失败", exc_info=True)
-
     # ── 主动发言：焦点群沉默超时后触发 ──
 
     _PROACTIVE_CHECK_INTERVAL = 60    # 每 60 秒检查一次
@@ -146,8 +62,10 @@ class QQAttentionGateService:
         return max(0, val)
 
     async def start_proactive_loop(self) -> None:
-        """启动主动发言后台循环。"""
+        """启动主动发言后台循环。重复调用安全。"""
         import asyncio
+        if getattr(self, "_proactive_task", None) and not self._proactive_task.done():
+            return
         self._proactive_task = asyncio.create_task(self._proactive_loop())
 
     async def stop_proactive_loop(self) -> None:
@@ -168,7 +86,6 @@ class QQAttentionGateService:
                 break
             try:
                 await self._check_proactive_speech()
-                await self._check_rapid_fire_flush()
             except Exception:
                 self._logger.warning("主动发言检查异常", exc_info=True)
 
@@ -267,6 +184,7 @@ class QQAttentionGateService:
         is_at_bot: bool = False,
         message_text: str = "",
         message_id: str = "",
+        quoted_message_id: str = "",
         sender_nickname: str = "",
         timestamp: int = 0,
     ) -> GateDecision:
@@ -318,8 +236,11 @@ class QQAttentionGateService:
             self._wake_if_sleeping(normalized_group_id)
             return GateDecision("reply", reason=f"keyword:{category}", force_reply=True)
 
-        # 5. 回复 bot 的消息 → 唤醒
-        is_reply_to_bot = bool(message_id and self.plugin.qq_client and message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {}))
+        # 5. 回复 bot 的消息 → 唤醒（检查 quoted_message_id）
+        is_reply_to_bot = bool(
+            quoted_message_id and self.plugin.qq_client
+            and quoted_message_id in getattr(self.plugin.qq_client, "_sent_message_ids", {})
+        )
         if is_reply_to_bot:
             self._wake_if_sleeping(normalized_group_id)
 
@@ -428,7 +349,7 @@ class QQAttentionGateService:
 
         max_messages = int((self.plugin._qq_settings or {}).get("retroactive_review_max_messages", 30) or 30)
 
-        self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(ignored)} 条忽略消息，开始回溯")
+        self._logger.info(f"[RetroReview] 群 {group_id} 有 {len(unreviewed)} 条未审核消息，开始回溯")
 
         # 2. 生成摘要 → LLM 挑选
         summary = self._build_ignored_summary(unreviewed)
@@ -449,9 +370,9 @@ class QQAttentionGateService:
         # 3. 逐条补回
         replied_ids: list[str] = []
         for idx in pick_indices:
-            if idx < 1 or idx > len(ignored):
+            if idx < 1 or idx > len(unreviewed):
                 continue
-            msg = ignored[idx - 1]
+            msg = unreviewed[idx - 1]
             try:
                 did_reply = await self._reply_to_ignored_message(group_id, msg)
                 if did_reply:

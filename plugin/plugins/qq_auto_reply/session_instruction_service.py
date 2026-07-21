@@ -224,11 +224,11 @@ class QQSessionInstructionService:
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_open_plat = self.plugin.qq_client and not self.plugin.qq_client.needs_attention if self.plugin.qq_client else False
         if is_open_plat:
-            format_section = t("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM)
+            format_section = self._resolve_static_layer("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM, user_language)
         elif strategy_mode == "neko_dynamic":
-            format_section = t("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC)
+            format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
         else:
-            format_section = t("format_prompt_section", FORMAT_PROMPT_SECTION)
+            format_section = self._resolve_static_layer("format_prompt_section", FORMAT_PROMPT_SECTION, user_language)
         if is_open_plat or strategy_mode == "neko_dynamic":
             format_section = format_section.format(
                 emoji_catalog=self._load_emoji_catalog(),

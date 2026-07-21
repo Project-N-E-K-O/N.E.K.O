@@ -214,7 +214,8 @@ class QQMessageDispatcher:
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
-            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count)
+            current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
+            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count, current_message_id=current_message_id)
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
@@ -232,6 +233,10 @@ class QQMessageDispatcher:
             if session_key in self.plugin._user_sessions:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
+            # 群聊预缓冲（非 @ 消息）：LLM 生成前跳过 pipeline
+            if not is_at_bot and getattr(self.plugin, "reply_buffer_service", None):
+                if self.plugin.reply_buffer_service.pre_buffer(session_key, message_text, sender_id, True, group_id):
+                    return
             await self.handle_group_message(
                 group_id,
                 sender_id,
@@ -249,7 +254,7 @@ class QQMessageDispatcher:
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0):
+    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = ""):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
@@ -258,6 +263,11 @@ class QQMessageDispatcher:
                 self.plugin._emit_log("INFO", f"开放平台自动设置管理员: {sender_id}")
                 try: await self.plugin.settings_service.persist_business_config()
                 except Exception: pass
+        # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
+        if getattr(self.plugin, "reply_buffer_service", None):
+            session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
+            if self.plugin.reply_buffer_service.pre_buffer(session_key, message_text, sender_id, False, ""):
+                return
         self.plugin._emit_log("INFO", f"私聊 pipeline 开始: from={sender_id} text={message_text[:40]}")
         request = QQReplyRequest(
             message_text=message_text,
@@ -270,10 +280,8 @@ class QQMessageDispatcher:
             forward_sub_count=forward_sub_count,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
-        if outcome.action == "reply" and outcome.reply_text:
-            mid = request.current_message_id if hasattr(request, "current_message_id") else ""
-            if mid and hasattr(self.plugin, "backlog_service") and self.plugin.backlog_service:
-                await self.plugin.backlog_store.mark_message_reviewed(mid)
+        if outcome.action == "reply" and outcome.reply_text and current_message_id:
+            await self.plugin.backlog_store.mark_message_reviewed(current_message_id)
         self.plugin._emit_log("INFO", f"私聊 pipeline 结果: action={outcome.action} text={'有' if outcome.reply_text else '空'}")
         self.plugin.runtime_service.record_pipeline_outcome(source=request.source_kind, request=request, outcome=outcome)
 
@@ -302,6 +310,7 @@ class QQMessageDispatcher:
                 is_at_bot=is_at_bot,
                 message_text=message_text,
                 message_id=current_message_id,
+                quoted_message_id=quoted_message_id,
                 sender_nickname=user_nickname or "",
                 timestamp=message_timestamp,
             )

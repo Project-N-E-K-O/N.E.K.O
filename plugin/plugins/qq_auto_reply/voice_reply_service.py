@@ -59,6 +59,55 @@ class QQVoiceReplyService:
             self.plugin.logger.warning(f"读取当前猫娘 voice_id 失败: {exc}")
             return ""
 
+    async def _synthesize_local_tts(self, text: str) -> tuple[bytes, str] | None:
+        """尝试本地 SoVITS/CosyVoice WebSocket TTS，成功返回 (wav_bytes, mime)，失败返回 None。"""
+        try:
+            from utils.config_manager import get_config_manager
+            cm = get_config_manager()
+            tts_config = cm.get_model_api_config("tts_custom")
+            base_url = str(tts_config.get("base_url", "")).strip()
+            if not base_url or (not base_url.startswith("ws://") and not base_url.startswith("wss://")):
+                return None
+
+            voice_id = await self.get_current_voice_id() or "default"
+            voice_name = str(tts_config.get("voice_name") or voice_id)
+
+            import websockets, json as _json, io, wave
+            ws_url = base_url.rstrip("/") + "/v1/audio/speech/stream"
+
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
+                await ws.send(_json.dumps({"voice": voice_name, "speed": 1.0}))
+                await ws.send(_json.dumps({"text": text}))
+                await ws.send(_json.dumps({"event": "end"}))
+
+                chunks: list[bytes] = []
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        chunks.append(msg)
+                    elif isinstance(msg, str):
+                        try:
+                            data = _json.loads(msg)
+                            if data.get("type") == "error":
+                                self.plugin.logger.warning(f"本地TTS错误: {data.get('message', '')}")
+                                return None
+                        except Exception:
+                            pass
+
+                if not chunks:
+                    return None
+
+                combined = b"".join(chunks)
+                out = io.BytesIO()
+                with wave.open(out, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(22050)
+                    wf.writeframes(combined)
+                return out.getvalue(), "audio/wav"
+        except Exception as e:
+            self.plugin.logger.warning(f"本地TTS失败: {e}")
+            return None
+
     async def synthesize_reply_voice_audio(self, text: str) -> tuple[bytes, str]:
         normalized_text = str(text or "").strip()
         if not normalized_text:
@@ -69,10 +118,18 @@ class QQVoiceReplyService:
             from main_logic.tts_client.workers.step import _adjust_free_tts_url, _build_step_tts_create_data
 
             config_manager = get_config_manager()
+
+            # 优先尝试本地 SoVITS/CosyVoice
+            local_result = await self._synthesize_local_tts(normalized_text)
+            if local_result:
+                return local_result
+
             voices = config_manager.get_voices_for_current_api()
             voice_id = await self.get_current_voice_id()
             if not voice_id:
-                raise RuntimeError("当前猫娘未配置 voice_id，无法发送语音")
+                active_native = get_active_realtime_native_provider_for_ui(config_manager)
+                if active_native:
+                    voice_id = active_native
             voice_data = voices.get(voice_id) if isinstance(voices, dict) else None
             provider = (voice_data or {}).get("provider", "")
             preview_language = "zh-CN"
@@ -212,6 +269,8 @@ class QQVoiceReplyService:
                 tts_api_config = config_manager.get_model_api_config("tts_custom")
             except Exception:
                 tts_api_config = {}
+            if not voice_id:
+                raise RuntimeError("未配置 voice_id 且无实时语音 provider，无法合成语音")
             preview_base_url = cosyvoice_base_url or tts_api_config.get("base_url", "")
             from utils.api_config_loader import get_cosyvoice_clone_model
             clone_model = (voice_data or {}).get("clone_model") or get_cosyvoice_clone_model(provider)

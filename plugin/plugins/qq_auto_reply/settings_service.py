@@ -154,6 +154,8 @@ class QQSettingsService:
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         success = await self.persist_business_config()
+        if self.plugin.attention_service:
+            self.plugin.attention_service.cleanup_stale_cache()
         if success:
             self.plugin._emit_log("INFO", "设置已保存到磁盘" + (" (需重启自动回复以应用新连接)" if self.plugin._running else ""))
         if self.plugin.qq_client:

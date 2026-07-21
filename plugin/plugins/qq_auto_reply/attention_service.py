@@ -164,11 +164,13 @@ class QQAttentionService:
         state = await self.plugin.backlog_store.load()
         attention_state = state.get("group_attention_state")
         self._cache = dict(attention_state) if isinstance(attention_state, dict) else {}
+        self.cleanup_stale_cache()
 
     def _current_time(self) -> int:
         return int(__import__("time").time())
 
     def _normalized_groups(self) -> list[str]:
+        """只读：返回信任列表 + 缓存中已有的群（不含清理逻辑）。"""
         groups: set[str] = set()
         if self.plugin.group_permission_mgr:
             for item in self.plugin.group_permission_mgr.list_groups():
@@ -176,18 +178,34 @@ class QQAttentionService:
                 normalized = str(gid or "").strip()
                 if normalized:
                     groups.add(normalized)
-        # 清理缓存中已不在信任列表的群
         for group_id in list(self._cache.keys()):
             if isinstance(group_id, str) and group_id.startswith("{"):
-                del self._cache[group_id]
                 continue
             normalized = str(group_id or "").strip()
             if normalized and not normalized.startswith("{"):
-                if normalized in groups:
-                    continue  # 在信任列表中，保留
-                # 不在信任列表，清除缓存
-                del self._cache[group_id]
+                groups.add(normalized)
         return sorted(groups)
+
+    def cleanup_stale_cache(self) -> int:
+        """显式清理不在信任列表中的缓存群，返回清理数。调用时机：load_cached_state / persist。"""
+        trust_groups: set[str] = set()
+        if self.plugin.group_permission_mgr:
+            for item in self.plugin.group_permission_mgr.list_groups():
+                gid = item.get("group_id", "") if isinstance(item, dict) else str(item or "")
+                normalized = str(gid or "").strip()
+                if normalized:
+                    trust_groups.add(normalized)
+        removed = 0
+        for group_id in list(self._cache.keys()):
+            if isinstance(group_id, str) and group_id.startswith("{"):
+                del self._cache[group_id]
+                removed += 1
+                continue
+            normalized = str(group_id or "").strip()
+            if normalized and not normalized.startswith("{") and normalized not in trust_groups:
+                del self._cache[group_id]
+                removed += 1
+        return removed
 
     def _load_state(self, group_id: str) -> QQGroupAttentionState:
         attention_state = self._cache.get(group_id)
@@ -668,6 +686,7 @@ class QQAttentionService:
     async def _persist(self) -> None:
         if not getattr(self.plugin, "backlog_store", None):
             return
+        self.cleanup_stale_cache()
         state = await self.plugin.backlog_store.load()
         state["group_attention_state"] = dict(self._cache)
         await self.plugin.backlog_store.save(state)
