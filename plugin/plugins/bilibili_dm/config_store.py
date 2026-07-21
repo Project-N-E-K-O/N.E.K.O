@@ -20,9 +20,10 @@ class BiliDMConfigStore:
     )
     VALID_PERMISSION_MODES = {"allow_list", "deny_list", "open"}
 
-    def __init__(self, base_dir: Path):
+    def __init__(self, base_dir: Path, *, logger: Any | None = None):
         self._path = Path(base_dir) / self.FILE_NAME
         self._lock = asyncio.Lock()
+        self._logger = logger
 
     @property
     def path(self) -> Path:
@@ -60,7 +61,9 @@ class BiliDMConfigStore:
         return max(minimum, min(maximum, parsed))
 
     @staticmethod
-    def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    def _bounded_float(
+        value: Any, default: float, minimum: float, maximum: float
+    ) -> float:
         try:
             parsed = float(value)
         except (TypeError, ValueError):
@@ -72,7 +75,9 @@ class BiliDMConfigStore:
         normalized = self.default_config()
         for field in self.CREDENTIAL_FIELDS:
             normalized[field] = str(raw.get(field) or "").strip()
-        normalized["permission_mode"] = self._permission_mode(raw.get("permission_mode"))
+        normalized["permission_mode"] = self._permission_mode(
+            raw.get("permission_mode")
+        )
         normalized["max_concurrent_messages"] = self._bounded_int(
             raw.get("max_concurrent_messages"), 3, 1, 20
         )
@@ -89,12 +94,22 @@ class BiliDMConfigStore:
         return normalized
 
     async def load(self) -> dict[str, Any]:
-        if not self._path.is_file():
-            return self.default_config()
-        payload = await read_json_async(self._path)
-        if not isinstance(payload, dict):
-            return self.default_config()
-        return self.normalize(payload)
+        async with self._lock:
+            if not self._path.is_file():
+                return self.default_config()
+            try:
+                payload = await read_json_async(self._path)
+            except (OSError, UnicodeError, TypeError, ValueError) as exc:
+                if self._logger is not None:
+                    self._logger.warning(
+                        f"读取 B站私信业务配置失败，已回退到默认配置: {type(exc).__name__}"
+                    )
+                return self.default_config()
+            if not isinstance(payload, dict):
+                if self._logger is not None:
+                    self._logger.warning("B站私信业务配置格式无效，已回退到默认配置")
+                return self.default_config()
+            return self.normalize(payload)
 
     async def create(self, initial: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return await self.save(dict(initial or {}))

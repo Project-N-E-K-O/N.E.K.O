@@ -13,8 +13,15 @@ import time
 from typing import Any, Dict, Optional
 
 from plugin.sdk.plugin import (
-    NekoPluginBase, lifecycle, neko_plugin, plugin_entry,
-    Ok, Err, SdkError, tr, ui,
+    NekoPluginBase,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    Ok,
+    Err,
+    SdkError,
+    tr,
+    ui,
 )
 
 from .bili_client import BiliDMClient
@@ -47,7 +54,7 @@ class BiliDMPlugin(NekoPluginBase):
         super().__init__(ctx)
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
-        self.config_store = BiliDMConfigStore(self.data_path())
+        self.config_store = BiliDMConfigStore(self.data_path(), logger=self.logger)
         self._settings: dict[str, Any] = self.config_store.default_config()
 
         # B站客户端
@@ -59,6 +66,7 @@ class BiliDMPlugin(NekoPluginBase):
         self._message_task: Optional[asyncio.Task] = None
         self._session_housekeeping_task: Optional[asyncio.Task] = None
         self._handler_tasks: set[asyncio.Task] = set()
+        self._lifecycle_lock = asyncio.Lock()
 
         # AI 会话管理
         self._user_sessions: dict[str, dict[str, Any]] = {}
@@ -99,7 +107,9 @@ class BiliDMPlugin(NekoPluginBase):
     def _apply_runtime_settings(self) -> None:
         settings = self._settings
         self._permission_mode = str(settings.get("permission_mode") or "allow_list")
-        self._max_concurrent_messages = max(1, int(settings.get("max_concurrent_messages") or 3))
+        self._max_concurrent_messages = max(
+            1, int(settings.get("max_concurrent_messages") or 3)
+        )
         self._message_concurrency = asyncio.Semaphore(self._max_concurrent_messages)
         self._ai_connect_timeout_seconds = max(
             1.0, float(settings.get("ai_connect_timeout_seconds") or 10.0)
@@ -121,7 +131,9 @@ class BiliDMPlugin(NekoPluginBase):
             logger=self.logger,
         )
 
-    async def _load_business_config(self, legacy: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def _load_business_config(
+        self, legacy: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         if await self.config_store.exists():
             self._settings = await self.config_store.load()
             return dict(self._settings)
@@ -138,6 +150,23 @@ class BiliDMPlugin(NekoPluginBase):
             self.logger.info("已将旧 plugin.toml 中的 B站私信配置迁移到插件数据目录")
         return dict(self._settings)
 
+    async def _initialize_permissions(self, legacy: dict[str, Any]) -> None:
+        """Load trusted users and persist the legacy fallback into the store."""
+        store_users_result = await self.store.get("trusted_users")
+        loaded_from_store = isinstance(store_users_result, Ok) and isinstance(
+            store_users_result.value, list
+        )
+        if loaded_from_store:
+            trusted_users = store_users_result.value
+            self.logger.info(f"从 store 加载 {len(trusted_users)} 个信任用户")
+        else:
+            legacy_users = legacy.get("trusted_users", [])
+            trusted_users = legacy_users if isinstance(legacy_users, list) else []
+
+        self.permission_mgr = PermissionManager(trusted_users)
+        if not loaded_from_store:
+            await self._save_trusted_users()
+
     def _build_dashboard_state(self) -> dict[str, Any]:
         trusted_users = self.permission_mgr.list_users() if self.permission_mgr else []
         return {
@@ -150,7 +179,9 @@ class BiliDMPlugin(NekoPluginBase):
                 "bili_jct_configured": bool(self._settings.get("bili_jct")),
                 "buvid3_configured": bool(self._settings.get("buvid3")),
                 "dedeuserid_configured": bool(self._settings.get("dedeuserid")),
-                "dedeuserid_masked": self._mask_value(str(self._settings.get("dedeuserid") or "")),
+                "dedeuserid_masked": self._mask_value(
+                    str(self._settings.get("dedeuserid") or "")
+                ),
                 "ac_time_value_configured": bool(self._settings.get("ac_time_value")),
             },
             "settings": {
@@ -213,7 +244,9 @@ class BiliDMPlugin(NekoPluginBase):
                     return
                 await self._handle_message(message)
 
-    async def _wait_session_response_complete(self, session: Any, timeout: float = 30.0) -> bool:
+    async def _wait_session_response_complete(
+        self, session: Any, timeout: float = 30.0
+    ) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             await asyncio.sleep(0.5)
@@ -233,14 +266,8 @@ class BiliDMPlugin(NekoPluginBase):
         bili_cfg = bili_cfg if isinstance(bili_cfg, dict) else {}
         await self._load_business_config(bili_cfg)
 
-        # 初始化权限管理器（优先从 store 加载，回退到 TOML 配置）
-        store_users_result = await self.store.get("trusted_users")
-        if isinstance(store_users_result, Ok) and store_users_result.value is not None:
-            trusted_users = store_users_result.value
-            self.logger.info(f"从 store 加载 {len(trusted_users)} 个信任用户")
-        else:
-            trusted_users = bili_cfg.get("trusted_users", [])
-        self.permission_mgr = PermissionManager(trusted_users)
+        # 初始化权限管理器（优先从 store 加载，并持久化旧 TOML 回退值）
+        await self._initialize_permissions(bili_cfg)
 
         # 获取管理员 UID
         self._refresh_admin_uid()
@@ -248,18 +275,22 @@ class BiliDMPlugin(NekoPluginBase):
         self._apply_runtime_settings()
         self._create_bili_client()
         if not self._credentials_configured():
-            self.logger.warning("B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写")
+            self.logger.warning(
+                "B站 Cookie（SESSDATA 和 bili_jct）未完整配置，请在插件前端面板中填写"
+            )
 
         self.register_static_ui("static")
-        self.set_list_actions([
-            {
-                "id": "open_ui",
-                "label": self.i18n.t("ui.actions.open", default="打开 UI"),
-                "kind": "ui",
-                "target": f"/plugin/{self.plugin_id}/ui/",
-                "open_in": "new_tab",
-            }
-        ])
+        self.set_list_actions(
+            [
+                {
+                    "id": "open_ui",
+                    "label": self.i18n.t("ui.actions.open", default="打开 UI"),
+                    "kind": "ui",
+                    "target": f"/plugin/{self.plugin_id}/ui/",
+                    "open_in": "new_tab",
+                }
+            ]
+        )
         self.logger.info("B站私信客户端已初始化")
 
         return Ok(self._build_dashboard_state())
@@ -267,7 +298,8 @@ class BiliDMPlugin(NekoPluginBase):
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
         """插件关闭时清理资源"""
-        await self._stop_runtime()
+        async with self._lifecycle_lock:
+            await self._stop_runtime()
 
         self.logger.info("B站私信插件已停止")
         return Ok({"status": "shutdown"})
@@ -296,25 +328,39 @@ class BiliDMPlugin(NekoPluginBase):
         id="get_dashboard_state",
         name=tr("panel.status.title", default="获取 B站私信插件状态"),
         description=tr("panel.status.title", default="获取凭证、监听和信任用户状态"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     )
     async def get_dashboard_state(self, **_):
         return Ok(self._build_dashboard_state())
 
-    @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存设置"), refresh_context=True)
+    @ui.action(
+        id="save_settings",
+        label=tr("entries.save_settings.name", default="保存设置"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="save_settings",
         name=tr("entries.save_settings.name", default="保存 B站私信设置"),
-        description=tr("entries.save_settings.description", default="保存 B站 Cookie 和监听参数到插件数据目录"),
+        description=tr(
+            "entries.save_settings.description",
+            default="保存 B站 Cookie 和监听参数到插件数据目录",
+        ),
         input_schema={
             "type": "object",
             "properties": {
-                "sesdata": {"type": "string"},
-                "bili_jct": {"type": "string"},
-                "buvid3": {"type": "string"},
-                "dedeuserid": {"type": "string"},
-                "ac_time_value": {"type": "string"},
-                "permission_mode": {"type": "string", "enum": ["allow_list", "deny_list", "open"]},
+                "sesdata": {"type": "string", "writeOnly": True},
+                "bili_jct": {"type": "string", "writeOnly": True},
+                "buvid3": {"type": "string", "writeOnly": True},
+                "dedeuserid": {"type": "string", "writeOnly": True},
+                "ac_time_value": {"type": "string", "writeOnly": True},
+                "permission_mode": {
+                    "type": "string",
+                    "enum": ["allow_list", "deny_list", "open"],
+                },
                 "max_concurrent_messages": {"type": "integer"},
                 "ai_connect_timeout_seconds": {"type": "number"},
                 "ai_turn_timeout_seconds": {"type": "number"},
@@ -324,7 +370,11 @@ class BiliDMPlugin(NekoPluginBase):
             "additionalProperties": False,
         },
     )
-    async def save_settings(
+    async def save_settings(self, **kwargs):
+        async with self._lifecycle_lock:
+            return await self._save_settings_locked(**kwargs)
+
+    async def _save_settings_locked(
         self,
         sesdata: Optional[str] = None,
         bili_jct: Optional[str] = None,
@@ -367,14 +417,29 @@ class BiliDMPlugin(NekoPluginBase):
         payload["persisted"] = True
         return Ok(payload)
 
-    @ui.action(id="clear_credentials", label=tr("entries.clear_credential.name", default="清除凭据"), refresh_context=True)
+    @ui.action(
+        id="clear_credentials",
+        label=tr("entries.clear_credential.name", default="清除凭据"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="clear_credentials",
         name=tr("entries.clear_credential.name", default="清除 B站凭据"),
-        description=tr("entries.clear_credential.description", default="停止监听并清除本地 B站 Cookie"),
-        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        description=tr(
+            "entries.clear_credential.description",
+            default="停止监听并清除本地 B站 Cookie",
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
     )
     async def clear_credentials(self, **_):
+        async with self._lifecycle_lock:
+            return await self._clear_credentials_locked()
+
+    async def _clear_credentials_locked(self):
         await self._stop_runtime()
         next_settings = dict(self._settings)
         for field in self.config_store.CREDENTIAL_FIELDS:
@@ -384,14 +449,24 @@ class BiliDMPlugin(NekoPluginBase):
         self.logger.info("本地 B站私信凭据已清除")
         return Ok(self._build_dashboard_state())
 
-    @ui.action(id="start_listening", label=tr("actions.start_listening.label", default="开始监听"), refresh_context=True)
+    @ui.action(
+        id="start_listening",
+        label=tr("actions.start_listening.label", default="开始监听"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="start_listening",
         name=tr("entries.start_listening.name", default="开始监听"),
-        description=tr("entries.start_listening.description", default="启动 B站私信监听并自动回复"),
+        description=tr(
+            "entries.start_listening.description", default="启动 B站私信监听并自动回复"
+        ),
         input_schema={"type": "object", "properties": {}},
     )
     async def start_listening(self, **_):
+        async with self._lifecycle_lock:
+            return await self._start_listening_locked()
+
+    async def _start_listening_locked(self):
         """开始监听 B站私信"""
         if self._running:
             return Ok({"status": "already_running"})
@@ -400,7 +475,11 @@ class BiliDMPlugin(NekoPluginBase):
         self._apply_runtime_settings()
         self._create_bili_client()
         if not self._credentials_configured():
-            return Err(SdkError("CREDENTIALS_MISSING: 请先在插件前端面板中配置 SESSDATA 和 bili_jct"))
+            return Err(
+                SdkError(
+                    "CREDENTIALS_MISSING: 请先在插件前端面板中配置 SESSDATA 和 bili_jct"
+                )
+            )
 
         try:
             await self.bili_client.connect()
@@ -408,8 +487,13 @@ class BiliDMPlugin(NekoPluginBase):
             self._running = True
             self._message_task = asyncio.create_task(self._process_messages())
 
-            if self._session_housekeeping_task is None or self._session_housekeeping_task.done():
-                self._session_housekeeping_task = asyncio.create_task(self._session_housekeeping_loop())
+            if (
+                self._session_housekeeping_task is None
+                or self._session_housekeeping_task.done()
+            ):
+                self._session_housekeeping_task = asyncio.create_task(
+                    self._session_housekeeping_loop()
+                )
 
             self.logger.info("B站私信监听已启动")
             payload = self._build_dashboard_state()
@@ -419,14 +503,24 @@ class BiliDMPlugin(NekoPluginBase):
             self.logger.exception("启动 B站私信监听失败")
             return Err(SdkError(f"START_ERROR: 启动失败: {e}"))
 
-    @ui.action(id="stop_listening", label=tr("actions.stop_listening.label", default="停止监听"), refresh_context=True)
+    @ui.action(
+        id="stop_listening",
+        label=tr("actions.stop_listening.label", default="停止监听"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="stop_listening",
         name=tr("entries.stop_listening.name", default="停止监听"),
-        description=tr("entries.stop_listening.description", default="停止监听 B站私信"),
+        description=tr(
+            "entries.stop_listening.description", default="停止监听 B站私信"
+        ),
         input_schema={"type": "object", "properties": {}},
     )
     async def stop_listening(self, **_):
+        async with self._lifecycle_lock:
+            return await self._stop_listening_locked()
+
+    async def _stop_listening_locked(self):
         """停止监听 B站私信"""
         if not self._running and not self._message_task:
             return Ok({"status": "not_running"})
@@ -478,7 +572,9 @@ class BiliDMPlugin(NekoPluginBase):
     @plugin_entry(
         id="send_message",
         name=tr("entries.send_message.name", default="发送私信"),
-        description=tr("entries.send_message.description", default="向指定 B站用户发送一条私信"),
+        description=tr(
+            "entries.send_message.description", default="向指定 B站用户发送一条私信"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -510,9 +606,14 @@ class BiliDMPlugin(NekoPluginBase):
             if not msg_text:
                 return Err(SdkError("INVALID_ARGUMENT: message 不能为空"))
 
-            if msg_text.startswith(("http://", "https://")) and any(
-                msg_text.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-            ) or msg_text.startswith("data:image/"):
+            if (
+                msg_text.startswith(("http://", "https://"))
+                and any(
+                    msg_text.lower().endswith(ext)
+                    for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+                )
+                or msg_text.startswith("data:image/")
+            ):
                 await self.bili_client.send_image(uid, msg_text)
                 self.logger.info(f"已发送图片私信给 {uid}")
             else:
@@ -523,11 +624,17 @@ class BiliDMPlugin(NekoPluginBase):
             self.logger.error(f"发送私信失败: {e}")
             return Err(SdkError(f"SEND_FAILED: 发送私信失败: {e}"))
 
-    @ui.action(id="add_trusted_user", label=tr("actions.add_trusted_user.label", default="添加信任用户"), refresh_context=True)
+    @ui.action(
+        id="add_trusted_user",
+        label=tr("actions.add_trusted_user.label", default="添加信任用户"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="add_trusted_user",
         name=tr("entries.add_trusted_user.name", default="添加信任用户"),
-        description=tr("entries.add_trusted_user.description", default="添加信任用户到白名单"),
+        description=tr(
+            "entries.add_trusted_user.description", default="添加信任用户到白名单"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -549,7 +656,9 @@ class BiliDMPlugin(NekoPluginBase):
             "required": ["uid"],
         },
     )
-    async def add_trusted_user(self, uid: str, level: str = "trusted", nickname: str = "", **_):
+    async def add_trusted_user(
+        self, uid: str, level: str = "trusted", nickname: str = "", **_
+    ):
         """添加信任用户并持久化到 store"""
         if not self.permission_mgr:
             return Err(SdkError("NOT_INITIALIZED: 权限管理器未初始化"))
@@ -585,11 +694,17 @@ class BiliDMPlugin(NekoPluginBase):
             result_data["warning"] = "已添加到内存，但持久化失败"
         return Ok(result_data)
 
-    @ui.action(id="remove_trusted_user", label=tr("actions.remove_trusted_user.label", default="移除信任用户"), refresh_context=True)
+    @ui.action(
+        id="remove_trusted_user",
+        label=tr("actions.remove_trusted_user.label", default="移除信任用户"),
+        refresh_context=True,
+    )
     @plugin_entry(
         id="remove_trusted_user",
         name=tr("entries.remove_trusted_user.name", default="移除信任用户"),
-        description=tr("entries.remove_trusted_user.description", default="从白名单中移除用户"),
+        description=tr(
+            "entries.remove_trusted_user.description", default="从白名单中移除用户"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -634,7 +749,9 @@ class BiliDMPlugin(NekoPluginBase):
     @plugin_entry(
         id="set_user_nickname",
         name=tr("entries.set_user_nickname.name", default="设置用户昵称"),
-        description=tr("entries.set_user_nickname.description", default="为信任用户设置专属称呼"),
+        description=tr(
+            "entries.set_user_nickname.description", default="为信任用户设置专属称呼"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -664,7 +781,9 @@ class BiliDMPlugin(NekoPluginBase):
             return Err(SdkError(f"USER_NOT_FOUND: 用户 {uid_str} 不在信任列表中"))
 
         if permission_level == "admin":
-            return Err(SdkError("ADMIN_NO_NICKNAME: 管理员始终被称为主人，无法设置昵称"))
+            return Err(
+                SdkError("ADMIN_NO_NICKNAME: 管理员始终被称为主人，无法设置昵称")
+            )
 
         success = self.permission_mgr.set_nickname(uid_str, nickname)
         if not success:
@@ -677,7 +796,9 @@ class BiliDMPlugin(NekoPluginBase):
     @plugin_entry(
         id="list_trusted_users",
         name=tr("entries.list_trusted_users.name", default="列出信任用户"),
-        description=tr("entries.list_trusted_users.description", default="列出所有信任的 B站用户"),
+        description=tr(
+            "entries.list_trusted_users.description", default="列出所有信任的 B站用户"
+        ),
         input_schema={"type": "object", "properties": {}},
     )
     async def list_trusted_users(self, **_):
@@ -753,7 +874,11 @@ class BiliDMPlugin(NekoPluginBase):
         if session_key in self._user_sessions:
             user_data = self._user_sessions[session_key]
             old_nickname = user_data.get("bili_nickname", "")
-            if bili_nickname and bili_nickname != sender_uid and bili_nickname != old_nickname:
+            if (
+                bili_nickname
+                and bili_nickname != sender_uid
+                and bili_nickname != old_nickname
+            ):
                 user_data["bili_nickname"] = bili_nickname
                 self.logger.info(
                     f"更新用户 {sender_uid} 的 B站昵称: {old_nickname} -> {bili_nickname}"
@@ -804,7 +929,11 @@ class BiliDMPlugin(NekoPluginBase):
             )
 
             # 确定用户称呼（优先级：配置自定义昵称 > B站真实昵称 > UID）
-            custom_nickname = self.permission_mgr.get_nickname(sender_uid) if self.permission_mgr else None
+            custom_nickname = (
+                self.permission_mgr.get_nickname(sender_uid)
+                if self.permission_mgr
+                else None
+            )
             if permission_level == "admin":
                 user_title = master_name if master_name else "主人"
             else:
@@ -823,9 +952,18 @@ class BiliDMPlugin(NekoPluginBase):
             character_card_fields = {}
             for key, value in current_character.items():
                 if key not in [
-                    "_reserved", "voice_id", "system_prompt", "model_type",
-                    "live2d", "vrm", "vrm_animation", "lighting", "vrm_rotation",
-                    "live2d_item_id", "item_id", "idleAnimation",
+                    "_reserved",
+                    "voice_id",
+                    "system_prompt",
+                    "model_type",
+                    "live2d",
+                    "vrm",
+                    "vrm_animation",
+                    "lighting",
+                    "vrm_rotation",
+                    "live2d_item_id",
+                    "item_id",
+                    "idleAnimation",
                 ]:
                     if isinstance(value, (str, int, float, bool)) and value:
                         character_card_fields[key] = value
@@ -836,8 +974,10 @@ class BiliDMPlugin(NekoPluginBase):
             api_key = conversation_config.get("api_key", "")
             model = conversation_config.get("model", "")
 
-            should_use_memory = (permission_level == "admin")
-            should_persist = should_use_memory if persist_memory is None else bool(persist_memory)
+            should_use_memory = permission_level == "admin"
+            should_persist = (
+                should_use_memory if persist_memory is None else bool(persist_memory)
+            )
 
             # 会话管理
             session_key = self._build_session_key(sender_uid)
@@ -901,7 +1041,9 @@ class BiliDMPlugin(NekoPluginBase):
                 if pending_image_b64:
                     await user_session.stream_image(pending_image_b64)
 
-                self.logger.info(f"发送消息到 AI (会话: {session_key}, 长度: {len(message)})")
+                self.logger.info(
+                    f"发送消息到 AI (会话: {session_key}, 长度: {len(message)})"
+                )
                 await asyncio.wait_for(
                     user_session.stream_text(message),
                     timeout=self._ai_turn_timeout_seconds,
@@ -909,7 +1051,9 @@ class BiliDMPlugin(NekoPluginBase):
 
                 completed = await self._wait_session_response_complete(user_session)
                 if not completed:
-                    self.logger.warning(f"会话 {session_key} 响应超时，关闭并丢弃该会话")
+                    self.logger.warning(
+                        f"会话 {session_key} 响应超时，关闭并丢弃该会话"
+                    )
                     await user_session.close()
                     self._user_sessions.pop(session_key, None)
                     return None
@@ -928,7 +1072,9 @@ class BiliDMPlugin(NekoPluginBase):
                     except Exception as e:
                         self.logger.error(f"记忆同步失败: {e}")
 
-                self.logger.info(f"AI 生成回复完成 (会话: {session_key}, 长度: {len(ai_reply)})")
+                self.logger.info(
+                    f"AI 生成回复完成 (会话: {session_key}, 长度: {len(ai_reply)})"
+                )
                 return ai_reply
             else:
                 self.logger.warning("AI 未生成回复")
@@ -970,7 +1116,8 @@ class BiliDMPlugin(NekoPluginBase):
         user_language = get_global_language()
         short_language = (
             normalize_language_code(user_language, format="short")
-            if normalize_language_code else user_language
+            if normalize_language_code
+            else user_language
         )
 
         init_prompt_template = SESSION_INIT_PROMPT.get(
@@ -989,18 +1136,26 @@ class BiliDMPlugin(NekoPluginBase):
                 import httpx
                 from config import MEMORY_SERVER_PORT
 
-                async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
-                    response = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}")
+                async with httpx.AsyncClient(
+                    timeout=5.0, proxy=None, trust_env=False
+                ) as client:
+                    response = await client.get(
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                    )
                     if response.is_success:
                         memory_context = response.text.strip()
                         if memory_context:
                             from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY
+
                             context_ready_template = CONTEXT_SUMMARY_READY.get(
                                 short_language,
-                                CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["en"]),
+                                CONTEXT_SUMMARY_READY.get(
+                                    user_language, CONTEXT_SUMMARY_READY["en"]
+                                ),
                             )
                             system_prompt_parts.append(
-                                memory_context + context_ready_template.format(
+                                memory_context
+                                + context_ready_template.format(
                                     name=her_name, master=master_name
                                 )
                             )
@@ -1017,17 +1172,18 @@ class BiliDMPlugin(NekoPluginBase):
         # B站私聊环境说明
         friend_note = (
             f"- 当前对话对象是{master_name if master_name else '主人'}的朋友，不是主人本人\n"
-            if permission_level != "admin" else ""
+            if permission_level != "admin"
+            else ""
         )
         private_identity_target = (
             f"- 当前对话对象：{user_title}（B站UID: {sender_uid}），这是当前私聊对象\n"
-            if permission_level != "admin" else
-            f"- 当前对话对象：{user_title}（B站UID: {sender_uid}），这就是主人/管理员本人\n"
+            if permission_level != "admin"
+            else f"- 当前对话对象：{user_title}（B站UID: {sender_uid}），这就是主人/管理员本人\n"
         )
         system_prompt_parts.append(f"""
 ======身份定义======
 - 你自己：{her_name}，你是当前回复者
-- 主人/管理员：{master_name if master_name else '主人'}，是固定身份
+- 主人/管理员：{master_name if master_name else "主人"}，是固定身份
 {private_identity_target}{friend_note}- 即使当前对话对象的名字、B站昵称、主人名字、你的名字或角色设定中的人物名称相同，也必须按上述身份定义区分，绝不能混淆角色
 ======身份定义结束======
 
@@ -1066,12 +1222,16 @@ class BiliDMPlugin(NekoPluginBase):
                 idle_sessions.append(session_key)
 
         for session_key in idle_sessions:
+
             async def _finalize_if_still_idle() -> bool:
                 current = self._user_sessions.get(session_key)
                 if not current:
                     return False
                 current_last_activity = current.get("last_activity_at") or now
-                if time.time() - current_last_activity < self.SESSION_IDLE_TIMEOUT_SECONDS:
+                if (
+                    time.time() - current_last_activity
+                    < self.SESSION_IDLE_TIMEOUT_SECONDS
+                ):
                     return False
                 return await self._finalize_session(session_key, reason="idle_timeout")
 
@@ -1082,6 +1242,7 @@ class BiliDMPlugin(NekoPluginBase):
     async def _flush_all_sessions(self, reason: str):
         """回收所有会话"""
         for session_key, user_data in list(self._user_sessions.items()):
+
             async def _finalize_existing() -> bool:
                 current = self._user_sessions.get(session_key)
                 if not current:
@@ -1106,7 +1267,9 @@ class BiliDMPlugin(NekoPluginBase):
 
         try:
             if user_data.get("memory_enabled") and her_name:
-                conversation_history = getattr(session, "_conversation_history", []) or []
+                conversation_history = (
+                    getattr(session, "_conversation_history", []) or []
+                )
                 last_synced_index = int(user_data.get("last_synced_index", 0))
                 remaining_messages = self._conversation_slice_to_memory_messages(
                     conversation_history, last_synced_index
@@ -1122,13 +1285,17 @@ class BiliDMPlugin(NekoPluginBase):
                         f"[{reason}] 已为用户 {session_key} 完成记忆结算，消息数: {len(remaining_messages)}"
                     )
                 elif user_data.get("has_cached_memory"):
-                    settled_messages = self._conversation_slice_to_memory_messages(conversation_history, 0)
+                    settled_messages = self._conversation_slice_to_memory_messages(
+                        conversation_history, 0
+                    )
                     result = await self._post_memory_history(
                         "settle", her_name, settled_messages, timeout=30.0
                     )
                     if result.get("status") == "error":
                         raise RuntimeError(result.get("message", "settle failed"))
-                    self.logger.info(f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算")
+                    self.logger.info(
+                        f"[{reason}] 已为用户 {session_key} 完成缓存记忆结算"
+                    )
 
             await session.close()
             self._user_sessions.pop(session_key, None)
@@ -1162,10 +1329,12 @@ class BiliDMPlugin(NekoPluginBase):
                 text = str(content)
             if not text:
                 continue
-            memory_messages.append({
-                "role": role,
-                "content": [{"type": "text", "text": text}],
-            })
+            memory_messages.append(
+                {
+                    "role": role,
+                    "content": [{"type": "text", "text": text}],
+                }
+            )
         return memory_messages
 
     async def _cache_session_delta(
@@ -1196,7 +1365,11 @@ class BiliDMPlugin(NekoPluginBase):
         return len(delta_messages)
 
     async def _post_memory_history(
-        self, endpoint: str, her_name: str, messages: list[dict[str, Any]], timeout: float = 5.0
+        self,
+        endpoint: str,
+        her_name: str,
+        messages: list[dict[str, Any]],
+        timeout: float = 5.0,
     ) -> dict[str, Any]:
         """发送对话历史到 Memory Server"""
         import httpx
