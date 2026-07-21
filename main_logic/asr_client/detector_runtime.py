@@ -1710,6 +1710,7 @@ class DetectorRuntime:
             identity.detector_epoch,
             self._candidate_generation,
         )
+        control_event_emitted = False
         if (
             self._on_event is not None
             and self._policy_event_candidate != candidate
@@ -1728,6 +1729,7 @@ class DetectorRuntime:
                     ),
                 )
             )
+            control_event_emitted = True
         return DetectorSubmitResult(
             DetectorSubmitStatus.ACCEPTED,
             adapter.throttle_available,
@@ -1735,6 +1737,7 @@ class DetectorRuntime:
             identity,
             throttle.action,
             candidate,
+            control_event_emitted,
         )
 
     async def _reset_after_overflow(
