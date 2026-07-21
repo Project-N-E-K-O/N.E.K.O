@@ -56,12 +56,13 @@ class QQClient(QQConnectionBase):
     @onebot_url.setter
     def onebot_url(self, value: str) -> None:
         self._onebot_url = str(value or "").strip()
-        # 重新解析监听地址（需重启服务端才能生效，setter 只更新缓存）
+        self._listen_host = "0.0.0.0"
+        self._listen_port = 6199
         parsed = urlparse(self._onebot_url) if self._onebot_url else None
         if parsed and parsed.hostname:
             self._listen_host = parsed.hostname
-            if parsed.port:
-                self._listen_port = parsed.port
+        if parsed and parsed.port:
+            self._listen_port = parsed.port
 
     def is_connected(self) -> bool:
         # 清理已断开的连接
@@ -133,7 +134,11 @@ class QQClient(QQConnectionBase):
             if attachment:
                 attachments.append(attachment)
             elif isinstance(segment, dict) and segment.get("type") == "record":
-                attachments.append({"type": "record", "file": str(segment.get("data", {}).get("file") or "")})
+                data = segment.get("data")
+                if isinstance(data, dict):
+                    file_id = str(data.get("file") or "").strip()
+                    if file_id:
+                        attachments.append({"type": "record", "file": file_id})
         return attachments
 
     @classmethod
@@ -680,7 +685,7 @@ class QQClient(QQConnectionBase):
         if not self._main_client:
             raise RuntimeError("No Napcat client connected")
 
-        echo = f"send_group_{group_id}_{id(segments)}"
+        echo = secrets.token_hex(8)
         payload = {
             "action": "send_group_msg",
             "params": {
@@ -692,21 +697,19 @@ class QQClient(QQConnectionBase):
 
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending_actions[echo] = future
-        await self._main_client.send(json.dumps(payload))
-
         try:
+            await self._main_client.send(json.dumps(payload))
             response = await asyncio.wait_for(future, timeout=10.0)
             message_id = str((response.get("data") or {}).get("message_id") or "")
             if message_id and record_sent:
                 self.record_sent_message_id(message_id)
-            self._pending_actions.pop(echo, None)
             return message_id if message_id else None
         except asyncio.TimeoutError:
-            self._pending_actions.pop(echo, None)
             return None
         except Exception:
-            self._pending_actions.pop(echo, None)
             raise
+        finally:
+            self._pending_actions.pop(echo, None)
         if self.logger:
             self.logger.debug(f"Sent segmented group message to {group_id}")
 

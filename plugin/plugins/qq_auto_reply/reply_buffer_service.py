@@ -30,6 +30,7 @@ class PendingReply:
         self.is_group = is_group
         self.group_id = group_id
         self._acked = False
+        self.first_blocks: list = []
 
 
 class QQReplyBufferService:
