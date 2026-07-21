@@ -141,6 +141,14 @@ def test_strip_proactive_screen_tag_leak_removes_known_prefix_leaks():
         ("/chat\n你好", "你好", "CHAT"),
         ("/music\n听这个", "听这个", "MUSIC"),
         ("屏幕/\n这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/chat你好", "你好", "CHAT"),
+        ("/music听这个", "听这个", "MUSIC"),
+        ("/屏幕这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("/屏幕观察这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("chat/你好", "你好", "CHAT"),
+        ("music/听这个", "听这个", "MUSIC"),
+        ("屏幕/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
+        ("屏幕观察/这个窗口有点怪", "这个窗口有点怪", "CHAT"),
     ]
 
     for raw, expected_text, expected_tag in cases:
