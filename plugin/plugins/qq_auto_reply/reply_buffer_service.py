@@ -181,8 +181,8 @@ class QQReplyBufferService:
                         fallback_to_text_on_voice_failure=True,
                     )
                     await self.plugin.reply_pipeline.run(request)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
             if n >= 17:
@@ -201,8 +201,8 @@ class QQReplyBufferService:
                         fallback_to_text_on_voice_failure=True,
                     )
                     await self.plugin.reply_pipeline.run(request)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 return
         else:
             # 新缓冲：pre_buffer 可能已创建了占位 pending
@@ -225,6 +225,7 @@ class QQReplyBufferService:
                     is_group=is_group,
                     group_id=group_id,
                 )
+                existing.first_blocks = blocks
                 existing.message_count += max(0, extra_count)
                 existing.topic_hint = self._topic_hint(raw_text or reply_text)
                 self._pending[session_key] = existing
@@ -247,8 +248,6 @@ class QQReplyBufferService:
         if self._pending.get(session_key) is not pending:
             return
 
-        self._pending.pop(session_key, None)
-
         # 汇总缓冲内容
         texts = pending.buffered_texts
         if pending.message_count == 1:
@@ -267,6 +266,7 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
             )
             await self.plugin.reply_delivery_node.deliver(plan)
+            self._pending.pop(session_key, None)
             return
 
         # 多条缓冲 → 走 pipeline 生成总结（兼容 Lanlan）
@@ -284,8 +284,9 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
             )
             await self.plugin.reply_pipeline.run(request)
-        except Exception:
-            pass
+            self._pending.pop(session_key, None)
+        except Exception as e:
+            self.plugin._emit_log("WARN", f"[Buffer] 总结pipeline失败: {e}")
 
     # ── LLM 合并决策 ──
 
