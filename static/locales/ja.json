@@ -2679,6 +2679,7 @@
             "proactiveMiniGameInviteChat": "ミニゲームへのお誘い",
             "proactiveMiniGameInviteChatTooltip": "条件が整ったときミニゲームに誘って話しかける",
             "agentMaster": "ネコクローマスタースイッチ",
+            "showTaskHud": "タスクHUDを表示",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
             "pluginConfigPage": "設定ページ",

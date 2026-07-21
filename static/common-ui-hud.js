@@ -320,6 +320,13 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         },
         {
+            id: 'agent-taskhud',
+            label: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD',
+            labelKey: 'settings.toggles.showTaskHud',
+            initialDisabled: false,
+            initialTitle: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD'
+        },
+        {
             id: 'agent-keyboard',
             label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             labelKey: 'settings.toggles.keyboardControl',
@@ -506,6 +513,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
         }
 
     });
+
+    // Init taskhud toggle from localStorage
+    const taskhudCheckbox = document.getElementById(`${avatarPrefix}-agent-taskhud`);
+    if (taskhudCheckbox) {
+        let saved = false;
+        try { saved = localStorage.getItem('neko-agent-taskhud-visible') === 'true'; } catch (_) {}
+        taskhudCheckbox.checked = saved;
+    }
 };
 
 // 创建 Agent 任务 HUD（屏幕正中右侧）

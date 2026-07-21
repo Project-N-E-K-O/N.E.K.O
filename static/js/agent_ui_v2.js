@@ -31,6 +31,7 @@
     const getEls = (...ids) => ids.map(id => byId(id)).filter(Boolean);
     const el = () => ({
         master: getEls('live2d-agent-master', 'vrm-agent-master', 'mmd-agent-master', 'pngtuber-agent-master'),
+        taskhud: getEls('live2d-agent-taskhud', 'vrm-agent-taskhud', 'mmd-agent-taskhud', 'pngtuber-agent-taskhud'),
         keyboard: getEls('live2d-agent-keyboard', 'vrm-agent-keyboard', 'mmd-agent-keyboard', 'pngtuber-agent-keyboard'),
         browser: getEls('live2d-agent-browser', 'vrm-agent-browser', 'mmd-agent-browser', 'pngtuber-agent-browser'),
         userPlugin: getEls('live2d-agent-user-plugin', 'vrm-agent-user-plugin', 'mmd-agent-user-plugin', 'pngtuber-agent-user-plugin'),
@@ -481,7 +482,7 @@
     }
 
     function bindEvents() {
-        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
+        const { master, taskhud, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const bindChangeOnce = (cb, key, handler) => {
             if (!cb) return;
