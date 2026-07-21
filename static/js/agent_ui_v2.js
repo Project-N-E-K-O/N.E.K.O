@@ -482,7 +482,7 @@
     }
 
     function bindEvents() {
-        const { master, taskhud, keyboard, browser, userPlugin, openfang, openclaw } = el();
+        const { master, keyboard, browser, userPlugin, openfang, openclaw } = el();
         if (!master.length) return;
         const bindChangeOnce = (cb, key, handler) => {
             if (!cb) return;

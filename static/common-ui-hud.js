@@ -515,7 +515,7 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
     });
 
     // Init taskhud toggle from localStorage
-    const taskhudCheckbox = document.getElementById(`${avatarPrefix}-agent-taskhud`);
+    const taskhudCheckbox = popup.querySelector(`#${avatarPrefix}-agent-taskhud`);
     if (taskhudCheckbox) {
         const stored = (() => { try { return localStorage.getItem('neko-agent-taskhud-visible'); } catch (_) { return null; } })();
         taskhudCheckbox.checked = stored === null ? true : stored === 'true';
