@@ -20,6 +20,8 @@ seoSchemaType: WebPage
 
 Google Analytics 可能处理页面网址和标题、来源页面、浏览器与设备信息及大致地理位置等信息。本站配置会关闭广告存储、广告用户数据、广告个性化、Google Signals 和广告个性化信号。
 
+对于 GA4“数据保留”设置所涵盖的用户级和事件级数据，保留时间最长为 14 个月；媒体资源管理员可将其缩短为 2 个月。该设置不影响汇总的标准报告。详见 [Google Analytics 数据保留说明](https://support.google.com/analytics/answer/7667196?hl=zh-Hans)。
+
 你同意后，Google Analytics 可能设置 `_ga`、`_ga_<measurement-id>` 等第一方 Cookie。Google 对 Cookie 和数据收集的说明见：
 
 - [Google Analytics Cookie 使用说明](https://support.google.com/analytics/answer/11397207?hl=zh-Hans)

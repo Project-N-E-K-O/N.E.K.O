@@ -5,6 +5,7 @@ import {
   ANALYTICS_CONSENT_EVENT,
   acceptGoogleAnalytics,
   getAnalyticsConsent,
+  handleAnalyticsConsentStorageEvent,
   rejectGoogleAnalytics,
 } from './analytics-consent.mjs'
 
@@ -88,15 +89,21 @@ function reject() {
   if (!wasActive) panelOpen.value = false
 }
 
+function syncStorageChoice(event: StorageEvent) {
+  handleAnalyticsConsentStorageEvent(event)
+}
+
 onMounted(() => {
   syncChoice()
   panelOpen.value = choice.value === null
   ready.value = true
   window.addEventListener(ANALYTICS_CONSENT_EVENT, syncChoice)
+  window.addEventListener('storage', syncStorageChoice)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener(ANALYTICS_CONSENT_EVENT, syncChoice)
+  window.removeEventListener('storage', syncStorageChoice)
 })
 </script>
 

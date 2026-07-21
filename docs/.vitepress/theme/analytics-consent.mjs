@@ -138,6 +138,21 @@ export function trackAnalyticsPageView(
   return true
 }
 
+export function createRoutePageViewTracker({
+  skipFirst = false,
+  trackPageView = trackAnalyticsPageView,
+} = {}) {
+  let skipNextPageView = Boolean(skipFirst)
+
+  return (target) => {
+    if (skipNextPageView) {
+      skipNextPageView = false
+      return false
+    }
+    return trackPageView(target)
+  }
+}
+
 export function enableGoogleAnalytics({
   windowObject = globalThis.window,
   documentObject = globalThis.document,
@@ -208,16 +223,14 @@ function clearGoogleAnalyticsCookies(
   }
 }
 
-export function rejectGoogleAnalytics({
+function disableGoogleAnalytics({
   windowObject = globalThis.window,
   documentObject = globalThis.document,
-  storage = browserStorage(windowObject),
   reloadIfActive = true,
 } = {}) {
   const wasActive = analyticsEnabled || Boolean(
     documentObject?.getElementById?.(GOOGLE_TAG_SCRIPT_ID),
   )
-  setAnalyticsConsent('denied', { storage, windowObject })
 
   if (wasActive && typeof windowObject?.gtag === 'function') {
     windowObject.gtag('consent', 'update', { ...DENIED_CONSENT })
@@ -229,4 +242,39 @@ export function rejectGoogleAnalytics({
     windowObject.location.reload()
   }
   return wasActive
+}
+
+export function handleAnalyticsConsentStorageEvent(
+  event,
+  {
+    windowObject = globalThis.window,
+    documentObject = globalThis.document,
+    reloadIfActive = true,
+  } = {},
+) {
+  if (event?.key !== ANALYTICS_CONSENT_STORAGE_KEY) return false
+
+  const storage = browserStorage(windowObject)
+  if (event.storageArea && storage && event.storageArea !== storage) return false
+
+  const choice = parseAnalyticsConsent(event.newValue)
+  runtimeChoice = choice
+  notifyConsentChanged(choice, windowObject)
+
+  if (choice === 'granted') {
+    enableGoogleAnalytics({ windowObject, documentObject })
+  } else {
+    disableGoogleAnalytics({ windowObject, documentObject, reloadIfActive })
+  }
+  return true
+}
+
+export function rejectGoogleAnalytics({
+  windowObject = globalThis.window,
+  documentObject = globalThis.document,
+  storage = browserStorage(windowObject),
+  reloadIfActive = true,
+} = {}) {
+  setAnalyticsConsent('denied', { storage, windowObject })
+  return disableGoogleAnalytics({ windowObject, documentObject, reloadIfActive })
 }

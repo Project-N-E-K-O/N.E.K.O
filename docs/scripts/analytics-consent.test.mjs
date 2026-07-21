@@ -154,6 +154,62 @@ test('granting consent queues consent before measurement and loads one tag', asy
   assert.equal(fixture.windowObject.dataLayer.length, 5)
 })
 
+test('route tracking skips exactly one bootstrap page view', async () => {
+  const analytics = await freshAnalyticsModule()
+  const trackedTargets = []
+  const trackRoutePageView = analytics.createRoutePageViewTracker({
+    skipFirst: true,
+    trackPageView(target) {
+      trackedTargets.push(target)
+      return true
+    },
+  })
+
+  assert.equal(trackRoutePageView('/guide/'), false)
+  assert.equal(trackRoutePageView('/architecture/'), true)
+  assert.equal(trackRoutePageView('/plugins/'), true)
+  assert.deepEqual(trackedTargets, ['/architecture/', '/plugins/'])
+})
+
+test('a cross-tab denial immediately disables active analytics', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+
+  analytics.acceptGoogleAnalytics(fixture)
+  const denialRecord = JSON.stringify({
+    version: 1,
+    choice: 'denied',
+    updatedAt: Date.now(),
+  })
+  fixture.storage.setItem(
+    analytics.ANALYTICS_CONSENT_STORAGE_KEY,
+    denialRecord,
+  )
+
+  assert.equal(
+    analytics.handleAnalyticsConsentStorageEvent(
+      {
+        key: analytics.ANALYTICS_CONSENT_STORAGE_KEY,
+        newValue: denialRecord,
+        storageArea: fixture.storage,
+      },
+      fixture,
+    ),
+    true,
+  )
+  assert.equal(analytics.getAnalyticsConsent(), 'denied')
+  assert.equal(analytics.trackAnalyticsPageView('/plugins/', fixture), false)
+  assert.equal(fixture.reloadCount(), 1)
+  assert.deepEqual(
+    fixture.windowObject.dataLayer.at(-1).slice(0, 2),
+    ['consent', 'update'],
+  )
+  assert.equal(
+    fixture.windowObject.dataLayer.at(-1)[2].analytics_storage,
+    'denied',
+  )
+})
+
 test('revoking active analytics stores denial and reloads without a second tag', async () => {
   const analytics = await freshAnalyticsModule()
   const fixture = browserFixture()

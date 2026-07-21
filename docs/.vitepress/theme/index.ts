@@ -3,8 +3,8 @@ import { h } from 'vue'
 import AnalyticsConsent from './AnalyticsConsent.vue'
 import LocaleSwitch from './LocaleSwitch.vue'
 import {
+  createRoutePageViewTracker,
   enableGoogleAnalytics,
-  trackAnalyticsPageView,
 } from './analytics-consent.mjs'
 import './custom.css'
 
@@ -18,11 +18,13 @@ export default {
   enhanceApp({ router }) {
     if (typeof window === 'undefined') return
 
-    enableGoogleAnalytics()
+    const trackRoutePageView = createRoutePageViewTracker({
+      skipFirst: enableGoogleAnalytics(),
+    })
     const existingAfterRouteChange = router.onAfterRouteChange
     router.onAfterRouteChange = async (to) => {
       await existingAfterRouteChange?.(to)
-      trackAnalyticsPageView(to)
+      trackRoutePageView(to)
     }
   },
 }

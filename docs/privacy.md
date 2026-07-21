@@ -20,6 +20,8 @@ The site loads Google Analytics 4 using measurement ID `G-N4QZK4PHE3`. It sends 
 
 Google Analytics may process information such as the page URL and title, referrer, browser and device information, and approximate location. We disable advertising storage, ad user data, ad personalization, Google Signals, and advertising-personalization signals in the site configuration.
 
+User-level and event-level data covered by GA4's Data Retention setting is kept for no longer than 14 months. Property administrators can reduce that period to 2 months. This setting does not affect aggregated standard reports. See [Google Analytics data retention](https://support.google.com/analytics/answer/7667196?hl=en).
+
 Google Analytics may set first-party cookies such as `_ga` and `_ga_<measurement-id>` after you consent. Google describes its cookie use and data collection in:
 
 - [Google Analytics cookie usage](https://support.google.com/analytics/answer/11397207)
