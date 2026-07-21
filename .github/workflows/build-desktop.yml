@@ -1,6 +1,33 @@
 name: Build Desktop App (Cross-Platform)
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0-beta.1)'
+        required: false
+        default: ''
+        type: string
+      electron_repo:
+        description: 'Electron frontend repo (owner/repo)'
+        required: false
+        default: 'Project-N-E-K-O/N.E.K.O.-PC'
+        type: string
+      electron_ref:
+        description: 'Electron repo branch/tag/commit'
+        required: false
+        default: 'main'
+        type: string
+      skip_signing:
+        description: 'Skip code signing'
+        required: false
+        default: 'true'
+        type: string
+      windows_only:
+        description: 'Build only the Windows backend and desktop app'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -58,8 +85,8 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            VERSION="${{ inputs.version }}"
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
@@ -77,24 +104,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: win
-            artifact_name: python-backend-win
-            output_binary: projectneko_server.exe
-          - os: macos-15
-            platform: mac-x64
-            python_arch: x64
-            artifact_name: python-backend-mac-x64
-            output_binary: projectneko_server
-          - os: macos-latest
-            platform: mac-arm64
-            artifact_name: python-backend-mac-arm64
-            output_binary: projectneko_server
-          - os: ubuntu-latest
-            platform: linux
-            artifact_name: python-backend-linux
-            output_binary: projectneko_server
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"}]' || '[{"os":"windows-latest","platform":"win","artifact_name":"python-backend-win","output_binary":"projectneko_server.exe"},{"os":"macos-15","platform":"mac-x64","python_arch":"x64","artifact_name":"python-backend-mac-x64","output_binary":"projectneko_server"},{"os":"macos-latest","platform":"mac-arm64","artifact_name":"python-backend-mac-arm64","output_binary":"projectneko_server"},{"os":"ubuntu-latest","platform":"linux","artifact_name":"python-backend-linux","output_binary":"projectneko_server"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
@@ -667,42 +677,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: win
-            portable_key: win
-            builder_platform: windows
-            portable_dir: dist/win-unpacked
-            python_artifact: python-backend-win
-            electron_args: '--win'
-            artifact_name: desktop-win-x64
-          - os: macos-15
-            platform: mac-x64
-            portable_key: mac_x64
-            builder_platform: macos
-            portable_arch_args: '--x64'
-            portable_dir: dist/portable-stage/mac/N.E.K.O.app
-            python_artifact: python-backend-mac-x64
-            electron_args: '--mac --x64'
-            artifact_name: desktop-mac-x64
-          - os: macos-latest
-            platform: mac-arm64
-            portable_key: mac_arm64
-            builder_platform: macos
-            portable_arch_args: '--arm64'
-            portable_dir: dist/portable-stage/mac-arm64/N.E.K.O.app
-            python_artifact: python-backend-mac-arm64
-            electron_args: '--mac --arm64'
-            artifact_name: desktop-mac-arm64
-          - os: ubuntu-latest
-            platform: linux
-            portable_key: linux_x64
-            builder_platform: linux
-            portable_arch_args: '--x64'
-            portable_dir: dist/portable-stage/linux-unpacked
-            python_artifact: python-backend-linux
-            electron_args: '--linux'
-            artifact_name: desktop-linux-x64
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"}]' || '[{"os":"windows-latest","platform":"win","portable_key":"win","builder_platform":"windows","portable_dir":"dist/win-unpacked","python_artifact":"python-backend-win","electron_args":"--win","artifact_name":"desktop-win-x64"},{"os":"macos-15","platform":"mac-x64","portable_key":"mac_x64","builder_platform":"macos","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/mac/N.E.K.O.app","python_artifact":"python-backend-mac-x64","electron_args":"--mac --x64","artifact_name":"desktop-mac-x64"},{"os":"macos-latest","platform":"mac-arm64","portable_key":"mac_arm64","builder_platform":"macos","portable_arch_args":"--arm64","portable_dir":"dist/portable-stage/mac-arm64/N.E.K.O.app","python_artifact":"python-backend-mac-arm64","electron_args":"--mac --arm64","artifact_name":"desktop-mac-arm64"},{"os":"ubuntu-latest","platform":"linux","portable_key":"linux_x64","builder_platform":"linux","portable_arch_args":"--x64","portable_dir":"dist/portable-stage/linux-unpacked","python_artifact":"python-backend-linux","electron_args":"--linux","artifact_name":"desktop-linux-x64"}]') }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -710,8 +685,8 @@ jobs:
       - name: Checkout Electron frontend
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.electron_repo || format('{0}/N.E.K.O.-PC', github.repository_owner) }}
-          ref: ${{ github.event.inputs.electron_ref || 'main' }}
+          repository: ${{ inputs.electron_repo || format('{0}/N.E.K.O.-PC', github.repository_owner) }}
+          ref: ${{ inputs.electron_ref || 'main' }}
           token: ${{ secrets.ELECTRON_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           path: electron-app
 
@@ -779,7 +754,7 @@ jobs:
       # N.E.K.O.-PC has hardenedRuntime, afterSign (notarize.js), and entitlements
       # which all require a valid signing identity; disable them all for CI builds
       - name: Disable macOS code signing
-        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true'))
+        if: runner.os == 'macOS' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true'))
         working-directory: electron-app
         run: |
           node -e "
@@ -828,7 +803,7 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true')) && 'false' || 'true' }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -846,7 +821,7 @@ jobs:
         env:
           NEKO_PORTABLE_BUILD: '1'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_signing == 'true')) && 'false' || 'true' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.skip_signing == 'true')) && 'false' || 'true' }}
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -1010,12 +985,14 @@ jobs:
           ls -lah release/
 
       - name: Delete old nightly release
+        if: ${{ !inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
 
       - name: Create nightly release
+        if: ${{ !inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1056,6 +1033,24 @@ jobs:
           Built from [\`${VERSION}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})
           NOTES
           )"
+
+      - name: Create or update Windows nightly release
+        if: ${{ inputs.windows_only }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release upload nightly release/* --clobber
+          else
+            gh release create nightly release/* \
+              --title "Nightly Build ${DATE}" \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              --notes "Unsigned Windows-only nightly build (${VERSION})."
+          fi
 
   # Stable tags publish every self-managed Portable update channel. If a release was
   # created manually first, upload --clobber updates its assets in place.
