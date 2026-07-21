@@ -581,23 +581,40 @@ MMDManager.prototype._startUIUpdateLoop = function() {
     this._mmdCtrlKeyUpListener = onKeyUp;
     this._mmdWindowBlurListener = onBlur;
 
+    // 空闲低频模式下改用 ~33ms 定时器转一次性 rAF：一次性 rAF 不形成连续
+    // vsync 链，Blink 主帧调度随渲染循环一起降到地板频率。否则本循环单独
+    // 就能把 BeginMainFrame 顶回显示器刷新率，渲染侧的空闲化收益归零。
+    const scheduleNext = () => {
+        if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
+        if (this.core && this.core._idleTickMode) {
+            if (this._uiLoopIdleTimeout) clearTimeout(this._uiLoopIdleTimeout);
+            this._uiLoopIdleTimeout = setTimeout(() => {
+                this._uiLoopIdleTimeout = null;
+                if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }, 33);
+            return;
+        }
+        this._uiUpdateLoopId = requestAnimationFrame(update);
+    };
+
     const update = () => {
         if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
 
         if (!this.currentModel || !this.currentModel.mesh) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) this._uiUpdateLoopId = requestAnimationFrame(update);
+            scheduleNext();
             return;
         }
 
         if (this._isInReturnState) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) this._uiUpdateLoopId = requestAnimationFrame(update);
+            scheduleNext();
             return;
         }
 
         if (window.isMobileWidth && window.isMobileWidth()) {
             const now = performance.now();
             if (now - lastMobileUpdate < MOBILE_UPDATE_INTERVAL) {
-                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) this._uiUpdateLoopId = requestAnimationFrame(update);
+                scheduleNext();
                 return;
             }
             lastMobileUpdate = now;
@@ -607,7 +624,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
         const lockIcon = this._mmdLockIcon;
 
         if (!this.camera || !this.renderer) {
-            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) this._uiUpdateLoopId = requestAnimationFrame(update);
+            scheduleNext();
             return;
         }
 
@@ -633,9 +650,7 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                         lockIcon.style.opacity = '0';
                     }
                 }
-                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-                    this._uiUpdateLoopId = requestAnimationFrame(update);
-                }
+                scheduleNext();
                 return;
             }
 
@@ -874,14 +889,18 @@ MMDManager.prototype._startUIUpdateLoop = function() {
             if (window.DEBUG_MODE) console.debug('[MMD UI] 更新循环单帧异常:', error);
         }
 
-        if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
-        }
+        scheduleNext();
     };
 
     this._updateFloatingButtonsPositionNow = () => {
         if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) return;
         cancelAnimationFrame(this._uiUpdateLoopId);
+        // 同步 flush 前清掉空闲模式的 pending 再入定时器，防止 update() 内的
+        // scheduleNext 与旧定时器分叉出两条更新链
+        if (this._uiLoopIdleTimeout) {
+            clearTimeout(this._uiLoopIdleTimeout);
+            this._uiLoopIdleTimeout = null;
+        }
         this._uiUpdateLoopId = 0;
         update();
     };

@@ -23,6 +23,7 @@ import { i18n } from '../../core/i18n.js';
 import { store, on } from '../../core/state.js';
 import { toast } from '../../core/toast.js';
 import { el } from '../_dom.js';
+import { openMemoryExportModal } from './memory_export_modal.js';
 
 const T = (k, ...a) => i18n(`memory_trace.overview.${k}`, ...a);
 
@@ -115,6 +116,14 @@ export function mountOverviewPage(host, ctx) {
     const bar = el('div', { className: 'mov-toolbar' });
     bar.append(el('h2', { className: 'mov-title' }, T('title')));
     const right = el('div', { className: 'mov-toolbar-right' });
+    // Export is only meaningful once a character's memory has loaded.
+    if (state.phase === 'ready') {
+      right.append(el('button', {
+        className: 'btn mov-export-btn',
+        title: T('export.button_hint'),
+        onClick: () => openMemoryExportModal({ characterName: (state.data || {}).character }),
+      }, T('export.button')));
+    }
     right.append(el('button', {
       className: 'btn mov-reload-btn', onClick: () => reload(),
     }, T('reload')));

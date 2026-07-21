@@ -219,7 +219,7 @@ def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path
 
 
 @pytest.mark.plugin_integration
-def test_cli_workflow_can_build_verify_and_repeatedly_install_without_manual_steps(tmp_path: Path) -> None:
+def test_cli_workflow_rejects_repeated_executable_install_without_renaming(tmp_path: Path) -> None:
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "plugins"
@@ -240,8 +240,6 @@ def test_cli_workflow_can_build_verify_and_repeatedly_install_without_manual_ste
                 str(plugins_root),
                 "--profiles-root",
                 str(profiles_root),
-                "--on-conflict",
-                "rename",
             ]
         )
         == 0
@@ -255,14 +253,12 @@ def test_cli_workflow_can_build_verify_and_repeatedly_install_without_manual_ste
                 str(plugins_root),
                 "--profiles-root",
                 str(profiles_root),
-                "--on-conflict",
-                "rename",
             ]
         )
-        == 0
+        == 1
     )
 
     assert (plugins_root / "simple_plugin" / "plugin.toml").is_file()
-    assert (plugins_root / "simple_plugin_1" / "plugin.toml").is_file()
+    assert not (plugins_root / "simple_plugin_1").exists()
     assert (profiles_root / "simple_plugin" / "default.toml").is_file()
-    assert (profiles_root / "simple_plugin_1" / "default.toml").is_file()
+    assert not (profiles_root / "simple_plugin_1").exists()

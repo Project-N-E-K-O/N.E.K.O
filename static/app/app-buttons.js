@@ -3087,13 +3087,24 @@
 
         function isDesktopRegionCaptureUnavailable(errorLike) {
             if (!errorLike) return false;
-            var code = errorLike.code || '';
+            var code = String(errorLike.code || '').trim();
+            if (!code) {
+                var exactValue = String(
+                    errorLike.message || errorLike.error || errorLike.reason || ''
+                ).trim();
+                if (/^[A-Z][A-Z0-9_]+$/.test(exactValue)) {
+                    code = exactValue;
+                }
+            }
             if (code === 'ENOSYS' || code === 'UNSUPPORTED_API' || code === 'SCREEN_CAPTURE_UNAVAILABLE') return true;
-            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase();
-            return message.indexOf('not implemented') !== -1
-                || message.indexOf('not supported') !== -1
-                || message.indexOf('unsupported') !== -1
-                || message.indexOf('unavailable') !== -1;
+            var message = String(errorLike.message || errorLike.error || errorLike.reason || '').toLowerCase().trim();
+            // 仅保留旧壳曾经返回的完整短语。能力级错误（例如
+            // SCREENSHOT_PIN_*）即使包含 unsupported，也必须终止本次操作，
+            // 不能回退到第二轮截图并把编辑器本身抓进画面。
+            return message === 'not implemented'
+                || message === 'not supported'
+                || message === 'unsupported'
+                || message === 'unavailable';
         }
 
         function normalizeDesktopRegionCaptureResult(raw) {
@@ -3108,7 +3119,9 @@
                 return {
                     success: false,
                     error: raw.error || raw.message || 'DESKTOP_REGION_CAPTURE_FAILED',
-                    code: raw.code || null
+                    code: raw.code || null,
+                    capability: raw.capability || null,
+                    retryable: raw.retryable === true
                 };
             }
             if (raw.pinned) {
@@ -3181,7 +3194,11 @@
                     console.info('[截图] 桌面框选接口声明不可用，回退到内置裁剪:', regionMethod.name);
                     return null;
                 }
-                throw new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
+                var terminalError = new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
+                terminalError.code = normalized.code || null;
+                terminalError.capability = normalized.capability || null;
+                terminalError.retryable = normalized.retryable === true;
+                throw terminalError;
             }
 
             console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (normalized.width || 0) + 'x' + (normalized.height || 0));

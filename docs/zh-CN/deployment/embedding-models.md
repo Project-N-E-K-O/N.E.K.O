@@ -8,6 +8,16 @@ local-text-retrieval-v1
 
 不要把具体的上游模型名写进配置文件或记忆缓存字段。该 profile id 是向量维度、池化方式、tokenizer 行为和量化方式的兼容性契约。如果未来的模型与现有向量不兼容，请直接升 profile id，例如 `local-text-retrieval-v2`。
 
+## 运行时行为
+
+- 推理完全在本地执行，并固定使用 ONNX Runtime 的 `CPUExecutionProvider`；不会选择 GPU provider。
+- 向量路径是可选能力。功能开关关闭、检测到的内存低于 4 GiB、CPU 命中已知崩溃黑名单、`auto` 模式没有可用的 INT8 SIMD 路径、依赖/资源不完整，或加载/推理失败时都会关闭。运行时失败会在当前进程剩余生命周期内粘滞关闭向量能力。
+- `VECTORS_QUANTIZATION=auto` 会在支持的 SIMD 路径可用时选择 INT8（x86 上为 AVX-VNNI 或 AVX2，ARM64 上为 NEON）。首选环境变量 `NEKO_VECTORS_QUANTIZATION`（兼容旧的无前缀名称）接受 `auto`、`int8`、`fp32`；强制 FP32 必须提供对应模型文件。
+- 没有向量时 `recall_memory` 仍然可用：显式查询路径会保留 BM25 结果；有 cosine 结果时使用倒数排名融合（RRF）。这条延迟敏感路径刻意不增加 LLM 重排。
+- 完整的 app-data profile 优先于随包 profile。不完整的 app-data 资源会整体回退到完整 bundle，不会把两边文件拼接使用。
+
+候选池与持久化边界请参阅[记忆系统](/zh-CN/architecture/memory-system)。
+
 ## 开发环境准备
 
 安装项目主依赖（已包含 `onnxruntime`、`tokenizers`；CPU SIMD 能力改读 numpy 的 `__cpu_features__`，不再需要 `py-cpuinfo`）：

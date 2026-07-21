@@ -304,6 +304,21 @@ class Live2DManager {
                 if (typeof window.targetFrameRate === 'number' && this.pixi_app.ticker) {
                     this.pixi_app.ticker.maxFPS = window.targetFrameRate;
                 }
+                // 包装 ticker.stop/start：外部代码（app-character / live2d-model 等）直接
+                // 操作 ticker 时先退出空闲低频 tick 模式，避免空闲定时器与外部暂停意图打架。
+                // 空闲模式自身通过 _tickerOrigStop/Start 绕过包装，不会自触发。
+                {
+                    const ticker = this.pixi_app.ticker;
+                    const mgr = this;
+                    // 闭包捕获本 ticker 自己的原始方法：PIXI 重建后旧 ticker 上残留的
+                    // 包装函数只会作用于旧 ticker 本身，不会透过实例属性误操作新 ticker。
+                    const origStop = ticker.stop.bind(ticker);
+                    const origStart = ticker.start.bind(ticker);
+                    this._tickerOrigStop = origStop;
+                    this._tickerOrigStart = origStart;
+                    ticker.stop = function () { mgr._exitIdleTickMode(); return origStop(); };
+                    ticker.start = function () { mgr._exitIdleTickMode(); return origStart(); };
+                }
                 // 启动自适应帧率守护：静止时降到地板（LIVE2D_IDLE_FPS），活动时升回配置帧率。
                 this._startIdleFpsGovernor();
 
@@ -316,6 +331,8 @@ class Live2DManager {
                 // 任务栏、DevTools、输入法等视口变化不会触发（幂等判定跳过）
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
+                let lastViewportW = window.innerWidth;
+                let lastViewportH = window.innerHeight;
                 let lastDevicePixelRatio = window.devicePixelRatio || 1;
 
                 const doResize = (reason) => {
@@ -337,6 +354,12 @@ class Live2DManager {
                     const sizeChanged = prevW !== newW || prevH !== newH;
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
+
+                    if (typeof this.isLive2DPeekActive === 'function' &&
+                        this.isLive2DPeekActive() &&
+                        typeof this.clearLive2DPeek === 'function') {
+                        this.clearLive2DPeek(`viewport-changed:${reason}`);
+                    }
 
                     if (resolutionChanged) {
                         renderer.resolution = nextResolution;
@@ -380,16 +403,21 @@ class Live2DManager {
                 this._screenChangeHandler = () => {
                     const sw = window.screen.width;
                     const sh = window.screen.height;
+                    const vw = window.innerWidth;
+                    const vh = window.innerHeight;
                     const dpr = window.devicePixelRatio || 1;
                     const renderer = this.pixi_app && this.pixi_app.renderer;
                     const shouldRecoverReturnBallRenderer = !!(renderer && renderer.screen &&
                         isLive2DReturnBallViewportSize(renderer.screen.width, renderer.screen.height) &&
                         !isLive2DReturnBallViewportSize(window.innerWidth, window.innerHeight));
                     if (sw === lastScreenW && sh === lastScreenH &&
+                        vw === lastViewportW && vh === lastViewportH &&
                         Math.abs(dpr - lastDevicePixelRatio) < 0.001 &&
                         !shouldRecoverReturnBallRenderer) return;
                     lastScreenW = sw;
                     lastScreenH = sh;
+                    lastViewportW = vw;
+                    lastViewportH = vh;
                     lastDevicePixelRatio = dpr;
                     doResize(shouldRecoverReturnBallRenderer
                         ? 'window.resize:return-ball-renderer-recovery'
@@ -527,10 +555,19 @@ class Live2DManager {
         }
         // 立即按 governor 语义落地，不必等下一次活动周期：有渲染活动升回配置帧率，
         // 否则直接压到静止地板，避免改完设置后空闲态停在未节流的值。
-        if (this._hasRenderActivity()) {
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) {
+            // 页面级豁免：直接落配置帧率，不进入空闲地板/低频模式
+            this._exitIdleTickMode();
+            this.pixi_app.ticker.maxFPS = window.targetFrameRate;
+        } else if (this._hasRenderActivity()) {
             this.boostInteractiveFPS();
         } else {
+            // 改配置时如果正处于空闲低频 tick 模式，先退出再按新地板重新进入，
+            // 让 interval 周期与新的地板帧率一致。
+            const wasIdleTickMode = this._idleTickMode;
+            if (wasIdleTickMode) this._exitIdleTickMode();
             this.pixi_app.ticker.maxFPS = this._resolveIdleFps();
+            if (wasIdleTickMode) this._enterIdleTickMode();
         }
         console.log(`[Live2D Core] 目标帧率设置为 ${window.targetFrameRate === 0 ? 'VSync (无限制)' : window.targetFrameRate + 'fps'}`);
     }
@@ -550,6 +587,8 @@ class Live2DManager {
     // 有渲染活动时升回配置帧率，并安排在 durationMs 后衰减回静止地板（全平台）。
     boostInteractiveFPS(durationMs = LIVE2D_INTERACTIVE_FPS_HOLD_MS) {
         if (!this.pixi_app || !this.pixi_app.ticker) return;
+        // 有活动：先退出空闲低频 tick 模式，恢复 rAF 驱动的满帧管线。
+        this._exitIdleTickMode();
         const ticker = this.pixi_app.ticker;
         const configured = this._resolveConfiguredTargetFps();
         // 活动时升回用户配置上限（0=不限帧）。不再 Math.max(IDLE,...)，否则会把刻意设到
@@ -561,13 +600,104 @@ class Live2DManager {
         const originalTicker = ticker;
         if (this._idleFpsRestoreTimer) {
             clearTimeout(this._idleFpsRestoreTimer);
+            this._idleFpsRestoreTimer = null;
         }
+        // 页面级豁免：只升频、不安排衰减——衰减会把预览页压回空闲地板帧率
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         this._idleFpsRestoreTimer = setTimeout(() => {
             this._idleFpsRestoreTimer = null;
             if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
                 originalTicker.maxFPS = this._resolveIdleFps();
+                // 无活动衰减到地板后，进一步切换到定时器驱动的低频 tick：
+                // rAF 驱动下即使 maxFPS 已限 30，三个 ticker 的 rAF 请求仍会让
+                // Blink 以显示器刷新率（如 120Hz）跑完整主帧生命周期，空耗 CPU/GPU。
+                this._enterIdleTickMode();
             }
         }, Math.max(100, Number(durationMs) || LIVE2D_INTERACTIVE_FPS_HOLD_MS));
+    }
+
+    /**
+     * 空闲低频 tick 模式：停掉 rAF 驱动的 ticker（app + 全局 shared/system），
+     * 改用 setInterval 以静止地板帧率手动 update()。效果等同 30fps 渲染，
+     * 但页面不再以显示器刷新率调度主帧。任何 boost / 外部 ticker.start()/stop()
+     * 都会立即退出该模式。
+     *
+     * 注意：PIXI.Ticker.shared/system 是全局单例。当前没有任何页面会同时运行
+     * 两个持有活跃 pixi_app 的 Live2DManager（预览管理器等都是互斥激活），
+     * 若未来出现共存场景，先进入空闲模式的实例会把另一个实例的 shared 驱动
+     * （模型 motion/physics 的 autoUpdate）降到自己的地板频率——届时需要把
+     * shared/system 的接管改成跨实例引用计数。
+     */
+    _enterIdleTickMode() {
+        if (this._idleTickMode) return;
+        if (!this.pixi_app || !this.pixi_app.ticker || !this._tickerOrigStop) return;
+        const ticker = this.pixi_app.ticker;
+        // 外部已显式暂停（pauseRendering / 角色切换）：不接管
+        if (ticker.started === false) return;
+        const PixiTicker = (typeof PIXI !== 'undefined' && PIXI.Ticker) ? PIXI.Ticker : null;
+        this._idleTickMode = true;
+        this._idleTickSharedWasStarted = !!(PixiTicker && PixiTicker.shared.started);
+        this._idleTickSystemWasStarted = !!(PixiTicker && PixiTicker.system.started);
+        // 定时器本身就是节流器：清掉 maxFPS 限制，避免 interval 抖动（33ms < minElapsed
+        // 33.33ms）导致 update() 被 maxFPS 丢帧、实际帧率减半。
+        this._idleTickSavedMaxFPS = ticker.maxFPS;
+        ticker.maxFPS = 0;
+        this._tickerOrigStop();
+        if (this._idleTickSharedWasStarted) PixiTicker.shared.stop();
+        if (this._idleTickSystemWasStarted) PixiTicker.system.stop();
+        const intervalMs = Math.max(16, Math.round(1000 / Math.max(1, this._resolveIdleFps())));
+        this._idleTickTimer = setInterval(() => {
+            if (!this._idleTickMode) return;
+            const app = this.pixi_app;
+            if (!app || !app.ticker) { this._exitIdleTickMode(); return; }
+            // 外部代码绕过包装直接把 ticker 拉起来了：让位给 rAF 模式
+            if (app.ticker.started) { this._exitIdleTickMode(); return; }
+            // 纯浏览器标签页隐藏时不渲染（对齐 rAF 模式下的完全暂停语义；
+            // Electron 宠物窗禁用 backgroundThrottling，不受影响）
+            if (typeof document !== 'undefined' && document.hidden) return;
+            const now = performance.now();
+            // 三个 update 各自捕获：一个 ticker 的异常不应拖累其余（对齐 rAF
+            // 模式下三条独立 rAF 链的失败隔离），且打印首个异常保住可诊断性。
+            const guardedUpdate = (t) => {
+                try {
+                    t.update(now);
+                } catch (e) {
+                    if (!this._idleTickErrorLogged) {
+                        this._idleTickErrorLogged = true;
+                        console.warn('[Live2D Core] 空闲低频 tick 渲染异常（同类后续异常不再打印）:', e);
+                    }
+                }
+            };
+            if (PixiTicker) {
+                if (this._idleTickSystemWasStarted) guardedUpdate(PixiTicker.system);
+                if (this._idleTickSharedWasStarted) guardedUpdate(PixiTicker.shared);
+            }
+            guardedUpdate(app.ticker);
+        }, intervalMs);
+    }
+
+    _exitIdleTickMode() {
+        if (!this._idleTickMode) return;
+        this._idleTickMode = false;
+        if (this._idleTickTimer) {
+            clearInterval(this._idleTickTimer);
+            this._idleTickTimer = null;
+        }
+        const PixiTicker = (typeof PIXI !== 'undefined' && PIXI.Ticker) ? PIXI.Ticker : null;
+        try {
+            if (PixiTicker) {
+                if (this._idleTickSharedWasStarted && !PixiTicker.shared.started) PixiTicker.shared.start();
+                if (this._idleTickSystemWasStarted && !PixiTicker.system.started) PixiTicker.system.start();
+            }
+        } catch (_) {}
+        const app = this.pixi_app;
+        if (app && app.ticker && typeof this._idleTickSavedMaxFPS === 'number') {
+            app.ticker.maxFPS = this._idleTickSavedMaxFPS;
+        }
+        if (app && app.ticker && app.ticker.started === false && this._tickerOrigStart) {
+            try { this._tickerOrigStart(); } catch (_) {}
+        }
+        this._idleTickSavedMaxFPS = null;
     }
 
     // 向后兼容旧调用名（live2d-interaction.js 的交互升帧），现已推广到全平台。
@@ -591,6 +721,8 @@ class Live2DManager {
     // 自适应帧率守护：周期性探测活动状态，有活动就续命满帧，无活动时由衰减计时器回落到地板。
     _startIdleFpsGovernor() {
         this._stopIdleFpsGovernor();
+        // 页面级豁免（demo/模型管理器等预览页）：期望满帧，不启动空闲治理
+        if (window.__NEKO_DISABLE_AVATAR_IDLE_THROTTLE__ === true) return;
         // 启动即视为活动（加载/入场动画期间保持满帧），随后自动衰减。
         this.boostInteractiveFPS();
         this._idleFpsGovernorTimer = setInterval(() => {
@@ -606,9 +738,17 @@ class Live2DManager {
             // （app-character / model_manager / app-ui / live2d-model 等）不走 resumeRendering，
             // 自终止后无人重启会让 Live2D 失去 idle 节流；ticker 恢复 started 后本守护自动继续治理。
             // 用 === false 安全降级：万一某 pixi 版本无 started 属性，守卫不触发即维持原行为。
-            if (this.pixi_app.ticker.started === false) return;
+            // 空闲低频 tick 模式下 started 恒为 false（由定时器驱动），但活动探测必须继续，
+            // 否则动作/拖拽/口型同步永远无法把帧率拉回来。
+            if (!this._idleTickMode && this.pixi_app.ticker.started === false) return;
             if (this._hasRenderActivity()) {
                 this.boostInteractiveFPS();
+            } else if (!this._idleTickMode && !this._idleFpsRestoreTimer) {
+                // 自愈：外部「确保渲染」路径（model-display / universal-manager 等的
+                // `!started && start()`）会把 ticker 拉回 rAF 模式并解除空闲低频 tick，
+                // 且不会再有 boost 衰减计时器带我们回来。无活动、无待衰减时直接重新进入。
+                this.pixi_app.ticker.maxFPS = this._resolveIdleFps();
+                this._enterIdleTickMode();
             }
         }, LIVE2D_IDLE_FPS_GOVERNOR_INTERVAL_MS);
     }
@@ -623,6 +763,9 @@ class Live2DManager {
             clearTimeout(this._idleFpsRestoreTimer);
             this._idleFpsRestoreTimer = null;
         }
+        // teardown 时必须退出空闲低频 tick 模式：全局 PIXI.Ticker.shared/system 是
+        // 我们停的，不恢复的话销毁重建后模型 autoUpdate（挂在 shared 上）会被冻住。
+        this._exitIdleTickMode();
     }
 
     /**
@@ -4524,6 +4667,48 @@ class Live2DManager {
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
      */
     getModelScreenBounds() {
+        const edgePeekState = this._live2DPeekState;
+        if (edgePeekState && edgePeekState.active) {
+            const model = edgePeekState.model || this.currentModel;
+            if (model && !model.destroyed && typeof model.getBounds === 'function') {
+                const bounds = model.getBounds();
+                const left = Number(bounds.left ?? bounds.x);
+                const top = Number(bounds.top ?? bounds.y);
+                const right = Number(bounds.right ?? (left + Number(bounds.width)));
+                const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+                const renderer = this.pixi_app && this.pixi_app.renderer;
+                const screen = renderer && renderer.screen;
+                const rendererW = Number(screen && screen.width);
+                const rendererH = Number(screen && screen.height);
+                const viewportLeft = 0;
+                const viewportTop = 0;
+                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
+                    ? rendererW
+                    : Number(window.innerWidth) || 0);
+                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
+                    ? rendererH
+                    : Number(window.innerHeight) || 0);
+                const visibleLeft = Math.max(left, viewportLeft);
+                const visibleRight = Math.min(right, viewportRight);
+                const visibleTop = Math.max(top, viewportTop);
+                const visibleBottom = Math.min(bottom, viewportBottom);
+                const width = visibleRight - visibleLeft;
+                const height = visibleBottom - visibleTop;
+                if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                    return {
+                        left: visibleLeft,
+                        right: visibleRight,
+                        top: visibleTop,
+                        bottom: visibleBottom,
+                        width: width,
+                        height: height,
+                        centerX: visibleLeft + width / 2,
+                        centerY: visibleTop + height / 2
+                    };
+                }
+            }
+        }
+
         const model = this.currentModel;
         if (!model) {
             return null;
@@ -4577,6 +4762,9 @@ class Live2DManager {
 
     // 复位模型位置和缩放到初始状态
     async resetModelPosition() {
+        if (typeof this.clearLive2DPeek === 'function') {
+            this.clearLive2DPeek('reset-model-position');
+        }
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
             return;

@@ -5,7 +5,7 @@
 New-user onboarding ("icebreaker") endpoints. The icebreaker is an onboarding conversation, not a mini-game: it keeps its own lifecycle state, separate from the game-route lifecycle. It can append context and speak fixed onboarding lines, but it never makes `/api/game/route/active` report an open mini-game window.
 
 ::: info
-All mutating endpoints (`/route/start`, `/route/end`, `/context`, `/choice`, `/speak`) are local-mutation endpoints guarded by the same CSRF / local-request validation as the rest of the backend. A failed check returns `{ "ok": false, "reason": "csrf_validation_failed" }`.
+All mutating endpoints (`/route/start`, `/route/end`, `/context`, `/free-text/interpret`, `/choice`, `/speak`) are local-mutation endpoints guarded by the same CSRF / local-request validation as the rest of the backend. A failed check returns `{ "ok": false, "reason": "csrf_validation_failed" }`.
 :::
 
 ::: info
@@ -151,6 +151,14 @@ If a route is active but the supplied `session_id` does not match it (a stale or
   "state": "<route state>"
 }
 ```
+
+### `POST /api/icebreaker/free-text/interpret`
+
+Maps a free-text answer to one of the active onboarding choices. Required JSON fields are `lanlan_name`, `session_id`, `user_text`, and a non-empty `options` list. Optional prompt context includes `assistant_line`, recent free-text turns, and the derail streak.
+
+The route must already be active and the `session_id` must match it. Validation, stale-session, missing-model, timeout, and parse failures use `{ "ok": false, "reason": "..." }`; a successful interpretation returns the normalized selected option and method metadata.
+
+---
 
 ### `POST /api/icebreaker/choice`
 

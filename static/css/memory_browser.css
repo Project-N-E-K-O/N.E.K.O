@@ -1685,6 +1685,55 @@ html.neko-window-maximized .chat-item + .chat-item:hover::before {
     color: #40C5F1;
 }
 
+.external-memory-import-card {
+    display: grid;
+    gap: 10px;
+}
+
+.external-memory-import-note,
+.external-memory-selection,
+.external-memory-import-status {
+    margin: 0;
+    color: #6f9fb7;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.external-memory-format-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.external-memory-format-cascader,
+.external-memory-format-popup {
+    width: 100%;
+}
+
+.external-memory-import-card .external-memory-format-trigger {
+    justify-content: space-between;
+}
+
+.external-memory-format-options {
+    width: 100%;
+    box-sizing: border-box;
+    border-right: 0;
+}
+
+.external-memory-import-card button {
+    width: 100%;
+    justify-content: center;
+}
+
+.external-memory-import-status {
+    min-height: 1.2em;
+}
+
+.external-memory-import-status.is-working { color: #3caed4; }
+.external-memory-import-status.is-success { color: #2b9f67; }
+.external-memory-import-status.is-warning { color: #bf7b1d; }
+.external-memory-import-status.is-error { color: #d94c4c; }
+
 /* 滚动条样式 */
 #memory-chat-edit::-webkit-scrollbar {
     width: var(--scrollbar-width, 8px);

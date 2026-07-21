@@ -384,6 +384,20 @@ export default {
     }
   },
   package: {
+    install: {
+      safeUpgradeHint: 'Ao importar o mesmo plugin novamente, a versão é verificada e a substituição segura com reversão é feita sem criar cópias com sufixo.',
+      planFailed: 'Não foi possível inspecionar o pacote de instalação.',
+      upgradeTitle: 'Atualizar {plugin}?',
+      upgradeBody: 'A versão {current} será substituída por {target}. Um plugin em execução será reiniciado brevemente.',
+      upgradeConfirm: 'Atualizar plugin',
+      upgradeCancelled: 'Atualização cancelada.',
+      upgradeSucceeded: '{plugin} foi atualizado com sucesso.',
+      blockedBundleConflict: 'Este pacote contém um plugin instalado. Atualize os plugins um de cada vez.',
+      blockedDirectoryConflict: 'A pasta de destino pertence a outro plugin e não foi alterada.',
+      blockedLegacyPlugin: 'Uma versão anterior deste plugin ainda está instalada. Desinstale {plugin} antes de continuar.',
+      rollbackCompleted: 'A atualização falhou e a versão anterior foi restaurada.',
+      rollbackIncomplete: 'A atualização falhou e a reversão ficou incompleta. Verifique o estado do plugin antes de continuar.'
+    },
     dialog: {
       title: 'Histórico de operações de pacote',
       subtitle: 'Mostrando os últimos {count} resultado(s)'

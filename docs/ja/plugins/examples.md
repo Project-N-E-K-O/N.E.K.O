@@ -146,7 +146,8 @@ class MonitoredPlugin(NekoPluginBase):
     @after_entry(target="*")
     def log_results(self, *, entry_id, result, **_):
         """すべてのエントリーポイントの結果をログに記録する。"""
-        self.logger.info(f"[{entry_id}] result={result}")
+        # user content を含み得る raw result を persistent log に書かない。
+        self.logger.info(f"[{entry_id}] completed result_type={type(result).__name__}")
 
     # --- エントリーポイント ---
 

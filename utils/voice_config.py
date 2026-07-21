@@ -20,7 +20,7 @@ three orthogonal things and leaked routing through prefixes
 single structured object instead:
 
 * **source** — where the voice identity comes from: ``preset`` (official built-in)
-  / ``clone`` (user-cloned) / ``design`` (text-described, generated; future).
+  / ``clone`` (user-cloned) / ``design`` (text-described, generated).
 * **provider** — which TTS backend owns it (``gemini`` / ``gptsovits`` /
   ``cosyvoice`` / ``elevenlabs`` / ``minimax`` / ``vllm_omni`` / ``free`` / ...).
 * **ref** — the voice identity *within* that provider (preset name / clone id /

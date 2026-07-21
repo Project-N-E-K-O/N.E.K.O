@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import {
   getAvatarToolRegistration,
-  type AvatarToolDefinitionEffect,
-  type AvatarToolDefinitionId,
-  type AvatarToolDefinitionSound,
+  type AvatarToolEffectId,
+  type AvatarToolId,
+  type AvatarToolSoundId,
   type AvatarToolTouchZone,
   type AvatarToolVariantId,
 } from './catalog';
@@ -398,22 +398,19 @@ type AvatarToolInteractionCommitFromPayload<Payload extends AvatarInteractionPay
 export type AvatarToolInteractionCommit =
   AvatarToolInteractionCommitFromPayload<AvatarInteractionPayload>;
 
-export type AvatarToolSound = AvatarToolDefinitionSound;
-export type AvatarToolEffect = AvatarToolDefinitionEffect;
-
 export type AvatarToolCommand = {
   commit?: AvatarToolInteractionCommit;
   rangeVariant?: AvatarToolVariantId;
   outsideVariant?: AvatarToolVariantId;
-  sound?: AvatarToolSound;
-  effect?: AvatarToolEffect;
+  sound?: AvatarToolSoundId;
+  effect?: AvatarToolEffectId;
   effectMode?: string;
   pressFeedback?: 'until-pointer-release';
   resetOutsideVariantAfterMs?: number;
 };
 
 export type AvatarToolRuleContext = {
-  toolId: AvatarToolDefinitionId;
+  toolId: AvatarToolId;
   clientX: number;
   clientY: number;
   hit: AvatarRangeHit | null;
@@ -441,6 +438,6 @@ export function resolveAvatarToolCommit(context: AvatarToolRuleContext): AvatarT
   return getAvatarToolRegistration(context.toolId).handlers.commit(context);
 }
 
-export function resolveAvatarToolPointerRelease(toolId: AvatarToolDefinitionId): AvatarToolCommand {
+export function resolveAvatarToolPointerRelease(toolId: AvatarToolId): AvatarToolCommand {
   return getAvatarToolRegistration(toolId).handlers.pointerRelease();
 }

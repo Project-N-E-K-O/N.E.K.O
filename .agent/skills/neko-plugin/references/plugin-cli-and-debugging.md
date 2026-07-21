@@ -28,9 +28,10 @@ Useful variants:
 
 ```bash
 uv run neko-plugin init <plugin_id> --type adapter --name "<Plugin Name>" --no-interactive
+uv run neko-plugin init <plugin_id> --type extension --name "<Plugin Name>"
 ```
 
-`--no-interactive` is suitable for normal plugins and adapters. `extension` is rejected and has no compatibility window; migrate it into a normal plugin/router rather than regenerating it.
+`--no-interactive` is suitable for normal plugins and adapters. Extension setup needs host details, so use the interactive path or ask the host questions first.
 
 ## CLI Source Map
 

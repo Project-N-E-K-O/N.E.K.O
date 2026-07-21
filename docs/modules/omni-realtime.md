@@ -1,62 +1,65 @@
 # Realtime Client
 
-**File:** `main_logic/omni_realtime_client.py`
+**Package:** `main_logic/omni_realtime_client/`
 
-The `OmniRealtimeClient` manages the WebSocket connection to Realtime API providers (Qwen, OpenAI, Gemini, Step, GLM).
+`OmniRealtimeClient` owns the native-audio conversation path selected by `LLMSessionManager` for audio input. The class is assembled from transport, response, audio, media/Gemini, and tool mixins behind the stable `main_logic.omni_realtime_client` import.
 
-## Supported providers
+## Provider transports
 
-| Provider | Protocol | Notes |
-|----------|----------|-------|
-| Qwen (DashScope) | WebSocket | Primary, most tested |
-| OpenAI | WebSocket | GPT Realtime API |
-| Step | WebSocket | Step Audio |
-| GLM | WebSocket | Zhipu Realtime |
-| Gemini | Google GenAI SDK | Uses SDK wrapper, not raw WebSocket |
+| Provider route | Transport behavior |
+|---|---|
+| Qwen | DashScope realtime WebSocket events |
+| OpenAI / GPT | OpenAI realtime WebSocket events; uplink audio is converted to 24 kHz |
+| Step | Step realtime WebSocket events |
+| GLM | Zhipu realtime WebSocket events |
+| Grok | Realtime WebSocket event path |
+| Gemini | Google GenAI SDK live session, not the raw WebSocket implementation |
+| Free route | Endpoint-dependent: Gemini-proxy/live-stream or Step-compatible behavior |
 
-## Key methods
+The client selects one branch from `api_type`, model, and endpoint configuration. A connection failure is surfaced to the session manager; it does not silently create an `OmniOfflineClient`.
 
-### `connect()`
+## Public lifecycle
 
-Establishes a WebSocket connection to the provider's Realtime API endpoint.
+| Method | Contract |
+|---|---|
+| `connect(instructions, ...)` | Open the selected provider session and configure turn detection, audio, tools, and instructions |
+| `handle_messages()` | Run the receive loop for WebSocket transports |
+| `update_session(config)` | Send provider-specific session updates |
+| `stream_audio(audio_chunk)` | Process and upload one PCM input chunk |
+| `stream_image(image_b64, bypass_rate_limit=False)` | Send or analyze one visual frame |
+| `prime_context(text, skipped=False)` | Seed startup/hot-swap context using provider-specific semantics |
+| `create_response(instructions, skipped=False)` | Add a user item and request a response |
+| `inject_text_and_request_response(text, on_rejected=None)` | Perform the proactive text-injection/response operation atomically |
+| `prompt_ephemeral(...)` | Request a temporary proactive response |
+| `cancel_response()` / `handle_interruption()` | Cancel or truncate the active provider response where supported |
+| `close()` | Stop background tasks, close the live transport, and release media/tool state |
 
-### `prime_context(text, skipped=False)`
+Callbacks include streamed text and audio, input/output transcripts, response completion, tool calls, status, and connection errors. Interruption is handled through the lifecycle methods; there is no universal constructor-level `on_interrupt` event contract for this client.
 
-Injects user text into the conversation as context. With `skipped=True` (or on Qwen) the text is appended to the session instructions without triggering a model response; with `skipped=False` (GPT/GLM/Step) it injects a one-shot user message and triggers a response.
+## Audio and turn detection
 
-### `create_response(instructions, skipped=False)`
+The client accepts PCM bytes without a sample-rate argument and distinguishes the two capture formats used by the application:
 
-Creates a user-role conversation message and triggers an LLM response. Used mid-conversation when an immediate model reply is needed.
+- 480-sample / 960-byte PC chunks arrive at 48 kHz, pass through the RNNoise path, and are downsampled to the internal 16 kHz stream;
+- 512-sample / 1024-byte mobile chunks are already 16 kHz and bypass PC denoising;
+- OpenAI realtime upload is resampled from the internal stream to 24 kHz at the final send step.
 
-### `inject_text_and_request_response(text, *, on_rejected=None)`
+`TurnDetectionMode.SERVER_VAD` is the default, but server VAD is not available on every route. Gemini, the free Gemini proxy, livestream, and explicit manual modes use client-side turn handling. The local fallback prefers RNNoise VAD when available and otherwise uses RMS-based speech detection with sustain/grace timing.
 
-Injects a user-role text item and explicitly triggers a response in one call. Used by the voice-mode proactive path (agent task callbacks / plugin `push_message` `ai_behavior="respond"`) to speak a result immediately without waiting for the next user turn.
+## Images
 
-### `stream_audio(audio_chunk)`
+Qwen, GLM, GPT, Gemini, and the compatible free Gemini route can receive native visual frames. Other realtime models use the separately configured vision model to turn the first relevant frame into text context.
 
-Streams a raw PCM audio chunk to the LLM. The input sample rate is auto-detected from the chunk size (480 samples = 48 kHz from PC, which is RNNoise-denoised and downsampled to 16 kHz; 512 samples = 16 kHz from mobile, passed through directly), so no sample-rate argument is needed.
+Native frames are throttled by `NATIVE_IMAGE_MIN_INTERVAL` (1.5 seconds). Idle capture multiplies the interval by `IMAGE_IDLE_RATE_MULTIPLIER` (5). `bypass_rate_limit=True` is reserved for a deliberate one-shot cue such as a proactive screenshot.
 
-### `stream_image(image_b64, *, bypass_rate_limit=False)`
+## Tools and proactive injection
 
-Streams a screenshot / camera frame for multi-modal understanding. Rate-limited by `NATIVE_IMAGE_MIN_INTERVAL` (1.5s default); pass `bypass_rate_limit=True` to skip the throttle for a single deliberate cue image (e.g. a proactive callback's screenshot).
+Tool definitions are normalized once and encoded into the selected provider's supported wire format. Results are returned with provider-specific events. A bounded sliding-window guard prevents a realtime tool-call flood.
 
-## Event handlers
+`inject_text_and_request_response()` is used by proactive callbacks that must speak immediately. It rejects or requeues work if another response owns the session rather than interleaving two response streams.
 
-| Event | Purpose |
-|-------|---------|
-| `on_text_delta()` | Streamed text response from the LLM |
-| `on_audio_delta()` | Streamed audio response |
-| `on_input_transcript()` | User's speech converted to text (STT) |
-| `on_output_transcript()` | LLM's output as text |
-| `on_interrupt()` | User interrupted the LLM's output |
+## Concurrency, backpressure, and failures
 
-## Turn detection
+Audio and image processing have dedicated async locks. Sends are bounded by a semaphore, and fire-and-forget work is tracked so `close()` can cancel it. HTTP/WebSocket 503 responses trigger a short send throttle; fatal frame, timeout, and transport failures notify the connection-error callback and close the session.
 
-The client uses **server-side VAD** (Voice Activity Detection) by default. The LLM provider decides when the user has finished speaking, enabling natural conversation turn-taking.
-
-## Image throttling
-
-Screen captures are rate-limited to avoid overwhelming the API:
-
-- **Active speaking**: Images sent every `NATIVE_IMAGE_MIN_INTERVAL` seconds (1.5s)
-- **Idle (no voice)**: Interval multiplied by `IMAGE_IDLE_RATE_MULTIPLIER` (5x = 7.5s)
+These mechanisms protect one live provider connection. Provider failover and switching between text and audio clients remain session-manager responsibilities.

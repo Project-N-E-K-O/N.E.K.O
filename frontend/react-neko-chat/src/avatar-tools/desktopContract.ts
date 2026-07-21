@@ -10,7 +10,7 @@ import {
   hasValidAvatarToolAssetVersion,
   isAvatarToolSameOriginAssetPath,
   withAvatarToolAssetVersion,
-  type AvatarToolDefinitionId,
+  type AvatarToolId,
   type AvatarToolDefinition,
   type AvatarToolEffectRecipe,
   type AvatarToolInteractionProfile,
@@ -107,7 +107,7 @@ const finiteRangeSchema = z.object({
 
 const fixedParticlesEffectSchema = z.object({
   id: identifierSchema,
-  kind: z.literal('fixed-particles-v1'),
+  kind: z.literal('fixed-particles'),
   interactionLock: z.literal('none'),
   lifetimeMs: positiveNumberSchema,
   glyph: z.string().min(1).max(16),
@@ -123,7 +123,7 @@ const fixedParticlesEffectSchema = z.object({
 
 const randomScatterEffectSchema = z.object({
   id: identifierSchema,
-  kind: z.literal('random-scatter-v1'),
+  kind: z.literal('random-scatter'),
   interactionLock: z.literal('none'),
   assetPath: desktopAvatarToolAssetPathSchema,
   count: positiveIntegerSchema.max(64),
@@ -154,7 +154,7 @@ const hammerTimelineEntrySchema = z.object({
 
 const hammerSwingEffectSchema = z.object({
   id: identifierSchema,
-  kind: z.literal('hammer-swing-v1'),
+  kind: z.literal('hammer-swing'),
   interactionLock: z.literal('effect-lifetime'),
   anchor: z.object({
     source: z.literal('live-pointer'),
@@ -211,7 +211,7 @@ const effectRecipeSchema = z.union([
 ]);
 
 const progressiveReleaseProfileSchema = z.object({
-  kind: z.literal('progressive-release-v1'),
+  kind: z.literal('progressive-release'),
   stages: z.array(z.object({
     variant: avatarToolVariantIdSchema,
     actionId: identifierSchema,
@@ -242,7 +242,7 @@ const progressiveReleaseProfileSchema = z.object({
 });
 
 const pressReleaseProfileSchema = z.object({
-  kind: z.literal('press-release-v1'),
+  kind: z.literal('press-release'),
   actionId: identifierSchema,
   pointerDown: z.object({
     rangeVariant: avatarToolVariantIdSchema,
@@ -269,7 +269,7 @@ const pressReleaseProfileSchema = z.object({
 }).strict();
 
 const lockedImpactProfileSchema = z.object({
-  kind: z.literal('locked-impact-v1'),
+  kind: z.literal('locked-impact'),
   actionId: identifierSchema,
   touchZone: z.literal('release'),
   outsideFeedback: z.object({
@@ -323,10 +323,10 @@ const interactionProfileSchema = z.union([
 ]);
 
 function collectInteractionReferences(profile: z.infer<typeof interactionProfileSchema>) {
-  if (profile.kind === 'progressive-release-v1') {
+  if (profile.kind === 'progressive-release') {
     return { sounds: [profile.feedback.sound], effects: [profile.feedback.effect] };
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return { sounds: [profile.chance.sound], effects: [profile.chance.effect] };
   }
   return {
@@ -481,7 +481,7 @@ function projectVisual(definition: AvatarToolDefinition): DesktopAvatarToolVisua
 }
 
 function projectEffect(effect: AvatarToolEffectRecipe) {
-  if (effect.kind === 'fixed-particles-v1') {
+  if (effect.kind === 'fixed-particles') {
     return {
       id: effect.id,
       kind: effect.kind,
@@ -498,7 +498,7 @@ function projectEffect(effect: AvatarToolEffectRecipe) {
       })),
     };
   }
-  if (effect.kind === 'random-scatter-v1') {
+  if (effect.kind === 'random-scatter') {
     const projectRange = (range: { min: number; range: number }) => ({
       min: range.min,
       range: range.range,
@@ -560,7 +560,7 @@ function projectEffect(effect: AvatarToolEffectRecipe) {
 }
 
 function projectProfile(profile: AvatarToolInteractionProfile) {
-  if (profile.kind === 'progressive-release-v1') {
+  if (profile.kind === 'progressive-release') {
     return {
       kind: profile.kind,
       stages: profile.stages.map(stage => ({
@@ -583,7 +583,7 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
       },
     };
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return {
       kind: profile.kind,
       actionId: profile.actionId,
@@ -642,10 +642,10 @@ function projectProfile(profile: AvatarToolInteractionProfile) {
 }
 
 function getReferencedResourceIds(profile: AvatarToolInteractionProfile) {
-  if (profile.kind === 'progressive-release-v1') {
+  if (profile.kind === 'progressive-release') {
     return { sounds: new Set([profile.feedback.sound]), effects: new Set([profile.feedback.effect]) };
   }
-  if (profile.kind === 'press-release-v1') {
+  if (profile.kind === 'press-release') {
     return { sounds: new Set([profile.chance.sound]), effects: new Set([profile.chance.effect]) };
   }
   return {
@@ -700,7 +700,7 @@ export function projectDesktopAvatarToolContract(
 }
 
 export function buildDesktopAvatarToolContract(
-  toolId: AvatarToolDefinitionId | null,
+  toolId: AvatarToolId | null,
 ): DesktopAvatarToolContract {
   return projectDesktopAvatarToolContract(
     toolId === null ? null : getAvatarToolRegistration(toolId).definition,

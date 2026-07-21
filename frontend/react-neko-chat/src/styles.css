@@ -1112,6 +1112,12 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   object-fit: cover;
 }
 
+.message-block-image img[data-neko-image-load-failed-sticker="true"] {
+  height: auto;
+  object-fit: contain;
+  background: #fff;
+}
+
 .message-block-link {
   display: grid;
   grid-template-columns: 1fr;
@@ -3115,6 +3121,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
 }
 
+.compact-meme-overlay img[data-neko-image-load-failed-sticker="true"] {
+  background: #fff;
+}
+
 /* 关闭叉的定位框：inline-block 收紧到图片实际尺寸，叉子绝对定位到框右上角＝图片右上角。
    pointer-events 继承 overlay 的 none（图片区继续穿透），只有下面的按钮单独开 auto。 */
 .compact-meme-overlay-frame {
@@ -3497,20 +3507,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(0, 210, 255, 0.96);
 }
 
+/* 只呼吸 opacity，不呼吸 filter：drop-shadow 参与动画时每帧都要重光栅化
+   （无法走合成器捷径），在 120Hz 屏上是持续的 raster+GPU 开销。脉动的光晕感
+   由 ::after 的 opacity/transform 呼吸层承担，::before 保持基础态的静态阴影。 */
 @keyframes compact-history-handle-breathe {
   0%,
   100% {
     opacity: 0.72;
-    filter:
-      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
   }
 
   50% {
     opacity: 1;
-    filter:
-      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
-      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
   }
 }
 

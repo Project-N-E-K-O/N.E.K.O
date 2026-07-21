@@ -25,7 +25,7 @@ describe('avatar tool effect recipes', () => {
   it('executes a custom recipe by kind without depending on its id', () => {
     const recipe = {
       id: 'fixture-sparkles',
-      kind: 'fixed-particles-v1',
+      kind: 'fixed-particles',
       interactionLock: 'none',
       lifetimeMs: 300,
       glyph: '+',
@@ -41,7 +41,7 @@ describe('avatar tool effect recipes', () => {
     });
 
     expect(execution).toMatchObject({
-      kind: 'fixed-particles-v1',
+      kind: 'fixed-particles',
       interactionLock: 'none',
       recipe: { id: 'fixture-sparkles' },
       visuals: [{ id: 7, x: 12, y: 17, driftX: 4, driftY: -5, scale: 1.2, delayMs: 6 }],
@@ -56,8 +56,8 @@ describe('avatar tool effect recipes', () => {
       nextId: () => ++id,
       random: () => 0.5,
     });
-    expect(execution.kind).toBe('fixed-particles-v1');
-    if (execution.kind !== 'fixed-particles-v1') throw new Error('invalid fixture');
+    expect(execution.kind).toBe('fixed-particles');
+    if (execution.kind !== 'fixed-particles') throw new Error('invalid fixture');
 
     expect(execution.visuals).toHaveLength(LOLLIPOP_HEART_EFFECT_RECIPE.particles.length);
     expect(execution.visuals[0]).toMatchObject({
@@ -79,8 +79,8 @@ describe('avatar tool effect recipes', () => {
       nextId: () => ++id,
       random: () => 0.5,
     });
-    expect(execution.kind).toBe('random-scatter-v1');
-    if (execution.kind !== 'random-scatter-v1') throw new Error('invalid fixture');
+    expect(execution.kind).toBe('random-scatter');
+    if (execution.kind !== 'random-scatter') throw new Error('invalid fixture');
 
     expect(execution.visuals).toHaveLength(FIST_REWARD_DROP_EFFECT_RECIPE.count);
     expect(execution.visuals[0]).toMatchObject({
@@ -98,7 +98,7 @@ describe('avatar tool effect recipes', () => {
   it('declares immediate windup while scheduling later hammer phases once', () => {
     expect(HAMMER_SWING_EFFECT_RECIPE).toMatchObject({
       id: 'hammer-swing',
-      kind: 'hammer-swing-v1',
+      kind: 'hammer-swing',
       interactionLock: 'effect-lifetime',
       anchor: {
         source: 'live-pointer',
@@ -192,17 +192,20 @@ class AudioMock extends EventTarget {
 
 describe('avatar tool sound lifecycle', () => {
   afterEach(() => {
+    delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
     audioInstances.length = 0;
     vi.unstubAllGlobals();
   });
 
   it('stops and releases active audio when its tool session is destroyed', () => {
+    window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'audio 1';
     vi.stubGlobal('Audio', AudioMock);
     const disposer = createAvatarToolDisposer(3, generation => generation === 3);
 
-    playAvatarToolSound('hammer-small', disposer);
+    playAvatarToolSound('hammer-impact', disposer);
     expect(audioInstances).toHaveLength(1);
-    expect(audioInstances[0]?.src).toBe('/static/sounds/avatar-tools/hammer-small.mp3');
+    expect(audioInstances[0]?.src)
+      .toBe('/static/sounds/avatar-tools/hammer/impact.mp3?v=audio%201');
     expect(audioInstances[0]?.volume).toBe(0.9);
 
     disposer.destroy();
@@ -213,14 +216,15 @@ describe('avatar tool sound lifecycle', () => {
   });
 
   it('prewarms all sounds for the selected tool and releases them with the session', () => {
+    window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'audio 1';
     vi.stubGlobal('Audio', AudioMock);
     const disposer = createAvatarToolDisposer(4, generation => generation === 4);
 
     prewarmAvatarToolSounds('hammer', disposer);
 
     expect(audioInstances.map(audio => audio.src)).toEqual([
-      '/static/sounds/avatar-tools/hammer-small.mp3',
-      '/static/sounds/avatar-tools/hammer-big.mp3',
+      '/static/sounds/avatar-tools/hammer/impact.mp3?v=audio%201',
+      '/static/sounds/avatar-tools/hammer/easter-egg.mp3?v=audio%201',
     ]);
     expect(audioInstances.every(audio => audio.preload === 'auto')).toBe(true);
     expect(audioInstances.every(audio => audio.volume === 0.9)).toBe(true);
@@ -254,7 +258,7 @@ describe('avatar tool sound lifecycle', () => {
     vi.stubGlobal('Audio', BrokenPlayAudio);
     const disposer = createAvatarToolDisposer(6, generation => generation === 6);
 
-    expect(() => playAvatarToolSound('coin-drop', disposer)).not.toThrow();
+    expect(() => playAvatarToolSound('fist-reward-drop', disposer)).not.toThrow();
     expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);
     expect(audioInstances[0]?.src).toBe('');
     disposer.destroy();
@@ -268,7 +272,7 @@ describe('avatar tool sound lifecycle', () => {
     vi.stubGlobal('Audio', RejectedPlayAudio);
     const disposer = createAvatarToolDisposer(7, generation => generation === 7);
 
-    playAvatarToolSound('coin-drop', disposer);
+    playAvatarToolSound('fist-reward-drop', disposer);
     await Promise.resolve();
 
     expect(audioInstances[0]?.pause).toHaveBeenCalledTimes(1);

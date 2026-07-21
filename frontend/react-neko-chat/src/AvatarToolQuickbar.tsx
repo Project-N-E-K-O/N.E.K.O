@@ -90,7 +90,7 @@ export default function AvatarToolQuickbar({
       >
         <img
           className="avatar-tool-quickbar-edit-image"
-          src={withAvatarToolAssetVersion('/static/icons/edit_tool_unified.png')}
+          src={withAvatarToolAssetVersion('/static/assets/avatar-tools/ui/edit.png')}
           alt=""
           aria-hidden="true"
         />

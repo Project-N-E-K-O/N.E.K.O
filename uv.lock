@@ -76,6 +76,30 @@ wheels = [
 ]
 
 [[package]]
+name = "aiotieba"
+version = "4.7.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "beautifulsoup4" },
+    { name = "cryptography" },
+    { name = "lxml" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/6b/a821387a21650922f25cda835921365f851a262dcd56ab5aefbc267003a7/aiotieba-4.7.1.tar.gz", hash = "sha256:9e85fc034af1e439c153485b088d0ab5ab15d6f05b89d2b75839ea0908d5a2a1", size = 212080, upload-time = "2026-05-23T16:07:04.625Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/15/6052199a816ccf9de1a4af890bc05838872ed821d60f20146efbbef1b3a3/aiotieba-4.7.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:95524e4f0299f1aa9682ed8a8e9e4b3fd338166cef7ca9b73e883ee8370ca8d0", size = 311510, upload-time = "2026-05-23T16:06:08.529Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/50/d80ae10fba2ded7f4bab13b0b491bcfdc610e3f182f64cc04599638a8647/aiotieba-4.7.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3e83cb50ec04cfc1043cfb782e755146a78acdab240802aca45fa469172b7281", size = 311876, upload-time = "2026-05-23T16:06:10.124Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/d4/6413ef9db2c2fe50443d2197254de9e859f8c55b1f2b7afa6c12ac85a586/aiotieba-4.7.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:47b28282b876fddb33340476bee7f2ebdfe07d24e41ddceb533a557d50f01863", size = 313182, upload-time = "2026-05-23T16:06:11.758Z" },
+    { url = "https://files.pythonhosted.org/packages/28/cb/524712d26f91d2fc063cebb18690142d537fb4a449f1e6440dd687570c20/aiotieba-4.7.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:0eec46c9178c04a24a63d61f18a90e2e628bb784fa890b355d8a2f8c6de0cfb0", size = 313332, upload-time = "2026-05-23T16:06:13.68Z" },
+    { url = "https://files.pythonhosted.org/packages/82/1a/27fd222cc05f51c0c56911ea6f34cf5c9ab31da4a8d37e729085edb894a8/aiotieba-4.7.1-cp311-cp311-win_amd64.whl", hash = "sha256:22c1a1d5c0ea833dbaafeaa74b6cdf36e2895aa65adc172e686ca032b3a45c62", size = 294597, upload-time = "2026-05-23T16:06:15.554Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/6e/25d204da8e18d17b7f1f0ec7505854398380405142c4ebe8fa2eb982f847/aiotieba-4.7.1-pp311-pypy311_pp73-macosx_10_15_x86_64.whl", hash = "sha256:7417a819eb507e486fb50b0b417b49435eb17361065436500e29800a4211c8fe", size = 311593, upload-time = "2026-05-23T16:06:57.961Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/4d/4911b34238920d112fd8533f46365d6031924c5fb1b94332e0f884098ede/aiotieba-4.7.1-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:2f15ec26bc4b619cae062d39c452e630bc74fe59e21abb76975b08184ebb149b", size = 311891, upload-time = "2026-05-23T16:06:59.59Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/4e/1f4fafefa2f99a93fcef30c8b5e59cdf076443616f1357d6399eaf24fdf0/aiotieba-4.7.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dd41e79b5693d4b7592daa586ceb428f7b756180bb8a3a017c21b6113a79b2c8", size = 313195, upload-time = "2026-05-23T16:07:01.171Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/88/1fc2ef921c49f32a8bbe9e83f13f0e7f518ba59f06e2e69a9f2a3f47160d/aiotieba-4.7.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:3ac4faae647700fd34aed8bdbf6dd1b342ec0325fb7c34cd6bd100a857c4393e", size = 294611, upload-time = "2026-05-23T16:07:02.886Z" },
+]
+
+[[package]]
 name = "altgraph"
 version = "0.17.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1414,6 +1438,7 @@ wheels = [
 name = "n-e-k-o"
 source = { editable = "." }
 dependencies = [
+    { name = "aiotieba" },
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4" },
@@ -1487,6 +1512,7 @@ galgame = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiotieba", specifier = ">=4.7.1" },
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },

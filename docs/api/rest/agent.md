@@ -2,103 +2,62 @@
 
 **Prefix:** `/api/agent`
 
-Manages the background agent system — capability flags, task state, and health monitoring.
+The main server's browser-facing proxy for the loopback Agent Server. It owns character/session synchronization and remote-deployment safety checks, then forwards runtime operations to `TOOL_SERVER_PORT`. Proxy failures normally return `502`; mutation routes return `501` when the backend is deployed remotely because controlling the server machine would be unsafe.
 
-## Flags
+## State and commands
 
 ### `GET /api/agent/flags`
 
-Get current agent capability flags.
-
-**Response:**
-
-```json
-{
-  "agent_enabled": false,
-  "computer_use_enabled": false,
-  "user_plugin_enabled": false,
-  "browser_use_enabled": false
-}
-```
+Returns the Agent Server flag snapshot, including the master switch and supported sub-features: Computer Use, Browser Use, user plugins, OpenClaw, and OpenFang. A proxy failure returns `502` with `success: false`.
 
 ### `POST /api/agent/flags`
 
-Update agent flags. Changes are forwarded to the tool server.
-
-**Body:**
-
-```json
-{
-  "lanlan_name": "character_name",
-  "flags": {
-    "agent_enabled": true,
-    "user_plugin_enabled": true
-  }
-}
-```
-
-## State & health
+Legacy partial flag update. The body is `{"lanlan_name":"...","flags":{...}}`. The route updates the character session and forwards recognized sub-flags. A missing character returns `404`; forwarding failure resets the local flags to a safe disabled state and returns `502`.
 
 ### `GET /api/agent/state`
 
-Get a snapshot of the agent's current state (running tasks, pending requests).
-
-### `GET /api/agent/health`
-
-Agent health check endpoint.
-
-## Capability checks
-
-### `GET /api/agent/computer_use/availability`
-
-Check if Computer Use is available (requires vision model configuration).
-
-### `GET /api/agent/mcp/availability`
-
-Check if MCP (Model Context Protocol) is available.
-
-### `GET /api/agent/user_plugin/availability`
-
-Check if user plugins are available.
-
-### `GET /api/agent/browser_use/availability`
-
-Check if Browser Use is available.
-
-## Tasks
-
-### `GET /api/agent/tasks`
-
-List all agent tasks (active and completed).
-
-### `GET /api/agent/tasks/{task_id}`
-
-Get details for a specific task.
-
-## Commands
+Returns the authoritative Agent Server state snapshot: revision, flags, capabilities, notification state, and task summary.
 
 ### `POST /api/agent/command`
 
-Send a control command to the agent.
+Preferred mutation entry point. The current commands are:
 
-**Body:**
+| Command | Additional fields | Purpose |
+|---|---|---|
+| `set_agent_enabled` | `enabled`, optional `profile` | Toggle the master runtime gate |
+| `set_flag` | `key`, `value` | Toggle one of `computer_use_enabled`, `browser_use_enabled`, `user_plugin_enabled`, `openclaw_enabled`, `openfang_enabled` |
+| `refresh_state` | none | Return and broadcast a fresh state snapshot |
 
-```json
-{
-  "lanlan_name": "character_name",
-  "command": "pause",
-  "task_id": "optional_task_id"
-}
-```
+`request_id` and `lanlan_name` are optional. Unknown commands or flag keys are rejected by the Agent Server; upstream/proxy failure is reported as `502`.
 
-**Available commands:** `pause`, `resume`, `cancel`
+## Health and capabilities
 
-## Internal endpoints
+| Method | Path | Response boundary |
+|---|---|---|
+| `GET` | `/api/agent/health` | `{"status":"ok","tool":{...}}`; Agent Server unavailable returns `502` and `status: "down"` |
+| `GET` | `/api/agent/computer_use/availability` | Readiness and reasons from the Agent Server |
+| `GET` | `/api/agent/browser_use/availability` | Browser dependency/model readiness |
+| `GET` | `/api/agent/user_plugin/availability` | Plugin service reachability; unavailable returns `502` |
+| `GET` | `/api/agent/openclaw/availability` | OpenClaw/QwenPaw readiness; unavailable returns `502` |
+| `GET` | `/api/agent/mcp/availability` | Compatibility response: always unavailable because MCP left the `brain/` layer |
 
-### `POST /api/agent/internal/analyze_request`
+## Tasks and administration
 
-Internal endpoint for submitting analyze requests. Used by the main server's session manager.
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/agent/tasks` | List Agent Server task snapshots |
+| `GET` | `/api/agent/tasks/{task_id}` | Read one task |
+| `POST` | `/api/agent/tasks/{task_id}/cancel` | Cancel one task; preserves upstream `404`, uses `504` when the request reached the server but its response timed out |
+| `POST` | `/api/agent/admin/control` | Forward administrative control such as `{"action":"end_all"}`; local-only, destructive to active work |
 
-### `POST /api/agent/admin/control`
+## Internal and UI-helper routes
 
-Admin control commands (e.g., kill process). Use with caution.
+| Method | Path | Boundary |
+|---|---|---|
+| `POST` | `/api/agent/internal/analyze_request` | Internal fallback bridge that publishes an `analyze_request` onto the main event bus |
+| `GET` | `/api/agent/user_plugin/dashboard` | Redirect to the local plugin dashboard; accepts validated `v` and loopback `yui_opener_origin` query values |
+| `GET` | `/api/agent/openclaw/guide` | Render the local OpenClaw guide page |
+| `GET` | `/api/agent/openclaw/guide/content` | Return localized guide Markdown; optional `lang` query |
+| `GET` | `/api/agent/openclaw/guide/assets/{asset_path:path}` | Serve a file below the fixed guide asset directory; traversal/missing files return `404` |
+
+The analyze bridge is not a public submission API. Dashboard and guide routes are browser helpers, not Agent Server task APIs.

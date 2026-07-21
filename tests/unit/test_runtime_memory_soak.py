@@ -10,6 +10,7 @@ import psutil
 import pytest
 
 from scripts import runtime_memory_baseline
+from scripts import runtime_memory_soak
 from scripts.runtime_memory_baseline import (
     _embedding_scenario,
     _process_row,
@@ -317,3 +318,38 @@ def test_trend_analysis_distinguishes_native_growth_from_traced_heap() -> None:
         "onnx_dll_or_model_mapping_residency_without_python_owner"
         in analysis["heuristic_signals"]
     )
+
+
+@pytest.mark.asyncio
+async def test_run_soak_passes_sampling_args_to_metadata(monkeypatch, tmp_path) -> None:
+    captured = []
+    snapshot = object()
+    monkeypatch.setattr(
+        runtime_memory_soak,
+        "_metadata",
+        lambda args: captured.append(args) or {"sample_interval_s": args.interval},
+    )
+    monkeypatch.setattr(runtime_memory_soak, "_persist", lambda *_args: None)
+    monkeypatch.setattr(
+        runtime_memory_soak.tracemalloc,
+        "take_snapshot",
+        lambda: snapshot,
+    )
+    monkeypatch.setattr(
+        runtime_memory_soak,
+        "_allocation_growth",
+        lambda _before, _after: [],
+    )
+    args = SimpleNamespace(
+        output=str(tmp_path / "soak.json"),
+        duration_hours=0.0,
+        cycles=0,
+        features=[],
+        interval=0.5,
+        window=0.5,
+    )
+
+    payload = await runtime_memory_soak._run_soak(args)
+
+    assert captured == [args]
+    assert payload["metadata"] == {"sample_interval_s": 0.5}

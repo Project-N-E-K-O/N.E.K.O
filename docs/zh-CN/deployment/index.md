@@ -1,26 +1,18 @@
-# 部署概述
+# 部署概览
 
-N.E.K.O. 可以根据您的环境和需求通过多种方式部署。
+| 方式 | 场景 | 实际入口 |
+| --- | --- | --- |
+| 桌面发行版 | 普通用户 | Electron UI + 打包 Python 后端 |
+| 源码 launcher | 本地开发 | `uv run python launcher.py` |
+| Docker Compose | 无头/服务器 | Nginx 代理 Python 服务 |
+| 独立模块 | 隔离服务问题 | 分别启动 memory/main/agent |
 
-| 方式 | 适用场景 | 平台 |
-|------|----------|------|
-| [Docker](/deployment/docker) | 生产环境、服务器、无界面运行 | Linux、macOS |
-| [手动搭建](/deployment/manual) | 开发、自定义 | 所有平台 |
-| [Windows 可执行文件](/deployment/windows-exe) | 终端用户 | Windows |
+跨平台 workflow 构建 Windows、macOS、Linux 产物；定时输出是 **nightly 预发行版**，不是稳定版承诺。
 
-## 最低要求
+源码要求 Python 3.11、`uv`，以及满足前端 lockfile 的 Node（plugin manager 要求 `^20.19.0 || >=22.12.0`）。
 
-- **CPU**：2 核以上
-- **内存**：最低 4 GB，推荐 8 GB
-- **Python**：3.11（手动搭建时需要）
-- **网络**：需要互联网访问以调用 API（除非使用本地 LLM）
+本地向量是可选的 CPU 能力；禁用时 BM25 仍可用。详见[本地嵌入模型资源](./embedding-models)。
 
-## 使用的端口
+源码首选端口为主服务 48911、记忆 48912、Agent/工具 48915、用户插件 48916。Docker 的宿主 48911/48912 是 Nginx HTTP/HTTPS 映射，不能与源码进程端口表混用。
 
-| 端口 | 服务 | 是否必需 |
-|------|------|----------|
-| 48911 | 主服务器（Web UI） | 是 |
-| 48912 | 记忆服务器 | 是 |
-| 48913 | 监控服务器 | 可选 |
-| 48915 | Agent 服务器 | 可选 |
-| 48916 | 插件服务器 | 可选 |
+N.E.K.O. 主要面向本机。对外暴露前必须评估认证、代理头、TLS、防火墙，以及配置、记忆、屏幕、浏览器和插件能力的隐私影响。

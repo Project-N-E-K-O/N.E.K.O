@@ -1,4 +1,4 @@
-"""安全门 / 限流时钟（D-B4 + neko_roast safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
+"""安全门 / 限流时钟（D-B4 + neko_live safety_guard 同款，去掉队列细节，加 critical 抢占冷却）。
 
 职责：持有"全局限流时钟 / 抢占冷却 / 手动急停 / 连续失败自动急停 / dry_run"等状态；
 仲裁(arbiter)调用它判定与记录。它不决定"说哪条"（那是 arbiter）。

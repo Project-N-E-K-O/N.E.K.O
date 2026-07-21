@@ -4,6 +4,8 @@
 
 すべてのライフサイクルフックは **任意** です。必要なければ書かなくてかまいません。
 
+lifecycle hook は host-dispatched event であり、通常の runtime entry ではありません。現在の host は `@plugin_entry(auto_start=True)` を理由に通常 entry を process startup で実行しません。初期化には `@lifecycle(id="startup")` を使います。また `self.config.update_own_config(...)` は supported host path で config を更新・refresh しますが、同じ plugin process に `config_change` を dispatch しません。call 後に config 依存の derived state を更新してください。
+
 ## 起動時に初期化する
 
 プラグインプロセスが開始されたあと、`startup` フックが呼ばれます。設定の読み込み、接続の作成、リソース準備に向いています。

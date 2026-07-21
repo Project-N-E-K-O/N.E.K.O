@@ -84,10 +84,14 @@ _COPY_PATH = _PROJECT_ROOT / "tests" / "testbench" / "pipeline" / "avatar_dedupe
 # Upstream single-source-of-truth for the window value. As of the 2026-06
 # upstream sync, ``cross_server.py`` no longer hard-codes ``8000``; it aliases
 # ``AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS = AVATAR_INTERACTION_DEDUPE_WINDOW_MS``
-# where the latter lives in ``config/__init__.py``. The testbench copy keeps a
-# standalone literal (L30: no cross-package import), so this smoke compares the
+# where the latter lives in the ``config`` package. The 2026-07 sync moved the
+# literal out of ``config/__init__.py`` (now a pure re-export) into
+# ``config/session_settings.py``, so we resolve the alias by scanning the whole
+# config package rather than a single hard-coded file. The testbench copy keeps
+# a standalone literal (L30: no cross-package import), so this smoke compares the
 # *resolved value* + function body rather than the constant's source text.
-_CONFIG_INIT_PATH = _PROJECT_ROOT / "config" / "__init__.py"
+_CONFIG_DIR = _PROJECT_ROOT / "config"
+_CONFIG_INIT_PATH = _CONFIG_DIR / "__init__.py"
 
 _SUCCESS_BANNER = "P25 AVATAR DEDUPE DRIFT SMOKE OK"
 
@@ -107,6 +111,28 @@ def _resolve_module_int(text: str, name: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _resolve_config_int(name: str) -> int | None:
+    """Resolve a top-level ``name = <int>`` literal from the ``config`` package.
+
+    The literal has migrated between config submodules across upstream syncs
+    (``config/__init__.py`` → ``config/session_settings.py`` as of the 2026-07
+    sync). ``config/__init__.py`` now only *re-exports* it via a ``from
+    .session_settings import ...`` line, so a scan of ``__init__.py`` alone
+    finds the import, not the literal. Scan ``__init__.py`` first (older layout)
+    then every top-level ``config/*.py`` module so the anchor survives future
+    relocations within the package.
+    """
+    for path in [_CONFIG_INIT_PATH, *sorted(_CONFIG_DIR.glob("*.py"))]:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        val = _resolve_module_int(text, name)
+        if val is not None:
+            return val
+    return None
+
+
 def _resolve_window_value(text: str) -> tuple[int | None, dict[str, int]]:
     """Resolve ``AVATAR_INTERACTION_MEMORY_DEDUPE_WINDOW_MS`` to an int.
 
@@ -124,11 +150,7 @@ def _resolve_window_value(text: str) -> tuple[int | None, dict[str, int]]:
     if re.fullmatch(r"\d+", rhs):
         return int(rhs), {}
     if rhs.isidentifier():
-        try:
-            cfg_text = _CONFIG_INIT_PATH.read_text(encoding="utf-8")
-        except OSError:
-            return None, {}
-        val = _resolve_module_int(cfg_text, rhs)
+        val = _resolve_config_int(rhs)
         if val is not None:
             return val, {rhs: val}
     return None, {}

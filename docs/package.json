@@ -2,6 +2,9 @@
   "name": "neko-docs",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",

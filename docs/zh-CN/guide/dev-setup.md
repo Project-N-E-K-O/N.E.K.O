@@ -1,115 +1,38 @@
 # 开发环境搭建
 
-## 克隆仓库
-
 ```bash
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
 cd N.E.K.O
-```
-
-## 安装依赖
-
-```bash
 uv sync
 ```
 
-这会将所有 Python 依赖安装到托管的虚拟环境中。项目要求 Python 3.11。
+`uv` 选择 `pyproject.toml` 固定的 Python 3.11。Python 模块、脚本、pytest 和临时命令全部通过 `uv run`。
 
-## 启动服务器
+## 构建前端
 
-N.E.K.O. 以多个协作服务器的形式运行。至少需要启动**主服务器**和**记忆服务器**：
+```powershell
+.\build_frontend.bat
+```
 
 ```bash
-# 终端 1 — 记忆服务器
-uv run python app/memory_server.py
-
-# 终端 2 — 主服务器
-uv run python -m app.main_server
-```
-
-可选地，启动智能体服务器以执行后台任务：
-
-```bash
-# 终端 3 — 智能体服务器（可选）
-uv run python -m app.agent_server
-```
-
-## 配置 API 密钥
-
-主服务器启动后，打开 Web UI 配置 API 密钥：
-
-```
-http://localhost:48911/api_key
-```
-
-选择你偏好的核心 API 提供商并输入 API 密钥。各提供商的详细信息请参阅 [API 提供商](/zh-CN/config/api-providers)。
-
-## 验证安装
-
-打开主界面：
-
-```
-http://localhost:48911
-```
-
-你应该能看到带有 Live2D 模型的角色界面。尝试发送一条文字消息或开启语音会话，以验证一切正常运行。
-
-## 默认端口
-
-| 服务器 | 端口 | 用途 |
-|--------|------|------|
-| 主服务器 | 48911 | Web UI、REST API、WebSocket |
-| 记忆服务器 | 48912 | 记忆存储与检索 |
-| 监控服务器 | 48913 | 状态监控 |
-| 智能体/工具服务器 | 48915 | 智能体任务执行 |
-| 插件服务器 | 48916 | 用户插件 |
-
-## 构建前端项目
-
-项目在 `frontend/` 下有两个现代前端项目。完整运行应用前需要先构建它们。
-
-### 推荐：一键构建脚本
-
-> **前置条件**：构建前端需要 [Node.js](https://nodejs.org/)（>= 20.19），请确保已安装。
-
-这是官方支持的构建方式 —— 请始终优先使用脚本，而不是手动执行 npm：
-
-```bash
-# Windows
-build_frontend.bat
-
-# Linux / macOS
 ./build_frontend.sh
 ```
 
-下面按项目列出的命令用于开发场景（开发服务器、增量构建）。生产构建请以上面的脚本为准。
+脚本校验/解压 `assets/yui-origin.tar.gz`，运行 `npm ci`，将 Vue plugin manager 构建到 `frontend/plugin-manager/dist/`，React chat 构建到 `static/react/neko-chat/`。
 
-### 聊天窗口（React）
+迭代时在对应 frontend 目录运行 `npm ci && npm run dev`。Plugin manager 使用 5173，并代理到 `VITE_BACKEND_URL` 或 48916；React 使用 5174。生产 React bundle 同时由 `index.html` 和 `chat.html` 挂载。
 
-```bash
-cd frontend/react-neko-chat
-npm install
-npm run dev          # 开发服务器（端口 5174）
-npm run build        # 生产构建 → static/react/neko-chat/
-```
-
-聊天窗口以 IIFE 库（`NekoChatWindow`）的形式构建，嵌入到 `templates/index.html` 中。
-
-### 插件管理面板（Vue）
+## 启动与验证
 
 ```bash
-cd frontend/plugin-manager
-npm install
-npm run dev          # 开发服务器（端口 5173，代理 API 到 localhost:48916）
-npm run build-only   # 生产构建 → frontend/plugin-manager/dist/
+uv run python launcher.py
 ```
 
-插件管理面板由插件服务器（端口 48916）在 `/ui/` 路径下提供服务。
-
-## 运行测试
+打开 launcher 报告的 URL，首选默认值为 `http://127.0.0.1:48911`。在 `/api_key` 配置 Provider，启动异常查看 `/health`。
 
 ```bash
 uv run pytest
+uv run ruff check .
 ```
 
-测试套件的结构和运行特定测试类别的方法请参阅 `tests/README.md`。
+CI 还执行 async 阻塞、禁用日志库、prompt/i18n、LLM budget、API 末尾斜杠、模块分层、文档路径和 core 契约脚本。声称与 CI 等价前请读 `.github/workflows/analyze.yml`。

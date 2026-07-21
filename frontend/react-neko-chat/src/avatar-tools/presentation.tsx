@@ -11,9 +11,10 @@ import {
   AVATAR_TOOL_DEFINITIONS,
   getAvatarToolRegistration,
   getAvatarToolSoundResource,
+  withAvatarToolAssetVersion,
   type AvatarToolDefinition,
-  type AvatarToolDefinitionId,
   type AvatarToolEffectRecipe,
+  type AvatarToolSoundId,
   type AvatarToolVariantSource,
   type FixedParticleEffectRecipe,
   type HammerSwingEffectRecipe,
@@ -23,7 +24,6 @@ import {
 import {
   isPointWithinAvatarToolUi,
   isPointerOverAvatarToolUi,
-  type AvatarToolSound,
 } from './interaction';
 import type { AvatarToolPointer } from './protocol';
 
@@ -31,7 +31,7 @@ import type { AvatarToolPointer } from './protocol';
 
 export type FixedParticleVisualEffect = {
   id: number;
-  kind: 'fixed-particles-v1';
+  kind: 'fixed-particles';
   recipe: FixedParticleEffectRecipe;
   x: number;
   y: number;
@@ -43,7 +43,7 @@ export type FixedParticleVisualEffect = {
 
 export type RandomScatterVisualEffect = {
   id: number;
-  kind: 'random-scatter-v1';
+  kind: 'random-scatter';
   recipe: RandomScatterEffectRecipe;
   x: number;
   y: number;
@@ -59,7 +59,7 @@ export type AvatarToolTransientVisualEffect =
   | RandomScatterVisualEffect;
 
 export type HammerSwingEffectExecution = {
-  kind: 'hammer-swing-v1';
+  kind: 'hammer-swing';
   recipe: HammerSwingEffectRecipe;
   interactionLock: 'effect-lifetime';
   mode: string | null;
@@ -71,13 +71,13 @@ export type ActiveHammerSwingEffectExecution = HammerSwingEffectExecution & {
 
 export type AvatarToolEffectExecution =
   | {
-    kind: 'fixed-particles-v1';
+    kind: 'fixed-particles';
     recipe: FixedParticleEffectRecipe;
     interactionLock: 'none';
     visuals: FixedParticleVisualEffect[];
   }
   | {
-    kind: 'random-scatter-v1';
+    kind: 'random-scatter';
     recipe: RandomScatterEffectRecipe;
     interactionLock: 'none';
     visuals: RandomScatterVisualEffect[];
@@ -96,7 +96,7 @@ export function createAvatarToolEffectExecution(
   recipe: AvatarToolEffectRecipe,
   context: AvatarToolEffectExecutionContext,
 ): AvatarToolEffectExecution {
-  if (recipe.kind === 'fixed-particles-v1') {
+  if (recipe.kind === 'fixed-particles') {
     return {
       kind: recipe.kind,
       recipe,
@@ -114,7 +114,7 @@ export function createAvatarToolEffectExecution(
       })),
     };
   }
-  if (recipe.kind === 'random-scatter-v1') {
+  if (recipe.kind === 'random-scatter') {
     return {
       kind: recipe.kind,
       recipe,
@@ -211,13 +211,13 @@ function stopAudio(audio: HTMLAudioElement) {
   try { audio.load(); } catch {}
 }
 
-export function prewarmAvatarToolSounds(toolId: AvatarToolDefinitionId, disposer: AvatarToolDisposer) {
+export function prewarmAvatarToolSounds(toolId: AvatarToolId, disposer: AvatarToolDisposer) {
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return;
   getAvatarToolRegistration(toolId).definition.sounds.forEach((resource) => {
     if (!disposer.isCurrent()) return;
     let cleanup = () => {};
     try {
-      const audio = new Audio(resource.src);
+      const audio = new Audio(withAvatarToolAssetVersion(resource.src));
       audio.preload = 'auto';
       audio.volume = resource.volume;
       let unregister = () => {};
@@ -239,12 +239,12 @@ export function prewarmAvatarToolSounds(toolId: AvatarToolDefinitionId, disposer
   });
 }
 
-export function playAvatarToolSound(sound: AvatarToolSound, disposer: AvatarToolDisposer) {
+export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer) {
   if (typeof Audio === 'undefined' || !disposer.isCurrent()) return;
   let cleanup = () => {};
   try {
     const resource = getAvatarToolSoundResource(sound);
-    const audio = new Audio(resource.src);
+    const audio = new Audio(withAvatarToolAssetVersion(resource.src));
     audio.preload = 'auto';
     audio.volume = resource.volume;
     let unregister = () => {};
@@ -503,7 +503,7 @@ export function getAvatarToolOverlayTransform(
 // Stable React renderer ------------------------------------------------------
 
 function AvatarToolTransientEffectVisual({ effect }: { effect: AvatarToolTransientVisualEffect }) {
-  if (effect.kind === 'random-scatter-v1') {
+  if (effect.kind === 'random-scatter') {
     return (
       <span
         className="avatar-tool-random-scatter-particle"

@@ -48,6 +48,7 @@
         scheduledSources: [],
         isPlaying: false,
         scheduleAudioChunksRunning: false,
+        scheduleAudioChunksTimer: null,
         audioStartTime: 0,
         nextChunkTime: 0,
         lipSyncActive: false,

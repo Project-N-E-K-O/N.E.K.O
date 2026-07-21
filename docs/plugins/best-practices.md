@@ -66,6 +66,8 @@ Use appropriate log levels:
 | `error` | Errors that need attention |
 | `exception` | Errors with full stack trace |
 
+Keep raw conversations, user-entered secrets, and other privacy-sensitive payloads out of persistent logs. If a temporary diagnostic must expose such content, use an explicit `print()` path and remove it after debugging; never send raw private content through `self.logger`. Prefer redacted lengths, IDs, and error types in normal logs.
+
 ```python
 self.logger.debug(f"Processing item {item_id}")
 self.logger.info(f"Plugin started successfully")
@@ -185,10 +187,10 @@ async def on_shutdown(self, **_):
 Before shipping your plugin:
 
 - [ ] All entry points return `Ok`/`Err` (not raw dicts or exceptions)
-- [ ] `@lifecycle(id="startup")` and `@lifecycle(id="shutdown")` are implemented
-- [ ] `input_schema` is defined for all entry points that accept parameters
-- [ ] `**_` is included in all entry point signatures
-- [ ] Logger is used instead of `print()`
+- [ ] Lifecycle hooks are added only for resources that actually need setup or cleanup
+- [ ] Entry parameters have an inferred schema, explicit `input_schema`, or a Pydantic `params` model as appropriate
+- [ ] Handler signatures declare what they consume; `**_` is used only when extra fields are intentional
+- [ ] Normal metadata uses the logger; raw privacy-sensitive content never does
 - [ ] Shared state is protected with locks if timers are used
 - [ ] Cross-plugin calls handle `Err` results
-- [ ] `plugin.toml` has correct `entry` path and SDK version constraints
+- [ ] `plugin.toml` has a correct host-loading `[plugin].entry` path and SDK version constraints

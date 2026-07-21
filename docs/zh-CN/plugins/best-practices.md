@@ -66,6 +66,8 @@ class WellOrganizedPlugin(NekoPluginBase):
 | `error` | 需要关注的错误 |
 | `exception` | 带完整堆栈跟踪的错误 |
 
+不要把原始对话、用户输入的密钥或其他隐私敏感 payload 写进持久日志。如果临时诊断确实必须显示这类内容，只能走明确的 `print()` 路径，并在排查后删除；不得通过 `self.logger` 记录原始隐私内容。正常日志优先记录脱敏后的长度、ID 和错误类型。
+
 ```python
 self.logger.debug(f"Processing item {item_id}")
 self.logger.info(f"Plugin started successfully")
@@ -185,10 +187,10 @@ async def on_shutdown(self, **_):
 发布插件前请检查：
 
 - [ ] 所有入口点返回 `Ok`/`Err`（而非原始字典或异常）
-- [ ] 已实现 `@lifecycle(id="startup")` 和 `@lifecycle(id="shutdown")`
-- [ ] 所有接受参数的入口点都定义了 `input_schema`
-- [ ] 所有入口点签名中都包含 `**_`
-- [ ] 使用 Logger 而非 `print()`
+- [ ] 只在确实需要初始化或清理资源时添加生命周期钩子
+- [ ] 入口参数按需使用自动推导 schema、显式 `input_schema` 或 Pydantic `params` 模型
+- [ ] 处理器签名只声明实际消费的字段；只有有意接收额外字段时才使用 `**_`
+- [ ] 普通元数据使用 Logger；原始隐私敏感内容绝不写 Logger
 - [ ] 如果使用了定时器，共享状态已用锁保护
 - [ ] 跨插件调用已处理 `Err` 结果
-- [ ] `plugin.toml` 中的 `entry` 路径和 SDK 版本约束正确
+- [ ] `plugin.toml` 中宿主加载用的 `[plugin].entry` 路径和 SDK 版本约束正确

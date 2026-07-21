@@ -13,13 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Provider-specific voice helpers: ElevenLabs clone/design/preview,
-Minimax request prefix, local voice-clone TTS detection.
+"""Provider-specific voice helpers: ElevenLabs clone/preview and local
+voice-clone TTS detection.
 
-Split out of the former monolithic ``main_routers/characters_router.py``.
+Voice Design provider behavior is implemented in :mod:`utils.voice_design`.
 """
-
-from ._shared import logger
 
 import json
 import io
@@ -28,35 +26,12 @@ from utils.tts.providers.elevenlabs import (
     ELEVENLABS_TTS_DEFAULT_MODEL,
     ELEVENLABS_TTS_VOICE_PREFIX,
 )
-from utils.voice_clone import (
-    sanitize_minimax_voice_prefix,
-    MINIMAX_PREFIX_MAX_LENGTH,
-)
 
 
 class ElevenLabsUpstreamError(Exception):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
         self.status_code = status_code
-
-
-def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
-    """Normalize the user-entered prefix into a safe prefix that MiniMax accepts."""
-    import uuid
-
-    original_prefix = str(prefix or '').strip()
-    safe_prefix = sanitize_minimax_voice_prefix(
-        original_prefix,
-        max_length=MINIMAX_PREFIX_MAX_LENGTH,
-    )
-    if safe_prefix != original_prefix:
-        logger.info(
-            "%s 音色前缀已规范化: %r -> %r",
-            provider_label,
-            original_prefix,
-            safe_prefix,
-        )
-    return original_prefix, f"{safe_prefix}{uuid.uuid4().hex[:8]}"
 
 
 async def _get_elevenlabs_base_url(config_manager) -> str:
@@ -126,93 +101,6 @@ async def _elevenlabs_clone_voice(
     except Exception as exc:
         raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while adding voice") from exc
     raw_voice_id = payload.get("voice_id") or payload.get("voiceId") or ""
-    if not raw_voice_id:
-        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
-    return _prefixed_elevenlabs_voice_id(raw_voice_id)
-
-
-# ── ElevenLabs voice design (text description → generated voice) ──────────────
-# Voice design is the third voice source (besides preset/clone): a text prompt is
-# turned into voice previews, the user picks one, and create-from-preview lands it
-# as a normal ElevenLabs voice_id (stored with source='design'). Dispatch then
-# reuses the existing ElevenLabs clone path (voice_meta.provider=='elevenlabs'),
-# so no separate worker is needed (design doc §7).
-ELEVENLABS_VOICE_DESIGN_DESC_MIN = 20
-
-
-ELEVENLABS_VOICE_DESIGN_DESC_MAX = 1000
-
-
-# ElevenLabs voice-design previews require a ``text`` between 100 and 1000 chars to
-# synthesize audible samples. ``auto_generate_text`` only returns generated voice ids
-# (no audio), which would yield empty/unplayable previews — so we always pass a fixed
-# preview line instead (must stay ≥ 100 chars).
-ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT = (
-    "Hello! This is a preview of your designed voice. I can read your stories, chat "
-    "with you about your day, and keep you company whenever you would like a friendly "
-    "voice nearby. How do I sound to you so far?"
-)
-
-
-async def _elevenlabs_design_previews(
-    *,
-    api_key: str,
-    base_url: str,
-    voice_description: str,
-) -> list[dict]:
-    """Call POST /v1/text-to-voice/design — returns the list of voice previews.
-
-    Each preview has ``generated_voice_id`` (the handle for create-from-preview)
-    and ``audio_base_64`` (an mp3 sample for the user to audition). We let
-    ElevenLabs auto-generate the preview text so the caller only supplies a
-    description.
-    """
-    url = f"{base_url.rstrip('/')}/v1/text-to-voice/design"
-    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
-    payload = {
-        "voice_description": voice_description,
-        # 显式给 text（≥100 chars）而非 auto_generate_text，确保返回可试听的 audio_base_64。
-        "text": ELEVENLABS_VOICE_DESIGN_PREVIEW_TEXT,
-    }
-    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-    _raise_for_elevenlabs_response(resp, "voice design")
-    try:
-        data = resp.json()
-    except Exception as exc:
-        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while designing voice") from exc
-    previews = data.get("previews") if isinstance(data, dict) else None
-    if not isinstance(previews, list) or not previews:
-        raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice previews")
-    return previews
-
-
-async def _elevenlabs_create_voice_from_preview(
-    *,
-    api_key: str,
-    base_url: str,
-    voice_name: str,
-    voice_description: str,
-    generated_voice_id: str,
-) -> str:
-    """Call POST /v1/text-to-voice — persist a designed preview into a voice_id."""
-    safe_name = (voice_name or 'NEKO Designed Voice').strip()[:100] or 'NEKO Designed Voice'
-    url = f"{base_url.rstrip('/')}/v1/text-to-voice"
-    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
-    payload = {
-        "voice_name": safe_name,
-        "voice_description": voice_description,
-        "generated_voice_id": generated_voice_id,
-        "labels": {"source": "NEKO"},
-    }
-    async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-    _raise_for_elevenlabs_response(resp, "voice design create")
-    try:
-        payload_resp = resp.json()
-    except Exception as exc:
-        raise ElevenLabsUpstreamError(502, "ElevenLabs returned invalid JSON while creating designed voice") from exc
-    raw_voice_id = payload_resp.get("voice_id") or payload_resp.get("voiceId") or ""
     if not raw_voice_id:
         raise ElevenLabsUpstreamError(502, "ElevenLabs did not return voice_id")
     return _prefixed_elevenlabs_voice_id(raw_voice_id)

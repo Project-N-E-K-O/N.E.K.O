@@ -363,6 +363,10 @@ class MMDInteraction {
 
                 this.isDragging = true;
                 this.dragMode = 'pan';
+                // 同步升频：不等 300ms governor 轮询，消除拖拽起步的 30fps 顿挫
+                if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                    this.manager.core._boostInteractiveFPS();
+                }
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 this._rememberPanDragPointer(e, { captureOffset: true });
                 this._rememberDragHintPanPointer(e, { start: true });
@@ -375,6 +379,9 @@ class MMDInteraction {
                 if (!this._hitTestModel(e.clientX, e.clientY)) return;
                 this.isDragging = true;
                 this.dragMode = 'orbit';
+                if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                    this.manager.core._boostInteractiveFPS();
+                }
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'crosshair';
                 e.preventDefault();
@@ -528,6 +535,13 @@ class MMDInteraction {
 
             // 只有鼠标在模型上才响应滚轮
             if (!this._hitTestModel(e.clientX, e.clientY)) return;
+
+            // 真正命中模型的缩放才升频：同步 boost（不等 300ms governor 轮询）
+            // 消除从空闲地板起步的首段 30fps 顿挫；时间戳供 governor 续期
+            this.manager._lastInteractionBoostTs = performance.now();
+            if (this.manager.core && typeof this.manager.core._boostInteractiveFPS === 'function') {
+                this.manager.core._boostInteractiveFPS();
+            }
 
             e.preventDefault();
             const scaleFactor = e.deltaY > 0 ? 0.95 : 1.05;

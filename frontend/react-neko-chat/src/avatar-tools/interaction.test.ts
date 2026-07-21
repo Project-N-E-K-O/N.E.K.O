@@ -171,7 +171,7 @@ function context(overrides: Partial<AvatarToolRuleContext> = {}): AvatarToolRule
 describe('avatar tool runtime rules', () => {
   it('interprets profile-declared actions, chance fields and zone subsets without tool-specific rules', () => {
     const source = getAvatarToolRegistration('fist').definition;
-    if (source.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    if (source.interaction.kind !== 'press-release') throw new Error('invalid fixture');
     const definition = {
       ...source,
       interaction: {
@@ -241,7 +241,7 @@ describe('avatar tool runtime rules', () => {
       rewardDrop: true,
       touchZone: 'face',
     }));
-    expect(command.effect).toBe('reward-drops');
+    expect(command.effect).toBe('fist-reward-drops');
     expect(resolveAvatarToolPointerRelease('fist')).toEqual({
       rangeVariant: 'primary',
       outsideVariant: 'primary',

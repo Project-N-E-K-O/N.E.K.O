@@ -17,7 +17,12 @@ def register(subparsers: argparse._SubParsersAction, *, defaults: CliDefaults) -
     pkg_arg.complete = PACKAGE_FILE_COMPLETER  # type: ignore[attr-defined]
     parser.add_argument("--plugins-root", default=str(defaults.plugins_root), help="Destination root for extracted plugin directories")
     parser.add_argument("--profiles-root", default=str(defaults.profiles_root), help="Destination root for extracted package profiles")
-    parser.add_argument("--on-conflict", choices=("rename", "fail"), default="rename", help="How to handle existing target directories")
+    parser.add_argument(
+        "--on-conflict",
+        choices=("fail",),
+        default="fail",
+        help="Abort if an executable plugin directory already exists",
+    )
     parser.set_defaults(handler=handle, _defaults=defaults)
 
 

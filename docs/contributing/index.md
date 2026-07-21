@@ -1,41 +1,30 @@
 # Contributing
 
-Project N.E.K.O. is open source under the Apache License 2.0. Contributions are welcome from developers, creators, and community members worldwide.
+Project N.E.K.O. accepts focused code, documentation, translation, testing, and content-tooling contributions.
 
-## How to contribute
+## Workflow
 
-1. **Fork** the repository on GitHub
-2. **Create a branch** for your feature or fix
-3. **Set up your environment** — Python 3.11 + [uv](https://docs.astral.sh/uv/), [Node.js](https://nodejs.org/) >= 20.19 (required for frontend builds via `build_frontend.bat` / `build_frontend.sh`)
-4. **Make your changes** following the [code style](./code-style) guidelines
-5. **Test** your changes (`uv run pytest`)
-6. **Submit a Pull Request** with a clear description
+1. Fork and create a focused branch from current `main`.
+2. Read `.agent/rules/neko-guide.md` and any matching `.agent/skills/*/SKILL.md`.
+3. Set up Python 3.11 with `uv sync`; build frontends with the repository scripts.
+4. Make a minimal, symmetric change in the owning module.
+5. Run targeted tests, then the relevant lint/build checks.
+6. Open a PR describing behavior, risk, and validation.
 
-::: tip AI-Assisted Development
-The project includes built-in configurations for AI coding assistants (Claude Code, Cursor, etc.). If you develop with these tools, they will automatically load the project's rules and skills. See [AI-Assisted Dev](./ai-assisted-dev) for details and how to adapt them for other AI tools.
-:::
+All Python commands use `uv run`. User-visible i18n changes update all eight locale files together.
 
-::: warning Nuitka packaging
-If you add directories holding Python code or new dynamic imports, read
-[Nuitka Packaging Caveats](./nuitka-packaging) first. Nuitka silently drops
-`.py` files from `--include-data-dir`, and the wrong directory naming
-breaks the standalone build without breaking source-mode tests.
-:::
+## PR gates
 
-## What we need
+- Changes to Python under `app/`, `main_logic/`, or `memory/` require the regression-report section expected by `scripts/check_pr_report.py`.
+- A PR with more than 20 counted files requires a non-empty no-split rationale. New files, recognized test files, and synchronized i18n locale groups are excluded by that gate's rules.
+- Static analysis and plugin tests are defined by current workflows, not by an old checklist.
 
-- **Backend developers** — Python, FastAPI, WebSocket, AI/ML integration
-- **Frontend developers** — JavaScript, Live2D/Three.js, CSS
-- **Creators** — Live2D/3D modelers, voice actors, character designers
-- **Translators** — Help expand i18n coverage
-- **Testers** — Bug reports and feature feedback
+Read [Testing](./testing), [Code Style](./code-style), [Documentation Maintenance](./documentation), and [Nuitka Packaging](./nuitka-packaging) before changing their areas.
 
-## Community
+Maintainer-only content tools have their own safety contracts. The [natural-expression candidate miner](./natural-expression-candidate-miner) accepts only explicitly supplied local data and never promotes runtime rules automatically.
 
-- **Discord**: [Join us](https://discord.gg/5kgHfepNJr)
-- **QQ Group**: 1022939659
-- **GitHub Issues**: [Report bugs or request features](https://github.com/Project-N-E-K-O/N.E.K.O/issues)
+## Reports and community
 
-## License
+Use [GitHub Issues](https://github.com/Project-N-E-K-O/N.E.K.O/issues) for reproducible bugs and scoped proposals. Include environment, exact revision/artifact, expected/actual behavior, sanitized logs, and minimal reproduction.
 
-The core engine is licensed under **Apache License 2.0** and will remain open source. Your contributions may be included in official Steam and App Store releases.
+Contributions are governed by the repository's current `LICENSE`; do not infer additional distribution promises from this documentation.

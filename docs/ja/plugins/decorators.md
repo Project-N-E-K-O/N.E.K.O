@@ -7,7 +7,7 @@ from plugin.sdk.plugin import (
     neko_plugin, plugin_entry, lifecycle, timer_interval, message,
     on_event, custom_event,
     hook, before_entry, after_entry, around_entry, replace_entry,
-    plugin,  # 名前空間スタイルの代替
+    plugin, quick_action,  # namespace style と command-palette hint
 )
 ```
 
@@ -33,8 +33,8 @@ class MyPlugin(NekoPluginBase):
     input_schema={...},          # バリデーション用 JSON Schema
     params=MyParamsModel,        # 代替：入力用 Pydantic モデル（スキーマを自動生成）
     kind="action",               # "action" | "service" | "hook" | "custom"
-    auto_start=False,            # 読み込み時に自動開始
-    persist=False,               # リロード間で永続化
+    auto_start=False,            # metadata flag。通常 entry は load 時に自動実行されない
+    persist=False,               # call 後の state snapshot policy を override
     model_validate=True,         # Pydantic バリデーションを有効化
     timeout=30.0,                # 実行タイムアウト（秒）
     llm_result_fields=["text"],  # LLM 消費用に抽出するフィールド
@@ -55,8 +55,8 @@ def process(self, data: str, **_):
 | `input_schema` | `dict` | `None` | 入力バリデーション用 JSON Schema |
 | `params` | `type` | `None` | Pydantic モデル（`input_schema` を自動生成） |
 | `kind` | `str` | `"action"` | エントリータイプ |
-| `auto_start` | `bool` | `False` | 読み込み時に自動開始 |
-| `persist` | `bool` | `None` | リロード間で状態を永続化 |
+| `auto_start` | `bool` | `False` | metadata flag。通常の `plugin_entry` handler は load 時に自動実行されない |
+| `persist` | `bool` | `None` | entry 実行後に configured freezable state を保存するか override |
 | `model_validate` | `bool` | `True` | Pydantic バリデーションを有効化 |
 | `timeout` | `float` | `None` | 実行タイムアウト（秒） |
 | `llm_result_fields` | `list[str]` | `None` | LLM 結果抽出用フィールド |
@@ -65,7 +65,7 @@ def process(self, data: str, **_):
 | `metadata` | `dict` | `None` | 追加メタデータ |
 
 ::: tip
-未使用のパラメーターを適切にキャプチャするため、関数シグネチャに常に `**_` を含めてください。
+handler が host からの追加 field を意図的に受け取る場合だけ `**_` を使います。明示的な signature では runtime が未対応 keyword を filter するため、必須ではありません。
 :::
 
 ## @lifecycle
@@ -119,7 +119,6 @@ def cleanup(self, **_):
 @message(
     id="handle_chat",
     source="chat",           # メッセージソースでフィルタリング
-    auto_start=True
 )
 def handle_chat(self, text: str, sender: str, **_):
     return Ok({"handled": True})
@@ -153,6 +152,19 @@ def custom_handler(self, event_data: str, **_):
 def on_refresh(self, source: str, **_):
     return Ok({"refreshed": True})
 ```
+
+## @quick_action
+
+plugin entry を command palette で優先表示します。Python が先に適用するよう `@plugin_entry` の下に置きます。
+
+```python
+@plugin_entry(id="get_weather", name="Get Weather")
+@quick_action(icon="🌤️", priority=10)
+async def get_weather(self, city: str = ""):
+    return Ok({"city": city})
+```
+
+`priority` が大きいほど先に表示されます。display metadata だけを変更し、Agent routing や自動実行には影響しません。
 
 ---
 

@@ -159,6 +159,14 @@
 
 中核となる「ボケとツッコミ」エンドポイントです。イベントを A レイヤーへ送り、得られたセリフを B レイヤーでミラーまたは発話します。
 
+### `POST /api/game/{game_type}/passive-guard`
+
+サッカー route の受動終了判定を行う bounded classifier です。JSON body は active `session_id`、`lanlan_name` と frontend が収集した短い game context を含みます。現在は `game_type=soccer` のみ実装されています。
+
+応答は `ok`、`recommendedAction`、`exitPromptType` を含み、成功時は分類詳細も返します。未対応 game、timeout、例外は HTTP error ではなく application envelope 内で `observe_more` と `none` へ安全に fallback します。
+
+---
+
 ### `POST /api/game/{game_type}/chat`
 
 汎用ゲーム LLM チャットエンドポイント。ゲームイベントを裏方の A レイヤーへ送り、セリフ 1 つと任意の制御指示を受け取ります。

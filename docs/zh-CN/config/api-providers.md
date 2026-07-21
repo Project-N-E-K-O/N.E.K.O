@@ -1,66 +1,14 @@
-# API 提供商
+# API Provider
 
-N.E.K.O. 支持两类 API 提供商：**Core**（用于实时语音/多模态）和 **Assist**（用于摘要、情感分析、视觉等文本任务）。
+Provider 是数据驱动的。当前发行定义在 `config/api_providers.json`，Python 回退在 `config/api_profiles.py`；Web UI 通过加载器获取显示信息。
 
-## Core API 提供商
+不要依赖文档里的 Provider 数量或模型 ID 快照，它们都会随 revision 变化。
 
-Core 提供商必须支持 **Realtime API**（基于 WebSocket 的流式传输）。
+- **Core** 驱动主对话/实时路径，字段为 `core_url(s)`、`core_model`、`core_api_key`。
+- **Assist** 支撑会话、摘要、纠错、情感、视觉、Agent 等角色，可包含 URL、token-plan URL、角色模型、Key 占位和 `provider_type`。
 
-| 提供商 | WebSocket URL | 默认模型 |
-|--------|---------------|----------|
-| `free` | 内置服务器 | `free-model` |
-| `qwen` | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime` | `qwen3.5-omni-flash-realtime-2026-03-15` |
-| `openai` | `wss://api.openai.com/v1/realtime` | `gpt-realtime-2` |
-| `step` | `wss://api.stepfun.com/v1/realtime` | `step-audio-2` |
-| `gemini` | Google GenAI SDK | `gemini-2.5-flash-native-audio-preview-12-2025` |
+`utils/api_config_loader.py` 读取并缓存 JSON、转换运行时字段；assist JSON 覆盖同名代码默认值；损坏/缺失时使用代码回退；`assist_api_key_fields` 映射凭据字段。
 
-::: tip
-**free** 层使用社区服务器，无需 API 密钥。适合测试使用，但容量有限。
-:::
+同一 JSON 还包含 keybook、API-key registry、原生 TTS/免费语音、默认模型元数据、直播和审核设置；这些有各自消费者，不是通用 Provider 字段。
 
-## Assist API 提供商
-
-Assist 提供商使用兼容 OpenAI 的 HTTP API 来处理文本任务。
-
-| 提供商 | Base URL |
-|--------|----------|
-| `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| `openai` | `https://api.openai.com/v1` |
-| `glm` | `https://open.bigmodel.cn/api/paas/v4` |
-| `step` | `https://api.stepfun.com/v1` |
-| `silicon` | `https://api.siliconflow.cn/v1` |
-| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
-| `kimi` | `https://api.moonshot.cn/v1` |
-
-每个 Assist 提供商为以下任务定义模型：
-
-| 任务 | 配置字段 | 用途 |
-|------|----------|------|
-| 对话 | `conversation_model` | 角色聊天（离线模式） |
-| 摘要 | `summary_model` | 对话摘要 |
-| 纠错 | `correction_model` | 文本纠错 |
-| 情感 | `emotion_model` | 情感分析 |
-| 视觉 | `vision_model` | 图像理解 |
-| Agent | `agent_model` | Agent 任务执行 |
-
-## 提供商配置
-
-提供商定义在 `config/api_providers.json` 中。你可以通过以下方式选择提供商：
-
-1. **Web UI** `http://localhost:48911/api_key`
-2. **环境变量** `NEKO_CORE_API` 和 `NEKO_ASSIST_API`
-3. **配置文件** `core_config.json` 中的 `coreApi` 和 `assistApi` 字段
-
-## API 密钥映射
-
-每个 Assist 提供商对应一个特定的环境变量：
-
-| 提供商 | 环境变量 |
-|--------|----------|
-| `qwen` | `NEKO_ASSIST_API_KEY_QWEN` |
-| `openai` | `NEKO_ASSIST_API_KEY_OPENAI` |
-| `glm` | `NEKO_ASSIST_API_KEY_GLM` |
-| `step` | `NEKO_ASSIST_API_KEY_STEP` |
-| `silicon` | `NEKO_ASSIST_API_KEY_SILICON` |
-| `gemini` | `NEKO_ASSIST_API_KEY_GEMINI` |
-| `kimi` | `NEKO_ASSIST_API_KEY_KIMI` |
+修改时保持 key 稳定、不得写真实密钥；可见文字同步 8 个 locale，并运行测试与文档构建。字段契约见 [API Provider 字段参考](/api_providers_fields)。

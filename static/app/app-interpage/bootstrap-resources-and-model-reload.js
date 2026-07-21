@@ -1666,6 +1666,13 @@ I.mod = window.appInterpage;
                 cancelAnimationFrame(window.mmdManager._uiUpdateLoopId);
                 window.mmdManager._uiUpdateLoopId = null;
             }
+            // 空闲低频模式下 UI 循环可能停在 pending 再入定时器里：一并清掉
+            for (const mgr of [window.vrmManager, window.mmdManager]) {
+                if (mgr && mgr._uiLoopIdleTimeout) {
+                    clearTimeout(mgr._uiLoopIdleTimeout);
+                    mgr._uiLoopIdleTimeout = null;
+                }
+            }
 
             // 隐藏所有悬浮按钮、锁图标和返回按钮（它们挂载在 document.body 上，不随容器隐藏）。
             // 记录隐藏前的 display，避免恢复时清空 display 导致容器短暂按默认 block 布局显示，

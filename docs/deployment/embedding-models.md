@@ -8,6 +8,16 @@ local-text-retrieval-v1
 
 Do not store the concrete upstream model name in config or memory cache fields. The profile id is the compatibility contract for vector dimensions, pooling, tokenizer behavior, and quantization. If a future model is not compatible with existing vectors, bump the profile id, for example `local-text-retrieval-v2`.
 
+## Runtime Behavior
+
+- Inference is local and uses ONNX Runtime's `CPUExecutionProvider`; no GPU provider is selected.
+- The vector path is optional. It is disabled when the feature switch is off, detected RAM is below 4 GiB, the CPU is on the known-crash blocklist, no supported INT8 SIMD path is available in `auto` mode, dependencies/assets are incomplete, or loading/inference fails. A runtime failure sticky-disables vectors for the rest of that process.
+- With `VECTORS_QUANTIZATION=auto`, the runtime selects INT8 when a supported SIMD path is usable (AVX-VNNI or AVX2 on x86; NEON on ARM64). `NEKO_VECTORS_QUANTIZATION` (preferred) and the legacy bare name accept `auto`, `int8`, or `fp32`; forced FP32 requires the FP32 model files.
+- The `recall_memory` tool still works without vectors: its explicit query path keeps BM25 results and uses Reciprocal Rank Fusion when cosine results are available. It deliberately does not add an LLM rerank on this latency-sensitive path.
+- A complete app-data profile takes precedence over the bundled profile. Incomplete app-data assets fall back to a complete bundle rather than partially mixing the two sources.
+
+For the candidate pools and persistence boundary, see [Memory System](/architecture/memory-system).
+
 ## Development Setup
 
 Install project dependencies (includes `onnxruntime` and `tokenizers`; CPU SIMD capability is read from numpy's `__cpu_features__`, so no `py-cpuinfo` is needed):

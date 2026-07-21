@@ -107,7 +107,8 @@ Core rules:
 - `id` should match the folder name and use the locked `plugin_id`.
 - `entry` must be `module.path:ClassName` with no leading/trailing whitespace.
 - `type` defaults to `plugin`.
-- `type = "extension"` and `[plugin.host]` are rejected. Move former Router code into an owning normal plugin or convert it into a standalone plugin.
+- `type = "extension"` requires `[plugin.host]`.
+- non-extension plugins must not declare `[plugin.host]`.
 - `version` should follow `x.y.z...`.
 - `keywords`, if present, must be a list of non-empty strings.
 - `passive`, if present, must be a TOML boolean, not a string.
@@ -142,7 +143,7 @@ Normal plugin code should use public SDK imports, usually:
 from plugin.sdk.plugin import NekoPluginBase, neko_plugin, plugin_entry, lifecycle, Ok, Err
 ```
 
-Use public SDK facades for plugin code: `plugin.sdk.plugin` or `plugin.sdk.adapter`. `plugin.sdk.extension` has been removed. Treat `plugin.sdk.shared` as internal SDK implementation. Do not add new `plugin.sdk.shared` imports in plugin workspace code; if a needed symbol is not exposed by a public facade, stop and escalate instead of reaching into shared internals.
+Use public SDK facades for plugin code: `plugin.sdk.plugin`, `plugin.sdk.extension`, or `plugin.sdk.adapter`. Treat `plugin.sdk.shared` as internal SDK implementation. Do not add new `plugin.sdk.shared` imports in plugin workspace code; if a needed symbol is not exposed by a public facade, stop and escalate instead of reaching into shared internals.
 
 Entry rules:
 
@@ -185,7 +186,7 @@ Hook rules:
 Choose the package type from the manifest/SDK contract.
 
 - `plugin`: default for independent features. Use it for user-callable entries, background listeners, timers, hosted/static UI, state/settings, cross-plugin calls, and ordinary external API/device integrations controlled from N.E.K.O.
-- Former `extension` packages are not loadable. Move Router code into an owning standard plugin or convert the package into a standalone plugin; use an adapter only for an external protocol.
+- `extension`: only for adding entries or hooks to an existing host plugin without modifying that host. It uses `plugin.sdk.extension`, runs injected into the host plugin process, and requires `[plugin.host]`.
 - `adapter`: only for bridging an external protocol or request stream into N.E.K.O plugin calls. It uses `plugin.sdk.adapter` plus adapter/gateway contracts. Do not choose adapter merely because the plugin calls an external service.
 
 Capabilities are selected after package type:
@@ -227,7 +228,6 @@ If `mode` is omitted, the platform infers it from `entry`: `.tsx`/`.jsx` -> `hos
 - Do not put expensive imports, network calls, or irreversible side effects at module top level; the parent process may import the entry module for metadata scanning even when runtime auto-start is false.
 - Config updates cannot modify `plugin.id` or `plugin.entry`; treat them as identity fields.
 - Hosted TSX action calls require an action-capable surface, `action:call` permission, a running plugin, and an action exposed by plugin UI context that maps to a real `@plugin_entry`.
-- Use `push_message(parts=..., visibility=..., ai_behavior=...)` for message output. Legacy `message_type`, `description`, `content`, `binary_data`, `binary_url`, `mime`, `delivery`, `reply`, `unsafe`, and `fast_mode` are compatibility-only fields scheduled for removal in v0.9; do not introduce them.
-- `self.bus` is a read/watch facade over host state, not a general publish bus. All five namespaces are readable, but only `messages`, `events`, and `lifecycle` support `watch()`; `conversations` and `memory` are read-only snapshots. Callable `filter(predicate)`, `where(predicate)`, and `sort(key=...)` are local-only; replayable watcher chains must use structured `filter(field=value, ...)` and `sort(by=...)`. Watcher subscriptions use only `on="add"`, `"del"`, or `"change"`.
-- In async entries, use `await self.bus.memory.get(...)` for recent records and `await self.ctx.query_memory(...)` for semantic memory lookup. Do not recreate the removed high-level `self.memory`/`MemoryClient` facade.
-- Python runtime dependencies belong in plugin-local `pyproject.toml [project].dependencies` and `vendor/`; do not add `requirements.txt`.
+- Use `push_message(parts=..., visibility=..., ai_behavior=...)` for new message output; legacy `message_type`, `delivery`, and `reply` are compatibility paths.
+- `self.bus` is a read/watch facade over host state, not a general publish bus.
+- Python runtime dependencies belong in plugin-local `pyproject.toml [project].dependencies` and `vendor/`; do not add `requirements.txt`. Extensions must not declare external Python runtime dependencies.

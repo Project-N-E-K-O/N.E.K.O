@@ -4,6 +4,8 @@ Plugins go through different phases during their lifetime: startup, shutdown, co
 
 All lifecycle hooks are **optional**. Don't need one? Don't write it.
 
+Lifecycle hooks are host-dispatched events, not ordinary runtime entries. `@plugin_entry(auto_start=True)` is only metadata in the current host and does not run a normal entry at process startup; use `@lifecycle(id="startup")` for initialization. Likewise, `self.config.update_own_config(...)` refreshes the plugin's config through the supported host path but does not dispatch `config_change` back into the same plugin process—refresh any derived state after the call.
+
 ## Do setup on startup
 
 After the plugin process starts, the `startup` hook is called. Good for initialization: loading config, opening connections, preparing resources.

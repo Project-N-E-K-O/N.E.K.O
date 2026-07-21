@@ -594,6 +594,11 @@ class VRMCore {
             this.manager.controls.target.set(0, 1, 0);
             this.manager.controls.enableDamping = true;
             this.manager.controls.dampingFactor = 0.1;
+            // OrbitControls 只在 update() 真正移动了相机时才发 change 事件：
+            // 打时间戳供空闲低频 governor 判定（覆盖拖拽平移 + 阻尼收敛期）
+            this.manager.controls.addEventListener('change', () => {
+                this.manager._lastCameraChangeAt = performance.now();
+            });
             this.manager.controls.update();
         }
 

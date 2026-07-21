@@ -1,15 +1,4 @@
-# 手动搭建
-
-适用于在任何平台上进行开发和自定义。
-
-## 前置条件
-
-- Python 3.11（必须是此版本，不支持 3.12+）
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) 包管理器
-- Node.js（>=20.19）
-- Git
-
-## 安装
+# 源码手动部署
 
 ```bash
 git clone https://github.com/Project-N-E-K-O/N.E.K.O.git
@@ -17,97 +6,38 @@ cd N.E.K.O
 uv sync
 ```
 
-## 可选：本地嵌入模型
-
-向量记忆使用可选的本地 ONNX 模型资源。下载命令、目录布局以及 PyInstaller / Nuitka 打包说明见
-[`embedding-models.md`](embedding-models.md)。
+Python 固定为 3.11；所有 Python 模块、脚本、测试和临时命令都通过 `uv run`。
 
 ## 构建前端
 
-项目在 `frontend/` 下有两个前端项目，运行前需要先构建。
-
-**推荐** —— 从项目根目录使用一键脚本，这是官方支持的构建方式：
+```powershell
+.\build_frontend.bat
+```
 
 ```bash
-# Windows
-build_frontend.bat
-
-# Linux / macOS
 ./build_frontend.sh
 ```
 
-如需手动执行，命令必须与脚本保持一致：
+脚本校验/解压 Yui Origin，运行 `npm ci`，生成 plugin manager 与共享 React chat bundle。
 
-```bash
-cd frontend/react-neko-chat && npm install && npm run build && cd ../..
-cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
-```
-
-## 运行
-
-推荐优先使用统一启动器：
+## 正常启动
 
 ```bash
 uv run python launcher.py
 ```
 
-这样会先完成本地 `cloudsave/` bootstrap 与快照导入，再启动各个服务，更接近 Steam / 桌面版实际启动链路。
+launcher 规划端口、启动 memory/main/agent、协调关闭，并在服务前应用暂存的 cloud-save snapshot。使用它报告的 URL；48911 只是首选值。
 
-在不同终端中启动所需的服务器：
+## 诊断拆分模式
 
 ```bash
-# 终端 1 — 记忆服务器（必需）
-uv run python app/memory_server.py
-
-# 终端 2 — 主服务器（必需）
+uv run python -m app.memory_server
 uv run python -m app.main_server
-
-# 终端 3 — 智能体服务器（可选）
 uv run python -m app.agent_server
 ```
 
-补充说明：
+只有 memory + main 时主 UI 可加载，但 Agent、托管插件、浏览器/电脑控制等需要 agent/tool。拆分模式不复现 launcher 的端口回退与生命周期。
 
-- 想验证生产态的 Steam 云路径，应通过 Steam 或桌面启动器启动。Windows / macOS / Linux 的打包版与源码模式，在 Steam 运行且已登录时都会使用 RemoteStorage bundle helper；同时，当 Steam 后台 Auto-Cloud 规则与平台 anchor 路径匹配时，仍会同步原始 `cloudsave/` 目录。
-- 手动三服务模式更适合开发调试；当前 `main_server` 会在需要时兜底导入快照，并尝试通知 `memory_server` reload。
-- shutdown 不会再自动把运行时变化写回 `cloudsave/`。如果希望 Steam 上传新的角色数据，需要在退出前先到云存档管理页手动为对应角色生成或覆盖 staged snapshot。
-- macOS 源码模式如果提示“Apple 无法验证 `SteamworksPy.dylib`”，通常是 Gatekeeper 在拦截未公证的本地动态库。先确认从项目根目录启动；如果仍被拦截，可在项目根目录执行：
+Cloud Save 的 Steam RemoteStorage 路径应通过 Steam/桌面 launcher 验证。拆分 main server 可执行后备 snapshot 导入并通知 memory reload；退出不会自动把运行时变化暂存，需由 Cloud Save Manager 准备上传 snapshot。
 
-```bash
-xattr -dr com.apple.quarantine steamworks/SteamworksPy.dylib steamworks/libsteam_api.dylib
-codesign --force --sign - steamworks/libsteam_api.dylib
-codesign --force --sign - steamworks/SteamworksPy.dylib
-```
-
-- 重新签名后再执行 `uv run python launcher.py` 或 `uv run python -m app.main_server`。
-
-## 配置
-
-1. 在浏览器中打开 `http://localhost:48911/api_key`
-2. 选择你的核心 API 服务商
-3. 输入你的 API 密钥
-4. 点击保存
-
-或者，在启动前设置环境变量：
-
-```bash
-export NEKO_CORE_API_KEY="sk-your-key"
-export NEKO_CORE_API="qwen"
-uv run python -m app.main_server
-```
-
-## 替代方案：pip 安装
-
-如果你更喜欢 pip 而非 uv：
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app/memory_server.py
-python -m app.main_server
-```
-
-## 验证
-
-打开 `http://localhost:48911`，你应该能看到角色界面。
+在主 URL 的 `/api_key` 选择当前 Core/Assist Provider、填写密钥并运行连通性检查。源码模式不消费 Docker API 初始化变量。`/health` 用于启动诊断。

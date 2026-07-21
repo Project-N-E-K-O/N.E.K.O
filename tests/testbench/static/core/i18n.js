@@ -143,6 +143,7 @@ export const I18N = {
         overview: '系统概况',
         lineage: '记忆溯源',
         embedding_space: '向量空间',
+        code_leads: '代码线索 (开发者)',
       },
       // 向量空间 (Embedding) 子页 (P28). 只读分析当前角色磁盘上已有的向量嵌入.
       embedding: {
@@ -245,6 +246,40 @@ export const I18N = {
         loading: '加载中…',
         reload: '刷新',
         load_failed: '加载失败',
+        export: {
+          button: '导出记忆分析',
+          button_hint: '一键导出脱敏后的记忆数据与分析结论 (ZIP), 便于离线分析与共享',
+          modal_title: '导出记忆分析 (脱敏 ZIP)',
+          tier_heading: '脱敏档位',
+          tier: {
+            minimal: '最小 (仅去凭据)',
+            standard: '标准 (默认, 假名化身份)',
+            strict: '严格 (额外撤除原始转录)',
+          },
+          tier_desc: {
+            minimal: '仅移除 api_key/token/cookie 等凭据; 保留真实姓名与全部正文。',
+            standard: '在最小基础上, 对主人名/角色名做一致假名化 (全包同一映射), 其余正文保留。',
+            strict: '在标准基础上, 整层撤除最原始的逐轮对话正文 (替换为结构占位); 事实/反思等抽象记忆正文仍保留。',
+          },
+          include_corpus: '包含对话语料 (conversation_corpus)',
+          include_corpus_hint: '关闭后不导出原始对话 turns, 只导出记忆四文件与分析结论。',
+          notice_head: '记忆脱敏说明 (务必阅读)',
+          notice_body:
+            '· 三档行为: minimal 只去凭据; standard 一致假名化身份并保留正文; strict 额外整层撤除原始逐轮转录、保留抽象记忆。\n'
+            + '· 跨层一致性: 身份标识在对话与事实/反思中使用同一映射, 绝不会出现"对话里是 A、记忆里是 B"。\n'
+            + '· 诚实限制: 只有身份标识被一致假名化; 自由正文里的其它个人披露不做自动清洗 (不可靠), 对外分享前请自行复核。\n'
+            + '· standard 档仍包含对话与记忆正文; 若要对外分享建议用 strict。凭据在所有档位均被移除。',
+          export_btn: '导出',
+          exporting: '导出中…',
+          ok_toast_fmt: (name) => `已导出: ${name}`,
+          err: {
+            no_session: '尚未创建会话或未选择角色, 无法导出。',
+            busy: '会话正忙 (有其它操作占用), 稍后再试。',
+            network: '网络错误, 导出请求未送达。',
+            backend_fmt: (msg) => `导出失败: ${msg}`,
+            download_fmt: (msg) => `下载失败: ${msg}`,
+          },
+        },
         no_session: {
           heading: '尚未创建会话',
           body: '先在顶栏新建会话并选择角色, 再来看记忆系统概况。',
@@ -530,6 +565,94 @@ export const I18N = {
         time_indexed_db: '对话归档',
         recent_json: 'recent 窗口',
       },
+      // 代码线索 (开发者) 子页 (P32). 把机械不变量类记忆分析发现「反推」成主程序
+      // 记忆代码的排查方向. 重点: 全文案压低置信预期 —— 这些是弱线索、不是 bug 报告.
+      // 措辞纪律 (蓝图 §3 UI-2): 线索卡文本禁用 "bug/缺陷/确认存在" 等确定性断言,
+      // 必用 "疑似/线索/值得排查/需人工确认".
+      code_leads: {
+        title: '代码线索 (开发者)',
+        intro: '本页把「机械不变量类」记忆分析发现反推成主程序记忆代码的排查方向, 仅供代码相关人员参考. 普通测试员可忽略本页.',
+        reload: '重新分析',
+        loading: '分析中…',
+        load_failed: '分析失败',
+        // UI-1: 页首不可跳过、不可关闭的红色警告 (6 要素).
+        notice: {
+          head: '务必先读: 这些是排查方向, 不是 bug 报告',
+          p1: '① 以下每一条都是「值得排查的方向 / 线索」, 不是已确认的代码缺陷.',
+          p2: '② 由记忆数据反推代码问题并不完全可靠, 可能是假阳性 (数据/模型/配置原因, 未必是代码).',
+          p3: '③ 每条线索都需要你到主程序代码里人工确认后才能下结论.',
+          p4: '④ 本页只读, 绝不会自动修改任何代码; testbench 全程不写主程序.',
+          p5: '⑤ 内容质量类问题 (矛盾 / 冗余 / 归因 / 漂移 / 留存) 刻意不在此反推 —— 只看机械不变量.',
+          p6: '⑥ 反推方法与局限详见说明文档:',
+          link: '代码线索使用说明',
+        },
+        leads_head: '排查线索 (需人工确认)',
+        strength: {
+          high: '较强',
+          medium: '中等',
+          low: '较弱',
+          hint: '较强 = 违反几乎必是写入/迁移代码问题; 较弱 = 也可能只是还没跑某道工序, 未必是代码信号. 无论强弱都需人工确认.',
+        },
+        needs_confirm: '(仍需人工确认)',
+        suspect_head: '疑似方向 (主程序模块, 非精确定位)',
+        missing_head: '还需哪些运行期证据才能坐实',
+        count_fmt: (n) => `命中 ${n} 处`,
+        examples_head: '样例 (仅本地查看, 勿截图外传)',
+        // 每条不变量的「违反了什么」+「建议排查动作」(祈使句式, 无确定性断言).
+        invariant: {
+          D1: '有反思没有任何有效来源事实 (游离反思).',
+          D2: '有晋升人设标记来自反思, 却没有对应的晋升/合并溯源边.',
+          D4: '有反思声明的来源事实已被硬删除 (悬空引用).',
+          E2: '有向量与其当前文本的 sha256 不一致 (向量过期未重算).',
+          E3: '有向量维度或数值非法 (向量损坏).',
+          E4: '混入了不同维度/模型的向量 (多向量空间).',
+          'ID-DUP': '同一记忆文件里出现了重复主键 id.',
+          'EVT-DUP': 'events.ndjson 里出现了重复 event_id.',
+        },
+        action: {
+          D1: '建议排查: 反思合成时来源事实的绑定逻辑, 或确认该反思本就无源 (非代码原因).',
+          D2: '建议排查: 反思晋升/合并写入时 source 与 merged_from 的赋值是否遗漏.',
+          D4: '建议排查: 删除事实时是否级联清理了引用它的反思.',
+          E2: '建议排查: 记忆文本更新后是否触发了向量重算.',
+          E3: '建议排查: 向量写入前的维度/数值校验点.',
+          E4: '建议排查: 是否在同一角色里混用了不同的嵌入模型/维度.',
+          'ID-DUP': '建议排查: 该记忆容器的主键分配与写入去重逻辑.',
+          'EVT-DUP': '建议排查: 事件 append/reconcile 路径是否重复写入了同一 event_id.',
+        },
+        // UI-5: 排除区 (明示故意不反推).
+        excluded: {
+          head: '以下类别故意不做代码反推',
+          intro: '这些属数据 / 模型 / 配置层问题, 反推到代码不可靠. 请走记忆运营 (在系统概况里查看), 而非改代码.',
+          item_fmt: (code, count) => `${code}: ${count} 项`,
+        },
+        // UI-5: 诚实状态行.
+        status: {
+          head: '检查状态',
+          embedding_ran: '向量检查: 已运行 (E2/E3/E4 已核对).',
+          embedding_unavailable: '向量检查: 未检查 (该角色无向量) —— 不代表向量一定没问题.',
+          evt_ran: '事件流检查: 已运行 (event_id 唯一性已核对).',
+          evt_unavailable: '事件流检查: 未检查 (无 events.ndjson) —— 不代表事件流一定没问题.',
+          evt_truncated: '事件流检查: 已部分运行 (文件过大, 仅扫描了前若干行).',
+        },
+        warnings_head: '数据读取告警',
+        // 诚实空态: 无线索 ≠ 代码没问题.
+        empty_leads: {
+          head: '未发现机械不变量违反',
+          body: '当前没有可反推的代码排查线索。注意: 这不代表主程序代码一定没问题, 只代表这几项机械检查没有命中。',
+        },
+        no_session: {
+          heading: '没有活动会话',
+          body: '请先在 Setup 新建或选择一个会话。',
+        },
+        no_character: {
+          heading: '未选择角色',
+          body: '请先在 Setup → Persona 填写角色名, 或从真实角色导入。',
+        },
+        empty: {
+          heading: '该角色暂无记忆数据',
+          body: '先在 Setup 里为角色导入 / 生成记忆, 再回来分析。',
+        },
+      },
     },
     setup: {
       nav: {
@@ -687,6 +810,14 @@ export const I18N = {
         confirm_overwrite: name => `"${name}" 已经在当前沙盒存在同名 memory 目录. 继续将覆盖文件; 确认?`,
         import_ok: (name, count) => `已导入 ${name} (${count} 个文件)`,
         import_failed: '导入失败',
+        // P31 角色一键导出 (与"导入"镜像): 忠实全量打包该本地角色记忆目录.
+        button_export: '导出',
+        button_exporting: '导出中…',
+        export_hint: '把该角色的完整记忆目录 (含隐私原始数据) 打包为 zip, 仅供本地备份 / 迁移 / 可信分享. 与脱敏的记忆分析导出不同, 此处不做任何脱敏.',
+        export_ok: (name) => `已导出 ${name}`,
+        export_failed: '导出失败',
+        export_no_session: '没有活动会话, 或本地 characters.json 里没有该角色, 无法导出',
+        export_too_large: '该角色记忆目录过大, 超过导出上限',
         source_paths_label: '数据源',
       },
       // P12.5: Setup → Scripts 子页 (对话剧本模板编辑器).
@@ -2717,6 +2848,7 @@ export const I18N = {
         docs_list: [
           { name: '测试用户使用手册 (中文)',  href: '/docs/testbench_USER_MANUAL' },
           { name: '外部事件注入详细说明',      href: '/docs/external_events_guide' },
+          { name: '记忆分析导出使用说明',      href: '/docs/memory_export_guide' },
           { name: '版本更新记录 (CHANGELOG)',  href: '/docs/CHANGELOG' },
           { name: '代码与设计总体概述 (给开发者)', href: '/docs/testbench_ARCHITECTURE_OVERVIEW' },
         ],

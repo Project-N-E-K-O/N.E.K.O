@@ -506,7 +506,7 @@ async def _run_soak(args: argparse.Namespace) -> dict[str, Any]:
     started_perf = time.perf_counter()
     deadline = started_perf + args.duration_hours * 3600.0
     payload: dict[str, Any] = {
-        "metadata": _metadata(),
+        "metadata": _metadata(args),
         "scenario": "soak",
         "started_perf_counter": started_perf,
         "contract": {

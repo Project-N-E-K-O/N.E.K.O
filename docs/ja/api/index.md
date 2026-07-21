@@ -1,71 +1,96 @@
 # API リファレンス
 
-N.E.K.O. は FastAPI を通じて包括的な API を公開しています。すべてのエンドポイントはメインサーバー（デフォルト `http://localhost:48911`）から提供されます。
+N.E.K.O. のメイン FastAPI サーバーは既定でポート `48911` を使用します。ここでは現在のソースツリーに存在するルートを記載していますが、すべてが安定した公開 API、またはリモート公開に安全な API という意味では**ありません**。
 
-## ベース URL
+## 互換性の境界
 
+| サーフェス | 想定利用者 | 互換性の想定 |
+|---|---|---|
+| [ランタイムツール API](/ja/api/rest/tools) | ローカルプラグインとコンパニオンプロセス | 文書化されたローカル統合契約 |
+| [メイン WebSocket プロトコル](/ja/api/websocket/protocol) | N.E.K.O. の Web、Electron、モバイルクライアント | 文書化されたクライアントプロトコル。内部メッセージはファーストパーティー UI と共に変更される場合がある |
+| [クラウドセーブ API](/ja/api/rest/cloudsave) | ローカルデータ管理クライアント | 文書化された破壊的データ操作。明示的なユーザー操作が必要 |
+| その他のメインサーバー REST ルート | N.E.K.O. のファーストパーティーページと貢献者 | 実装向け。UI と共に変化し、汎用公開 Web API ではない |
+| メモリサーバーとエージェントサーバー | メインサーバーと内部サービス間 | 内部専用。N.E.K.O. 自体のデバッグ以外ではメインサーバー経由で使う |
+
+N.E.K.O. は現在、全体的な後方互換性を保証する独立バージョン付き HTTP API を公開していません。安定した拡張面は[プラグインシステム](/ja/plugins/)です。モデル呼び出し可能なコールバックを公開する必要がある場合だけランタイムツール契約を使ってください。
+
+## ベース URL とセキュリティ
+
+```text
+http://127.0.0.1:48911
 ```
-http://localhost:48911
-```
 
-## 認証
+メイン API 全体を覆う認証レイヤーはありません。`/api/tools` や `/api/capture` など一部の機密統合ルートはループバック制限を実装していますが、多くのファーストパーティー UI ルートにはありません。ポート `48911` を信頼できない LAN やインターネットへ公開しないでください。プロバイダー API キーは[設定システム](/ja/config/)で管理され、API Bearer Token ではありません。
 
-ローカルアクセスでは認証は不要です。LLM プロバイダーの API キーは[設定](/ja/config/)システムで別途管理されます。
+明記されていない限り、パス末尾に `/` はありません。
 
-## REST エンドポイント
+## メインサーバー REST ルート
 
-| ルーター | プレフィックス | 説明 |
-|--------|--------|-------------|
-| [Config](/ja/api/rest/config) | `/api/config` | API キー、ユーザー設定、プロバイダー設定 |
-| [Characters](/ja/api/rest/characters) | `/api/characters` | キャラクターの CRUD、音声設定、マイク |
-| [Live2D](/ja/api/rest/live2d) | `/api/live2d` | Live2D モデル管理、感情マッピング |
-| [VRM](/ja/api/rest/vrm) | `/api/model/vrm` | VRM モデル管理、アニメーション |
-| [Memory](/ja/api/rest/memory) | `/api/memory` | メモリファイル、レビュー設定 |
-| [Agent](/ja/api/rest/agent) | `/api/agent` | エージェントフラグ、タスク、ヘルスチェック |
-| [Workshop](/ja/api/rest/workshop) | `/api/steam/workshop` | Steam Workshop アイテム、パブリッシュ |
-| [MMD](/ja/api/rest/mmd) | `/api/model/mmd` | MMD モデル管理 |
+### 文書化された統合とデータ操作
+
+| ルーター | プレフィックス | 境界 |
+|---|---|---|
+| [ランタイムツール](/ja/api/rest/tools) | `/api/tools` | ループバック専用のプラグインコールバック登録 |
+| [クラウドセーブ](/ja/api/rest/cloudsave) | `/api/cloudsave` | キャラクターユニットのアップロード／ダウンロード。破壊的操作を含む |
+| [キャプチャブリッジ](/ja/api/rest/capture) | `/api/capture` | ループバック専用のファーストパーティー Electron/GalGame ブリッジ |
+
+### ファーストパーティーアプリケーションルート
+
+以下のページは貢献者や代替ローカルクライアントに有用ですが、主に N.E.K.O. 自身の UI が利用します。
+
+| ルーター | プレフィックス | 範囲 |
+|---|---|---|
+| [設定](/ja/api/rest/config) | `/api/config` | プロバイダー設定、ユーザー設定、接続テスト |
+| [キャラクター](/ja/api/rest/characters) | `/api/characters` | キャラクター、ペルソナ、カード、音声、アバター操作 |
+| [Live2D](/ja/api/rest/live2d) | `/api/live2d` | Live2D モデルと感情マッピング |
+| [VRM](/ja/api/rest/vrm) | `/api/model/vrm` | VRM モデル、設定、アニメーション、表情 |
+| [MMD](/ja/api/rest/mmd) | `/api/model/mmd` | MMD モデルとモーション管理 |
 | [PNGTuber](/ja/api/rest/pngtuber) | `/api/model/pngtuber` | PNGTuber モデル管理 |
-| [Music](/ja/api/rest/music) | `/api/music` | 音楽検索と再生プロキシ |
-| [Jukebox](/ja/api/rest/jukebox) | `/api/jukebox` | 楽曲とアクションのライブラリ |
-| [Game](/ja/api/rest/game) | `/api/game` | ミニゲームバックエンド |
-| [Galgame](/ja/api/rest/galgame) | `/api/galgame` | ギャルゲーの返信オプション |
-| [Icebreaker](/ja/api/rest/icebreaker) | `/api/icebreaker` | 新規ユーザーのオンボーディング |
-| [Proactive](/ja/api/rest/proactive) | `/api/proactive` | プロアクティブチャットのモードと設定 |
-| [System](/ja/api/rest/system) | `/api` | 感情分析、スクリーンショット、ユーティリティ |
-
-### その他 / 内部ルーター
-
-以下のルーターは稼働していますが、ここでは個別にドキュメント化されていません：`capture`（`/api/capture`）、`cloudsave`（`/api/cloudsave`）、`storage-location`（`/api/storage/location`）、`avatar-drop`（`/api/avatar-drop`）、`card-assist`（`/api/card-assist`）、`auth`/cookies（`/api/auth`）、`tool`（`/api/tools`）、`debug`（`/api/debug`）。
+| [メモリ](/ja/api/rest/memory) | `/api/memory` | 直近メモリファイル、レビュー/設定、名前変更、旧ストレージ整理。recall は内部 `/query_memory` route を使用 |
+| [エージェントプロキシ](/ja/api/rest/agent) | `/api/agent` | メインサーバープロキシ、タスク状態、フラグ、診断 |
+| [Steam Workshop](/ja/api/rest/workshop) | `/api/steam/workshop` | 閲覧、ステージング、公開、購読 |
+| [音楽](/ja/api/rest/music) | `/api/music` | 音楽検索と再生プロキシ |
+| [ジュークボックス](/ja/api/rest/jukebox) | `/api/jukebox` | 楽曲とアクションライブラリ |
+| [ミニゲーム](/ja/api/rest/game) | `/api/game` | ミニゲームの状態と操作 |
+| [GalGame](/ja/api/rest/galgame) | `/api/galgame` | GalGame の返信候補生成 |
+| [アイスブレイク](/ja/api/rest/icebreaker) | `/api/icebreaker` | 新規ユーザーのオンボーディング |
+| [プロアクティブチャット](/ja/api/rest/proactive) | `/api/proactive` | プロアクティブチャットのモードと設定 |
+| [システム](/ja/api/rest/system) | `/api` | 起動、プロンプト、スクリーンショット、ユーティリティ、Steam、診断 |
 
 ## WebSocket
 
-| エンドポイント | 説明 |
-|----------|-------------|
-| [プロトコル](/ja/api/websocket/protocol) | 接続ライフサイクルとセッション管理 |
-| [メッセージタイプ](/ja/api/websocket/message-types) | すべてのクライアント→サーバーおよびサーバー→クライアントのメッセージフォーマット |
-| [オーディオストリーミング](/ja/api/websocket/audio-streaming) | バイナリオーディオフォーマット、割り込み、リサンプリング |
+メインアプリケーションソケットは `ws://127.0.0.1:48911/ws/{character_name}` です。
 
-## 内部 API
+| ページ | 内容 |
+|---|---|
+| [プロトコル](/ja/api/websocket/protocol) | 接続ライフサイクル、セッション操作、セキュリティ境界 |
+| [メッセージタイプ](/ja/api/websocket/message-types) | クライアント操作、入力データ、サーバーイベント |
+| [オーディオストリーミング](/ja/api/websocket/audio-streaming) | JSON PCM 入力とバイナリフレームのサーバー音声出力 |
 
-これらはサービス間 API であり、外部からの使用を意図していません：
+## 内部および未バージョン化サーフェス
 
-| サーバー | 説明 |
-|--------|-------------|
-| [Memory Server](/ja/api/memory-server) | メモリの保存と取得（ポート 48912） |
-| [Agent Server](/ja/api/agent-server) | エージェントタスクの実行（ポート 48915） |
+メインサーバーには、公開リファレンスページを意図的に持たない次のファーストパーティー実装ルートもあります：
 
-## レスポンスフォーマット
+- `/api/storage/location` — 初回起動時の保存先選択、移行、ディレクトリ選択、再起動、保持ソースのクリーンアップ。
+- `/api/avatar-drop` — コンポーザー用ドキュメント解析補助。出力は現在のファーストパーティー UI に従う。
+- `/api/card-assist` — 現在のプロンプトと設定済み LLM プロバイダーに結合したキャラクターカード生成／推敲。
+- `/api/auth` — ローカル Cookie と QR ログイン状態。互換エンドポイントを含み、認証情報を扱う。
+- `/api/debug` — 変更され得る診断スナップショットとブラウザヘルス報告。
+- `/health` — ランチャー／プロセス用の軽量ヘルスプローブ。
+- `/api/beacon/shutdown` — ブラウザモードのライフサイクル制御。アプリ統合用ではない。
+- `/market` と `/market/{path}` — ユーザープラグインサーバーへの不透明な同一オリジンリバースプロキシ。スキーマはメイン API の所有物ではない。
 
-すべての REST エンドポイントは JSON を返します。成功レスポンスは通常、データを直接含みます。エラーレスポンスは FastAPI のデフォルトフォーマットに従います：
+一致する N.E.K.O. バージョンも管理しない限り、これらに対するサードパーティー統合を構築しないでください。
 
-```json
-{
-  "detail": "Error message describing what went wrong"
-}
-```
+## 内部サービス API
 
-## コンテンツタイプ
+| サーバー | 既定アドレス | 境界 |
+|---|---|---|
+| [メモリサーバー](/ja/api/memory-server) | `http://127.0.0.1:48912` | 内部メモリライフサイクル、レンダリング、検索 |
+| [エージェントサーバー](/ja/api/agent-server) | `http://127.0.0.1:48915` | 内部エージェント実行と ZeroMQ トランスポート |
 
-- `application/json` — ほとんどのエンドポイント
-- `multipart/form-data` — ファイルアップロード（モデル、音声サンプル）
-- `audio/*` — 音声プレビューレスポンス
+## レスポンスとコンテンツタイプ
+
+レスポンス形式はルーターごとに異なります。FastAPI/Pydantic の検証は通常 `detail` を使いますが、アプリケーションルーターには `success`、`error`/`code`、メッセージフィールドを返すものもあります。各ページの契約に従い、英語メッセージではなく機械可読コードで分岐してください。
+
+主な形式は JSON、アップロード用 `multipart/form-data`、音声プレビューの音声レスポンス、サーバー音声用の WebSocket バイナリフレームです。

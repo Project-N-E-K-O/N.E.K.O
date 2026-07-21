@@ -32,6 +32,7 @@ dependencies = [
   "pywinauto; sys_platform == 'win32'",
   "pygetwindow; sys_platform == 'win32'",
   "pyrnnoise>=0.4.3",
+  "aiotieba>=4.7.1",
   "beautifulsoup4>=4.12.0",
   "bilibili-api-python>=17.4.0",
   "googletrans>=4.0.2",

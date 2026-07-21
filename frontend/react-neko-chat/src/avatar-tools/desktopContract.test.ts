@@ -34,7 +34,7 @@ function collectContractAssetPaths(contract: ReturnType<typeof buildDesktopAvata
   }
   definition.interaction?.sounds.forEach(sound => paths.push(sound.src));
   definition.interaction?.effects.forEach((effect) => {
-    if (effect.kind === 'random-scatter-v1') paths.push(effect.assetPath);
+    if (effect.kind === 'random-scatter') paths.push(effect.assetPath);
   });
   return paths;
 }
@@ -83,7 +83,7 @@ describe('desktop avatar tool contract', () => {
       scale: 1,
     });
     expect(fist.definition?.interaction?.profile).toMatchObject({
-      kind: 'press-release-v1',
+      kind: 'press-release',
       burst: {
         normalIntensity: 'normal',
         rapidIntensity: 'rapid',
@@ -93,7 +93,7 @@ describe('desktop avatar tool contract', () => {
 
     const hammer = buildDesktopAvatarToolContract('hammer');
     expect(hammer.definition?.interaction?.profile).toMatchObject({
-      kind: 'locked-impact-v1',
+      kind: 'locked-impact',
       burst: {
         normalIntensity: 'normal',
         rapidIntensity: 'rapid',
@@ -103,7 +103,7 @@ describe('desktop avatar tool contract', () => {
     });
     const effect = hammer.definition?.interaction?.effects[0];
     expect(effect).toMatchObject({
-      kind: 'hammer-swing-v1',
+      kind: 'hammer-swing',
       anchor: { source: 'live-pointer', visualMode: 'inRange' },
       impactRegistration: {
         transformOrigin: { x: 80.19, y: 68 },
@@ -124,7 +124,7 @@ describe('desktop avatar tool contract', () => {
 
   it('preserves a tool-specific touch-zone subset in the desktop contract', () => {
     const fist = cloneJson(AVATAR_TOOL_DEFINITIONS.find(definition => definition.id === 'fist'));
-    if (!fist || fist.interaction.kind !== 'press-release-v1') throw new Error('invalid fixture');
+    if (!fist || fist.interaction.kind !== 'press-release') throw new Error('invalid fixture');
     fist.interaction.touchZones = ['head'];
 
     const contract = projectDesktopAvatarToolContract(fist);
@@ -144,16 +144,15 @@ describe('desktop avatar tool contract', () => {
         expect(path).toContain('v=wire%201');
         expect(path.match(/(?:\?|&)v=/g)).toHaveLength(1);
       });
-      expect(interaction?.sounds.map(sound => sound.id).sort()).toEqual(
-        source.id === 'hammer' ? ['hammer-big', 'hammer-small'] : source.sounds.map(sound => sound.id).sort(),
-      );
+      expect(interaction?.sounds.map(sound => sound.id).sort())
+        .toEqual(source.sounds.map(sound => sound.id).sort());
       expect(interaction?.effects.map(effect => effect.id)).toEqual(source.effects.map(effect => effect.id));
       expect(interaction?.profile).not.toHaveProperty('key');
       expect(interaction?.profile).not.toHaveProperty('burst.key');
     });
 
     const stale = cloneJson(AVATAR_TOOL_DEFINITIONS[0]) as AvatarToolDefinition;
-    stale.visual.variants.primary.iconImagePath = '/static/icons/chat_sugar1.png?v=stale';
+    stale.visual.variants.primary.iconImagePath = '/static/assets/avatar-tools/lollipop/primary-icon.png?v=stale';
     const replaced = projectDesktopAvatarToolContract(stale);
     expect(replaced.definition?.visual?.variants.primary.iconImagePath).toContain('v=wire%201');
     expect(replaced.definition?.visual?.variants.primary.iconImagePath).not.toContain('stale');
@@ -191,7 +190,7 @@ describe('desktop avatar tool contract', () => {
     for (const field of ['clientX', 'clientY']) {
       const reservedChanceField = cloneJson(valid);
       const profile = reservedChanceField.definition?.interaction?.profile;
-      if (profile?.kind === 'locked-impact-v1') profile.chance.field = field;
+      if (profile?.kind === 'locked-impact') profile.chance.field = field;
       expect(() => desktopAvatarToolContractSchema.parse(reservedChanceField)).toThrow();
     }
 
@@ -246,7 +245,7 @@ describe('desktop avatar tool contract', () => {
 
     const unsafeThreshold = cloneJson(valid);
     const unsafeProfile = unsafeThreshold.definition?.interaction?.profile;
-    if (unsafeProfile?.kind === 'locked-impact-v1') {
+    if (unsafeProfile?.kind === 'locked-impact') {
       unsafeProfile.burst.rapidThreshold = Number.MAX_SAFE_INTEGER + 1;
     }
     expect(() => desktopAvatarToolContractSchema.parse(unsafeThreshold)).toThrow();

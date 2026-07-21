@@ -1270,19 +1270,58 @@ def test_react_chat_templates_use_react_asset_version_for_chat_bundle():
             assert f"{asset_path}?v={static_version}" not in source
 
 
-def test_pages_router_react_chat_asset_version_tracks_avatar_tool_icons():
+def test_pages_router_react_chat_asset_version_tracks_avatar_tool_resources():
     source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
-    for asset_path in (
-        "static/icons/edit_tool_unified.png",
-        "static/icons/chat_sugar1.png",
-        "static/icons/cat_claw1.png",
-        "static/icons/chat_hammer1.png",
-        "static/app/app-chat-adapter.js",
-        "static/app/app-buttons.js",
-    ):
-        assert f'_PROJECT_ROOT / "{asset_path}"' in source
+    assert '*sorted(_PROJECT_ROOT.glob("static/assets/avatar-tools/**/*.png"))' in source
+    assert '*sorted(_PROJECT_ROOT.glob("static/sounds/avatar-tools/**/*.mp3"))' in source
+    assert '_PROJECT_ROOT / "static/app/app-chat-adapter.js"' in source
+    assert '_PROJECT_ROOT / "static/app/app-buttons.js"' in source
     assert 'glob("static/app/app-react-chat-window/*.js")' in source
+
+    for legacy_name in ("chat_sugar", "cat_claw", "chat_hammer", "cat_moneny", "_cursor.png"):
+        assert legacy_name not in source
+
+
+def test_avatar_tool_resource_references_are_canonical_and_exist():
+    source_paths = (
+        Path("frontend/react-neko-chat/src/avatar-tools/catalog.ts"),
+        Path("frontend/react-neko-chat/src/AvatarToolQuickbar.tsx"),
+        Path("static/js/card_maker.js"),
+    )
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
+    resource_urls = set(re.findall(
+        r"/static/(?:assets|sounds)/avatar-tools/[a-z0-9_./-]+\.(?:png|mp3)",
+        sources,
+    ))
+
+    assert resource_urls
+    for resource_url in resource_urls:
+        assert Path(resource_url.removeprefix("/")).is_file(), resource_url
+
+    for legacy_name in (
+        "/sugar/",
+        "/claw/",
+        "chat_sugar",
+        "cat_claw",
+        "chat_hammer",
+        "cat_moneny",
+        "rps_",
+        "_cursor.png",
+        "edit_tool_unified.png",
+    ):
+        assert legacy_name not in sources
+
+    for bundle_path in (
+        Path("static/react/neko-chat/neko-chat-window.iife.js"),
+        Path("static/react/neko-chat/neko-chat-window.es.js"),
+    ):
+        if bundle_path.is_file():
+            bundle = bundle_path.read_text(encoding="utf-8")
+            assert "/static/icons/chat_sugar" not in bundle
+            assert "/static/icons/cat_claw" not in bundle
+            assert "/static/icons/chat_hammer" not in bundle
+            assert "/static/icons/edit_tool_unified.png" not in bundle
 
 
 def test_home_yui_guide_does_not_route_to_steam_workshop():

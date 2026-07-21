@@ -38,6 +38,7 @@ import { renderLineageGraph, countIsolated } from './memory_trace/lineage_graph.
 import { renderDetailPanel } from './memory_trace/detail_panel.js';
 import { mountEmbeddingSpacePage } from './memory_trace/embedding_space.js';
 import { mountOverviewPage } from './memory_trace/overview.js';
+import { mountCodeLeadsPage } from './memory_trace/code_leads.js';
 
 // Sub-pages of 记忆系统分析. Each mount(container, ctx) returns a teardown.
 // ctx.goTo(pageId, opts) lets a sub-page jump to a sibling (e.g. the 系统概况
@@ -47,6 +48,7 @@ const PAGES = [
   { id: 'overview', navKey: 'memory_trace.nav.overview', mount: mountOverviewPage },
   { id: 'lineage', navKey: 'memory_trace.nav.lineage', mount: mountLineagePage },
   { id: 'embedding', navKey: 'memory_trace.nav.embedding_space', mount: mountEmbeddingSpacePage },
+  { id: 'code_leads', navKey: 'memory_trace.nav.code_leads', mount: mountCodeLeadsPage },
 ];
 const LS_KEY = 'testbench:memory_analysis:active_subpage';
 

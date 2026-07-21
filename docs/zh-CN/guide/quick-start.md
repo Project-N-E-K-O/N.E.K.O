@@ -1,52 +1,25 @@
 # 快速开始
 
-本页将引导你在完成[开发环境搭建](./dev-setup)后首次运行 N.E.K.O.。
-
-## 1. 启动服务器
+先完成[开发环境搭建](./dev-setup)。
 
 ```bash
-# 在不同的终端中运行：
-uv run python app/memory_server.py
-uv run python -m app.main_server
+uv run python launcher.py
 ```
 
-## 2. 配置 API 提供商
+launcher 启动协作服务并报告最终端口。使用它报告的主 URL；`http://127.0.0.1:48911` 只是首选默认值。
 
-访问 `http://localhost:48911/api_key`，至少配置**核心 API** 提供商。
+打开主 URL 的 `/api_key`，选择 Core Provider，按需选择 Assist Provider，填写对应凭据并运行连通性检查。Provider/模型列表随 revision 变化，不要照抄旧截图。
 
-如果想快速测试且无需 API 密钥，请选择 **Free** 作为核心 API 提供商。
+全新数据根从当前 locale 的角色默认值与 Yui Origin 初始化。角色 ID/显示名来自有效数据，旧文档固定写成“小天”已经失效。文字聊天使用共享 React 组件；语音取决于 core/TTS 路径和麦克风权限。
 
-## 3. 与默认角色互动
+| 路由 | 用途 |
+| --- | --- |
+| `/character_card_manager` | 角色与形象选择 |
+| `/model_manager` | 形象模型 |
+| `/live2d_emotion_manager` | Live2D 情感映射 |
+| `/vrm_emotion_manager` | VRM 情感映射 |
+| `/voice_clone` | 依赖 Provider 的音色克隆 |
+| `/memory_browser` | 记忆输出与处理状态 |
+| `/api_key` | Provider 与凭据 |
 
-在浏览器中打开 `http://localhost:48911`。默认角色（"小天"）将加载一个 Live2D 模型。
-
-**文字模式：** 在聊天输入框中输入消息并按回车键。
-
-**语音模式：** 点击麦克风按钮开启语音会话。自然地说话 —— 系统使用服务端 VAD（语音活动检测）来判断你何时结束发言。
-
-## 4. 自定义角色
-
-访问 `http://localhost:48911/character_card_manager` 可以：
-
-- 修改角色的名字、性别、年龄和性格特征
-- 设置自定义 Live2D 或 VRM 模型
-- 克隆自定义声音（上传约 15 秒的干净音频样本）
-- 编辑系统提示词以完全控制角色行为
-
-## 5. 探索 Web UI 页面
-
-| URL | 用途 |
-|-----|------|
-| `/` | 主聊天界面 |
-| `/api_key` | API 密钥配置 |
-| `/model_manager` | Live2D/VRM 模型管理 |
-| `/live2d_emotion_manager` | 情绪到动画映射 |
-| `/vrm_emotion_manager` | VRM 情绪映射 |
-| `/voice_clone` | 语音克隆 |
-| `/memory_browser` | 浏览和编辑记忆 |
-
-## 下一步
-
-- [项目结构](./project-structure) —— 了解代码库布局
-- [架构概览](/zh-CN/architecture/) —— 三个服务器如何协作
-- [API 参考](/zh-CN/api/) —— 所有 REST 和 WebSocket 端点
+不是每个 Provider/部署模式都支持全部功能。Agent 和托管插件还需要 agent/tool 服务。

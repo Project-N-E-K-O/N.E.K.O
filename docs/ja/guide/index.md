@@ -1,50 +1,17 @@
-# はじめに
+# 開発者ガイド
 
-**Project N.E.K.O.**（**N**etworked **E**motional **K**nowledging **O**rganism）は、リアルタイムの音声/テキストインタラクション、マルチ形態アバターレンダリング（Live2D / VRM / MMD / PNGTuber / 猫デスクトップペット）、永続的メモリ、エージェントベースのタスク実行を統合したオープンソースAIコンパニオンプラットフォームです。
+Project N.E.K.O. は avatar rendering、realtime/text interaction、persistent memory、Agent execution、plugin を備える open-source AI companion platform です。このサイトは current repository の contributor/integrator 向けで、pricing/provider marketing ではありません。
 
-## N.E.K.O. とは？
+主な境界は `app/` services、`main_logic/` と `memory/`、`brain/`、Jinja/static + shared React chat、Vue plugin manager、N.E.K.O.-PC Electron shell、`docker/` です。
 
-N.E.K.O. はAIコンパニオンのためのUGC（ユーザー生成コンテンツ）プラットフォームです。ユーザーは独自の個性、声、ビジュアルモデルを持つAIキャラクターを作成、カスタマイズ、共有できます。システムは以下をサポートしています：
+| Goal | Page |
+| --- | --- |
+| Tools | [前提条件](./prerequisites) |
+| Setup | [開発環境](./dev-setup) |
+| First run | [クイックスタート](./quick-start) |
+| Repository | [プロジェクト構造](./project-structure) |
+| Services | [アーキテクチャ](/ja/architecture/) |
+| Plugin | [Plugin Quick Start](/ja/plugins/quick-start) |
+| Deploy | [デプロイ](/ja/deployment/) |
 
-- **リアルタイム音声会話** — Realtime APIプロバイダー（Qwen、OpenAI、Gemini、Step、GLM）を使用したWebSocket経由の通信
-- **Live2DおよびVRMモデルレンダリング** — 感情マッピングされたアニメーション付き
-- **永続的メモリ** — セマンティック検索と時間インデックス付き履歴によるセッション間の記憶保持
-- **バックグラウンドエージェント実行** — MCP、Computer Use、Browser Use、仮想マシンアダプター経由
-- **音声クローン** — カスタムTTSボイス対応
-- **Steam Workshop連携** — コンテンツ共有機能
-- **プラグインシステム** — 開発者向け拡張機能
-
-## 対象読者
-
-このドキュメントは、以下を目的とする**開発者**向けに書かれています：
-
-- N.E.K.O. のコアコードベースへのコントリビュート
-- N.E.K.O. の機能を拡張するプラグインの開発
-- N.E.K.O. のREST/WebSocket APIとの連携
-- カスタム環境への N.E.K.O. のデプロイ
-- デバッグや拡張のためのシステムアーキテクチャの理解
-
-## クイックリンク
-
-| 目的 | 参照先 |
-|------|--------|
-| 開発環境のセットアップ | [開発環境セットアップ](./dev-setup) |
-| アーキテクチャの理解 | [アーキテクチャ概要](/ja/architecture/) |
-| プラグインの開発 | [プラグインクイックスタート](/plugins/quick-start) |
-| APIとの連携 | [APIリファレンス](/api/) |
-| Dockerでのデプロイ | [Dockerデプロイメント](/deployment/docker) |
-| システムの設定 | [設定リファレンス](/config/) |
-
-## 技術スタック
-
-| レイヤー | 技術 |
-|----------|------|
-| バックエンドフレームワーク | FastAPI + Uvicorn |
-| リアルタイム通信 | WebSocket（ネイティブ + Alibaba DashScope） |
-| サービス間メッセージング | ZeroMQ（PUB/SUB + PUSH/PULL） |
-| LLM連携 | LangChain + OpenAI互換API |
-| TTS | DashScope CosyVoice、GPT-SoVITS |
-| フロントエンド | Vanilla JS、Pixi.js（Live2D）、Three.js（VRM） |
-| メモリストレージ | SQLite + テキストEmbedding |
-| パッケージ管理 | uv（Python 3.11） |
-| コンテナ化 | Docker（マルチアーキテクチャ） |
+Python examples はすべて `uv run`。同 revision の entrypoint/loader/workflow と異なる場合は current code を優先し、docs drift を報告してください。

@@ -7,8 +7,13 @@ from plugin.sdk.plugin import (
     # ベース
     NekoPluginBase, PluginMeta,
     # デコレーター
-    neko_plugin, plugin_entry, lifecycle, timer_interval, message, on_event,
-    custom_event, hook, before_entry, after_entry, around_entry, replace_entry,
+    EntryKind, neko_plugin, plugin_entry, lifecycle, timer_interval, message,
+    on_event, custom_event, hook, before_entry, after_entry, around_entry,
+    replace_entry, quick_action, plugin, ui,
+    # LLM tool と OS activity
+    llm_tool, LlmToolMeta, OsActivitySnapshot, get_os_activity_snapshot,
+    # plugin-local i18n と settings
+    PluginI18n, tr, PluginSettings, SettingsField,
     # Result 型
     Ok, Err, Result, unwrap, unwrap_or,
     # ランタイムヘルパー
@@ -20,6 +25,8 @@ from plugin.sdk.plugin import (
     get_plugin_logger,
 )
 ```
+
+`plugin.sdk.plugin` が supported developer import surface です。root `plugin.sdk` package は意図的に conservative shared subset だけを公開するため、plugin-only helper がすべて再 export されるとは仮定しないでください。
 
 ## NekoPluginBase
 
@@ -72,7 +79,7 @@ self.push_message(
 )
 ```
 
-v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は非推奨で、v0.9 で削除されます。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
+v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
 
 #### `data_path(*parts) -> Path`
 
@@ -118,6 +125,16 @@ self.register_static_ui("static")  # <plugin_dir>/static/index.html を配信
 #### `include_router(router, *, prefix) -> None`
 
 大規模または機能分割された通常 Plugin を整理するために `PluginRouter` を mount します。
+
+関連 method は `exclude_router(router_or_name) -> bool`、`get_router(name)`、`list_routers()` です。Router は manifest `[plugin].entry` にはできず、この mount path は `on_mount` / `on_unmount` を自動実行しません。
+
+#### Hosted/static UI と list action
+
+Hosted TSX は exported `ui` namespace と manifest surface を使います。日本語 mirror は未整備のため [English Hosted UI](/plugins/hosted-ui) を参照してください。legacy static UI は `register_static_ui(...)`、list-row action は `set_list_actions(...)`、`register_list_action(...)`、`clear_list_actions()`、`get_list_actions()` で管理します。
+
+#### LLM tool method
+
+`register_llm_tool(...)`、`unregister_llm_tool(name)`、`list_llm_tools()` は `@llm_tool` の imperative API です。conversation-time tool を登録し、user-plugin Agent entry とは別です。[LLM Tool Calling](./tool-calling) を参照してください。
 
 #### `run_update(**kwargs) -> object` (async)
 
@@ -268,10 +285,11 @@ events = await self.bus.events.get(plugin_id=self.plugin_id, max_count=50)
 recent = events.filter(priority_min=1).sort(by="timestamp", reverse=True).limit(20)
 
 records = await self.bus.memory.get(bucket_id="default", limit=20)
-matches = await self.ctx.query_memory("default", "ユーザーの好み")
 ```
 
 list surface は `filter` / `where`、`sort`、`limit`、`watch` です。callable の `filter(predicate)`、`where(predicate)`、`sort(key=...)` は local-only です。replayable な watcher chain では structured `filter(field=value, ...)` と `sort(by=...)` を使います。`watch()` を使えるのは `messages`、`events`、`lifecycle` だけで、`conversations` と `memory` は read-only snapshot です。watcher subscription は `add`、`del`、`change` のみ受け付けます。
+
+`bus.memory` に入るのは、件数制限付きでメモリ上に保持される最近のユーザー発話イベント（TTL は 1 時間）です。キャラクターの永続的な facts、reflections、persona とは別物です。`ctx.query_memory(...)` は非推奨の placeholder endpoint に対する互換呼び出しとしてのみ残されており、semantic recall は行いません。
 
 ### 優先度レベル
 
