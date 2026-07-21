@@ -33,6 +33,7 @@ from ._shared import is_auth_rejection
 _STEP_URL = "wss://api.stepfun.com/v1/realtime/asr/stream"
 _STEP_MODEL = "stepaudio-2.5-asr-stream"
 _STEP_SUPPORTED_LANGUAGES = frozenset({"en", "zh"})
+_STEP_FINALIZED_ITEM_LIMIT = 1024
 
 _ItemKey: TypeAlias = tuple[int, int, int]
 
@@ -43,10 +44,15 @@ class _StepConnectionState:
     buffer_epoch: int
     next_utterance_id: int
     emit_ready: bool
-    item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    provider_audio_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    provider_audio_ids_by_key: dict[_ItemKey, str] = field(default_factory=dict)
+    transcription_item_keys: dict[str, _ItemKey] = field(default_factory=dict)
+    pending_provider_turns: deque[_ItemKey] = field(default_factory=deque)
     pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
     unbound_manual_item_ids: deque[str] = field(default_factory=deque)
     unbound_manual_item_id_set: set[str] = field(default_factory=set)
+    finalized_item_ids: set[str] = field(default_factory=set)
+    finalized_item_order: deque[str] = field(default_factory=deque)
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
     error_sent: asyncio.Event = field(default_factory=asyncio.Event)
@@ -60,23 +66,69 @@ def _step_bind_pending_manual_items(state: _StepConnectionState) -> None:
         if item_id not in state.unbound_manual_item_id_set:
             continue
         state.unbound_manual_item_id_set.remove(item_id)
-        if item_id in state.item_keys:
+        if (
+            item_id in state.finalized_item_ids
+            or item_id in state.transcription_item_keys
+        ):
             continue
-        state.item_keys[item_id] = state.pending_manual_commits.popleft()
+        state.transcription_item_keys[item_id] = state.pending_manual_commits.popleft()
 
 
 def _step_manual_item_key(
     state: _StepConnectionState,
     item_id: str,
 ) -> _ItemKey | None:
-    key = state.item_keys.get(item_id)
+    if item_id in state.finalized_item_ids:
+        return None
+    key = state.transcription_item_keys.get(item_id)
     if key is not None:
         return key
     if item_id not in state.unbound_manual_item_id_set:
         state.unbound_manual_item_ids.append(item_id)
         state.unbound_manual_item_id_set.add(item_id)
     _step_bind_pending_manual_items(state)
-    return state.item_keys.get(item_id)
+    return state.transcription_item_keys.get(item_id)
+
+
+def _step_provider_item_key(
+    state: _StepConnectionState,
+    item_id: str,
+) -> _ItemKey | None:
+    if not item_id or item_id in state.finalized_item_ids:
+        return None
+    key = state.transcription_item_keys.get(item_id)
+    if key is not None:
+        return key
+    if not state.pending_provider_turns:
+        return None
+    key = state.pending_provider_turns.popleft()
+    state.transcription_item_keys[item_id] = key
+    return key
+
+
+def _step_remember_finalized_item(
+    state: _StepConnectionState,
+    item_id: str,
+) -> None:
+    if not item_id or item_id in state.finalized_item_ids:
+        return
+    state.finalized_item_ids.add(item_id)
+    state.finalized_item_order.append(item_id)
+    while len(state.finalized_item_order) > _STEP_FINALIZED_ITEM_LIMIT:
+        expired_item_id = state.finalized_item_order.popleft()
+        state.finalized_item_ids.discard(expired_item_id)
+
+
+def _step_complete_item(
+    state: _StepConnectionState,
+    item_id: str,
+    key: _ItemKey,
+) -> None:
+    _step_remember_finalized_item(state, item_id)
+    state.transcription_item_keys.pop(item_id, None)
+    audio_item_id = state.provider_audio_ids_by_key.pop(key, None)
+    if audio_item_id is not None:
+        state.provider_audio_item_keys.pop(audio_item_id, None)
 
 
 def _step_event_id() -> str:
@@ -319,7 +371,10 @@ async def _step_receiver(
                     state,
                     "ASR_STEP_PROVIDER_ERROR",
                     "Step ASR provider reported an error",
-                    item_key=state.item_keys.get(item_id),
+                    item_key=(
+                        state.transcription_item_keys.get(item_id)
+                        or state.provider_audio_item_keys.get(item_id)
+                    ),
                 )
                 return "error"
 
@@ -327,7 +382,7 @@ async def _step_receiver(
                 if config.endpointing_mode != "provider":
                     continue
                 item_id = str(event.get("item_id") or "")
-                if not item_id or item_id in state.item_keys:
+                if not item_id or item_id in state.provider_audio_item_keys:
                     continue
                 key = (
                     state.generation,
@@ -336,7 +391,9 @@ async def _step_receiver(
                 )
                 state.next_utterance_id += 1
                 state.last_utterance_id = key[2]
-                state.item_keys[item_id] = key
+                state.provider_audio_item_keys[item_id] = key
+                state.provider_audio_ids_by_key[key] = item_id
+                state.pending_provider_turns.append(key)
                 await response_queue.put(
                     _AsrWorkerEvent(
                         kind="utterance_started",
@@ -355,9 +412,11 @@ async def _step_receiver(
 
             if event_type == "conversation.item.input_audio_transcription.delta":
                 item_id = str(event.get("item_id") or "")
-                key = state.item_keys.get(item_id)
-                if key is None and item_id and config.endpointing_mode == "manual":
-                    key = _step_manual_item_key(state, item_id)
+                key = (
+                    _step_provider_item_key(state, item_id)
+                    if config.endpointing_mode == "provider"
+                    else _step_manual_item_key(state, item_id)
+                )
                 if key is not None:
                     await response_queue.put(
                         _AsrWorkerEvent(
@@ -372,11 +431,15 @@ async def _step_receiver(
 
             if event_type == "conversation.item.input_audio_transcription.completed":
                 item_id = str(event.get("item_id") or "")
-                key = state.item_keys.get(item_id)
-                if key is None and item_id and config.endpointing_mode == "manual":
-                    key = _step_manual_item_key(state, item_id)
+                if item_id in state.finalized_item_ids:
+                    continue
+                key = (
+                    _step_provider_item_key(state, item_id)
+                    if config.endpointing_mode == "provider"
+                    else _step_manual_item_key(state, item_id)
+                )
                 if key is not None:
-                    state.item_keys.pop(item_id, None)
+                    _step_complete_item(state, item_id, key)
                     await response_queue.put(
                         _AsrWorkerEvent(
                             kind="final",
@@ -386,6 +449,11 @@ async def _step_receiver(
                             text=str(event.get("transcript") or ""),
                         )
                     )
+                else:
+                    # A completed item without an eligible turn is terminally
+                    # unknown. Remember it so a delayed duplicate cannot claim
+                    # a future provider turn or manual commit.
+                    _step_remember_finalized_item(state, item_id)
                 continue
 
         if not state.intentional_close.is_set():

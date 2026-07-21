@@ -545,7 +545,142 @@ async def test_step_manual_uses_transcription_item_id_not_committed_item_id(
         await _stop_worker(task, requests, responses, utterance_id=8)
 
 
-async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> None:
+async def test_step_server_vad_correlates_distinct_item_ids_and_tombstones(
+    monkeypatch,
+) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(step.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(
+        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    await websocket.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio-1"}
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-1",
+            "transcript": "done",
+        }
+    )
+    assert (await _next_event(responses, "utterance_started")).utterance_id == 1
+    assert (await _next_event(responses, "final")).text == "done"
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript-1",
+            "transcript": "duplicate",
+        }
+    )
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "step-transcript-1",
+            "text": "late",
+        }
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert responses.empty()
+
+    session_update = json.loads(websocket.sent[0])
+    assert session_update["session"]["audio"]["input"]["turn_detection"] == {
+        "type": "server_vad"
+    }
+    assert not any(
+        isinstance(payload, str)
+        and json.loads(payload).get("type") == "input_audio_buffer.commit"
+        for payload in websocket.sent
+    )
+    await _stop_worker(task, requests, responses)
+
+
+async def test_step_server_vad_correlates_two_interleaved_turns(monkeypatch) -> None:
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(step.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="provider"),
+        )
+    )
+    await _next_event(responses, "ready")
+
+    await websocket.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "unknown-before-start",
+            "transcript": "must be ignored",
+        }
+    )
+    for audio_item_id in ("step-audio-1", "step-audio-2"):
+        await websocket.server_send(
+            {
+                "type": "input_audio_buffer.speech_started",
+                "item_id": audio_item_id,
+            }
+        )
+    for transcript_item_id, text in (
+        ("step-transcript-1", "first"),
+        ("step-transcript-2", "second"),
+    ):
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "item_id": transcript_item_id,
+                "text": text[:2],
+            }
+        )
+        await websocket.server_send(
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": transcript_item_id,
+                "transcript": text,
+            }
+        )
+
+    observed = [await _next_event(responses) for _ in range(6)]
+    assert [(event.kind, event.utterance_id, event.text) for event in observed] == [
+        ("utterance_started", 1, ""),
+        ("utterance_started", 2, ""),
+        ("partial", 1, "fi"),
+        ("final", 1, "first"),
+        ("partial", 2, "se"),
+        ("final", 2, "second"),
+    ]
+    await _stop_worker(task, requests, responses, utterance_id=3)
+
+
+async def test_step_server_vad_reconnect_isolates_item_bindings(monkeypatch) -> None:
     async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
         if isinstance(payload, str) and json.loads(payload)["type"] == "session.update":
             await ws.server_send({"type": "session.updated"})
@@ -565,21 +700,18 @@ async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> No
         )
     )
     await _next_event(responses, "ready")
-    await requests.put(
-        _AsrWorkerRequest(kind="audio", generation=0, utterance_id=1, audio=b"\0\0")
-    )
     await first.server_send(
-        {"type": "input_audio_buffer.speech_started", "item_id": "step-vad"}
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio"}
     )
     await first.server_send(
         {
             "type": "conversation.item.input_audio_transcription.completed",
-            "item_id": "step-vad",
-            "transcript": "done",
+            "item_id": "step-transcript",
+            "transcript": "first",
         }
     )
     assert (await _next_event(responses, "utterance_started")).utterance_id == 1
-    assert (await _next_event(responses, "final")).text == "done"
+    assert (await _next_event(responses, "final")).text == "first"
 
     await requests.put(
         _AsrWorkerRequest(kind="clear", generation=0, buffer_epoch=1, utterance_id=2)
@@ -601,6 +733,20 @@ async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> No
             for payload in second.sent
         )
     )
+    await second.server_send(
+        {"type": "input_audio_buffer.speech_started", "item_id": "step-audio"}
+    )
+    await second.server_send(
+        {
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "step-transcript",
+            "transcript": "second",
+        }
+    )
+    started = await _next_event(responses, "utterance_started")
+    final = await _next_event(responses, "final")
+    assert (started.buffer_epoch, started.utterance_id) == (1, 2)
+    assert (final.buffer_epoch, final.utterance_id, final.text) == (1, 2, "second")
     await _stop_worker(
         task,
         requests,
@@ -608,6 +754,75 @@ async def test_step_server_vad_maps_utterances_and_reconnects(monkeypatch) -> No
         buffer_epoch=1,
         utterance_id=2,
     )
+
+
+async def test_step_manual_late_completed_does_not_consume_next_commit(
+    monkeypatch,
+) -> None:
+    commit_count = 0
+
+    async def on_send(ws: _FakeWebSocket, payload: str | bytes) -> None:
+        nonlocal commit_count
+        assert isinstance(payload, str)
+        message = json.loads(payload)
+        if message["type"] == "session.update":
+            await ws.server_send({"type": "session.updated"})
+        elif message["type"] == "input_audio_buffer.commit":
+            commit_count += 1
+            if commit_count == 1:
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": "step-transcript-old",
+                        "transcript": "first",
+                    }
+                )
+            else:
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.delta",
+                        "item_id": "step-transcript-old",
+                        "text": "late",
+                    }
+                )
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": "step-transcript-old",
+                        "transcript": "duplicate",
+                    }
+                )
+                await ws.server_send(
+                    {
+                        "type": "conversation.item.input_audio_transcription.completed",
+                        "item_id": "step-transcript-new",
+                        "transcript": "second",
+                    }
+                )
+
+    websocket = _FakeWebSocket(on_send=on_send)
+    connector = _FakeConnector(websocket)
+    monkeypatch.setattr(step.websockets, "connect", connector)
+    requests: asyncio.Queue[_AsrWorkerRequest] = asyncio.Queue()
+    responses: asyncio.Queue[_AsrWorkerEvent] = asyncio.Queue()
+    task = asyncio.create_task(
+        step.step_asr_worker(
+            requests,
+            responses,
+            "key",
+            AsrSessionConfig(endpointing_mode="manual"),
+        )
+    )
+    await _next_event(responses, "ready")
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=1))
+    first_final = await _next_event(responses, "final")
+    await requests.put(_AsrWorkerRequest(kind="commit", generation=0, utterance_id=2))
+    second_final = await _next_event(responses, "final")
+
+    assert (first_final.utterance_id, first_final.text) == (1, "first")
+    assert (second_final.utterance_id, second_final.text) == (2, "second")
+    assert responses.empty()
+    await _stop_worker(task, requests, responses, utterance_id=3)
 
 
 async def test_openai_transcription_resampling_and_out_of_order_finals(
