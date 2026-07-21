@@ -1,6 +1,11 @@
 name: Build Desktop App (Windows Only)
 
 on:
+  push:
+    branches:
+      - 'ci/portable-update'
+    paths:
+      - '.github/workflows/build-desktop-windows.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -28,9 +33,9 @@ jobs:
   build-windows:
     uses: ./.github/workflows/build-desktop.yml
     with:
-      version: ${{ inputs.version }}
-      electron_repo: ${{ inputs.electron_repo }}
-      electron_ref: ${{ inputs.electron_ref }}
-      skip_signing: ${{ inputs.skip_signing }}
+      version: ${{ inputs.version || '0.8.4-nightly.1' }}
+      electron_repo: ${{ inputs.electron_repo || 'xxynet/N.E.K.O-PC' }}
+      electron_ref: ${{ inputs.electron_ref || 'feat/auto-update' }}
+      skip_signing: ${{ inputs.skip_signing || 'true' }}
       windows_only: true
     secrets: inherit
