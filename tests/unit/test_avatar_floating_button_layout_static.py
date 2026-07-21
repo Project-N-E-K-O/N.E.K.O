@@ -58,6 +58,28 @@ def test_avatar_floating_button_rows_keep_fixed_height_when_aux_controls_toggle(
     assert "transform: 'translateY(-50%)'" in mute_button_block
 
 
+def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():
+    source = LIVE2D_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    lock_icon_block = _source_slice_between(
+        source,
+        "Live2DManager.prototype.setupHTMLLockIcon = function(model) {",
+        "Live2DManager.prototype.setupFloatingButtons = function(model) {",
+        "Live2D lock icon setup",
+    )
+    floating_buttons_block = source[source.find(
+        "Live2DManager.prototype.setupFloatingButtons = function(model) {"
+    ):]
+
+    scale_call = "getLive2DFloatingControlScale(modelHeight, baseToolbarHeight)"
+    assert scale_call in lock_icon_block
+    assert scale_call in floating_buttons_block
+    assert "lockIcon.style.transform = nextTransform;" in lock_icon_block
+    assert "const actualLockIconSize = baseLockIconSize * scale;" in lock_icon_block
+    assert "window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockTop, actualLockIconSize)" in lock_icon_block
+    assert "right: clampedLeft + actualLockIconSize" in lock_icon_block
+    assert "bottom: clampedTop + actualLockIconSize" in lock_icon_block
+
+
 def test_interpage_restore_keeps_floating_button_containers_in_flex_layout():
     source = read_js_parts(APP_INTERPAGE_PATH)
     restore_block = _source_slice_between(

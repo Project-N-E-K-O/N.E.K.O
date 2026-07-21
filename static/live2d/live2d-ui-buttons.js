@@ -20,6 +20,13 @@ AvatarButtonMixin.apply(Live2DManager.prototype, 'live2d', {
 
 const LIVE2D_X11_UI_TICK_MS = 80;
 
+function getLive2DFloatingControlScale(modelHeight, baseToolbarHeight) {
+    const minScale = 0.5;
+    const maxScale = 1.0;
+    const rawScale = modelHeight / 2 / baseToolbarHeight;
+    return Math.round(Math.max(minScale, Math.min(maxScale, rawScale)) * 1000) / 1000;
+}
+
 function shouldThrottleLive2DUiTicker(manager) {
     return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11) &&
         !(manager && manager._isDraggingModel);
@@ -179,6 +186,7 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
     // 否则模型位置与上次相同时首帧写入被跳过，图标停在 fixed 默认位置
     this._lockIconLastLeft = undefined;
     this._lockIconLastTop = undefined;
+    this._lockIconLastTransform = undefined;
     this._lockIconLastOpacity = undefined;
     this._lockIconLastOverlapScanAt = 0;
     this._lockIconElement = lockIcon;
@@ -221,13 +229,34 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
 
+            const baseButtonSize = 48;
+            const baseGap = 12;
+            const buttonCount = 5;
+            const baseToolbarHeight = baseButtonSize * buttonCount + baseGap * (buttonCount - 1);
+            const modelHeight = bounds.bottom - bounds.top;
+            const scale = isMobileWidth()
+                ? 1
+                : getLive2DFloatingControlScale(modelHeight, baseToolbarHeight);
+            const nextTransform = `scale(${scale})`;
+            if (nextTransform !== this._lockIconLastTransform) {
+                this._lockIconLastTransform = nextTransform;
+                lockIcon.style.transformOrigin = 'left top';
+                lockIcon.style.transform = nextTransform;
+            }
+
+            const baseLockIconSize = 32;
+            const actualLockIconSize = baseLockIconSize * scale;
+            const viewportEdgePadding = 8;
+
             const targetX = bounds.right * 0.7 + bounds.left * 0.3;
             const targetY = bounds.top * 0.3 + bounds.bottom * 0.7;
 
+            const defaultMaxLockTop = screenHeight - actualLockIconSize - viewportEdgePadding;
             const maxLockTop = typeof window.getNekoYuiGuideLockIconMaxTop === 'function'
-                ? window.getNekoYuiGuideLockIconMaxTop(screenHeight - 40, 40)
-                : screenHeight - 40;
-            const clampedLeft = Math.round(Math.max(0, Math.min(targetX, screenWidth - 40)));
+                ? window.getNekoYuiGuideLockIconMaxTop(defaultMaxLockTop, actualLockIconSize)
+                : defaultMaxLockTop;
+            const maxLockLeft = screenWidth - actualLockIconSize - viewportEdgePadding;
+            const clampedLeft = Math.round(Math.max(0, Math.min(targetX, maxLockLeft)));
             const clampedTop = Math.round(Math.max(0, Math.min(targetY, maxLockTop)));
             // 位置无变化时跳过 style 写入，避免每帧无谓的样式失效
             if (clampedLeft !== this._lockIconLastLeft || clampedTop !== this._lockIconLastTop) {
@@ -238,8 +267,8 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
             }
 
             // 重叠检测节流到 250ms：纯装饰性淡出（opacity 0.3），不需要逐帧
-            // 扫两遍 DOM。矩形用已知坐标 + 固定 32px 尺寸推算（图标 position:fixed
-            // 无变换），避免每帧 getBoundingClientRect 强制布局。
+            // 扫两遍 DOM。矩形用已知坐标 + 缩放后的实际尺寸推算，避免每帧
+            // getBoundingClientRect 强制布局。
             const nowTs = performance.now();
             let isOverlapped = this._lockIconLastOverlapped === true;
             if (!this._lockIconLastOverlapScanAt || nowTs - this._lockIconLastOverlapScanAt >= 250) {
@@ -247,8 +276,8 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
                 const lockRect = {
                     left: clampedLeft,
                     top: clampedTop,
-                    right: clampedLeft + 32,
-                    bottom: clampedTop + 32
+                    right: clampedLeft + actualLockIconSize,
+                    bottom: clampedTop + actualLockIconSize
                 };
                 isOverlapped = false;
                 document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
@@ -682,13 +711,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             const modelCenterY = (bounds.top + bounds.bottom) / 2;
 
             const modelHeight = bounds.bottom - bounds.top;
-            const targetToolbarHeight = modelHeight / 2;
-
-            const minScale = 0.5;
-            const maxScale = 1.0;
-            const rawScale = targetToolbarHeight / baseToolbarHeight;
             // scale 量化到千分位，避免呼吸抖动击穿 transform 脏检查
-            const scale = Math.round(Math.max(minScale, Math.min(maxScale, rawScale)) * 1000) / 1000;
+            const scale = getLive2DFloatingControlScale(modelHeight, baseToolbarHeight);
             const rotation = Number(this._floatingButtonsRotationRadians) || 0;
             const rotateTransform = rotation ? ` rotate(${rotation}rad)` : '';
 
