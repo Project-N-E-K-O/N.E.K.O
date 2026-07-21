@@ -144,8 +144,8 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         category="ws_streaming",
         worker_input_sample_rate_hz=16_000,
         wire_sample_rate_hz=16_000,
-        supported_endpointing_modes=frozenset({"manual", "provider"}),
-        implementation_status="blocked_credentials",
+        supported_endpointing_modes=frozenset({"provider"}),
+        implementation_status="implemented",
     ),
     "grok": AsrProviderMeta(
         provider_key="grok",

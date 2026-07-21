@@ -226,11 +226,13 @@ def test_phase2_registry_routes_and_capabilities():
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
     assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"provider"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
-    assert ASR_PROVIDER_REGISTRY["step"].implementation_status == "blocked_credentials"
+    assert ASR_PROVIDER_REGISTRY["step"].supported_endpointing_modes == {"provider"}
+    assert ASR_PROVIDER_REGISTRY["step"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["grok"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["qwen"].implementation_status == "implemented"
     assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
+    assert ASR_PROVIDER_REGISTRY["step"].requires_smart_turn is False
     assert ASR_PROVIDER_REGISTRY["qwen"].requires_smart_turn is False
     for provider_key in ("glm", "gemini"):
         meta = ASR_PROVIDER_REGISTRY[provider_key]
@@ -305,6 +307,31 @@ def test_openai_core_resolves_to_provider_endpointing_without_smart_turn(
     )
 
     assert selection.provider_key == "openai"
+    assert selection.endpointing_mode == "provider"
+    assert session._voice_turn_factory is None
+
+
+def test_step_core_resolves_to_provider_endpointing_without_smart_turn(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_STEP": "step-key"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("step", user_region="cn")
+    session = asr_client._create_asr_session_from_selection(
+        "step",
+        selection=selection,
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+
+    assert selection.provider_key == "step"
     assert selection.endpointing_mode == "provider"
     assert session._voice_turn_factory is None
 
@@ -414,7 +441,6 @@ def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
         ("qwen", "manual", True),
         ("qwen", "provider", False),
         ("openai", "provider", False),
-        ("step", "manual", True),
         ("step", "provider", False),
         ("grok", "provider", False),
         ("glm", "manual", True),
@@ -595,6 +621,7 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
                 "ASSIST_API_KEY_QWEN": "qwen-cn-key",
                 "ASSIST_API_KEY_QWEN_INTL": "qwen-intl-key",
                 "ASSIST_API_KEY_OPENAI": "openai-key",
+                "ASSIST_API_KEY_STEP": "step-key",
                 "ASSIST_API_KEY_GROK": "grok-key",
                 "AUDIO_API_KEY": "must-not-be-used",
             }
@@ -627,6 +654,12 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert (openai_key, openai_provider) == ("openai-key", "openai")
     assert openai_worker is asr_client._IMPLEMENTED_WORKERS["openai"]
 
+    step_worker, step_key, step_provider = asr_client._get_asr_worker(
+        "step", "provider"
+    )
+    assert (step_key, step_provider) == ("step-key", "step")
+    assert step_worker is asr_client._IMPLEMENTED_WORKERS["step"]
+
     grok_worker, grok_key, grok_provider = asr_client._get_asr_worker(
         "grok", "provider"
     )
@@ -647,6 +680,8 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: openai"):
         asr_client._get_asr_worker("openai", "provider")
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: step"):
+        asr_client._get_asr_worker("step", "provider")
     with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: grok"):
         asr_client._get_asr_worker("grok", "provider")
 
