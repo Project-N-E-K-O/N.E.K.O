@@ -21,6 +21,8 @@ def test_openclaw_guide_routes_external_links_to_system_browser():
     assert "function initializeGuideExternalLinks()" in template
     assert "target.closest('a[href]')" in template
     assert "externalUrl.origin === window.location.origin" in template
+    assert "if (!['http:', 'https:'].includes(externalUrl.protocol)) return;" in template
+    assert "event.preventDefault();" in template
     assert "window.electronShell.openExternal(href)" in template
     assert "window.open(href, '_blank', 'noopener,noreferrer')" in template
     assert "initializeGuideExternalLinks();" in template

@@ -107,6 +107,7 @@ def test_workshop_publish_opens_item_in_system_browser():
     core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
 
     assert "function openPublishedWorkshopItem(webUrl)" in core
+    assert "https://steamcommunity.com/sharedfiles/filedetails/?id=${published_id}" in core
     assert "window.electronShell.openExternal(webUrl)" in core
     assert "window.open(webUrl, '_blank', 'noopener,noreferrer')" in core
     assert "openPublishedWorkshopItem(webUrl);" in core
