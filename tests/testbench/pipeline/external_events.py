@@ -674,14 +674,33 @@ async def simulate_avatar_interaction(
     # 必须在这里把真实 wire 快照一下, 让 preview 从 session.last_llm_wire
     # 读取, 否则就是"UI 承诺的预览 ≠ 实际发送的 wire"语义漂移.
     try:
+        interaction_facts = {
+            key: normalized[key]
+            for key in (
+                "action_id",
+                "intensity",
+                "user_gesture",
+                "avatar_gesture",
+                "round_result",
+            )
+            if key in normalized
+        }
+        if "action_id" in normalized:
+            preview_note = (
+                f"avatar:{normalized['tool_id']}+{normalized['action_id']}"
+                f"@{normalized['intensity']}"
+            )
+        else:
+            preview_note = (
+                f"avatar:{normalized['tool_id']} "
+                f"{normalized['user_gesture']}/{normalized['avatar_gesture']} "
+                f"result={normalized['round_result']}"
+            )
         record_last_llm_wire(
             session,
             base_wire,
             source="avatar_event",
-            note=(
-                f"avatar:{normalized['tool_id']}+{normalized['action_id']}"
-                f"@{normalized['intensity']}"
-            ),
+            note=preview_note,
         )
     except Exception as exc:  # noqa: BLE001 — observability must not block LLM
         python_logger().debug(
@@ -783,8 +802,7 @@ async def simulate_avatar_interaction(
         detail={
             "interaction_id": normalized.get("interaction_id"),
             "tool_id": normalized["tool_id"],
-            "action_id": normalized["action_id"],
-            "intensity": normalized["intensity"],
+            **interaction_facts,
             "reward_drop": normalized.get("reward_drop"),
             "easter_egg": normalized.get("easter_egg"),
             "reply_chars": len(reply_text),

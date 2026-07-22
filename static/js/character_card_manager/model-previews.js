@@ -321,7 +321,6 @@ async function loadVrmPreview(modelPath, rawData) {
         if (result) {
             scheduleWorkshop3DPreviewResize(localVrmManager, 'vrm-preview-canvas');
             console.log('[Workshop VRM] 模型预览加载成功');
-            showMessage(window.t ? window.t('steam.vrmPreviewLoaded') || 'VRM 模型预览已加载' : 'VRM 模型预览已加载', 'success');
         }
     } catch (error) {
         console.error('[Workshop VRM] 加载预览失败:', error);
@@ -434,7 +433,6 @@ async function loadMmdPreview(modelPath, rawData) {
                 }
             }
             console.log('[Workshop MMD] 模型预览加载成功');
-            showMessage(window.t ? window.t('steam.mmdPreviewLoaded') || 'MMD 模型预览已加载' : 'MMD 模型预览已加载', 'success');
         }
     } catch (error) {
         console.error('[Workshop MMD] 加载预览失败:', error);
@@ -664,7 +662,6 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
 
         // 确保获取正确的steam_id，优先使用modelInfo中的item_id
         let finalSteamId = modelInfo.item_id;
-        showMessage((window.t && window.t('live2d.loadingModel', { model: modelName })) || `正在加载模型: ${modelName}...`, 'info');
 
         // 1. Fetch files list
         let filesRes;
@@ -773,7 +770,6 @@ async function loadLive2DModelByName(modelName, modelInfo = null) {
         // 更新全局selectedModelInfo变量
         selectedModelInfo = modelInfo;
         setLive2DPreviewRefreshButtonState(true, true);
-        showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
     } catch (error) {
         if (error && error.code === 'STALE_LIVE2D_PREVIEW_LOAD') {
             return;
@@ -1211,8 +1207,6 @@ async function loadLive2DModelFromFolder(files) {
         if (previewOverlay) {
             previewOverlay.style.pointerEvents = 'auto';
         }
-
-        showMessage(window.t('steam.live2dPreviewLoaded'), 'success');
 
     } catch (error) {
         console.error('Failed to load Live2D model:', error);

@@ -51,7 +51,10 @@ COOKIE_FILES = {
     'weibo': CONFIG_DIR / 'weibo_cookies.json',
     'reddit': CONFIG_DIR / 'reddit_cookies.json',
     'twitter': CONFIG_DIR / 'twitter_cookies.json',
-    'youtube': CONFIG_DIR / 'youtube_cookies.json'
+    'youtube': CONFIG_DIR / 'youtube_cookies.json',
+    # Twitch stores OAuth credentials here, not browser cookies.  Reuse the
+    # existing encrypted, permission-restricted credential store.
+    'twitch': CONFIG_DIR / 'twitch_credentials.json',
 }
 
 class LoginStatus:
@@ -75,6 +78,13 @@ def validate_cookies(platform: str, cookies: Dict[str, str]) -> bool:
     if platform == 'youtube':
         if not cookies.get('SAPISID'):
             logger.warning("⚠️ 安全拦截：YouTube Cookie 缺少 SAPISID！")
+            return False
+        return True
+
+    if platform == 'twitch':
+        required = ('access_token', 'refresh_token', 'client_id')
+        if not all(cookies.get(key) for key in required):
+            logger.warning("⚠️ 安全拦截：Twitch OAuth 凭证缺少必要字段！")
             return False
         return True
 
@@ -168,9 +178,12 @@ def save_cookies_to_file(platform: str, cookies: Dict[str, Any], encrypt: bool =
             
             logger.info(f"✅ 已明文保存 {platform} 凭证到: {cookie_file}")
         
-        logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
-        for k, v in list(cookies.items())[:3]: # 仅展示前三个键
-            logger.info(f"   - {k}: {mask_string(v)}")
+        # OAuth bearer material must never enter logs, even in partially masked
+        # form. Cookie-based platforms retain the existing diagnostic summary.
+        if platform != 'twitch':
+            logger.info(f"🔐 【{platform.capitalize()} 凭证摘要】:")
+            for k, v in list(cookies.items())[:3]: # 仅展示前三个键
+                logger.info(f"   - {k}: {mask_string(v)}")
         return True
         
     except Exception as e:
@@ -407,7 +420,8 @@ class PlatformLoginManager:
             'weibo': {'name': '微博', 'methods': ['manual'], 'func': get_weibo_cookies},
             'reddit': {'name': 'Reddit', 'methods': ['manual'], 'func': get_reddit_cookies},
             'twitter': {'name': 'Twitter/X', 'methods': ['manual'], 'func': get_twitter_cookies},
-            'youtube': {'name': 'YouTube', 'methods': ['manual'], 'func': get_youtube_cookies}
+            'youtube': {'name': 'YouTube', 'methods': ['manual'], 'func': get_youtube_cookies},
+            'twitch': {'name': 'Twitch', 'methods': ['device_code'], 'func': lambda _method: None},
         }
     
     def login_platform(self, platform: str, method: str) -> Optional[Dict[str, str]]:

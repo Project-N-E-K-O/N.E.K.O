@@ -1203,13 +1203,18 @@
         return String(value).trim();
     }
 
-    function getCurrentAssistantName() {
+    function getConfiguredAssistantName() {
         return sanitizeDisplayName(
             window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__
+            || (window.appState && window.appState.lanlan_name)
             || (window.lanlan_config && window.lanlan_config.lanlan_name)
             || window._currentCatgirl
             || window.currentCatgirl
-        ) || 'Neko';
+        );
+    }
+
+    function getCurrentAssistantName() {
+        return getConfiguredAssistantName() || 'Neko';
     }
 
     I.getCurrentUserName = function getCurrentUserName() {
@@ -1267,6 +1272,7 @@
         return {
             title: title,
             iconSrc: '/static/icons/chat_icon.png',
+            assistantName: getConfiguredAssistantName() || undefined,
             inputPlaceholder: inputPlaceholder,
             sendButtonLabel: sendButtonLabel,
             emptyText: I.getI18nText('chat.emptyState', '聊天内容接入后会显示在这里。'),
@@ -1450,6 +1456,7 @@
         }
         return Object.assign({}, I.ensureViewProps(), {
             messages: I.state.messages,
+            assistantName: getConfiguredAssistantName() || undefined,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,
             _rollbackKey: I.state._rollbackKey || undefined,

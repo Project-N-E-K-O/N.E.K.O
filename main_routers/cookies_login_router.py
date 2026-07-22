@@ -49,6 +49,7 @@ from utils.cookies_login import (
     get_cookie_key_file,
 )
 from utils.logger_config import get_module_logger
+from utils.twitch_auth import TwitchAuthService
 
 logger = get_module_logger(__name__, "Main")
 
@@ -74,6 +75,7 @@ def verify_local_access(request: Request):
 router = APIRouter(prefix="/api/auth", tags=["认证管理"], dependencies=[Depends(verify_local_access)])
 templates = Jinja2Templates(directory="templates")
 login_manager = PlatformLoginManager()
+twitch_auth_service = TwitchAuthService()
 
 # Only these credential types can back the personal-dynamics proactive source.
 # Keep this aligned with ``utils.web_scraper.personal_dynamics``.
@@ -102,6 +104,12 @@ class CookieSubmit(BaseModel):
             logger.warning(f"🚨 检测到恶意内容注入尝试！恶意内容注入，length={len(v)}")
             raise ValueError("检测到非法或危险字符，请求已被系统拦截。")
         return v
+
+
+class TwitchDeviceSubmit(BaseModel):
+    """The public Twitch Developer Client ID used for Device Code authorization."""
+
+    client_id: str = Field(..., min_length=8, max_length=80, pattern=r"^[A-Za-z0-9]+$")
 
 
 # ============ 1. 内部辅助逻辑 ============
@@ -176,6 +184,13 @@ async def save_cookie(data: CookieSubmit):
         supported_platforms = login_manager.get_supported_platforms()
         if data.platform not in supported_platforms:
             raise HTTPException(status_code=400, detail=f"不支持的平台: {data.platform}")
+        platform_info = supported_platforms[data.platform]
+        if "manual" not in platform_info.get("methods", []):
+            method = platform_info.get("default_method") or "平台专用授权流程"
+            raise HTTPException(
+                status_code=400,
+                detail=f"{platform_info['name']} 凭证只能通过 {method} 授权保存",
+            )
             
         # 2. 解析与验证
         cookies = parse_cookie_string(data.cookie_string)
@@ -203,6 +218,27 @@ async def save_cookie(data: CookieSubmit):
         logger.debug(f"详细错误: {e}")  # debug 级别记录详情
         raise HTTPException(status_code=500, detail="内部服务器错误")
 
+
+@router.post("/twitch/device/start", summary="启动 Twitch Device Code 授权")
+async def start_twitch_device_authorization(data: TwitchDeviceSubmit):
+    """Start a local-only OAuth Device Code flow without returning secrets."""
+    result = await twitch_auth_service.start(data.client_id)
+    if result.get("success"):
+        return result
+    raise HTTPException(status_code=502, detail="无法启动 Twitch 授权，请检查 Client ID 或网络连接")
+
+
+@router.post("/twitch/device/check", summary="检查 Twitch Device Code 授权")
+async def check_twitch_device_authorization(data: TwitchDeviceSubmit):
+    """Poll Twitch once; successful credentials are encrypted before returning."""
+    result = await twitch_auth_service.check_device_code(data.client_id)
+    if result.get("success"):
+        return result
+    code = result.get("code")
+    if code in {"device_authorization_not_active", "device_authorization_expired"}:
+        raise HTTPException(status_code=400, detail="Twitch 授权已失效，请重新开始授权")
+    raise HTTPException(status_code=502, detail="Twitch 授权检查失败，请稍后重试")
+
 @router.get("/cookies/status", summary="获取所有平台Cookie状态汇总")
 async def get_all_cookies_status():
     """Return cookie presence status for each supported platform (used by the frontend personal-feed feature)."""
@@ -229,6 +265,10 @@ async def get_platform_cookies(platform: str):
     supported = login_manager.get_supported_platforms()
     if platform not in supported:
         raise HTTPException(status_code=400, detail="平台无效")
+
+    if platform == "twitch":
+        status_data = await twitch_auth_service.status()
+        return {"success": True, "data": status_data}
             
     cookies = await asyncio.to_thread(load_cookies_from_file, platform)
     if not cookies:

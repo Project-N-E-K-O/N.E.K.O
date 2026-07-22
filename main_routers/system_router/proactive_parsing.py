@@ -327,6 +327,122 @@ _PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
 _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE)
 
 
+_PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
+    (re.compile(r"^/(?i:chat)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^(?i:chat)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^chat[ \t]*(?:\r?\n|$)\s*", re.IGNORECASE), "CHAT"),
+    (re.compile(r"^/(?i:music)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^(?i:music)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^/聊天中(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/?聊天中\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^聊天中(?=\s|$)\s*"), "CHAT"),
+    (re.compile(r"^/屏幕观察(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^屏幕观察/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/屏幕(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^屏幕\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+)
+
+
+_PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset({
+    "QQ",
+    "当前界面",
+    "用户当前操作",
+    "上轮未收尾话题",
+    "屏幕内容",
+    "屏幕显示",
+})
+
+
+_PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS = frozenset({
+    "聊天中",
+})
+
+
+def _get_proactive_context_leak_labels() -> frozenset[str]:
+    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
+    return get_proactive_intent_leak_labels() | frozenset(
+        label.casefold() for label in _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS
+    )
+
+
+def _get_proactive_context_slash_leak_labels() -> frozenset[str]:
+    return _get_proactive_context_leak_labels() | frozenset(
+        label.casefold() for label in _PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS
+    )
+
+
+def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
+    if not rest:
+        return True
+    ch = rest[0]
+    if ch.isspace() or ch in "/：:":
+        return True
+    # Chinese/Japanese/Korean labels are often glued directly to the actual
+    # reply. Keep short ASCII app names like QQ stricter to avoid QQ音乐 false
+    # positives.
+    return (not label.isascii()) and (not ch.isascii())
+
+
+def _strip_proactive_label_slash_prefix(body: str, labels: frozenset[str]) -> str | None:
+    """Strip a known leading internal label written as ``label/`` or ``/label``."""
+    if not body:
+        return None
+    folded = body.casefold()
+    for label in sorted(labels, key=len, reverse=True):
+        if not label:
+            continue
+        if folded.startswith(label):
+            rest = body[len(label):]
+            sep = re.match(r"\s*/", rest)
+            if sep:
+                return rest[sep.end():].lstrip()
+        if body.startswith("/") and folded[1:].startswith(label):
+            rest = body[1 + len(label):]
+            if _label_prefix_boundary_ok(label, rest):
+                rest = rest.lstrip()
+                if rest[:1] in "/：:":
+                    rest = rest[1:]
+                return rest.lstrip()
+    return None
+
+
+def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
+    """Strip a lone leading slash separator left after a leaked label."""
+    if not body:
+        return None
+    match = re.match(r"^/(?:[ \t]+|\r?\n[ \t]*|$)", body)
+    if not match:
+        return None
+    rest = body[match.end():].lstrip()
+    if rest or match.end() == len(body):
+        return rest
+    return None
+
+
+def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
+    """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
+    if not text:
+        return "", ""
+    leading_len = len(text) - len(text.lstrip())
+    leading = text[:leading_len]
+    body = text[leading_len:]
+    cleaned = _strip_proactive_label_slash_prefix(body, _get_proactive_context_leak_labels())
+    if cleaned is not None:
+        return leading + cleaned, "CHAT"
+    cleaned = _strip_proactive_orphan_slash_prefix(body)
+    if cleaned is not None:
+        return leading + cleaned, "CHAT"
+    for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
+        match = pattern.match(body)
+        if match:
+            rest = body[match.end():].lstrip()
+            cleaned_rest = _strip_proactive_orphan_slash_prefix(rest)
+            if cleaned_rest is not None:
+                rest = cleaned_rest
+            return leading + rest, source_tag
+    return text, ""
+
+
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """Strip mistakenly emitted screen-source tags (e.g. ``[Screen]``) from Phase 2 text.
 
@@ -347,6 +463,9 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """
     if not text:
         return "", ""
+    text, prefix_tag = _strip_proactive_known_prefix_tag_leak(text)
+    if prefix_tag:
+        return text, prefix_tag
     leading_len = len(text) - len(text.lstrip())
     leading = text[:leading_len]
     body = text[leading_len:]
@@ -386,6 +505,7 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
       line;
     - a leading ``<label>:`` / ``<label>：`` prefix on the first line,
       keeping the rest of that line as content.
+    - a leading ``<label>/`` / ``/<label>`` prefix, also keeping the content.
 
     Exact (decoration-trimmed, casefolded) matching against the derived
     label set keeps generic words from being scrubbed out of normal speech.
@@ -393,10 +513,10 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     """
     if not text:
         return text
-    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
-    labels = get_proactive_intent_leak_labels()
+    labels = _get_proactive_context_leak_labels()
     if not labels:
         return text
+    slash_labels = _get_proactive_context_slash_leak_labels()
 
     def _norm(segment: str) -> str:
         out = segment.strip().strip(_INTENT_LABEL_DECOR)
@@ -408,6 +528,10 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         body = text.lstrip()
         if not body:
             break
+        slash_cleaned = _strip_proactive_label_slash_prefix(body, slash_labels)
+        if slash_cleaned is not None:
+            text = slash_cleaned
+            continue
         nl = body.find('\n')
         first = body if nl == -1 else body[:nl]
         rest = '' if nl == -1 else body[nl + 1:]
