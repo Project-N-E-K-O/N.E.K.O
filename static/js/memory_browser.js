@@ -570,70 +570,7 @@
         tutorialResetBtn.disabled = selection.type !== 'page' && selection.type !== 'home-day' && selection.type !== 'home-all';
     }
 
-    async function getTutorialPromptResetHeaders() {
-        const headers = { 'Content-Type': 'application/json' };
-        const helper = window.nekoLocalMutationSecurity;
-        if (helper && typeof helper.getMutationHeaders === 'function') {
-            try {
-                return Object.assign(headers, await helper.getMutationHeaders());
-            } catch (error) {
-                console.warn('[MemoryBrowser] 获取教程重置安全头失败，尝试页面配置:', error);
-            }
-        }
-
-        try {
-            const response = await fetch('/api/config/page_config', { cache: 'no-store' });
-            if (!response.ok) return headers;
-            const data = await response.json();
-            if (data && typeof data.autostart_csrf_token === 'string' && data.autostart_csrf_token) {
-                headers['X-CSRF-Token'] = data.autostart_csrf_token;
-            }
-        } catch (error) {
-            console.warn('[MemoryBrowser] 读取页面配置失败，继续使用基础教程重置请求头:', error);
-        }
-        return headers;
-    }
-
-    async function resetHomeTutorialPromptStateViaApi(reason) {
-        const normalizedReason = typeof reason === 'string' && reason.trim()
-            ? reason.trim()
-            : 'memory_browser_home_all_reset';
-        const body = JSON.stringify({ reason: normalizedReason });
-        const sendResetRequest = async () => fetch('/api/tutorial-prompt/reset', {
-            method: 'POST',
-            headers: await getTutorialPromptResetHeaders(),
-            body,
-        });
-
-        let response = await sendResetRequest();
-        if (response.status === 403 && window.nekoLocalMutationSecurity &&
-            typeof window.nekoLocalMutationSecurity.refreshToken === 'function') {
-            let shouldRetry = false;
-            try {
-                const payload = await response.clone().json();
-                shouldRetry = payload && payload.error_code === 'csrf_validation_failed';
-            } catch (_) {
-                shouldRetry = false;
-            }
-            if (shouldRetry) {
-                await window.nekoLocalMutationSecurity.refreshToken();
-                response = await sendResetRequest();
-            }
-        }
-        if (!response.ok) {
-            throw new Error('tutorial prompt reset failed: ' + response.status);
-        }
-        return response.json();
-    }
-
-    async function resetHomeTutorialPromptState(reason) {
-        if (window.universalTutorialManager && typeof window.universalTutorialManager.resetHomeTutorialPromptState === 'function') {
-            return window.universalTutorialManager.resetHomeTutorialPromptState(reason);
-        }
-        return resetHomeTutorialPromptStateViaApi(reason);
-    }
-
-    async function resetSelectedTutorial() {
+    async function performSelectedTutorialReset() {
         const selection = resolveSelectedTutorialReset();
         if (selection.type === 'home-day') {
             if (window.AvatarFloatingGuideReset && typeof window.AvatarFloatingGuideReset.resetAvatarFloatingGuideDay === 'function') {
@@ -649,7 +586,6 @@
                     source: 'memory_browser_reset_select',
                 });
             }
-            await resetHomeTutorialPromptState('memory_browser_home_day_reset');
             return;
         }
         if (selection.type === 'home-all') {
@@ -662,7 +598,6 @@
                     source: 'memory_browser_reset_home_all',
                 });
             }
-            await resetHomeTutorialPromptState('memory_browser_home_all_reset');
             await showTutorialResetNotice(getTutorialHomeAllResetSuccessMessage());
             return;
         }
@@ -679,6 +614,19 @@
                 }
             }
             await window.resetTutorialForPage(selection.pageKey);
+        }
+    }
+
+    async function resetSelectedTutorial() {
+        try {
+            return await performSelectedTutorialReset();
+        } catch (error) {
+            console.error('[MemoryBrowser] 新手教程重置失败:', error);
+            await showTutorialResetNotice(
+                translate('tutorial.reset.dayFailed', '新手教程重置失败，请稍后再试。'),
+                { variant: 'error' }
+            );
+            return false;
         }
     }
 

@@ -1334,10 +1334,11 @@ def test_home_yui_guide_does_not_route_to_steam_workshop():
     assert "#${p}-menu-steam-workshop" not in tutorial_source
 
 
-def test_home_tutorial_reset_also_clears_backend_prompt_state():
+def test_home_tutorial_reset_uses_unified_seven_day_state_only():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
-    assert "/api/tutorial-prompt/reset" in tutorial_source
+    assert "/api/tutorial-prompt/" not in tutorial_source
+    assert "getSevenDayTutorialStateApi().resetRound" in tutorial_source
 
 
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
@@ -1485,6 +1486,7 @@ def test_character_card_manager_cloudsave_button_uses_icon_badge():
 
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
+    seven_day_state_source = Path("static/tutorial/core/seven-day-state.js").read_text(encoding="utf-8")
     avatar_reload_source = Path("static/tutorial/avatar/reload-controller.js").read_text(encoding="utf-8")
     interpage_source = read_js_parts(Path("static/app/app-interpage"))
     app_ui_source = read_js_parts(Path("static/app/app-ui"))
@@ -1617,15 +1619,15 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "this.revealPrepared();" in restore_block
     assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
-    assert "AVATAR_FLOATING_GUIDE_ROUND_COUNT = 7" in tutorial_source
+    assert "const ROUND_COUNT = 7" in seven_day_state_source
     launch_block = tutorial_source.split("const launchTutorial = () => {", 1)[1].split(
         "if (this.isI18nReady())",
         1,
     )[0]
     assert "this.startTutorial();" in launch_block
-    assert "this.shouldStartHomeAvatarFloatingGuideRound()" in launch_block
-    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in launch_block
-    assert "this.startAvatarFloatingGuideRound(round, { source })" in launch_block
+    assert "const homeRound = this.currentPage === 'home'" in launch_block
+    assert "this.getHomeAvatarFloatingGuideLaunchRound()" in launch_block
+    assert "this.startAvatarFloatingGuideRound(homeRound, { source })" in launch_block
     assert "shouldStartHomeAvatarFloatingGuideRound() {" in tutorial_source
     assert "getHomeAvatarFloatingGuideStartRound(options = {})" in tutorial_source
     assert "candidates.push(state.pendingRound, state.manualResetRound, 1);" in tutorial_source
@@ -1883,23 +1885,24 @@ def test_avatar_floating_tutorial_boot_predictor_loads_before_user_model_init():
     pages_router_source = Path("main_routers/pages_router.py").read_text(encoding="utf-8")
 
     predictor_script = "/static/tutorial/core/avatar-floating-boot-predictor.js"
+    state_script = "/static/tutorial/core/seven-day-state.js"
     assert predictor_script in index_source
+    assert state_script in index_source
+    assert index_source.index(state_script) < index_source.index(predictor_script)
     assert index_source.index(predictor_script) < index_source.index("/static/live2d/live2d-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/vrm/vrm-init.js")
     assert index_source.index(predictor_script) < index_source.index("/static/mmd/mmd-init.js")
     assert "static/tutorial/core/avatar-floating-boot-predictor.js" in pages_router_source
+    assert "static/tutorial/core/seven-day-state.js" in pages_router_source
 
 
 def test_avatar_floating_tutorial_boot_predictor_contract():
     predictor_source = Path("static/tutorial/core/avatar-floating-boot-predictor.js").read_text(encoding="utf-8")
     manager_source = Path("static/tutorial/core/universal-manager.js").read_text(encoding="utf-8")
 
-    assert "AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1'" in predictor_source
-    assert "manualResetRound" in predictor_source
-    assert "pendingRound" in predictor_source
-    assert "completedRounds" in predictor_source
-    assert "skippedRounds" in predictor_source
-    assert "lastAutoShownDate" in predictor_source
+    assert "window.NekoSevenDayTutorialState" in predictor_source
+    assert "return sevenDayState.loadState();" in predictor_source
+    assert "sevenDayState.getNextAutoRound(" in predictor_source
     assert "window.NekoAvatarFloatingBoot" in predictor_source
     assert "shouldBootIntoTutorial" in predictor_source
     assert "shouldSkipUserModelBoot" in predictor_source
@@ -1930,12 +1933,10 @@ def test_avatar_floating_tutorial_boot_predictor_contract():
         "function getPredictedRound()",
         1,
     )[0]
-    assert compute_block.index("if (guideState.manualResetRound)") < compute_block.index(
-        "if (guideState.lastAutoShownDate === getTodayLocalDate())"
-    )
-    assert compute_block.index("if (guideState.lastAutoShownDate === getTodayLocalDate())") < compute_block.index(
-        "if (guideState.pendingRound"
-    )
+    assert "return sevenDayState.getNextAutoRound(" in compute_block
+    assert "sevenDayState.getTodayLocalDate()" in compute_block
+    assert "manualResetRound" not in compute_block
+    assert "pendingRound" not in compute_block
 
 
 def test_avatar_model_initializers_skip_user_model_when_tutorial_boot_is_predicted():

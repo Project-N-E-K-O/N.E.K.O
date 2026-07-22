@@ -75,15 +75,6 @@
             "decline": "Não, deixa ligado"
         }
     },
-    "tutorialPrompt": {
-        "title": "Quer começar o tutorial em casa?",
-        "message": "Posso mostrar rapidamente os principais pontos de entrada na tela inicial para que você possa começar a usar o N.E.K.O imediatamente.",
-        "note": "Você pode ignorá-lo a qualquer momento ou reabri-lo mais tarde no Memory Browser.",
-        "startNow": "Iniciar tutorial",
-        "later": "Talvez mais tarde",
-        "never": "Não me lembre",
-        "startFailed": "O tutorial não pôde ser iniciado agora. Por favor, tente novamente mais tarde."
-    },
     "characterProfile": {
         "gender": "Gênero",
         "age": "Idade",

@@ -76,6 +76,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial/core/seven-day-state.js",
     _PROJECT_ROOT / "static/tutorial/core/avatar-floating-boot-predictor.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",

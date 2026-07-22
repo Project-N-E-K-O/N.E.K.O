@@ -16,13 +16,6 @@ REQUIRED_KEYS = (
     "autostartPrompt.later",
     "autostartPrompt.never",
     "autostartPrompt.requiresApproval",
-    "tutorialPrompt.title",
-    "tutorialPrompt.message",
-    "tutorialPrompt.note",
-    "tutorialPrompt.startNow",
-    "tutorialPrompt.later",
-    "tutorialPrompt.never",
-    "tutorialPrompt.startFailed",
 )
 
 CHARACTER_MANAGER_VOICE_KEYS = (
@@ -180,7 +173,7 @@ def test_locale_json_objects_do_not_contain_duplicate_keys():
 
 
 @pytest.mark.unit
-def test_tutorial_prompt_locale_keys_exist_in_all_locales():
+def test_required_locale_keys_exist_in_all_locales():
     missing_by_locale: dict[str, list[str]] = {}
 
     for locale_path in sorted(LOCALES_DIR.glob("*.json")):

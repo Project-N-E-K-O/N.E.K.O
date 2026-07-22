@@ -396,13 +396,13 @@
             const payload = details || {};
             if (
                 window.universalTutorialManager
-                && typeof window.universalTutorialManager.logPromptFlow === 'function'
+                && typeof window.universalTutorialManager.logTutorialFlow === 'function'
             ) {
-                window.universalTutorialManager.logPromptFlow(step, payload);
+                window.universalTutorialManager.logTutorialFlow(step, payload);
                 return;
             }
-            if (typeof window.logTutorialPromptFlow === 'function') {
-                window.logTutorialPromptFlow(step, payload);
+            if (typeof window.logTutorialFlow === 'function') {
+                window.logTutorialFlow(step, payload);
                 return;
             }
             console.log(flowPrefix + ' ' + step, payload);
@@ -410,8 +410,7 @@
 
         function translate(key, fallback) {
             // window.safeT 仅按 typeof === 'string' 判断，i18next 缺 key 时
-            // 会把原始 key 作为字符串返回，导致 'tutorialPrompt.title' 这种
-            // 裸 key 被当成翻译显示给用户。这里显式检测 key-literal 回退，
+            // 会把原始 key 作为字符串返回。这里显式检测 key-literal 回退，
             // 保证 call site 给的中文 fallback 能真正生效。
             const fallbackText = typeof fallback === 'string' ? fallback : key;
             if (typeof window.t === 'function') {
