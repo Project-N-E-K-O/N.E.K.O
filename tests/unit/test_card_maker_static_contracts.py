@@ -103,6 +103,17 @@ def test_character_card_import_keeps_non_blocking_progress_visible_until_complet
     assert "live2d.modelLoadFailed" in previews
 
 
+def test_workshop_publish_opens_item_in_system_browser():
+    core = (CHARACTER_CARD_MANAGER_JS_DIR / "core-and-upload.js").read_text(encoding="utf-8")
+
+    assert "function openPublishedWorkshopItem(webUrl)" in core
+    assert "window.electronShell.openExternal(webUrl)" in core
+    assert "window.open(webUrl, '_blank', 'noopener,noreferrer')" in core
+    assert "openPublishedWorkshopItem(webUrl);" in core
+    assert "ActivateGameOverlayToWebPage" not in core
+    assert "steam://url/CommunityFilePage" not in core
+
+
 def test_model_manager_parts_load_in_dependency_order():
     discovered_names = {path.name for path in MODEL_MANAGER_JS_DIR.glob("*.js")}
     assert discovered_names == set(MODEL_MANAGER_PART_NAMES)

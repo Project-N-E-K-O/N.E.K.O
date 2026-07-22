@@ -1241,6 +1241,43 @@
                 });
             }
 
+            function initializeGuideExternalLinks() {
+                if (!guideContent) return;
+                guideContent.addEventListener('click', (event) => {
+                    const target = event.target;
+                    const link = target && typeof target.closest === 'function'
+                        ? target.closest('a[href]')
+                        : null;
+                    if (!link || !guideContent.contains(link)) return;
+
+                    let externalUrl;
+                    try {
+                        externalUrl = new URL(link.getAttribute('href'), window.location.href);
+                    } catch (_) {
+                        return;
+                    }
+                    if (!['http:', 'https:'].includes(externalUrl.protocol)) return;
+                    if (externalUrl.origin === window.location.origin) return;
+
+                    event.preventDefault();
+                    const href = externalUrl.toString();
+                    if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                        Promise.resolve(window.electronShell.openExternal(href))
+                            .then((result) => {
+                                if (result && result.success === false) {
+                                    console.warn('[OpenClawGuide] Failed to open external link:', result.error || 'Unknown error');
+                                }
+                            })
+                            .catch((error) => {
+                                console.warn('[OpenClawGuide] Failed to open external link:', error);
+                            });
+                        return;
+                    }
+
+                    window.open(href, '_blank', 'noopener,noreferrer');
+                });
+            }
+
             function renderGuideContent() {
                 guideContent.innerHTML = renderMarkdown(guideMarkdown);
                 buildGuideToc();
@@ -1288,6 +1325,7 @@
                 initializeCloseButton();
                 initializeGuideTocScroll();
                 initializeGuideContentScrollbar();
+                initializeGuideExternalLinks();
                 applyLocalizedChrome();
                 await loadGuideContent();
             }
