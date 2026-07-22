@@ -156,9 +156,14 @@ def test_packaged_facts_modules_use_package_qualified_imports():
     ],
 )
 def test_forge_main_active_character_url_tracks_main_server_port(
-    monkeypatch, environment, expected_port
+    monkeypatch, tmp_path, environment, expected_port
 ):
     server = importlib.import_module("local_server.card_forge_server.server")
+    monkeypatch.setattr(
+        server,
+        "_main_server_port_config_path",
+        lambda: tmp_path / "missing-port-config.json",
+    )
     for key in (
         "NEKO_MAIN_ACTIVE_CHARACTER_URL",
         "NEKO_MAIN_SERVER_PORT",
@@ -170,6 +175,25 @@ def test_forge_main_active_character_url_tracks_main_server_port(
 
     assert server._resolve_main_server_active_character_url() == (
         f"http://127.0.0.1:{expected_port}/card-forge/active-character"
+    )
+
+
+def test_forge_main_active_character_url_uses_electron_port_config(
+    monkeypatch, tmp_path
+):
+    server = importlib.import_module("local_server.card_forge_server.server")
+    port_config = tmp_path / "port_config.json"
+    port_config.write_text('{"MAIN_SERVER_PORT": 43103}', encoding="utf-8")
+    monkeypatch.setattr(server, "_main_server_port_config_path", lambda: port_config)
+    for key in (
+        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
+        "NEKO_MAIN_SERVER_PORT",
+        "MAIN_SERVER_PORT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    assert server._resolve_main_server_active_character_url() == (
+        "http://127.0.0.1:43103/card-forge/active-character"
     )
 
 

@@ -12,6 +12,7 @@ import json
 import logging
 import mimetypes
 import os
+import platform
 import sys
 import time
 import uuid
@@ -189,13 +190,39 @@ def _read_card_face_data_url(name: str) -> str:
     return data_url
 
 
+def _main_server_port_config_path() -> Path:
+    """Return Electron's platform-specific runtime port configuration path."""
+    home = Path.home()
+    system = platform.system()
+    if system == "Windows":
+        base = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+    elif system == "Darwin":
+        base = home / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    return base / "N.E.K.O" / "port_config.json"
+
+
+def _read_main_server_port_config() -> int | None:
+    """Read MAIN_SERVER_PORT written by Electron, ignoring invalid snapshots."""
+    try:
+        payload = json.loads(
+            _main_server_port_config_path().read_text(encoding="utf-8")
+        )
+        raw = payload.get("MAIN_SERVER_PORT") if isinstance(payload, dict) else None
+        candidate = int(raw)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return candidate if 1 <= candidate <= 65535 else None
+
+
 def _resolve_main_server_active_character_url() -> str:
     """Resolve the active-character endpoint using the main-server port precedence."""
     override = os.environ.get("NEKO_MAIN_ACTIVE_CHARACTER_URL", "").strip()
     if override:
         return override
 
-    port = 48911
+    port: int | None = None
     for key in ("NEKO_MAIN_SERVER_PORT", "MAIN_SERVER_PORT"):
         raw = os.environ.get(key, "").strip()
         if not raw:
@@ -207,6 +234,8 @@ def _resolve_main_server_active_character_url() -> str:
         if 1 <= candidate <= 65535:
             port = candidate
             break
+    if port is None:
+        port = _read_main_server_port_config() or 48911
     return f"http://127.0.0.1:{port}/card-forge/active-character"
 
 
