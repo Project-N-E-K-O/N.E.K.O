@@ -1146,17 +1146,8 @@ class DetectorRuntime:
                         self._candidate_generation,
                     )
                 )
-                bound_turn = self._bound_turns.get(candidate)
-                if bound_turn is None:
+                if not await self._publish_bound_completion(candidate, identity):
                     self._deferred_completions[candidate] = identity
-                    return
-                await self._on_event(
-                    DetectorTurnEvent(
-                        ingress=identity,
-                        bound_turn=bound_turn,
-                        kind="complete",
-                    )
-                )
 
             self._semantic_adapter = _VoiceTurnAdapter(
                 vad=self._vad,
@@ -1230,15 +1221,27 @@ class DetectorRuntime:
         bound = BoundDetectorTurn(candidate, turn_token)
         self._bound_turns[candidate] = bound
         deferred = self._deferred_completions.pop(candidate, None)
-        if deferred is not None and self._on_event is not None:
+        if deferred is not None:
+            await self._publish_bound_completion(candidate, deferred)
+        return bound
+
+    async def _publish_bound_completion(
+        self,
+        candidate: DetectorCandidateKey,
+        identity: DetectorIngressIdentity,
+    ) -> bool:
+        bound_turn = self._bound_turns.pop(candidate, None)
+        if bound_turn is None:
+            return False
+        if self._on_event is not None:
             await self._on_event(
                 DetectorTurnEvent(
-                    ingress=deferred,
-                    bound_turn=bound,
+                    ingress=identity,
+                    bound_turn=bound_turn,
                     kind="complete",
                 )
             )
-        return bound
+        return True
 
     async def force_speech_started(
         self,
