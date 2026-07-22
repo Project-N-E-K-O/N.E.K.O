@@ -55,6 +55,7 @@ from .lifecycle import (
     VoiceTransportToken,
 )
 from .provider_policy import resolve_provider_policy
+from .speaker_shadow import SpeakerShadowRuntime
 from .transcript import (
     TranscriptDispatcher,
     TranscriptEnvelope,
@@ -178,6 +179,9 @@ class IndependentAsrRuntime:
         self._asr_detector: DetectorRuntime | None = None
         self._asr_smart_turn_lease: SmartTurnLease | None = None
         self._asr_session_factory = None
+        self._speaker_shadow_factory: (
+            Callable[[], SpeakerShadowRuntime | None] | None
+        ) = None
         self._asr_transport_selection = None
         self._asr_transport_task: asyncio.Task[None] | None = None
         self._asr_transport_lock = asyncio.Lock()
@@ -697,6 +701,23 @@ class IndependentAsrRuntime:
             self._asr_provider or "unknown",
         )
 
+    async def _create_speaker_shadow(self) -> SpeakerShadowRuntime | None:
+        """Build the private observation runtime without risking ASR startup."""
+
+        factory = self._speaker_shadow_factory
+        if factory is None:
+            return None
+        try:
+            return await asyncio.to_thread(factory)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "[%s] speaker shadow factory failed; continuing without shadow",
+                self.display_name,
+            )
+            return None
+
     async def start(
         self,
         *,
@@ -705,7 +726,6 @@ class IndependentAsrRuntime:
     ) -> AsrStartResult:
         """Resolve and start one independent-ASR route."""
 
-        self._ensure_asr_runtime_state()
         await self._close_independent_asr()
         self._asr_audio_bytes = 0
         self._voice_input_resource_optimization_enabled = bool(
@@ -863,6 +883,7 @@ class IndependentAsrRuntime:
                 if not accepted:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
+            speaker_shadow = await self._create_speaker_shadow()
             detector_ref = DetectorRuntime(
                 provider_policy=policy,
                 resource_optimization_enabled=(
@@ -874,6 +895,7 @@ class IndependentAsrRuntime:
                     else None
                 ),
                 on_event=on_detector_event,
+                speaker_shadow=speaker_shadow,
             )
             self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate

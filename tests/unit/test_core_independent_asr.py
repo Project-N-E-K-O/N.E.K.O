@@ -100,6 +100,24 @@ class _Runtime(AsrRuntimeMixin):
         object.__setattr__(self, name, value)
 
 
+async def test_speaker_shadow_factory_is_private_default_off_and_fail_open() -> None:
+    runtime = _Runtime()
+
+    assert runtime._speaker_shadow_factory is None
+    assert await runtime._create_speaker_shadow() is None
+
+    sentinel = object()
+    factory = MagicMock(return_value=sentinel)
+    runtime._asr_runtime._speaker_shadow_factory = factory
+    assert await runtime._create_speaker_shadow() is sentinel
+    factory.assert_called_once_with()
+
+    runtime._asr_runtime._speaker_shadow_factory = MagicMock(
+        side_effect=RuntimeError("missing model")
+    )
+    assert await runtime._create_speaker_shadow() is None
+
+
 class _TestSmartTurnLease:
     def __init__(self, token) -> None:
         self.token = token
@@ -2532,6 +2550,9 @@ async def test_start_uses_current_core_route_only_after_provider_ready(
     asr.connect = AsyncMock()
     asr.close = AsyncMock()
     factory = MagicMock(return_value=asr)
+    speaker_shadow = object()
+    speaker_shadow_factory = MagicMock(return_value=speaker_shadow)
+    runtime._asr_runtime._speaker_shadow_factory = speaker_shadow_factory
     monkeypatch.setattr(
         core_module,
         "aload_global_conversation_settings",
@@ -2557,6 +2578,8 @@ async def test_start_uses_current_core_route_only_after_provider_ready(
     assert runtime._asr_session is asr
     assert runtime._asr_provider == "gemini"
     assert runtime._asr_route_mode == "independent"
+    assert runtime._asr_detector._speaker_shadow is speaker_shadow
+    speaker_shadow_factory.assert_called_once_with()
     assert factory.call_args.args == ("gemini",)
     assert factory.call_args.kwargs["selection"].provider_key == "gemini"
 
