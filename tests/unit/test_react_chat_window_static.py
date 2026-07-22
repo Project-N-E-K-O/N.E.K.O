@@ -1952,6 +1952,26 @@ def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
     assert host_duration.group(1) == css_duration.group(1)
 
 
+def test_queued_surface_mode_preserves_compact_transition_options():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    flush_block = script.split("function flushPendingChatSurfaceModeIfNeeded()", 1)[1].split(
+        "function setMinimized(nextMinimized)",
+        1,
+    )[0]
+
+    assert "pendingChatSurfaceMode = {" in set_mode_block
+    assert "mode: normalized," in set_mode_block
+    assert "transitionOptions: transitionOptions" in set_mode_block
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in flush_block
+    assert "var targetMode = pendingSurfaceMode.mode;" in flush_block
+    assert "setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);" in flush_block
+
+
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

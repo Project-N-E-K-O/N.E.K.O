@@ -1242,7 +1242,10 @@
         }
 
         if (I.isMinimizeTransitioning) {
-            I.pendingChatSurfaceMode = normalized;
+            I.pendingChatSurfaceMode = {
+                mode: normalized,
+                transitionOptions: transitionOptions
+            };
             return previousMode;
         }
         I.pendingChatSurfaceMode = null;
@@ -1326,12 +1329,13 @@
     function flushPendingChatSurfaceModeIfNeeded() {
         if (I.isMinimizeTransitioning || !I.pendingChatSurfaceMode) return;
 
-        var targetMode = I.pendingChatSurfaceMode;
+        var pendingSurfaceMode = I.pendingChatSurfaceMode;
         I.pendingChatSurfaceMode = null;
+        var targetMode = pendingSurfaceMode.mode;
         if (targetMode === I.getCurrentChatSurfaceMode()) {
             return;
         }
-        I.setChatSurfaceMode(targetMode);
+        I.setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);
     }
 
     function setMinimized(nextMinimized) {
