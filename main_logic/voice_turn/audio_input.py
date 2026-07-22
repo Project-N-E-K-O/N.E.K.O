@@ -41,6 +41,32 @@ class VoiceInputAudioPipeline:
         self._lock = asyncio.Lock()
         self._closed = False
 
+    async def _process_chunk_cancellation_safe(
+        self,
+        processor: _AudioProcessorProtocol,
+        pcm16: bytes,
+    ) -> bytes:
+        processing_task = asyncio.create_task(
+            asyncio.to_thread(processor.process_chunk, pcm16)
+        )
+        cancellation: asyncio.CancelledError | None = None
+        while True:
+            try:
+                processed = await asyncio.shield(processing_task)
+            except asyncio.CancelledError as exc:
+                if processing_task.cancelled():
+                    raise
+                if cancellation is None:
+                    cancellation = exc
+                continue
+            except Exception:
+                if cancellation is not None:
+                    raise cancellation
+                raise
+            if cancellation is not None:
+                raise cancellation
+            return processed
+
     async def process(
         self,
         pcm16: bytes,
@@ -65,7 +91,10 @@ class VoiceInputAudioPipeline:
                 raise RuntimeError("VOICE_AUDIO_PIPELINE_CLOSED")
             if self._processor is None:
                 self._processor = self._processor_factory()
-            processed = await asyncio.to_thread(self._processor.process_chunk, pcm16)
+            processed = await self._process_chunk_cancellation_safe(
+                self._processor,
+                pcm16,
+            )
             probability = float(self._processor.speech_probability)
             rnnoise_available = bool(
                 getattr(
