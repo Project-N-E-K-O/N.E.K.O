@@ -33,6 +33,7 @@ def test_shared_window_controls_bind_only_explicit_hidden_pin_buttons():
     assert "PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]" in script
     assert "function schedulePinStateRefreshRetry(generation, retryIndex)" in script
     assert "if (!normalizedState.available)" in script
+    assert "window.addEventListener('focus', () => refreshPinState())" in script
     assert "pinButton.hidden = !available" in script
     assert "pinButton.classList.toggle('is-pinned', pinned)" in script
     assert "common.pinWindow" in script

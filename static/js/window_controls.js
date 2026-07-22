@@ -243,7 +243,7 @@
         }
         if (!window.__nekoWindowControlsFocusBound) {
             window.__nekoWindowControlsFocusBound = true;
-            window.addEventListener('focus', refreshPinState);
+            window.addEventListener('focus', () => refreshPinState());
         }
         if (!window.__nekoWindowControlsLocaleBound) {
             window.__nekoWindowControlsLocaleBound = true;
