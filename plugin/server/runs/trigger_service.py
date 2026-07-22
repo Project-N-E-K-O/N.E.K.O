@@ -18,6 +18,35 @@ from plugin.settings import PLUGIN_EXECUTION_TIMEOUT
 
 logger = get_logger("server.runs.trigger")
 _TIMEOUT_UNSET = object()
+_REDACTED_ARG_VALUE = "<redacted>"
+_SENSITIVE_ARG_NAMES = frozenset(
+    {
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "cookie",
+        "cookies",
+        "credential",
+        "credentials",
+        "sessdata",
+        "bili_jct",
+        "buvid3",
+        "dedeuserid",
+        "ac_time_value",
+        "authorization",
+        "api_key",
+    }
+)
+_SENSITIVE_ARG_SUFFIXES = (
+    "_password",
+    "_passwd",
+    "_secret",
+    "_token",
+    "_cookie",
+    "_credential",
+    "_api_key",
+)
 
 
 class TriggerResult(BaseModel):
@@ -51,15 +80,97 @@ class HostHealthContract(Protocol):
 
 @runtime_checkable
 class TriggerHostContract(Protocol):
-    async def trigger(self, entry_id: str, args: dict[str, object], timeout: float | None) -> object: ...
+    async def trigger(
+        self, entry_id: str, args: dict[str, object], timeout: float | None
+    ) -> object: ...
 
     def health_check(self) -> HostHealthContract: ...
+
+
+def _entry_write_only_arguments(plugin_id: str, entry_id: str) -> set[str]:
+    """Resolve JSON-Schema fields that must not be copied into run events."""
+    try:
+        handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=1.0)
+    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError):
+        return set()
+
+    prefix_dot = f"{plugin_id}."
+    prefix_colon = f"{plugin_id}:plugin_entry:"
+    for event_key_obj, handler_obj in handlers_snapshot.items():
+        if not isinstance(event_key_obj, str):
+            continue
+        if not (
+            event_key_obj.startswith(prefix_dot)
+            or event_key_obj.startswith(prefix_colon)
+        ):
+            continue
+        meta = getattr(handler_obj, "meta", None)
+        if getattr(meta, "event_type", None) != "plugin_entry":
+            continue
+        if getattr(meta, "id", None) != entry_id:
+            continue
+        schema = getattr(meta, "input_schema", None)
+        if not isinstance(schema, Mapping):
+            return set()
+        properties = schema.get("properties")
+        if not isinstance(properties, Mapping):
+            return set()
+        return {
+            str(name)
+            for name, definition in properties.items()
+            if isinstance(definition, Mapping)
+            and (
+                definition.get("writeOnly") is True
+                or definition.get("x-sensitive") is True
+            )
+        }
+    return set()
+
+
+def _argument_name_is_sensitive(name: object) -> bool:
+    normalized = str(name or "").strip().lower().replace("-", "_")
+    return normalized in _SENSITIVE_ARG_NAMES or normalized.endswith(
+        _SENSITIVE_ARG_SUFFIXES
+    )
+
+
+def _redact_trigger_args(
+    *,
+    plugin_id: str,
+    entry_id: str,
+    args: Mapping[str, object],
+) -> dict[str, object]:
+    """Return a copy safe for event records while leaving execution args intact."""
+    write_only = _entry_write_only_arguments(plugin_id, entry_id)
+
+    def redact_value(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {
+                str(key): (
+                    _REDACTED_ARG_VALUE
+                    if str(key) in write_only or _argument_name_is_sensitive(key)
+                    else redact_value(item)
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [redact_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [redact_value(item) for item in value]
+        return value
+
+    redacted = redact_value(args)
+    return redacted if isinstance(redacted, dict) else {}
 
 
 def _enqueue_trigger_event(event: Mapping[str, object]) -> None:
     normalized = dict(event)
     trace_id_obj = normalized.get("trace_id")
-    trace_id = trace_id_obj if isinstance(trace_id_obj, str) and trace_id_obj else str(uuid.uuid4())
+    trace_id = (
+        trace_id_obj
+        if isinstance(trace_id_obj, str) and trace_id_obj
+        else str(uuid.uuid4())
+    )
     normalized["trace_id"] = trace_id
 
     event_id_obj = normalized.get("event_id")
@@ -88,11 +199,20 @@ def _enqueue_trigger_event(event: Mapping[str, object]) -> None:
         logger.debug("failed to append trigger event record")
 
 
-def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | None, dict[str, object] | None]:
+def _resolve_host(
+    plugin_id: str, trace_id: str
+) -> tuple[TriggerHostContract | None, dict[str, object] | None]:
     try:
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
         hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+    except (
+        RuntimeError,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+    ) as exc:
         logger.warning(
             "failed to get host snapshots for plugin {}: err_type={}, err={}",
             plugin_id,
@@ -106,7 +226,9 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
             retriable=True,
             trace_id=trace_id,
         )
-    if not isinstance(plugins_snapshot, Mapping) or not isinstance(hosts_snapshot, Mapping):
+    if not isinstance(plugins_snapshot, Mapping) or not isinstance(
+        hosts_snapshot, Mapping
+    ):
         logger.warning(
             "invalid snapshot shape for plugin {}: plugins_type={}, hosts_type={}",
             plugin_id,
@@ -124,11 +246,7 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
     host_obj = hosts_snapshot.get(plugin_id)
     if not isinstance(host_obj, TriggerHostContract):
         plugin_registered = plugin_id in plugins_snapshot
-        running_plugins = [
-            key
-            for key in hosts_snapshot.keys()
-            if isinstance(key, str)
-        ]
+        running_plugins = [key for key in hosts_snapshot.keys() if isinstance(key, str)]
         if plugin_registered:
             return None, fail(
                 ErrorCode.NOT_READY,
@@ -140,11 +258,7 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
                 retriable=True,
                 trace_id=trace_id,
             )
-        known_plugins = [
-            key
-            for key in plugins_snapshot.keys()
-            if isinstance(key, str)
-        ]
+        known_plugins = [key for key in plugins_snapshot.keys() if isinstance(key, str)]
         return None, fail(
             ErrorCode.NOT_FOUND,
             f"Plugin '{plugin_id}' is not found/registered",
@@ -154,7 +268,14 @@ def _resolve_host(plugin_id: str, trace_id: str) -> tuple[TriggerHostContract | 
 
     try:
         health = host_obj.health_check()
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+    except (
+        RuntimeError,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+    ) as exc:
         logger.warning(
             "health check failed for plugin {}: err_type={}, err={}",
             plugin_id,
@@ -226,7 +347,10 @@ async def _execute_trigger(
         for event_key_obj, handler_obj in handlers_snapshot.items():
             if not isinstance(event_key_obj, str):
                 continue
-            if not (event_key_obj.startswith(prefix_dot) or event_key_obj.startswith(prefix_colon)):
+            if not (
+                event_key_obj.startswith(prefix_dot)
+                or event_key_obj.startswith(prefix_colon)
+            ):
                 continue
             meta = getattr(handler_obj, "meta", None)
             if getattr(meta, "event_type", None) != "plugin_entry":
@@ -235,7 +359,14 @@ async def _execute_trigger(
                 continue
             resolved_timeout = resolve_entry_timeout(meta, resolved_timeout)
             break
-    except (RuntimeError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+    except (
+        RuntimeError,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+    ) as exc:
         logger.debug(
             "failed to resolve per-entry timeout for plugin {} entry {}: err_type={}, err={}",
             plugin_id,
@@ -257,13 +388,21 @@ async def _execute_trigger(
 
     try:
         response = await host.trigger(entry_id, args, timeout=resolved_timeout)
-        logger.debug("plugin trigger response received: plugin_id={}, entry_id={}", plugin_id, entry_id)
+        logger.debug(
+            "plugin trigger response received: plugin_id={}, entry_id={}",
+            plugin_id,
+            entry_id,
+        )
         return response
     except (TimeoutError, asyncio.TimeoutError):
         return fail(
             ErrorCode.TIMEOUT,
             "Plugin execution timed out",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "timeout": resolved_timeout},
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "timeout": resolved_timeout,
+            },
             retriable=True,
             trace_id=trace_id,
         )
@@ -271,14 +410,22 @@ async def _execute_trigger(
         return fail(
             ErrorCode.INTERNAL,
             str(exc),
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(exc).__name__},
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(exc).__name__,
+            },
             trace_id=trace_id,
         )
     except (ConnectionError, OSError) as exc:
         return fail(
             ErrorCode.NOT_READY,
             "Communication error with plugin",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(exc).__name__},
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(exc).__name__,
+            },
             retriable=True,
             trace_id=trace_id,
         )
@@ -286,19 +433,29 @@ async def _execute_trigger(
         return fail(
             ErrorCode.VALIDATION_ERROR,
             "Invalid request parameters",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(exc).__name__},
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(exc).__name__,
+            },
             trace_id=trace_id,
         )
     except RuntimeError as exc:
         return fail(
             ErrorCode.INTERNAL,
             "An internal error occurred",
-            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(exc).__name__},
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(exc).__name__,
+            },
             trace_id=trace_id,
         )
 
 
-def _normalize_plugin_response(plugin_response: object, trace_id: str) -> dict[str, object]:
+def _normalize_plugin_response(
+    plugin_response: object, trace_id: str
+) -> dict[str, object]:
     if not is_envelope(plugin_response):
         if isinstance(plugin_response, Mapping):
             return ok(data=dict(plugin_response), trace_id=trace_id)
@@ -326,13 +483,18 @@ async def trigger_plugin(
 ) -> TriggerResult:
     trace_id = str(uuid.uuid4())
     received_at = now_iso()
+    redacted_args = _redact_trigger_args(
+        plugin_id=plugin_id,
+        entry_id=entry_id,
+        args=args,
+    )
 
     _enqueue_trigger_event(
         {
             "type": "plugin_triggered",
             "plugin_id": plugin_id,
             "entry_id": entry_id,
-            "args": dict(args),
+            "args": redacted_args,
             "task_id": task_id,
             "client": client_host,
             "received_at": received_at,
@@ -346,7 +508,7 @@ async def trigger_plugin(
             success=False,
             plugin_id=plugin_id,
             entry_id=entry_id,
-            args=dict(args),
+            args=redacted_args,
             plugin_response=resolve_error,
             received_at=received_at,
         )
@@ -363,7 +525,7 @@ async def trigger_plugin(
         success=bool(normalized_response.get("success")),
         plugin_id=plugin_id,
         entry_id=entry_id,
-        args=dict(args),
+        args=redacted_args,
         plugin_response=normalized_response,
         received_at=received_at,
     )
