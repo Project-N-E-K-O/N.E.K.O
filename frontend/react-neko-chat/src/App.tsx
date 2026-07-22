@@ -3258,8 +3258,6 @@ function CompactChatApp({
       && workAreaWidth > 0
       && Number.isFinite(workAreaHeight)
       && workAreaHeight > 0;
-    const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches === true;
-    if (!isMobileViewport && !hasDesktopWorkArea) return 'default';
     const fanElement = compactInputToolFanRef.current;
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
@@ -3302,30 +3300,34 @@ function CompactChatApp({
       prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
     }
 
-    const wheelLayoutFitsViewport = (
+    const getWheelLayoutViewportOverflow = (
       slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
       options?: { axis?: 'both' | 'horizontal' },
-    ) => slots.every(({ angleDeg, scale }) => {
+    ) => slots.reduce((totalOverflow, { angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      const fitsHorizontally = itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX;
-      if (options?.axis === 'horizontal') return fitsHorizontally;
-      return fitsHorizontally
-        && itemCenterY - halfSize >= minY
-        && itemCenterY + halfSize <= maxY;
-    });
+      const horizontalOverflow = Math.max(0, minX - (itemCenterX - halfSize))
+        + Math.max(0, (itemCenterX + halfSize) - maxX);
+      if (options?.axis === 'horizontal') return totalOverflow + horizontalOverflow;
+      const verticalOverflow = Math.max(0, minY - (itemCenterY - halfSize))
+        + Math.max(0, (itemCenterY + halfSize) - maxY);
+      return totalOverflow + horizontalOverflow + verticalOverflow;
+    }, 0);
+
+    const defaultOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelDefaultVisibleSlots);
+    const viewportFitOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots);
 
     if (
       prefersViewportFitFromBottomGap
-      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+      && getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' }) === 0
     ) {
       return 'viewport-fit';
     }
-    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
-    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    if (defaultOverflow === 0) return 'default';
+    if (viewportFitOverflow === 0) return 'viewport-fit';
+    if (!hasDesktopWorkArea && viewportFitOverflow < defaultOverflow) return 'viewport-fit';
     return 'default';
   }, []);
 

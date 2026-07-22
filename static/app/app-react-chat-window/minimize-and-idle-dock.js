@@ -1225,6 +1225,8 @@
     }
 
     I.setChatSurfaceMode = function setChatSurfaceMode(nextMode) {
+        var options = arguments.length > 1 ? arguments[1] : null;
+        var transitionOptions = options && typeof options === 'object' ? options : {};
         var normalized = I.coerceChatSurfaceModeForHost(nextMode);
         var previousMode = I.getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
@@ -1281,7 +1283,24 @@
         I.renderWindow();
 
         if (nextMinimized !== previousMinimized) {
-            setMinimized(nextMinimized);
+            // compact 按钮路径已在 React surface 内完成毛线球按压与右→左擦除；这里只落到最终球态。
+            // idle dock、公开 API 和 full surface 等其他入口继续走既有调用及整窗缩放路径。
+            if (transitionOptions.skipShellCollapseAnimation === true
+                && nextMinimized
+                && previousMode === 'compact'
+                && !I.isElectronChatWindow()
+                && !window.__LANLAN_IS_ELECTRON_PET__) {
+                setMinimized(nextMinimized, { skipShellCollapseAnimation: true });
+            } else if (previousMinimized
+                && normalized === 'compact'
+                && !I.isElectronChatWindow()
+                && !window.__LANLAN_IS_ELECTRON_PET__) {
+                // React compact surface 自带 minimized→compact 展开擦除；Web 不再叠加 full shell
+                // 的从球放大动画，否则会先按通用左下锚点向上展开、随后再回到 compact 锚点。
+                setMinimized(nextMinimized, { skipShellExpandAnimation: true });
+            } else {
+                setMinimized(nextMinimized);
+            }
         } else {
             I.syncChatSurfaceModeUI();
         }
@@ -1314,6 +1333,8 @@
     }
 
     function setMinimized(nextMinimized) {
+        var options = arguments.length > 1 ? arguments[1] : null;
+        var transitionOptions = options && typeof options === 'object' ? options : {};
         var shell = I.getShell();
         if (!shell) return;
 
@@ -1332,6 +1353,62 @@
             shell.style.removeProperty('opacity');
             I.isMinimizeTransitioning = false;
             I.syncChatSurfaceModeUI();
+            return;
+        }
+
+        if (!willMinimize && transitionOptions.skipShellExpandAnimation === true) {
+            // minimized class 仍在时先隐藏并恢复最终 compact 几何；同一任务末尾再显示，
+            // 避免 React 重建 compact surface 与宿主位置校正之间出现一帧错误位置。
+            var previousCompactRestoreVisibility = shell.style.visibility;
+            shell.style.visibility = 'hidden';
+            shell.classList.remove('is-collapsing', 'is-expanding');
+            shell.style.transform = 'none';
+            shell.style.removeProperty('transform-origin');
+            shell.style.removeProperty('width');
+            shell.style.removeProperty('height');
+            shell.style.removeProperty('left');
+            shell.style.removeProperty('top');
+            shell.style.removeProperty('right');
+            shell.style.removeProperty('bottom');
+            shell.classList.remove('is-mobile-content-capped', 'is-minimized');
+            I.savedShellSize = null;
+            I.savedShellPosition = null;
+            I.syncCompactSurfaceAnchor();
+            I.scheduleMobileContentLayout();
+            I.syncChatSurfaceModeUI();
+            if (previousCompactRestoreVisibility) {
+                shell.style.visibility = previousCompactRestoreVisibility;
+            } else {
+                shell.style.removeProperty('visibility');
+            }
+
+            var compactExpandHandled = false;
+            var compactExpandTimer = null;
+            var finishCompactExpand = function () {
+                if (compactExpandHandled) return;
+                compactExpandHandled = true;
+                clearTimeout(compactExpandTimer);
+                activeAnimationCleanup = null;
+                I.isMinimizeTransitioning = false;
+                flushPendingChatSurfaceModeIfNeeded();
+            };
+            var reduceCompactExpandMotion = false;
+            try {
+                reduceCompactExpandMotion = !!(
+                    window.matchMedia
+                    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                );
+            } catch (e) {}
+            if (reduceCompactExpandMotion) {
+                finishCompactExpand();
+            } else {
+                // React 的 neko-compact-expand-wipe 为 300ms；多留一帧余量后释放状态锁。
+                compactExpandTimer = window.setTimeout(finishCompactExpand, 340);
+                activeAnimationCleanup = function () {
+                    clearTimeout(compactExpandTimer);
+                    compactExpandHandled = true;
+                };
+            }
             return;
         }
 
@@ -1362,6 +1439,27 @@
             var target = getMinimizedTarget(rect);
             var targetLeft = target.left;
             var targetTop = target.top;
+
+            if (transitionOptions.skipShellCollapseAnimation === true) {
+                // compact surface 已经播完自己的擦除动画。直接切换最终几何，避免再播放
+                // full surface 专用的整窗 scale transition（窄屏下尤其明显）。
+                shell.classList.remove('is-collapsing', 'is-expanding');
+                shell.style.transform = 'none';
+                shell.style.removeProperty('transform-origin');
+                shell.style.removeProperty('width');
+                shell.style.removeProperty('height');
+                shell.classList.remove('is-mobile-content-capped');
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
+                shell.style.left = targetLeft + 'px';
+                shell.style.top = targetTop + 'px';
+                shell.classList.add('is-minimized');
+                I.applyMinimizedBallSkin(ensureMinimizedBallIcon());
+                I.isMinimizeTransitioning = false;
+                I.syncChatSurfaceModeUI();
+                flushPendingChatSurfaceModeIfNeeded();
+                return;
+            }
 
             // 3. 计算缩放比，并反推 transform-origin，使缩放后的 shell
             //    视觉终点落在 target 上。fallback 的 shell 左下角目标会自然得到

@@ -2851,14 +2851,16 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
 
     if (isMobile) {
         model.anchor.set(0.5, 0.1);
+        const viewportWidth = Math.max(window.innerWidth || this.pixi_app.renderer.screen.width || 1, 1);
+        const viewportHeight = Math.max(window.innerHeight || this.pixi_app.renderer.screen.height || 1, 1);
         const scale = Math.min(
             0.5,
-            window.innerHeight * 1.3 / 4000,
-            window.innerWidth * 1.2 / 2000
+            viewportHeight * 1.3 / 4000,
+            viewportWidth * 1.2 / 2000
         );
         model.scale.set(scale);
-        model.x = this.pixi_app.renderer.screen.width * 0.5;
-        model.y = this.pixi_app.renderer.screen.height * 0.28;
+        model.x = viewportWidth * 0.5;
+        model.y = viewportHeight * 0.28;
     } else {
         model.anchor.set(0.65, 0.75);
         if (preferences && preferences.scale && preferences.position) {
