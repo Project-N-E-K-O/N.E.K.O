@@ -87,6 +87,31 @@ def test_only_requested_top_level_templates_define_pin_controls():
         assert 'data-neko-window-control="pin"' not in read_text(path), path
 
 
+def test_pin_templates_version_shared_window_control_and_locale_assets():
+    for path in (
+        "templates/voice_clone.html",
+        "templates/api_key_settings.html",
+        "templates/character_card_manager.html",
+        "templates/memory_browser.html",
+        "templates/cookies_login.html",
+        "templates/cloudsave_manager.html",
+        "templates/jukebox.html",
+    ):
+        source = read_text(path)
+        assert "/static/i18n-i18next.js?v={{ static_asset_version" in source, path
+        assert "/static/css/window_controls.css?v={{ static_asset_version" in source, path
+        assert "/static/js/window_controls.js?v={{ static_asset_version" in source, path
+
+    routes = read_text("main_routers/pages_router.py")
+    jukebox_route = re.search(
+        r"async def get_jukebox_page\(request: Request\):(?P<body>[\s\S]*?)"
+        r"(?=\n@router\.get)",
+        routes,
+    )
+    assert jukebox_route
+    assert "**_static_assets_ctx()" in jukebox_route.group("body")
+
+
 def test_jukebox_has_an_explicit_pin_before_minimize_without_touching_manager():
     shell = read_text("static/jukebox/jukebox/shell.js")
     template = read_text("templates/jukebox.html")
@@ -142,6 +167,14 @@ def test_plugin_manager_pin_control_and_bridge_contract():
     assert 'v-if="pinAvailable"' in component
     assert "api.getPinState" in component
     assert "api.togglePin" in component
+    assert ':disabled="pinPending"' in component
+    assert "if (pinPending.value) return" in component
+    assert "PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]" in component
+    assert "function schedulePinStateRetry(generation: number, retryIndex: number)" in component
+    assert "const generation = ++pinRequestGeneration" in component
+    assert "generation === pinRequestGeneration" in component
+    assert "clearPinStateRetry()" in component
+    assert "pinDisposed = true" in component
     assert "pinAvailable.value = !!state.available" in component
     assert "isPinned.value = !!state.pinned" in component
     assert "@keyframes neko-plugin-pin-lock" in component

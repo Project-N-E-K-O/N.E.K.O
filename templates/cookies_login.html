@@ -7,10 +7,10 @@
     <title data-i18n="cookiesLogin.title">N.E.K.O 凭证控制中心</title>
     <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
     <script src="/static/libs/purify.js"></script>
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/theme-manager.js"></script>
-    <link rel="stylesheet" href="/static/css/window_controls.css">
-    <script src="/static/js/window_controls.js" defer></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
     <style>
         :root {
             --primary: #40c5f1;

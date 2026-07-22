@@ -14,6 +14,7 @@
           :title="pinLabel"
           :aria-label="pinLabel"
           :aria-pressed="isPinned"
+          :disabled="pinPending"
           @click="togglePin"
         >
           <span class="titlebar-pin-icon" aria-hidden="true"></span>
@@ -87,9 +88,14 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const PIN_STATE_RETRY_DELAYS_MS = [50, 150, 350, 750]
 const isMaximized = ref(false)
 const pinAvailable = ref(false)
 const isPinned = ref(false)
+const pinPending = ref(false)
+let pinRequestGeneration = 0
+let pinRetryTimer: number | null = null
+let pinDisposed = false
 const pinLabel = computed(() => isPinned.value ? t('common.unpinWindow') : t('common.pinWindow'))
 const maximizeLabel = computed(() => isMaximized.value ? t('common.restore') : t('common.maximize'))
 
@@ -117,27 +123,71 @@ function applyPinState(state: NekoWindowControlResult | null | undefined) {
   isPinned.value = !!state.pinned
 }
 
-async function refreshPinState() {
+function clearPinStateRetry() {
+  if (pinRetryTimer === null) return
+  window.clearTimeout(pinRetryTimer)
+  pinRetryTimer = null
+}
+
+function schedulePinStateRetry(generation: number, retryIndex: number) {
+  if (
+    pinDisposed
+    || generation !== pinRequestGeneration
+    || retryIndex >= PIN_STATE_RETRY_DELAYS_MS.length
+  ) return
+  clearPinStateRetry()
+  pinRetryTimer = window.setTimeout(() => {
+    pinRetryTimer = null
+    if (pinDisposed || generation !== pinRequestGeneration) return
+    void refreshPinState({ generation, retryIndex: retryIndex + 1 })
+  }, PIN_STATE_RETRY_DELAYS_MS[retryIndex])
+}
+
+async function refreshPinState(retryContext?: { generation: number; retryIndex: number }) {
+  if (pinPending.value) return
+  const isRetry = !!(
+    retryContext
+    && retryContext.generation === pinRequestGeneration
+    && Number.isInteger(retryContext.retryIndex)
+  )
+  if (!isRetry) clearPinStateRetry()
+  const generation = isRetry ? retryContext.generation : ++pinRequestGeneration
+  const retryIndex = isRetry ? retryContext.retryIndex : 0
   const api = getWindowControlApi()
   if (!api || typeof api.getPinState !== 'function') {
-    applyPinState(null)
+    if (generation === pinRequestGeneration) applyPinState(null)
+    schedulePinStateRetry(generation, retryIndex)
     return
   }
   try {
-    applyPinState(await api.getPinState())
+    const state = await api.getPinState()
+    if (pinDisposed || generation !== pinRequestGeneration) return
+    applyPinState(state)
+    if (!state || !state.available) schedulePinStateRetry(generation, retryIndex)
   } catch {
+    if (pinDisposed || generation !== pinRequestGeneration) return
     applyPinState(null)
+    schedulePinStateRetry(generation, retryIndex)
   }
 }
 
 async function togglePin() {
   const api = getWindowControlApi()
   if (!api || typeof api.togglePin !== 'function') return
+  if (pinPending.value) return
+  clearPinStateRetry()
+  pinPending.value = true
+  const generation = ++pinRequestGeneration
+  let refreshAfterFailure = false
   try {
-    applyPinState(await api.togglePin())
+    const state = await api.togglePin()
+    if (generation === pinRequestGeneration) applyPinState(state)
   } catch {
-    await refreshPinState()
+    refreshAfterFailure = true
+  } finally {
+    if (generation === pinRequestGeneration) pinPending.value = false
   }
+  if (refreshAfterFailure && generation === pinRequestGeneration) await refreshPinState()
 }
 
 async function minimizeWindow() {
@@ -185,6 +235,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  pinDisposed = true
+  pinRequestGeneration += 1
+  clearPinStateRetry()
+  pinPending.value = false
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('focus', handleWindowFocus)
 })

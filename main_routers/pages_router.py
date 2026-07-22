@@ -442,7 +442,10 @@ async def get_card_maker_page(request: Request):
 async def get_jukebox_page(request: Request):
     """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox.html", {"request": request})
+    return templates.TemplateResponse("templates/jukebox.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)
