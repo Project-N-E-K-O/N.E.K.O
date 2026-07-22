@@ -1,0 +1,49 @@
+{
+  "targetDomain": "project-neko.online",
+  "locationCode": 2840,
+  "languageCode": "en",
+  "device": "desktop",
+  "serpDepth": 10,
+  "keywords": [
+    {
+      "keyword": "open source ai companion",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "open source ai desktop assistant",
+      "landingPage": "/",
+      "intent": "BOFU category"
+    },
+    {
+      "keyword": "proactive ai companion",
+      "landingPage": "/",
+      "intent": "MOFU category"
+    },
+    {
+      "keyword": "local ai desktop companion",
+      "landingPage": "/guide/",
+      "intent": "MOFU setup"
+    },
+    {
+      "keyword": "live2d ai assistant",
+      "landingPage": "/frontend/live2d",
+      "intent": "MOFU feature"
+    },
+    {
+      "keyword": "ai companion long term memory",
+      "landingPage": "/architecture/memory-system",
+      "intent": "MOFU feature"
+    },
+    {
+      "keyword": "open source ai plugin framework",
+      "landingPage": "/plugins/",
+      "intent": "MOFU developer"
+    },
+    {
+      "keyword": "self hosted ai companion docker",
+      "landingPage": "/deployment/docker",
+      "intent": "BOFU deployment"
+    }
+  ]
+}

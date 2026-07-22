@@ -1359,6 +1359,12 @@ function showConfirmModal(message, confirmCallback, cancelCallback = null) {
 }
 
 function showMessage(message, type = 'info', duration = 3000) {
+    // 只显示导入过程及导入失败；模型预览关闭等历史路径可能把正常取消误报为
+    // error，因此不能在这里全局恢复所有旧错误 toast。
+    if (type !== 'importing' && type !== 'import-error') {
+        return null;
+    }
+
     // 统一为「导出角色卡」同款风格的居中顶部浮层卡片（非模态），
     // 保证桌面端网页也能稳定显示。调用签名保持与旧版兼容。
     function createMessageArea() {
@@ -1370,6 +1376,11 @@ function showMessage(message, type = 'info', duration = 3000) {
     }
 
     const messageArea = document.getElementById('message-area') || createMessageArea();
+    // 旧模板曾把全局通知容器放在默认隐藏的上传模态框内，导致通知节点已创建但不可见。
+    // 始终挂到 body，既能避开隐藏祖先，也能保持通知为不阻塞操作的页面级浮层。
+    if (messageArea.parentElement !== document.body) {
+        document.body.appendChild(messageArea);
+    }
 
     // 布局：居中、顶部向下滑入，堆叠显示
     messageArea.style.position = 'fixed';
@@ -1385,16 +1396,15 @@ function showMessage(message, type = 'info', duration = 3000) {
     messageArea.style.alignItems = 'center';
     messageArea.style.pointerEvents = 'none';
 
-    const typeConfig = {
-        error:   { icon: 'fa-exclamation-circle', accent: '#ff5a5a', grad: 'linear-gradient(135deg,#ff7a7a,#ff5a5a)' },
-        warning: { icon: 'fa-exclamation-triangle', accent: '#f0ad4e', grad: 'linear-gradient(135deg,#f6c266,#f0ad4e)' },
-        success: { icon: 'fa-check-circle', accent: '#58c38a', grad: 'linear-gradient(135deg,#6ec5a8,#58c38a)' },
-        info:    { icon: 'fa-info-circle', accent: '#40C5F1', grad: 'linear-gradient(135deg,#40C5F1,#5dd4f7)' },
-    };
-    const cfg = typeConfig[type] || typeConfig.info;
+    const isError = type === 'import-error';
+    const cfg = isError
+        ? { icon: 'ccm-toast-error-icon', accent: '#ff5a5a' }
+        : { icon: 'ccm-toast-spinner', accent: '#40C5F1' };
 
     const card = document.createElement('div');
     card.className = 'ccm-toast-card ccm-toast-' + type;
+    card.setAttribute('role', isError ? 'alert' : 'status');
+    card.setAttribute('aria-live', isError ? 'assertive' : 'polite');
     card.style.cssText = [
         'background:#fff',
         'border-radius:14px',
@@ -1417,9 +1427,15 @@ function showMessage(message, type = 'info', duration = 3000) {
         'transition:opacity 0.22s ease, transform 0.22s ease',
     ].join(';');
 
-    const iconEl = document.createElement('i');
-    iconEl.className = 'fa ' + cfg.icon;
-    iconEl.style.cssText = 'color:' + cfg.accent + ';font-size:18px;margin-top:2px;flex-shrink:0';
+    const iconEl = document.createElement('span');
+    iconEl.className = cfg.icon;
+    iconEl.setAttribute('aria-hidden', 'true');
+    if (isError) {
+        iconEl.textContent = '!';
+        iconEl.style.cssText = 'width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;background:' + cfg.accent + ';color:#fff;border-radius:50%;font-weight:700;margin-top:2px;flex-shrink:0';
+    } else {
+        iconEl.style.cssText = 'width:16px;height:16px;border:2px solid ' + cfg.accent + ';border-right-color:transparent;border-radius:50%;margin-top:2px;flex-shrink:0';
+    }
     card.appendChild(iconEl);
 
     const body = document.createElement('div');
@@ -1429,7 +1445,7 @@ function showMessage(message, type = 'info', duration = 3000) {
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.innerHTML = '<i class="fa fa-times"></i>';
+    closeBtn.textContent = '×';
     closeBtn.style.cssText = 'background:transparent;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;flex-shrink:0';
     closeBtn.onmouseenter = () => { closeBtn.style.background = 'rgba(0,0,0,0.06)'; closeBtn.style.color = '#333'; };
     closeBtn.onmouseleave = () => { closeBtn.style.background = 'transparent'; closeBtn.style.color = '#888'; };
@@ -1438,6 +1454,7 @@ function showMessage(message, type = 'info', duration = 3000) {
         card.style.transform = 'translateY(-8px)';
         setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 220);
     };
+    card.dismiss = dismiss;
     closeBtn.onclick = dismiss;
     card.appendChild(closeBtn);
 
@@ -1467,60 +1484,6 @@ function escapeHtml(text) {
         .replace(/'/g, '&#39;');
 }
 
-
-// 共享的提示框功能
-function showToast(message, duration = 3000) {
-    let container = document.getElementById('message-area');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'message-area';
-        container.className = 'message-area';
-        document.body.appendChild(container);
-    }
-
-    // 若容器由模板/其他逻辑预先创建，首个 toast 沿用旧 zIndex 会被新模态遮挡；
-    // 无条件刷新定位 / 层级，确保每次都落在最顶层。
-    container.style.position = 'fixed';
-    container.style.top = '20px';
-    container.style.right = '20px';
-    container.style.maxWidth = '400px';
-    container.style.zIndex = '2147483647';
-    container.style.display = 'flex';
-    container.style.flexDirection = 'column';
-    container.style.alignItems = 'flex-end';
-    container.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-
-    const messageElement = document.createElement('div');
-    // 使用 textContent 避免 HTML 注入风险 (resolved duplicate innerHTML comment review safely)
-    messageElement.textContent = message;
-    messageElement.style.cssText = `
-        padding: 15px 20px;
-        margin-bottom: 10px;
-        background: #e8f5e9;
-        color: #2e7d32;
-        border-radius: 6px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        font-weight: bold;
-        opacity: 0;
-        transform: translateY(-10px);
-        transition: opacity 0.3s ease, transform 0.3s ease;
-    `;
-
-    container.appendChild(messageElement);
-
-    setTimeout(() => {
-        messageElement.style.opacity = '1';
-        messageElement.style.transform = 'translateY(0)';
-    }, 10);
-
-    setTimeout(() => {
-        messageElement.style.opacity = '0';
-        messageElement.style.transform = 'translateY(-10px)';
-        setTimeout(() => {
-            messageElement.remove();
-        }, 300);
-    }, duration);
-}
 
 // 加载状态管理器
 function LoadingManager() {
@@ -1937,12 +1900,6 @@ function uploadItem() {
                 setButtonState(uploadButton, false);
             }
 
-            // 清除所有现有消息
-            const messageArea = document.getElementById('message-area');
-            if (messageArea) {
-                messageArea.innerHTML = '';
-            }
-
             if (data.success) {
                 // 标记上传已完成
                 isUploadCompleted = true;
@@ -2027,18 +1984,6 @@ function uploadItem() {
                 // 添加默认标签
                     addTag(window.t ? window.t('steam.defaultTagMod') : '模组');
 
-                // 显示成功提示和操作选项
-                setTimeout(() => {
-                    const messageArea = document.getElementById('message-area');
-                    const actionMessage = document.createElement('div');
-                    actionMessage.className = 'success-message';
-                    actionMessage.innerHTML = `
-                    <span>${window.t ? window.t('steam.operationComplete') : 'Operation complete, you can:'}</span>
-                    <button class="button button-sm" onclick="closeUploadModal()">${window.t ? window.t('steam.hideUploadSection') : 'Hide Upload Section'}</button>
-                    <span class="message-close" onclick="this.parentElement.remove()">×</span>
-                `;
-                    messageArea.appendChild(actionMessage);
-                }, 1000);
             } else {
                 // 上传失败，重置上传完成标志
                 isUploadCompleted = false;
@@ -2047,21 +1992,6 @@ function uploadItem() {
                     showMessage(window.t ? window.t('steam.uploadWarning', { message: data.message }) : `警告: ${data.message}`, 'warning', 8000);
                 }
 
-                // 提供重试建议
-                setTimeout(() => {
-                    const retryButton = document.createElement('button');
-                    retryButton.className = 'button button-sm';
-                    retryButton.textContent = window.t ? window.t('steam.retryUpload') : '重试上传';
-                    retryButton.onclick = uploadItem;
-
-                    const messageArea = document.getElementById('message-area');
-                    const retryMessage = document.createElement('div');
-                    retryMessage.className = 'error-message';
-                    retryMessage.innerHTML = `<span>${window.t ? window.t('steam.retryPrompt') : 'Would you like to retry the upload?'}</span>
-                    <button class="button button-sm" onclick="uploadItem()">${window.t ? window.t('steam.retryUpload') : 'Retry Upload'}</button>
-                    <span class="message-close" onclick="this.parentElement.remove()">×</span>`;
-                    messageArea.appendChild(retryMessage);
-                }, 2000);
             }
         })
         .catch(error => {
@@ -2074,12 +2004,6 @@ function uploadItem() {
             if (uploadButton) {
                 uploadButton.textContent = originalText;
                 setButtonState(uploadButton, false);
-            }
-
-            // 清除所有现有消息
-            const messageArea = document.getElementById('message-area');
-            if (messageArea) {
-                messageArea.innerHTML = '';
             }
 
             let errorMessage = window.t ? window.t('steam.uploadGeneralError') : '上传失败';

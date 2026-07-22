@@ -41,6 +41,7 @@ async def dashboard_state(runtime: Any) -> dict[str, Any]:
         "live_director_status": live_director_status,
         "solo_test_readiness": solo_test_readiness,
         "speech_explanation": speech_explanation,
+        "co_stream_participation": runtime.co_stream_participation_snapshot(),
         "live_explain": live_explanation(
             runtime,
             profiles=profiles,

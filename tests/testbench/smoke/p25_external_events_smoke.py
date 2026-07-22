@@ -416,6 +416,29 @@ def check_a_happy_paths(client, mock) -> list[str]:
                f"instruction missing '彩蛋' event fact for hammer+easter_egg; "
                f"前 400 字符: {instruction_e[:400]!r}")
 
+        # A1f — RPS is a strict round-fact payload. It intentionally has no
+        # action_id/intensity fields, so the full testbench delivery path must
+        # not assume the action-tool shape when recording preview/diagnostics.
+        mock.set_reply("Mocked reply")
+        status, body = _post_event(
+            client,
+            "avatar",
+            {
+                "interaction_id": "i1-rps",
+                "tool_id": "rps",
+                "target": "avatar",
+                "user_gesture": "rock",
+                "avatar_gesture": "scissors",
+                "round_result": "user_win",
+            },
+        )
+        _check(status == 200, "A1f.status", f"{status} {body}")
+        rps_result = _extract_result(body)
+        _check(rps_result.get("accepted") is True, "A1f.accepted",
+               f"reason={rps_result.get('reason')}")
+        _check(rps_result.get("assistant_reply") == "Mocked reply", "A1f.reply",
+               f"assistant_reply={rps_result.get('assistant_reply')!r}")
+
         # A2 — agent_callback.
         mock.set_reply("Mocked reply")
         status, body = _post_event(

@@ -131,6 +131,10 @@ class NekoLivePlugin(NekoPluginBase):
                 "queue_limit": {"type": "integer"},
                 "roast_strength": {"type": "string"},
                 "activity_level": {"type": "string"},
+                "co_stream_host_pause_fill_activation": {
+                    "type": "string",
+                    "enum": ["off", "conditional_auto"],
+                },
                 "roast_once_per_uid": {"type": "boolean"},
                 "viewer_memory_enabled": {"type": "boolean"},
                 "stream_theme": {"type": "string"},

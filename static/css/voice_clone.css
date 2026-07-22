@@ -1271,6 +1271,12 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
     opacity: 0.6;
 }
 
+.voice-preview-btn[data-preview-state="playing"]:disabled {
+    background: #35b5e1;
+    cursor: progress;
+    opacity: 1;
+}
+
 .voice-delete-btn img, .voice-preview-btn img {
     width: 18px;
     height: 18px;
