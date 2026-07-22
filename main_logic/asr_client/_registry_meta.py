@@ -53,6 +53,9 @@ class AsrProviderMeta:
     max_segment_ms: int | None = None
     warm_transport_ms: int = 25_000
     replay_policy: AsrReplayPolicy = "preconnect_only"
+    connect_max_attempts: int = 1
+    connect_retry_base_seconds: float = 0.25
+    connect_retry_cap_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if self.category == "segmented_request" and self.max_segment_ms is None:
@@ -61,6 +64,14 @@ class AsrProviderMeta:
             raise ValueError("max_segment_ms must be positive")
         if self.warm_transport_ms < 0:
             raise ValueError("warm_transport_ms must not be negative")
+        if self.connect_max_attempts <= 0:
+            raise ValueError("connect_max_attempts must be positive")
+        if self.connect_retry_base_seconds <= 0:
+            raise ValueError("connect_retry_base_seconds must be positive")
+        if self.connect_retry_cap_seconds < self.connect_retry_base_seconds:
+            raise ValueError(
+                "connect_retry_cap_seconds must cover the retry base"
+            )
 
 
 # Business code must route through this table rather than scattering
@@ -187,6 +198,7 @@ ASR_PROVIDER_REGISTRY: dict[str, AsrProviderMeta] = {
         supported_endpointing_modes=frozenset({"manual", "provider"}),
         implementation_status="implemented",
         replay_policy="provider_managed",
+        connect_max_attempts=3,
     ),
     "free": AsrProviderMeta(
         provider_key="free",

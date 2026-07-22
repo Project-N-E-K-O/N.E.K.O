@@ -5,9 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Hashable, Literal, TypeAlias
+from typing import Hashable
 
-from .lifecycle import FinalKey, VoiceTurnToken
+from main_logic.voice_turn.contracts import (
+    FinalKey,
+    VoiceTurnToken,
+)
 
 
 SegmentId = Hashable
@@ -170,48 +173,19 @@ class SegmentAggregator:
             self._next_turn_to_publish = self._turn_id + 1
 
 
-VoiceInputConsumerOwner: TypeAlias = Literal["game"]
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceTranscriptEvent:
-    """One route-authorized logical transcript for an external consumer."""
-
-    turn_token: VoiceTurnToken
-    provider: str
-    text: str
-
-
-VoiceTranscriptCallback: TypeAlias = Callable[
-    [VoiceTranscriptEvent],
-    Awaitable[None],
-]
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceInputConsumerBinding:
-    """An inert transcript target; MicLease remains the capture authority."""
-
-    owner: VoiceInputConsumerOwner
-    on_final: VoiceTranscriptCallback
-    identity: object = field(default_factory=object, repr=False, compare=False)
-
-
 @dataclass(frozen=True, slots=True)
 class TranscriptEnvelope:
     turn_token: VoiceTurnToken
-    core_session_ref: object
     provider: str
     text: str
-    consumer_binding: VoiceInputConsumerBinding | None = None
 
     @property
     def final_key(self) -> FinalKey:
         return FinalKey.from_turn(self.turn_token)
 
 
-class CoreTranscriptDispatcher:
-    """Own bounded Core delivery slots and one serial dispatch worker."""
+class TranscriptDispatcher:
+    """Own bounded final delivery slots and one serial dispatch worker."""
 
     def __init__(
         self,
