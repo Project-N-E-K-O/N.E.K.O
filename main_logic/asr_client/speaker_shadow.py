@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Hashable
@@ -33,7 +34,7 @@ class SpeakerShadowCandidateKey:
 @dataclass(frozen=True, slots=True)
 class SpeakerShadowConfig:
     enabled: bool = False
-    similarity_threshold: float = 0.44
+    similarity_thresholds: tuple[float, ...] = (0.40, 0.44, 0.48, 0.52, 0.55)
     minimum_audio_ms: int = 1_500
     maximum_audio_ms: int = 4_000
     idle_unload_seconds: float = 60.0
@@ -45,8 +46,24 @@ class SpeakerShadowConfig:
     callback_timeout_seconds: float = 0.1
 
     def __post_init__(self) -> None:
-        if not 0.0 <= self.similarity_threshold <= 1.0:
-            raise ValueError("similarity_threshold must be within [0, 1]")
+        if (
+            not self.similarity_thresholds
+            or any(
+                not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0
+                for threshold in self.similarity_thresholds
+            )
+            or any(
+                left >= right
+                for left, right in zip(
+                    self.similarity_thresholds,
+                    self.similarity_thresholds[1:],
+                )
+            )
+        ):
+            raise ValueError(
+                "similarity_thresholds must be finite, unique, increasing values "
+                "within [0, 1]"
+            )
         if self.minimum_audio_ms <= 0:
             raise ValueError("minimum_audio_ms must be positive")
         if self.maximum_audio_ms < self.minimum_audio_ms:
@@ -75,7 +92,7 @@ class SpeakerShadowConfig:
 class SpeakerShadowObservation:
     candidate: Hashable
     similarity: float
-    would_block: bool
+    would_block: tuple[tuple[float, bool], ...]
     audio_ms: int
 
 
@@ -157,6 +174,10 @@ class SpeakerShadowRuntime:
         self._backend_factory = backend_factory
         self._on_observation = on_observation
         self._metrics = SpeakerShadowMetrics()
+        self._would_block_counts = {
+            threshold: 0 for threshold in self._config.similarity_thresholds
+        }
+        self._backend_metrics: dict[str, int] = {}
         self._queue: asyncio.Queue[_AudioFrame | _CandidateFinished | object] = (
             asyncio.Queue(maxsize=self._config.queue_capacity)
         )
@@ -182,6 +203,18 @@ class SpeakerShadowRuntime:
                 len(buffer.pcm16) for buffer in self._buffers.values()
             ),
             finalized_tombstone_count=len(self._finalized),
+        )
+        snapshot.update(
+            {
+                f"would_block_at_{round(threshold * 100):03d}_count": count
+                for threshold, count in self._would_block_counts.items()
+            }
+        )
+        backend_metrics = dict(self._backend_metrics)
+        for key, value in self._read_backend_metrics(self._backend).items():
+            backend_metrics[key] = backend_metrics.get(key, 0) + value
+        snapshot.update(
+            {f"backend_{key}": value for key, value in backend_metrics.items()}
         )
         return snapshot
 
@@ -365,8 +398,8 @@ class SpeakerShadowRuntime:
             similarity = float(
                 await asyncio.to_thread(backend.score, pcm16, buffer.sample_rate_hz)
             )
-            if not 0.0 <= similarity <= 1.0:
-                raise ValueError("speaker similarity must be within [0, 1]")
+            if not math.isfinite(similarity) or not -1.0 <= similarity <= 1.0:
+                raise ValueError("speaker cosine similarity must be within [-1, 1]")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -377,15 +410,22 @@ class SpeakerShadowRuntime:
         if frame.generation != self._generation or self._closed:
             self._metrics.stale_result_count += 1
             return
+        would_block = tuple(
+            (threshold, similarity < threshold)
+            for threshold in self._config.similarity_thresholds
+        )
         observation = SpeakerShadowObservation(
             candidate=frame.candidate,
             similarity=similarity,
-            would_block=similarity < self._config.similarity_threshold,
+            would_block=would_block,
             audio_ms=audio_ms,
         )
         self._metrics.evaluated_candidate_count += 1
-        if observation.would_block:
+        if any(blocked for _, blocked in would_block):
             self._metrics.would_block_count += 1
+        for threshold, blocked in would_block:
+            if blocked:
+                self._would_block_counts[threshold] += 1
         if self._on_observation is None:
             return
         try:
@@ -514,9 +554,30 @@ class SpeakerShadowRuntime:
             await asyncio.to_thread(backend.close)
         except Exception:
             pass
+        for key, value in self._read_backend_metrics(backend).items():
+            self._backend_metrics[key] = self._backend_metrics.get(key, 0) + value
         self._metrics.unload_count += 1
         self._load_failure_streak = 0
         self._next_load_attempt_at = 0.0
+
+    @staticmethod
+    def _read_backend_metrics(backend: SpeakerShadowBackend | None) -> dict[str, int]:
+        if backend is None:
+            return {}
+        snapshot = getattr(backend, "snapshot", None)
+        if not callable(snapshot):
+            return {}
+        try:
+            values = snapshot()
+        except Exception:
+            return {}
+        if not isinstance(values, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in values.items()
+            if isinstance(key, str) and isinstance(value, int) and not isinstance(value, bool)
+        }
 
     async def _cleanup_after_worker(
         self,
@@ -525,6 +586,12 @@ class SpeakerShadowRuntime:
         if worker is not None:
             await asyncio.gather(worker, return_exceptions=True)
         await self._unload_backend()
+        close_factory = getattr(self._backend_factory, "close", None)
+        if callable(close_factory):
+            try:
+                await asyncio.to_thread(close_factory)
+            except Exception:
+                pass
 
     @staticmethod
     def _consume_cleanup_result(task: asyncio.Task[None]) -> None:

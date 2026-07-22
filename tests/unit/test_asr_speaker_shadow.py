@@ -93,7 +93,7 @@ def _pcm(duration_ms: int, *, sample_rate_hz: int = 16_000) -> bytes:
 def _config(**overrides) -> SpeakerShadowConfig:
     values = {
         "enabled": True,
-        "similarity_threshold": 0.44,
+        "similarity_thresholds": (0.40, 0.44, 0.48, 0.52, 0.55),
         "minimum_audio_ms": 20,
         "maximum_audio_ms": 100,
         "idle_unload_seconds": 60.0,
@@ -123,11 +123,22 @@ async def test_shadow_scores_once_and_records_hypothetical_block() -> None:
         SpeakerShadowObservation(
             candidate=(1, 1),
             similarity=pytest.approx(0.2),
-            would_block=True,
+            would_block=(
+                (0.40, True),
+                (0.44, True),
+                (0.48, True),
+                (0.52, True),
+                (0.55, True),
+            ),
             audio_ms=20,
         )
     ]
     assert runtime.snapshot()["would_block_count"] == 1
+    assert runtime.snapshot()["would_block_at_040_count"] == 1
+    assert runtime.snapshot()["would_block_at_044_count"] == 1
+    assert runtime.snapshot()["would_block_at_048_count"] == 1
+    assert runtime.snapshot()["would_block_at_052_count"] == 1
+    assert runtime.snapshot()["would_block_at_055_count"] == 1
     assert runtime.snapshot()["evaluated_candidate_count"] == 1
     await runtime.close()
 
@@ -144,6 +155,23 @@ async def test_shadow_is_disabled_without_loading_a_backend() -> None:
 
     assert backend.load_calls == 0
     assert runtime.snapshot()["submitted_frame_count"] == 0
+
+
+async def test_shadow_accepts_negative_cosine_as_a_valid_observation() -> None:
+    observations: list[SpeakerShadowObservation] = []
+    runtime = SpeakerShadowRuntime(
+        backend_factory=lambda: _Backend(score=-0.25),
+        config=_config(minimum_audio_ms=10),
+        on_observation=observations.append,
+    )
+
+    assert runtime.submit(_pcm(10), sample_rate_hz=16_000, candidate=(1, 2))
+    await runtime.wait_idle()
+
+    assert observations[0].similarity == pytest.approx(-0.25)
+    assert all(blocked for _, blocked in observations[0].would_block)
+    assert runtime.snapshot()["inference_failure_count"] == 0
+    await runtime.close()
 
 
 async def test_shadow_failures_and_low_scores_never_change_detector_results() -> None:
@@ -536,8 +564,10 @@ async def test_idle_unload_releases_and_later_reloads_backend() -> None:
 
 
 def test_shadow_config_rejects_unsafe_bounds() -> None:
-    with pytest.raises(ValueError, match="similarity_threshold"):
-        SpeakerShadowConfig(enabled=True, similarity_threshold=1.1)
+    with pytest.raises(ValueError, match="similarity_thresholds"):
+        SpeakerShadowConfig(enabled=True, similarity_thresholds=(0.4, 1.1))
+    with pytest.raises(ValueError, match="similarity_thresholds"):
+        SpeakerShadowConfig(enabled=True, similarity_thresholds=(0.44, 0.40))
     with pytest.raises(ValueError, match="maximum_audio_ms"):
         SpeakerShadowConfig(
             enabled=True, minimum_audio_ms=2_000, maximum_audio_ms=1_000
