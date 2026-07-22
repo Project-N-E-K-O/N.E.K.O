@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from ._registry_meta import ASR_PROVIDER_REGISTRY, AsrEndpointingMode
+from ._registry_meta import (
+    ASR_PROVIDER_REGISTRY,
+    AsrEndpointingMode,
+    AsrProviderAvailability,
+)
 
 
 AsrTransport = Literal["streaming", "segmented"]
@@ -21,6 +25,7 @@ class AsrProviderPolicy:
     max_segment_ms: int | None
     warm_transport_ms: int
     replay_policy: AsrReplayPolicy
+    availability: AsrProviderAvailability = AsrProviderAvailability.IMPLEMENTED
     provider_final_timeout_ms: int = 10_000
     connect_max_attempts: int = 1
     connect_retry_base_seconds: float = 0.25
@@ -58,6 +63,8 @@ def resolve_provider_policy(
             "ASR_ENDPOINTING_NOT_SUPPORTED: "
             f"{normalized_provider} does not support {endpointing_mode}"
         )
+    if meta.availability is not AsrProviderAvailability.IMPLEMENTED:
+        raise AsrProviderUnavailableError(meta.availability)
 
     transport: AsrTransport = (
         "segmented" if meta.category in {"dummy", "segmented_request"} else "streaming"
@@ -73,7 +80,16 @@ def resolve_provider_policy(
         max_segment_ms=meta.max_segment_ms if transport == "segmented" else None,
         warm_transport_ms=meta.warm_transport_ms if transport == "streaming" else 0,
         replay_policy=meta.replay_policy,
+        availability=meta.availability,
         connect_max_attempts=meta.connect_max_attempts,
         connect_retry_base_seconds=meta.connect_retry_base_seconds,
         connect_retry_cap_seconds=meta.connect_retry_cap_seconds,
     )
+
+
+class AsrProviderUnavailableError(RuntimeError):
+    """Typed provider capability failure for callers that need policy."""
+
+    def __init__(self, availability: AsrProviderAvailability) -> None:
+        self.availability = availability
+        super().__init__(f"ASR_PROVIDER_{availability.value.upper()}")

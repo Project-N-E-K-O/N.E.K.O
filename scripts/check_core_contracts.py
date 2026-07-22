@@ -630,12 +630,16 @@ def run(root: Path) -> list[Violation]:
     streaming_path = core_dir / "streaming.py"
     asr_client_dir = root / "main_logic" / "asr_client"
     asr_component_path = asr_client_dir / "runtime.py"
+    asr_audio_path = asr_client_dir / "audio.py"
+    voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
     for required in (
         asr_bridge_path,
         tts_path,
         streaming_path,
         asr_client_dir,
         asr_component_path,
+        asr_audio_path,
+        voice_input_path,
     ):
         if not required.exists():
             violations.append(Violation(
@@ -713,7 +717,10 @@ def run(root: Path) -> list[Violation]:
                     ))
 
     if asr_bridge_path.exists():
-        for node in ast.walk(parse(asr_bridge_path)):
+        bridge_tree = parse(asr_bridge_path)
+        route_setter_found = False
+        forbidden_runtime_reads = {"lifecycle", "route_mode", "required"}
+        for node in ast.walk(bridge_tree):
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
@@ -725,6 +732,85 @@ def run(root: Path) -> list[Violation]:
                     node.col_offset,
                     "ASR_LAYERING",
                     f"provider literal '{node.value}' must stay below the Core ASR bridge",
+                ))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in forbidden_runtime_reads
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr == "_asr_runtime"
+            ):
+                violations.append(Violation(
+                    asr_bridge_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"Core must not read IndependentAsrRuntime.{node.attr}",
+                ))
+        for node in ast.walk(bridge_tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "_set_microphone_route":
+                route_setter_found = True
+            if node.name in {"_init_asr_runtime_state", "_set_microphone_route"}:
+                continue
+            for child in ast.walk(node):
+                targets = []
+                if isinstance(child, ast.Assign):
+                    targets = child.targets
+                elif isinstance(child, ast.AnnAssign):
+                    targets = [child.target]
+                if any(
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr == "_asr_route_mode"
+                    for target in targets
+                ):
+                    violations.append(Violation(
+                        asr_bridge_path,
+                        child.lineno,
+                        child.col_offset,
+                        "ASR_LAYERING",
+                        "Core route changes must go through _set_microphone_route()",
+                    ))
+        if not route_setter_found:
+            violations.append(Violation(
+                asr_bridge_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "core/asr_runtime.py must define _set_microphone_route()",
+            ))
+
+    for path in (asr_bridge_path, asr_component_path):
+        if not path.exists():
+            continue
+        for node in ast.walk(parse(path)):
+            if isinstance(node, ast.ImportFrom) and any(
+                alias.name == "ProcessedVoiceFrame" for alias in node.names
+            ) and node.module != "main_logic.voice_turn.audio_input":
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "ProcessedVoiceFrame must come from voice_turn.audio_input",
+                ))
+
+    if asr_audio_path.exists():
+        for node in ast.walk(parse(asr_audio_path)):
+            if isinstance(node, ast.ClassDef) and node.name in {
+                "ProcessedVoiceFrame",
+                "VoiceInputAudioPipeline",
+            }:
+                violations.append(Violation(
+                    asr_audio_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"provider-neutral {node.name} belongs in voice_turn/audio_input.py",
                 ))
 
     if asr_component_path.exists():
@@ -754,6 +840,115 @@ def run(root: Path) -> list[Violation]:
                 "ASR_LAYERING",
                 "IndependentAsrRuntime must be a plain composed object, not a mixin subclass",
             ))
+        if component_class is not None:
+            forbidden_fields = {
+                "_asr_route_mode",
+                "_asr_required",
+                "_voice_lease_connection_id",
+                "_voice_lease_generation",
+                "_voice_lease_synchronized",
+                "_voice_lease_owner",
+                "_voice_lease_hard_muted",
+                "_voice_lease_focus_suppressed",
+                "_voice_input_suppressed",
+            }
+            forbidden_methods = {
+                "activate_native_route",
+                "deactivate_audio_route",
+                "block_audio_route",
+                "sync_voice_lease",
+                "apply_voice_lease_state",
+                "process_audio",
+                "_process_microphone_audio",
+            }
+            public_methods = {
+                "__init__",
+                "display_name",
+                "close",
+                "capture_ingress_token",
+                "suspend",
+                "resume",
+                "abort",
+                "wait_transcript_idle",
+                "start",
+                "submit",
+            }
+            for node in ast.walk(component_class):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and node.attr in forbidden_fields
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        f"IndependentAsrRuntime must not mirror Core state {node.attr}",
+                    ))
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node in component_class.body
+                ):
+                    if node.name in forbidden_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"IndependentAsrRuntime must not define {node.name}()",
+                        ))
+                    if not node.name.startswith("_") and node.name not in public_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"unexpected IndependentAsrRuntime public method {node.name}()",
+                        ))
+            for node in ast.walk(component_tree):
+                if (
+                    isinstance(node, ast.Name)
+                    and node.id == "VoiceInputAudioPipeline"
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "IndependentAsrRuntime must not own the Core PCM pipeline",
+                    ))
+
+        callbacks_class = next(
+            (
+                node for node in component_tree.body
+                if isinstance(node, ast.ClassDef)
+                and node.name == "AsrRuntimeCallbacks"
+            ),
+            None,
+        )
+        callback_events = {
+            "on_partial": "VoicePartialEvent",
+            "on_final": "VoiceTranscriptEvent",
+            "on_failure": "AsrFailureEvent",
+            "on_status": "AsrStatusEvent",
+            "on_lifecycle": "AsrLifecycleNotification",
+        }
+        annotations = {
+            node.target.id: {name.id for name in ast.walk(node.annotation) if isinstance(name, ast.Name)}
+            for node in (callbacks_class.body if callbacks_class is not None else [])
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        for callback_name, event_name in callback_events.items():
+            if event_name not in annotations.get(callback_name, set()):
+                violations.append(Violation(
+                    asr_component_path,
+                    getattr(callbacks_class, "lineno", 1),
+                    0,
+                    "ASR_LAYERING",
+                    f"{callback_name} must receive immutable {event_name}",
+                ))
         for node in ast.walk(component_tree):
             if isinstance(node, ast.ClassDef) and node.name.endswith("Mixin"):
                 violations.append(Violation(
