@@ -3535,6 +3535,7 @@
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
         var pinLabel = escapeHtml(translateLabel('common.pinWindow', 'Pin Window'));
+        var unpinLabel = escapeHtml(translateLabel('common.unpinWindow', 'Unpin Window'));
         var scrollbarCss = '<style>'
             + '::-webkit-scrollbar{width:8px;height:8px;}'
             + '::-webkit-scrollbar-track{background:transparent;}'
@@ -3554,7 +3555,8 @@
             + escapeHtml(title) + '</span>'
             + '<div class="neko-window-controls" style="margin-left:auto;gap:4px;">'
             + '<button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden '
-            + 'data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="' + pinLabel
+            + 'data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" '
+            + 'data-neko-pin-label="' + pinLabel + '" data-neko-unpin-label="' + unpinLabel + '" title="' + pinLabel
             + '" aria-label="' + pinLabel + '" aria-pressed="false"><span class="neko-window-pin-icon" aria-hidden="true"></span></button>'
             + '<button onclick="window.close()" title="' + closeLabel + '" style="-webkit-app-region:no-drag;'
             + 'background:none;border:none;color:#fff;font-size:20px;cursor:pointer;width:36px;height:36px;'

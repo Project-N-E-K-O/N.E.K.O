@@ -155,7 +155,13 @@ def test_jukebox_has_an_explicit_pin_before_minimize_without_touching_manager():
 
 def test_chat_export_preview_uses_named_windows_and_pin_contract():
     script = read_text("static/app/app-chat-export.js")
+    window_chrome = re.search(
+        r"function buildWindowChromeHtml\(title\) \{(?P<body>.*?)\n    \}",
+        script,
+        re.DOTALL,
+    )
 
+    assert window_chrome
     assert "exportPreviewAssetVersion = getCurrentExportAssetVersion()" in script
     assert "function getVersionedExportAssetUrl(path)" in script
     assert "getVersionedExportAssetUrl('/static/css/window_controls.css')" in script
@@ -177,6 +183,12 @@ def test_chat_export_preview_uses_named_windows_and_pin_contract():
     assert "button.setAttribute('data-neko-unpin-label', unpinLabel)" in script
     assert script.count("syncPinButtonLocale(pinButton)") >= 2
     assert "syncPinButtonLocale(modal.pinButton)" in script
+    assert "translateLabel('common.pinWindow', 'Pin Window')" in window_chrome.group("body")
+    assert "translateLabel('common.unpinWindow', 'Unpin Window')" in window_chrome.group(
+        "body"
+    )
+    assert 'data-neko-pin-label="' in window_chrome.group("body")
+    assert 'data-neko-unpin-label="' in window_chrome.group("body")
 
 
 def test_plugin_manager_pin_control_and_bridge_contract():
