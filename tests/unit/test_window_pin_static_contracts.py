@@ -34,6 +34,12 @@ def test_shared_window_controls_bind_only_explicit_hidden_pin_buttons():
     assert "function schedulePinStateRefreshRetry(generation, retryIndex)" in script
     assert "if (!normalizedState.available)" in script
     assert "window.addEventListener('focus', () => refreshPinState())" in script
+    assert re.search(
+        r"const state = await api\.togglePin\(\);\s*"
+        r"\+\+pinStateRefreshGeneration;\s*"
+        r"updatePinState\(state",
+        script,
+    ), "a successful toggle must invalidate older pin-state refreshes"
     assert "pinButton.hidden = !available" in script
     assert "pinButton.classList.toggle('is-pinned', pinned)" in script
     assert "common.pinWindow" in script

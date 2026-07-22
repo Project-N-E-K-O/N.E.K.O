@@ -179,6 +179,7 @@
                 pinButtons.forEach((button) => { button.disabled = true; });
                 try {
                     const state = await api.togglePin();
+                    ++pinStateRefreshGeneration;
                     updatePinState(state || { available: false, pinned: false });
                 } catch (error) {
                     await refreshPinState();
