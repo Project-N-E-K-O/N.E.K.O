@@ -4,6 +4,8 @@
         "minimize": "最小化",
         "maximize": "最大化",
         "restore": "還原",
+        "pinWindow": "置頂視窗",
+        "unpinWindow": "取消置頂",
         "expand": "展開",
         "close": "關閉",
         "save": "保存",
