@@ -26,6 +26,9 @@ function createRuntime(initialCatMindState, options = {}) {
     setCompactChatState(next) {
       compactChatState = next;
     },
+    normalizeMessage(message) {
+      return message;
+    },
     renderWindow() {},
   };
   const window = {
@@ -64,7 +67,7 @@ function createRuntime(initialCatMindState, options = {}) {
   const stretchRequests = [];
   if (Object.prototype.hasOwnProperty.call(options, 'stretchStarted')) {
     window.NekoCatIdlePresentation = {
-      requestCat1Stretch() {
+      requestCat1HissStretch() {
         stretchRequests.push({ tier: catMindState.tier, enteredAt: catMindState.enteredAt });
         return options.stretchStarted === true;
       },
@@ -171,7 +174,7 @@ test('cat replies mix voice atoms with optional internal punctuation', () => {
   assert.equal(reply, '喵～喵喵喵！！！');
 });
 
-test('CAT1 hiss easter egg starts stretch before using its dedicated reply', () => {
+test('CAT1 hiss easter egg starts stretch before showing its text and sticker', () => {
   const runtime = createRuntime({}, { random: () => 0, stretchStarted: true });
   const manager = runtime.window.nekoCatLocalChatManager;
 
@@ -181,7 +184,15 @@ test('CAT1 hiss easter egg starts stretch before using its dedicated reply', () 
 
   const items = manager.getSnapshot().items;
   assert.equal(runtime.stretchRequests.length, 1);
-  assert.equal(items.at(-1).text, '哈～ฅ(`ꈊ´ฅ)');
+  assert.deepEqual(Array.from(items, item => item.role), ['user', 'assistant', 'assistant']);
+  assert.equal(items.at(-2).text, '哈～ฅ(`ꈊ´ฅ)');
+  assert.equal(items.at(-1).text, '');
+  assert.equal(items.at(-1).imageUrl, '/static/assets/neko-idle/thought-items/cat1-chat-angry.gif');
+  assert.equal(items.at(-1).imageAlt, '哈～ฅ(`ꈊ´ฅ)');
+  assert.equal(items.at(-1).imageWidth, 512);
+  assert.equal(items.at(-1).imageHeight, 512);
+  const displayMessages = runtime.window.__appReactChatWindowParts.getCatLocalChatDisplayMessages();
+  assert.deepEqual(Array.from(displayMessages.at(-1).blocks, block => block.type), ['image']);
   assert.equal(runtime.observations.filter(item => item.type === 'cat_local_text_received').length, 1);
 });
 

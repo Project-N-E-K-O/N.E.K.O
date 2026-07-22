@@ -173,7 +173,7 @@ test('journey-local play and stretch report only their own completion feedback',
   assert.equal(observations.length, 1);
 });
 
-test('independent stretch runner keeps hard gates and completes one owned lifecycle', async () => {
+test('independent stretch runner and hiss entry keep hard gates and one owned lifecycle', async () => {
   let edgePeekActive = true;
   let scheduled = null;
   let journeySyncs = 0;
@@ -191,6 +191,8 @@ test('independent stretch runner keeps hard gates and completes one owned lifecy
     yarnSettling: false,
   };
   const artSources = [];
+  const hissSounds = [];
+  const soundStops = [];
   const terminals = [];
   const buttonClasses = new Map();
   const containerClasses = new Map();
@@ -218,6 +220,8 @@ test('independent stretch runner keeps hard gates and completes one owned lifecy
     Date: { now: () => 1000 },
     _NEKO_IDLE_TIER_CAT1: 'cat1',
     _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS: 700,
+    _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL: 'hiss.mp3',
+    _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME: 0.12,
     _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     _normalizeNekoIdleReturnTier: (tier) => tier,
     _isNekoIdleReturnDragActionBlocking: () => false,
@@ -248,6 +252,11 @@ test('independent stretch runner keeps hard gates and completes one owned lifecy
       edgePeekActive,
     }),
     _getNekoIdleGifDurationMs: () => Promise.resolve(900),
+    _playNekoIdleSound: (state, src, volume) => {
+      hissSounds.push({ state, src, volume });
+      return {};
+    },
+    _stopNekoIdleSoundAudio: (state) => soundStops.push(state),
     _forEachNekoIdleReturnButton: () => {},
     setTimeout(callback, delay) {
       scheduled = { callback, delay };
@@ -262,27 +271,29 @@ test('independent stretch runner keeps hard gates and completes one owned lifecy
     'function _getNekoIdleCat1PlayActionState'
   ), context);
 
-  assert.equal(typeof context.window.NekoCatIdlePresentation.requestCat1Stretch, 'function');
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(typeof context.window.NekoCatIdlePresentation.requestCat1HissStretch, 'function');
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   assert.equal(context._playNekoIdleCat1StretchAction(button), false);
   assert.equal(artSources.length, 0);
+  assert.equal(hissSounds.length, 0);
 
   edgePeekActive = false;
   runtimeGate.yarnDragActive = true;
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   runtimeGate.yarnDragActive = false;
   runtimeGate.yarnSettling = true;
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   runtimeGate.yarnSettling = false;
   runtimeGate.activeIndependentAction = true;
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   runtimeGate.activeIndependentAction = false;
   button.__nekoIdleCat1Journey.pairMovePlan = {};
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   button.__nekoIdleCat1Journey.pairMovePlan = null;
   button.__nekoIdleCat1Journey.pairMoveFrame = 1;
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), false);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), false);
   button.__nekoIdleCat1Journey.pairMoveFrame = 0;
+  assert.equal(hissSounds.length, 0);
 
   assert.equal(context._playNekoIdleCat1StretchAction(button, {
     onTerminal: (result, detail) => terminals.push({ result, detail }),
@@ -302,12 +313,18 @@ test('independent stretch runner keeps hard gates and completes one owned lifecy
   assert.equal(containerClasses.get('is-cat1-stretching'), false);
   assert.equal(artSources.at(-1).src, 'idle.gif');
   assert.equal(journeySyncs, 1);
+  assert.equal(soundStops.length, 1);
   assert.equal(terminals.length, 1);
   assert.equal(terminals[0].result, 'done');
   assert.equal(terminals[0].detail.reason, 'cat1-stretch-action-finished');
 
-  assert.equal(context.window.NekoCatIdlePresentation.requestCat1Stretch(), true);
+  assert.equal(context.window.NekoCatIdlePresentation.requestCat1HissStretch(), true);
+  assert.equal(hissSounds.length, 1);
+  assert.equal(hissSounds[0].state, button.__nekoIdleCat1StretchActionState);
+  assert.equal(hissSounds[0].src, 'hiss.mp3');
+  assert.equal(hissSounds[0].volume, 0.12);
   await Promise.resolve();
   scheduled.callback();
   assert.equal(button.__nekoIdleCat1StretchActionState.active, false);
+  assert.equal(soundStops.length, 2);
 });

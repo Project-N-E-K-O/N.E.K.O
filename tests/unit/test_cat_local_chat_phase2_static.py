@@ -75,15 +75,20 @@ def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
     actions_source = read(
         ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-actions-and-audio.js"
     )
+    core_source = read(ROOT / "static" / "avatar" / "avatar-ui-buttons" / "core.js")
     index_source = read(ROOT / "templates" / "index.html")
 
     assert "CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03" in manager_source
     assert "window.NekoCatIdlePresentation" in manager_source
-    assert "requestCat1Stretch()" in manager_source
+    assert "requestCat1HissStretch()" in manager_source
+    assert "cat1-chat-angry.gif" in manager_source
     assert "cat1_stretch_done_near_chat" not in manager_source
     assert "window.NekoCatIdlePresentation = Object.freeze" in actions_source
-    assert "requestCat1Stretch: _requestNekoIdleCat1StretchPresentation" in actions_source
-    assert "return _playNekoIdleCat1StretchAction(button);" in actions_source
+    assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in actions_source
+    assert "requestCat1Stretch:" not in actions_source
+    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in actions_source
+    assert "cat1-voice-chat-angry.mp3" in core_source
+    assert "appendStickerItem(hissReply.stickerUrl, reply, pending.requestId);" in manager_source
     assert "'ฅ(`ꈊ´ฅ)'" in lexicon_source
     assert "'(ฅ`ω´ฅ)'" in lexicon_source
     assert index_source.index("idle-actions-and-audio.js") < index_source.index("cat-local-chat.js")

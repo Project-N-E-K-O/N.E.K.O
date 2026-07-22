@@ -228,6 +228,9 @@ function _getNekoIdleCat1StretchActionState(button) {
             active: false,
             token: 0,
             timer: 0,
+            audio: null,
+            fadeFrame: 0,
+            fadeToken: 0,
             resumeJourney: false,
             presentationOnTerminal: null
         };
@@ -295,6 +298,7 @@ function _cancelNekoIdleCat1StretchAction(button, options = {}) {
         clearTimeout(state.timer);
         state.timer = 0;
     }
+    _stopNekoIdleSoundAudio(state);
     _setNekoIdleCat1StretchActionClass(button, false);
     _restoreNekoIdleCat1StretchActionArt(button, state, options);
     state.resumeJourney = false;
@@ -375,7 +379,7 @@ function _playNekoIdleCat1StretchAction(button, options = {}) {
     return true;
 }
 
-function _requestNekoIdleCat1StretchPresentation() {
+function _findNekoIdleCat1StretchPresentationButton() {
     const gate = _getNekoCatMindRuntimeGateSnapshot();
     if (!gate ||
         !gate.validCatRuntime ||
@@ -389,17 +393,28 @@ function _requestNekoIdleCat1StretchPresentation() {
         !gate.returnBallVisible ||
         gate.chatSurfaceDragging ||
         gate.yarnDragActive ||
-        gate.yarnSettling) return false;
+        gate.yarnSettling) return null;
 
     const button = _findNekoCatMindVisibleButtonForTier(_NEKO_IDLE_TIER_CAT1);
     const journey = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
-    if (journey && (journey.pairMovePlan || journey.pairMoveFrame)) return false;
-    return _playNekoIdleCat1StretchAction(button);
+    if (journey && (journey.pairMovePlan || journey.pairMoveFrame)) return null;
+    return button || null;
+}
+
+function _requestNekoIdleCat1HissStretchPresentation() {
+    const button = _findNekoIdleCat1StretchPresentationButton();
+    if (!button || !_playNekoIdleCat1StretchAction(button)) return false;
+    _playNekoIdleSound(
+        _getNekoIdleCat1StretchActionState(button),
+        _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL,
+        _NEKO_IDLE_CAT1_CHAT_HISS_SOUND_VOLUME
+    );
+    return true;
 }
 
 if (typeof window !== 'undefined') {
     window.NekoCatIdlePresentation = Object.freeze({
-        requestCat1Stretch: _requestNekoIdleCat1StretchPresentation
+        requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation
     });
 }
 

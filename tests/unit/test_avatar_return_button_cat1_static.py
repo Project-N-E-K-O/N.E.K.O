@@ -37,6 +37,8 @@ INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_PLAY_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-play-1.gif"
 CAT1_EAT_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-eat.mp3"
+CAT1_CHAT_HISS_STICKER_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "thought-items" / "cat1-chat-angry.gif"
+CAT1_CHAT_HISS_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-chat-angry.mp3"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -61,9 +63,13 @@ def test_cat1_return_button_assets_are_version_tracked():
     assert CAT1_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_PLAY_ASSET_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_EAT_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_STICKER_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
+    assert CAT1_CHAT_HISS_SOUND_PATH in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
     assert CAT1_ASSET_PATH.is_file()
     assert CAT1_PLAY_ASSET_PATH.is_file()
     assert CAT1_EAT_SOUND_PATH.is_file()
+    assert CAT1_CHAT_HISS_STICKER_PATH.is_file()
+    assert CAT1_CHAT_HISS_SOUND_PATH.is_file()
 
 
 def test_cat1_play_action_module_is_independent_from_eat_action():
@@ -194,9 +200,15 @@ def test_cat1_stretch_action_has_an_independent_runner():
         "function _getNekoIdleCat1PlayActionState",
         1,
     )[0]
+    cancel_block = source.split("function _cancelNekoIdleCat1StretchAction(button, options = {})", 1)[1].split(
+        "function _finishNekoIdleCat1StretchAction",
+        1,
+    )[0]
     assert "active: false" in state_block
     assert "token: 0" in state_block
     assert "timer: 0" in state_block
+    assert "audio: null" in state_block
+    assert "_stopNekoIdleSoundAudio(state);" in cancel_block
     assert "_getNekoIdleCat1StretchAssetUrl()" in play_block
     assert "_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS" in play_block
     assert "presentationOnTerminal" in play_block
@@ -208,6 +220,9 @@ def test_cat1_stretch_action_has_an_independent_runner():
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH" not in source
     assert "function _settleNekoIdleReturnSubactionToIdle" not in source
     assert "function _scheduleNekoIdleReturnSubactionSettle" not in source
+    assert "function _requestNekoIdleCat1HissStretchPresentation()" in play_block
+    assert "_NEKO_IDLE_CAT1_CHAT_HISS_SOUND_URL" in play_block
+    assert "requestCat1HissStretch: _requestNekoIdleCat1HissStretchPresentation" in play_block
 
 
 def test_cat1_pair_move_is_adapter_only_small_move_runner():

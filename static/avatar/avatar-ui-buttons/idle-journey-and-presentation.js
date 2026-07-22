@@ -220,7 +220,11 @@ function _isNekoIdleDesktopChatExpandedRecent() {
 }
 
 function _canNekoIdleCat1MoveSoloWithExpandedChat() {
-    return !!(_getNekoIdleReactChatExpandedShell() || _isNekoIdleDesktopChatExpandedRecent());
+    return !!(
+        _getNekoIdleReactChatExpandedShell() ||
+        _getNekoIdleDesktopCompactSurfaceRect() ||
+        _isNekoIdleDesktopChatExpandedRecent()
+    );
 }
 
 function _getNekoIdleChatMinimizedRect() {

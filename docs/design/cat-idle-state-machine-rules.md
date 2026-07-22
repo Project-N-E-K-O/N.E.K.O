@@ -119,7 +119,7 @@ L = S(0.8d + 0.2 × min(d, t))
 
 聊天窗形态和几何是 provider、near/far 与安全判断事实，不等同于用户需求，所以不直接改五维；它们仍进入 recent events 并排入下一轮异步判断。相同最小化状态和相同窗口矩形只记一次。聊天球中心移动至少 `24px` 才从后续最小化通知归类为 `chat_minimized_moved_far`，poll/heartbeat 不重复记录。`cat1_walk_done_near_chat` 的社交/刺激只属于成功到达；携带 `completed=false` 或 `cancelled=true` 时跳过这部分语义反馈，仅按 3.2 结算已经走过的真实路程。compact 上缘成功落位同时结算既有表现反馈和真实路程。
 
-CAT1 本地文字的 `3%` 哈气彩蛋只请求既有独立伸懒腰表现，不是 selector 动作。该条文字已按 3.1 的 `cat_local_text_received` 结算一次；彩蛋完成不追加五维、不写 cooldown、严格 action result 或 episode，也不冒充只属于 journey near-chat 的 `cat1_stretch_done_near_chat`。runner 拒绝时回退普通猫叫。
+CAT1 本地文字的 `3%` 哈气彩蛋只通过哈气专用窄入口请求既有独立伸懒腰表现，不是 selector 动作。runner 拒绝时回退普通猫叫；确认启动后，同一次回复显示哈气文字和专用对话表情包，并播放服从猫形态音频开关的本地哈气音效。音效附着在伸懒腰状态上，沿用其结束与中断清理；文字和表情包则保留到当前猫形态聊天周期结束。该条文字已按 3.1 的 `cat_local_text_received` 结算一次；彩蛋完成不追加五维、不写 cooldown、严格 action result 或 episode，也不冒充只属于 journey near-chat 的 `cat1_stretch_done_near_chat`。
 
 ### 3.4 控制与边界 observation
 

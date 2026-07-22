@@ -15,6 +15,9 @@
     var REPLY_DELAY_MIN_MS = 320;
     var REPLY_DELAY_SPAN_MS = 480;
     var CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03;
+    var CAT1_HISS_STICKER_URL = buildVersionedAssetUrl(
+        '/static/assets/neko-idle/thought-items/cat1-chat-angry.gif'
+    );
     var state = {
         active: false,
         tier: 'none',
@@ -28,6 +31,16 @@
     var seenRequestOrder = [];
     var lastReplyText = '';
     var lastAppliedSnapshotAt = 0;
+
+    function buildVersionedAssetUrl(path) {
+        try {
+            if (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) {
+                var version = new URL(document.currentScript.src, window.location.href).searchParams.get('v');
+                if (version) return path + '?v=' + encodeURIComponent(version);
+            }
+        } catch (_) {}
+        return path;
+    }
 
     function normalizeTier(value) {
         return value === 'cat1' || value === 'cat2' || value === 'cat3' ? value : 'cat1';
@@ -59,12 +72,17 @@
         if (!item || typeof item !== 'object') return null;
         var role = item.role === 'user' ? 'user' : (item.role === 'assistant' ? 'assistant' : '');
         var text = typeof item.text === 'string' ? item.text : '';
+        var imageUrl = typeof item.imageUrl === 'string' ? item.imageUrl : '';
         var id = typeof item.id === 'string' ? item.id : '';
-        if (!role || !text || !id) return null;
+        if (!role || (!text && !imageUrl) || !id) return null;
         return {
             id: id,
             role: role,
             text: text,
+            imageUrl: imageUrl,
+            imageAlt: typeof item.imageAlt === 'string' ? item.imageAlt : '',
+            imageWidth: Number.isFinite(Number(item.imageWidth)) ? Number(item.imageWidth) : 0,
+            imageHeight: Number.isFinite(Number(item.imageHeight)) ? Number(item.imageHeight) : 0,
             createdAt: Number.isFinite(Number(item.createdAt)) ? Number(item.createdAt) : Date.now(),
             sequence: Number.isFinite(Number(item.sequence)) ? Number(item.sequence) : 0,
             requestId: typeof item.requestId === 'string' ? item.requestId : ''
@@ -272,11 +290,11 @@
         return voice && punctuation && face ? voice + punctuation + face : '';
     }
 
-    function requestCat1StretchPresentation() {
+    function requestCat1HissStretchPresentation() {
         var presentation = window.NekoCatIdlePresentation;
-        if (!presentation || typeof presentation.requestCat1Stretch !== 'function') return false;
+        if (!presentation || typeof presentation.requestCat1HissStretch !== 'function') return false;
         try {
-            return presentation.requestCat1Stretch() === true;
+            return presentation.requestCat1HissStretch() === true;
         } catch (_) {
             return false;
         }
@@ -284,12 +302,15 @@
 
     function chooseHissStretchReply(tier) {
         if (normalizeTier(tier) !== 'cat1' || Math.random() >= CAT1_HISS_STRETCH_EASTER_EGG_RATE) {
-            return '';
+            return null;
         }
         var candidate = composeHissStretchReply();
-        if (!candidate || !requestCat1StretchPresentation()) return '';
+        if (!candidate || !requestCat1HissStretchPresentation()) return null;
         lastReplyText = candidate;
-        return candidate;
+        return {
+            text: candidate,
+            stickerUrl: CAT1_HISS_STICKER_URL
+        };
     }
 
     function appendItem(role, text, requestId) {
@@ -299,6 +320,27 @@
             id: 'cat-local-' + state.enteredAt + '-' + itemSequence,
             role: role,
             text: text,
+            createdAt: now,
+            sequence: itemSequence,
+            requestId: requestId
+        });
+        if (state.items.length > MAX_ITEMS) {
+            state.items = state.items.slice(-MAX_ITEMS);
+        }
+    }
+
+    function appendStickerItem(imageUrl, imageAlt, requestId) {
+        if (!imageUrl) return;
+        itemSequence += 1;
+        var now = Date.now();
+        state.items.push({
+            id: 'cat-local-' + state.enteredAt + '-' + itemSequence,
+            role: 'assistant',
+            text: '',
+            imageUrl: imageUrl,
+            imageAlt: imageAlt || '',
+            imageWidth: 512,
+            imageHeight: 512,
             createdAt: now,
             sequence: itemSequence,
             requestId: requestId
@@ -356,13 +398,17 @@
                 return;
             }
             state.tier = normalizeTier(current.tier);
-            var reply = chooseHissStretchReply(state.tier) || chooseReply(state.tier);
+            var hissReply = chooseHissStretchReply(state.tier);
+            var reply = hissReply ? hissReply.text : chooseReply(state.tier);
             if (!reply) {
                 publishSnapshot('cat-local-chat-reply-invalidated');
                 scheduleNextReply();
                 return;
             }
             appendItem('assistant', reply, pending.requestId);
+            if (hissReply && hissReply.stickerUrl) {
+                appendStickerItem(hissReply.stickerUrl, reply, pending.requestId);
+            }
             publishSnapshot('cat-local-chat-reply');
             scheduleNextReply();
         }, delay);
@@ -395,11 +441,24 @@
     I.getCatLocalChatDisplayMessages = function getCatLocalChatDisplayMessages() {
         if (!state.active || typeof I.normalizeMessage !== 'function') return [];
         return state.items.map(function (item, index) {
+            var blocks = [];
+            if (item.text) {
+                blocks.push({ type: 'text', text: item.text });
+            }
+            if (item.imageUrl) {
+                blocks.push({
+                    type: 'image',
+                    url: item.imageUrl,
+                    alt: item.imageAlt || '',
+                    width: item.imageWidth || undefined,
+                    height: item.imageHeight || undefined
+                });
+            }
             return I.normalizeMessage({
                 id: item.id,
                 role: item.role,
                 createdAt: item.createdAt,
-                blocks: [{ type: 'text', text: item.text }],
+                blocks: blocks,
                 status: 'sent'
             }, I._sortKeySeq + index + 1);
         }).filter(Boolean);
