@@ -18,7 +18,6 @@ N.E.K.O. 将**可写用户数据**与**仓库内置默认值**分开保存。
 | --- | --- |
 | `core_config.json` | Provider、凭据、模型角色覆盖及功能设置 |
 | `characters.json` | 角色定义与保留头像数据 |
-| `tutorial_prompt_config.json` | 教程提示状态 |
 | `user_preferences.json` | 用户/UI 偏好 |
 | `voice_storage.json` | 语音元数据 |
 | `workshop_config.json` | 创意工坊设置 |

@@ -40,7 +40,7 @@ class QQSessionInstructionService:
         {"id": "init",                  "i18n_key": "",                      "required_placeholders": ["{name}"],                       "format_after": True},
         {"id": "role",                  "i18n_key": "role_prompt_section",   "required_placeholders": [],                                "format_after": False},
         {"id": "attention",             "i18n_key": "attention_prompt_section", "required_placeholders": [],                            "format_after": False},
-        {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{sticker_catalog}"],  "format_after": True},
+        {"id": "format_neko_dynamic",   "i18n_key": "format_prompt_section_neko_dynamic", "required_placeholders": ["{emoji_catalog}", "{sticker_catalog}"],  "format_after": True},
         {"id": "format_neko_scene",     "i18n_key": "format_prompt_section", "required_placeholders": [],                               "format_after": False},
         {"id": "format_open_platform",  "i18n_key": "format_prompt_section_open_platform", "required_placeholders": ["{sticker_catalog}"], "format_after": True},
         {"id": "persona_wrapper",       "i18n_key": "character_prompt_section", "required_placeholders": ["{character_prompt}"],       "format_after": True},
@@ -68,6 +68,14 @@ class QQSessionInstructionService:
     def __init__(self, plugin: Any):
         self.plugin = plugin
         self._sticker_catalog_cache: str = ""
+        self._emoji_catalog_cache: str = ""
+
+    def _resolve_time_section(self, locale: str) -> str:
+        """解析时间层：优先使用动态时间上下文，回退静态模板。"""
+        fatigue = getattr(self.plugin, "fatigue_service", None)
+        if fatigue:
+            return fatigue.get_dynamic_time_context()
+        return self._resolve_static_layer("time_prompt_section", TIME_PROMPT_SECTION, locale, time_str=self._format_current_time())
 
     def _resolve_static_layer(self, i18n_key: str, default_template: str, locale: str = "", **format_kwargs) -> str:
         """解析静态提示词层：先查 prompt_overrides，再回退 i18n/默认模板。"""
@@ -141,6 +149,24 @@ class QQSessionInstructionService:
         self._sticker_catalog_cache = "    (暂无可用表情包)"
         return self._sticker_catalog_cache
 
+    def _load_emoji_catalog(self) -> str:
+        if self._emoji_catalog_cache:
+            return self._emoji_catalog_cache
+        try:
+            import json, os
+            emoji_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emoji.json")
+            if os.path.isfile(emoji_path):
+                with open(emoji_path, "r", encoding="utf-8") as f:
+                    data = json.loads(f.read())
+                if isinstance(data, dict):
+                    items = [f"    {eid}: {desc}" for eid, desc in list(data.items())[:80]]
+                    self._emoji_catalog_cache = "\n".join(items)
+                    return self._emoji_catalog_cache
+        except Exception as e:
+            self.plugin.logger.warning(f"加载 emoji.json 失败: {e}")
+        self._emoji_catalog_cache = "    (暂无可用表情)"
+        return self._emoji_catalog_cache
+
     async def build_session_instructions(
         self,
         her_name: str,
@@ -198,13 +224,14 @@ class QQSessionInstructionService:
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_open_plat = self.plugin.qq_client and not self.plugin.qq_client.needs_attention if self.plugin.qq_client else False
         if is_open_plat:
-            format_section = t("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM)
+            format_section = self._resolve_static_layer("format_prompt_section_open_platform", FORMAT_PROMPT_SECTION_OPEN_PLATFORM, user_language)
         elif strategy_mode == "neko_dynamic":
-            format_section = t("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC)
+            format_section = self._resolve_static_layer("format_prompt_section_neko_dynamic", FORMAT_PROMPT_SECTION_NEKO_DYNAMIC, user_language)
         else:
-            format_section = t("format_prompt_section", FORMAT_PROMPT_SECTION)
+            format_section = self._resolve_static_layer("format_prompt_section", FORMAT_PROMPT_SECTION, user_language)
         if is_open_plat or strategy_mode == "neko_dynamic":
             format_section = format_section.format(
+                emoji_catalog=self._load_emoji_catalog(),
                 sticker_catalog=self._load_sticker_catalog(),
             )
 
@@ -221,7 +248,7 @@ class QQSessionInstructionService:
             ),
             self._build_sessions_section(),
             self._resolve_static_layer("character_prompt_section", CHARACTER_PROMPT_SECTION, user_language, character_prompt=base_prompt),
-            self._resolve_static_layer("time_prompt_section", TIME_PROMPT_SECTION, user_language, time_str=self._format_current_time()),
+            self._resolve_time_section(user_language),
             self._build_chat_environment_section(
                 sender_id=sender_id,
                 user_title=user_title,
@@ -273,7 +300,10 @@ class QQSessionInstructionService:
             )
         )
         self._append_blacklist_section(sections)
+        self._append_group_custom_prompt_section(sections, group_id, is_group)
         self._append_cross_group_section(sections, group_id, is_group)
+        self._append_fatigue_section(sections, sender_id, is_group, group_id)
+        self._append_attention_context_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
         sections.append(self._resolve_static_layer("output_prompt_section", OUTPUT_PROMPT_SECTION, user_language))
 
@@ -514,6 +544,41 @@ class QQSessionInstructionService:
                 self.plugin.i18n.t("prompts.blacklist",
                     default="## 禁用词汇（Blacklist）\n以下词汇绝对不能在你的回复中出现，即使对方主动提及也要避开：\n")
                 + words_str + "\n"
+            )
+
+    def _append_attention_context_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
+        """注入多维注意力上下文（维度明细 + 焦点判定原因）。"""
+        if not is_group or not group_id:
+            return
+        attention = getattr(self.plugin, "attention_service", None)
+        if not attention or not attention._enabled():
+            return
+        context = attention.get_attention_context(str(group_id))
+        if context:
+            sections.append(context)
+
+    def _append_fatigue_section(self, sections: list[str], sender_id: str, is_group: bool, group_id: Optional[str]) -> None:
+        """注入疲劳/苏醒状态提示词（KiraAI-style 动态行为约束）。"""
+        if not self.plugin.fatigue_service:
+            return
+        session_key = f"group:{group_id}" if is_group else f"private:{sender_id}"
+        prompt = self.plugin.fatigue_service.get_fatigue_prompt(session_key)
+        if prompt:
+            sections.append(prompt)
+
+    def _append_group_custom_prompt_section(self, sections: list[str], group_id: Optional[str], is_group: bool) -> None:
+        """追加按群自定义提示词（仅在群聊场景生效）。"""
+        if not is_group or not group_id:
+            return
+        group_prompts = (self.plugin._qq_settings or {}).get("group_prompts") or {}
+        if not isinstance(group_prompts, dict):
+            return
+        custom_text = str(group_prompts.get(str(group_id), "") or "").strip()
+        if custom_text:
+            sections.append(
+                f"## 本群特殊说明（Group-Specific Instructions）\n"
+                f"以下是你在此群中的额外行为准则，请严格遵守：\n\n"
+                f"{custom_text}"
             )
 
     def _append_role_card_section(

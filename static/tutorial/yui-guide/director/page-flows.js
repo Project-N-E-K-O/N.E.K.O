@@ -1081,7 +1081,7 @@
 
         async moveCursorToElement(element, durationMs, options) {
             const normalizedOptions = options || {};
-            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            this.releaseExternalizedChatCursorToHome();
             while (!this.isStopping()) {
                 await this.waitUntilSceneResumed();
                 const rect = this.getElementRect(element);
@@ -1174,7 +1174,7 @@
 
         async moveCursorToTrackedElement(element, durationMs, options) {
             const normalizedOptions = options || {};
-            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            this.releaseExternalizedChatCursorToHome();
             const totalDurationMs = Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS;
             const exactDuration = normalizedOptions.exactDuration === true;
             const firstLegMs = exactDuration

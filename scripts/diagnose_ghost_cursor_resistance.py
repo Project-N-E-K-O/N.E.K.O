@@ -52,7 +52,7 @@ def _bootstrap_page(page: Any, *, pc_overlay: bool) -> None:
             window.universalTutorialManager = {
                 currentPage: 'home',
                 isTutorialRunning: true,
-                logPromptFlow: () => {},
+                logTutorialFlow: () => {},
             };
             window.matchMedia = window.matchMedia || (() => ({
                 matches: false,

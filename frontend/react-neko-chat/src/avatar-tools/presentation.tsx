@@ -1,7 +1,7 @@
 import type { CSSProperties, RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   resolveAvatarToolImagePaths,
   type AvatarToolId,
   type AvatarToolItem,
@@ -20,7 +20,12 @@ import {
   type HammerSwingEffectRecipe,
   type HammerSwingPhase,
   type RandomScatterEffectRecipe,
+  type RoundRevealEffectRecipe,
+  type RoundRevealPhase,
+  type AvatarToolRoundChoiceGesture,
+  type AvatarToolRoundResult,
 } from './catalog';
+import { i18n } from '../i18n';
 import {
   isPointWithinAvatarToolUi,
   isPointerOverAvatarToolUi,
@@ -68,6 +73,29 @@ export type HammerSwingEffectExecution = {
 export type ActiveHammerSwingEffectExecution = HammerSwingEffectExecution & {
   phase: HammerSwingPhase;
 };
+
+export type AvatarToolRoundRevealFacts = {
+  userGesture: AvatarToolRoundChoiceGesture;
+  userVariant: AvatarToolVariantId;
+  avatarGesture: AvatarToolRoundChoiceGesture;
+  avatarVariant: AvatarToolVariantId;
+  roundResult: AvatarToolRoundResult;
+};
+
+export type ActiveRoundRevealEffectExecution = {
+  kind: 'round-reveal';
+  recipe: RoundRevealEffectRecipe;
+  interactionLock: 'effect-lifetime';
+  phase: RoundRevealPhase;
+  round: AvatarToolRoundRevealFacts;
+  userStart: { x: number; y: number };
+  anchor: AvatarToolHeadAnchor;
+  avatarName: string;
+};
+
+export type ActiveAvatarToolEffectExecution =
+  | ActiveHammerSwingEffectExecution
+  | ActiveRoundRevealEffectExecution;
 
 export type AvatarToolEffectExecution =
   | {
@@ -136,6 +164,9 @@ export function createAvatarToolEffectExecution(
         };
       }),
     };
+  }
+  if (recipe.kind === 'round-reveal') {
+    throw new Error('round-reveal requires confirmed round facts');
   }
   return {
     kind: recipe.kind,
@@ -239,8 +270,51 @@ export function prewarmAvatarToolSounds(toolId: AvatarToolId, disposer: AvatarTo
   });
 }
 
+const visualPreparation = new Map<AvatarToolId, Promise<void>>();
+
+export function prepareAvatarToolVisuals(toolId: AvatarToolId): Promise<void> {
+  const existing = visualPreparation.get(toolId);
+  if (existing) return existing;
+  if (typeof Image === 'undefined') return Promise.resolve();
+
+  const definition = getAvatarToolRegistration(toolId).definition;
+  const paths = new Set<string>();
+  Object.values(definition.visual.variants).forEach((variant) => {
+    paths.add(withAvatarToolAssetVersion(variant.iconImagePath));
+    paths.add(withAvatarToolAssetVersion(variant.pointerImagePath));
+  });
+  const preparation = Promise.all(Array.from(paths, imagePath => new Promise<void>((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      image.removeEventListener('load', decode);
+      image.removeEventListener('error', finish);
+      resolve();
+    };
+    const decode = () => {
+      if (typeof image.decode !== 'function') {
+        finish();
+        return;
+      }
+      try {
+        image.decode().catch(() => undefined).then(finish);
+      } catch {
+        finish();
+      }
+    };
+    image.addEventListener('load', decode, { once: true });
+    image.addEventListener('error', finish, { once: true });
+    image.src = imagePath;
+    if (image.complete) decode();
+  }))).then(() => undefined);
+  visualPreparation.set(toolId, preparation);
+  return preparation;
+}
+
 export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarToolDisposer) {
-  if (typeof Audio === 'undefined' || !disposer.isCurrent()) return;
+  if (typeof Audio === 'undefined' || !disposer.isCurrent()) return () => {};
   let cleanup = () => {};
   try {
     const resource = getAvatarToolSoundResource(sound);
@@ -270,6 +344,7 @@ export function playAvatarToolSound(sound: AvatarToolSoundId, disposer: AvatarTo
     // Local feedback must not block the interaction when audio is unavailable.
     cleanup();
   }
+  return cleanup;
 }
 
 
@@ -287,7 +362,7 @@ export type AvatarToolPresentation = {
 };
 
 export function getAvatarTool(toolId: AvatarToolId | null): AvatarToolItem | null {
-  return AVAILABLE_AVATAR_TOOLS.find(item => item.id === toolId) ?? null;
+  return AVAILABLE_COMPACT_AVATAR_TOOLS.find(item => item.id === toolId) ?? null;
 }
 
 export function createAvatarToolVariantState(
@@ -386,6 +461,36 @@ export type AvatarToolImpactEffectVisualModel = ActiveHammerSwingEffectExecution
   impactImagePath: string;
 };
 
+export type AvatarToolRoundRevealVisualModel = ActiveRoundRevealEffectExecution & {
+  userImagePath: string;
+  avatarImagePath: string;
+  displayWidth: number;
+  displayHeight: number;
+  resultLabel: string;
+};
+
+export type AvatarToolOwnedEffectVisualModel =
+  | AvatarToolImpactEffectVisualModel
+  | AvatarToolRoundRevealVisualModel;
+
+export type AvatarToolHeadAnchor = {
+  x: number;
+  y: number;
+  coordinateSpace: 'viewport-css-pixel';
+};
+
+export type AvatarToolRoundChoiceAvatarGestureState = {
+  variant: AvatarToolVariantId;
+  anchor: AvatarToolHeadAnchor;
+};
+
+export type AvatarToolRoundChoiceAvatarGestureVisualModel =
+  AvatarToolRoundChoiceAvatarGestureState & {
+    imagePath: string;
+    displayWidth: number;
+    displayHeight: number;
+  };
+
 export type AvatarToolVisualModel = {
   activeTool: AvatarToolItem | null;
   activeToolId: AvatarToolId | null;
@@ -396,7 +501,8 @@ export type AvatarToolVisualModel = {
   overlayActive: boolean;
   overlayCompact: boolean;
   overlayImagePath: string;
-  overlayEffect: AvatarToolImpactEffectVisualModel | null;
+  overlayEffect: AvatarToolOwnedEffectVisualModel | null;
+  roundChoiceAvatarGesture: AvatarToolRoundChoiceAvatarGestureVisualModel | null;
   transientEffects: AvatarToolTransientVisualEffect[];
 };
 
@@ -410,16 +516,38 @@ export function buildAvatarToolVisualModel({
   overlayActive,
   overlayCompact,
   overlayEffectExecution,
+  roundChoiceAvatarGestureState,
   transientEffects,
-}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect'> & {
-  overlayEffectExecution: ActiveHammerSwingEffectExecution | null;
+}: Omit<AvatarToolVisualModel, 'overlayImagePath' | 'overlayEffect' | 'roundChoiceAvatarGesture'> & {
+  overlayEffectExecution: ActiveAvatarToolEffectExecution | null;
+  roundChoiceAvatarGestureState: AvatarToolRoundChoiceAvatarGestureState | null;
 }) : AvatarToolVisualModel {
   const activeImagePaths = activeTool ? resolveAvatarToolImagePaths(activeTool, effectiveVariant) : null;
-  const overlayEffect = activeTool && overlayEffectExecution ? {
-    ...overlayEffectExecution,
-    pointerImagePath: resolveAvatarToolImagePaths(activeTool, effectiveVariant).pointerImagePath,
-    idleImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.idle).iconImagePath,
-    impactImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.impact).iconImagePath,
+  const overlayEffect: AvatarToolOwnedEffectVisualModel | null = activeTool && overlayEffectExecution
+    ? overlayEffectExecution.kind === 'hammer-swing'
+      ? {
+        ...overlayEffectExecution,
+        pointerImagePath: resolveAvatarToolImagePaths(activeTool, effectiveVariant).pointerImagePath,
+        idleImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.idle).iconImagePath,
+        impactImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.recipe.variants.impact).iconImagePath,
+      }
+      : {
+        ...overlayEffectExecution,
+        userImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.round.userVariant).iconImagePath,
+        avatarImagePath: resolveAvatarToolImagePaths(activeTool, overlayEffectExecution.round.avatarVariant).iconImagePath,
+        displayWidth: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayWidth,
+        displayHeight: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayHeight,
+        resultLabel: getAvatarToolRoundResultLabel(
+          overlayEffectExecution.round.roundResult,
+          overlayEffectExecution.avatarName,
+        ),
+      }
+    : null;
+  const roundChoiceAvatarGesture = activeTool && roundChoiceAvatarGestureState ? {
+    ...roundChoiceAvatarGestureState,
+    imagePath: resolveAvatarToolImagePaths(activeTool, roundChoiceAvatarGestureState.variant).iconImagePath,
+    displayWidth: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayWidth,
+    displayHeight: getAvatarToolRegistration(activeTool.id).definition.visual.inRange.displayHeight,
   } : null;
   return {
     activeTool,
@@ -434,6 +562,7 @@ export function buildAvatarToolVisualModel({
       ? (overlayCompact ? activeImagePaths?.pointerImagePath ?? '' : activeImagePaths?.iconImagePath ?? '')
       : '',
     overlayEffect,
+    roundChoiceAvatarGesture,
     transientEffects,
   };
 }
@@ -498,6 +627,79 @@ export function getAvatarToolOverlayTransform(
     compact,
     pointer,
   );
+}
+
+export function clampAvatarToolHeadGestureAnchor(
+  anchor: AvatarToolHeadAnchor,
+  displayWidth: number,
+  displayHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): AvatarToolHeadAnchor {
+  const gutter = 8;
+  const headGap = 24;
+  const minX = gutter + displayWidth / 2;
+  const maxX = viewportWidth - gutter - displayWidth / 2;
+  const minY = gutter + displayHeight + headGap;
+  const maxY = viewportHeight - gutter;
+  return {
+    x: maxX >= minX ? Math.min(Math.max(anchor.x, minX), maxX) : viewportWidth / 2,
+    y: maxY >= minY ? Math.min(Math.max(anchor.y, minY), maxY) : Math.max(gutter, viewportHeight - gutter),
+    coordinateSpace: anchor.coordinateSpace,
+  };
+}
+
+export function getAvatarToolRoundResultLabel(
+  result: AvatarToolRoundResult,
+  avatarName: string,
+): string {
+  if (result === 'user_win') {
+    return i18n('chat.avatarToolRpsResultUserWin', 'You win');
+  }
+  if (result === 'draw') {
+    return i18n('chat.avatarToolRpsResultDraw', 'Draw');
+  }
+  const name = avatarName.trim();
+  return name
+    ? i18n('chat.avatarToolRpsResultAvatarWin', '{{name}} wins', { name })
+    : '';
+}
+
+export type AvatarToolRoundResultLabels = Pick<
+  Record<AvatarToolRoundResult, string>,
+  'user_win' | 'draw'
+> & Partial<Pick<Record<AvatarToolRoundResult, string>, 'avatar_win'>>;
+
+export function getAvatarToolRoundResultLabels(avatarName: string): AvatarToolRoundResultLabels {
+  const name = avatarName.trim();
+  return {
+    user_win: getAvatarToolRoundResultLabel('user_win', name),
+    ...(name ? { avatar_win: getAvatarToolRoundResultLabel('avatar_win', name) } : {}),
+    draw: getAvatarToolRoundResultLabel('draw', name),
+  };
+}
+
+export function clampAvatarToolRoundRevealAnchor(
+  anchor: AvatarToolHeadAnchor,
+  displayWidth: number,
+  displayHeight: number,
+  separationPx: number,
+  resultOffsetY: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): AvatarToolHeadAnchor {
+  const gutter = 12;
+  const horizontalExtent = separationPx + displayWidth / 2;
+  const minX = gutter + horizontalExtent;
+  const maxX = viewportWidth - gutter - horizontalExtent;
+  const handCenterOffsetY = 24 + displayHeight / 2;
+  const minY = gutter + handCenterOffsetY;
+  const maxY = viewportHeight - gutter - Math.max(24, resultOffsetY + 36) + handCenterOffsetY;
+  return {
+    x: maxX >= minX ? Math.min(Math.max(anchor.x, minX), maxX) : viewportWidth / 2,
+    y: maxY >= minY ? Math.min(Math.max(anchor.y, minY), maxY) : Math.max(gutter, viewportHeight - gutter),
+    coordinateSpace: anchor.coordinateSpace,
+  };
 }
 
 // Stable React renderer ------------------------------------------------------
@@ -585,52 +787,128 @@ export default function AvatarToolVisuals({ model }: { model: AvatarToolVisualMo
   ) : null;
 
   const overlayEffect = model.overlayEffect;
-  const overlayEffectDurationMs = overlayEffect?.recipe.timeline[
-    overlayEffect.recipe.timeline.length - 1
+  const hammerEffect = overlayEffect?.kind === 'hammer-swing' ? overlayEffect : null;
+  const overlayEffectDurationMs = hammerEffect?.recipe.timeline[
+    hammerEffect.recipe.timeline.length - 1
   ]?.delayMs ?? 0;
-  const overlayEffectEasterActive = !!overlayEffect
-    && overlayEffect.mode === overlayEffect.recipe.easterEgg.mode;
-  const impactEffectVisual = model.overlayActive && overlayEffect && activeVisualMode ? (
+  const overlayEffectEasterActive = !!hammerEffect
+    && hammerEffect.mode === hammerEffect.recipe.easterEgg.mode;
+  const impactEffectVisual = model.overlayActive && hammerEffect && activeVisualMode ? (
     <div
       ref={model.overlayRef}
       className={`avatar-tool-impact-effect is-visible${model.overlayCompact ? ' is-compact' : ''}${overlayEffectEasterActive ? ' is-easter-egg' : ''}`}
       aria-hidden="true"
       style={{
         '--avatar-tool-impact-effect-visual-scale': activeVisualMode.scale,
-        '--avatar-tool-impact-effect-scale': overlayEffectEasterActive ? overlayEffect.recipe.easterEgg.scale : 1,
-        '--avatar-tool-impact-effect-anchor-fix-x': `${overlayEffectEasterActive ? overlayEffect.recipe.easterEgg.anchorOffset.x : 0}px`,
-        '--avatar-tool-impact-effect-anchor-fix-y': `${overlayEffectEasterActive ? overlayEffect.recipe.easterEgg.anchorOffset.y : 0}px`,
-        '--avatar-tool-impact-origin-x': `${overlayEffect.recipe.impactRegistration.transformOrigin.x}px`,
-        '--avatar-tool-impact-origin-y': `${overlayEffect.recipe.impactRegistration.transformOrigin.y}px`,
-        '--avatar-tool-impact-translate-x': `${overlayEffect.recipe.impactRegistration.translate.x}px`,
-        '--avatar-tool-impact-translate-y': `${overlayEffect.recipe.impactRegistration.translate.y}px`,
-        '--avatar-tool-impact-rotation': `${overlayEffect.recipe.impactRegistration.rotationDeg}deg`,
-        '--avatar-tool-impact-scale': overlayEffect.recipe.impactRegistration.scale,
+        '--avatar-tool-impact-effect-scale': overlayEffectEasterActive ? hammerEffect.recipe.easterEgg.scale : 1,
+        '--avatar-tool-impact-effect-anchor-fix-x': `${overlayEffectEasterActive ? hammerEffect.recipe.easterEgg.anchorOffset.x : 0}px`,
+        '--avatar-tool-impact-effect-anchor-fix-y': `${overlayEffectEasterActive ? hammerEffect.recipe.easterEgg.anchorOffset.y : 0}px`,
+        '--avatar-tool-impact-origin-x': `${hammerEffect.recipe.impactRegistration.transformOrigin.x}px`,
+        '--avatar-tool-impact-origin-y': `${hammerEffect.recipe.impactRegistration.transformOrigin.y}px`,
+        '--avatar-tool-impact-translate-x': `${hammerEffect.recipe.impactRegistration.translate.x}px`,
+        '--avatar-tool-impact-translate-y': `${hammerEffect.recipe.impactRegistration.translate.y}px`,
+        '--avatar-tool-impact-rotation': `${hammerEffect.recipe.impactRegistration.rotationDeg}deg`,
+        '--avatar-tool-impact-scale': hammerEffect.recipe.impactRegistration.scale,
       } as CSSProperties}
     >
       <div className="avatar-tool-impact-effect-stage" style={{ transformOrigin: '0 0' }}>
         {model.overlayCompact ? (
           <img
             className="avatar-tool-impact-effect-pointer-image"
-            src={overlayEffect.pointerImagePath}
+            src={hammerEffect.pointerImagePath}
             alt=""
             style={{ width: `${activeVisualMode.displayWidth}px`, height: `${activeVisualMode.displayHeight}px` }}
           />
         ) : (
           <div
-            className={`avatar-tool-impact-effect-visual${overlayEffect.phase !== 'idle' ? ' is-active' : ' is-idle'}${overlayEffect.phase === 'impact' ? ' is-impact' : ''}`}
+            className={`avatar-tool-impact-effect-visual${hammerEffect.phase !== 'idle' ? ' is-active' : ' is-idle'}${hammerEffect.phase === 'impact' ? ' is-impact' : ''}`}
             style={{
               width: `${activeVisualMode.displayWidth}px`,
               height: `${activeVisualMode.displayHeight}px`,
-              transformOrigin: `${overlayEffect.recipe.transformOrigin.x}px ${overlayEffect.recipe.transformOrigin.y}px`,
+              transformOrigin: `${hammerEffect.recipe.transformOrigin.x}px ${hammerEffect.recipe.transformOrigin.y}px`,
               animationDuration: `${overlayEffectDurationMs}ms`,
             }}
           >
-            <img className="avatar-tool-impact-effect-image avatar-tool-impact-effect-image-primary" src={overlayEffect.idleImagePath} alt="" />
-            <img className="avatar-tool-impact-effect-image avatar-tool-impact-effect-image-secondary" src={overlayEffect.impactImagePath} alt="" />
+            <img className="avatar-tool-impact-effect-image avatar-tool-impact-effect-image-primary" src={hammerEffect.idleImagePath} alt="" />
+            <img className="avatar-tool-impact-effect-image avatar-tool-impact-effect-image-secondary" src={hammerEffect.impactImagePath} alt="" />
           </div>
         )}
       </div>
+    </div>
+  ) : null;
+
+  const roundReveal = overlayEffect?.kind === 'round-reveal' ? overlayEffect : null;
+  const roundRevealAnchor = roundReveal ? clampAvatarToolRoundRevealAnchor(
+    roundReveal.anchor,
+    roundReveal.displayWidth,
+    roundReveal.displayHeight,
+    roundReveal.recipe.separationPx,
+    roundReveal.recipe.resultOffsetY,
+    typeof window === 'undefined' ? 0 : window.innerWidth,
+    typeof window === 'undefined' ? 0 : window.innerHeight,
+  ) : null;
+  const roundRevealVisual = model.overlayActive && roundReveal && roundRevealAnchor ? (
+    <div
+      className={`avatar-tool-round-reveal is-${roundReveal.phase} is-${roundReveal.round.roundResult}`}
+      aria-hidden="true"
+      style={{
+        left: `${roundRevealAnchor.x}px`,
+        top: `${roundRevealAnchor.y - 24 - roundReveal.displayHeight / 2}px`,
+        '--avatar-tool-rps-user-start-x': `${roundReveal.userStart.x - roundRevealAnchor.x}px`,
+        '--avatar-tool-rps-user-start-y': `${roundReveal.userStart.y - (roundRevealAnchor.y - 24 - roundReveal.displayHeight / 2)}px`,
+        '--avatar-tool-rps-separation': `${roundReveal.recipe.separationPx}px`,
+        '--avatar-tool-rps-result-y': `${roundReveal.recipe.resultOffsetY}px`,
+        '--avatar-tool-rps-approach-ms': `${roundReveal.recipe.timeline[1]?.delayMs ?? 520}ms`,
+        '--avatar-tool-rps-impact-ms': `${(roundReveal.recipe.timeline[2]?.delayMs ?? 760) - (roundReveal.recipe.timeline[1]?.delayMs ?? 520)}ms`,
+      } as CSSProperties}
+    >
+      <img
+        className="avatar-tool-round-reveal-hand is-user"
+        src={roundReveal.userImagePath}
+        alt=""
+        style={{ width: `${roundReveal.displayWidth}px`, height: `${roundReveal.displayHeight}px` }}
+      />
+      <img
+        className="avatar-tool-round-reveal-hand is-avatar"
+        src={roundReveal.avatarImagePath}
+        alt=""
+        style={{ width: `${roundReveal.displayWidth}px`, height: `${roundReveal.displayHeight}px` }}
+      />
+      <span className="avatar-tool-round-reveal-impact-ring" />
+      {roundReveal.resultLabel ? (
+        <span className="avatar-tool-round-reveal-result">{roundReveal.resultLabel}</span>
+      ) : null}
+    </div>
+  ) : null;
+
+  const roundChoiceAvatarGesture = model.roundChoiceAvatarGesture;
+  const roundChoiceAvatarGestureAnchor = roundChoiceAvatarGesture
+    ? clampAvatarToolHeadGestureAnchor(
+      roundChoiceAvatarGesture.anchor,
+      roundChoiceAvatarGesture.displayWidth,
+      roundChoiceAvatarGesture.displayHeight,
+      typeof window === 'undefined' ? 0 : window.innerWidth,
+      typeof window === 'undefined' ? 0 : window.innerHeight,
+    )
+    : null;
+  const roundChoiceAvatarGestureVisual = roundChoiceAvatarGesture ? (
+    <div
+      className="avatar-tool-round-choice-avatar-gesture"
+      aria-hidden="true"
+      style={{
+        left: `${roundChoiceAvatarGestureAnchor?.x ?? roundChoiceAvatarGesture.anchor.x}px`,
+        top: `${roundChoiceAvatarGestureAnchor?.y ?? roundChoiceAvatarGesture.anchor.y}px`,
+      }}
+    >
+      <img
+        className="avatar-tool-round-choice-avatar-gesture-image"
+        src={roundChoiceAvatarGesture.imagePath}
+        alt=""
+        style={{
+          width: `${roundChoiceAvatarGesture.displayWidth}px`,
+          height: `${roundChoiceAvatarGesture.displayHeight}px`,
+        }}
+      />
     </div>
   ) : null;
 
@@ -638,6 +916,8 @@ export default function AvatarToolVisuals({ model }: { model: AvatarToolVisualMo
     <>
       {toolVisual}
       {impactEffectVisual}
+      {roundRevealVisual}
+      {roundChoiceAvatarGestureVisual}
     </>
   );
 

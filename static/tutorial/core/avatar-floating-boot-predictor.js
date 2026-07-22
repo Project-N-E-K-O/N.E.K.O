@@ -1,10 +1,12 @@
 (function () {
     'use strict';
 
-    const AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
-    const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1'];
     const PC_OVERLAY_RUN_ID_STORAGE_KEY = 'yuiGuidePcOverlayRunId';
-    const ROUND_COUNT = 7;
+    const sevenDayState = window.NekoSevenDayTutorialState || null;
+    if (!sevenDayState) {
+        console.error('[TutorialBoot] 七日教程状态模块不可用，跳过启动预测');
+        return;
+    }
 
     const state = {
         predictedRound: null,
@@ -16,97 +18,24 @@
     };
     let overlayRunId = '';
 
-    function getTodayLocalDate() {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        const day = String(now.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-    }
-
     function normalizeRound(value) {
-        const round = Number(value);
-        return Number.isInteger(round) && round >= 1 && round <= ROUND_COUNT ? round : null;
-    }
-
-    function normalizeRoundList(value) {
-        if (!Array.isArray(value)) {
-            return [];
-        }
-        return Array.from(new Set(
-            value
-                .map(item => Number(item))
-                .filter(item => Number.isInteger(item) && item >= 1 && item <= ROUND_COUNT)
-        )).sort((left, right) => left - right);
+        return sevenDayState.normalizeRound(value);
     }
 
     function loadGuideState() {
-        let parsed = {};
-        try {
-            const raw = window.localStorage && window.localStorage.getItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY);
-            parsed = raw ? JSON.parse(raw) : {};
-        } catch (_) {
-            parsed = {};
-        }
-        return {
-            firstSeenDate: parsed.firstSeenDate || getTodayLocalDate(),
-            completedRounds: normalizeRoundList(parsed.completedRounds),
-            skippedRounds: normalizeRoundList(parsed.skippedRounds),
-            pendingRound: normalizeRound(parsed.pendingRound),
-            manualResetRound: normalizeRound(parsed.manualResetRound),
-            lastAutoShownDate: parsed.lastAutoShownDate || ''
-        };
+        return sevenDayState.loadState();
     }
 
-    function getDateDeltaDays(firstSeenDate, today) {
-        const matchFirst = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(firstSeenDate || ''));
-        const matchToday = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(today || ''));
-        if (!matchFirst || !matchToday) {
-            return 0;
-        }
-        const firstDate = new Date(Number(matchFirst[1]), Number(matchFirst[2]) - 1, Number(matchFirst[3]));
-        const todayDate = new Date(Number(matchToday[1]), Number(matchToday[2]) - 1, Number(matchToday[3]));
-        const diffMs = todayDate.getTime() - firstDate.getTime();
-        return Number.isFinite(diffMs) ? Math.max(0, Math.floor(diffMs / 86400000)) : 0;
-    }
-
-    function hasLegacyHomeTutorialSeen() {
-        try {
-            return HOME_TUTORIAL_KEYS.some(key => window.localStorage && window.localStorage.getItem(key) === 'true');
-        } catch (_) {
-            return false;
-        }
+    function isAuthoritativeStateReady() {
+        return typeof sevenDayState.isReady !== 'function' || sevenDayState.isReady();
     }
 
     function computePredictedRound() {
         const guideState = loadGuideState();
-        const completed = new Set(guideState.completedRounds);
-        const skipped = new Set(guideState.skippedRounds);
-
-        if (!completed.has(1) && hasLegacyHomeTutorialSeen()) {
-            completed.add(1);
-        }
-
-        if (guideState.manualResetRound) {
-            return guideState.manualResetRound;
-        }
-        if (guideState.lastAutoShownDate === getTodayLocalDate()) {
-            return null;
-        }
-        if (guideState.pendingRound && !completed.has(guideState.pendingRound) && !skipped.has(guideState.pendingRound)) {
-            return guideState.pendingRound;
-        }
-        if (!completed.has(1) && !skipped.has(1)) {
-            return 1;
-        }
-
-        const maxDueRound = Math.min(ROUND_COUNT, getDateDeltaDays(guideState.firstSeenDate, getTodayLocalDate()) + 1);
-        for (let round = 2; round <= maxDueRound; round += 1) {
-            if (!completed.has(round) && !skipped.has(round)) {
-                return round;
-            }
-        }
-        return null;
+        return sevenDayState.getNextAutoRound(
+            guideState,
+            sevenDayState.getTodayLocalDate()
+        );
     }
 
     function getPredictedRound() {
@@ -119,6 +48,9 @@
     }
 
     function shouldBootIntoTutorial() {
+        if (!isAuthoritativeStateReady()) {
+            return false;
+        }
         if (state.predictionSuppressed) {
             return false;
         }
@@ -130,6 +62,9 @@
     }
 
     function shouldSkipUserModelBoot() {
+        if (!isAuthoritativeStateReady()) {
+            return state.directTutorialBootClaimed === true;
+        }
         if (!isTutorialBootAvailable()) {
             return false;
         }

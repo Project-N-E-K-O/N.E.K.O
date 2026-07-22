@@ -55,7 +55,7 @@ class QQSettingsService:
         url = str(settings.get("onebot_url") or "").strip()
         masked = self.plugin._mask_token(str(settings.get("token") or ""))
         mode = str(settings.get("qq_connection_mode") or "napcat").strip()
-        self.plugin._emit_log("INFO", f"连接模式: {mode} | 地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''} | 策略: {self.plugin._strategy_mode}")
+        self.plugin._emit_log("INFO", f"连接模式: {mode} | 监听地址: {url or '(未配置)'} | Token: {masked}{' (空)' if not settings.get('token') else ''} | 策略: {self.plugin._strategy_mode}")
 
     def _enforce_attention_for_dynamic_mode(self) -> None:
         """neko_dynamic 模式下强制启用多群注意力，确保磁盘配置与运行时一致。"""
@@ -86,7 +86,7 @@ class QQSettingsService:
 
         if onebot_url is not None:
             self.plugin._qq_settings["onebot_url"] = str(onebot_url or "").strip()
-            self.plugin._emit_log("INFO", f"OneBot 地址已更新: {self.plugin._qq_settings['onebot_url'] or '(空)'}")
+            self.plugin._emit_log("INFO", f"反向 WS 监听地址已更新: {self.plugin._qq_settings['onebot_url'] or '(空)'}")
         if token is not None:
             self.plugin._qq_settings["token"] = str(token or "")
             masked = self.plugin._mask_token(self.plugin._qq_settings["token"])
@@ -131,6 +131,9 @@ class QQSettingsService:
             self.plugin._truth_reply_probability = value
         if backlog_labels is not None:
             self.plugin._qq_settings["backlog_labels"] = self.plugin.config_store.normalize_backlog_labels(backlog_labels)
+        proactive_silence_seconds = kwargs.get("proactive_silence_seconds")
+        if proactive_silence_seconds is not None:
+            self.plugin._qq_settings["proactive_silence_seconds"] = max(0, int(proactive_silence_seconds))
         sticker_cooldown_messages = kwargs.get("sticker_cooldown_messages")
         if sticker_cooldown_messages is not None:
             self.plugin._qq_settings["sticker_cooldown_messages"] = max(0, int(sticker_cooldown_messages))
@@ -153,11 +156,14 @@ class QQSettingsService:
         strategy_mode = kwargs.get("strategy_mode")
         if strategy_mode is not None:
             self.plugin._qq_settings["strategy_mode"] = self.plugin.config_store._normalize_strategy_mode(strategy_mode)
-            self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._qq_settings['strategy_mode']}")
+            self.plugin._strategy_mode = self.plugin._qq_settings["strategy_mode"]
+            self.plugin._emit_log("INFO", f"策略模式已切换: {self.plugin._strategy_mode}")
         self._enforce_attention_for_dynamic_mode()
         self.plugin._qq_settings.pop("guide_step_settings_done", None)
         self.plugin._ensure_qq_client_initialized()
         success = await self.persist_business_config()
+        if self.plugin.attention_service:
+            self.plugin.attention_service.cleanup_stale_cache()
         if success:
             self.plugin._emit_log("INFO", "设置已保存到磁盘" + (" (需重启自动回复以应用新连接)" if self.plugin._running else ""))
         if self.plugin.qq_client:

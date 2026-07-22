@@ -16,7 +16,7 @@
 Avatar-interaction prompt templates and payload normalizers.
 
 Used when the frontend reports a tool-based avatar interaction
-(lollipop / fist / hammer) — these helpers validate the payload,
+(lollipop / fist / hammer / rps) — these helpers validate the payload,
 localize event facts, and compose the model instruction + memory note
 that drive the runtime reaction.
 """
@@ -36,8 +36,10 @@ from config._runtime import (
     truncate_to_tokens,
 )
 from config.prompts.avatar_interaction_contract import (
+    AVATAR_INTERACTION_ROUND_GESTURES as _AVATAR_INTERACTION_ROUND_GESTURES,
     AVATAR_INTERACTION_TOUCH_ZONE_TOOLS as _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS,
     normalize_avatar_interaction_intensity as _normalize_avatar_interaction_intensity,
+    resolve_avatar_interaction_round_result as _resolve_avatar_interaction_round_result,
 )
 
 
@@ -527,6 +529,102 @@ _AVATAR_INTERACTION_REACTION_PROFILES = {
 }
 
 
+# RPS uses the same direct-event prompt responsibility as the other avatar tools:
+# preserve the already-validated interaction facts and let the current persona,
+# relationship, and conversation context determine the natural reaction.
+_AVATAR_INTERACTION_RPS_PROMPT_PROFILES = {
+    "zh": {
+        "template": "{actor}刚刚和{avatar}玩了一局猜拳。{actor}出{user_gesture}，{avatar}出{avatar_gesture}，本局{result}。请结合当前人格、关系和对话语境，像刚玩完这一局一样自然接话，不必先复述胜负。",
+        "gestures": {"rock": "石头", "scissors": "剪刀", "paper": "布"},
+        "results": {
+            "user_win": "{actor}赢、{avatar}输",
+            "avatar_win": "{avatar}赢、{actor}输",
+            "draw": "平手",
+        },
+    },
+    "zh-TW": {
+        "template": "{actor}剛剛和{avatar}玩了一局猜拳。{actor}出{user_gesture}，{avatar}出{avatar_gesture}，這局{result}。請結合目前的人格、關係和對話脈絡，像剛玩完這一局一樣自然接話，不必先重述勝負。",
+        "gestures": {"rock": "石頭", "scissors": "剪刀", "paper": "布"},
+        "results": {
+            "user_win": "{actor}贏、{avatar}輸",
+            "avatar_win": "{avatar}贏、{actor}輸",
+            "draw": "平手",
+        },
+    },
+    "en": {
+        "template": "{actor} and {avatar} just played a round of rock-paper-scissors. {actor} chose {user_gesture}, {avatar} chose {avatar_gesture}, and {result}. Respond naturally as if the round had just ended, in keeping with the current personality, relationship, and conversation context, without first restating the outcome.",
+        "gestures": {"rock": "rock", "scissors": "scissors", "paper": "paper"},
+        "results": {
+            "user_win": "{actor} won while {avatar} lost",
+            "avatar_win": "{avatar} won while {actor} lost",
+            "draw": "the round was a draw",
+        },
+    },
+    "ja": {
+        "template": "{actor}と{avatar}が今、じゃんけんを一回しました。{actor}は{user_gesture}を、{avatar}は{avatar_gesture}を出し、{result}。現在の人格、関係、会話の流れを保ち、じゃんけんを終えた直後のように自然に言葉を返してください。最初に勝敗を言い直す必要はありません。",
+        "gestures": {"rock": "グー", "scissors": "チョキ", "paper": "パー"},
+        "results": {
+            "user_win": "{actor}の勝ち、{avatar}の負けでした",
+            "avatar_win": "{avatar}の勝ち、{actor}の負けでした",
+            "draw": "あいこでした",
+        },
+    },
+    "ko": {
+        "template": "방금 {actor} 낸 손은 {user_gesture}, {avatar}의 손은 {avatar_gesture}로 가위바위보 한 판이 끝났고, {result}. 현재 성격과 관계, 대화 맥락을 이어 방금 판을 마친 것처럼 자연스럽게 말해라. 먼저 승패를 되풀이할 필요는 없다.",
+        "gestures": {"rock": "바위", "scissors": "가위", "paper": "보"},
+        "results": {
+            "user_win": "{avatar}는 이번 판에서 졌다",
+            "avatar_win": "{avatar}는 이번 판에서 이겼다",
+            "draw": "이번 판은 비겼다",
+        },
+    },
+    "ru": {
+        "template": "{actor} и {avatar} только что сыграли один раунд в «камень, ножницы, бумага». Ход {actor}: {user_gesture}; ход {avatar}: {avatar_gesture}; {result}. Сохраняя нынешний характер, отношения и контекст разговора, ответь естественно, как сразу после раунда. Не нужно сначала повторять его исход.",
+        "gestures": {"rock": "камень", "scissors": "ножницы", "paper": "бумага"},
+        "results": {
+            "user_win": "победитель — {actor}, проигравшая сторона — {avatar}",
+            "avatar_win": "победитель — {avatar}, проигравшая сторона — {actor}",
+            "draw": "получилась ничья",
+        },
+    },
+    "es": {
+        "template": "{actor} y {avatar} acaban de jugar una ronda de piedra, papel o tijera. {actor} sacó {user_gesture} y {avatar} sacó {avatar_gesture}; {result}. Mantén la personalidad, la relación y el contexto de la conversación actuales, y responde con naturalidad como justo después de la ronda, sin empezar por repetir el resultado.",
+        "gestures": {"rock": "piedra", "scissors": "tijera", "paper": "papel"},
+        "results": {
+            "user_win": "ganó {actor} y perdió {avatar}",
+            "avatar_win": "ganó {avatar} y perdió {actor}",
+            "draw": "la ronda terminó en empate",
+        },
+    },
+    "pt": {
+        "template": "{actor} e {avatar} acabaram de jogar uma rodada de pedra, papel e tesoura. {actor} jogou {user_gesture} e {avatar} jogou {avatar_gesture}; {result}. Mantenha a personalidade, a relação e o contexto atuais da conversa, e responda naturalmente como logo após a rodada, sem começar repetindo o resultado.",
+        "gestures": {"rock": "pedra", "scissors": "tesoura", "paper": "papel"},
+        "results": {
+            "user_win": "{actor} venceu e {avatar} perdeu",
+            "avatar_win": "{avatar} venceu e {actor} perdeu",
+            "draw": "a rodada terminou empatada",
+        },
+    },
+}
+
+
+def _require_rps_round_facts(payload: dict) -> tuple[str, str, str]:
+    user_gesture = str(payload.get("user_gesture") or "").strip().lower()
+    avatar_gesture = str(payload.get("avatar_gesture") or "").strip().lower()
+    round_result = str(payload.get("round_result") or "").strip().lower()
+    expected_result = _resolve_avatar_interaction_round_result(
+        user_gesture, avatar_gesture
+    )
+    if (
+        user_gesture not in _AVATAR_INTERACTION_ROUND_GESTURES
+        or avatar_gesture not in _AVATAR_INTERACTION_ROUND_GESTURES
+        or not expected_result
+        or round_result != expected_result
+    ):
+        raise ValueError("Invalid rps round facts")
+    return user_gesture, avatar_gesture, round_result
+
+
 def _require_avatar_interaction_facts(tool_id: str, action_id: str, payload: dict) -> str:
     intensity = _normalize_avatar_interaction_intensity(
         tool_id, action_id, payload.get("intensity")
@@ -562,6 +660,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}连续用锤子敲了你好几下]",
             "easter_egg": "[{master}用放大彩蛋锤敲了你一下]",
         },
+        "rps": {
+            "user_win": "[和{master}猜拳，输了]",
+            "avatar_win": "[和{master}猜拳，赢了]",
+            "draw": "[和{master}猜拳，平手]",
+        },
     },
     "en": {
         "lollipop": {
@@ -577,6 +680,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master} bonked you once with a hammer]",
             "rapid": "[{master} bonked you several times with a hammer]",
             "easter_egg": "[{master} hit you once with the enlarged easter-egg hammer]",
+        },
+        "rps": {
+            "user_win": "[Lost to {master} at rock-paper-scissors]",
+            "avatar_win": "[Beat {master} at rock-paper-scissors]",
+            "draw": "[Drew with {master} at rock-paper-scissors]",
         },
     },
     "zh-TW": {
@@ -594,6 +702,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}連續用槌子敲了你好幾下]",
             "easter_egg": "[{master}用放大彩蛋槌敲了你一下]",
         },
+        "rps": {
+            "user_win": "[和{master}猜拳，輸了]",
+            "avatar_win": "[和{master}猜拳，贏了]",
+            "draw": "[和{master}猜拳，平手]",
+        },
     },
     "ja": {
         "lollipop": {
@@ -609,6 +722,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master}がハンマーであなたを一度叩いた]",
             "rapid": "[{master}がハンマーであなたを何度か続けて叩いた]",
             "easter_egg": "[{master}が拡大イースターエッグのハンマーであなたを一度叩いた]",
+        },
+        "rps": {
+            "user_win": "[{master}とのじゃんけんに負けた]",
+            "avatar_win": "[{master}とのじゃんけんに勝った]",
+            "draw": "[{master}とのじゃんけんはあいこだった]",
         },
     },
     "ko": {
@@ -629,6 +747,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master}이 망치로 너를 여러 번 연달아 쳤다]",
             "easter_egg": "[{master}이 확대 이스터에그 망치로 너를 한 번 쳤다]",
         },
+        "rps": {
+            "user_win": "[{master} 상대 가위바위보에서 짐]",
+            "avatar_win": "[{master} 상대 가위바위보에서 이김]",
+            "draw": "[{master} 상대 가위바위보에서 비김]",
+        },
     },
     "ru": {
         # 俄语过去时随主语性别变（дал / дала）。master_name 是任意字符串，无法静态
@@ -647,6 +770,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master} несколько раз подряд стукнул тебя молотком]",
             "easter_egg": "[{master} один раз стукнул тебя увеличенным пасхальным молотком]",
         },
+        "rps": {
+            "user_win": "[Проигрыш {master} в игре «камень, ножницы, бумага»]",
+            "avatar_win": "[Победа над {master} в игре «камень, ножницы, бумага»]",
+            "draw": "[Ничья с {master} в игре «камень, ножницы, бумага»]",
+        },
     },
     "es": {
         "lollipop": {
@@ -663,6 +791,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "rapid": "[{master} te golpeó varias veces seguidas con un martillo]",
             "easter_egg": "[{master} te dio un golpe con el martillo de easter egg ampliado]",
         },
+        "rps": {
+            "user_win": "[Perdiste contra {master} a piedra, papel o tijera]",
+            "avatar_win": "[Ganaste a {master} a piedra, papel o tijera]",
+            "draw": "[Empataste con {master} a piedra, papel o tijera]",
+        },
     },
     "pt": {
         "lollipop": {
@@ -678,6 +811,11 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
             "bonk": "[{master} bateu em você uma vez com um martelo]",
             "rapid": "[{master} bateu em você várias vezes seguidas com um martelo]",
             "easter_egg": "[{master} bateu em você uma vez com o martelo de easter egg ampliado]",
+        },
+        "rps": {
+            "user_win": "[Perdeu para {master} no jogo de pedra, papel e tesoura]",
+            "avatar_win": "[Venceu {master} no jogo de pedra, papel e tesoura]",
+            "draw": "[Empatou com {master} no jogo de pedra, papel e tesoura]",
         },
     },
 }
@@ -811,6 +949,23 @@ def _build_avatar_interaction_instruction(
     """Build the localized event fact sent to the model for an interaction."""
     locale = _avatar_interaction_locale(language)
     tool_id = payload["tool_id"]
+    if tool_id == "rps":
+        user_gesture, avatar_gesture, round_result = _require_rps_round_facts(payload)
+        profile = _AVATAR_INTERACTION_RPS_PROMPT_PROFILES.get(
+            locale, _AVATAR_INTERACTION_RPS_PROMPT_PROFILES["en"]
+        )
+        actor = _avatar_interaction_prompt_actor(locale, master_name)
+        avatar = str(lanlan_name or "").strip()
+        result = str(profile["results"][round_result]).format(
+            actor=actor, avatar=avatar
+        )
+        return str(profile["template"]).format(
+            actor=actor,
+            avatar=avatar,
+            user_gesture=profile["gestures"][user_gesture],
+            avatar_gesture=profile["gestures"][avatar_gesture],
+            result=result,
+        )
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 
@@ -869,6 +1024,16 @@ def _build_avatar_interaction_memory_meta(
     fallback = _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK
     master = str(master_name or "").strip() or fallback.get(locale, fallback["en"])
     tool_id = str(payload.get("tool_id") or "").strip().lower()
+    if tool_id == "rps":
+        _, _, round_result = _require_rps_round_facts(payload)
+        memory_note = templates.get("rps", {}).get(round_result, "").format(
+            master=master
+        )
+        return {
+            "memory_note": memory_note,
+            "memory_dedupe_key": "rps_round",
+            "memory_dedupe_rank": 1,
+        }
     action_id = str(payload.get("action_id") or "").strip().lower()
     intensity = _require_avatar_interaction_facts(tool_id, action_id, payload)
 

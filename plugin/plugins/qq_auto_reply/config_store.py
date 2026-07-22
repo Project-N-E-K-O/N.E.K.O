@@ -77,7 +77,7 @@ class QQAutoReplyConfigStore:
     def default_config(self) -> dict[str, Any]:
         return {
             "qq_connection_mode": "napcat",     # "napcat" | "open_platform"
-            "onebot_url": "ws://127.0.0.1:3001",
+            "onebot_url": "ws://0.0.0.0:6199",
             "token": "",
             # QQ 开放平台
             "qq_open_app_id": "",
@@ -121,6 +121,13 @@ class QQAutoReplyConfigStore:
             "retroactive_review_max_messages": 30,  # 回溯最多取多少条被忽略消息
             "retroactive_review_max_reply": 5,      # 回溯最多补回多少条
             "sticker_cooldown_messages": 5,          # 表情包发送间隔（群内消息数），0=不限制
+            # 疲劳系统参数（KiraAI-style 动态行为约束）
+            "fatigue_enabled": True,
+            "fatigue_circadian_peak_hour": 15,       # 昼夜节律峰值时间（24小时制）
+            "fatigue_circadian_low_hour": 3,         # 昼夜节律低谷时间
+            "fatigue_session_per_reply": 5.0,        # 每条回复增加的会话疲劳
+            "fatigue_awake_idle_timeout": 10.0,      # 苏醒后空闲多久回睡眠（秒）
+            "proactive_silence_seconds": 300,         # 焦点群沉默多久后主动发言（秒），0=禁用
             # 群聊长期记忆显式 opt-in。成员记忆会增加按成员分桶的提取调用，
             # 因此独立开关且默认关闭。
             "group_memory_enabled": False,
@@ -129,6 +136,8 @@ class QQAutoReplyConfigStore:
             "allow_cross_group_context": False,
             # 提示词编辑器覆盖值（locale → layer_id → text）
             "prompt_overrides": {},
+            # 按群自定义提示词（group_id → 提示词文本）
+            "group_prompts": {},
         }
 
     async def exists(self) -> bool:
@@ -153,6 +162,7 @@ class QQAutoReplyConfigStore:
         else:
             merged["reply_mode"] = "text"
         merged["strategy_mode"] = self._normalize_strategy_mode(payload.get("strategy_mode"))
+        merged["group_prompts"] = payload.get("group_prompts") if isinstance(payload.get("group_prompts"), dict) else {}
         merged.pop("audio_reply_enabled", None)
         return merged
 
@@ -170,6 +180,10 @@ class QQAutoReplyConfigStore:
             normalized["backlog_labels"] = self.normalize_backlog_labels(normalized.get("backlog_labels"))
             normalized["reply_mode"] = self.normalize_reply_mode(normalized.get("reply_mode"))
             normalized["strategy_mode"] = self._normalize_strategy_mode(normalized.get("strategy_mode"))
+            normalized["group_prompts"] = {
+                str(k): str(v) for k, v in (normalized.get("group_prompts") or {}).items()
+                if str(k).strip() and str(v).strip()
+            }
             normalized.pop("audio_reply_enabled", None)
             await atomic_write_json_async(self._path, normalized)
             return normalized

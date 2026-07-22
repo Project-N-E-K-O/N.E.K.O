@@ -420,6 +420,9 @@ Object.assign(window.Jukebox, {
             <span class="jukebox-settings-icon" aria-hidden="true">⚙</span>
             <span class="jukebox-settings-label">${window.t('Jukebox.settingsShort', '管理/导入')}</span>
           </button>
+          <button type="button" class="jukebox-pin neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}" aria-label="${Jukebox.escapeAttr(window.t('common.pinWindow', '置顶窗口'))}" aria-pressed="false">
+            <span class="neko-window-pin-icon" aria-hidden="true"></span>
+          </button>
           <button class="jukebox-minimize" onclick="Jukebox_hide()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.minimize', '最小化'))}">−</button>
           <button class="jukebox-close" onclick="Jukebox_close()" data-tooltip="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}" aria-label="${Jukebox.escapeAttr(window.t('Jukebox.close', '关闭'))}">×</button>
         </div>
@@ -544,6 +547,9 @@ Object.assign(window.Jukebox, {
 
     Jukebox.injectStyles();
     Jukebox.renderPlaybackControls();
+    if (window.nekoWindowControls && typeof window.nekoWindowControls.init === 'function') {
+      window.nekoWindowControls.init();
+    }
     Jukebox.bindTextTooltips(jukeboxContainer.querySelector('.jukebox-header-buttons'));
     const sortLockButton = jukeboxContainer.querySelector('.jukebox-sort-lock-btn');
     if (sortLockButton) {
@@ -1356,11 +1362,11 @@ Object.assign(window.Jukebox, {
         line-height: 1;
       }
 
+      .jukebox-pin,
       .jukebox-minimize {
         background: rgba(255,255,255,0.46);
         border: 1px solid rgba(99,199,232,0.16);
         color: rgba(45, 78, 104, 0.8);
-        font-size: 24px;
         cursor: pointer;
         padding: 0;
         width: 34px;
@@ -1370,13 +1376,48 @@ Object.assign(window.Jukebox, {
         justify-content: center;
         border-radius: 50%;
         line-height: 1;
-        transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+        transition:
+          background 0.2s ease,
+          border-color 0.2s ease,
+          color 0.2s ease,
+          transform 0.2s ease,
+          box-shadow 0.2s ease;
       }
 
+      .jukebox-minimize {
+        font-size: 24px;
+      }
+
+      .jukebox-pin[hidden] {
+        display: none;
+      }
+
+      .jukebox-pin.is-pinned {
+        background: linear-gradient(145deg, rgba(99,199,232,0.34), rgba(255,255,255,0.58));
+        border-color: rgba(73,181,220,0.38);
+        color: rgba(28, 48, 68, 0.96);
+        box-shadow:
+          inset 0 0 0 1px rgba(255,255,255,0.5),
+          0 4px 12px rgba(65,171,211,0.2);
+      }
+
+      .jukebox-pin:hover,
       .jukebox-minimize:hover {
         background: ${Jukebox.Config.header.btnHoverBg};
         color: rgba(28, 48, 68, 0.94);
         transform: translateY(-1px);
+      }
+
+      .jukebox-pin.is-pinned:hover {
+        background: linear-gradient(145deg, rgba(99,199,232,0.44), rgba(255,255,255,0.68));
+        border-color: rgba(73,181,220,0.48);
+        box-shadow:
+          inset 0 0 0 1px rgba(255,255,255,0.62),
+          0 5px 14px rgba(65,171,211,0.24);
+      }
+
+      .jukebox-pin:focus-visible {
+        outline-color: rgba(14,165,233,0.9);
       }
 
       .jukebox-close {
@@ -2035,6 +2076,7 @@ Object.assign(window.Jukebox, {
       }
 
       [data-theme="dark"] .jukebox-settings,
+      [data-theme="dark"] .jukebox-pin,
       [data-theme="dark"] .jukebox-minimize,
       [data-theme="dark"] .jukebox-sort-lock-btn,
       [data-theme="dark"] .jukebox-speaker-btn,
@@ -2046,6 +2088,7 @@ Object.assign(window.Jukebox, {
       }
 
       [data-theme="dark"] .jukebox-settings:hover,
+      [data-theme="dark"] .jukebox-pin:hover,
       [data-theme="dark"] .jukebox-minimize:hover,
       [data-theme="dark"] .jukebox-sort-lock-btn:hover,
       [data-theme="dark"] .jukebox-sort-lock-btn.unlocked,
@@ -2055,6 +2098,24 @@ Object.assign(window.Jukebox, {
         background: linear-gradient(135deg, rgba(14, 165, 233, 0.28), rgba(244, 114, 182, 0.18));
         border-color: rgba(124, 218, 244, 0.36);
         box-shadow: 0 6px 16px rgba(14, 165, 233, 0.16);
+      }
+
+      [data-theme="dark"] .jukebox-pin.is-pinned {
+        color: #f8fafc;
+        background: linear-gradient(145deg, rgba(14,165,233,0.42), rgba(244,114,182,0.2));
+        border-color: rgba(124,218,244,0.48);
+        box-shadow:
+          inset 0 0 0 1px rgba(186,230,253,0.16),
+          0 5px 14px rgba(14,165,233,0.22);
+      }
+
+      [data-theme="dark"] .jukebox-pin.is-pinned:hover {
+        background: linear-gradient(145deg, rgba(14,165,233,0.52), rgba(244,114,182,0.26));
+        border-color: rgba(186,230,253,0.58);
+      }
+
+      [data-theme="dark"] .jukebox-pin:focus-visible {
+        outline-color: rgba(186,230,253,0.94);
       }
 
       [data-theme="dark"] .jukebox-close {

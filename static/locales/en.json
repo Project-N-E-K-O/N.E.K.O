@@ -4,6 +4,8 @@
         "minimize": "Minimize",
         "maximize": "Maximize",
         "restore": "Restore",
+        "pinWindow": "Pin window",
+        "unpinWindow": "Unpin window",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",
@@ -74,15 +76,6 @@
             "accept": "Yes, turn off screen sharing",
             "decline": "No, keep it on"
         }
-    },
-    "tutorialPrompt": {
-        "title": "Want to start the home tutorial?",
-        "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
-        "note": "You can skip it at any time, or reopen it later from Memory Browser.",
-        "startNow": "Start tutorial",
-        "later": "Maybe later",
-        "never": "Don't remind me",
-        "startFailed": "The tutorial couldn't be started right now. Please try again later."
     },
     "characterProfile": {
         "gender": "Gender",
@@ -809,6 +802,14 @@
         "toolLollipop": "Lollipop",
         "toolFist": "Cat paw",
         "toolHammer": "Hammer",
+        "toolRps": "Rock Paper Scissors",
+        "avatarToolRpsGestureRock": "Rock",
+        "avatarToolRpsGestureScissors": "Scissors",
+        "avatarToolRpsGesturePaper": "Paper",
+        "avatarToolRpsResultUserWin": "You win",
+        "avatarToolRpsResultAvatarWin": "{{name}} wins",
+        "avatarToolRpsResultDraw": "Draw",
+        "avatarToolRpsRoundAnnouncement": "You played {{userGesture}}. {{name}} played {{avatarGesture}}. {{result}}.",
         "avatarToolsButtonAriaLabel": "Avatar tools",
         "clearAvatarToolAriaLabel": "Clear tool",
         "avatarToolQuickbarAriaLabel": "Avatar quick tools",
@@ -1664,6 +1665,7 @@
         },
         "registeredVoices": "Registered Voices",
         "preview": "Preview",
+        "previewing": "Previewing",
         "previewFailed": "Preview failed: {{error}}",
         "previewTimeout": "Preview generation timed out. Please try again later.",
         "playFailed": "Play failed: {{error}}",
@@ -3787,6 +3789,7 @@
         "bilibili": "Bilibili",
         "xhh": "Xiaoheihe",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3812,7 +3815,15 @@
         "noCookies": "Please configure Cookies first",
         "statusLoadFailed": "Status load failed",
         "thisPlatform": "this platform",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Create a public app in the Twitch Developer Console and enter its Client ID. A Client Secret is neither requested nor stored.",
+            "start": "Start Twitch authorization", "authorizeHint": "Open the Twitch activation page and enter this code:", "check": "I've authorized it; check status",
+            "invalidClientId": "Enter a valid Twitch Client ID", "started": "Twitch authorization started; finish confirmation in your browser",
+            "startFailed": "Could not start Twitch authorization. Check the Client ID and network.", "authorized": "Twitch credential was encrypted and saved",
+            "pending": "Authorization is not complete. Confirm it on Twitch, then try again.", "checkFailed": "Authorization check failed. Start authorization again."
+        },
         "instructions": {
+            "twitch": "<b>Device Code authorization:</b> Create a public app in the Twitch Developer Console, enter its Client ID, then follow the authorization prompt.",
             "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
             "xhh": "<b>Recommended:</b> use QR login below, or sign in at <b>xiaoheihe.cn</b> and enter the cookies manually.",
             "youtube": "<b>1. Get the Cookie</b><br>In a browser signed in to YouTube:<br>1. Open <b>youtube.com</b><br>2. Press F12 → Network<br>3. Refresh the page and select a <code>youtubei/v1/browse</code> request<br>4. Copy the complete Cookie value from Request Headers",
