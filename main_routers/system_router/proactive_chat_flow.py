@@ -26,7 +26,7 @@ from .break_reminders import (
     _render_work_break_game_invite_prompt,
     _render_work_break_prompt,
 )
-from .mini_game_invite import (
+from main_logic.proactive_chat.mini_game_invite import (
     _build_mini_game_invite_options_payload,
     _maybe_deliver_mini_game_invite,
     _mini_game_invite_advance_response,
@@ -36,18 +36,24 @@ from .mini_game_invite import (
     _pick_mini_game_type,
     _push_mini_game_invite_resolved,
 )
-from .proactive_content import (
+from main_logic.proactive_chat.music_recommendation import (
     _append_music_recommendations,
+    _build_music_dynamic_context,
+    _build_music_playing_hint,
+    _fetch_music_with_fallback,
     _format_music_content,
     _log_music_content,
+    _record_music_played_through,
+    _select_music_recommendation,
+)
+from .proactive_content import (
     _log_news_content,
     _log_personal_dynamics,
     _log_trending_content,
     _log_video_content,
 )
-from .proactive_history import (
+from main_logic.proactive_chat.state import (
     _PROACTIVE_SIMILARITY_THRESHOLD,
-    _clear_channel_from_proactive_history,
     _format_recent_proactive_chats,
     _increment_proactive_chat_total,
     _is_recent_proactive_material,
@@ -58,7 +64,8 @@ from .proactive_history import (
     _record_proactive_material,
     _record_reminiscence_usage,
 )
-from .proactive_parsing import (
+from main_logic.proactive_chat.contracts import (
+    ProactiveChatCommand,
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_FAILED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
@@ -78,22 +85,26 @@ from .proactive_parsing import (
     PROACTIVE_REASON_PASS_SOURCE_EMPTY,
     PROACTIVE_REASON_PASS_THROTTLED,
     _ensure_proactive_reason_code,
-    _extract_links_from_raw,
-    _lookup_link_by_title,
-    _parse_unified_phase1_result,
     _proactive_chat_body,
     _proactive_error_body,
     _proactive_pass_body,
+)
+from main_logic.proactive_chat.generation import (
+    _extract_links_from_raw,
+    _lookup_link_by_title,
+    _parse_unified_phase1_result,
     _strip_proactive_intent_label_leak,
     _strip_proactive_screen_tag_leak,
     _text_is_pass_sentinel,
 )
-from .proactive_sources import (
+from main_logic.proactive_chat.decisions import (
     _compute_source_weights,
-    _ensure_source_history_loaded,
     _filter_sources_by_weight,
-    _record_source_used,
     _should_skip_source,
+)
+from main_logic.proactive_chat.state import (
+    _ensure_source_history_loaded,
+    _record_source_used,
     _source_hash,
 )
 import asyncio
@@ -147,10 +158,7 @@ from config import (
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_directives import render_regen_avoid_instruction, render_format_fix_instruction
 from config.prompts.prompts_proactive import (
-    get_proactive_generate_prompt, get_proactive_music_playing_hint,
-    get_proactive_music_unknown_track_name,
-    get_proactive_music_failsafe_hint,
-    get_proactive_music_strict_constraint,
+    get_proactive_generate_prompt,
     get_proactive_format_sections,
     get_screen_section_header,
     get_screen_section_footer, get_screen_img_hint, BEGIN_GENERATE,
@@ -159,7 +167,7 @@ from config.prompts.prompts_proactive import (
     MUSIC_SECTION_FOOTER,
     MEME_SECTION_HEADER,
     MEME_SECTION_FOOTER, get_meme_topic_line,
-    PROACTIVE_SOURCE_LABELS, PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
+    PROACTIVE_SOURCE_LABELS,
     build_proactive_action_note,
 )
 from utils.screenshot_utils import (
@@ -175,7 +183,6 @@ from utils.web_scraper import (
     fetch_news_content, format_news_content,
     fetch_personal_dynamics, format_personal_dynamics,
 )
-from utils.music_crawlers import fetch_music_content
 from utils.meme_fetcher import fetch_meme_content
 from utils.meme_moderation import moderate_meme_image_url
 
@@ -311,7 +318,23 @@ def _render_followup_topic_hooks(
     return prompt, surfaced_reflection_ids
 
 
-def _resolve_proactive_locale(data: dict, mgr) -> str:
+def _command_language_candidates(
+    command_or_data: ProactiveChatCommand | dict,
+) -> tuple[Any, Any, Any]:
+    """Read locale aliases from the new command or the compatibility dict."""
+    if isinstance(command_or_data, ProactiveChatCommand):
+        return command_or_data.language_candidates
+    return (
+        command_or_data.get('language'),
+        command_or_data.get('lang'),
+        command_or_data.get('i18n_language'),
+    )
+
+
+def _resolve_proactive_locale(
+    command_or_data: ProactiveChatCommand | dict,
+    mgr,
+) -> str:
     """Resolve the active user locale for proactive chat flows.
 
     Request data wins first, websocket session language is the second source of
@@ -319,7 +342,10 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
     keeps proactive invite copy and Phase 1-2 LLM output aligned with the live
     session whenever frontend i18n has already reported the user's language.
     """
-    request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
+    request_lang = next(
+        (value for value in _command_language_candidates(command_or_data) if value),
+        None,
+    )
     # 与 ``main_routers/game_router._absorb_request_language`` 同形：第三方客户端 /
     # corrupted localStorage 可能传 ``'undefined'`` / ``'estonian'`` 等 garbage，
     # ``normalize_language_code`` 对未识别值默认回退 ``'en'``——必须先用公共白名单
@@ -336,12 +362,15 @@ def _resolve_proactive_locale(data: dict, mgr) -> str:
     return get_global_language() or 'en'
 
 
-def _resolve_topic_hook_locale(data: dict, mgr, *, fallback: str) -> str:
+def _resolve_topic_hook_locale(
+    command_or_data: ProactiveChatCommand | dict,
+    mgr,
+    *,
+    fallback: str,
+) -> str:
     """Resolve the locale for topic-hook prompts without collapsing zh-TW."""
     for raw_lang in (
-        data.get('language'),
-        data.get('lang'),
-        data.get('i18n_language'),
+        *_command_language_candidates(command_or_data),
         getattr(mgr, 'user_language', None),
     ):
         if raw_lang and is_supported_language_code(raw_lang):
@@ -412,10 +441,11 @@ async def proactive_chat(request: Request):
         master_name_current, her_name_current, _, _, _, lanlan_prompt_map, _, _, _ = await _config_manager.aget_character_data()
         
         data = await request.json()
-        lanlan_name = data.get('lanlan_name') or her_name_current
-        is_playing_music = data.get('is_playing_music', False)
-        current_track = data.get('current_track', None)
-        music_cooldown = data.get('music_cooldown', False)
+        command = ProactiveChatCommand.from_payload(data)
+        lanlan_name = command.lanlan_name or her_name_current
+        is_playing_music = command.is_playing_music
+        current_track = command.current_track
+        music_cooldown = command.music_cooldown
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
@@ -458,7 +488,7 @@ async def proactive_chat(request: Request):
         # ========== Voice mode fast path ==========
         # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
         # can_start_proactive 做 409 判定即可。
-        if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+        if command.voice_mode and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
             # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
             # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
             # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
@@ -685,7 +715,7 @@ async def proactive_chat(request: Request):
         # CodeRabbit Major review 指出原版只在 _maybe_deliver_mini_game_invite
         # 入口拦 user toggle，旗标已经把上游 gate 绕过 → 进 _maybe_deliver
         # 又被 toggle 拦 None → caller 走普通 source picking，封禁场景仍然漏过。
-        _user_invite_toggle = bool(data.get('mini_game_invite_enabled', True))
+        _user_invite_toggle = command.mini_game_invite_enabled
 
         # 调试旗标 ``MINI_GAME_INVITE_FORCE_GAME_TYPE`` 非 None 时绕开本函数所有
         # 上游早退 gate（closed / skip_probability / restricted_screen_only），
@@ -753,7 +783,7 @@ async def proactive_chat(request: Request):
                 print(f"[{lanlan_name}] propensity=restricted_screen_only 但有 must-fire 提醒待发，跳过本轮抖动 sleep")
             else:
                 try:
-                    _base_interval_raw = data.get('base_interval_seconds')
+                    _base_interval_raw = command.base_interval_seconds
                     _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
                 except (TypeError, ValueError):
                     _base_interval = 0.0
@@ -783,7 +813,7 @@ async def proactive_chat(request: Request):
             )
         ):
             try:
-                _break_lang = _resolve_proactive_locale(data, mgr)
+                _break_lang = _resolve_proactive_locale(command, mgr)
             except Exception:
                 _break_lang = 'zh'
 
@@ -1052,20 +1082,20 @@ async def proactive_chat(request: Request):
         # 表示新版客户端"用户把所有 source toggle 都关了"，不能再走 BC fallback
         # 退化到 home/trending（否则 mini-game 邀请 toggle 单独开启的场景下 dice
         # miss 会让 home 兜底打破 toggle 契约——codex P1）。
-        if 'enabled_modes' in data:
-            enabled_modes = data.get('enabled_modes') or []
+        if command.enabled_modes_provided:
+            enabled_modes = command.enabled_modes or []
         else:
-            content_type = data.get('content_type', None)
-            screenshot_data = data.get('screenshot_data')
+            content_type = command.content_type
+            screenshot_data = command.screenshot_data
             if screenshot_data and isinstance(screenshot_data, str):
                 enabled_modes = ['vision']
-            elif data.get('use_window_search', False):
+            elif command.use_window_search:
                 enabled_modes = ['window']
             elif content_type == 'news':
                 enabled_modes = ['news']
             elif content_type == 'video':
                 enabled_modes = ['video']
-            elif data.get('use_personal_dynamic', False):
+            elif command.use_personal_dynamic:
                 enabled_modes = ['personal']
             else:
                 enabled_modes = ['home']
@@ -1111,7 +1141,7 @@ async def proactive_chat(request: Request):
         # 不再掷骰。activity_snapshot is None（隐私模式 / tracker 不可用）保守
         # 不发——无法判断是否在工作状态。
         try:
-            invite_lang = _resolve_proactive_locale(data, mgr)
+            invite_lang = _resolve_proactive_locale(command, mgr)
         except Exception:
             invite_lang = 'zh'
         # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
@@ -1147,10 +1177,10 @@ async def proactive_chat(request: Request):
         await _ensure_source_history_loaded()
 
         # ========== 0. 并行获取所有信息源内容（无 LLM） ==========
-        screenshot_data = data.get('screenshot_data')
+        screenshot_data = command.screenshot_data
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
         # Avatar 位置元数据（前端截图时捕获的归一化坐标）
-        avatar_position = data.get('avatar_position')
+        avatar_position = command.avatar_position
         
         async def _fetch_source(mode: str) -> tuple:
             """
@@ -1159,7 +1189,7 @@ async def proactive_chat(request: Request):
             if mode == 'vision':
                 if not has_screenshot:
                     raise ValueError("无截图数据（screenshot_data 为空或类型不正确）")
-                window_title = data.get('window_title', '')
+                window_title = command.window_title
                 # ⚠️ Phase 1 不调用 vision_model 分析截图！
                 # 截图将在 Phase 2 由 vision_model 直接读取原图，这里只做压缩。
                 compressed_b64 = ''
@@ -1343,10 +1373,14 @@ async def proactive_chat(request: Request):
         # 与 mini-game 邀请短路同源：request body → mgr.user_language → 全局缓存。
         # 见 _resolve_proactive_locale 的 docstring。
         try:
-            proactive_lang = _resolve_proactive_locale(data, mgr)
+            proactive_lang = _resolve_proactive_locale(command, mgr)
         except Exception:
             proactive_lang = 'zh'
-        topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)
+        topic_hook_lang = _resolve_topic_hook_locale(
+            command,
+            mgr,
+            fallback=proactive_lang,
+        )
         
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(lanlan_name, proactive_lang)
@@ -1827,20 +1861,6 @@ async def proactive_chat(request: Request):
         music_keyword = unified_parsed.get('music_keyword')
         meme_keyword = unified_parsed.get('meme_keyword')
 
-        async def _fetch_music_with_fallback(kw: str):
-            """Search music with the LLM keyword; falls back to a random recommendation on failure."""
-            try:
-                raw = await fetch_music_content(keyword=kw, limit=5)
-                if raw and raw.get('success'):
-                    return raw
-            except Exception as e:
-                logger.warning(f"[{lanlan_name}] 音乐关键词 '{kw}' 搜索异常: {e}")
-            logger.warning(f"[{lanlan_name}] 音乐关键词 '{kw}' 搜索失败，尝试随机推荐")
-            try:
-                return await fetch_music_content(keyword="", limit=5)
-            except Exception:
-                return None
-
         async def _fetch_meme_with_fallback(kw: str):
             """Search memes with the LLM keyword; falls back to random hot words on failure.
 
@@ -1876,7 +1896,9 @@ async def proactive_chat(request: Request):
 
         if has_music_task and not unified_parsed.get('music_pass'):
             kw = music_keyword or ""
-            fetch_tasks_p1.append(_fetch_music_with_fallback(kw))
+            fetch_tasks_p1.append(
+                _fetch_music_with_fallback(kw, lanlan_name=lanlan_name)
+            )
             fetch_labels.append('music')
         elif has_music_task:
             print(f"[{lanlan_name}] Phase 1 音乐通道明确 PASS，跳过后置 fetch")
@@ -1917,67 +1939,24 @@ async def proactive_chat(request: Request):
         # 与 web/meme 对偶：超取 N 条后逐条概率 skip，遇命中瞬移到下一条。
         # 全部命中则清空 music_content 让通道整体降级。
         # ============================================================
-        if music_content and music_content.get('formatted_content'):
-            music_topic = music_content['formatted_content']
-            if music_topic:
-                music_tracks = music_content.get('raw_data', {}).get('data', [])
-                if music_tracks:
-                    picked_track: dict | None = None
-                    picked_key: str = ''
-                    for candidate_track in music_tracks:
-                        track_url = candidate_track.get('url', '')
-                        track_name = candidate_track.get('name', '')
-                        track_artist = candidate_track.get('artist', '')
-                        candidate_key = _source_hash(
-                            track_url, f"{track_name} - {track_artist}"
-                        )
-                        if candidate_key and _should_skip_source(candidate_key):
-                            print(f"[{lanlan_name}]- Phase 1 音乐候选去重命中，跳过: {track_name}")
-                            continue
-                        picked_track = candidate_track
-                        picked_key = candidate_key
-                        break
-                    if picked_track is None:
-                        print(f"[{lanlan_name}]- Phase 1 所有音乐候选均被衰减 skip，整体清空通道")
-                        music_content = None
-                    else:
-                        # 选中非首条时，把 raw_data['data'] 砍到 picked 起始位置并重 format —
-                        # 否则 music_topic 文本仍以被 skip 掉的首条为头条，与
-                        # selected_music_link 的归因脱节，下游 _append_music_recommendations
-                        # 也会把已 skip 的首条作为推荐项暴露给前端。
-                        picked_idx = music_tracks.index(picked_track)
-                        if picked_idx > 0:
-                            raw = music_content.get('raw_data') or {}
-                            raw_trimmed = {**raw, 'data': music_tracks[picked_idx:]}
-                            new_topic = _format_music_content(raw_trimmed, proactive_lang)
-                            if new_topic:
-                                music_topic = new_topic
-                                music_content['formatted_content'] = music_topic
-                                music_content['raw_data'] = raw_trimmed
-                        track_name = picked_track.get('name', '')
-                        track_artist = picked_track.get('artist', '')
-                        track_url = picked_track.get('url', '')
-                        track_cover = picked_track.get('cover', '')
-                        logger.debug(f"[{lanlan_name}]- Phase 1 音乐话题已添加 (topic_len={len(music_topic)})")
-                        print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
-                        selected_music_link = {
-                            'title': track_name,
-                            'artist': track_artist,
-                            'url': track_url,
-                            'cover': track_cover,
-                            'source': '音乐推荐',
-                            'type': 'music'
-                        }
-                        selected_music_topic_key = picked_key
-                        phase1_topics.append(('music', music_topic))
-                else:
-                    # formatted_content 非空时 _format_music_content 必已输出至少一条
-                    # 曲目，所以这里实际不可达；保留为防御兜底，并与上面 picked_track
-                    # is None 路径对偶：没有可播曲目就不进 active_channels，守住
-                    # "music ∈ active_channels ⟺ selected_music_link 非空" 这条不变量，
-                    # 避免 Phase 2 出现音乐素材却无歌可投（发了 [MUSIC] 转译不出）。
-                    logger.debug(f"[{lanlan_name}] Phase 1 音乐 formatted_content 非空但无曲目数据，跳过音乐通道")
-                    music_content = None
+        music_selection = _select_music_recommendation(
+            music_content,
+            lang=proactive_lang,
+            source_hash=_source_hash,
+            should_skip_source=_should_skip_source,
+            lanlan_name=lanlan_name,
+        )
+        music_content = music_selection.content
+        if music_selection.link:
+            music_topic = music_selection.topic
+            selected_music_link = music_selection.link
+            selected_music_topic_key = music_selection.topic_key
+            logger.debug(
+                f"[{lanlan_name}]- Phase 1 音乐话题已添加 "
+                f"(topic_len={len(music_topic)})"
+            )
+            print(f"[{lanlan_name}]- Phase 1 音乐话题: {music_topic[:100]}")
+            phase1_topics.append(('music', music_topic))
 
         # ============================================================
         # 表情包话题组装（遍历候选 → 去重 → 限1张）
@@ -2206,10 +2185,12 @@ async def proactive_chat(request: Request):
         # 无 tag gate 只在前者生效，否则会把 _of_none 模式的合法纯文本搭话误判为
         # 格式泄漏 drop（Codex P1）。
         _expects_source_tag = bool(external_section) or bool(music_section) or bool(meme_section)
-        music_playing_hint = ""
-        if is_playing_music and current_track:
-            track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
-            music_playing_hint = get_proactive_music_playing_hint(track_name, master_name_current, proactive_lang)
+        music_playing_hint = _build_music_playing_hint(
+            is_playing_music=is_playing_music,
+            current_track=current_track,
+            master_name=master_name_current,
+            lang=proactive_lang,
+        )
 
         # 把活动快照渲染成 prompt 段。snapshot 缺失时退化为空串——decision frame
         # 里的 A) 看「用户当前状态」分支会自动走到"其它状态：所有切入点都可用"。
@@ -2279,19 +2260,13 @@ async def proactive_chat(request: Request):
             source_instruction=source_instruction,
             output_format_section=output_format_section,
         )
-        dynamic_context_for_phase2 = ""
-        # 同 music_section：[MUSIC] tag 强制指令只在真有可播曲目时注入。
-        if selected_music_link:
-            dynamic_context_for_phase2 += PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get(
-                proactive_lang,
-                PROACTIVE_MUSIC_TAG_INSTRUCTIONS.get('en', PROACTIVE_MUSIC_TAG_INSTRUCTIONS['zh']),
-            )
-            raw_data = music_content.get('raw_data', {}) if music_content else {}
-            if raw_data.get('best_match', {}).get('status') == 'fuzzy':
-                dynamic_context_for_phase2 += get_proactive_music_failsafe_hint(master_name_current, proactive_lang)
-
-        if is_playing_music:
-            dynamic_context_for_phase2 += get_proactive_music_strict_constraint(proactive_lang)
+        dynamic_context_for_phase2 = _build_music_dynamic_context(
+            selected_music_link=selected_music_link,
+            music_content=music_content,
+            is_playing_music=is_playing_music,
+            master_name=master_name_current,
+            lang=proactive_lang,
+        )
         # music_cooldown 时不再注入 strict_constraint —— 此时 music 通道已被前端/后端
         # 完全剔除，不应向模型暴露任何音乐相关指令，以免干扰其他 source 的选择。
         print(f"[{lanlan_name}] Phase 2 prompt 长度: {len(generate_prompt)}, 动态上下文: {len(dynamic_context_for_phase2)} 字符")
@@ -3296,7 +3271,5 @@ async def proactive_music_played_through(request: Request):
     lanlan_name = (data.get('lanlan_name') or her_name_default or '').strip()
     if not lanlan_name:
         return JSONResponse({"success": False, "error": "lanlan_name missing"}, status_code=400)
-    cleared = _clear_channel_from_proactive_history(lanlan_name, 'music')
-    if cleared:
-        logger.info(f"[{lanlan_name}] 音乐完整播放，重置 music 通道权重衰减（清空 {cleared} 条）")
+    cleared = _record_music_played_through(lanlan_name)
     return JSONResponse({"success": True, "cleared": cleared, "lanlan_name": lanlan_name})

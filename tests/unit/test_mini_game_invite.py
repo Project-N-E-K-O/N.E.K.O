@@ -21,9 +21,9 @@ import pytest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
-import main_routers.system_router.mini_game_invite as sr  # noqa: E402
-import main_routers.system_router.proactive_history as sr_history  # noqa: E402
-import main_routers.system_router.proactive_parsing as sr_parsing  # noqa: E402
+import main_logic.proactive_chat.mini_game_invite as sr  # noqa: E402
+import main_logic.proactive_chat.state as sr_history  # noqa: E402
+import main_logic.proactive_chat.contracts as sr_parsing  # noqa: E402
 
 LANLAN = "test_lanlan"
 MASTER = "小明"

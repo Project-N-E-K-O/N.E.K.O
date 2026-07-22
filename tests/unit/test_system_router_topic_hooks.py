@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import main_routers.system_router.proactive_chat_flow as system_router
+from main_logic.proactive_chat.contracts import ProactiveChatCommand
 from main_routers.system_router import (
     _open_threads_for_activity_state,
     _render_followup_topic_hooks,
@@ -80,7 +81,7 @@ def test_topic_hook_locale_preserves_traditional_chinese_request_language():
     mgr = SimpleNamespace(user_language="zh-CN")
 
     topic_hook_lang = _resolve_topic_hook_locale(
-        {"language": "zh-TW"},
+        ProactiveChatCommand.from_payload({"language": "zh-TW"}),
         mgr,
         fallback="zh",
     )
@@ -112,5 +113,6 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
 def test_open_threads_compute_uses_topic_hook_locale():
     source = Path(system_router.__file__).read_text(encoding="utf-8")
 
-    assert "topic_hook_lang = _resolve_topic_hook_locale(data, mgr, fallback=proactive_lang)" in source
+    assert "topic_hook_lang = _resolve_topic_hook_locale(" in source
+    assert "            command," in source
     assert "kickoff_open_threads_compute(lang=topic_hook_lang)" in source

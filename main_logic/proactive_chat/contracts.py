@@ -13,14 +13,81 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Stable result contracts for proactive chat.
+"""Stable command and result contracts for proactive chat.
 
 This module is intentionally framework-independent.  It owns the public
-``action`` / ``reason_code`` / ``stage`` vocabulary and the helpers that
-construct domain result bodies.
+request command plus the ``action`` / ``reason_code`` / ``stage`` vocabulary
+and helpers that construct domain result bodies.
 """
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class ProactiveChatCommand:
+    """Framework-independent snapshot of a proactive-chat request payload.
+
+    Values intentionally retain the request's existing truthiness semantics.
+    In particular, ``enabled_modes_provided`` distinguishes a missing field
+    (legacy source inference) from an explicitly supplied empty list (all
+    source toggles disabled).
+    """
+
+    lanlan_name: Any = None
+    voice_mode: bool = False
+    is_playing_music: bool = False
+    current_track: Any = None
+    music_cooldown: bool = False
+    mini_game_invite_enabled: bool = True
+    base_interval_seconds: Any = None
+    enabled_modes: Any = None
+    enabled_modes_provided: bool = False
+    content_type: Any = None
+    screenshot_data: Any = None
+    use_window_search: bool = False
+    use_personal_dynamic: bool = False
+    avatar_position: Any = None
+    window_title: Any = ""
+    language: Any = None
+    lang: Any = None
+    i18n_language: Any = None
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "ProactiveChatCommand":
+        """Build a command without importing HTTP framework types."""
+        if not isinstance(payload, Mapping):
+            raise TypeError("proactive chat payload must be a mapping")
+        return cls(
+            lanlan_name=payload.get("lanlan_name"),
+            voice_mode=bool(payload.get("voice_mode", False)),
+            is_playing_music=bool(payload.get("is_playing_music", False)),
+            current_track=payload.get("current_track"),
+            music_cooldown=bool(payload.get("music_cooldown", False)),
+            mini_game_invite_enabled=bool(
+                payload.get("mini_game_invite_enabled", True)
+            ),
+            base_interval_seconds=payload.get("base_interval_seconds"),
+            enabled_modes=payload.get("enabled_modes"),
+            enabled_modes_provided="enabled_modes" in payload,
+            content_type=payload.get("content_type"),
+            screenshot_data=payload.get("screenshot_data"),
+            use_window_search=bool(payload.get("use_window_search", False)),
+            use_personal_dynamic=bool(
+                payload.get("use_personal_dynamic", False)
+            ),
+            avatar_position=payload.get("avatar_position"),
+            window_title=payload.get("window_title", ""),
+            language=payload.get("language"),
+            lang=payload.get("lang"),
+            i18n_language=payload.get("i18n_language"),
+        )
+
+    @property
+    def language_candidates(self) -> tuple[Any, Any, Any]:
+        """Return request locale aliases in their established precedence."""
+        return self.language, self.lang, self.i18n_language
 
 
 PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"

@@ -19,9 +19,10 @@ video, trending, music, personal dynamics).
 Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
-from ._shared import logger
-from config.prompts.prompts_proactive import (
-    MUSIC_SEARCH_RESULT_TEXTS,
+from main_logic.proactive_chat.music_recommendation import (
+    _append_music_recommendations,
+    _format_music_content,
+    _log_music_content,
 )
 
 
@@ -137,91 +138,6 @@ def _log_trending_content(lanlan_name: str, trending_content: dict):
             print(detail)
     else:
         print(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
-
-
-def _log_music_content(lanlan_name: str, music_content: dict):
-    """Log music content fetch details."""
-    if music_content.get('success'):
-        tracks = music_content.get('data', [])
-        titles = [f"{t.get('name', '')} - {t.get('artist', '')}" for t in tracks[:5]]
-        if titles:
-            logger.debug(f"[{lanlan_name}] 成功获取音乐推荐:")
-            for title in titles:
-                logger.debug(f"  - {title}")
-    else:
-        logger.warning(f"[{lanlan_name}] 音乐获取失败: {music_content.get('error', '未知错误')}")
-
-
-def _format_music_content(music_content: dict, lang: str = 'zh') -> str:
-    """Formats music content into a readable string with multi-language support."""
-    if not music_content.get('success'):
-        return ""
-    
-    t = MUSIC_SEARCH_RESULT_TEXTS.get(lang, MUSIC_SEARCH_RESULT_TEXTS['en'])
-    
-    output_lines = [t['title']]
-    tracks = music_content.get('data', [])
-    for i, track in enumerate(tracks[:5], 1):
-        # 使用多语言字典中的"未知"占位符，替代硬编码的中文
-        name = track.get('name') or t['unknown_track']
-        artist = track.get('artist') or t['unknown_artist']
-        album = track.get('album', '')
-        
-        if album:
-            output_lines.append(f"{i}. 《{name}》 - {artist}（{t['album']}：{album}）")
-        else:
-            output_lines.append(f"{i}. 《{name}》 - {artist}")
-    
-    # 如果除了标题没有抓到任何歌曲，则返回空
-    if len(output_lines) == 1:
-        return ""
-        
-    # 删除了原来的 desc 尾注，保持素材的客观中立
-    return "\n".join(output_lines)
-
-
-def _append_music_recommendations(
-    source_links: list[dict],
-    music_content: dict | None,
-    limit: int = 3,
-) -> int:
-    """Deduplicate and append music tracks from *music_content* into *source_links*.
-
-    Returns the number of tracks actually appended (0 when nothing new).
-    """
-    music_raw = music_content.get('raw_data', {}) if music_content else {}
-    tracks = music_raw.get('data')
-    if not tracks:
-        return 0
-
-    existing_signatures = {
-        (
-            (link.get('url') or '').strip(),
-            (link.get('title') or '').strip(),
-            (link.get('artist') or '').strip(),
-        )
-        for link in source_links
-        if isinstance(link, dict) and link.get('source') == '音乐推荐'
-    }
-
-    appended = 0
-    for track in tracks[:limit]:
-        title = (track.get('name') or '未知曲目').strip()
-        artist = (track.get('artist') or '未知艺术家').strip()
-        url = (track.get('url') or '').strip()
-        sig = (url, title, artist)
-        if sig in existing_signatures:
-            continue
-        source_links.append({
-            'title': title,
-            'artist': artist,
-            'url': url,
-            'cover': track.get('cover', ''),
-            'source': '音乐推荐',
-        })
-        existing_signatures.add(sig)
-        appended += 1
-    return appended
 
 
 def _log_personal_dynamics(lanlan_name: str, personal_content: dict):

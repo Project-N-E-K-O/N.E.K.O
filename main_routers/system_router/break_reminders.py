@@ -19,7 +19,7 @@ Split out of the former monolithic ``main_routers/system_router.py``.
 """
 
 from ._shared import logger
-from .proactive_history import _record_proactive_chat
+from main_logic.proactive_chat.state import _record_proactive_chat
 import asyncio
 from utils.llm_client import (
     SystemMessage,
