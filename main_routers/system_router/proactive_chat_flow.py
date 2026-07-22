@@ -85,7 +85,9 @@ from main_logic.proactive_chat.contracts import (
     _proactive_pass_body,
 )
 from main_logic.proactive_chat.generation import (
+    _decide_phase1_channels,
     _extract_links_from_raw,
+    _generate_phase2_stream,
     _lookup_link_by_title,
     _parse_unified_phase1_result,
     _strip_proactive_intent_label_leak,
@@ -122,33 +124,18 @@ from fastapi.responses import JSONResponse
 from utils.llm_client import (
     SystemMessage,
     HumanMessage,
-    ThinkingStreamStripper,
     chat_retry_error_types,
     create_chat_llm_async,
 )
-# Phase 2 proactive output ceiling. The model occasionally runs off; this
-# fence cuts the stream and aborts TTS once the running output exceeds the
-# token budget. We use sync `count_tokens` here on purpose:
-#   - At fence time `full_text` is < 1 KB (we abort at 300 tokens ≈ 400 CJK
-#     chars); tiktoken Rust encode of that size is sub-millisecond.
-#   - tiktoken's Rust core releases the GIL inside `encode`, so a sync call
-#     does NOT block other coroutines' IO callbacks for any meaningful time.
-#   - `asyncio.to_thread` adds ~0.1 ms scheduling overhead per call (warmed
-#     thread pool) — 3-4× the actual encode work. Across a 30-chunk stream
-#     that's a few milliseconds saved per turn, but more importantly avoids
-#     the cold-start case where the first thread hop can take much longer.
-from utils.tokenize import count_tokens
 from ..shared_state import get_config_manager, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from config import (
     MEMORY_SERVER_PORT,
     focus_extra_body,
-    leaks_thinking_in_content,
     PROACTIVE_PHASE1_FETCH_PER_SOURCE,
     PROACTIVE_PHASE1_TOTAL_TOPICS,
     PROACTIVE_EXTERNAL_PER_ITEM_MAX_TOKENS,
     PROACTIVE_EXTERNAL_TOTAL_MAX_TOKENS,
-    PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS as PHASE2_OUTPUT_MAX_TOKENS,
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE1_UNIFIED_MAX_TOKENS,
     ANTI_REPEAT_DROP_THRESHOLD,
@@ -159,7 +146,7 @@ from config import (
     MINI_GAME_INVITE_FORCE_GAME_TYPE,
 )
 from config.prompts.prompts_sys import _loc
-from config.prompts.prompts_directives import render_regen_avoid_instruction, render_format_fix_instruction
+from config.prompts.prompts_directives import render_regen_avoid_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_generate_prompt,
     get_proactive_format_sections,
@@ -2058,15 +2045,15 @@ async def proactive_chat(request: Request):
             else:
                 logger.warning(f"[{lanlan_name}] Phase 1 表情包数据为空，跳过表情包话题")
         
+        phase1_decision = _decide_phase1_channels(
+            phase1_topics,
+            vision_content,
+            has_unfinished_thread=_has_unfinished_thread,
+        )
+        if phase1_decision.result is not None:
+            print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
+            return await _end_proactive(JSONResponse(phase1_decision.result.body))
         if not phase1_topics and not vision_content:
-            if not _has_unfinished_thread:
-                print(f"[{lanlan_name}] Phase 1 所有通道均无可用话题")
-                return await _end_proactive(JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "reason_code": PROACTIVE_REASON_PASS_MODEL_PASS,
-                    "message": "所有信息源筛选后均不值得搭话"
-                }))
             print(f"[{lanlan_name}] Phase 1 无话题但有未收尾话题，进入 text-only 跟进 Phase 2")
 
         # Phase 1 preempt check：topic assembly 完，进入 Phase 2 前最后一次瞄
@@ -2074,18 +2061,11 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_pre_phase2")))
         
         # 收集各通道结果
-        active_channels = [ch for ch, _ in phase1_topics]
+        active_channels = phase1_decision.active_channels
         print(f"[{lanlan_name}] Phase 1 结果: phase1_topics={phase1_topics}, vision_content={'有' if vision_content else '无'}")
-        web_topic = None
-        music_topic = None
-        for channel, topic in phase1_topics:
-            if channel == 'web':
-                web_topic = topic
-            elif channel == 'music':
-                music_topic = topic
-        if vision_content:
-            active_channels.append('vision')
-        primary_channel = 'vision' if vision_content else (active_channels[0] if active_channels else 'unknown')
+        web_topic = phase1_decision.web_topic
+        music_topic = phase1_decision.music_topic
+        primary_channel = phase1_decision.primary_channel
         print(f"[{lanlan_name}] Phase 1 可用通道: {active_channels}，主通道: {primary_channel}")
         
         # ================================================================
@@ -2341,318 +2321,29 @@ async def proactive_chat(request: Request):
         actual_model = (vision_model_name if phase2_use_vision else conversation_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
 
-        # --- 流式调用 + 在线拦截 ---
-        from utils.token_tracker import set_call_type
-        set_call_type("proactive")
-        buffer = ""
-        tag_parsed = False
-        source_tag = ""
-        full_text = ""
-        pipe_count = 0
-        aborted = False
-        abort_reason_code: str | None = None
-        # 滚动尾部缓冲区：保留最近 5 个字符以检测跨 chunk 的 "[PASS]"（长度 6）
-        pass_probe = ""
-        _PASS_PROBE_LEN = 5  # len("[PASS]") - 1
-
-        def _abort(reason_code: str) -> None:
-            nonlocal aborted, abort_reason_code
-            aborted = True
-            # User takeover is the most important telemetry signal. If a later
-            # cleanup path also notices empty/invalid output, keep the takeover
-            # reason so the final pass is classified as delivery preemption.
-            if (
-                abort_reason_code is None
-                or reason_code == PROACTIVE_REASON_DELIVERY_PREEMPTED
-            ):
-                abort_reason_code = reason_code
-
-        async def _emit_safe(text: str) -> bool:
-            """Send to TTS after passing the fence/length checks. Returns True when we should abort."""
-            nonlocal pipe_count, full_text
-            if not text:
-                return False
-            # 状态机 preempt check：O(1) 读 sticky flag + sid 比较。用户抢占
-            # （handle_new_message 或 text stream_text 入口）会 fire USER_INPUT，
-            # 在 PHASE2 阶段 sticky 把 _preempted 翻到 True；同时 current_speech_id
-            # 被轮换，proactive_sid != 新 sid 兜底覆盖竞态窗口。
-            # TTS 不在流式阶段输出：先缓冲全文，等相似度/数据级硬拦截都通过后
-            # 再一次性 feed。否则重复文本会在 guard 命中前已经被用户听到。
-            if mgr.state.is_proactive_preempted(proactive_sid):
-                print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
-                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
-                return True
-            for ch in text:
-                if ch in ('|', '｜'):
-                    pipe_count += 1
-                    if pipe_count >= 2:
-                        print(f"[{lanlan_name}] Phase 2 fence 触发 (pipe_count={pipe_count})，abort")
-                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-                        return True
-            # sync count_tokens — see PHASE2_OUTPUT_MAX_TOKENS docstring
-            n_tokens = count_tokens(full_text + text)
-            if n_tokens > PHASE2_OUTPUT_MAX_TOKENS:
-                print(f"[{lanlan_name}] Phase 2 长度超限 ({n_tokens} > {PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort")
-                _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-                return True
-            full_text += text
-            return False
-        
-        # Focus 凝神: idle/proactive counterpart to OmniOfflineClient's inline
-        # stripper — text-mode Phase-2 also streams thinking-on (disable_thinking
-        # False). Strip leaked <think> CoT before it reaches TTS/UI for leak-prone
-        # models (qwen3.5/3.6/3.7 hybrids). Symmetric with the inline path; None
-        # (no wrapping) for clean providers or thinking-off turns → zero impact.
-        _p2_strip = (
-            ThinkingStreamStripper()
-            if (not phase2_disable_thinking) and leaks_thinking_in_content(conversation_model)
-            else None
+        phase2_generation = await _generate_phase2_stream(
+            mgr=mgr,
+            proactive_sid=proactive_sid,
+            lanlan_name=lanlan_name,
+            messages=messages,
+            make_llm=_make_llm,
+            phase2_use_vision=phase2_use_vision,
+            phase2_disable_thinking=phase2_disable_thinking,
+            conversation_model=conversation_model,
+            expects_source_tag=_expects_source_tag,
+            proactive_lang=proactive_lang,
+            master_name=master_name_current,
+            human_text=human_text,
+            screenshot_b64=screenshot_b64_for_phase2,
+            log=logger,
         )
-        try:
-            async with asyncio.timeout(25.0):
-                # 使用 async with 确保 ChatOpenAI 正确关闭
-                async with (await _make_llm(temperature=1.0,
-                                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                                            use_vision=phase2_use_vision,
-                                            disable_thinking=phase2_disable_thinking)) as llm:
-                    async for chunk in llm.astream(messages):
-                        # Phase 2 preempt check：每 chunk 顶端做 O(1) 状态机读，
-                        # 用户抢占立刻跳出；_emit_safe 里还有一次保险。
-                        if mgr.state.is_proactive_preempted(proactive_sid):
-                            print(f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort")
-                            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
-                            break
-                        content = chunk.content if hasattr(chunk, 'content') else ''
-                        if _p2_strip is not None and content:
-                            # Holds CoT until the first </think>; returns "" while
-                            # buffering so the skip below drops the held chunk.
-                            content = _p2_strip.feed(content)
-                        if not content:
-                            continue
-
-                        if not tag_parsed:
-                            buffer += content
-                            # 缓冲前 ~80 字符，解析 "主动搭话" 前缀和来源标签
-                            if len(buffer) < 80 and '\n' not in buffer[min(len(buffer)-1, 10):]:
-                                continue
-                            # 清理 "主动搭话" 前缀
-                            cleaned = buffer
-                            m = re.search(r'主动搭话\s*\n', cleaned)
-                            if m:
-                                cleaned = cleaned[m.end():]
-                            # 解析 [PASS] / [CHAT] / [WEB] / [MUSIC] / [MEME]
-                            # 先 lstrip：模型偶尔先吐换行/空格再吐 [CHAT]，不去前导空白
-                            # 会让 ^\[ 匹配失败、source_tag 误留空被当成无 tag（Codex P2）。
-                            cleaned = cleaned.lstrip()
-                            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
-                            if tag_match:
-                                source_tag = tag_match.group(1).upper()
-                                cleaned = cleaned[tag_match.end():]
-                            else:
-                                cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-                                if _leak_tag:
-                                    source_tag = _leak_tag
-                            tag_parsed = True
-
-                            # 模型本该输出带括号的 [PASS]，但偶尔吐裸 PASS：tag 正则
-                            # 认不出 → source_tag 空、'[PASS]' 也不在 cleaned 里。再补
-                            # 一道整段哨兵判定（fullmatch，方括号可选），裸 PASS 与
-                            # [PASS] 一视同仁 abort；fullmatch 不会误伤正文里的 "pass"。
-                            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
-                                    or _text_is_pass_sentinel(cleaned)):
-                                print(f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort")
-                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                                break
-                            
-                            # 缓冲中剩余的文本经由 pass_probe 逻辑输出
-                            if cleaned.strip():
-                                combined = pass_probe + cleaned
-                                if '[PASS]' in combined.upper():
-                                    print(f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort")
-                                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                                    break
-                                safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
-                                pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
-                                if await _emit_safe(safe_text):
-                                    break
-                            continue
-                        
-                        # --- 在线拦截: [PASS]（含跨 chunk 检测）---
-                        combined = pass_probe + content
-                        if '[PASS]' in combined.upper():
-                            print(f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort")
-                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                            break
-                        # 将本次 chunk 的尾部保留到 pass_probe，可安全输出的部分为去掉尾部的前段
-                        safe_text = combined[:-_PASS_PROBE_LEN] if len(combined) > _PASS_PROBE_LEN else ''
-                        pass_probe = combined[-_PASS_PROBE_LEN:] if len(combined) >= _PASS_PROBE_LEN else combined
-                        
-                        if safe_text and await _emit_safe(safe_text):
-                            break
-        
-        except (asyncio.TimeoutError, Exception) as e:
-            logger.warning(f"[{lanlan_name}] Phase 2 流式调用异常: {type(e).__name__}: {e}")
-            _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-        
-        # --- 流结束后：flush pass_probe 残留 ---
-        if pass_probe and not aborted:
-            if '[PASS]' in pass_probe.upper():
-                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-            else:
-                await _emit_safe(pass_probe)
-        pass_probe = ""
-
-        # Focus: flush the stripper's held answer. Non-empty only when no
-        # </think> ever arrived (the model didn't think this turn) — which means
-        # the tag was never parsed and nothing flowed through pass_probe, so feed
-        # it into `buffer` and let the unparsed-buffer block below tag-parse +
-        # emit it (symmetric with the inline path's prefix_buffer flush).
-        if _p2_strip is not None and not aborted:
-            _p2_residual = _p2_strip.flush()
-            if _p2_residual:
-                buffer += _p2_residual
-
-        # --- 流结束后 buffer 未 flush 的兜底处理 ---
-        if not tag_parsed and buffer and not aborted:
-            cleaned = buffer
-            m = re.search(r'主动搭话\s*\n', cleaned)
-            if m:
-                cleaned = cleaned[m.end():]
-            cleaned = cleaned.lstrip()  # 同上：去前导空白再匹配 tag（Codex P2）
-            tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
-            if tag_match:
-                source_tag = tag_match.group(1).upper()
-                cleaned = cleaned[tag_match.end():]
-            else:
-                cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
-                if _leak_tag:
-                    source_tag = _leak_tag
-            # 短 bare-PASS 回复（如整段就 "PASS"，4 字 < 80 无换行）流式期一直
-            # 在 buffer 里 continue、tag_parsed 始终 False，最终落到这里兜底。
-            # 同样补整段哨兵判定，裸 PASS 与 [PASS] 一视同仁 abort。
-            if (source_tag == 'PASS' or '[PASS]' in cleaned.upper()
-                    or _text_is_pass_sentinel(cleaned)):
-                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-            elif cleaned.strip():
-                await _emit_safe(cleaned)
-        
-        # 没有解析到合法来源标签（[CHAT]/[WEB]/[MUSIC]/[MEME]）→ 输出不符合格式。
-        # 弱模型（free-model）常把人设里的 Format / 约束块当正文吐出来——线上见过
-        # "No Markdown: Yes."、"* No stage directions/parentheses"、"完全不同的角度或主题"
-        # 这类脚手架泄漏。合法搭话必然以 tag 起头，缺 tag 即判格式泄漏，drop 整轮，
-        # 不要把脚手架念给博士听。（TTS 在本函数后段才真正投递，此处 abort 安全。）
-        if not aborted and full_text.strip() and not source_tag and _expects_source_tag:
-            # 没解析到合法来源标签——多半是模型把人设 Format/约束块当正文吐了出来。
-            # （仅在本轮启用 tag 系统时才判泄漏；_of_none 纯文本模式无 tag 是合法的，
-            #  不进此分支，留给后面的 source_tag='CHAT' 兜底正常投递。）
-            # 不直接 drop，先给一次"格式纠正"regen 自救：重建 Human turn（fix 指令 +
-            # 原 human_text，末尾仍是 BEGIN 触发句），ainvoke 重跑一次再解析 tag。
-            # 解析到合法非 PASS tag → 用自救结果接回主流程（下游 is_duplicate / BM25
-            # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
-            print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
-            if mgr.state.is_proactive_preempted(proactive_sid):
-                _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
-            else:
-                _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
-                if phase2_use_vision:
-                    _fix_human_content = [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
-                        {"type": "text", "text": _fix_human_text},
-                    ]
-                else:
-                    _fix_human_content = _fix_human_text
-                _fix_text = ""
-                try:
-                    async with asyncio.timeout(20.0):
-                        async with (await _make_llm(
-                            temperature=1.0,
-                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
-                            use_vision=phase2_use_vision,
-                            disable_thinking=phase2_disable_thinking,
-                        )) as _fix_llm:
-                            _fix_resp = await _fix_llm.ainvoke(
-                                [messages[0], HumanMessage(content=_fix_human_content)]
-                            )
-                            _fix_text = (_fix_resp.content if hasattr(_fix_resp, "content") else "") or ""
-                except Exception as _fix_exc:
-                    logger.warning("[%s] Phase 2 格式自救 regen 失败: %s", lanlan_name, _fix_exc)
-                    _fix_text = ""
-                _fc = (_fix_text or "").strip()
-                _fm = re.search(r"主动搭话\s*\n", _fc)
-                if _fm:
-                    _fc = _fc[_fm.end():]
-                _fc = _fc.lstrip()
-                _fix_tag = ""
-                _ftm = re.match(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _fc, re.IGNORECASE)
-                if _ftm:
-                    _fix_tag = _ftm.group(1).upper()
-                    _fc = _fc[_ftm.end():]
-                else:
-                    _fc, _leak_tag = _strip_proactive_screen_tag_leak(_fc)
-                    if _leak_tag:
-                        _fix_tag = _leak_tag
-                if _fix_tag and _fix_tag != "PASS" and _fc.strip() and "[PASS]" not in _fc.upper():
-                    source_tag = _fix_tag
-                    full_text = _fc.strip()
-                    print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
-                else:
-                    print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
-                    if (
-                        _fix_tag == "PASS"
-                        or "[PASS]" in _fc.upper()
-                        or _text_is_pass_sentinel(_fc)
-                    ):
-                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
-                    else:
-                        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
-
-        # --- 结果处理 ---
-        # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
-        # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
-        # 两者拼起来打印会让正文头部"复读"一遍，看着像 bug 实际不是。
-        # 调试只需要 tag + 实际投递文本即可。
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output (aborted={aborted}, tag={source_tag}): {full_text[:300]}\n")
-        if aborted or not full_text.strip():
-            final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
-            # 只有当用户没接管时才调 handle_new_message 清 TTS —— 否则会把
-            # 用户正常回复的 TTS 也清掉（PR #862 修的 bug）。状态机的
-            # is_proactive_preempted 是权威信号，sid 比较作为最后一道兜底。
-            if not mgr.state.is_proactive_preempted(proactive_sid):
-                await mgr.handle_new_message()
-                logger.debug(f"[{lanlan_name}] Phase 2 abort，已中断 TTS + 前端音频")
-            else:
-                logger.info(f"[{lanlan_name}] Phase 2 abort 但用户已接管 (state preempted)，跳过 TTS 清理避免误伤正常回复")
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "reason_code": final_abort_reason_code,
-                "message": "Phase 2 流式输出被拦截或为空"
-            }))
-        
-        full_text, _leak_tag = _strip_proactive_screen_tag_leak(full_text)
-        if _leak_tag and not source_tag:
-            source_tag = _leak_tag
-        response_text = full_text.strip()
-        # 剥掉模型偶尔把活动状态里的「口吻 / 回忆线索」等内部引导标签当成首行小标题
-        # 念出来的泄漏（前端 realistic 模式会按换行切成单独一个气泡）。必须在下方
-        # 重复度 / BM25 防复读判定**之前**剥：否则被泄漏标签做前缀的复读句会因前缀
-        # 稀释相似度而绕过 dedup。这些标签纯脚手架，绝不该进 TTS / 历史。
-        response_text = _strip_proactive_intent_label_leak(response_text)
-        if not response_text:
-            if not mgr.state.is_proactive_preempted(proactive_sid):
-                await mgr.handle_new_message()
-            else:
-                logger.info("[%s] cleaned proactive output is empty but user already took over; skip TTS cleanup", lanlan_name)
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "reason_code": PROACTIVE_REASON_PASS_GENERATION_EMPTY,
-                "message": "Phase 2 清理后输出为空"
-            }))
-        # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
-        # 完整原文通过 print 给开发者本地查看。
-        logger.debug(f"[{lanlan_name}] Phase 2 流式完成 (vision={phase2_use_vision}, len={len(response_text)} chars)")
-        print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+        if phase2_generation.result is not None:
+            return await _end_proactive(
+                JSONResponse(phase2_generation.result.body)
+            )
+        full_text = phase2_generation.full_text
+        response_text = phase2_generation.response_text
+        source_tag = phase2_generation.source_tag
 
         # 素材推送类 channel（MUSIC/MEME）的复读按"素材本身"去重而非台词：本轮
         # 素材（曲目 / 搜索关键词）与近期不雷同时，台词级硬拦截（字面相似度 +

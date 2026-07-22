@@ -15,11 +15,462 @@
 
 """Parsers and output guards for proactive Phase 1/2 generation."""
 
+import asyncio
 import logging
 import re
+from dataclasses import dataclass
+from typing import Any
+
+from config import (
+    PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+    PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS,
+    leaks_thinking_in_content,
+)
+from config.prompts.prompts_directives import render_format_fix_instruction
+from utils.llm_client import HumanMessage, ThinkingStreamStripper
+from utils.tokenize import count_tokens
+
+from .contracts import (
+    PROACTIVE_REASON_DELIVERY_PREEMPTED,
+    PROACTIVE_REASON_PASS_GENERATION_EMPTY,
+    PROACTIVE_REASON_PASS_MODEL_PASS,
+    ProactiveChatResult,
+    _proactive_pass_body,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Phase1Decision:
+    """The channel decision handed from Phase 1 to Phase 2.
+
+    ``result`` is populated only when Phase 1 terminates the proactive turn.
+    A text-only unfinished-thread continuation is therefore represented by an
+    empty channel list and ``primary_channel='unknown'``, matching the legacy
+    Router flow.
+    """
+
+    result: ProactiveChatResult | None
+    active_channels: list[str]
+    primary_channel: str
+    web_topic: str | None
+    music_topic: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Phase2Generation:
+    """Framework-independent outcome of the Phase 2 model stream."""
+
+    result: ProactiveChatResult | None
+    full_text: str = ""
+    response_text: str = ""
+    source_tag: str = ""
+
+
+def _decide_phase1_channels(
+    phase1_topics: list[tuple[str, str]],
+    vision_content: str | None,
+    *,
+    has_unfinished_thread: bool,
+) -> Phase1Decision:
+    """Finalize Phase 1 without changing source order or continuation rules."""
+    if not phase1_topics and not vision_content and not has_unfinished_thread:
+        return Phase1Decision(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_MODEL_PASS,
+                    message="所有信息源筛选后均不值得搭话",
+                )
+            ),
+            active_channels=[],
+            primary_channel="unknown",
+            web_topic=None,
+            music_topic=None,
+        )
+
+    active_channels = [channel for channel, _topic in phase1_topics]
+    web_topic = None
+    music_topic = None
+    for channel, topic in phase1_topics:
+        if channel == "web":
+            web_topic = topic
+        elif channel == "music":
+            music_topic = topic
+    if vision_content:
+        active_channels.append("vision")
+    primary_channel = (
+        "vision"
+        if vision_content
+        else (active_channels[0] if active_channels else "unknown")
+    )
+    return Phase1Decision(
+        result=None,
+        active_channels=active_channels,
+        primary_channel=primary_channel,
+        web_topic=web_topic,
+        music_topic=music_topic,
+    )
+
+
+async def _generate_phase2_stream(
+    *,
+    mgr: Any,
+    proactive_sid: Any,
+    lanlan_name: str,
+    messages: list[Any],
+    make_llm: Any,
+    phase2_use_vision: bool,
+    phase2_disable_thinking: bool,
+    conversation_model: str,
+    expects_source_tag: bool,
+    proactive_lang: str,
+    master_name: str,
+    human_text: str,
+    screenshot_b64: str | None,
+    log: logging.Logger | None = None,
+) -> Phase2Generation:
+    """Run the guarded Phase 2 stream and preserve its legacy abort semantics."""
+    active_logger = log or logger
+    from utils.token_tracker import set_call_type
+
+    set_call_type("proactive")
+    buffer = ""
+    tag_parsed = False
+    source_tag = ""
+    full_text = ""
+    pipe_count = 0
+    aborted = False
+    abort_reason_code: str | None = None
+    pass_probe = ""
+    pass_probe_len = 5  # len("[PASS]") - 1
+
+    def _abort(reason_code: str) -> None:
+        nonlocal aborted, abort_reason_code
+        aborted = True
+        if (
+            abort_reason_code is None
+            or reason_code == PROACTIVE_REASON_DELIVERY_PREEMPTED
+        ):
+            abort_reason_code = reason_code
+
+    async def _emit_safe(text: str) -> bool:
+        nonlocal pipe_count, full_text
+        if not text:
+            return False
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            print(f"[{lanlan_name}] Phase 2 检测到用户接管（state 抢占），abort")
+            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
+            return True
+        for char in text:
+            if char in ("|", "｜"):
+                pipe_count += 1
+                if pipe_count >= 2:
+                    print(
+                        f"[{lanlan_name}] Phase 2 fence 触发 "
+                        f"(pipe_count={pipe_count})，abort"
+                    )
+                    _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+                    return True
+        token_count = count_tokens(full_text + text)
+        if token_count > PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS:
+            print(
+                f"[{lanlan_name}] Phase 2 长度超限 "
+                f"({token_count} > {PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS} tokens)，abort"
+            )
+            _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+            return True
+        full_text += text
+        return False
+
+    thinking_stripper = (
+        ThinkingStreamStripper()
+        if not phase2_disable_thinking
+        and leaks_thinking_in_content(conversation_model)
+        else None
+    )
+    try:
+        async with asyncio.timeout(25.0):
+            async with (
+                await make_llm(
+                    temperature=1.0,
+                    max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                    use_vision=phase2_use_vision,
+                    disable_thinking=phase2_disable_thinking,
+                )
+            ) as llm:
+                async for chunk in llm.astream(messages):
+                    if mgr.state.is_proactive_preempted(proactive_sid):
+                        print(
+                            f"[{lanlan_name}] Phase 2 astream chunk 前检测到抢占，abort"
+                        )
+                        _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
+                        break
+                    content = chunk.content if hasattr(chunk, "content") else ""
+                    if thinking_stripper is not None and content:
+                        content = thinking_stripper.feed(content)
+                    if not content:
+                        continue
+
+                    if not tag_parsed:
+                        buffer += content
+                        if (
+                            len(buffer) < 80
+                            and "\n" not in buffer[min(len(buffer) - 1, 10) :]
+                        ):
+                            continue
+                        cleaned = buffer
+                        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
+                        if prefix_match:
+                            cleaned = cleaned[prefix_match.end() :]
+                        cleaned = cleaned.lstrip()
+                        tag_match = re.match(
+                            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
+                            cleaned,
+                            re.IGNORECASE,
+                        )
+                        if tag_match:
+                            source_tag = tag_match.group(1).upper()
+                            cleaned = cleaned[tag_match.end() :]
+                        else:
+                            cleaned, leak_tag = _strip_proactive_screen_tag_leak(
+                                cleaned
+                            )
+                            if leak_tag:
+                                source_tag = leak_tag
+                        tag_parsed = True
+
+                        if (
+                            source_tag == "PASS"
+                            or "[PASS]" in cleaned.upper()
+                            or _text_is_pass_sentinel(cleaned)
+                        ):
+                            print(
+                                f"[{lanlan_name}] Phase 2 流式检测到 PASS，abort"
+                            )
+                            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                            break
+
+                        if cleaned.strip():
+                            combined = pass_probe + cleaned
+                            if "[PASS]" in combined.upper():
+                                print(
+                                    f"[{lanlan_name}] Phase 2 流式检测到 [PASS]，abort"
+                                )
+                                _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                                break
+                            safe_text = (
+                                combined[:-pass_probe_len]
+                                if len(combined) > pass_probe_len
+                                else ""
+                            )
+                            pass_probe = (
+                                combined[-pass_probe_len:]
+                                if len(combined) >= pass_probe_len
+                                else combined
+                            )
+                            if await _emit_safe(safe_text):
+                                break
+                        continue
+
+                    combined = pass_probe + content
+                    if "[PASS]" in combined.upper():
+                        print(
+                            f"[{lanlan_name}] Phase 2 流式检测到内嵌 [PASS]，abort"
+                        )
+                        _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                        break
+                    safe_text = (
+                        combined[:-pass_probe_len]
+                        if len(combined) > pass_probe_len
+                        else ""
+                    )
+                    pass_probe = (
+                        combined[-pass_probe_len:]
+                        if len(combined) >= pass_probe_len
+                        else combined
+                    )
+                    if safe_text and await _emit_safe(safe_text):
+                        break
+    except (asyncio.TimeoutError, Exception) as exc:
+        active_logger.warning(
+            "[%s] Phase 2 流式调用异常: %s: %s",
+            lanlan_name,
+            type(exc).__name__,
+            exc,
+        )
+        _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+
+    if pass_probe and not aborted:
+        if "[PASS]" in pass_probe.upper():
+            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+        else:
+            await _emit_safe(pass_probe)
+    pass_probe = ""
+
+    if thinking_stripper is not None and not aborted:
+        residual = thinking_stripper.flush()
+        if residual:
+            buffer += residual
+
+    if not tag_parsed and buffer and not aborted:
+        cleaned = buffer
+        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
+        if prefix_match:
+            cleaned = cleaned[prefix_match.end() :]
+        cleaned = cleaned.lstrip()
+        tag_match = re.match(
+            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if tag_match:
+            source_tag = tag_match.group(1).upper()
+            cleaned = cleaned[tag_match.end() :]
+        else:
+            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+            if leak_tag:
+                source_tag = leak_tag
+        if (
+            source_tag == "PASS"
+            or "[PASS]" in cleaned.upper()
+            or _text_is_pass_sentinel(cleaned)
+        ):
+            _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+        elif cleaned.strip():
+            await _emit_safe(cleaned)
+
+    if not aborted and full_text.strip() and not source_tag and expects_source_tag:
+        print(
+            f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen"
+        )
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            _abort(PROACTIVE_REASON_DELIVERY_PREEMPTED)
+        else:
+            fix_human_text = (
+                f"{render_format_fix_instruction(proactive_lang, master_name)}"
+                f"\n\n{human_text}"
+            )
+            if phase2_use_vision:
+                fix_human_content: Any = [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{screenshot_b64}"
+                        },
+                    },
+                    {"type": "text", "text": fix_human_text},
+                ]
+            else:
+                fix_human_content = fix_human_text
+            fix_text = ""
+            try:
+                async with asyncio.timeout(20.0):
+                    async with (
+                        await make_llm(
+                            temperature=1.0,
+                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision=phase2_use_vision,
+                            disable_thinking=phase2_disable_thinking,
+                        )
+                    ) as fix_llm:
+                        fix_response = await fix_llm.ainvoke(
+                            [messages[0], HumanMessage(content=fix_human_content)]
+                        )
+                        fix_text = (
+                            fix_response.content
+                            if hasattr(fix_response, "content")
+                            else ""
+                        ) or ""
+            except Exception as exc:
+                active_logger.warning(
+                    "[%s] Phase 2 格式自救 regen 失败: %s",
+                    lanlan_name,
+                    exc,
+                )
+                fix_text = ""
+            fixed = (fix_text or "").strip()
+            prefix_match = re.search(r"主动搭话\s*\n", fixed)
+            if prefix_match:
+                fixed = fixed[prefix_match.end() :]
+            fixed = fixed.lstrip()
+            fix_tag = ""
+            tag_match = re.match(
+                r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
+                fixed,
+                re.IGNORECASE,
+            )
+            if tag_match:
+                fix_tag = tag_match.group(1).upper()
+                fixed = fixed[tag_match.end() :]
+            else:
+                fixed, leak_tag = _strip_proactive_screen_tag_leak(fixed)
+                if leak_tag:
+                    fix_tag = leak_tag
+            if (
+                fix_tag
+                and fix_tag != "PASS"
+                and fixed.strip()
+                and "[PASS]" not in fixed.upper()
+            ):
+                source_tag = fix_tag
+                full_text = fixed.strip()
+                print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
+            else:
+                print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
+                if (
+                    fix_tag == "PASS"
+                    or "[PASS]" in fixed.upper()
+                    or _text_is_pass_sentinel(fixed)
+                ):
+                    _abort(PROACTIVE_REASON_PASS_MODEL_PASS)
+                else:
+                    _abort(PROACTIVE_REASON_PASS_GENERATION_EMPTY)
+
+    print(
+        "\n[PROACTIVE-DEBUG] Phase 2 STREAM output "
+        f"(aborted={aborted}, tag={source_tag}): {full_text[:300]}\n"
+    )
+    if aborted or not full_text.strip():
+        final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+            active_logger.debug(
+                "[%s] Phase 2 abort，已中断 TTS + 前端音频", lanlan_name
+            )
+        else:
+            active_logger.info(
+                "[%s] Phase 2 abort 但用户已接管 (state preempted)，"
+                "跳过 TTS 清理避免误伤正常回复",
+                lanlan_name,
+            )
+        return Phase2Generation(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    final_reason,
+                    message="Phase 2 流式输出被拦截或为空",
+                )
+            )
+        )
+
+    full_text, leak_tag = _strip_proactive_screen_tag_leak(full_text)
+    if leak_tag and not source_tag:
+        source_tag = leak_tag
+    response_text = _strip_proactive_intent_label_leak(full_text.strip())
+    active_logger.debug(
+        "[%s] Phase 2 流式完成 (vision=%s, len=%s chars)",
+        lanlan_name,
+        phase2_use_vision,
+        len(response_text),
+    )
+    print(f"\n[PROACTIVE-DEBUG] Phase 2 STREAM output: {response_text[:200]}...\n")
+    return Phase2Generation(
+        result=None,
+        full_text=full_text,
+        response_text=response_text,
+        source_tag=source_tag,
+    )
 
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
