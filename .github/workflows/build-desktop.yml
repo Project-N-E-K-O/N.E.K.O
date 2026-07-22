@@ -28,6 +28,11 @@ on:
         required: false
         default: false
         type: boolean
+      previous_portable_release:
+        description: 'Release tag used as the Portable delta baseline'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*'
@@ -55,6 +60,10 @@ on:
         options:
           - 'true'
           - 'false'
+      previous_portable_release:
+        description: 'Release tag used as the Portable delta baseline'
+        required: false
+        default: ''
 
 env:
   PYTHON_VERSION: '3.11'
@@ -828,28 +837,35 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
-      - name: Download previous stable Portable manifests
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Download previous Portable manifests
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.previous_portable_release != ''
         working-directory: electron-app
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PORTABLE_KEY: ${{ matrix.portable_key }}
+          PREVIOUS_RELEASE_TAG: ${{ inputs.previous_portable_release }}
         run: |
           set -euo pipefail
           mkdir -p previous-portable
-          PREVIOUS_URL="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+          RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/latest"
+          RELEASE_LABEL="latest stable release"
+          if [[ -n "$PREVIOUS_RELEASE_TAG" ]]; then
+            RELEASE_ENDPOINT="repos/${GITHUB_REPOSITORY}/releases/tags/${PREVIOUS_RELEASE_TAG}"
+            RELEASE_LABEL="release ${PREVIOUS_RELEASE_TAG}"
+          fi
+          PREVIOUS_URL="$(gh api "$RELEASE_ENDPOINT" \
             --jq "[.assets[] | select(.name | endswith(\"_${PORTABLE_KEY}_manifest.json\"))][0].browser_download_url // empty" \
             2>/dev/null || true)"
           if [[ -n "$PREVIOUS_URL" ]]; then
             curl --fail --location --retry 3 "$PREVIOUS_URL" \
               --output "previous-portable/previous-${PORTABLE_KEY}-manifest.json"
-            echo "Downloaded previous stable ${PORTABLE_KEY} Portable manifest"
+            echo "Downloaded previous ${PORTABLE_KEY} Portable manifest from ${RELEASE_LABEL}"
           else
-            echo "No previous ${PORTABLE_KEY} Portable manifest found; this release will contain a full package only"
+            echo "No previous ${PORTABLE_KEY} Portable manifest found in ${RELEASE_LABEL}; this release will contain a full package only"
           fi
           if [[ "$PORTABLE_KEY" == "linux_x64" ]]; then
-            APPIMAGE_URL="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
+            APPIMAGE_URL="$(gh api "$RELEASE_ENDPOINT" \
               --jq '[.assets[] | select(.name | endswith("_linux_x64_appimage_manifest.json"))][0].browser_download_url // empty' \
               2>/dev/null || true)"
             if [[ -n "$APPIMAGE_URL" ]]; then
