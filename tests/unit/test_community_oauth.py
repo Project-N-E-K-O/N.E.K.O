@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from urllib.parse import parse_qs, urlparse
 
@@ -55,6 +57,11 @@ def test_oauth_start_returns_desktop_pkce_auth_url(oauth_app):
     query = parse_qs(parsed.query)
     assert query["client_id"] == ["neko-servers-desktop-dev"]
     assert query["code_challenge_method"] == ["S256"]
+    pending_data = json.loads(pending.read_text(encoding="utf-8"))
+    expected_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(pending_data["code_verifier"].encode("ascii")).digest()
+    ).rstrip(b"=").decode("ascii")
+    assert query["code_challenge"] == [expected_challenge]
     assert query["response_type"] == ["code"]
     assert "openid" in query["scope"][0]
     redirect_uri = query["redirect_uri"][0]
@@ -215,6 +222,42 @@ def test_oauth_callback_success_persists_social_session(oauth_app, monkeypatch):
     assert saved_auth["client_id"] == "neko-servers-desktop-dev"
     assert saved_auth["local_user_id"] == USER_ID
     assert saved_auth["bind"]["bound"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("challenge_payload", [ValueError("invalid json"), []])
+async def test_oauth_guest_bind_treats_malformed_challenge_as_best_effort(
+    monkeypatch,
+    challenge_payload,
+):
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            if isinstance(challenge_payload, Exception):
+                raise challenge_payload
+            return challenge_payload
+
+    class _FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, **kwargs):
+            assert url.endswith("/api/auth/bind-client/challenge")
+            return _FakeResponse()
+
+    monkeypatch.setattr(O.httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(C, "_get_client_credentials", lambda: ("local-client", "local-proof"))
+
+    bind = await O._oauth_guest_bind("https://community.example", "platform-access")
+
+    assert bind == {"bound": False, "error": "invalid_client_binding_challenge"}
 
 
 @pytest.mark.unit

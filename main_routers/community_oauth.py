@@ -527,7 +527,13 @@ async def _oauth_guest_bind(social_base: str, access_token: str) -> dict[str, An
                     bind["error"] = f"http_{challenge_res.status_code}"
                 return bind
 
-            challenge_body = challenge_res.json() or {}
+            try:
+                challenge_body = challenge_res.json()
+            except (ValueError, TypeError):
+                challenge_body = None
+            if not isinstance(challenge_body, dict):
+                bind["error"] = "invalid_client_binding_challenge"
+                return bind
             challenge = str(challenge_body.get("binding_challenge") or "").strip()
             if not challenge:
                 bind["error"] = "invalid_client_binding_challenge"

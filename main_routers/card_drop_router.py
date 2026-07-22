@@ -12,6 +12,7 @@ The cloud contract lives in N.E.K.O.Servers ``app/modules/cards/router.py``.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
@@ -647,7 +648,7 @@ async def _lookup_cloud_identity(base: str, access: str) -> _CloudIdentityLookup
 async def _resolve_saved_desktop_identity(base: str) -> _CloudIdentityLookup:
     """Return persisted UUID metadata, securely upgrading pre-v2 sessions."""
     for _attempt in range(3):
-        snapshot = _desktop_session_snapshot()
+        snapshot = await asyncio.to_thread(_desktop_session_snapshot)
         if snapshot is None:
             return _CloudIdentityLookup(None, 200, "missing")
         local_user_id = snapshot.get("local_user_id") or ""
@@ -661,14 +662,15 @@ async def _resolve_saved_desktop_identity(base: str) -> _CloudIdentityLookup:
         lookup = await _lookup_cloud_identity(base, snapshot["access_token"])
         if lookup.identity is None:
             return lookup
-        if _persist_session_identity_metadata(
+        if await asyncio.to_thread(
+            _persist_session_identity_metadata,
             snapshot,
             lookup.identity.local_user_id,
             lookup.identity.auth_source,
         ):
             return lookup
 
-        current = _desktop_session_snapshot()
+        current = await asyncio.to_thread(_desktop_session_snapshot)
         if current is not None and all(
             current.get(field) == snapshot.get(field)
             for field in ("base_url", "access_token", "refresh_token")
@@ -907,8 +909,8 @@ def _consume_steam_pending(state: str) -> tuple[bool, str | None]:
 
 @router.get("/auth-status", summary="社区登录状态")
 async def auth_status_endpoint():
-    a = _load_auth() or {}
-    if _access_token():
+    a = await asyncio.to_thread(_load_auth) or {}
+    if await asyncio.to_thread(_access_token):
         u = a.get("user") or {}
         # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
         bind = a.get("bind") or {"bound": True, "error": None}
@@ -1219,7 +1221,7 @@ async def register_endpoint(request: Request, payload: dict = Body(default=None)
 @router.post("/logout", summary="登出（清本地 JWT）")
 async def logout_endpoint(request: Request, payload: dict | None = Body(default=None)):
     _require_local_mutation_ticket(request, payload)
-    if not _clear_auth():
+    if not await asyncio.to_thread(_clear_auth):
         raise HTTPException(status_code=500, detail="local_clear_failed")
     return {"logged_in": False}
 
@@ -1312,7 +1314,7 @@ async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
     from main_logic.forge_credit_ledger import grant_credit
 
     try:
-        return grant_credit(payload)
+        return await asyncio.to_thread(grant_credit, payload)
     except (ValueError, LookupError, RuntimeError) as exc:
         raise _credit_error(exc) from exc
 
@@ -1322,7 +1324,7 @@ async def credits_endpoint(request: Request):
     cors = await _require_credit_browser(request)
     from main_logic.forge_credit_ledger import list_credits
 
-    return JSONResponse(list_credits(), headers=cors)
+    return JSONResponse(await asyncio.to_thread(list_credits), headers=cors)
 
 
 @router.get("/credits/local-summary", summary="本体同源界面读取锻造券数量角标")
@@ -1336,7 +1338,7 @@ async def local_credit_summary_endpoint(request: Request):
         raise HTTPException(status_code=403, detail="origin_not_allowed")
     from main_logic.forge_credit_ledger import list_credits
 
-    snapshot = list_credits()
+    snapshot = await asyncio.to_thread(list_credits)
     expiries = [
         str(credit.get("expires_at"))
         for credit in snapshot.get("credits", [])
@@ -1357,7 +1359,11 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
     from main_logic.forge_credit_ledger import reserve_credit
 
     try:
-        result = reserve_credit(credit_id, str(payload.get("operation_id") or ""))
+        result = await asyncio.to_thread(
+            reserve_credit,
+            credit_id,
+            str(payload.get("operation_id") or ""),
+        )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
@@ -1372,7 +1378,12 @@ async def commit_credit_endpoint(
     from main_logic.forge_credit_ledger import commit_credit
 
     try:
-        result = commit_credit(credit_id, operation_id, str(payload.get("card_id") or ""))
+        result = await asyncio.to_thread(
+            commit_credit,
+            credit_id,
+            operation_id,
+            str(payload.get("card_id") or ""),
+        )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
@@ -1385,7 +1396,7 @@ async def release_credit_endpoint(request: Request, credit_id: str, operation_id
     from main_logic.forge_credit_ledger import release_credit
 
     try:
-        result = release_credit(credit_id, operation_id)
+        result = await asyncio.to_thread(release_credit, credit_id, operation_id)
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)
