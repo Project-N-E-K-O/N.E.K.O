@@ -14,6 +14,7 @@
     var MAX_SEEN_REQUESTS = 128;
     var REPLY_DELAY_MIN_MS = 320;
     var REPLY_DELAY_SPAN_MS = 480;
+    var CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03;
     var state = {
         active: false,
         tier: 'none',
@@ -227,9 +228,20 @@
         var random = typeof randomFn === 'function' ? randomFn : Math.random;
         var normalizedTier = normalizeTier(tier);
         var shape = lexicon.tiers[normalizedTier] || lexicon.tiers.cat1;
-        var meow = pick(lexicon.meows, random) || '';
-        if (!meow) return '';
+        var meowPool = Array.isArray(shape.meows) ? shape.meows : lexicon.meows;
         var meowCount = Number(pick(shape.meowCounts, random)) || 1;
+        var voiceParts = [];
+        for (var index = 0; index < meowCount; index += 1) {
+            var meow = pick(meowPool, random) || '';
+            if (!meow) return '';
+            voiceParts.push(meow);
+            if (index < meowCount - 1 &&
+                pick(shape.infixPunctuationSlots, random) === true) {
+                var infixGroup = lexicon.punctuation[shape.infixPunctuationGroup];
+                var infix = pick(infixGroup, random) || '';
+                if (infix) voiceParts.push(infix);
+            }
+        }
         var punctuation = pick(lexicon.punctuation[shape.punctuationGroup], random) || '';
         var leadingPause = pick(shape.leadingPauseSlots, random) === true
             ? (pick(lexicon.punctuation.pause, random) || '')
@@ -237,7 +249,7 @@
         var face = pick(shape.kaomojiSlots, random) === true
             ? (pick(lexicon.kaomoji[shape.kaomojiGroup], random) || '')
             : '';
-        return leadingPause + new Array(meowCount + 1).join(meow) + punctuation + face;
+        return leadingPause + voiceParts.join('') + punctuation + face;
     }
 
     function chooseReply(tier) {
@@ -245,6 +257,37 @@
         for (var attempt = 0; attempt < 3 && candidate === lastReplyText; attempt += 1) {
             candidate = composeReply(tier);
         }
+        lastReplyText = candidate;
+        return candidate;
+    }
+
+    function composeHissStretchReply(randomFn) {
+        var lexicon = window.nekoCatLocalChatLexicon;
+        var hiss = lexicon && lexicon.easterEggs && lexicon.easterEggs.hissStretch;
+        if (!hiss) return '';
+        var random = typeof randomFn === 'function' ? randomFn : Math.random;
+        var voice = pick(hiss.voices, random) || '';
+        var punctuation = pick(hiss.punctuation, random) || '';
+        var face = pick(hiss.kaomoji, random) || '';
+        return voice && punctuation && face ? voice + punctuation + face : '';
+    }
+
+    function requestCat1StretchPresentation() {
+        var presentation = window.NekoCatIdlePresentation;
+        if (!presentation || typeof presentation.requestCat1Stretch !== 'function') return false;
+        try {
+            return presentation.requestCat1Stretch() === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function chooseHissStretchReply(tier) {
+        if (normalizeTier(tier) !== 'cat1' || Math.random() >= CAT1_HISS_STRETCH_EASTER_EGG_RATE) {
+            return '';
+        }
+        var candidate = composeHissStretchReply();
+        if (!candidate || !requestCat1StretchPresentation()) return '';
         lastReplyText = candidate;
         return candidate;
     }
@@ -313,7 +356,8 @@
                 return;
             }
             state.tier = normalizeTier(current.tier);
-            appendItem('assistant', chooseReply(state.tier), pending.requestId);
+            var reply = chooseHissStretchReply(state.tier) || chooseReply(state.tier);
+            appendItem('assistant', reply, pending.requestId);
             publishSnapshot('cat-local-chat-reply');
             scheduleNextReply();
         }, delay);
@@ -375,7 +419,8 @@
         syncFromCatMind: syncFromCatMind,
         applySnapshot: applySnapshot,
         submit: submit,
-        composeReply: composeReply
+        composeReply: composeReply,
+        composeHissStretchReply: composeHissStretchReply
     });
 
     window.addEventListener('neko:cat-local-chat-state', function (event) {

@@ -621,6 +621,7 @@ def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
           _NEKO_IDLE_CAT1_WALK_FINISH_PLAY_PROBABILITY: 0.25,
           _NEKO_CAT_IDLE_OBSERVATION_TYPES: {{ CAT1_WALK_DONE_NEAR_CHAT: 'cat1_walk_done_near_chat' }},
           _getNekoIdleCat1Journey: () => state,
+          _isNekoIdleCat1StretchActionActive: () => false,
           _cancelNekoIdleCat1Frame: () => {{}},
           _clearNekoIdleCat1WalkApproachSide: () => {{}},
           _getNekoIdleReturnContainerFromButton: () => null,
@@ -628,8 +629,8 @@ def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
           _resetNekoIdleCat1WalkSpeed: () => {{}},
           _dispatchNekoCatIdleObservationSource: () => {{ observationCalls += 1; }},
           _playNekoIdleCat1PlayAction: () => {{ playCalls += 1; return playSucceeds; }},
+          _playNekoIdleCat1StretchAction: () => {{ stretchCalls += 1; return true; }},
           _setNekoIdleCat1Classes: () => {{}},
-          _setNekoIdleCat1Substate: (_button, substate) => {{ stretchCalls += 1; state.substate = substate; }},
         }};
         vm.createContext(context);
         vm.runInContext(finishSource, context);
@@ -642,7 +643,7 @@ def test_cat1_walk_finish_resolves_one_local_tail_per_approach():
             actionSettled: false,
             walkFinishResolution: '',
             substate: 'walking',
-            profile: {{ idleSubstate: 'idle', finishingSubstate: 'stretch' }},
+            profile: {{ idleSubstate: 'idle' }},
           }};
           randomValue = value;
           playSucceeds = canPlay;

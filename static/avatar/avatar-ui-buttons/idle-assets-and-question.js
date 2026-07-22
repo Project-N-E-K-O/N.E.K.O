@@ -491,7 +491,7 @@ function _attachNekoCatMindProviderDiagnostics(actionId, decision, context = {})
         journey: journey ? { exists: true, paused: !!journey.paused, substate: journey.substate || '',
             idleSubstate: profile.idleSubstate || '', actionSettled: !!journey.actionSettled,
             targetKind: journey.targetKind || '', pairMoveActive: !!(journey.pairMovePlan || journey.pairMoveFrame),
-            pendingWalk: !!(journey.pendingWalkTimer || journey.pendingWalkReady || journey.frame || journey.settleTimer) } : { exists: false }
+            pendingWalk: !!(journey.pendingWalkTimer || journey.pendingWalkReady || journey.frame) } : { exists: false }
     };
     const checks = [
         { id: 'known_action', passed: Object.values(_NEKO_CAT_MIND_ACTION_IDS).includes(actionId) },

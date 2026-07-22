@@ -41,7 +41,6 @@ test('small_move capability check is pure while actual start owns hover preparat
         pendingWalkTimer: 0,
         pendingWalkReady: false,
         frame: 0,
-        settleTimer: 0,
     };
     const art = {
         __nekoIdleHoverSrc: 'hover.gif',

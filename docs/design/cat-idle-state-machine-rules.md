@@ -119,6 +119,8 @@ L = S(0.8d + 0.2 × min(d, t))
 
 聊天窗形态和几何是 provider、near/far 与安全判断事实，不等同于用户需求，所以不直接改五维；它们仍进入 recent events 并排入下一轮异步判断。相同最小化状态和相同窗口矩形只记一次。聊天球中心移动至少 `24px` 才从后续最小化通知归类为 `chat_minimized_moved_far`，poll/heartbeat 不重复记录。`cat1_walk_done_near_chat` 的社交/刺激只属于成功到达；携带 `completed=false` 或 `cancelled=true` 时跳过这部分语义反馈，仅按 3.2 结算已经走过的真实路程。compact 上缘成功落位同时结算既有表现反馈和真实路程。
 
+CAT1 本地文字的 `3%` 哈气彩蛋只请求既有独立伸懒腰表现，不是 selector 动作。该条文字已按 3.1 的 `cat_local_text_received` 结算一次；彩蛋完成不追加五维、不写 cooldown、严格 action result 或 episode，也不冒充只属于 journey near-chat 的 `cat1_stretch_done_near_chat`。runner 拒绝时回退普通猫叫。
+
 ### 3.4 控制与边界 observation
 
 | 事件 | 直接五维变化 | 作用 |
@@ -149,7 +151,7 @@ L = S(0.8d + 0.2 × min(d, t))
 
 `interrupted` 先按动作自身终态处理，例如 small move 仍可结算已经发生的真实路程；随后生成的 drag/return/tier interruption observation 只是生命周期元数据，五维全部为零。拖拽本身已经通过 3.1 和 3.2 结算，不能再由中断事件重复收费。
 
-journey 到达聊天球后的局部 `25%` 玩球不是 selector 动作。只有它真实 done 时才使用上表的 play 完成反馈并消费尚未满足的毛线意图；cancelled 不结算完成反馈。两者都不写 Cat Mind cooldown、严格 action result 或 return episode，也不会单独制造下一轮 selector 机会。
+journey 到达聊天球后选择的局部 `25%` 玩球和独立伸懒腰都不是 selector 动作。局部玩球只有真实 done 时才使用上表的 play 完成反馈并消费尚未满足的毛线意图；伸懒腰只有独立 runner 真实 done 时才使用上表的 stretch 完成反馈；两者 cancelled 均不结算完成反馈。它们都不写 Cat Mind cooldown、严格 action result 或 return episode。伸懒腰完成只有在仍保留新鲜 intent 且此前被 provider 阻塞时，才可按 4.5 的规则唤醒一次重新 dry-run，不能单独制造动作机会。
 
 ## 四、动作分数
 

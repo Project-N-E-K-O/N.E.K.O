@@ -69,6 +69,26 @@ def test_cat_manager_stays_temporary_and_only_observes_accepted_local_text():
     assert "kaomoji:" in lexicon_source
 
 
+def test_cat1_hiss_easter_egg_reuses_the_independent_stretch_presentation():
+    manager_source = read(CHAT_HOST / "cat-local-chat.js")
+    lexicon_source = read(CHAT_HOST / "cat-local-chat-lexicon.js")
+    actions_source = read(
+        ROOT / "static" / "avatar" / "avatar-ui-buttons" / "idle-actions-and-audio.js"
+    )
+    index_source = read(ROOT / "templates" / "index.html")
+
+    assert "CAT1_HISS_STRETCH_EASTER_EGG_RATE = 0.03" in manager_source
+    assert "window.NekoCatIdlePresentation" in manager_source
+    assert "requestCat1Stretch()" in manager_source
+    assert "cat1_stretch_done_near_chat" not in manager_source
+    assert "window.NekoCatIdlePresentation = Object.freeze" in actions_source
+    assert "requestCat1Stretch: _requestNekoIdleCat1StretchPresentation" in actions_source
+    assert "return _playNekoIdleCat1StretchAction(button);" in actions_source
+    assert "'ฅ(`ꈊ´ฅ)'" in lexicon_source
+    assert "'(ฅ`ω´ฅ)'" in lexicon_source
+    assert index_source.index("idle-actions-and-audio.js") < index_source.index("cat-local-chat.js")
+
+
 def test_cat_text_only_prop_is_shared_and_auto_dock_is_guarded():
     schema = read(ROOT / "frontend" / "react-neko-chat" / "src" / "message-schema.ts")
     compact = read(ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx")
