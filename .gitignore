@@ -21,6 +21,10 @@ tests/test_inputs/
 /data/vad_models/*
 !/data/vad_models/manifest.json
 !/data/vad_models/THIRD_PARTY_NOTICES.md
+!/data/speaker_models/
+/data/speaker_models/*
+!/data/speaker_models/manifest.json
+!/data/speaker_models/THIRD_PARTY_NOTICES.md
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe
