@@ -275,6 +275,29 @@
         return true;
     }
 
+    function observeAcceptedLocalText(requestId) {
+        var catMind = window.nekoCatMind;
+        if (!catMind || typeof catMind.observe !== 'function') return false;
+        var current = readCatMindState();
+        if (!current || current.active !== true || Number(current.enteredAt) !== state.enteredAt) {
+            return false;
+        }
+        try {
+            return !!catMind.observe({
+                type: 'cat_local_text_received',
+                source: 'cat-local-chat',
+                tier: normalizeTier(current.tier),
+                timestamp: Date.now(),
+                detail: {
+                    requestId: requestId,
+                    enteredAt: state.enteredAt
+                }
+            });
+        } catch (_) {
+            return false;
+        }
+    }
+
     function scheduleNextReply() {
         if (replyTimer || !replyQueue.length) return;
         var delay = REPLY_DELAY_MIN_MS + Math.floor(Math.random() * REPLY_DELAY_SPAN_MS);
@@ -307,6 +330,7 @@
             && requestedEnteredAt !== state.enteredAt) return false;
         if (!rememberRequestId(requestId)) return true;
         appendItem('user', text, requestId);
+        observeAcceptedLocalText(requestId);
         replyQueue.push({ requestId: requestId, enteredAt: state.enteredAt });
         publishSnapshot('cat-local-chat-user');
         scheduleNextReply();

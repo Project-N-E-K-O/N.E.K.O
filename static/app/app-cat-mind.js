@@ -77,6 +77,7 @@
         DRAG_CANCELLED: 'drag_cancelled',
         RAPID_DRAG: 'rapid_drag',
         CAT_HOVER_REACTION: 'cat_hover_reaction',
+        CAT_LOCAL_TEXT_RECEIVED: 'cat_local_text_received',
         THOUGHT_BUBBLE_POP: 'thought_bubble_pop',
         RETURN_CLICK: 'return_click',
         TIER_CHANGED: 'tier_changed',
@@ -130,8 +131,8 @@
     });
     // Every registered action uses the same scoring layers and monotonic
     // response curves. Positive need surplus rises quickly enough to answer a
-    // dense interaction burst, while the deeper cadence floor and the action's
-    // own power-recovery cooldown keep ordinary idle and repeats restrained.
+    // dense interaction burst, while the cadence curve keeps ordinary idle
+    // restrained and the action cooldown changes only relative candidate order.
     var ACTION_SCORE_POLICY = Object.freeze({
         negativeNeedCurveRange: 14,
         positiveNeedCurveRange: 8,
@@ -141,17 +142,15 @@
         cadenceFloor: -58,
         cadenceCeiling: 18,
         cadenceRecoveryMs: 4.85 * 60 * 1000,
-        cooldownPenaltyPoints: 36,
-        cooldownMultiplier: 4.2,
         cooldownRecoveryExponent: 1.9,
     });
     // Short-lived action intent is selector context, not a sixth need. A
     // strong, explicit invitation may move the matching action ahead of the
-    // ordinary cadence, while the action's own cooldown still dominates a
-    // just-started repeat.
+    // ordinary cadence, while its cooldown still lowers its relative priority
+    // when another legal action is also eligible.
     var ACTION_INTENT_POLICY = Object.freeze({
         maxContribution: 84,
-        cooldownPenaltyRelief: 0.5,
+        cooldownRankRelief: 0.5,
         freshHoldMs: 30 * 1000,
         halfLifeMs: 90 * 1000,
         yarnOfferStrongStrength: 0.9,
@@ -171,10 +170,11 @@
     var INTERACTION_FEEDBACK_POLICY = Object.freeze({
         hover: Object.freeze({ social_need: 0.006, stimulation_need: 0.018, energy: -0.001 }),
         dragStart: Object.freeze({ social_need: 0.01, stimulation_need: 0.035 }),
-        dragEnd: Object.freeze({ social_need: 0.025, stimulation_need: 0.18 }),
+        dragEnd: Object.freeze({ social_need: 0.025, stimulation_need: 0.26 }),
         dragCancelled: Object.freeze({ social_need: 0.012, stimulation_need: 0.016 }),
         rapidImmediate: Object.freeze({ social_need: 0.08, stimulation_need: 0.4 }),
         rapidTerminal: Object.freeze({ social_need: 0.03, stimulation_need: 0.12 }),
+        localText: Object.freeze({ social_need: 0.10, stimulation_need: 0.10 }),
         bubbleSocialSatisfaction: 0.28,
         bubbleStimulationSatisfaction: 0.18,
     });
@@ -182,7 +182,7 @@
     // above a tier comfort band leaks away, so a short burst is answered now
     // instead of leaving the fields pinned at 1 for many later minutes.
     var NEED_OVERFLOW_POLICY = Object.freeze({
-        cat1: Object.freeze({ socialComfort: 0.62, socialHalfLifeMinutes: 4, stimulationComfort: 0.7, stimulationHalfLifeMinutes: 3 }),
+        cat1: Object.freeze({ socialComfort: 0.52, socialHalfLifeMinutes: 4, stimulationComfort: 0.6, stimulationHalfLifeMinutes: 3 }),
         cat2: Object.freeze({ socialComfort: 0.48, socialHalfLifeMinutes: 5, stimulationComfort: 0.42, stimulationHalfLifeMinutes: 5 }),
         cat3: Object.freeze({ socialComfort: 0.36, socialHalfLifeMinutes: 6, stimulationComfort: 0.3, stimulationHalfLifeMinutes: 6 }),
     });
@@ -596,12 +596,12 @@
                 var intentCurveFactor = item.intentCurveFactor === null || item.intentCurveFactor === undefined
                     ? null
                     : Number(item.intentCurveFactor);
-                var utilityScore = item.utilityScore === null || item.utilityScore === undefined
+                var eligibilityScore = item.eligibilityScore === null || item.eligibilityScore === undefined
                     ? null
-                    : Number(item.utilityScore);
-                var cooldownPenalty = item.cooldownPenalty === null || item.cooldownPenalty === undefined
+                    : Number(item.eligibilityScore);
+                var cooldownSortRank = item.cooldownSortRank === null || item.cooldownSortRank === undefined
                     ? null
-                    : Number(item.cooldownPenalty);
+                    : Number(item.cooldownSortRank);
                 var cooldownRemainingMs = item.cooldownRemainingMs === null || item.cooldownRemainingMs === undefined
                     ? null
                     : Number(item.cooldownRemainingMs);
@@ -631,9 +631,9 @@
                     intentContribution: Number.isFinite(intentContribution) ? intentContribution : null,
                     intentCurveFactor: Number.isFinite(intentCurveFactor) ? intentCurveFactor : null,
                     intentReason: typeof item.intentReason === 'string' ? item.intentReason : '',
-                    utilityScore: Number.isFinite(utilityScore) ? utilityScore : null,
+                    eligibilityScore: Number.isFinite(eligibilityScore) ? eligibilityScore : null,
                     cooldownApplied: item.cooldownApplied === true,
-                    cooldownPenalty: Number.isFinite(cooldownPenalty) ? cooldownPenalty : null,
+                    cooldownSortRank: Number.isFinite(cooldownSortRank) ? cooldownSortRank : null,
                     cooldownRemainingMs: Number.isFinite(cooldownRemainingMs) ? cooldownRemainingMs : null,
                     cooldownRecoveryFactor: Number.isFinite(cooldownRecoveryFactor) ? cooldownRecoveryFactor : null,
                     cooldownCurveFactor: Number.isFinite(cooldownCurveFactor) ? cooldownCurveFactor : null,
@@ -1082,27 +1082,25 @@
         var config = getActionScoreConfig(actionId);
         var cooldown = runtimeState.scheduler.actionCooldowns[actionId];
         if (!config || !cooldown) {
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
+            return { active: false, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var startedAt = Number(cooldown.startedAt);
         var fullCooldownMs = Number(cooldown.fullCooldownMs) || config.cooldownMs;
         if (!Number.isFinite(startedAt) || !Number.isFinite(fullCooldownMs) || fullCooldownMs <= 0) {
             if (shouldPrune) delete runtimeState.scheduler.actionCooldowns[actionId];
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
+            return { active: false, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var elapsedMs = Math.max(0, (Number(timestamp) || nowMs()) - startedAt);
         var remainingMs = Math.max(0, fullCooldownMs - elapsedMs);
         if (!remainingMs) {
             if (shouldPrune) delete runtimeState.scheduler.actionCooldowns[actionId];
-            return { active: false, penalty: 0, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
+            return { active: false, remainingMs: 0, recoveryFactor: 0, curveFactor: 0 };
         }
         var recoveryFactor = Math.min(1, remainingMs / fullCooldownMs);
         var elapsedProgress = 1 - recoveryFactor;
         var curveFactor = 1 - Math.pow(elapsedProgress, ACTION_SCORE_POLICY.cooldownRecoveryExponent);
         return {
             active: true,
-            penalty: ACTION_SCORE_POLICY.cooldownPenaltyPoints *
-                ACTION_SCORE_POLICY.cooldownMultiplier * curveFactor,
             remainingMs: remainingMs,
             recoveryFactor: recoveryFactor,
             curveFactor: curveFactor,
@@ -1188,12 +1186,16 @@
         var cadence = getCadenceScore(timestamp);
         var cooldown = getActionCooldown(actionId, timestamp, cooldownOptions);
         var intent = getActionIntentContribution(actionId, timestamp);
-        var intentCooldownRelief = ACTION_INTENT_POLICY.cooldownPenaltyRelief * intent.curveFactor;
-        var cooldownPenalty = cooldown.penalty * (1 - intentCooldownRelief);
-        var utilityScore = needContribution + cadence.adjustment + intent.contribution - cooldownPenalty;
+        var intentCooldownRelief = ACTION_INTENT_POLICY.cooldownRankRelief * intent.curveFactor;
+        var cooldownSortRank = cooldown.curveFactor * (1 - intentCooldownRelief);
+        var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution;
+        // Need, cadence and intent decide whether the action is warranted.
+        // Cooldown stays out of this gate and remains a relative selection
+        // signal, so using an action once cannot erase it for several minutes.
+        var eligibilityScore = baseEligibilityScore;
         return {
             baseScore: baseScore,
-            score: threshold + utilityScore,
+            score: threshold + eligibilityScore,
             threshold: threshold,
             needSurplus: needSurplus,
             needContribution: needContribution,
@@ -1205,10 +1207,9 @@
             intentContribution: intent.contribution,
             intentCurveFactor: intent.curveFactor,
             intentReason: intent.reason,
-            utilityScore: utilityScore,
+            eligibilityScore: eligibilityScore,
             cooldownApplied: cooldown.active,
-            cooldownPenalty: cooldownPenalty,
-            cooldownBasePenalty: cooldown.penalty,
+            cooldownSortRank: cooldownSortRank,
             intentCooldownRelief: intentCooldownRelief,
             cooldownRemainingMs: cooldown.remainingMs,
             cooldownRecoveryFactor: cooldown.recoveryFactor,
@@ -1242,9 +1243,9 @@
                 intentContribution: Math.round(scoring.intentContribution * 100) / 100,
                 intentCurveFactor: Math.round(scoring.intentCurveFactor * 10000) / 10000,
                 intentReason: scoring.intentReason,
-                utilityScore: Math.round(scoring.utilityScore * 100) / 100,
+                eligibilityScore: Math.round(scoring.eligibilityScore * 100) / 100,
                 cooldownApplied: scoring.cooldownApplied,
-                cooldownPenalty: Math.round(scoring.cooldownPenalty * 100) / 100,
+                cooldownSortRank: Math.round(scoring.cooldownSortRank * 10000) / 10000,
                 cooldownRemainingMs: Math.round(scoring.cooldownRemainingMs),
                 cooldownRecoveryFactor: Math.round(scoring.cooldownRecoveryFactor * 10000) / 10000,
                 cooldownCurveFactor: Math.round(scoring.cooldownCurveFactor * 10000) / 10000,
@@ -1441,9 +1442,9 @@
                 intentContribution: null,
                 intentCurveFactor: null,
                 intentReason: '',
-                utilityScore: null,
+                eligibilityScore: null,
                 cooldownApplied: false,
-                cooldownPenalty: 0,
+                cooldownSortRank: 0,
                 cooldownRemainingMs: 0,
                 cooldownRecoveryFactor: 0,
                 cooldownCurveFactor: 0,
@@ -1478,14 +1479,14 @@
                     candidate.intentContribution = Math.round(scoring.intentContribution * 100) / 100;
                     candidate.intentCurveFactor = Math.round(scoring.intentCurveFactor * 10000) / 10000;
                     candidate.intentReason = scoring.intentReason;
-                    candidate.utilityScore = Math.round(scoring.utilityScore * 100) / 100;
+                    candidate.eligibilityScore = Math.round(scoring.eligibilityScore * 100) / 100;
                     candidate.cooldownApplied = scoring.cooldownApplied;
-                    candidate.cooldownPenalty = Math.round(scoring.cooldownPenalty * 100) / 100;
+                    candidate.cooldownSortRank = Math.round(scoring.cooldownSortRank * 10000) / 10000;
                     candidate.cooldownRemainingMs = Math.round(scoring.cooldownRemainingMs);
                     candidate.cooldownRecoveryFactor = Math.round(scoring.cooldownRecoveryFactor * 10000) / 10000;
                     candidate.cooldownCurveFactor = Math.round(scoring.cooldownCurveFactor * 10000) / 10000;
                     candidate.score = Math.round(scoring.score * 100) / 100;
-                    if (candidate.utilityScore >= 0) {
+                    if (candidate.eligibilityScore >= 0) {
                         candidate.allowed = true;
                         candidate.reason = 'allowed';
                     } else {
@@ -1498,7 +1499,12 @@
         var allowed = base.candidates.filter(function (candidate) { return candidate.allowed; });
         if (allowed.length) {
             allowed.sort(function (left, right) {
-                if (right.utilityScore !== left.utilityScore) return right.utilityScore - left.utilityScore;
+                if (left.cooldownSortRank !== right.cooldownSortRank) {
+                    return left.cooldownSortRank - right.cooldownSortRank;
+                }
+                if (right.eligibilityScore !== left.eligibilityScore) {
+                    return right.eligibilityScore - left.eligibilityScore;
+                }
                 return getActionTieBreakIndex(left.actionId) - getActionTieBreakIndex(right.actionId);
             });
             base.outcome = allowed[0].actionId;
@@ -1515,7 +1521,7 @@
             base.request = request;
         }
         recordDecision(base);
-        var isCurrentRequest = runtimeState.active &&
+        var isCurrentRequest = !!base.request && runtimeState.active &&
             runtimeState.scheduler.pendingActionRequest &&
             runtimeState.scheduler.pendingActionRequest.requestId === base.request.requestId;
         if (base.request &&
@@ -1641,6 +1647,16 @@
             return '';
         }
         var detail = observation.detail || {};
+        var requestIdentity = observation.type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED
+            ? (detail.requestId || '')
+            : '';
+        if (requestIdentity) {
+            return [
+                observation.type,
+                runtimeState.enteredAt,
+                requestIdentity,
+            ].join('|');
+        }
         return [
             observation.type,
             observation.source,
@@ -1671,6 +1687,7 @@
             type === OBSERVATION_TYPES.DRAG_CANCELLED ||
             type === OBSERVATION_TYPES.RAPID_DRAG ||
             type === OBSERVATION_TYPES.CAT_HOVER_REACTION ||
+            type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED ||
             type === OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED ||
             type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP ||
             type === OBSERVATION_TYPES.RETURN_CLICK) {
@@ -1725,6 +1742,7 @@
             type === OBSERVATION_TYPES.DRAG_CANCELLED ||
             type === OBSERVATION_TYPES.RAPID_DRAG ||
             type === OBSERVATION_TYPES.CAT_HOVER_REACTION ||
+            type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED ||
             type === OBSERVATION_TYPES.CHAT_YARN_DRAG_COMPLETED ||
             type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP;
     }
@@ -2075,6 +2093,11 @@
             // It only nudges the five fields; the shared score still decides the
             // legal action without an event-to-runner mapping.
             mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.hover);
+        } else if (type === OBSERVATION_TYPES.CAT_LOCAL_TEXT_RECEIVED) {
+            // Text content is deliberately absent. One accepted local cat-chat
+            // request is only bounded social/stimulation evidence; the shared
+            // selector and its existing gates still own every action decision.
+            mergeInteractionNeed(INTERACTION_FEEDBACK_POLICY.localText);
         } else if (type === OBSERVATION_TYPES.THOUGHT_BUBBLE_POP) {
             // Popping the bubble is a completed moment of contact, so it
             // satisfies social/stimulation need instead of feeding another
@@ -2108,7 +2131,7 @@
         } else if (type === OBSERVATION_TYPES.SOCIAL_PING_DONE) {
             adjustMind({ social_need: -0.34, energy: -0.01 });
         } else if (type === OBSERVATION_TYPES.SMALL_MOVE_DONE) {
-            adjustMind({ stimulation_need: -0.14 });
+            adjustMind({ stimulation_need: -0.18 });
             applyPhysicalActivity(observation.detail);
         } else if (type === OBSERVATION_TYPES.SMALL_MOVE_CANCELLED) {
             // Cancellation does not claim the action's completion feedback,

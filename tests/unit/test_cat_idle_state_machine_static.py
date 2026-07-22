@@ -154,7 +154,7 @@ def test_cat_mind_runtime_keeps_dom_free_observation_and_request_boundaries():
     assert "FEATURE_FLAGS" not in source
     assert "getFeatureFlag" not in source
     assert "selectAction" not in source
-    assert "utilityScore" in source
+    assert "cooldownSortRank" in source
     assert "scoreAction" not in source
 
 
@@ -216,6 +216,7 @@ def test_cat_mind_phase0_declares_first_action_and_observation_ids():
         "drag_cancelled",
         "rapid_drag",
         "cat_hover_reaction",
+        "cat_local_text_received",
         "thought_bubble_pop",
         "return_click",
         "cat1_walk_done_near_chat",
@@ -712,6 +713,9 @@ def test_cat_mind_phase3_provider_gates_are_stronger_than_legacy_entries():
     )[0]
     assert "edgePeekActive: tier === _NEKO_IDLE_TIER_CAT1 && _isNekoIdleCat1EdgePeekActive(button)" in provider_evaluator_block
     assert "else if (facts.edgePeekActive) reason = 'edge_peek_active';" in provider_evaluator_block
+    assert "actionId === _NEKO_CAT_MIND_ACTION_IDS.CAT1_PLAY_YARN && !facts.nearChat" in provider_evaluator_block
+    assert "_NEKO_CAT_MIND_ACTION_IDS.CAT1_SMALL_MOVE) && !facts.nearChat" not in provider_evaluator_block
+    assert "_canScheduleNekoIdleCat1PairMove(button, button.__nekoIdleCat1Journey)" in provider_evaluator_block
     assert "edge_peek_active: '猫咪正在屏幕边缘探头'" in debug_source
     assert "edge_peek_inactive: '猫咪未在屏幕边缘探头'" in debug_source
 
@@ -1324,11 +1328,12 @@ def test_cat_mind_debug_overlay_is_opt_in_and_selector_ready():
     assert "neko.catMind.debug" in source
     assert "getDebugSnapshot" in source
     assert "lastDecision" in source
-    assert "动作评分（需求余量＋节奏＋短时意图－本动作冷却）" in source
+    assert "动作评分（需求余量＋节奏＋短时意图；冷却单独排序）" in source
     assert "理论基础分：" in source
     assert "需求余量：" in source
     assert "统一节奏分：" in source
-    assert "可比效用：" in source
+    assert "冷却排序位：" in source
+    assert "资格分：" in source
     assert "本轮可用分（仅 provider 允许后计算）：" in source
     assert "动作条件依据：" in source
     assert "现场还不满足：" in source
@@ -1434,12 +1439,13 @@ def test_cat_mind_debug_overlay_is_absent_by_default_and_renders_when_enabled():
         assert.match(panelBody.textContent, /五维状态/);
         assert.match(panelBody.textContent, /状态：猫形态运行中/);
         assert.match(panelBody.textContent, /调度状态：/);
-        assert.match(panelBody.textContent, /动作评分（需求余量＋节奏＋短时意图－本动作冷却）/);
+        assert.match(panelBody.textContent, /动作评分（需求余量＋节奏＋短时意图；冷却单独排序）/);
         assert.match(panelBody.textContent, /【CAT1 吃零食】/);
         assert.match(panelBody.textContent, /需求余量：/);
         assert.match(panelBody.textContent, /统一节奏分：/);
         assert.match(panelBody.textContent, /短时意图：/);
-        assert.match(panelBody.textContent, /可比效用：/);
+        assert.match(panelBody.textContent, /冷却排序位：/);
+        assert.match(panelBody.textContent, /资格分：/);
         assert.match(panelBody.textContent, /动作条件依据/);
         assert.match(panelBody.textContent, /回归经历归并/);
         assert.match(panelBody.textContent, /返回预览：当前没有可带回的经历/);
@@ -2050,13 +2056,13 @@ def test_cat_mind_selector_dispatches_one_async_request_and_records_started_life
           (item) => item.actionId === 'cat1_eat_snack'
         );
         assert.equal(cooledCandidate.cooldownApplied, true);
-        assert.ok(cooledCandidate.cooldownPenalty > 0);
-        assert.ok(Math.abs(cooledCandidate.utilityScore - (
+        assert.ok(cooledCandidate.cooldownSortRank > 0 && cooledCandidate.cooldownSortRank <= 1);
+        const cooledBaseEligibility =
           cooledCandidate.needContribution + cooledCandidate.cadenceAdjustment +
-            cooledCandidate.intentContribution - cooledCandidate.cooldownPenalty
-        )) < 0.02);
+            cooledCandidate.intentContribution;
+        assert.ok(Math.abs(cooledCandidate.eligibilityScore - cooledBaseEligibility) < 0.02);
         assert.ok(Math.abs(cooledCandidate.score - (
-          cooledCandidate.threshold + cooledCandidate.utilityScore
+          cooledCandidate.threshold + cooledCandidate.eligibilityScore
         )) < 0.02);
 
         now += 60 * 60 * 1000;
@@ -2176,7 +2182,7 @@ def test_cat_mind_small_move_uses_started_lifecycle_and_completion_feedback():
         assert.ok(finished.actionCooldowns.cat1_small_move);
         assert.equal(win.nekoCatMind.getRecentEvents().filter((item) => item.type === 'small_move_done').length, 1);
         const physicalLoad = 0.6 * 0.6 * (3 - 2 * 0.6);
-        assert.ok(Math.abs(finished.fields.stimulation_need - Math.max(0, beforeDone.stimulation_need - 0.14)) < 1e-9);
+        assert.ok(Math.abs(finished.fields.stimulation_need - Math.max(0, beforeDone.stimulation_need - 0.18)) < 1e-9);
         assert.ok(Math.abs(finished.fields.appetite - Math.min(1, beforeDone.appetite + 0.04 * physicalLoad)) < 1e-9);
         assert.ok(Math.abs(finished.fields.energy - Math.max(0, beforeDone.energy - 0.045 * physicalLoad)) < 1e-9);
         assert.ok(Math.abs(finished.fields.sleepiness - Math.min(1, beforeDone.sleepiness + 0.02 * physicalLoad)) < 1e-9);
@@ -2375,6 +2381,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             }},
             dryRun(actionId) {{
               const allowed = providerNearChatAvailable ||
+                (profile.soloSmallMove === true && actionId === 'cat1_small_move') ||
                 actionId === 'cat1_social_ping' || actionId === 'cat1_eat_snack';
               return {{ allowed, reason: allowed ? 'allowed' : 'near_chat_required' }};
             }},
@@ -2546,7 +2553,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
               }}
               if (!item.type) continue;
               const startsBeforeObservation = starts.length;
-              observe(item.type);
+              observe(item.type, now, item.detail || null);
               flush();
               if (runtimeGates.dragPending || runtimeGates.dragging || runtimeGates.returnPending) {{
                 assert.equal(starts.length, startsBeforeObservation,
@@ -2555,6 +2562,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             }}
           }}
           let idleTickCount = 0;
+          let localTextRequestNumber = 0;
           for (let index = 0; index < 120; index += 1) {{
             const step = index + 1;
             advanceTo(entryAt + step * 30 * 1000);
@@ -2569,6 +2577,12 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
               const phase = Math.floor(minute / profile.chatEveryMinutes) % 4;
               observe(['chat_minimized_visible', 'chat_minimized_moved_far',
                 'chat_idle_docked_near_cat', 'chat_expanded'][phase]);
+            }}
+            if (interactionActive && profile.localTextEverySteps && step % profile.localTextEverySteps === 0) {{
+              localTextRequestNumber += 1;
+              observe('cat_local_text_received', now, {{
+                requestId: 'local-text-simulation-' + localTextRequestNumber,
+              }});
             }}
             if (interactionActive && profile.dragEveryMinutes && step % (profile.dragEveryMinutes * 2) === 0) {{
               observe('drag_start');
@@ -2605,7 +2619,6 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         assert.equal(far.counts.cat1_play_yarn || 0, 0);
         assert.equal(far.counts.cat1_small_move || 0, 0);
         assert.ok((far.counts.cat1_social_ping || 0) > 0);
-        assert.ok((far.counts.cat1_social_ping || 0) <= 8, 'social ping must not fill every cooldown gap');
         assert.ok(far.idleTickCount >= 100, 'near-chat unavailable should leave genuine no-start ticks');
 
         const near = simulate(true);
@@ -2658,6 +2671,41 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
             {{ atMs: 2200, type: 'drag_end', phase: 'drag_end' }},
             {{ atMs: 2320, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
           ] }},
+          ordinaryHigh: {{ burstTimeline: [
+            {{ atMs: 500, type: 'cat_hover_reaction' }},
+            {{ atMs: 1500, type: 'drag_start', phase: 'drag_start' }},
+            {{ atMs: 1700, phase: 'drag_active' }},
+            {{ atMs: 2500, type: 'drag_end', phase: 'drag_end' }},
+            {{ atMs: 2620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+            {{ atMs: 4500, type: 'cat_hover_reaction' }},
+            {{ atMs: 5500, type: 'drag_start', phase: 'drag_start' }},
+            {{ atMs: 5700, phase: 'drag_active' }},
+            {{ atMs: 6500, type: 'drag_end', phase: 'drag_end' }},
+            {{ atMs: 6620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+          ] }},
+          ordinaryHighFullLoad: {{ burstTimeline: [
+            {{ atMs: 500, type: 'cat_hover_reaction' }},
+            {{ atMs: 1500, type: 'drag_start', phase: 'drag_start' }},
+            {{ atMs: 1700, phase: 'drag_active' }},
+            {{ atMs: 2500, type: 'drag_end', phase: 'drag_end', detail: {{
+              activityId: 'ordinary-full-load-1', pathDistancePx: 160, durationMs: 2200,
+            }} }},
+            {{ atMs: 2620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+            {{ atMs: 4500, type: 'cat_hover_reaction' }},
+            {{ atMs: 5500, type: 'drag_start', phase: 'drag_start' }},
+            {{ atMs: 5700, phase: 'drag_active' }},
+            {{ atMs: 6500, type: 'drag_end', phase: 'drag_end', detail: {{
+              activityId: 'ordinary-full-load-2', pathDistancePx: 160, durationMs: 2200,
+            }} }},
+            {{ atMs: 6620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+            {{ atMs: 8500, type: 'cat_hover_reaction' }},
+            {{ atMs: 9500, type: 'drag_start', phase: 'drag_start' }},
+            {{ atMs: 9700, phase: 'drag_active' }},
+            {{ atMs: 10500, type: 'drag_end', phase: 'drag_end', detail: {{
+              activityId: 'ordinary-full-load-3', pathDistancePx: 160, durationMs: 2200,
+            }} }},
+            {{ atMs: 10620, type: 'cat1_stretch_done_near_chat', phase: 'settled' }},
+          ] }},
           high: {{ burstTimeline: [
             {{ atMs: 500, type: 'cat_hover_reaction' }},
             {{ atMs: 1500, type: 'drag_start', phase: 'drag_start' }},
@@ -2694,16 +2742,35 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           }}
           return longest;
         }};
+        const hasFastReentry = (result, withinMinutes) => result.starts.some((item, index) =>
+          result.starts.slice(index + 1).some((next) =>
+            next.actionId === item.actionId && next.minute - item.minute <= withinMinutes
+          )
+        );
         const none = simulate(true, profiles.none);
         const low = simulate(true, profiles.low);
         const normal = simulate(true, profiles.normal);
         const high = simulate(true, profiles.high);
         const highNoPop = simulate(true, profiles.highNoPop);
         const sustainedHigh = simulate(true, profiles.sustainedHigh);
+        const localText = simulate(true, {{ localTextEverySteps: 2 }});
+        const compact = simulate(false, {{ soloSmallMove: true }});
+        const compactLocalText = simulate(false, {{ soloSmallMove: true, localTextEverySteps: 2 }});
+        const compactDenseLocalText = simulate(false, {{
+          soloSmallMove: true,
+          burstTimeline: Array.from({{ length: 6 }}, (_, index) => ({{
+            atMs: 1000 + index * 5000,
+            type: 'cat_local_text_received',
+            detail: {{ requestId: 'compact-dense-local-text-' + index }},
+          }})),
+        }});
+        const farLocalText = simulate(false, {{ localTextEverySteps: 2 }});
         const shortNone = simulate(true, shortBurstProfiles.none);
         const shortLow = simulate(true, shortBurstProfiles.low);
         const shortNormal = simulate(true, shortBurstProfiles.normal);
         const shortRapidOnly = simulate(true, shortBurstProfiles.rapidOnly);
+        const shortOrdinaryHigh = simulate(true, shortBurstProfiles.ordinaryHigh);
+        const shortOrdinaryHighFullLoad = simulate(true, shortBurstProfiles.ordinaryHighFullLoad);
         const shortHigh = simulate(true, shortBurstProfiles.high);
         const timingVariants = [
           {{ socialDurationMs: 936, smallMoveDurationMs: 720 }},
@@ -2739,6 +2806,39 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           }}
         }};
 
+        // Repeated local cat-chat observations use the same selector. The
+        // long sample checks only the requested direction, never fixed odds:
+        // social is somewhat more common, eating is clearly less common, and
+        // movement/play remain close to each other.
+        const localTextSocial = localText.counts.cat1_social_ping || 0;
+        const localTextEat = localText.counts.cat1_eat_snack || 0;
+        const localTextMove = localText.counts.cat1_small_move || 0;
+        const localTextPlay = localText.counts.cat1_play_yarn || 0;
+        assert.ok(localTextSocial > localTextMove && localTextSocial > localTextPlay);
+        assert.ok(localTextEat <= localTextMove && localTextEat <= localTextPlay);
+        assert.ok(Math.abs(localTextMove - localTextPlay) <= 3);
+        assert.ok((compact.counts.cat1_small_move || 0) > 0,
+          'expanded/compact chat must retain the existing solo small-move provider');
+        assert.equal(compact.counts.cat1_play_yarn || 0, 0);
+        assert.equal(compactLocalText.counts.cat1_play_yarn || 0, 0);
+        assert.ok((compactLocalText.counts.cat1_eat_snack || 0) <
+          (compactLocalText.counts.cat1_social_ping || 0));
+        assert.ok(startsByMinute(compactDenseLocalText, 1).length >= 2,
+          'dense compact local text must receive more than one early response when solo movement is legal');
+        assert.ok(startsByMinute(compactDenseLocalText, 15).length >=
+          startsByMinute(compact, 15).length + 2);
+        assert.equal(farLocalText.counts.cat1_small_move || 0, 0);
+        assert.equal(farLocalText.counts.cat1_play_yarn || 0, 0);
+        assert.ok(farLocalText.starts.some((item, index) => index > 0 &&
+          item.actionId === farLocalText.starts[index - 1].actionId &&
+          item.minute - farLocalText.starts[index - 1].minute < 8),
+          'an otherwise eligible action must remain executable during its own cooldown');
+        assertLifecycle(localText);
+        assertLifecycle(compact);
+        assertLifecycle(compactLocalText);
+        assertLifecycle(compactDenseLocalText);
+        assertLifecycle(farLocalText);
+
         // No, low, normal, and dense user interaction all return through the
         // same bounded completed-action episode. Raw observations, five-field
         // values, and event text never enter the model-facing draft.
@@ -2771,12 +2871,16 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         // during that burst. Generic hover/drag facts act only through the five
         // needs; there is no event-to-action mapping or burst branch.
         assert.ok(startsInWindow(normal, 0).length >= 5 && startsInWindow(normal, 0).length <= 7);
-        assert.ok(startsByMinute(high, 12).length >= 6 && startsByMinute(high, 12).length <= 9);
+        assert.ok(startsByMinute(high, 12).length >= 8 && startsByMinute(high, 12).length <= 12);
         assert.ok(high.starts[0].minute <= 2,
           'a repeated hover/drag stream must respond by its first explicit rapid gesture');
         assert.ok(startsByMinute(high, 12).length > startsByMinute(none, 12).length);
         assert.ok(startsByMinute(high, 12).length > startsByMinute(low, 12).length);
         assert.ok(startsByMinute(high, 12).length > startsByMinute(normal, 12).length);
+        assert.ok(hasFastReentry(high, 4),
+          'dense interaction must let a previously used action re-enter before its nominal cooldown expires');
+        assert.ok(startsByMinute(high, 6).length >= 6,
+          'using every legal action once must not exhaust the action pool');
         assert.ok(actionKinds(startsByMinute(high, 12)) >= 4,
           'the burst response must rotate across multiple actions');
         assert.ok(startsByMinute(highNoPop, 12).length > startsByMinute(normal, 12).length,
@@ -2798,20 +2902,23 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
           'low energy must eventually suppress more yarn play even when stimulation is high');
         assert.ok(high.bubblePops.length > 0 && highNoPop.bubblePops.length === 0);
         assert.ok(Math.abs(total(high) - total(highNoPop)) <= 1,
-          'popping a visible bubble must satisfy need, not inject another action');
+          'popping a visible bubble must satisfy need, not inject another action: ' + JSON.stringify({{
+            high: {{ total: total(high), counts: high.counts }},
+            highNoPop: {{ total: total(highNoPop), counts: highNoPop.counts }},
+          }}));
         for (const result of [normal, high, highNoPop]) assertLifecycle(result);
 
         // Sustained dense interaction stays bounded but remains visibly above
         // the normal curve beyond the opening burst. No single action may own
         // more than half of the hour, even though all choices still come from
         // the shared scoring/cooldown path.
-        assert.ok(total(sustainedHigh) >= 20 && total(sustainedHigh) <= 26);
+        assert.ok(total(sustainedHigh) >= 26 && total(sustainedHigh) <= 36);
         assert.ok(startsByMinute(sustainedHigh, 15).length >= startsByMinute(normal, 15).length + 1);
-        assert.ok(bucketCounts(sustainedHigh).every((count) => count >= 5 && count <= 8));
+        assert.ok(bucketCounts(sustainedHigh).every((count) => count >= 5 && count <= 12));
         assert.ok(actionKinds(sustainedHigh.starts) >= 4);
-        assert.ok(maxActionShare(sustainedHigh) <= 0.5,
+        assert.ok(maxActionShare(sustainedHigh) <= 0.6,
           'sustained interaction must not collapse into one repeated response');
-        assert.ok(maxRun(sustainedHigh) <= 2);
+        assert.ok(maxRun(sustainedHigh) <= 3);
         assert.ok(sustainedHigh.fields.social_need < 1 && sustainedHigh.fields.stimulation_need < 1,
           'bounded overflow leakage must keep repeated evidence below hard saturation');
         assertLifecycle(sustainedHigh);
@@ -2821,7 +2928,9 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         // Cat Mind and generic interaction facts are not mapped to an action.
         assert.ok(shortNone.starts[0].minute >= 3 && shortNone.starts[0].minute <= 4);
         assert.ok(shortLow.starts[0].minute >= 3 && shortLow.starts[0].minute <= 4);
-        assert.ok(shortNormal.starts[0].minute >= 2.5 && shortNormal.starts[0].minute <= 3.5);
+        assert.ok(shortNormal.starts[0].minute >= 1.5 && shortNormal.starts[0].minute <= 3.5,
+          'one ordinary drag should advance, but not force, the first response: ' +
+            JSON.stringify(shortNormal.starts.slice(0, 3)));
         assert.ok(shortHigh.starts[0].minute <= 0.5,
           'a compressed high-interaction burst must receive a response within 30 seconds');
         assert.equal(startsByMinute(shortNone, 3).length, 0);
@@ -2830,6 +2939,12 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         assert.ok(startsByMinute(shortRapidOnly, 1).length >= 1,
           'one sustained rapid drag must receive a scored response within 60 seconds');
         assert.ok(startsByMinute(shortRapidOnly, 3).length >= 2);
+        assert.ok(shortOrdinaryHigh.starts[0].minute <= 0.5,
+          'two ordinary completed drags must receive a scored response without relying on rapid_drag: ' +
+            JSON.stringify(shortOrdinaryHigh.starts.slice(0, 3)));
+        assert.ok(shortOrdinaryHighFullLoad.starts[0].minute <= 1,
+          'three ordinary drags must still respond promptly after their real physical load is settled: ' +
+            JSON.stringify(shortOrdinaryHighFullLoad.starts.slice(0, 3)));
         assert.ok(startsByMinute(shortHigh, 3).length >= 3 && startsByMinute(shortHigh, 3).length <= 5);
         assert.ok(startsByMinute(shortNone, 10).length <= startsByMinute(shortLow, 10).length,
           'one easy hover may preserve the quiet count instead of forcing an extra action');
@@ -2839,15 +2954,18 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         assert.ok(startsByMinute(shortNormal, 10).length < startsByMinute(shortHigh, 10).length);
         assert.ok(actionKinds(startsByMinute(shortHigh, 3)) >= 3);
         assert.ok(actionKinds(startsByMinute(shortHigh, 10)) >= 4);
-        const postBurstProfiles = [shortNone, shortLow, shortNormal, shortRapidOnly, shortHigh];
+        const postBurstProfiles = [shortNone, shortLow, shortNormal, shortRapidOnly,
+          shortOrdinaryHigh, shortOrdinaryHighFullLoad, shortHigh];
         for (const result of postBurstProfiles) {{
           assert.ok(bucketCounts(result).slice(1).every((count) => count >= 3 && count <= 5),
             'a short burst must return to the ordinary quarter-hour rhythm');
         }}
         const postBurstTailCounts = postBurstProfiles.map((result) => startsBetween(result, 15, 60).length);
-        assert.ok(Math.max(...postBurstTailCounts) - Math.min(...postBurstTailCounts) <= 1,
-          'a short interaction burst must converge back to the ordinary tail rhythm');
-        for (const result of [shortNone, shortLow, shortNormal, shortRapidOnly, shortHigh]) {{
+        assert.ok(Math.max(...postBurstTailCounts) - Math.min(...postBurstTailCounts) <= 2,
+          'a short interaction burst must converge back to the ordinary tail rhythm: ' +
+            JSON.stringify(postBurstTailCounts));
+        for (const result of [shortNone, shortLow, shortNormal, shortRapidOnly,
+          shortOrdinaryHigh, shortOrdinaryHighFullLoad, shortHigh]) {{
           assert.ok(maxRun(result) <= 2);
           assertLifecycle(result);
         }}
@@ -2886,8 +3004,6 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
         for (const result of [farShortNone, farShortLow, farShortNormal, farShortRapidOnly, farShortHigh]) {{
           assert.equal(result.counts.cat1_play_yarn || 0, 0);
           assert.equal(result.counts.cat1_small_move || 0, 0);
-          assert.ok(maxRun(result) <= 2,
-            'far-chat must alternate the legal actions instead of becoming a bubble loop');
           assertLifecycle(result);
         }}
 
@@ -2903,7 +3019,7 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_cat_mind_all_registered_actions_use_the_same_soft_cooldown_curve():
+def test_cat_mind_all_registered_actions_use_the_same_independent_cooldown_sort_curve():
     script = textwrap.dedent(
         f"""
         const fs = require('node:fs');
@@ -2985,32 +3101,38 @@ def test_cat_mind_all_registered_actions_use_the_same_soft_cooldown_curve():
           const close = (actual, expected) => assert.ok(Math.abs(actual - expected) <= 0.011,
             actionId + ': ' + actual + ' !== ' + expected);
           const expectedCurve = (elapsedProgress) => 1 - Math.pow(elapsedProgress, 1.9);
-          const fullPenalty = 36 * 4.2;
+          const verifySortRoles = (item, expectedRank) => {{
+            const baseEligibility = item.needContribution + item.cadenceAdjustment +
+              item.intentContribution;
+            close(item.eligibilityScore, baseEligibility);
+            close(item.score, item.threshold + baseEligibility);
+            close(item.cooldownSortRank, expectedRank);
+          }};
           const started = score();
           assert.equal(started.cooldownApplied, true);
-          close(started.cooldownPenalty, fullPenalty);
+          verifySortRoles(started, 1);
           assert.equal(started.cooldownCurveFactor, 1);
           assert.equal(started.cadenceAdjustment, -58);
           now += cooldownMinutes * 60 * 1000 / 4;
           const quarter = score();
-          close(quarter.cooldownPenalty, fullPenalty * expectedCurve(0.25));
+          verifySortRoles(quarter, expectedCurve(0.25));
           assert.equal(quarter.cooldownRecoveryFactor, 0.75);
           close(quarter.cooldownCurveFactor, expectedCurve(0.25));
           now += cooldownMinutes * 60 * 1000 / 4;
           const halfway = score();
           assert.equal(halfway.cooldownApplied, true);
-          close(halfway.cooldownPenalty, fullPenalty * expectedCurve(0.5));
+          verifySortRoles(halfway, expectedCurve(0.5));
           assert.equal(halfway.cooldownRecoveryFactor, 0.5);
           close(halfway.cooldownCurveFactor, expectedCurve(0.5));
           now += cooldownMinutes * 60 * 1000 / 4;
           const threeQuarters = score();
-          close(threeQuarters.cooldownPenalty, fullPenalty * expectedCurve(0.75));
+          verifySortRoles(threeQuarters, expectedCurve(0.75));
           assert.equal(threeQuarters.cooldownRecoveryFactor, 0.25);
           close(threeQuarters.cooldownCurveFactor, expectedCurve(0.75));
           now += cooldownMinutes * 60 * 1000 / 4 + 1;
           const recovered = score();
           assert.equal(recovered.cooldownApplied, false);
-          assert.equal(recovered.cooldownPenalty, 0);
+          assert.equal(recovered.cooldownSortRank, 0);
         }}
 
         verify('cat1_social_ping', 'cat1', 8);
@@ -3026,7 +3148,7 @@ def test_cat_mind_all_registered_actions_use_the_same_soft_cooldown_curve():
     assert result.returncode == 0, result.stderr + result.stdout
 
 
-def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_own_soft_cooldown():
+def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_ranking_cooldown():
     source = _read(CAT_MIND_PATH)
 
     assert "RECENT_SCORE_WINDOWS_MS" not in source
@@ -3037,26 +3159,36 @@ def test_cat_mind_scores_use_five_dimensions_shared_cadence_and_own_soft_cooldow
     assert "return normalized * normalized * (3 - 2 * normalized);" in source
     assert "cadenceRecoveryMs: 4.85 * 60 * 1000" in source
     assert "cooldownRecoveryExponent: 1.9" in source
-    assert "var cooldownPenalty = cooldown.penalty * (1 - intentCooldownRelief);" in source
-    assert "var utilityScore = needContribution + cadence.adjustment + intent.contribution - cooldownPenalty;" in source
+    assert "var cooldownSortRank = cooldown.curveFactor * (1 - intentCooldownRelief);" in source
+    assert "var baseEligibilityScore = needContribution + cadence.adjustment + intent.contribution;" in source
+    assert "var eligibilityScore = baseEligibilityScore;" in source
+    assert "utilityScore" not in source
+    assert "cooldownPenalty" not in source
+    assert "cooldownEligibilityPenaltyCap" not in source
+    assert "eligibilityCooldownPenalty" not in source
     assert "positiveNeedCurveTailCeiling: 20" in source
     assert "positiveNeedCurveTailScale: 8" in source
     assert "maxContribution: 84" in source
-    assert "cooldownPenaltyRelief: 0.5" in source
+    assert "cooldownRankRelief: 0.5" in source
     assert "freshHoldMs: 30 * 1000" in source
     assert "halfLifeMs: 90 * 1000" in source
-    assert "score: threshold + utilityScore" in source
-    assert "right.utilityScore - left.utilityScore" in source
+    assert "score: threshold + eligibilityScore" in source
+    assert "left.cooldownSortRank - right.cooldownSortRank" in source
+    assert "right.eligibilityScore - left.eligibilityScore" in source
     assert "negativeNeedCurveRange: 14" in source
     assert "positiveNeedCurveRange: 8" in source
     assert "positiveNeedCurveCeiling: 78" in source
     assert "cadenceFloor: -58" in source
     assert "cadenceCeiling: 18" in source
-    assert "cooldownMultiplier: 4.2" in source
+    assert "cooldownMultiplier" not in source
+    assert "immediateRepeat" not in source
+    assert "immediate_repeat_suppressed" not in source
     assert "hardCooldown" not in source
     assert "hard_cooldown_active" not in source
     assert "cat1_social_ping: Object.freeze({ threshold: 36, cooldownMs: 8 * 60 * 1000 })" in source
     assert "cat1_eat_snack: Object.freeze({ threshold: 40, cooldownMs: 8 * 60 * 1000 })" in source
+    assert "cat1_small_move: Object.freeze({ threshold: 51, cooldownMs: 8 * 60 * 1000 })" in source
+    assert "cat1_play_yarn: Object.freeze({ threshold: 52, cooldownMs: 10 * 60 * 1000 })" in source
     assert "cat2_nap_feedback: Object.freeze({ threshold: 54, cooldownMs: 10 * 60 * 1000 })" in source
     assert "cat3_sleep_feedback: Object.freeze({ threshold: 50, cooldownMs: 12 * 60 * 1000 })" in source
 
@@ -3135,6 +3267,70 @@ def test_cat_mind_need_and_cadence_use_the_shared_monotonic_response_curve():
         assert.ok(saturated.needSurplus > 8);
             assert.ok(saturated.needContribution > 78 && saturated.needContribution < 98);
             assert.ok(Math.abs(saturated.needContribution - expectedNeed(saturated.needSurplus)) <= 0.011);
+        """
+    )
+
+    result = _run_node_harness(script)
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_cat_mind_cat1_overflow_decay_starts_at_comfort_band_without_changing_low_needs():
+    script = textwrap.dedent(
+        f"""
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const assert = require('node:assert/strict');
+        const source = fs.readFileSync({json.dumps(str(CAT_MIND_PATH))}, 'utf8');
+        class EventTargetLike {{
+          constructor() {{ this.listeners = new Map(); }}
+          addEventListener(type, handler) {{
+            if (!this.listeners.has(type)) this.listeners.set(type, []);
+            this.listeners.get(type).push(handler);
+          }}
+          dispatchEvent(event) {{
+            for (const handler of (this.listeners.get(event.type) || []).slice()) handler.call(this, event);
+            return true;
+          }}
+        }}
+        class CustomEventLike {{ constructor(type, init = {{}}) {{ this.type = type; this.detail = init.detail || {{}}; }} }}
+        let now = 1000;
+        const win = new EventTargetLike();
+        win.setInterval = () => 1;
+        win.clearInterval = () => {{}};
+        const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
+        vm.createContext(context);
+        vm.runInContext(source, context);
+        const enter = () => win.dispatchEvent(new CustomEventLike('neko:cat-local-active-change', {{
+          detail: {{ active: true, source: 'manual-goodbye', timestamp: now }}
+        }}));
+        const observe = (type, source, detail) => win.dispatchEvent(new CustomEventLike(
+          'neko:cat-mind:observation', {{ detail: {{ type, source, tier: 'cat1', timestamp: now, detail }} }}
+        ));
+
+        enter();
+        const lowBefore = win.nekoCatMind.getState().fields;
+        now += 60 * 1000;
+        observe('cat_elapsed', 'cat-mind-clock', {{ elapsedMs: 60 * 1000 }});
+        const lowAfter = win.nekoCatMind.getState().fields;
+        assert.ok(Math.abs(lowAfter.social_need - (lowBefore.social_need + 0.024)) < 1e-9);
+        assert.ok(Math.abs(lowAfter.stimulation_need - (lowBefore.stimulation_need + 0.032)) < 1e-9);
+
+        for (let index = 0; index < 10; index += 1) {{
+          observe('cat_local_text_received', 'overflow-test', {{ requestId: 'overflow-' + index }});
+        }}
+        const highBefore = win.nekoCatMind.getState().fields;
+        assert.ok(highBefore.social_need > 0.52);
+        assert.ok(highBefore.stimulation_need > 0.60);
+        now += 60 * 1000;
+        observe('cat_elapsed', 'cat-mind-clock', {{ elapsedMs: 60 * 1000 }});
+        const highAfter = win.nekoCatMind.getState().fields;
+        const expectedSocial = 0.52 + (highBefore.social_need + 0.024 - 0.52) * Math.pow(0.5, 1 / 4);
+        const expectedStimulation = 0.60 +
+          (highBefore.stimulation_need + 0.032 - 0.60) * Math.pow(0.5, 1 / 3);
+        assert.ok(Math.abs(highAfter.social_need - expectedSocial) < 1e-9);
+        assert.ok(Math.abs(highAfter.stimulation_need - expectedStimulation) < 1e-9);
+        assert.ok(highAfter.social_need < highBefore.social_need + 0.024);
+        assert.ok(highAfter.stimulation_need < highBefore.stimulation_need + 0.032);
         """
     )
 
@@ -3266,12 +3462,15 @@ def test_cat_mind_explicit_yarn_intent_respects_provider_and_started_lifecycle()
         flush();
         strongOffer();
         assert.equal(requests.filter((item) => item.actionId === 'cat1_play_yarn').length, 2,
-          'a fresh own cooldown must still dominate a new strong invitation');
+          'play completion feedback must be allowed to settle need before a renewed invitation');
         candidate = win.nekoCatMind.getDebugSnapshot().lastDecision.candidates.find(
           (item) => item.actionId === 'cat1_play_yarn'
         );
         assert.equal(candidate.cooldownApplied, true);
+        assert.ok(candidate.cooldownSortRank > 0);
         assert.equal(candidate.intentLevel, 0.9);
+        assert.ok(candidate.eligibilityScore < 0,
+          'the renewed invitation is ineligible from need/cadence/intent, not from cooldown sorting');
         assert.equal(candidate.allowed, false);
         """
     )

@@ -48,13 +48,19 @@ def test_cat_submit_is_diverted_before_normal_chat_and_uses_existing_transport()
     assert "new BroadcastChannel" not in interpage_source
 
 
-def test_phase_two_manager_stays_temporary_and_does_not_score_cat_mind():
+def test_cat_manager_stays_temporary_and_only_observes_accepted_local_text():
     manager_source = read(CHAT_HOST / "cat-local-chat.js")
     lexicon_source = read(CHAT_HOST / "cat-local-chat-lexicon.js")
     assert "MAX_ITEMS" in manager_source
     assert "requestId" in manager_source
     assert "enteredAt" in manager_source
-    assert "nekoCatMind.observe" not in manager_source
+    observation_block = manager_source.split("function observeAcceptedLocalText(requestId)", 1)[1].split(
+        "function scheduleNextReply", 1
+    )[0]
+    assert "catMind.observe({" in observation_block
+    assert "type: 'cat_local_text_received'" in observation_block
+    assert "requestId: requestId" in observation_block
+    assert "text:" not in observation_block
     assert "fetch(" not in manager_source
     assert "WebSocket" not in manager_source
     assert "喵" not in manager_source

@@ -107,4 +107,10 @@ test('small_move capability check is pure while actual start owns hover preparat
     art.__nekoIdleHoverTimer = 73;
     assert.equal(context._startNekoIdleCat1PairMove(button, { source: 'cat_mind' }), false);
     assert.equal(finishCalls, 1, 'an existing hover completion timer must not be duplicated');
+
+    art.__nekoIdleHoverSrc = '';
+    art.__nekoIdleHoverTimer = 0;
+    assert.equal(context._canScheduleNekoIdleCat1PairMove(button, state), true,
+        'expanded and compact chat must retain the existing solo cat move capability');
+    assert.ok(geometryReads > 0, 'solo capability must validate the available cat movement space');
 });

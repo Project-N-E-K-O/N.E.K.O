@@ -13,6 +13,7 @@ function createRuntime(initialCatMindState) {
   const listeners = new Map();
   const timers = [];
   const publishedReasons = [];
+  const observations = [];
   let timerSeq = 0;
   const catMindState = Object.assign({
     active: true,
@@ -30,7 +31,13 @@ function createRuntime(initialCatMindState) {
   const window = {
     location: { pathname: '/' },
     __appReactChatWindowParts: hostParts,
-    nekoCatMind: { getState: () => ({ ...catMindState }) },
+    nekoCatMind: {
+      getState: () => ({ ...catMindState }),
+      observe(payload) {
+        observations.push(payload);
+        return payload;
+      },
+    },
     postGoodbyeChatComposerHiddenState: (_hidden, reason) => {
       publishedReasons.push(reason);
     },
@@ -74,6 +81,7 @@ function createRuntime(initialCatMindState) {
   return {
     window,
     catMindState,
+    observations,
     publishedReasons,
     runNextTimer() {
       const timer = timers.shift();
@@ -113,6 +121,13 @@ test('canonical cat chat deduplicates requests and replies in submission order',
   assert.equal(manager.submit({ requestId: 'r1', text: '重复', enteredAt: 1000 }), true);
   assert.equal(manager.submit({ requestId: 'r2', text: '第二条', enteredAt: 1000 }), true);
   assert.equal(manager.getSnapshot().items.length, 2);
+  assert.deepEqual(Array.from(runtime.observations, item => item.type), [
+    'cat_local_text_received',
+    'cat_local_text_received',
+  ]);
+  assert.deepEqual(Array.from(runtime.observations, item => item.detail.requestId), ['r1', 'r2']);
+  assert.equal(runtime.observations.some(item => JSON.stringify(item).includes('第一条')), false);
+  assert.equal(runtime.observations.some(item => JSON.stringify(item).includes('第二条')), false);
 
   while (runtime.pendingTimerCount()) runtime.runNextTimer();
 
@@ -124,6 +139,19 @@ test('canonical cat chat deduplicates requests and replies in submission order',
   assert.equal(items.filter(item => item.role === 'assistant').every(item => item.text.includes('喵')), true);
   assert.equal(runtime.publishedReasons.includes('cat-local-chat-user'), true);
   assert.equal(runtime.publishedReasons.includes('cat-local-chat-reply'), true);
+});
+
+test('Cat Mind observation failure does not break the accepted local reply', () => {
+  const runtime = createRuntime();
+  const manager = runtime.window.nekoCatLocalChatManager;
+  runtime.window.nekoCatMind.observe = () => { throw new Error('Cat Mind unavailable'); };
+
+  assert.equal(manager.submit({ requestId: 'observe-failure', text: '仍然回复', enteredAt: 1000 }), true);
+  while (runtime.pendingTimerCount()) runtime.runNextTimer();
+
+  const items = manager.getSnapshot().items;
+  assert.deepEqual(Array.from(items, item => item.role), ['user', 'assistant']);
+  assert.match(items[1].text, /喵/);
 });
 
 test('cycle exit invalidates pending replies and standalone pages cannot become authoritative', () => {
