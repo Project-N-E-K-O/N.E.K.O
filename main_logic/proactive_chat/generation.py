@@ -22,20 +22,34 @@ from dataclasses import dataclass
 from typing import Any
 
 from config import (
+    ANTI_REPEAT_DROP_THRESHOLD,
+    ANTI_REPEAT_EXEMPT_SOURCE_TAGS,
+    ANTI_REPEAT_INJECT_TOP_K,
+    ANTI_REPEAT_REGEN_THRESHOLD,
     PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
     PROACTIVE_PHASE2_OUTPUT_MAX_TOKENS,
     leaks_thinking_in_content,
 )
-from config.prompts.prompts_directives import render_format_fix_instruction
+from config.prompts.prompts_directives import (
+    render_format_fix_instruction,
+    render_regen_avoid_instruction,
+)
 from utils.llm_client import HumanMessage, ThinkingStreamStripper
 from utils.tokenize import count_tokens
 
 from .contracts import (
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
+    PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_GENERATION_EMPTY,
     PROACTIVE_REASON_PASS_MODEL_PASS,
     ProactiveChatResult,
     _proactive_pass_body,
+)
+from .state import (
+    _PROACTIVE_SIMILARITY_THRESHOLD,
+    _is_recent_proactive_material,
+    _is_similar_to_recent_proactive_chat,
+    _proactive_material_key,
 )
 
 
@@ -67,6 +81,19 @@ class Phase2Generation:
     full_text: str = ""
     response_text: str = ""
     source_tag: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class Phase2GuardedOutput:
+    """Phase 2 text after literal, BM25, and music-data guards."""
+
+    result: ProactiveChatResult | None
+    full_text: str = ""
+    response_text: str = ""
+    source_tag: str = ""
+    selected_music_link: dict[str, Any] | None = None
+    music_content: dict[str, Any] | None = None
+    is_music_used: bool = False
 
 
 def _decide_phase1_channels(
@@ -471,6 +498,363 @@ async def _generate_phase2_stream(
         response_text=response_text,
         source_tag=source_tag,
     )
+
+
+async def _guard_phase2_output(
+    *,
+    mgr: Any,
+    proactive_sid: Any,
+    lanlan_name: str,
+    response_text: str,
+    full_text: str,
+    source_tag: str,
+    active_channels: list[str],
+    selected_music_link: dict[str, Any] | None,
+    selected_meme_link: dict[str, Any] | None,
+    music_content: dict[str, Any] | None,
+    meme_content: dict[str, Any] | None,
+    is_playing_music: bool,
+    music_cooldown: bool,
+    expects_source_tag: bool,
+    make_llm: Any,
+    messages: list[Any],
+    human_text: str,
+    screenshot_b64: str | None,
+    phase2_use_vision: bool,
+    phase2_disable_thinking: bool,
+    proactive_lang: str,
+    master_name: str,
+    log: logging.Logger | None = None,
+) -> Phase2GuardedOutput:
+    """Apply Phase 2 dedup and data guards in their established order."""
+    active_logger = log or logger
+
+    def _output(
+        *,
+        result: ProactiveChatResult | None = None,
+        is_music_used: bool = False,
+    ) -> Phase2GuardedOutput:
+        return Phase2GuardedOutput(
+            result=result,
+            full_text=full_text,
+            response_text=response_text,
+            source_tag=source_tag,
+            selected_music_link=selected_music_link,
+            music_content=music_content,
+            is_music_used=is_music_used,
+        )
+
+    music_only_pending = (
+        "music" in active_channels
+        and selected_music_link is not None
+        and not is_playing_music
+        and not music_cooldown
+        and not any(
+            channel in ("vision", "web", "meme")
+            for channel in active_channels
+        )
+    )
+    if music_only_pending and source_tag != "MUSIC":
+        dedup_tag = "MUSIC"
+    elif source_tag == "MEME" and selected_meme_link is None:
+        dedup_tag = "CHAT"
+    else:
+        dedup_tag = source_tag
+    material_key = _proactive_material_key(
+        dedup_tag,
+        selected_music_link,
+        meme_content,
+    )
+    exempt_text_dedup = (
+        dedup_tag in ANTI_REPEAT_EXEMPT_SOURCE_TAGS
+        and not _is_recent_proactive_material(
+            lanlan_name,
+            dedup_tag,
+            material_key,
+        )
+    )
+    if exempt_text_dedup:
+        active_logger.info(
+            "[%s] proactive text-dedup exempt: tag=%s (model_tag=%s) "
+            "material=%r (fresh material, skip similarity+BM25)",
+            lanlan_name,
+            dedup_tag,
+            source_tag,
+            material_key or "(none)",
+        )
+
+    is_duplicate, similarity_score = False, 0.0
+    if not exempt_text_dedup:
+        is_duplicate, similarity_score = _is_similar_to_recent_proactive_chat(
+            lanlan_name,
+            response_text,
+        )
+    if is_duplicate:
+        active_logger.info(
+            "[%s] proactive repeat guard blocked Phase 2 output "
+            "(similarity=%.3f threshold=%.2f)",
+            lanlan_name,
+            similarity_score,
+            _PROACTIVE_SIMILARITY_THRESHOLD,
+        )
+        print(
+            f"[{lanlan_name}] 主动搭话重复度过高，已拦截 "
+            f"(similarity={similarity_score:.3f}, "
+            f"threshold={_PROACTIVE_SIMILARITY_THRESHOLD:.2f})"
+        )
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        else:
+            active_logger.info(
+                "[%s] repeat guard hit but user already took over; "
+                "skip TTS cleanup",
+                lanlan_name,
+            )
+        return _output(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_DUPLICATE,
+                    message="主动搭话重复度过高，已拦截",
+                    similarity=similarity_score,
+                    threshold=_PROACTIVE_SIMILARITY_THRESHOLD,
+                )
+            )
+        )
+
+    if exempt_text_dedup:
+        bm25_total, bm25_terms = 0.0, {}
+        anti_repeat_corpus = None
+    else:
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+
+            anti_repeat_corpus = get_anti_repeat_corpus()
+            bm25_total, bm25_terms = anti_repeat_corpus.score_draft(
+                lanlan_name,
+                response_text,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            active_logger.debug("[AntiRepeat] BM25 score skipped: %s", exc)
+            bm25_total, bm25_terms = 0.0, {}
+            anti_repeat_corpus = None
+
+    if bm25_total >= ANTI_REPEAT_REGEN_THRESHOLD:
+        initial_source_tag = source_tag
+        avoid_terms = list(bm25_terms.keys())[:ANTI_REPEAT_INJECT_TOP_K]
+        active_logger.info(
+            "[%s] proactive BM25 regen (score=%.2f threshold=%.2f avoid=%s)",
+            lanlan_name,
+            bm25_total,
+            ANTI_REPEAT_REGEN_THRESHOLD,
+            avoid_terms,
+        )
+        print(
+            f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
+            f"(score={bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, "
+            f"避开={avoid_terms})"
+        )
+        avoid_message = render_regen_avoid_instruction(
+            avoid_terms,
+            proactive_lang,
+            master_name,
+        )
+        regen_human_text = f"{avoid_message}\n\n{human_text}"
+        if phase2_use_vision:
+            regen_human_content: Any = [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{screenshot_b64}"
+                    },
+                },
+                {"type": "text", "text": regen_human_text},
+            ]
+        else:
+            regen_human_content = regen_human_text
+        regen_messages = [
+            messages[0],
+            HumanMessage(content=regen_human_content),
+        ]
+        regen_text = ""
+        if mgr.state.is_proactive_preempted(proactive_sid):
+            active_logger.info(
+                "[%s] proactive BM25 regen aborted: user preempted before ainvoke",
+                lanlan_name,
+            )
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_DELIVERY_PREEMPTED,
+                        message="BM25 regen 前用户已接管",
+                    )
+                )
+            )
+        try:
+            async with asyncio.timeout(20.0):
+                async with (
+                    await make_llm(
+                        temperature=1.0,
+                        max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                        use_vision=phase2_use_vision,
+                        disable_thinking=phase2_disable_thinking,
+                    )
+                ) as regen_llm:
+                    regen_response = await regen_llm.ainvoke(regen_messages)
+                    regen_text = (
+                        regen_response.content
+                        if hasattr(regen_response, "content")
+                        else ""
+                    ) or ""
+        except Exception as exc:
+            active_logger.warning(
+                "[%s] proactive BM25 regen LLM call failed: %s",
+                lanlan_name,
+                exc,
+            )
+            regen_text = ""
+
+        cleaned = (regen_text or "").strip()
+        regen_source_tag = ""
+        prefix_match = re.search(r"主动搭话\s*\n", cleaned)
+        if prefix_match:
+            cleaned = cleaned[prefix_match.end() :]
+        tag_match = re.match(
+            r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*",
+            cleaned,
+            re.IGNORECASE,
+        )
+        if tag_match:
+            regen_source_tag = tag_match.group(1).upper()
+            cleaned = cleaned[tag_match.end() :]
+        else:
+            cleaned, leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+            if leak_tag:
+                regen_source_tag = leak_tag
+        cleaned = _strip_proactive_intent_label_leak(cleaned)
+        if (
+            regen_source_tag == "PASS"
+            or (expects_source_tag and not regen_source_tag)
+            or not cleaned.strip()
+            or "[PASS]" in cleaned.upper()
+        ):
+            active_logger.info(
+                "[%s] proactive BM25 regen returned empty/PASS/untagged, drop",
+                lanlan_name,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_DUPLICATE,
+                        message="BM25 regen 失败，已 drop",
+                    )
+                )
+            )
+
+        try:
+            regen_total, _ = anti_repeat_corpus.score_draft(
+                lanlan_name,
+                cleaned,
+            )
+        except Exception:
+            regen_total = 0.0
+        if regen_total >= ANTI_REPEAT_DROP_THRESHOLD:
+            active_logger.info(
+                "[%s] proactive BM25 regen still over drop (score=%.2f)",
+                lanlan_name,
+                regen_total,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_DUPLICATE,
+                        message="BM25 regen 后仍超阈值，已 drop",
+                        bm25_score=regen_total,
+                    )
+                )
+            )
+        regen_duplicate, regen_similarity = (
+            _is_similar_to_recent_proactive_chat(lanlan_name, cleaned)
+        )
+        if regen_duplicate:
+            active_logger.info(
+                "[%s] proactive BM25 regen still literal-dup "
+                "(similarity=%.3f)",
+                lanlan_name,
+                regen_similarity,
+            )
+            if not mgr.state.is_proactive_preempted(proactive_sid):
+                await mgr.handle_new_message()
+            return _output(
+                result=ProactiveChatResult(
+                    body=_proactive_pass_body(
+                        PROACTIVE_REASON_PASS_DUPLICATE,
+                        message="BM25 regen 后字面相似度仍超阈值，已 drop",
+                        similarity=regen_similarity,
+                        threshold=_PROACTIVE_SIMILARITY_THRESHOLD,
+                    )
+                )
+            )
+        source_tag = regen_source_tag
+        if source_tag != "MUSIC":
+            if selected_music_link is not None or music_content is not None:
+                active_logger.info(
+                    "[%s] proactive BM25 regen final tag=%s (initial=%s); "
+                    "cleared music candidate",
+                    lanlan_name,
+                    source_tag,
+                    initial_source_tag or "(none)",
+                )
+            selected_music_link = None
+            music_content = None
+        response_text = cleaned
+        full_text = cleaned
+
+    has_music_topic = "music" in active_channels
+    is_music_used = has_music_topic and source_tag == "MUSIC"
+    ai_wants_music = source_tag == "MUSIC"
+
+    if is_playing_music and ai_wants_music:
+        print(
+            f"[{lanlan_name}] 数据级锁触发：播放中尝试推荐新歌，"
+            "已强制拦截并清空曲目列表"
+        )
+        is_music_used = False
+        music_content = None
+        source_tag = "PASS"
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        else:
+            active_logger.info(
+                "[%s] 降级拦截 abort 但用户已接管 "
+                "(state preempted)，跳过 TTS 清理",
+                lanlan_name,
+            )
+        return _output(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_MODEL_PASS,
+                    message=f"[{lanlan_name}] 播放中推荐拦截触发，动作已取消",
+                )
+            ),
+            is_music_used=False,
+        )
+    if music_cooldown and ai_wants_music:
+        print(
+            f"[{lanlan_name}] 音乐冷却期模型输出 [MUSIC]，"
+            "降级为 CHAT（不中止搭话）"
+        )
+        is_music_used = False
+        music_content = None
+        source_tag = "CHAT"
+
+    if not source_tag and full_text.strip():
+        source_tag = "CHAT"
+
+    return _output(is_music_used=is_music_used)
 
 
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
