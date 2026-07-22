@@ -2,7 +2,9 @@ import { defineConfig } from 'vitepress'
 import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isNoindexRoute } from './indexing-policy.mjs'
 
+const SITE_ORIGIN = 'https://project-neko.online'
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC_EXCLUDE = new Set([
   'README_en.md',
@@ -16,6 +18,13 @@ const SRC_EXCLUDE = new Set([
   'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
+
+function filterSitemapItems<T extends { url: string }>(items: T[]): T[] {
+  return items.filter((item) => {
+    const route = new URL(item.url, `${SITE_ORIGIN}/`).pathname
+    return !isNoindexRoute(route)
+  })
+}
 
 function collectPageRoutes(directory = DOCS_ROOT): string[] {
   const routes: string[] = []
@@ -414,21 +423,27 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
       nuitka: 'Nuitka Packaging', docs: 'Documentation Maintenance', miner: 'Natural-Expression Miner',
+      dataforseo: 'DataForSEO SEO Monitoring',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
       nuitka: 'Nuitka 打包注意事项', docs: '文档维护规范', miner: '自然表达候选挖掘器',
+      dataforseo: 'DataForSEO SEO 监控',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
       nuitka: 'Nuitka パッケージング', docs: 'ドキュメント保守', miner: '自然表現候補マイナー',
+      dataforseo: 'DataForSEO SEO モニタリング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
   const maintainerTools = lang === 'en'
-    ? [{ text: t.miner, link: '/contributing/natural-expression-candidate-miner' }]
+    ? [
+        { text: t.miner, link: '/contributing/natural-expression-candidate-miner' },
+        { text: t.dataforseo, link: '/contributing/dataforseo-seo-monitoring' },
+      ]
     : []
   return [
     {
@@ -557,6 +572,10 @@ export default defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  sitemap: {
+    hostname: SITE_ORIGIN,
+    transformItems: filterSitemapItems,
+  },
 
   // Keep this list in sync with SRC_EXCLUDE in
   // scripts/check_docs_no_relative_paths.py.

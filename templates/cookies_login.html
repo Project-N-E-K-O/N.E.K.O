@@ -7,10 +7,10 @@
     <title data-i18n="cookiesLogin.title">N.E.K.O 凭证控制中心</title>
     <link rel="icon" href="/static/icons/icon_systray.ico" type="image/x-icon">
     <script src="/static/libs/purify.js"></script>
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/theme-manager.js"></script>
-    <link rel="stylesheet" href="/static/css/window_controls.css">
-    <script src="/static/js/window_controls.js" defer></script>
+    <link rel="stylesheet" href="/static/css/window_controls.css?v={{ static_asset_version | default('0') }}">
+    <script src="/static/js/window_controls.js?v={{ static_asset_version | default('0') }}" defer></script>
     <style>
         :root {
             --primary: #40c5f1;
@@ -494,6 +494,9 @@
     <div class="container-header">
         <h2 data-i18n="cookiesLogin.header">凭证获取中心</h2>
         <div class="neko-window-controls">
+            <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false">
+                <span class="neko-window-pin-icon" aria-hidden="true"></span>
+            </button>
             <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
                 <span class="neko-window-minimize-icon"></span>
             </button>
@@ -512,6 +515,7 @@
             <button class="tab-btn" onclick="switchTab('bilibili', this)" data-i18n="cookiesLogin.bilibili">Bilibili</button>
             <button class="tab-btn" onclick="switchTab('xhh', this)" data-i18n="cookiesLogin.xhh">小黑盒</button>
             <button class="tab-btn" onclick="switchTab('youtube', this)" data-i18n="cookiesLogin.youtube">YouTube</button>
+            <button class="tab-btn" onclick="switchTab('twitch', this)" data-i18n="cookiesLogin.twitch">Twitch</button>
             <button class="tab-btn" onclick="switchTab('douyin', this)" data-i18n="cookiesLogin.douyin">抖音</button>
             <button class="tab-btn" onclick="switchTab('kuaishou', this)" data-i18n="cookiesLogin.kuaishou">快手</button>
             <button class="tab-btn" onclick="switchTab('weibo', this)" data-i18n="cookiesLogin.weibo">微博</button>

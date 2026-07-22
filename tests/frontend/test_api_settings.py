@@ -69,6 +69,205 @@ def test_api_key_settings(mock_page: Page, running_server: str):
 
 
 @pytest.mark.frontend
+def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_server: str):
+    """Collapsed custom-model headers must not borrow rounded corners from a wrapper."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+
+    styles = mock_page.evaluate("""
+        () => {
+            document.getElementById('custom-api-options').style.display = 'block';
+            document.getElementById('custom-api-container').style.display = 'block';
+            const container = document.querySelector('.model-config-container');
+            const header = container.querySelector(':scope > .model-header');
+
+            return {
+                containerBorderWidth: getComputedStyle(container).borderTopWidth,
+                containerOverflow: getComputedStyle(container).overflow,
+                headerBorderRadius: getComputedStyle(header).borderTopLeftRadius,
+                headerOverflow: getComputedStyle(header).overflow,
+                headerBoxSizing: getComputedStyle(header).boxSizing,
+                containerWidth: Math.round(container.getBoundingClientRect().width),
+                headerWidth: Math.round(header.getBoundingClientRect().width),
+            };
+        }
+    """)
+
+    assert styles == {
+        "containerBorderWidth": "0px",
+        "containerOverflow": "visible",
+        "headerBorderRadius": "999px",
+        "headerOverflow": "hidden",
+        "headerBoxSizing": "border-box",
+        "containerWidth": styles["headerWidth"],
+        "headerWidth": styles["headerWidth"],
+    }
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(350)
+
+    expanded_styles = mock_page.evaluate("""
+        () => {
+            const content = document.getElementById('conversation-model-content');
+            const style = getComputedStyle(content);
+
+            return {
+                borderWidth: style.borderTopWidth,
+                borderRadius: style.borderTopLeftRadius,
+                marginTop: style.marginTop,
+            };
+        }
+    """)
+
+    assert expanded_styles == {
+        "borderWidth": "1px",
+        "borderRadius": "24px",
+        "marginTop": "8px",
+    }
+
+
+@pytest.mark.frontend
+def test_key_book_shortcut_centers_and_selects_provider_input(
+    mock_page: Page, running_server: str
+):
+    """The shortcut should center, focus, and select the matching provider key field."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector(
+        "#conversationModelProvider option[value='qwen']", state="attached", timeout=10000
+    )
+    mock_page.wait_for_selector("#keyBookInput_qwen", state="attached", timeout=10000)
+
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+
+        const provider = document.getElementById('conversationModelProvider');
+        provider.value = 'qwen';
+        onCustomModelProviderChange('conversation');
+        toggleModelConfig('conversation');
+
+        setMaskedInput(document.getElementById('keyBookInput_qwen'), 'sk-qwen-shortcut-test');
+        window.__keyBookScrollTarget = '';
+        window.__keyBookScrollOptions = null;
+        Element.prototype.scrollIntoView = function (options) {
+            window.__keyBookScrollTarget = this.querySelector('input')?.id || this.id;
+            window.__keyBookScrollOptions = options;
+        };
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    shortcut = mock_page.locator("#conversation-model-content .key-book-shortcut")
+    expect(shortcut).to_have_count(1)
+    expect(shortcut).to_have_attribute("data-provider-key", "qwen")
+    shortcut.click()
+
+    state = mock_page.evaluate("""() => {
+        const input = document.getElementById('keyBookInput_qwen');
+        return {
+            optionsDisplay: document.getElementById('key-book-options').style.display,
+            toggleExpanded: document.getElementById('key-book-toggle-btn').classList.contains('rotated'),
+            scrollTarget: window.__keyBookScrollTarget,
+            scrollBlock: window.__keyBookScrollOptions?.block,
+            activeId: document.activeElement?.id,
+            value: input.value,
+            selectionStart: input.selectionStart,
+            selectionEnd: input.selectionEnd,
+        };
+    }""")
+
+    assert state == {
+        "optionsDisplay": "block",
+        "toggleExpanded": True,
+        "scrollTarget": "keyBookInput_qwen",
+        "scrollBlock": "center",
+        "activeId": "keyBookInput_qwen",
+        "value": "sk-qwen-shortcut-test",
+        "selectionStart": 0,
+        "selectionEnd": len("sk-qwen-shortcut-test"),
+    }
+
+
+@pytest.mark.frontend
+def test_key_book_shortcut_targets_active_mimo_token_plan_key(
+    mock_page: Page, running_server: str
+):
+    """Follow-assist shortcuts must target the Token Plan key while that mode is active."""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='mimo']", state="attached")
+    mock_page.wait_for_selector(
+        "#conversationModelProvider option[value='follow_assist']", state="attached"
+    )
+
+    mock_page.evaluate("""() => {
+        const assistProvider = document.getElementById('assistApiSelect');
+        assistProvider.value = 'mimo';
+        assistProvider.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const tokenPlanToggle = document.getElementById('useMimoTokenPlan');
+        tokenPlanToggle.checked = true;
+        tokenPlanToggle.dispatchEvent(new Event('change', { bubbles: true }));
+        setMaskedInput(
+            document.getElementById('mimoTokenPlanKeyInput'),
+            'tp-shortcut-test'
+        );
+
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        toggleCustomApi();
+        document.getElementById('custom-api-options').style.display = 'block';
+
+        const provider = document.getElementById('conversationModelProvider');
+        provider.value = 'follow_assist';
+        onCustomModelProviderChange('conversation');
+        toggleModelConfig('conversation');
+
+        window.__keyBookScrollTarget = '';
+        window.__keyBookScrollOptions = null;
+        Element.prototype.scrollIntoView = function (options) {
+            window.__keyBookScrollTarget = this.querySelector('input')?.id || this.id;
+            window.__keyBookScrollOptions = options;
+        };
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    shortcut = mock_page.locator("#conversation-model-content .key-book-shortcut")
+    expect(shortcut).to_have_count(1)
+    expect(shortcut).to_have_attribute("data-provider-key", "mimo_token_plan")
+    shortcut.click()
+
+    state = mock_page.evaluate("""() => {
+        const input = document.getElementById('mimoTokenPlanKeyInput');
+        return {
+            scrollTarget: window.__keyBookScrollTarget,
+            scrollBlock: window.__keyBookScrollOptions?.block,
+            activeId: document.activeElement?.id,
+            value: input.value,
+            selectionStart: input.selectionStart,
+            selectionEnd: input.selectionEnd,
+        };
+    }""")
+
+    assert state == {
+        "scrollTarget": "mimoTokenPlanKeyInput",
+        "scrollBlock": "center",
+        "activeId": "mimoTokenPlanKeyInput",
+        "value": "tp-shortcut-test",
+        "selectionStart": 0,
+        "selectionEnd": len("tp-shortcut-test"),
+    }
+
+
+@pytest.mark.frontend
 def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, running_server: str):
     """普通 HTTP TTS 配置在 GPT-SoVITS 关闭时不应被编码成占位串。"""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")

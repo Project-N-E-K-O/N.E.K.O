@@ -20,6 +20,8 @@ export default {
     minimize: '최소화',
     maximize: '최대화',
     restore: '복원',
+    pinWindow: '창을 항상 위에 고정',
+    unpinWindow: '항상 위 고정 해제',
     toggleSelection: '선택 전환',
     success: '성공',
     error: '오류',

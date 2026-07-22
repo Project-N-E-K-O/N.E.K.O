@@ -189,6 +189,7 @@ export const chatWindowPropsSchema = z.object({
   title: z.string().optional(),
   iconSrc: z.string().optional(),
   messages: z.array(chatMessageSchema).optional(),
+  assistantName: z.string().trim().min(1).optional(),
   inputPlaceholder: z.string().optional(),
   sendButtonLabel: z.string().optional(),
 

@@ -95,28 +95,21 @@ class QQNapcatService:
             return None
 
     async def wait_for_onebot_ready(self, *, timeout_seconds: float = 20.0, poll_interval: float = 0.5) -> bool:
-        if self.plugin.qq_client and getattr(self.plugin.qq_client, "ws", None):
+        """等待 Napcat 客户端连接到此服务器的反向 WS
+
+        反向 WS 模式下，我们不再主动 TCP 连接外部端口，而是轮询是否有
+        OneBot 客户端连接到了我们的服务器。
+        """
+        if self.plugin.qq_client and self.plugin.qq_client.is_connected():
             self.clear_startup_error()
             return True
-        raw_url = str((self.plugin._qq_settings or {}).get("onebot_url") or "").strip()
-        if not raw_url and self.plugin.qq_client:
-            raw_url = str(getattr(self.plugin.qq_client, "onebot_url", "") or "").strip()
-        parsed = urlparse(raw_url)
-        host = str(parsed.hostname or "127.0.0.1").strip() or "127.0.0.1"
-        port = self._extract_onebot_port()
-        if port is None:
-            return False
         deadline = asyncio.get_running_loop().time() + max(1.0, float(timeout_seconds or 20.0))
         while asyncio.get_running_loop().time() < deadline:
-            try:
-                reader, writer = await asyncio.open_connection(host, port)
-                writer.close()
-                await writer.wait_closed()
+            if self.plugin.qq_client and self.plugin.qq_client.is_connected():
                 self.clear_startup_error()
                 return True
-            except Exception:
-                await asyncio.sleep(max(0.1, float(poll_interval or 0.5)))
-        self._set_startup_error(f"NapCat 已尝试启动，但 OneBot {host}:{port} 在限定时间内未就绪")
+            await asyncio.sleep(max(0.1, float(poll_interval or 0.5)))
+        self._set_startup_error("NapCat 已尝试启动，但没有客户端连接到反向 WS 服务器")
         return False
 
     def _napcat_log_dir(self) -> Path:

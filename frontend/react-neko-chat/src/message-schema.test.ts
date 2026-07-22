@@ -54,6 +54,11 @@ describe('message-schema', () => {
     expect(props).toEqual({});
   });
 
+  it('accepts only a real non-empty assistant name for localized tool results', () => {
+    expect(parseChatWindowProps({ assistantName: ' Yui ' }).assistantName).toBe('Yui');
+    expect(() => parseChatWindowProps({ assistantName: '   ' })).toThrow();
+  });
+
   it('accepts new user icebreaker choice prompts', () => {
     const onChoiceSelect = vi.fn();
     const props = parseChatWindowProps({

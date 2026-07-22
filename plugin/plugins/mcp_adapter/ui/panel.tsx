@@ -65,18 +65,29 @@ type ImportServerConfig = {
   args?: unknown
   url?: unknown
   env?: unknown
+  headers?: unknown
   enabled?: unknown
   autoConnect?: unknown
 }
 
-const defaultImportJson = `{
-  "name": "example",
-  "transport": "stdio",
-  "command": "uvx",
-  "args": ["mcp-server-example"],
-  "enabled": true,
-  "auto_connect": true
-}`
+const defaultImportJson = `[
+  {
+    "name": "example",
+    "transport": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-example"],
+    "enabled": true,
+    "auto_connect": true
+  },
+  {
+    "name": "remote-api",
+    "transport": "streamable-http",
+    "url": "https://api.example.com/mcp",
+    "headers": { "Authorization": "Bearer your_token_here" },
+    "enabled": true,
+    "auto_connect": true
+  }
+]`
 
 const emptyServerForm = {
   name: "",
@@ -85,6 +96,7 @@ const emptyServerForm = {
   args: "",
   url: "",
   env: "",
+  headers: "",
   autoConnect: true,
 }
 type ServerFormValues = typeof emptyServerForm
@@ -178,6 +190,11 @@ auto_connect = true`
     } else if (String(server.env || "").trim()) {
       payload.env = JSON.parse(String(server.env))
     }
+    if (server.headers && typeof server.headers === "object" && !Array.isArray(server.headers)) {
+      payload.headers = server.headers
+    } else if (String(server.headers || "").trim()) {
+      payload.headers = JSON.parse(String(server.headers))
+    }
     return payload
   }
 
@@ -211,6 +228,7 @@ auto_connect = true`
           args: server.args,
           url: server.url,
           env: server.env,
+          headers: server.headers,
           enabled: server.enabled,
         }
       })
@@ -460,6 +478,11 @@ auto_connect = true`
               <Field label={t("panel.form.env")} help={t("panel.form.envHelp")}>
                 <Textarea value={serverForm.values.env} placeholder='{"TOKEN":"..."}' onChange={(value) => updateServerForm({ env: value })} />
               </Field>
+              {serverForm.values.transport !== "stdio" ? (
+                <Field label={t("panel.form.headers")} help={t("panel.form.headersHelp")}>
+                  <Textarea value={serverForm.values.headers} placeholder='{"Authorization":"Bearer ..."}' onChange={(value) => updateServerForm({ headers: value })} />
+                </Field>
+              ) : null}
               <Switch checked={serverForm.values.autoConnect} label={t("panel.form.autoConnect")} onChange={(value) => updateServerForm({ autoConnect: value })} />
               <Button tone="success" onClick={addServerFromForm}>{t("panel.addServer.submit")}</Button>
             </Stack>

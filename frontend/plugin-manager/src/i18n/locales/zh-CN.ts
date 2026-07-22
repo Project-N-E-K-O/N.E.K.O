@@ -20,6 +20,8 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '恢复',
+    pinWindow: '置顶窗口',
+    unpinWindow: '取消置顶',
     toggleSelection: '切换选中状态',
     success: '成功',
     error: '错误',

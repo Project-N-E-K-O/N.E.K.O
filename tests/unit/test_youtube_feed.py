@@ -482,18 +482,22 @@ async def test_fetch_youtube_home_feed_formats_empty_timeout_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_video_region_route_uses_youtube_outside_china(monkeypatch):
+async def test_video_region_route_combines_youtube_with_twitch_outside_china(monkeypatch):
     async def fake_youtube(limit):
         return {"success": True, "source": "youtube", "videos": [{"title": str(limit)}]}
 
+    async def fake_twitch(limit):
+        return {"success": True, "source": "twitch", "videos": [{"title": f"live-{limit}"}]}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_twitch_live_streams", fake_twitch)
     monkeypatch.setattr(trending_content, "fetch_youtube_home_feed", fake_youtube)
 
     result = await trending_content.fetch_video_content(limit=7)
 
     assert result["region"] == "non-china"
-    assert result["video"]["source"] == "youtube"
-    assert result["video"]["videos"][0]["title"] == "7"
+    assert result["video"]["source"] == "mixed"
+    assert [item["title"] for item in result["video"]["videos"]] == ["live-7", "7"]
 
 
 @pytest.mark.asyncio
@@ -501,13 +505,17 @@ async def test_video_region_route_always_propagates_failure_error(monkeypatch):
     async def fake_youtube(_limit):
         return {"success": False, "source": "youtube", "videos": []}
 
+    async def fake_twitch(_limit):
+        return {"success": False, "source": "twitch", "videos": []}
+
     monkeypatch.setattr(trending_content, "is_china_region", lambda: False)
+    monkeypatch.setattr(trending_content, "fetch_twitch_live_streams", fake_twitch)
     monkeypatch.setattr(trending_content, "fetch_youtube_home_feed", fake_youtube)
 
     result = await trending_content.fetch_video_content(limit=7)
 
     assert result["success"] is False
-    assert result["error"] == "youtube 获取失败（无错误详情）"
+    assert result["error"] == "Twitch 与 YouTube 获取失败（无错误详情）"
 
 
 def test_youtube_video_format_and_source_links():

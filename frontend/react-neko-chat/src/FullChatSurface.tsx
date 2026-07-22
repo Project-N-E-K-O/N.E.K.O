@@ -27,7 +27,7 @@ import { useFocusGlow } from './useFocusGlow';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_FULL_AVATAR_TOOLS,
   resolveAvatarToolMenuIconVisual,
   type AvatarToolItem,
 } from './avatarTools';
@@ -370,7 +370,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
+const toolIconItems = AVAILABLE_FULL_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
@@ -3087,9 +3087,7 @@ export default function FullChatSurface({
                         onComposerRemoveAttachment?.(attachment.id);
                       }
                     }}
-                  >
-                    ×
-                  </button>
+                  />
                 </figure>
               ))}
             </div>

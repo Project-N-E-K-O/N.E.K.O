@@ -531,6 +531,19 @@
         nextBounds = clampElectronDockBounds(nextBounds, I.electronIdleDockWorkArea);
         if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
 
+        if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+            var committedBounds = null;
+            try {
+                committedBounds = await bridge.idleDockCommitCollapsedBounds(nextBounds);
+            } catch (_) {
+                committedBounds = null;
+            }
+            if (positionSeq !== I.electronIdleDockPositionSeq || !I.electronIdleDockActive || !I.electronIdleDockDesired) return;
+            if (committedBounds !== false && committedBounds !== null && committedBounds !== undefined) {
+                rememberElectronIdleDockBounds(committedBounds);
+                return;
+            }
+        }
         bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
         rememberElectronIdleDockBounds(nextBounds);
     }
@@ -558,6 +571,13 @@
 
     function shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier) {
         return !!(detail && detail.reason === 'viewport-resize' && !activeTier);
+    }
+
+    function shouldIgnoreElectronIdleDockTransientDragHide(detail) {
+        if (!detail || detail.visible) return false;
+        return detail.reason === 'return-ball-drag-start'
+            || detail.reason === 'return-ball-drag-active'
+            || detail.reason === 'return-ball-dragging';
     }
 
     function waitElectronIdleDockCommitRetry(delayMs) {
@@ -794,10 +814,17 @@
             return;
         }
         if (I.hasElectronIdleDockPendingOrActive()) {
+            // Pet 在把 return-ball 交给原生拖动窗口时会暂时把 DOM 容器设为不可见；
+            // 这是拖动中的中间帧，不是 idle-dock 退出信号，不能在这里恢复旧 bounds。
+            if (shouldIgnoreElectronIdleDockTransientDragHide(detail)) {
+                return;
+            }
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = activeTier && detail && (
+            // CAT2 拖动结束会先降级成 CAT1；此时 activeTier 已为 false。是否保留落点
+            // 必须由终止事件语义决定，不能再依赖降级后的最终 tier。
+            var shouldPreserveCurrentPosition = detail && !!detail.screenRect && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
