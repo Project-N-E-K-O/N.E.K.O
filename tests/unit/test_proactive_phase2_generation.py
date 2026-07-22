@@ -106,6 +106,21 @@ async def test_chat_tag_returns_clean_generated_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_label_only_output_becomes_generation_empty(monkeypatch) -> None:
+    _patch_runtime_guards(monkeypatch)
+    mgr = _FakeManager()
+
+    generated = await _generate(mgr, ["[CHAT]\n", "QQ/"])
+
+    assert generated.result is not None
+    assert (
+        generated.result.body["reason_code"]
+        == contracts.PROACTIVE_REASON_PASS_GENERATION_EMPTY
+    )
+    mgr.handle_new_message.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_bare_pass_returns_model_pass_and_clears_proactive_tts(
     monkeypatch,
 ) -> None:

@@ -15,20 +15,33 @@
 
 """Mini-game invite state, policy, delivery and keyword handling."""
 
-import logging
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .state import (
-    _ensure_proactive_chat_totals_loaded,
-    _get_proactive_chat_total,
-    _record_invite_delivery_persistent,
-    _record_proactive_chat,
-    _was_invite_ever_delivered,
+from config import (
+    MINI_GAME_INVITE_AVAILABLE_GAMES,
+    MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS,
+    MINI_GAME_INVITE_COOLDOWN_CHATS,
+    MINI_GAME_INVITE_ENABLED,
+    MINI_GAME_INVITE_FORCE_GAME_TYPE,
+    MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS,
+    MINI_GAME_INVITE_NEW_USER_FORCE_AT,
+    MINI_GAME_INVITE_TRIGGER_PROBABILITY,
+    MINI_GAME_LAUNCH_URL_BY_GAME,
 )
+from config.prompts.prompts_proactive import (
+    MINI_GAME_INVITE_KEYWORDS,
+    MINI_GAME_INVITE_LINES_BY_GAME,
+    MINI_GAME_INVITE_OPTION_LABELS,
+)
+from config.prompts.prompts_sys import _loc
+from utils.logger_config import get_module_logger
+
 from .contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
@@ -37,26 +50,15 @@ from .contracts import (
     _proactive_chat_body,
     _proactive_pass_body,
 )
-from config import (
-    MINI_GAME_INVITE_ENABLED,
-    MINI_GAME_INVITE_FORCE_GAME_TYPE,
-    MINI_GAME_INVITE_TRIGGER_PROBABILITY,
-    MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS,
-    MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS,
-    MINI_GAME_INVITE_COOLDOWN_CHATS,
-    MINI_GAME_INVITE_NEW_USER_FORCE_AT,
-    MINI_GAME_INVITE_AVAILABLE_GAMES,
-    MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS,
-    MINI_GAME_LAUNCH_URL_BY_GAME,
-)
-from config.prompts.prompts_sys import _loc
-from config.prompts.prompts_proactive import (
-    MINI_GAME_INVITE_LINES_BY_GAME, MINI_GAME_INVITE_OPTION_LABELS,
-    MINI_GAME_INVITE_KEYWORDS,
+from .state import (
+    _ensure_proactive_chat_totals_loaded,
+    _get_proactive_chat_total,
+    _record_invite_delivery_persistent,
+    _record_proactive_chat,
+    _was_invite_ever_delivered,
 )
 
-
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +377,7 @@ async def _attempt_mini_game_invite_delivery(
     master_name: str,
     user_toggle_enabled: bool = True,
     push_options_compat: bool,
+    memory_dir: str | Path | None = None,
 ) -> dict | None:
     """Deliver an eligible invite for either the legacy or staged caller.
 
@@ -416,6 +419,10 @@ async def _attempt_mini_game_invite_delivery(
     if not MINI_GAME_INVITE_ENABLED:
         return None
 
+    state_storage_kwargs = (
+        {"memory_dir": memory_dir} if memory_dir is not None else {}
+    )
+
     # 调试旗标短路：非 None 时跳过所有 snapshot/cooldown/概率 gate，把 game_type
     # 钉到旗标值上。仍然要求该 game_type 有对应文案；非法值 warn + 退出而不 raise，
     # 避免在配置抖动时把整个 proactive 流水线带挂。Force-first 标记成 True 让 caller
@@ -436,7 +443,7 @@ async def _attempt_mini_game_invite_delivery(
                 lanlan_name, force_game, list(MINI_GAME_INVITE_LINES_BY_GAME.keys()),
             )
             return None
-        await _ensure_proactive_chat_totals_loaded()
+        await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         game_type = force_game
         # 让下面 success-log 共用同一字段；调试旗标语义上等同于 "强制走 first-time
         # 路径"，print 出来好认。
@@ -466,7 +473,7 @@ async def _attempt_mini_game_invite_delivery(
         # ``state.delivered_at is None``——后者会被 PR-B「回头再说」reset，且重启清零；
         # codex review (P1) 指出，没这条 force-first 在每次重启后都会把已邀请过的
         # 用户当新用户重新强制邀请。
-        await _ensure_proactive_chat_totals_loaded()
+        await _ensure_proactive_chat_totals_loaded(**state_storage_kwargs)
         never_delivered = not _was_invite_ever_delivered(lanlan_name)
         total_so_far = _get_proactive_chat_total(lanlan_name)
         force_first = (
@@ -533,7 +540,7 @@ async def _attempt_mini_game_invite_delivery(
     # counter +1 + ever_delivered=True 一把锁内原子写盘。两份持久化数据必须
     # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
-    await _record_invite_delivery_persistent(lanlan_name)
+    await _record_invite_delivery_persistent(lanlan_name, **state_storage_kwargs)
 
     try:
         from utils.instrument import counter as _instr_counter
@@ -615,8 +622,12 @@ async def _run_mini_game_invite_short_circuit(
     invite_lang: str,
     master_name: str,
     user_toggle_enabled: bool = True,
+    memory_dir: str | Path | None = None,
 ) -> MiniGameInviteShortCircuit | None:
     """Run the invite attempt and expose framework-neutral short-circuit data."""
+    state_storage_kwargs = (
+        {"memory_dir": memory_dir} if memory_dir is not None else {}
+    )
     body = await _attempt_mini_game_invite_delivery(
         lanlan_name=lanlan_name,
         mgr=mgr,
@@ -625,6 +636,7 @@ async def _run_mini_game_invite_short_circuit(
         master_name=master_name,
         user_toggle_enabled=user_toggle_enabled,
         push_options_compat=False,
+        **state_storage_kwargs,
     )
     if body is None:
         return None
@@ -894,33 +906,25 @@ def _maybe_apply_mini_game_invite_keyword(
     return result
 
 
-# Self-register the mini-game-invite keyword matcher with main_logic's
-# event bus. Same rationale as plugin/core/state.py: ``main_logic.core``
-# previously imported this function directly (a layering inversion);
-# after the inversion was removed, the only way this hook gets attached
-# is via ``register_text_user_message_hook``. Registering at module import
-# time keeps the path alive for any context that loads system_router
-# directly (testbench, ad-hoc scripts) without going through
-# ``app/runtime_bindings.py``. ``register_text_user_message_hook`` dedupes
-# on identity, so the explicit wiring in ``app/runtime_bindings.py`` is a
-# no-op once we've fired here.
-try:
-    from main_logic.agent_event_bus import register_text_user_message_hook as _register_text_hook
-    _register_text_hook(_maybe_apply_mini_game_invite_keyword)
-except Exception as _exc:
-    # Same discriminator pattern as plugin/core/state.py: only
-    # ``ModuleNotFoundError`` whose missing module IS one of the top-level
-    # targets here is a legit partial-env case (and even that is rare —
-    # main_logic should always be importable when system_router loads).
-    # A transitive failure or a register_* regression must be logged so
-    # the silent dispatcher no-op doesn't hide a real bug. Codex P2 catch.
-    _expected_absent = {"main_logic", "main_logic.agent_event_bus"}
-    _is_expected_absent = (
-        isinstance(_exc, ModuleNotFoundError)
-        and getattr(_exc, "name", None) in _expected_absent
-    )
-    if not _is_expected_absent:
-        logger.warning(
-            "proactive_chat: failed to self-register text_user_message_hook",
-            exc_info=True,
+def install_mini_game_invite_hooks() -> None:
+    """Register mini-game keyword handling at the application boundary.
+
+    The event bus deduplicates callbacks by identity, so repeated Router
+    assembly remains safe while importing this domain module stays side-effect
+    free.
+    """
+    try:
+        from main_logic.agent_event_bus import register_text_user_message_hook
+
+        register_text_user_message_hook(_maybe_apply_mini_game_invite_keyword)
+    except Exception as exc:
+        expected_absent = {"main_logic", "main_logic.agent_event_bus"}
+        is_expected_absent = (
+            isinstance(exc, ModuleNotFoundError)
+            and getattr(exc, "name", None) in expected_absent
         )
+        if not is_expected_absent:
+            logger.warning(
+                "proactive_chat: failed to register text_user_message_hook",
+                exc_info=True,
+            )

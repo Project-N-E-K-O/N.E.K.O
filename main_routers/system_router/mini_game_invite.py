@@ -47,7 +47,11 @@ from main_logic.proactive_chat.mini_game_invite import (  # noqa: F401
     _mini_game_launch_url,
     _pick_mini_game_type,
     _push_mini_game_invite_resolved,
+    install_mini_game_invite_hooks,
 )
+
+
+install_mini_game_invite_hooks()
 
 
 @router.post('/mini_game/invite/respond')

@@ -21,13 +21,15 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from utils.logger_config import get_module_logger
+
 from .contracts import (
     PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND,
     PROACTIVE_REASON_PASS_BUSY,
     PROACTIVE_REASON_PASS_DISABLED,
     PROACTIVE_REASON_PASS_PRIVACY,
-    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
     PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY,
+    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
     PROACTIVE_REASON_PASS_SOURCE_EMPTY,
     PROACTIVE_REASON_PASS_THROTTLED,
     ProactiveChatCommand,
@@ -35,7 +37,6 @@ from .contracts import (
     _proactive_error_body,
     _proactive_pass_body,
 )
-
 from .state import (
     _RECENT_CHAT_MAX_AGE_SECONDS,
     _get_source_history_entry,
@@ -44,6 +45,61 @@ from .state import (
     _reminiscence_usage_entries,
     _source_skip_probability,
 )
+
+logger = get_module_logger(__name__, "Main")
+
+
+def build_proactive_response(source_tag: str, ctx: dict) -> tuple[str, list]:
+    """Resolve the effective delivery channel and its selected source links."""
+    primary_channel = "unknown"
+    source_links = []
+    lanlan_name = ctx.get("lanlan_name", "System")
+
+    match source_tag:
+        case "CHAT":
+            primary_channel = "chat"
+        case "WEB":
+            web_link = ctx.get("selected_web_link")
+            primary_channel = web_link.get("mode", "web") if web_link else "web"
+            if web_link:
+                source_links.append(web_link)
+                logger.debug(
+                    "[%s] Phase 2 确定选择 WEB (子通道: %s)，已添加链接",
+                    lanlan_name,
+                    primary_channel,
+                )
+        case "MUSIC":
+            primary_channel = "music"
+            if ctx.get("selected_music_link"):
+                source_links.append(ctx["selected_music_link"])
+                logger.debug("[%s] Phase 2 确定选择 MUSIC，已添加链接", lanlan_name)
+        case "MEME":
+            primary_channel = "meme"
+            if ctx.get("selected_meme_link"):
+                source_links.append(ctx["selected_meme_link"])
+                logger.debug("[%s] Phase 2 确定选择 MEME，已添加相关链接", lanlan_name)
+            else:
+                logger.warning(
+                    "[%s] Phase 2 AI 选择 MEME 但无可用表情包链接，回退处理",
+                    lanlan_name,
+                )
+                if ctx.get("selected_web_link"):
+                    primary_channel = ctx["selected_web_link"].get("mode", "web")
+                    source_links.append(ctx["selected_web_link"])
+                    logger.debug(
+                        "[%s] Phase 2 回退到 WEB 通道 (子通道: %s)",
+                        lanlan_name,
+                        primary_channel,
+                    )
+                elif ctx.get("vision_content"):
+                    primary_channel = "vision"
+                    logger.debug("[%s] Phase 2 回退到 VISION 通道", lanlan_name)
+                else:
+                    logger.debug(
+                        "[%s] Phase 2 MEME 无表情包且无回退通道，将跳过链接展示",
+                        lanlan_name,
+                    )
+    return primary_channel, source_links
 
 
 def _decide_manager_entry_guard(

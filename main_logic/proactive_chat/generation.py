@@ -35,6 +35,7 @@ from config.prompts.prompts_directives import (
     render_regen_avoid_instruction,
 )
 from utils.llm_client import HumanMessage, ThinkingStreamStripper
+from utils.logger_config import get_module_logger
 from utils.tokenize import count_tokens
 
 from .contracts import (
@@ -52,8 +53,7 @@ from .state import (
     _proactive_material_key,
 )
 
-
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 
 @dataclass(frozen=True, slots=True)
@@ -485,6 +485,23 @@ async def _generate_phase2_stream(
     if leak_tag and not source_tag:
         source_tag = leak_tag
     response_text = _strip_proactive_intent_label_leak(full_text.strip())
+    if not response_text:
+        if not mgr.state.is_proactive_preempted(proactive_sid):
+            await mgr.handle_new_message()
+        else:
+            active_logger.info(
+                "[%s] cleaned proactive output is empty but user already "
+                "took over; skip TTS cleanup",
+                lanlan_name,
+            )
+        return Phase2Generation(
+            result=ProactiveChatResult(
+                body=_proactive_pass_body(
+                    PROACTIVE_REASON_PASS_GENERATION_EMPTY,
+                    message="Phase 2 清理后输出为空",
+                )
+            )
+        )
     active_logger.debug(
         "[%s] Phase 2 流式完成 (vision=%s, len=%s chars)",
         lanlan_name,
@@ -857,6 +874,19 @@ async def _guard_phase2_output(
     return _output(is_music_used=is_music_used)
 
 
+def _interleave_link_groups(candidate_groups: list[list[dict]]) -> list[dict]:
+    """Interleave non-empty link groups row by row until all are exhausted."""
+    groups = [group for group in candidate_groups if group]
+    links: list[dict] = []
+    row = 0
+    while any(row < len(group) for group in groups):
+        for group in groups:
+            if row < len(group):
+                links.append(group[row])
+        row += 1
+    return links
+
+
 def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     """
     Extract a list of link info entries from raw web data.
@@ -870,12 +900,38 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
     try:
         if mode == 'news':
             news = raw_data.get('news', {})
-            items = news.get('trending', [])
-            for item in items:
+            weibo_or_twitter: list[dict] = []
+            for item in (news.get('trending', []) or []):
                 title = item.get('word', '') or item.get('name', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter'})
+                    weibo_or_twitter.append({
+                        'title': title,
+                        'url': url,
+                        'source': '微博' if raw_data.get('region', 'china') == 'china' else 'Twitter',
+                    })
+            xhh_links: list[dict] = []
+            for post in (raw_data.get('xhh', {}).get('posts', []) or []):
+                title = post.get('title', '')
+                url = post.get('url', '')
+                if title and url:
+                    xhh_links.append({'title': title, 'url': url, 'source': '小黑盒'})
+
+            tieba_links: list[dict] = []
+            tieba = raw_data.get('tieba', {}) or {}
+            posts = tieba.get('posts', []) or (tieba.get('tieba', {}) or {}).get('posts', [])
+            topics = tieba.get('topics', []) or (tieba.get('tieba', {}) or {}).get('topics', [])
+            for item in list(posts or []) + list(topics or []):
+                title = item.get('title', '') or item.get('topic_name', '') or item.get('word', '')
+                url = item.get('url', '')
+                if title and url:
+                    tieba_links.append({'title': title, 'url': url, 'source': '贴吧'})
+
+            links.extend(
+                _interleave_link_groups(
+                    [weibo_or_twitter, xhh_links, tieba_links]
+                )
+            )
 
         elif mode == 'video':
             video = raw_data.get('video', {})
@@ -884,7 +940,12 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
                 title = item.get('title', '')
                 url = item.get('url', '')
                 if title and url:
-                    links.append({'title': title, 'url': url, 'source': 'B站' if raw_data.get('region', 'china') == 'china' else 'Reddit'})
+                    default_source = 'B站' if raw_data.get('region', 'china') == 'china' else 'YouTube'
+                    links.append({
+                        'title': title,
+                        'url': url,
+                        'source': item.get('source') or default_source,
+                    })
 
         elif mode == 'home':
             bilibili = raw_data.get('bilibili', {})
@@ -910,49 +971,38 @@ def _extract_links_from_raw(mode: str, raw_data: dict) -> list[dict]:
 
         elif mode == 'personal':
             region = raw_data.get('region', 'china')
-            if region == 'china':
+            platform_specs = (
+                [
+                    ('bilibili_dynamic', 'dynamics', ('content',), 'B站'),
+                    ('weibo_dynamic', 'statuses', ('content',), '微博'),
+                    ('douyin_dynamic', 'dynamics', ('content',), '抖音'),
+                    ('kuaishou_dynamic', 'dynamics', ('content',), '快手'),
+                ]
+                if region == 'china'
+                else [
+                    ('reddit_dynamic', 'posts', ('title', 'content'), 'Reddit'),
+                    ('twitter_dynamic', 'tweets', ('content',), 'Twitter'),
+                ]
+            )
+            platform_links: list[list[dict]] = []
+            for data_key, items_key, title_keys, source_name in platform_specs:
+                group: list[dict] = []
+                for item in (raw_data.get(data_key, {}).get(items_key, []) or []):
+                    title = next(
+                        (item.get(key, '') for key in title_keys if item.get(key)),
+                        '',
+                    )
+                    url = item.get('url', '')
+                    if title and url:
+                        group.append({
+                            'title': title,
+                            'url': url,
+                            'source': source_name,
+                        })
+                if group:
+                    platform_links.append(group)
 
-                b_dyn = raw_data.get('bilibili_dynamic', {})
-                for d in (b_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'B站'})
-
-                w_dyn = raw_data.get('weibo_dynamic', {})
-                for d in (w_dyn.get('statuses', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '微博'})
-
-                d_dyn = raw_data.get('douyin_dynamic', {})
-                for d in (d_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '抖音'})
-
-                k_dyn = raw_data.get('kuaishou_dynamic', {})
-                for d in (k_dyn.get('dynamics', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': '快手'})
-            else:
-                r_dyn = raw_data.get('reddit_dynamic', {})
-                for d in (r_dyn.get('posts', []) or []):
-                    title = d.get('title', '') or d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Reddit'})
-
-                t_dyn = raw_data.get('twitter_dynamic', {})
-                for d in (t_dyn.get('tweets', []) or []):
-                    title = d.get('content', '')
-                    url = d.get('url', '')
-                    if title and url:
-                        links.append({'title': title, 'url': url, 'source': 'Twitter'})
+            links.extend(_interleave_link_groups(platform_links))
 
         elif mode == 'music':
             items = raw_data.get('data', [])
@@ -982,7 +1032,7 @@ def _parse_web_screening_result(text: str) -> dict | None:
     # ^ + re.MULTILINE 锚定行首，防止匹配到 "有值得分享的话题：" 等前缀行
     # [ \t]* 替代 \s*，只吃水平空白，避免跨行捕获到下一行内容
     patterns = {
-        'title': r'^[ \t]*(?:话题|Topic|話題|주제)[ \t]*[：:][ \t]*(.+)',
+        'title': r'^[ \t]*(?:话题|标题|Topic|Title|話題|주제)[ \t]*[：:][ \t]*(.+)',
         'source': r'^[ \t]*(?:来源|Source|出典|출처)[ \t]*[：:][ \t]*(.+)',
         'number': r'^[ \t]*(?:序号|No|番号|번호)\.?[ \t]*[：:][ \t]*(\d+)',
     }
@@ -1136,6 +1186,126 @@ _PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
 _PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE)
 
 
+_PROACTIVE_KNOWN_PREFIX_TAG_LEAKS = (
+    (re.compile(r"^/(?i:chat)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^(?i:chat)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^chat[ \t]*(?:\r?\n|$)\s*", re.IGNORECASE), "CHAT"),
+    (re.compile(r"^/(?i:music)(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^(?i:music)/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "MUSIC"),
+    (re.compile(r"^/聊天中(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/?聊天中\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^聊天中(?=\s|$)\s*"), "CHAT"),
+    (re.compile(r"^/屏幕观察(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^屏幕观察/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^/屏幕(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+    (re.compile(r"^屏幕\s*/(?=\s|$|[A-Z]|[^\x00-\x7f])\s*"), "CHAT"),
+)
+
+
+_PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS = frozenset({
+    "QQ",
+    "当前界面",
+    "用户当前操作",
+    "上轮未收尾话题",
+    "屏幕内容",
+    "屏幕显示",
+})
+
+
+_PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS = frozenset({
+    "聊天中",
+})
+
+
+def _get_proactive_context_leak_labels() -> frozenset[str]:
+    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
+
+    return get_proactive_intent_leak_labels() | frozenset(
+        label.casefold() for label in _PROACTIVE_OBSERVED_CONTEXT_PREFIX_LABELS
+    )
+
+
+def _get_proactive_context_slash_leak_labels() -> frozenset[str]:
+    return _get_proactive_context_leak_labels() | frozenset(
+        label.casefold() for label in _PROACTIVE_OBSERVED_SLASH_PREFIX_LABELS
+    )
+
+
+def _label_prefix_boundary_ok(label: str, rest: str) -> bool:
+    if not rest:
+        return True
+    ch = rest[0]
+    if ch.isspace() or ch in "/：:":
+        return True
+    return (not label.isascii()) and (not ch.isascii())
+
+
+def _strip_proactive_label_slash_prefix(
+    body: str,
+    labels: frozenset[str],
+) -> str | None:
+    """Strip a known leading internal label written as ``label/`` or ``/label``."""
+    if not body:
+        return None
+    folded = body.casefold()
+    for label in sorted(labels, key=len, reverse=True):
+        if not label:
+            continue
+        if folded.startswith(label):
+            rest = body[len(label):]
+            sep = re.match(r"\s*/", rest)
+            if sep:
+                return rest[sep.end():].lstrip()
+        if body.startswith("/") and folded[1:].startswith(label):
+            rest = body[1 + len(label):]
+            if _label_prefix_boundary_ok(label, rest):
+                rest = rest.lstrip()
+                if rest[:1] in "/：:":
+                    rest = rest[1:]
+                return rest.lstrip()
+    return None
+
+
+def _strip_proactive_orphan_slash_prefix(body: str) -> str | None:
+    """Strip a lone leading slash separator left after a leaked label."""
+    if not body:
+        return None
+    match = re.match(r"^/(?:[ \t]+|\r?\n[ \t]*|$)", body)
+    if not match:
+        return None
+    rest = body[match.end():].lstrip()
+    if rest or match.end() == len(body):
+        return rest
+    return None
+
+
+def _strip_proactive_known_prefix_tag_leak(text: str) -> tuple[str, str]:
+    """Strip known leading source-label leaks such as ``/chat`` from Phase 2 text."""
+    if not text:
+        return "", ""
+    leading_len = len(text) - len(text.lstrip())
+    leading = text[:leading_len]
+    body = text[leading_len:]
+    cleaned = _strip_proactive_label_slash_prefix(
+        body,
+        _get_proactive_context_leak_labels(),
+    )
+    if cleaned is not None:
+        return leading + cleaned, "CHAT"
+    cleaned = _strip_proactive_orphan_slash_prefix(body)
+    if cleaned is not None:
+        return leading + cleaned, "CHAT"
+    for pattern, source_tag in _PROACTIVE_KNOWN_PREFIX_TAG_LEAKS:
+        match = pattern.match(body)
+        if match:
+            rest = body[match.end():].lstrip()
+            cleaned_rest = _strip_proactive_orphan_slash_prefix(rest)
+            if cleaned_rest is not None:
+                rest = cleaned_rest
+            return leading + rest, source_tag
+    return text, ""
+
+
 def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """Strip mistakenly emitted screen-source tags (e.g. ``[Screen]``) from Phase 2 text.
 
@@ -1156,6 +1326,9 @@ def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
     """
     if not text:
         return "", ""
+    text, prefix_tag = _strip_proactive_known_prefix_tag_leak(text)
+    if prefix_tag:
+        return text, prefix_tag
     leading_len = len(text) - len(text.lstrip())
     leading = text[:leading_len]
     body = text[leading_len:]
@@ -1194,7 +1367,8 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
       decoration / trailing colon), when real content follows on a later
       line;
     - a leading ``<label>:`` / ``<label>：`` prefix on the first line,
-      keeping the rest of that line as content.
+      keeping the rest of that line as content;
+    - a leading ``<label>/`` / ``/<label>`` prefix, also keeping the content.
 
     Exact (decoration-trimmed, casefolded) matching against the derived
     label set keeps generic words from being scrubbed out of normal speech.
@@ -1202,10 +1376,10 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
     """
     if not text:
         return text
-    from config.prompts.prompts_activity import get_proactive_intent_leak_labels
-    labels = get_proactive_intent_leak_labels()
+    labels = _get_proactive_context_leak_labels()
     if not labels:
         return text
+    slash_labels = _get_proactive_context_slash_leak_labels()
 
     def _norm(segment: str) -> str:
         out = segment.strip().strip(_INTENT_LABEL_DECOR)
@@ -1217,6 +1391,10 @@ def _strip_proactive_intent_label_leak(text: str) -> str:
         body = text.lstrip()
         if not body:
             break
+        slash_cleaned = _strip_proactive_label_slash_prefix(body, slash_labels)
+        if slash_cleaned is not None:
+            text = slash_cleaned
+            continue
         nl = body.find('\n')
         first = body if nl == -1 else body[:nl]
         rest = '' if nl == -1 else body[nl + 1:]

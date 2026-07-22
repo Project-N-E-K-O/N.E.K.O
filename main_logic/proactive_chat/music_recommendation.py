@@ -15,7 +15,6 @@
 
 """Framework-independent music recommendation behavior for proactive chat."""
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -27,12 +26,12 @@ from config.prompts.prompts_proactive import (
     get_proactive_music_strict_constraint,
     get_proactive_music_unknown_track_name,
 )
+from utils.logger_config import get_module_logger
 from utils.music_crawlers import fetch_music_content
 
 from .state import _clear_channel_from_proactive_history
 
-
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 
 @dataclass(frozen=True)

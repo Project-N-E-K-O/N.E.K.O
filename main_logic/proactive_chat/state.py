@@ -18,12 +18,12 @@
 import asyncio
 import difflib
 import hashlib
-import logging
 import re
 import time
 from collections import deque
 from pathlib import Path
 from typing import Any
+
 from config import (
     PROACTIVE_CHAT_HISTORY_MAX,
     PROACTIVE_SOURCE_FORGET_P,
@@ -31,17 +31,18 @@ from config import (
     PROACTIVE_SOURCE_HALF_LIFE_DEFAULT,
     PROACTIVE_SOURCE_HARD_SKIP_SECONDS,
 )
-from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_proactive import (
-    RECENT_PROACTIVE_CHATS_HEADER, RECENT_PROACTIVE_CHATS_FOOTER,
-    RECENT_PROACTIVE_TIME_LABELS,
     RECENT_PROACTIVE_CHANNEL_LABELS,
+    RECENT_PROACTIVE_CHATS_FOOTER,
+    RECENT_PROACTIVE_CHATS_HEADER,
+    RECENT_PROACTIVE_TIME_LABELS,
 )
+from config.prompts.prompts_sys import _loc
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_json_async, read_json
+from utils.logger_config import get_module_logger
 
-
-logger = logging.getLogger(__name__)
+logger = get_module_logger(__name__, "Main")
 
 
 # --- Global source decay history (cross-character, persisted) ---
@@ -52,8 +53,15 @@ _source_history_lock = asyncio.Lock()
 _source_history_loaded = False
 
 
-def _source_history_path() -> Path:
-    return Path(get_config_manager().memory_dir) / _SOURCE_HISTORY_FILENAME
+def _resolve_memory_dir(memory_dir: str | Path | None) -> Path:
+    """Resolve the persistence root while preserving the legacy singleton fallback."""
+    if memory_dir is None:
+        memory_dir = get_config_manager().memory_dir
+    return Path(memory_dir)
+
+
+def _source_history_path(*, memory_dir: str | Path | None = None) -> Path:
+    return _resolve_memory_dir(memory_dir) / _SOURCE_HISTORY_FILENAME
 
 
 def _source_hash(url: str = '', fallback_title: str = '') -> str:
@@ -88,7 +96,9 @@ def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
     return _source_history.get(url_hash)
 
 
-async def _ensure_source_history_loaded() -> None:
+async def _ensure_source_history_loaded(
+    *, memory_dir: str | Path | None = None
+) -> None:
     """Load source history once without blocking the event loop."""
     global _source_history_loaded
     if _source_history_loaded:
@@ -96,7 +106,7 @@ async def _ensure_source_history_loaded() -> None:
     async with _source_history_lock:
         if _source_history_loaded:
             return
-        path = _source_history_path()
+        path = _source_history_path(memory_dir=memory_dir)
         try:
             data = await asyncio.to_thread(read_json, path)
             entries = data.get('entries') if isinstance(data, dict) else None
@@ -129,6 +139,7 @@ async def _record_source_used(
     url: str,
     kind: str,
     title: str = '',
+    memory_dir: str | Path | None = None,
 ) -> None:
     """Update, prune and persist one consumed source record."""
     source_hash = _source_hash(url, title)
@@ -157,7 +168,9 @@ async def _record_source_used(
             "entries": dict(_source_history),
         }
     try:
-        await atomic_write_json_async(_source_history_path(), snapshot)
+        await atomic_write_json_async(
+            _source_history_path(memory_dir=memory_dir), snapshot
+        )
     except Exception as exc:
         logger.warning(
             "落盘 %s 失败: %s: %s",
@@ -413,11 +426,15 @@ def _record_proactive_material(lanlan_name: str, source_tag: str, key: str) -> N
     per_tag[source_tag].append((time.time(), key))
 
 
-def _proactive_chat_totals_path() -> Path:
-    return Path(get_config_manager().memory_dir) / _PROACTIVE_CHAT_TOTALS_FILENAME
+def _proactive_chat_totals_path(
+    *, memory_dir: str | Path | None = None
+) -> Path:
+    return _resolve_memory_dir(memory_dir) / _PROACTIVE_CHAT_TOTALS_FILENAME
 
 
-async def _ensure_proactive_chat_totals_loaded() -> None:
+async def _ensure_proactive_chat_totals_loaded(
+    *, memory_dir: str | Path | None = None
+) -> None:
     """Lazy-load the persisted cumulative counters + ever_delivered. Idempotent. File reads go to the thread pool.
 
     schema: {"version": 2,
@@ -436,7 +453,7 @@ async def _ensure_proactive_chat_totals_loaded() -> None:
     async with _proactive_chat_totals_lock:
         if _proactive_chat_totals_loaded:
             return
-        path = _proactive_chat_totals_path()
+        path = _proactive_chat_totals_path(memory_dir=memory_dir)
         try:
             data = await asyncio.to_thread(read_json, path)
             totals = data.get('totals') if isinstance(data, dict) else None
@@ -473,11 +490,13 @@ def _was_invite_ever_delivered(lanlan_name: str) -> bool:
     return bool(_invite_ever_delivered.get(lanlan_name, False))
 
 
-async def _persist_totals_unlocked() -> None:
+async def _persist_totals_unlocked(
+    *, memory_dir: str | Path | None = None
+) -> None:
     """Persist totals + ever_delivered to disk. The caller must hold _proactive_chat_totals_lock."""
     try:
         await atomic_write_json_async(
-            _proactive_chat_totals_path(),
+            _proactive_chat_totals_path(memory_dir=memory_dir),
             {
                 'version': _PROACTIVE_CHAT_TOTALS_SCHEMA_VERSION,
                 'totals': dict(_proactive_chat_totals),
@@ -493,22 +512,26 @@ async def _persist_totals_unlocked() -> None:
         )
 
 
-async def _increment_proactive_chat_total(lanlan_name: str) -> int:
+async def _increment_proactive_chat_total(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> int:
     """+1 cached counter and persist atomically. Returns new value.
 
     Serialization is guaranteed by ``_proactive_chat_totals_lock``: concurrent
     proactive_chat calls each await a serial update, so no increment is lost.
     Persistence failures are not raised to the caller — the counter is
     best-effort; losing one +1 is not fatal, but the log line is kept."""
-    await _ensure_proactive_chat_totals_loaded()
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
     async with _proactive_chat_totals_lock:
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
-        await _persist_totals_unlocked()
+        await _persist_totals_unlocked(memory_dir=memory_dir)
     return new_value
 
 
-async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
+async def _mark_invite_ever_delivered(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> None:
     """One-shot set-True + persist. Skips the disk write when already True to save IO.
 
     Shares ``_proactive_chat_totals_lock`` with ``_increment_proactive_chat_total``
@@ -520,15 +543,17 @@ async def _mark_invite_ever_delivered(lanlan_name: str) -> None:
     ever_delivered: stale`` half-state on disk, making force-first fire once more
     after restart. Use ``_record_invite_delivery_persistent`` for one atomic
     write under a single lock."""
-    await _ensure_proactive_chat_totals_loaded()
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
     async with _proactive_chat_totals_lock:
         if _invite_ever_delivered.get(lanlan_name):
             return
         _invite_ever_delivered[lanlan_name] = True
-        await _persist_totals_unlocked()
+        await _persist_totals_unlocked(memory_dir=memory_dir)
 
 
-async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
+async def _record_invite_delivery_persistent(
+    lanlan_name: str, *, memory_dir: str | Path | None = None
+) -> int:
     """Atomic persistent record of one successfully delivered mini-game invite:
     counter +1 + ever_delivered=True written to disk once under one lock.
     Returns the new total.
@@ -538,12 +563,12 @@ async def _record_invite_delivery_persistent(lanlan_name: str) -> int:
     ever_delivered: stale`` half-state on disk — after restart
     ``_was_invite_ever_delivered`` sees the stale false and force-first fires
     again. Pointed out by CodeRabbit Major review."""
-    await _ensure_proactive_chat_totals_loaded()
+    await _ensure_proactive_chat_totals_loaded(memory_dir=memory_dir)
     async with _proactive_chat_totals_lock:
         new_value = _proactive_chat_totals.get(lanlan_name, 0) + 1
         _proactive_chat_totals[lanlan_name] = new_value
         _invite_ever_delivered[lanlan_name] = True
-        await _persist_totals_unlocked()
+        await _persist_totals_unlocked(memory_dir=memory_dir)
     return new_value
 
 

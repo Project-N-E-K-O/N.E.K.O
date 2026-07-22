@@ -346,13 +346,13 @@ def test_proactive_reason_codes_have_stage_mapping():
 @pytest.mark.unit
 def test_proactive_phase2_abort_reasons_stay_specific():
     import inspect
-    import main_routers.system_router as system_router
+    from main_logic.proactive_chat import generation
 
-    src = inspect.getsource(system_router.proactive_chat)
+    src = inspect.getsource(generation._generate_phase2_stream)
     assert "abort_reason_code" in src
     assert "PROACTIVE_REASON_DELIVERY_PREEMPTED" in src
     assert "PROACTIVE_REASON_PASS_MODEL_PASS" in src
-    assert "final_abort_reason_code = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
+    assert "final_reason = abort_reason_code or PROACTIVE_REASON_PASS_GENERATION_EMPTY" in src
 
 
 @pytest.mark.unit
@@ -393,9 +393,15 @@ def test_proactive_chat_concurrent_rejection_returns_http_409():
         "原子 check+claim）；refactor 改成无锁 can_start_proactive 双查会重新"
         "引入 PR #1015 修过的双进 PHASE1 race"
     )
-    # 拒绝路径必须 409 + success=False（前端契约）
-    assert "status_code=409" in src, (
+    # 拒绝路径必须继续使用领域决策给出的 409 + success=False（前端契约）。
+    assert "status_code=entry_result.status_code" in src
+    from main_logic.proactive_chat.decisions import _decide_busy_entry_guard
+
+    result = _decide_busy_entry_guard(False, state_snapshot={"phase": "PHASE1"})
+    assert result is not None
+    assert result.status_code == 409, (
         "proactive_chat 并发拒绝时必须 HTTP 409 —— 前端 "
         "app-proactive.js triggerProactiveChat 据此跳过 backoff++。若改成 "
         "200/500 等其他 status，前端会把 server 忙误算成 attempt 消耗"
     )
+    assert result.body["success"] is False

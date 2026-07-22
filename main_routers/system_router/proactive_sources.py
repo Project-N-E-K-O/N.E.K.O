@@ -15,6 +15,7 @@
 
 """Compatibility facade for proactive source state and decisions."""
 
+from main_logic.proactive_chat import state as _state
 from main_logic.proactive_chat.decisions import (  # noqa: F401
     _SOURCE_WEIGHT_DECAY_LAMBDA,
     _SOURCE_WEIGHT_FLOOR,
@@ -27,13 +28,37 @@ from main_logic.proactive_chat.decisions import (  # noqa: F401
 from main_logic.proactive_chat.state import (  # noqa: F401
     _SOURCE_HISTORY_FILENAME,
     _SOURCE_HISTORY_SCHEMA_VERSION,
-    _ensure_source_history_loaded,
     _half_life_for,
-    _record_source_used,
     _source_hash,
     _source_history,
     _source_history_loaded,
     _source_history_lock,
-    _source_history_path,
     _source_skip_probability,
 )
+from ..shared_state import get_config_manager as _get_legacy_config_manager
+
+
+def _legacy_memory_dir():
+    return _get_legacy_config_manager().memory_dir
+
+
+def _source_history_path():
+    return _state._source_history_path(memory_dir=_legacy_memory_dir())
+
+
+async def _ensure_source_history_loaded() -> None:
+    await _state._ensure_source_history_loaded(memory_dir=_legacy_memory_dir())
+
+
+async def _record_source_used(
+    *,
+    url: str,
+    kind: str,
+    title: str = '',
+) -> None:
+    await _state._record_source_used(
+        url=url,
+        kind=kind,
+        title=title,
+        memory_dir=_legacy_memory_dir(),
+    )
