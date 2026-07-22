@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 import type { HeadConfig, TransformContext } from 'vitepress'
 import { isNoindexRoute } from './indexing-policy.mjs'
+import { LOCALES, SITE_ORIGIN } from './seo-shared.mjs'
 
-export const SITE_ORIGIN = 'https://project-neko.online'
+export { SITE_ORIGIN }
 
 const PROJECT_ORIGIN = 'https://project-neko.cn/'
 const GITHUB_URL = 'https://github.com/Project-N-E-K-O/N.E.K.O'
@@ -14,50 +15,15 @@ const WEBSITE_ID = `${SITE_ORIGIN}/#website`
 const SOFTWARE_ID = `${SITE_ORIGIN}/#software`
 
 type PageData = TransformContext['pageData']
-type LocaleKey = 'en' | 'zh-CN' | 'ja'
+type LocaleDefinition = (typeof LOCALES)[number]
+type LocaleKey = LocaleDefinition['key']
 type PageSchemaType = 'WebPage' | 'CollectionPage' | 'TechArticle'
-
-interface LocaleDefinition {
-  key: LocaleKey
-  prefix: '' | '/zh-CN' | '/ja'
-  hreflang: 'en' | 'zh-CN' | 'ja'
-  htmlLang: 'en-US' | 'zh-CN' | 'ja'
-  ogLocale: 'en_US' | 'zh_CN' | 'ja_JP'
-  docsLabel: string
-}
 
 interface AlternatePage {
   locale: LocaleDefinition
   route: string
   url: string
 }
-
-const LOCALES: readonly LocaleDefinition[] = [
-  {
-    key: 'en',
-    prefix: '',
-    hreflang: 'en',
-    htmlLang: 'en-US',
-    ogLocale: 'en_US',
-    docsLabel: 'N.E.K.O. Docs',
-  },
-  {
-    key: 'zh-CN',
-    prefix: '/zh-CN',
-    hreflang: 'zh-CN',
-    htmlLang: 'zh-CN',
-    ogLocale: 'zh_CN',
-    docsLabel: 'N.E.K.O. 文档',
-  },
-  {
-    key: 'ja',
-    prefix: '/ja',
-    hreflang: 'ja',
-    htmlLang: 'ja',
-    ogLocale: 'ja_JP',
-    docsLabel: 'N.E.K.O. ドキュメント',
-  },
-]
 
 const SECTION_LABELS: Record<LocaleKey, Record<string, string>> = {
   en: {

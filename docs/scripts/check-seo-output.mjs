@@ -1,8 +1,12 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
+import {
+  LOCALE_HOME_PATHS,
+  SITE_ORIGIN,
+} from '../.vitepress/seo-shared.mjs'
 
-const SITE_ORIGIN = 'https://project-neko.online'
 const DIST_DIR = resolve('.vitepress/dist')
+const PUBLIC_DIR = resolve('public')
 const errors = []
 
 function filesRecursively(directory, extension) {
@@ -98,11 +102,19 @@ if (existsSync(sitemapPath)) {
 
 const pages = new Map()
 const indexableDescriptions = new Map()
+const copiedPublicHtml = new Set(
+  existsSync(PUBLIC_DIR)
+    ? filesRecursively(PUBLIC_DIR, '.html').map((htmlPath) =>
+        relative(PUBLIC_DIR, htmlPath).replaceAll('\\', '/'),
+      )
+    : [],
+)
 let noindexCount = 0
 let indexableCount = 0
 
 for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   const file = relative(DIST_DIR, htmlPath).replaceAll('\\', '/')
+  if (copiedPublicHtml.has(file)) continue
   const html = readFileSync(htmlPath, 'utf8')
   const isNotFound = file === '404.html'
   const metaTags = tags(html, 'meta')
@@ -216,7 +228,7 @@ for (const htmlPath of filesRecursively(DIST_DIR, '.html')) {
   if (!noindex) {
     const nodes = parsedJsonLd.flatMap(jsonLdNodes)
     const canonicalPath = new URL(canonical).pathname
-    const isLocaleHome = ['/', '/zh-CN/', '/ja/'].includes(canonicalPath)
+    const isLocaleHome = LOCALE_HOME_PATHS.has(canonicalPath)
     const expectedPrimaryType = isLocaleHome
       ? 'WebPage'
       : canonicalPath.endsWith('/')
