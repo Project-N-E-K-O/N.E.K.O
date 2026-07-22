@@ -1,0 +1,5 @@
+"""Bounded independent-ASR transport retry policy."""
+
+_SONIOX_CONNECT_MAX_ATTEMPTS = 3
+_ASR_CONNECT_RETRY_BASE_SECONDS = 0.25
+_ASR_CONNECT_RETRY_CAP_SECONDS = 1.0
