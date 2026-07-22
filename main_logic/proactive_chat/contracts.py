@@ -57,8 +57,6 @@ class ProactiveChatCommand:
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> "ProactiveChatCommand":
         """Build a command without importing HTTP framework types."""
-        if not isinstance(payload, Mapping):
-            raise TypeError("proactive chat payload must be a mapping")
         return cls(
             lanlan_name=payload.get("lanlan_name"),
             voice_mode=bool(payload.get("voice_mode", False)),
@@ -88,6 +86,14 @@ class ProactiveChatCommand:
     def language_candidates(self) -> tuple[Any, Any, Any]:
         """Return request locale aliases in their established precedence."""
         return self.language, self.lang, self.i18n_language
+
+
+@dataclass(frozen=True, slots=True)
+class ProactiveChatResult:
+    """Framework-independent result adapted to HTTP by the Router."""
+
+    body: dict[str, Any]
+    status_code: int = 200
 
 
 PROACTIVE_REASON_CHAT_DELIVERED = "CHAT_DELIVERED"

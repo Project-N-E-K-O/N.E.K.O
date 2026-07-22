@@ -18,6 +18,7 @@
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -32,6 +33,7 @@ from .contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
     PROACTIVE_REASON_PASS_DELIVERY_BUSY,
+    ProactiveChatResult,
     _proactive_chat_body,
     _proactive_pass_body,
 )
@@ -55,6 +57,22 @@ from config.prompts.prompts_proactive import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class MiniGameInviteEntryAdvance:
+    """A pending invite implicitly resolved by newer user activity."""
+
+    session_id: str
+    action: str
+
+
+@dataclass(frozen=True, slots=True)
+class MiniGameInviteShortCircuit:
+    """A completed invite attempt and optional frontend options payload."""
+
+    result: ProactiveChatResult
+    options_payload: dict[str, Any] | None = None
 
 
 # --- Mini-game 邀请短路状态（每角色独立）---
@@ -169,6 +187,42 @@ def _mini_game_invite_advance_response(
     # 让日志能区分按钮路径与隐式路径。
     return _apply_mini_game_invite_choice(
         lanlan_name, 'later', source='implicit_dismiss',
+    )
+
+
+def _last_user_message_at_from_activity(
+    activity_snapshot: Any,
+    *,
+    now: float | None = None,
+) -> float | None:
+    """Back-compute the text path's last user-message timestamp."""
+    if activity_snapshot is None:
+        return None
+    seconds_since_user_msg = getattr(
+        activity_snapshot,
+        "seconds_since_user_msg",
+        None,
+    )
+    if seconds_since_user_msg is None:
+        return None
+    current_time = time.time() if now is None else now
+    return current_time - float(seconds_since_user_msg)
+
+
+def _advance_mini_game_invite_entry(
+    lanlan_name: str,
+    last_user_msg_at: float | None,
+) -> MiniGameInviteEntryAdvance | None:
+    """Advance pending state and normalize the resolved-notification fields."""
+    outcome = _mini_game_invite_advance_response(
+        lanlan_name,
+        last_user_msg_at,
+    )
+    if not outcome or not outcome.get("session_id"):
+        return None
+    return MiniGameInviteEntryAdvance(
+        session_id=outcome["session_id"],
+        action=outcome.get("action", "suppress"),
     )
 
 
@@ -312,7 +366,7 @@ def _pick_mini_game_type(lanlan_name: str | None = None) -> str | None:
     return _random.choice(candidates)
 
 
-async def _maybe_deliver_mini_game_invite(
+async def _attempt_mini_game_invite_delivery(
     *,
     lanlan_name: str,
     mgr,
@@ -320,8 +374,9 @@ async def _maybe_deliver_mini_game_invite(
     invite_lang: str,
     master_name: str,
     user_toggle_enabled: bool = True,
+    push_options_compat: bool,
 ) -> dict | None:
-    """On a hit, deliver the mini-game invite and return the JSON dict for _end_proactive; returns None on no hit.
+    """Deliver an eligible invite for either the legacy or staged caller.
 
     Short-circuit conditions (any one unmet → return None and the caller
     continues the original Phase1/2 pipeline):
@@ -496,25 +551,23 @@ async def _maybe_deliver_mini_game_invite(
         # 埋点失败不能影响邀请投递
         pass
 
-    # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
-    # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
-    # galgame mode 开关。Pet 主窗收到后通过现有 RAW_MESSAGE IPC forwarding 自动
-    # 转给 chat.html，不需要新 IPC channel。
-    options_payload = _build_mini_game_invite_options_payload(
-        invite_lang=invite_lang,
-        game_type=game_type,
-        session_id=invite_session_id,
-    )
-    try:
-        if mgr.websocket and hasattr(mgr.websocket, 'send_json'):
-            client_state = getattr(mgr.websocket, 'client_state', None)
-            if client_state is None or client_state == client_state.CONNECTED:
-                await mgr.websocket.send_json(options_payload)
-    except Exception as exc:
-        logger.warning(
-            "[%s] mini-game invite options WS push failed: %s",
-            lanlan_name, exc,
+    if push_options_compat:
+        options_payload = _build_mini_game_invite_options_payload(
+            invite_lang=invite_lang,
+            game_type=game_type,
+            session_id=invite_session_id,
         )
+        try:
+            if mgr.websocket and hasattr(mgr.websocket, 'send_json'):
+                client_state = getattr(mgr.websocket, 'client_state', None)
+                if client_state is None or client_state == client_state.CONNECTED:
+                    await mgr.websocket.send_json(options_payload)
+        except Exception as exc:
+            logger.warning(
+                "[%s] mini-game invite options WS push failed: %s",
+                lanlan_name,
+                exc,
+            )
 
     print(
         f"[{lanlan_name}] Mini-game invite delivered "
@@ -530,6 +583,67 @@ async def _maybe_deliver_mini_game_invite(
         lanlan_name=lanlan_name,
         turn_id=proactive_sid,
         invite_session_id=invite_session_id,
+    )
+
+
+async def _maybe_deliver_mini_game_invite(
+    *,
+    lanlan_name: str,
+    mgr,
+    activity_snapshot,
+    invite_lang: str,
+    master_name: str,
+    user_toggle_enabled: bool = True,
+) -> dict | None:
+    """Preserve the pre-stage-5.5 direct delivery behavior and signature."""
+    return await _attempt_mini_game_invite_delivery(
+        lanlan_name=lanlan_name,
+        mgr=mgr,
+        activity_snapshot=activity_snapshot,
+        invite_lang=invite_lang,
+        master_name=master_name,
+        user_toggle_enabled=user_toggle_enabled,
+        push_options_compat=True,
+    )
+
+
+async def _run_mini_game_invite_short_circuit(
+    *,
+    lanlan_name: str,
+    mgr: Any,
+    activity_snapshot: Any,
+    invite_lang: str,
+    master_name: str,
+    user_toggle_enabled: bool = True,
+) -> MiniGameInviteShortCircuit | None:
+    """Run the invite attempt and expose framework-neutral short-circuit data."""
+    body = await _attempt_mini_game_invite_delivery(
+        lanlan_name=lanlan_name,
+        mgr=mgr,
+        activity_snapshot=activity_snapshot,
+        invite_lang=invite_lang,
+        master_name=master_name,
+        user_toggle_enabled=user_toggle_enabled,
+        push_options_compat=False,
+    )
+    if body is None:
+        return None
+
+    options_payload = None
+    if (
+        body.get("action") == "chat"
+        and body.get("channel") == "mini_game"
+        and body.get("game_type")
+        and body.get("invite_session_id")
+    ):
+        options_payload = _build_mini_game_invite_options_payload(
+            invite_lang=invite_lang,
+            game_type=body["game_type"],
+            session_id=body["invite_session_id"],
+        )
+    return MiniGameInviteShortCircuit(
+        result=ProactiveChatResult(body=body),
+        options_payload=options_payload,
     )
 
 

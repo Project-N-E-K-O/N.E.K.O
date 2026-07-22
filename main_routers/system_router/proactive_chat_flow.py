@@ -27,14 +27,15 @@ from .break_reminders import (
     _render_work_break_prompt,
 )
 from main_logic.proactive_chat.mini_game_invite import (
+    _advance_mini_game_invite_entry,
     _build_mini_game_invite_options_payload,
-    _maybe_deliver_mini_game_invite,
-    _mini_game_invite_advance_response,
+    _last_user_message_at_from_activity,
     _mini_game_invite_count_post_response_chat,
     _mini_game_invite_get_state,
     _mini_game_invite_record_delivered,
     _pick_mini_game_type,
     _push_mini_game_invite_resolved,
+    _run_mini_game_invite_short_circuit,
 )
 from main_logic.proactive_chat.music_recommendation import (
     _append_music_recommendations,
@@ -69,7 +70,6 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_CHAT_DELIVERED,
     PROACTIVE_REASON_DELIVERY_FAILED,
     PROACTIVE_REASON_DELIVERY_PREEMPTED,
-    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND,
     PROACTIVE_REASON_ERROR_INTERNAL,
     PROACTIVE_REASON_ERROR_SOURCE_FETCH_FAILED,
     PROACTIVE_REASON_ERROR_TIMEOUT,
@@ -79,11 +79,6 @@ from main_logic.proactive_chat.contracts import (
     PROACTIVE_REASON_PASS_DUPLICATE,
     PROACTIVE_REASON_PASS_GENERATION_EMPTY,
     PROACTIVE_REASON_PASS_MODEL_PASS,
-    PROACTIVE_REASON_PASS_PRIVACY,
-    PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY,
-    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
-    PROACTIVE_REASON_PASS_SOURCE_EMPTY,
-    PROACTIVE_REASON_PASS_THROTTLED,
     _ensure_proactive_reason_code,
     _proactive_chat_body,
     _proactive_error_body,
@@ -98,9 +93,18 @@ from main_logic.proactive_chat.generation import (
     _text_is_pass_sentinel,
 )
 from main_logic.proactive_chat.decisions import (
-    _compute_source_weights,
-    _filter_sources_by_weight,
+    _decide_activity_schedule,
+    _decide_busy_entry_guard,
+    _decide_closed_activity_gate,
+    _decide_empty_source_gate,
+    _decide_game_route_entry_guard,
+    _decide_manager_entry_guard,
+    _decide_probabilistic_activity_gate,
+    _select_source_modes,
+    _select_weighted_sources,
+    _should_fetch_activity_snapshot,
     _should_skip_source,
+    _should_use_voice_fast_path,
 )
 from main_logic.proactive_chat.state import (
     _ensure_source_history_loaded,
@@ -111,7 +115,6 @@ import asyncio
 import json
 import random
 import re
-import time
 from typing import Any
 from uuid import uuid4
 from fastapi import Request
@@ -247,6 +250,20 @@ async def _safe_fire_proactive_done(scope: dict) -> None:
         await mgr.state.fire(se.PROACTIVE_DONE)
     except Exception as err:  # 状态机不该抛，但兜底 swallow
         logger.warning("safe_fire_proactive_done 异常: %s", err)
+
+
+async def _push_mini_game_invite_options(mgr: Any, payload: dict) -> None:
+    """Send an invite-options payload from the Router/WebSocket boundary."""
+    try:
+        websocket = getattr(mgr, "websocket", None)
+        if websocket is None or not hasattr(websocket, "send_json"):
+            return
+        client_state = getattr(websocket, "client_state", None)
+        if client_state is not None and client_state != client_state.CONNECTED:
+            return
+        await websocket.send_json(payload)
+    except Exception as exc:
+        logger.warning("mini-game invite options WS push failed: %s", exc)
 
 
 _PHASE1_FETCH_PER_SOURCE = PROACTIVE_PHASE1_FETCH_PER_SOURCE  # Phase 1 每个信息源固定抓取条数
@@ -449,36 +466,38 @@ async def proactive_chat(request: Request):
         
         # 获取session manager
         mgr = session_manager.get(lanlan_name)
-        if not mgr:
+        manager_exists = bool(mgr)
+        entry_result = _decide_manager_entry_guard(
+            lanlan_name,
+            manager_exists=manager_exists,
+            goodbye_silent=(
+                getattr(mgr, "is_goodbye_silent", lambda: False)()
+                if manager_exists
+                else False
+            ),
+        )
+        if entry_result is not None:
+            if entry_result.body.get("reason_code") == PROACTIVE_REASON_PASS_DISABLED:
+                logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
             return JSONResponse(
-                _proactive_error_body(
-                    PROACTIVE_REASON_ERROR_CHARACTER_NOT_FOUND,
-                    error=f"角色 {lanlan_name} 不存在",
-                ),
-                status_code=404,
+                entry_result.body,
+                status_code=entry_result.status_code,
             )
-
-        if getattr(mgr, "is_goodbye_silent", lambda: False)():
-            logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
-            return JSONResponse(_proactive_pass_body(
-                PROACTIVE_REASON_PASS_DISABLED,
-                message="goodbye silent; proactive skipped",
-            ))
 
         try:
             from main_routers.game_router import is_game_route_active
-            if is_game_route_active(lanlan_name):
-                logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
-                return JSONResponse(_proactive_pass_body(
-                    PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
-                    message="game route active; ordinary proactive skipped",
-                ))
+            game_route_active = bool(is_game_route_active(lanlan_name))
         except Exception as game_route_err:
             logger.warning("[%s] proactive game-route guard failed closed: %s", lanlan_name, game_route_err)
-            return JSONResponse(_proactive_pass_body(
-                PROACTIVE_REASON_PASS_ROUTE_ACTIVE,
-                message="game route guard unavailable; ordinary proactive skipped",
-            ))
+            game_route_active = None
+        entry_result = _decide_game_route_entry_guard(game_route_active)
+        if entry_result is not None:
+            if game_route_active:
+                logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
+            return JSONResponse(
+                entry_result.body,
+                status_code=entry_result.status_code,
+            )
         
         # 检查能否发起新一轮主动搭话：状态机统一把 "AI 正在响应"（_is_responding）、
         # "另一轮 proactive 在跑"（phase != IDLE）两个信号收拢到 O(1) 判定。
@@ -488,7 +507,25 @@ async def proactive_chat(request: Request):
         # ========== Voice mode fast path ==========
         # 语音模式下不走 Phase1/Phase2，不占 SM 的 proactive phase；先用只读
         # can_start_proactive 做 409 判定即可。
-        if command.voice_mode and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
+        # Preserve the original short-circuit evaluation order: a text request
+        # must not re-read manager/session properties solely to decide the voice
+        # path, and an inactive manager must not read ``mgr.session`` here.
+        if command.voice_mode:
+            manager_active = mgr.is_active
+            realtime_session = (
+                isinstance(mgr.session, OmniRealtimeClient)
+                if manager_active
+                else False
+            )
+        else:
+            manager_active = False
+            realtime_session = False
+        use_voice_fast_path = _should_use_voice_fast_path(
+            voice_mode=command.voice_mode,
+            manager_active=manager_active,
+            realtime_session=realtime_session,
+        )
+        if use_voice_fast_path:
             # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
             # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
             # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
@@ -502,27 +539,31 @@ async def proactive_chat(request: Request):
             # 用户随后点「现在不想玩」落到 expired、真正的 5h decline 起不来、邀请
             # 5min 后反复重来。改用真消息时间戳后，纯点按钮（不说话）的用户活动
             # 时间不会越过 delivered_at，pending 一直留到用户显式点按钮 / 说话。
-            _voice_advance_outcome = _mini_game_invite_advance_response(
+            _voice_entry_advance = _advance_mini_game_invite_entry(
                 lanlan_name, getattr(mgr, 'last_user_message_time', None),
             )
             # advance 触发了隐式 dismiss → 推 WS 让前端清掉 prompt UI（cross-window
             # 一致性）。codex P2 指出非按钮路径漏推 WS 让 UI 挂着。
-            if _voice_advance_outcome and _voice_advance_outcome.get('session_id'):
+            if _voice_entry_advance is not None:
                 await _push_mini_game_invite_resolved(
                     mgr,
-                    session_id=_voice_advance_outcome['session_id'],
-                    action=_voice_advance_outcome.get('action', 'suppress'),
+                    session_id=_voice_entry_advance.session_id,
+                    action=_voice_entry_advance.action,
                 )
-            if not mgr.state.can_start_proactive(session=probe_session):
+            can_start_proactive = mgr.state.can_start_proactive(
+                session=probe_session
+            )
+            entry_result = _decide_busy_entry_guard(
+                can_start_proactive,
+                state_snapshot=(
+                    None if can_start_proactive else mgr.state.snapshot()
+                ),
+            )
+            if entry_result is not None:
                 logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
                 return JSONResponse(
-                    _proactive_error_body(
-                        PROACTIVE_REASON_PASS_BUSY,
-                        error="AI正在响应中，无法主动搭话",
-                        message="请等待当前响应完成",
-                        state=mgr.state.snapshot(),
-                    ),
-                    status_code=409,
+                    entry_result.body,
+                    status_code=entry_result.status_code,
                 )
             delivered = await mgr.trigger_voice_proactive_nudge()
             if delivered:
@@ -552,16 +593,18 @@ async def proactive_chat(request: Request):
         # IDLE→PHASE1 + 订阅派发，避免并发请求双双通过 can_start_proactive 后
         # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
         from main_logic.session_state import SessionEvent as _SE
-        if not await mgr.state.try_start_proactive(session=probe_session):
+        proactive_started = await mgr.state.try_start_proactive(
+            session=probe_session
+        )
+        entry_result = _decide_busy_entry_guard(
+            proactive_started,
+            state_snapshot=(None if proactive_started else mgr.state.snapshot()),
+        )
+        if entry_result is not None:
             logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
             return JSONResponse(
-                _proactive_error_body(
-                    PROACTIVE_REASON_PASS_BUSY,
-                    error="AI正在响应中，无法主动搭话",
-                    message="请等待当前响应完成",
-                    state=mgr.state.snapshot(),
-                ),
-                status_code=409,
+                entry_result.body,
+                status_code=entry_result.status_code,
             )
         _proactive_done_emitted = False
         # Set after activity snapshot fetch — tells the frontend scheduler
@@ -673,7 +716,7 @@ async def proactive_chat(request: Request):
                 f"[{lanlan_name}] privacy mode check failed, defaulting to enabled: {_pm_err}",
             )
             privacy_mode = True
-        if privacy_mode:
+        if not _should_fetch_activity_snapshot(privacy_mode):
             print(f"[{lanlan_name}] 隐私模式开启，跳过 activity tracker，按无限制策略搭话")
             activity_snapshot = None
         else:
@@ -691,20 +734,18 @@ async def proactive_chat(request: Request):
         # 否则 cooldown 永远卡在 pending。Text path 从 activity_snapshot 反推
         # last_user_msg_at；voice fast path 在上面的 voice block 内独立调一次
         # （用 mgr.last_user_activity_time），两边对称。
-        _text_last_user_msg_at: float | None = None
-        if activity_snapshot is not None:
-            _secs = getattr(activity_snapshot, 'seconds_since_user_msg', None)
-            if _secs is not None:
-                _text_last_user_msg_at = time.time() - float(_secs)
-        _text_advance_outcome = _mini_game_invite_advance_response(
+        _text_last_user_msg_at = _last_user_message_at_from_activity(
+            activity_snapshot,
+        )
+        _text_entry_advance = _advance_mini_game_invite_entry(
             lanlan_name, _text_last_user_msg_at,
         )
         # 隐式 dismiss 推 WS（同 voice fast path 对称，codex P2）
-        if _text_advance_outcome and _text_advance_outcome.get('session_id'):
+        if _text_entry_advance is not None:
             await _push_mini_game_invite_resolved(
                 mgr,
-                session_id=_text_advance_outcome['session_id'],
-                action=_text_advance_outcome.get('action', 'suppress'),
+                session_id=_text_entry_advance.session_id,
+                action=_text_entry_advance.action,
             )
 
         # 用户级 toggle：前端 CHAT_MODE_CONFIG 里的 ``proactiveMiniGameInviteEnabled``
@@ -739,18 +780,16 @@ async def proactive_chat(request: Request):
         # look. Bypassed for the unfinished_thread override is
         # deliberate: if the AI just asked a question, hanging on it
         # mid-private is rude. closed > thread.
-        if (
-            not _debug_force_invite
-            and activity_snapshot is not None
-            and activity_snapshot.propensity == 'closed'
-        ):
+        activity_result = _decide_closed_activity_gate(
+            activity_snapshot,
+            debug_force_invite=_debug_force_invite,
+        )
+        if activity_result is not None:
             print(f"[{lanlan_name}] propensity=closed (state={activity_snapshot.state}), 跳过本轮 proactive")
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "reason_code": PROACTIVE_REASON_PASS_PRIVACY,
-                "message": f"user state={activity_snapshot.state} → closed (privacy lockdown)",
-            }))
+            return await _end_proactive(JSONResponse(
+                activity_result.body,
+                status_code=activity_result.status_code,
+            ))
 
         # ========== Screen-only：固定间隔 + 后端抖动 ==========
         # 用户处于 gaming / focused_work（propensity=restricted_screen_only）
@@ -770,31 +809,22 @@ async def proactive_chat(request: Request):
         # next_schedule_fixed_mode=False，前端误切回 tier backoff，让用户
         # 离开 must-fire 状态后又被退避机制吞掉一段时间。
         # Codex P2 + CodeRabbit Major review。
-        if (
-            activity_snapshot is not None
-            and activity_snapshot.propensity == 'restricted_screen_only'
-        ):
-            _next_schedule_fixed_mode = True
-            _has_must_fire = (
-                activity_snapshot.anti_slack_pending is not None
-                or activity_snapshot.work_break_pending is not None
-            )
-            if _has_must_fire:
+        activity_schedule = _decide_activity_schedule(
+            activity_snapshot,
+            base_interval_seconds=command.base_interval_seconds,
+        )
+        _next_schedule_fixed_mode = activity_schedule.fixed_mode
+        if activity_schedule.fixed_mode:
+            if activity_schedule.has_must_fire:
                 print(f"[{lanlan_name}] propensity=restricted_screen_only 但有 must-fire 提醒待发，跳过本轮抖动 sleep")
-            else:
-                try:
-                    _base_interval_raw = command.base_interval_seconds
-                    _base_interval = float(_base_interval_raw) if _base_interval_raw is not None else 0.0
-                except (TypeError, ValueError):
-                    _base_interval = 0.0
-                # 上限兜底：base 过大时把 0.5*base 截到 60s，避免极端配置
-                # （比如 user 把 proactiveChatInterval 调到 300s）让后端
-                # 单请求占连接十分钟。
-                if _base_interval > 0:
-                    _jitter_max = min(_base_interval * 0.5, 60.0)
-                    _jitter = random.uniform(0.0, _jitter_max)
-                    print(f"[{lanlan_name}] propensity=restricted_screen_only, 后端注入 {_jitter:.2f}s 间隔抖动（base={_base_interval:.1f}s）")
-                    await asyncio.sleep(_jitter)
+            elif activity_schedule.jitter_max > 0:
+                _jitter = random.uniform(0.0, activity_schedule.jitter_max)
+                print(
+                    f"[{lanlan_name}] propensity=restricted_screen_only, "
+                    f"后端注入 {_jitter:.2f}s 间隔抖动"
+                    f"（base={activity_schedule.base_interval:.1f}s）"
+                )
+                await asyncio.sleep(_jitter)
 
         # ========== Must-fire: break-reminder branches ==========
         # Anti-slack outranks water-break (transition trigger more
@@ -1053,84 +1083,48 @@ async def proactive_chat(request: Request):
         # back to something, we honour that promise regardless of
         # how silenced the user wanted us. The thread mechanism's
         # 2-followup hard cap already prevents harassment.
-        if (
-            not _debug_force_invite
-            and activity_snapshot is not None
-            and activity_snapshot.skip_probability > 0
-            and activity_snapshot.unfinished_thread is None
-        ):
-            import random as _random
-            if _random.random() < activity_snapshot.skip_probability:
-                print(
-                    f"[{lanlan_name}] skip_probability={activity_snapshot.skip_probability:.2f} "
-                    f"rolled (state={activity_snapshot.state} intensity={activity_snapshot.game_intensity} "
-                    f"genre={activity_snapshot.game_genre})，本轮跳过"
-                )
-                return await _end_proactive(JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "reason_code": PROACTIVE_REASON_PASS_THROTTLED,
-                    "message": (
-                        f"probabilistic skip: state={activity_snapshot.state} "
-                        f"intensity={activity_snapshot.game_intensity} "
-                        f"skip_prob={activity_snapshot.skip_probability:.2f}"
-                    ),
-                }))
+        activity_result = _decide_probabilistic_activity_gate(
+            activity_snapshot,
+            debug_force_invite=_debug_force_invite,
+        )
+        if activity_result is not None:
+            print(
+                f"[{lanlan_name}] skip_probability={activity_snapshot.skip_probability:.2f} "
+                f"rolled (state={activity_snapshot.state} intensity={activity_snapshot.game_intensity} "
+                f"genre={activity_snapshot.game_genre})，本轮跳过"
+            )
+            return await _end_proactive(JSONResponse(
+                activity_result.body,
+                status_code=activity_result.status_code,
+            ))
 
         # ========== 解析 enabled_modes ==========
         # 兼容旧版前端：``enabled_modes`` 字段缺席 → 根据其它字段推断；显式传 ``[]``
         # 表示新版客户端"用户把所有 source toggle 都关了"，不能再走 BC fallback
         # 退化到 home/trending（否则 mini-game 邀请 toggle 单独开启的场景下 dice
         # miss 会让 home 兜底打破 toggle 契约——codex P1）。
-        if command.enabled_modes_provided:
-            enabled_modes = command.enabled_modes or []
-        else:
-            content_type = command.content_type
-            screenshot_data = command.screenshot_data
-            if screenshot_data and isinstance(screenshot_data, str):
-                enabled_modes = ['vision']
-            elif command.use_window_search:
-                enabled_modes = ['window']
-            elif content_type == 'news':
-                enabled_modes = ['news']
-            elif content_type == 'video':
-                enabled_modes = ['video']
-            elif command.use_personal_dynamic:
-                enabled_modes = ['personal']
-            else:
-                enabled_modes = ['home']
-
-        # 是否有 5 分钟内未收尾话题。若有，restricted_screen_only / sources 空
-        # 这两个早退分支都让步——AI 能基于 conversation history 接续旧话题，
-        # 不需要任何外部素材。
-        _has_unfinished_thread = (
-            activity_snapshot is not None
-            and activity_snapshot.unfinished_thread is not None
+        source_mode_selection = _select_source_modes(
+            command,
+            activity_snapshot,
+            debug_force_invite=_debug_force_invite,
         )
+        enabled_modes = source_mode_selection.enabled_modes
+        _has_unfinished_thread = source_mode_selection.has_unfinished_thread
 
         # restricted_screen_only：用户处于 gaming / focused_work，仅允许屏幕通道。
         # 把 enabled_modes 收紧到只剩 vision。如果前端这一轮根本没启用 vision，
         # 直接 pass —— 没东西可看，又不让聊外部，没必要继续。
         # 例外：有未收尾话题（5min 内 AI 提的问题用户还没回）→ 即使没 vision
         # 也允许跑下去，跟进上一个问题不需要外部素材。
-        if (
-            not _debug_force_invite
-            and activity_snapshot is not None
-            and activity_snapshot.propensity == 'restricted_screen_only'
-        ):
-            if 'vision' in enabled_modes:
-                enabled_modes = ['vision']
-                print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
-            elif _has_unfinished_thread:
-                enabled_modes = []
-                print(f"[{lanlan_name}] propensity=restricted_screen_only 但有未收尾话题，允许 text-only 跟进")
-            else:
-                return await _end_proactive(JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "reason_code": PROACTIVE_REASON_PASS_RESTRICTED_SCREEN_ONLY,
-                    "message": f"user state={activity_snapshot.state} restricts proactive to screen-only, but vision not enabled this round",
-                }))
+        if source_mode_selection.restricted_to_vision:
+            print(f"[{lanlan_name}] propensity=restricted_screen_only, 收紧 enabled_modes 到仅 vision")
+        elif source_mode_selection.text_only_followup:
+            print(f"[{lanlan_name}] propensity=restricted_screen_only 但有未收尾话题，允许 text-only 跟进")
+        elif source_mode_selection.result is not None:
+            return await _end_proactive(JSONResponse(
+                source_mode_selection.result.body,
+                status_code=source_mode_selection.result.status_code,
+            ))
 
         print(f"[{lanlan_name}] 启用的搭话模式: {enabled_modes}")
 
@@ -1146,7 +1140,7 @@ async def proactive_chat(request: Request):
             invite_lang = 'zh'
         # _user_invite_toggle 已经在上面 _debug_force_invite 计算前算过——把
         # toggle 关时旗标也连带禁用，保证早退 gate 不被绕过。
-        invite_outcome = await _maybe_deliver_mini_game_invite(
+        invite_short_circuit = await _run_mini_game_invite_short_circuit(
             lanlan_name=lanlan_name,
             mgr=mgr,
             activity_snapshot=activity_snapshot,
@@ -1154,8 +1148,16 @@ async def proactive_chat(request: Request):
             master_name=master_name_current,
             user_toggle_enabled=_user_invite_toggle,
         )
-        if invite_outcome is not None:
-            return await _end_proactive(JSONResponse(invite_outcome))
+        if invite_short_circuit is not None:
+            if invite_short_circuit.options_payload is not None:
+                await _push_mini_game_invite_options(
+                    mgr,
+                    invite_short_circuit.options_payload,
+                )
+            return await _end_proactive(JSONResponse(
+                invite_short_circuit.result.body,
+                status_code=invite_short_circuit.result.status_code,
+            ))
 
         # 用户把所有 source toggle 都关了（仅留 mini-game 邀请独立 toggle 触发本轮
         # 请求），mini-game 短路又没命中：没什么可聊。直接 pass 而不是落到下面源
@@ -1163,14 +1165,16 @@ async def proactive_chat(request: Request):
         # 话题 → 让 Phase 2 走 text-only 跟进路径（与 sources={} 但 thread 在的兜
         # 底语义对齐）。codex P1 指出：BC fallback 已经按 "字段缺席 vs 显式 []" 分
         # 流，这里对显式空清晰退出。
-        if not enabled_modes and not _has_unfinished_thread:
+        source_result = _decide_empty_source_gate(
+            enabled_modes,
+            has_unfinished_thread=_has_unfinished_thread,
+        )
+        if source_result is not None:
             print(f"[{lanlan_name}] enabled_modes 空 + mini-game miss + 无 unfinished_thread → pass")
-            return await _end_proactive(JSONResponse({
-                "success": True,
-                "action": "pass",
-                "reason_code": PROACTIVE_REASON_PASS_SOURCE_EMPTY,
-                "message": "no source modes enabled and mini-game invite did not fire",
-            }))
+            return await _end_proactive(JSONResponse(
+                source_result.body,
+                status_code=source_result.status_code,
+            ))
 
         # 全局 source 衰减历史：进入 picking 前确保已惰性加载到内存（首次为线程池
         # IO，后续是 O(1) flag 检查）。同步 picking loop 后续直接读 dict。
@@ -1688,13 +1692,15 @@ async def proactive_chat(request: Request):
         # suppressed 集合，本轮就跳过 followup_topics_prompt（per-reflection
         # cooldown 在 reflection.py 那侧另算，这里是 channel 级别的兜底）。
         # ============================================================
-        non_vision_modes = [m for m in enabled_modes if m != 'vision' and m in sources]
-        weight_candidates = list(non_vision_modes)
-        if _surfaced_reflection_ids:
-            weight_candidates.append('reminiscence')
-        if weight_candidates:
-            source_weights = _compute_source_weights(lanlan_name, weight_candidates)
-            suppressed = _filter_sources_by_weight(source_weights)
+        source_weight_selection = _select_weighted_sources(
+            lanlan_name,
+            enabled_modes,
+            sources,
+            has_reminiscence=bool(_surfaced_reflection_ids),
+        )
+        if source_weight_selection.weights:
+            source_weights = source_weight_selection.weights
+            suppressed = source_weight_selection.suppressed
             weight_str = ' '.join(f"{ch}={w:.3f}" for ch, w in source_weights.items())
             logger.debug(f"[{lanlan_name}] 来源权重: {weight_str} | 剔除: {suppressed or '无'}")
 
